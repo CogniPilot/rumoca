@@ -41,10 +41,20 @@ fn overconstrained_derivative_alias_rewrite_targets_root_state() {
 
     let mut flat = flat::Model::new();
     flat.oc_break_edge_scalar_count = 1;
+    for name in ["branch.port.reference.gamma", "root.port.reference.gamma"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(Span::DUMMY)
+            },
+        );
+    }
     rewrite_overconstrained_derivative_alias_refs(&mut dae, &flat, &alias_roots)
         .expect("alias rewrite should succeed");
 
-    assert_eq!(dae.continuous.equations.len(), 1);
+    assert_eq!(dae.continuous.equations.len(), 2);
     let Expression::Binary { lhs, .. } = &dae.continuous.equations[0].rhs else {
         panic!("expected residual binary expression");
     };
@@ -55,4 +65,8 @@ fn overconstrained_derivative_alias_rewrite_targets_root_state() {
         panic!("expected der() argument var ref");
     };
     assert_eq!(name.var_name(), &VarName::new("root.port.reference.gamma"));
+    assert_eq!(
+        dae.continuous.equations[1].origin,
+        "overconstrained derivative alias: branch.port.reference.gamma = root.port.reference.gamma"
+    );
 }

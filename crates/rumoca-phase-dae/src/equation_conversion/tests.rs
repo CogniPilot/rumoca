@@ -82,6 +82,13 @@ fn var_ref_with_parts(name: &str, parts: Vec<(&str, Vec<i64>)>) -> rumoca_core::
     }
 }
 
+fn integer_literal(value: i64) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(value),
+        span: fixture_span(),
+    }
+}
+
 fn primitive_variable_with_dims_and_parts(
     name: &str,
     dims: Vec<i64>,
@@ -132,6 +139,84 @@ fn add_pair_record_function(flat_model: &mut flat::Model, name: &str) {
     output.type_class = Some(rumoca_core::ClassType::Record);
     function.add_output(output);
     flat_model.functions.insert(function.name.clone(), function);
+}
+
+fn add_complex_constructor(flat_model: &mut flat::Model) {
+    let mut constructor = rumoca_core::Function::new("Complex", fixture_span());
+    constructor.is_constructor = true;
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("re", "Real", fixture_span())
+            .with_def_id(rumoca_core::DefId::new(201)),
+    );
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("im", "Real", fixture_span())
+            .with_def_id(rumoca_core::DefId::new(202)),
+    );
+    flat_model
+        .functions
+        .insert(constructor.name.clone(), constructor);
+}
+
+fn add_converter_symmetrical_component_fields(flat_model: &mut flat::Model) {
+    for (name, parts, def_id) in [
+        (
+            "converter.iSymmetricalComponent[2].re",
+            vec![
+                ("converter", vec![]),
+                ("iSymmetricalComponent", vec![2]),
+                ("re", vec![]),
+            ],
+            rumoca_core::DefId::new(201),
+        ),
+        (
+            "converter.iSymmetricalComponent[2].im",
+            vec![
+                ("converter", vec![]),
+                ("iSymmetricalComponent", vec![2]),
+                ("im", vec![]),
+            ],
+            rumoca_core::DefId::new(202),
+        ),
+        (
+            "converter.iSymmetricalComponent[3].re",
+            vec![
+                ("converter", vec![]),
+                ("iSymmetricalComponent", vec![3]),
+                ("re", vec![]),
+            ],
+            rumoca_core::DefId::new(201),
+        ),
+        (
+            "converter.iSymmetricalComponent[3].im",
+            vec![
+                ("converter", vec![]),
+                ("iSymmetricalComponent", vec![3]),
+                ("im", vec![]),
+            ],
+            rumoca_core::DefId::new(202),
+        ),
+    ] {
+        let var = primitive_variable_with_parts(name, parts, def_id);
+        flat_model.variables.insert(var.name.clone(), var);
+    }
+}
+
+fn add_index_non_pos_parameter(flat_model: &mut flat::Model) {
+    flat_model.variables.insert(
+        rumoca_core::VarName::new("converter.indexNonPos"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("converter.indexNonPos"),
+            dims: vec![2],
+            variability: rumoca_core::Variability::Parameter(Default::default()),
+            binding: Some(rumoca_core::Expression::Array {
+                elements: vec![integer_literal(2), integer_literal(3)],
+                is_matrix: false,
+                span: fixture_span(),
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(fixture_span())
+        },
+    );
 }
 
 #[test]
@@ -312,6 +397,52 @@ fn test_record_function_equation_matches_subscripts_semantically() {
         .expect("same subscript value from a different span should match");
     assert_eq!(expanded.len(), 2);
     assert!(format!("{:?}", expanded[0].residual).contains("controller.y[1].alpha"));
+}
+
+#[test]
+fn test_record_field_equation_expands_parameter_array_selected_lhs() {
+    let mut flat_model = flat::Model::new();
+    add_converter_symmetrical_component_fields(&mut flat_model);
+    add_index_non_pos_parameter(&mut flat_model);
+    add_complex_constructor(&mut flat_model);
+
+    let selected_lhs = rumoca_core::Expression::Index {
+        base: Box::new(var_ref_with_parts(
+            "converter.iSymmetricalComponent",
+            vec![("converter", vec![]), ("iSymmetricalComponent", vec![])],
+        )),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("converter.indexNonPos").into(),
+                subscripts: vec![rumoca_core::Subscript::generated_index(1, fixture_span())],
+                span: fixture_span(),
+            }),
+            span: fixture_span(),
+        }],
+        span: fixture_span(),
+    };
+    let equation = flat::Equation::new(
+        residual(
+            selected_lhs,
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("Complex").into(),
+                args: vec![integer_literal(0), integer_literal(0)],
+                is_constructor: true,
+                span: fixture_span(),
+            },
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "converter".to_string(),
+        },
+    );
+
+    let expanded = expand_record_field_equation(&equation, &flat_model)
+        .unwrap()
+        .expect("parameter-selected record equation should expand");
+    assert_eq!(expanded.len(), 2);
+    assert!(format!("{:?}", expanded[0].residual).contains("iSymmetricalComponent[2].re"));
+    assert!(format!("{:?}", expanded[1].residual).contains("iSymmetricalComponent[2].im"));
 }
 
 #[test]

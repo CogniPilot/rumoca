@@ -157,6 +157,124 @@ pub(crate) fn count_overconstrained_interface(
     Ok(correction)
 }
 
+/// Count rooted overconstrained component gauge freedoms.
+///
+/// A VCG component with a definite or selected potential root has one free
+/// reference coordinate for the overconstrained record. This is not an ordinary
+/// missing equation; admission consumes it only as deficit-only closure.
+pub(crate) fn count_overconstrained_root_gauge(
+    flat: &flat::Model,
+    state_vars: &IndexSet<rumoca_core::VarName>,
+) -> Result<usize, ToDaeError> {
+    let record_groups = collect_oc_record_groups(flat, state_vars)?;
+    if record_groups.is_empty() {
+        return Ok(0);
+    }
+
+    let record_paths: Vec<&str> = record_groups.keys().map(|s| s.as_str()).collect();
+    let (comp_of, n_comps) =
+        build_record_components(&record_paths, &flat.branches, &flat.optional_edges);
+    let rooted_components = rooted_component_flags(flat, &comp_of, n_comps);
+
+    let mut gauge_by_component = vec![0usize; n_comps];
+    for (rec_path, group) in &record_groups {
+        let Some(&comp_id) = comp_of.get(rec_path.as_str()) else {
+            continue;
+        };
+        if !rooted_components[comp_id] {
+            continue;
+        }
+        let gauge = group
+            .total_scalar_size
+            .saturating_sub(group.eq_constraint_size);
+        gauge_by_component[comp_id] = gauge_by_component[comp_id].max(gauge);
+    }
+
+    Ok(gauge_by_component.into_iter().sum())
+}
+
+fn collect_oc_record_groups(
+    flat: &flat::Model,
+    state_vars: &IndexSet<rumoca_core::VarName>,
+) -> Result<FxHashMap<String, OcRecordGroup>, ToDaeError> {
+    let defined_lhs_paths = collect_nonconnection_lhs_paths(flat);
+    let mut record_groups: FxHashMap<String, OcRecordGroup> = FxHashMap::default();
+    for (name, var) in &flat.variables {
+        if !var.is_overconstrained {
+            continue;
+        }
+        let Some(ref rec_path) = var.oc_record_path else {
+            continue;
+        };
+        if !crate::is_continuous_unknown(flat, state_vars, name) {
+            continue;
+        }
+        let group = match record_groups.entry(rec_path.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let eq_constraint_size = var.oc_eq_constraint_size.ok_or_else(|| {
+                    ToDaeError::runtime_contract_violation_at(
+                        format!(
+                            "overconstrained variable `{name}` is missing equalityConstraint size"
+                        ),
+                        var.source_span,
+                    )
+                })?;
+                entry.insert(OcRecordGroup {
+                    total_scalar_size: 0,
+                    eq_constraint_size,
+                    has_internal_definition: defined_lhs_paths
+                        .iter()
+                        .any(|lhs| is_same_or_child(lhs, rec_path)),
+                })
+            }
+        };
+        group.total_scalar_size += flat_variable_scalar_size(var);
+    }
+    Ok(record_groups)
+}
+
+fn rooted_component_flags(
+    flat: &flat::Model,
+    comp_of: &FxHashMap<&str, usize>,
+    n_comps: usize,
+) -> Vec<bool> {
+    let mut has_root = vec![false; n_comps];
+    for (rec_path, &comp_id) in comp_of {
+        if flat.definite_roots.contains(*rec_path) {
+            has_root[comp_id] = true;
+        }
+        for root in &flat.definite_roots {
+            if rec_path.starts_with(root.as_str())
+                && rec_path.as_bytes().get(root.len()) == Some(&b'.')
+            {
+                has_root[comp_id] = true;
+            }
+        }
+    }
+
+    for (pot_root, _priority) in &flat.potential_roots {
+        for (rec_path, &comp_id) in comp_of {
+            let matches = rec_path.starts_with(pot_root.as_str())
+                || pot_root.starts_with(*rec_path)
+                || crate::path_utils::first_rendered_segment(rec_path)
+                    .is_some_and(|prefix| pot_root.starts_with(prefix));
+            if matches && !has_root[comp_id] {
+                has_root[comp_id] = true;
+            }
+        }
+    }
+    has_root
+}
+
+fn flat_variable_scalar_size(var: &flat::Variable) -> usize {
+    if var.dims.is_empty() {
+        1
+    } else {
+        var.dims.iter().map(|&d| d.max(1) as usize).product()
+    }
+}
+
 /// Build connected components from record paths using VCG branches.
 /// Returns (path -> component_id, number_of_components).
 pub(crate) fn build_record_components<'a>(

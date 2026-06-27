@@ -659,6 +659,14 @@ pub struct DaeMetadata {
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
 
+    /// Scalar gauge freedom for rooted overconstrained connection components.
+    ///
+    /// A selected root fixes the connection graph topology, but the root record's
+    /// absolute reference coordinate remains a gauge degree of freedom for the
+    /// simulation DAE. Admission uses this only as deficit-only closure.
+    #[serde(default)]
+    pub overconstrained_root_gauge_count: usize,
+
     /// Optional description string from the root class declaration.
     #[serde(default)]
     pub model_description: Option<String>,

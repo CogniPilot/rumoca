@@ -938,11 +938,18 @@ fn eval_integer_expression(expr: &rumoca_core::Expression, flat: &flat::Model) -
             value: rumoca_core::Literal::Integer(value),
             ..
         } => Some(*value),
-        rumoca_core::Expression::VarRef { name, .. } => {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
             let binding = &flat.variables.get(name.var_name())?.binding;
             let Some(binding) = binding else {
                 return None;
             };
+            if let Some(index) = eval_single_array_subscript(subscripts, flat) {
+                let values = eval_integer_array_expression(binding, flat, 0)?;
+                let selected = usize::try_from(index.checked_sub(1)?).ok()?;
+                return values.get(selected).copied();
+            }
             eval_integer_expression(binding, flat)
         }
         rumoca_core::Expression::Binary {
@@ -959,6 +966,85 @@ fn eval_integer_expression(expr: &rumoca_core::Expression, flat: &flat::Model) -
         } => Some(eval_integer_expression(lhs, flat)? - eval_integer_expression(rhs, flat)?),
         _ => None,
     }
+}
+
+fn eval_single_array_subscript(
+    subscripts: &[rumoca_core::Subscript],
+    flat: &flat::Model,
+) -> Option<i64> {
+    let [subscript] = subscripts else {
+        return None;
+    };
+    match subscript {
+        rumoca_core::Subscript::Index { value, .. } => Some(*value),
+        rumoca_core::Subscript::Expr { expr, .. } => eval_integer_expression(expr, flat),
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+fn eval_integer_array_expression(
+    expr: &rumoca_core::Expression,
+    flat: &flat::Model,
+    depth: u8,
+) -> Option<Vec<i64>> {
+    if depth > 8 {
+        return None;
+    }
+    match expr {
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: false,
+            ..
+        } => elements
+            .iter()
+            .map(|element| eval_integer_expression(element, flat))
+            .collect(),
+        rumoca_core::Expression::VarRef { name, .. } => {
+            let binding = flat.variables.get(name.var_name())?.binding.as_ref()?;
+            eval_integer_array_expression(binding, flat, depth + 1)
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if function_name_matches(name.as_str(), "indexNonPositiveSequence")
+                && args.len() == 1 =>
+        {
+            let m = eval_integer_expression(&args[0], flat)?;
+            index_non_positive_sequence(m)
+        }
+        _ => None,
+    }
+}
+
+fn function_name_matches(name: &str, leaf: &str) -> bool {
+    name == leaf || name.rsplit('.').next() == Some(leaf)
+}
+
+fn number_of_symmetric_base_systems(m: i64) -> Option<i64> {
+    if m <= 0 {
+        return None;
+    }
+    if m % 2 != 0 || m == 2 {
+        return Some(1);
+    }
+    Some(2 * number_of_symmetric_base_systems(m / 2)?)
+}
+
+fn index_non_positive_sequence(m: i64) -> Option<Vec<i64>> {
+    let n_base = number_of_symmetric_base_systems(m)?;
+    let m_base = m.checked_div(n_base)?;
+    if m_base == 1 {
+        return Some(Vec::new());
+    }
+    if m_base == 2 {
+        return Some((1..=n_base).map(|k| 2 + 2 * (k - 1)).collect());
+    }
+
+    let mut values = Vec::new();
+    for k in 1..=n_base {
+        for value in 2..=m_base {
+            values.push(value + m_base * (k - 1));
+        }
+    }
+    Some(values)
 }
 
 fn subscripts_match_semantically(

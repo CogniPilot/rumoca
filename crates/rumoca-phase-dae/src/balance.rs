@@ -62,6 +62,7 @@ pub struct InitialClosureBalanceDetail {
     pub scalar_equations: usize,
     pub scalar_unknowns: usize,
     pub deficit_before: i64,
+    pub overconstrained_root_gauge_scalars: i64,
     pub initial_equation_scalars: i64,
     pub initial_algorithm_scalars: i64,
     pub closure_used: i64,
@@ -242,12 +243,17 @@ fn initial_closure_balance_detail_from_counts(
         .map(|eq| eq.scalar_count as i64)
         .sum::<i64>();
     let initial_algorithm_scalars = 0;
-    let closure_used = (initial_equation_scalars + initial_algorithm_scalars).min(deficit_before);
+    let overconstrained_root_gauge_scalars =
+        dae_model.metadata.overconstrained_root_gauge_count as i64;
+    let closure_used =
+        (initial_equation_scalars + initial_algorithm_scalars + overconstrained_root_gauge_scalars)
+            .min(deficit_before);
     let deficit_after = deficit_before - closure_used;
     InitialClosureBalanceDetail {
         scalar_equations: scalar_equations as usize,
         scalar_unknowns: scalar_unknowns as usize,
         deficit_before,
+        overconstrained_root_gauge_scalars,
         initial_equation_scalars,
         initial_algorithm_scalars,
         closure_used,

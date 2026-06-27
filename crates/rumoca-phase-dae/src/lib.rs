@@ -434,6 +434,8 @@ fn finalize_lowered_dae(
         dae.metadata.stream_interface_equation_count = flat.stream_interface_equation_count;
         dae.metadata.oc_break_edge_scalar_count = flat.oc_break_edge_scalar_count;
         overconstrained_interface::validate_connection_graph(flat)?;
+        dae.metadata.overconstrained_root_gauge_count =
+            overconstrained_interface::count_overconstrained_root_gauge(flat, state_vars)?;
         let oc_correction = count_overconstrained_interface(flat, state_vars)?;
         if oc_correction >= 0 {
             dae.metadata.overconstrained_interface_count = oc_correction;
@@ -828,25 +830,19 @@ fn rewrite_overconstrained_derivative_alias_refs(
         rewrite_overconstrained_derivative_alias_expr(expr, alias_roots, &mut rewritten_aliases);
     }
 
-    add_unrewritten_overconstrained_derivative_alias_equations(
-        dae,
-        flat,
-        alias_roots,
-        &rewritten_aliases,
-    )
+    add_overconstrained_derivative_alias_equations(dae, flat, alias_roots)
 }
 
-fn add_unrewritten_overconstrained_derivative_alias_equations(
+fn add_overconstrained_derivative_alias_equations(
     dae: &mut dae::Dae,
     flat: &flat::Model,
     alias_roots: &FxHashMap<rumoca_core::VarName, rumoca_core::VarName>,
-    rewritten_aliases: &FxHashSet<rumoca_core::VarName>,
 ) -> Result<(), ToDaeError> {
-    let graph_needs_alias_rows = alias_roots.len() > flat.oc_break_edge_scalar_count;
+    // Rewriting der(alias) to der(root) preserves the dynamic derivative use,
+    // but the alias variable remains an algebraic unknown after state filtering.
+    // Connection-graph break-edge accounting cannot stand in for this local
+    // alias closure, so emit one residual row for every removed derivative state.
     for (alias, root) in alias_roots {
-        if !graph_needs_alias_rows && rewritten_aliases.contains(alias) {
-            continue;
-        }
         let Some(alias_var) = flat.variables.get(alias) else {
             continue;
         };
