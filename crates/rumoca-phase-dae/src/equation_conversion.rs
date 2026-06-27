@@ -1004,8 +1004,7 @@ fn eval_integer_array_expression(
             eval_integer_array_expression(binding, flat, depth + 1)
         }
         rumoca_core::Expression::FunctionCall { name, args, .. }
-            if function_name_matches(name.as_str(), "indexNonPositiveSequence")
-                && args.len() == 1 =>
+            if is_polyphase_index_non_positive_sequence(name.as_str()) && args.len() == 1 =>
         {
             let m = eval_integer_expression(&args[0], flat)?;
             index_non_positive_sequence(m)
@@ -1014,8 +1013,12 @@ fn eval_integer_array_expression(
     }
 }
 
-fn function_name_matches(name: &str, leaf: &str) -> bool {
-    name == leaf || name.rsplit('.').next() == Some(leaf)
+fn is_polyphase_index_non_positive_sequence(name: &str) -> bool {
+    matches!(
+        name,
+        "indexNonPositiveSequence"
+            | "Modelica.Electrical.Polyphase.Functions.indexNonPositiveSequence"
+    )
 }
 
 fn number_of_symmetric_base_systems(m: i64) -> Option<i64> {
