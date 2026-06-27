@@ -26,8 +26,12 @@ use crate::{
     RowEvalContext, to_scalar_program_block,
 };
 
+mod initial_event;
 mod sensitivity;
 mod support;
+pub use initial_event::{
+    InitialEventObservation, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
+};
 use support::{
     NewtonProbe, apply_newton_steps, copy_runtime_values, copy_runtime_values_into,
     reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
@@ -1182,36 +1186,6 @@ impl SolveRuntime {
         Err(RuntimeSolveError::solve_ir(format!(
             "initial discrete equations did not converge at t={t}"
         )))
-    }
-
-    pub fn apply_projected_post_initial_event_update<P>(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        max_iters: usize,
-        project_algebraics: P,
-    ) -> Result<EventActionOutcome, RuntimeSolveError>
-    where
-        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
-    {
-        let event_pre_y = copy_runtime_values(y, "post-initial event pre y snapshot")?;
-        let event_pre_p = copy_runtime_values(p, "post-initial event pre p snapshot")?;
-        self.apply_projected_event_update(
-            ProjectedEventUpdateInput {
-                y,
-                p,
-                t,
-                tol,
-                event_pre_y: &event_pre_y,
-                event_pre_p: &event_pre_p,
-                max_iters,
-                row_filter: EventUpdateRowFilter::FollowCurrentOnly,
-                root_relation_overrides: &[],
-            },
-            project_algebraics,
-        )
     }
 
     pub fn apply_projected_event_update<P>(

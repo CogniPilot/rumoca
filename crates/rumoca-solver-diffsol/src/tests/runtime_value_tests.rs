@@ -11,18 +11,30 @@ fn event_sample_replaces_near_duplicate_output_sample() {
     let mut times = Vec::new();
     let mut data = vec![Vec::new()];
 
+    let mut samples = SampleRecorder {
+        runtime: None,
+        model: &model,
+        recorded_times: &mut times,
+        data: &mut data,
+    };
     record_sample_if_new(
-        None,
-        &model,
-        &[],
-        &[5.0],
-        &mut times,
-        &mut data,
-        4.999999999999981,
+        &mut samples,
+        SamplePoint {
+            y: &[],
+            params: &[5.0],
+            t: 4.999999999999981,
+        },
     )
     .expect("pre-event output sample should be recorded");
-    record_sample_if_new(None, &model, &[], &[7.0], &mut times, &mut data, 5.0)
-        .expect("near-duplicate event sample should replace the stale output value");
+    record_sample_if_new(
+        &mut samples,
+        SamplePoint {
+            y: &[],
+            params: &[7.0],
+            t: 5.0,
+        },
+    )
+    .expect("near-duplicate event sample should replace the stale output value");
 
     assert_eq!(times, vec![5.0]);
     assert_eq!(data, vec![vec![7.0]]);
@@ -551,6 +563,7 @@ fn initialization_projects_demoted_state_layout_slots() {
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let mut y = model.initial_y.clone();
     let mut params = model.parameters.clone();
+    let mut current_t = 0.0;
     initialize_state_runtime_values(
         &model,
         &SimOptions::default(),
@@ -558,7 +571,7 @@ fn initialization_projects_demoted_state_layout_slots() {
         &ode_model,
         &mut y,
         &mut params,
-        0.0,
+        &mut current_t,
     )
     .expect("demoted state-layout slots should be projected by initialization");
 

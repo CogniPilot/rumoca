@@ -68,25 +68,6 @@ pub(crate) fn apply_event_updates_with_event_pre(
     apply_event_updates_with_filter(input, EventUpdateRowFilter::All)
 }
 
-pub(crate) fn apply_post_initial_event_updates(
-    runtime: &SolveRuntime,
-    ode_model: &OdeModel,
-    y: &mut [f64],
-    p: &mut [f64],
-    t: f64,
-    tol: f64,
-) -> Result<(), SimError> {
-    let outcome = runtime.apply_projected_post_initial_event_update(
-        y,
-        p,
-        t,
-        tol,
-        EVENT_UPDATE_MAX_ITERS,
-        project_algebraics_callback(ode_model, t, tol),
-    )?;
-    event_action_outcome_to_result(outcome, t)
-}
-
 fn apply_event_updates_with_filter(
     input: EventUpdateInput<'_>,
     row_filter: EventUpdateRowFilter,
@@ -343,14 +324,19 @@ fn record_no_state_event_step(
             runtime.current_t,
             step.tol,
         )?;
-        record_sample_if_new(
-            None,
+        let mut samples = SampleRecorder {
+            runtime: None,
             model,
-            &runtime.current_y,
-            &runtime.params,
-            &mut runtime.recorded_times,
-            &mut runtime.data,
-            runtime.current_t,
+            recorded_times: &mut runtime.recorded_times,
+            data: &mut runtime.data,
+        };
+        record_sample_if_new(
+            &mut samples,
+            SamplePoint {
+                y: &runtime.current_y,
+                params: &runtime.params,
+                t: runtime.current_t,
+            },
         )?;
         runtime.current_t = runtime_root_event_application_time(runtime.current_t, step.target);
         return Ok(());
@@ -412,14 +398,19 @@ fn settle_and_record_no_state_output(
         runtime.current_t,
         opts.atol.max(1.0e-10),
     )?;
-    record_sample_if_new(
-        None,
+    let mut samples = SampleRecorder {
+        runtime: None,
         model,
-        &runtime.current_y,
-        &runtime.params,
-        &mut runtime.recorded_times,
-        &mut runtime.data,
-        runtime.current_t,
+        recorded_times: &mut runtime.recorded_times,
+        data: &mut runtime.data,
+    };
+    record_sample_if_new(
+        &mut samples,
+        SamplePoint {
+            y: &runtime.current_y,
+            params: &runtime.params,
+            t: runtime.current_t,
+        },
     )
 }
 
@@ -430,11 +421,11 @@ fn initialize_no_state_runtime(
 ) -> Result<NoStateRuntime, SimError> {
     let mut params = model.parameters.clone();
     let mut current_y = model.initial_y.clone();
-    let current_t = opts.t_start;
+    let mut current_t = opts.t_start;
     let tol = opts.atol.max(1.0e-10);
     let runtime = SolveRuntime::new(model)?;
     let equilibrium_model = OdeModel::new(model)?;
-    set_initial_event_flag(model, &mut params, true);
+    runtime.set_initial_event_flag(&mut params, true);
     settle_algebraics_and_relation_memory(
         &runtime,
         &equilibrium_model,
@@ -444,34 +435,52 @@ fn initialize_no_state_runtime(
         0,
         tol,
     )?;
-    let initial_event = initial_runtime_event_stop(&model.problem, current_t, None);
-    apply_event_updates(
-        &runtime,
-        &equilibrium_model,
-        &mut current_y,
-        &mut params,
-        current_t,
-        tol,
-    )?;
-    set_initial_event_flag(model, &mut params, false);
-    if initial_event.is_some() {
-        apply_post_initial_event_updates(
-            &runtime,
-            &equilibrium_model,
-            &mut current_y,
-            &mut params,
-            current_t,
+    let dynamic_event = runtime.current_dynamic_time_event_stop(&current_y, &params, current_t)?;
+    let event_pre_y = current_y.clone();
+    let event_pre_p = params.clone();
+    let outcome = runtime.apply_projected_initial_event_boundary(
+        solve_eval::ProjectedInitialEventInput {
+            y: &mut current_y,
+            p: &mut params,
+            t_start: current_t,
+            t_end: opts.t_end,
             tol,
+            event_pre_y: &event_pre_y,
+            event_pre_p: &event_pre_p,
+            max_iters: EVENT_UPDATE_MAX_ITERS,
+            dynamic_event,
+            apply_without_initial_event: true,
+        },
+        |y, p, t| project_algebraics_and_detect_changes(&equilibrium_model, y, p, t, 0, tol),
+    )?;
+    event_action_outcome_to_result(outcome.action, outcome.final_t)?;
+    current_t = outcome.final_t;
+    commit_pre_params_after_event(model, &current_y, &mut params, tol);
+    let mut data = vec![Vec::with_capacity(output_count); model.visible_names.len()];
+    let mut recorded_times = Vec::with_capacity(output_count);
+    for observation in &outcome.observations {
+        let mut samples = SampleRecorder {
+            runtime: None,
+            model,
+            recorded_times: &mut recorded_times,
+            data: &mut data,
+        };
+        record_sample_if_new(
+            &mut samples,
+            SamplePoint {
+                y: &observation.y,
+                params: &observation.p,
+                t: observation.t,
+            },
         )?;
     }
-    commit_pre_params_after_event(model, &current_y, &mut params, tol);
     Ok(NoStateRuntime {
         runtime,
         params,
         current_y,
         current_t,
-        data: vec![Vec::with_capacity(output_count); model.visible_names.len()],
-        recorded_times: Vec::with_capacity(output_count),
+        data,
+        recorded_times,
         equilibrium_model,
         stop_schedule: SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end),
     })

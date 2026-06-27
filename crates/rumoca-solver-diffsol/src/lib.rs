@@ -25,10 +25,10 @@ pub(crate) use bdf::{
 };
 use diffsol::{
     BacktrackingLineSearch, BdfState, FaerSparseLU, FaerSparseMat, MatrixCommon,
-    NewtonNonlinearSolver, OdeEquations, OdeSolverMethod, OdeSolverState, OdeSolverStopReason,
-    VectorHost,
+    NewtonNonlinearSolver, OdeEquations, OdeEquationsImplicit, OdeSolverMethod, OdeSolverProblem,
+    OdeSolverState, OdeSolverStopReason, VectorHost,
 };
-use init_projection::{EventObservation, initialize_state_runtime_values, set_initial_event_flag};
+use init_projection::{EventObservation, initialize_state_runtime_values};
 use rumoca_eval_solve::sim_driver::{
     SimDriverError, SolverStepper, StateTrajectory, StepOutcome, simulate_state_targets,
 };
@@ -41,14 +41,13 @@ use rumoca_solver::{
     DiffsolMethod, EventPreMode, RuntimeEventBoundary, RuntimeEventBoundaryHandler,
     RuntimeEventStop, SimOptions, SimResult, SimTermination, SolveStopSchedule,
     build_sim_result_from_solve_model, commit_pre_params_after_event, discrete_row_pre_mode,
-    initial_runtime_event_stop, process_runtime_event_boundary, push_visible_values,
-    replace_last_visible_values, runtime_event_horizon, runtime_root_event_application_time,
+    process_runtime_event_boundary, push_visible_values, replace_last_visible_values,
+    runtime_event_horizon, runtime_root_event_application_time,
     timeline::sample_time_match_with_tol, write_pre_params_from_sources,
 };
 pub(crate) use runtime::{
     EventUpdateInput, apply_discrete_value, apply_event_updates,
-    apply_event_updates_with_event_pre, apply_initialization_updates,
-    apply_post_initial_event_updates, seed_initial_discrete_values,
+    apply_event_updates_with_event_pre, apply_initialization_updates, seed_initial_discrete_values,
     settle_algebraics_and_relation_memory,
 };
 use runtime::{check_no_state_initialization, simulate_no_state_solve_ir};
@@ -133,6 +132,7 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
     let equilibrium_model = Arc::new(OdeModel::new(model)?);
     let mut current_y = model.initial_y.clone();
     let mut params = model.parameters.clone();
+    let mut current_t = opts.t_start;
     initialize_state_runtime_values(
         model,
         opts,
@@ -140,14 +140,14 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
         &equilibrium_model,
         &mut current_y,
         &mut params,
-        opts.t_start,
+        &mut current_t,
     )?;
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
     let problem = build_ode_problem_with_runtime_params_and_initial(
         model,
         opts,
         runtime_params,
-        opts.t_start,
+        current_t,
         current_y.clone(),
         equilibrium_model.clone(),
     )?;
@@ -198,23 +198,29 @@ fn simulate_with_states(
     let mut recorded_times = Vec::with_capacity(times.len());
     let mut current_t = opts.t_start;
     let mut current_y = model.initial_y.clone();
-    initialize_state_runtime_values(
+    let initial_observations = initialize_state_runtime_values(
         model,
         opts,
         runtime,
         equilibrium_model,
         &mut current_y,
         &mut params,
-        current_t,
+        &mut current_t,
     )?;
-    record_sample_if_new(
-        Some(runtime),
+    let mut samples = SampleRecorder {
+        runtime: Some(runtime.as_ref()),
         model,
-        &current_y,
-        &params,
-        &mut recorded_times,
-        &mut data,
-        current_t,
+        recorded_times: &mut recorded_times,
+        data: &mut data,
+    };
+    record_initial_samples(
+        &mut samples,
+        SamplePoint {
+            y: &current_y,
+            params: &params,
+            t: current_t,
+        },
+        &initial_observations,
     )?;
 
     // Shared runtime params captured by ODE closures and updated by event handlers.
@@ -229,47 +235,16 @@ fn simulate_with_states(
         current_y.clone(),
         equilibrium_model.clone(),
     )?;
-    // The solver borrows `problem` for the full simulation. `Bdf` and `Sdirk` are
-    // distinct concrete types, so we build whichever one was requested and box it
-    // behind `BdfStepper` to run the single (backend-neutral) driver once. ESDIRK34
-    // / TR-BDF2 reuse the same projection-aware consistent IC via `initial_rk_state`.
-    let mut stepper: Box<dyn SolverStepper + '_> = match opts.diffsol_method {
-        DiffsolMethod::Bdf => {
-            let state = initial_bdf_state(model, equilibrium_model, &problem, &current_y, &params)?;
-            let nl_solver = NewtonNonlinearSolver::new(
-                LinearSolver::default(),
-                BacktrackingLineSearch::default(),
-            );
-            let solver = solver_call("BDF new", || {
-                diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
-            })?;
-            Box::new(DiffsolStepper::new(DiffsolStepperInputs {
-                solver,
-                model,
-                equilibrium_model,
-                runtime,
-                runtime_params: runtime_params.clone(),
-                opts,
-                mode: DiffsolMode::General,
-            }))
-        }
-        method @ (DiffsolMethod::Esdirk34 | DiffsolMethod::TrBdf2) => {
-            let state = initial_rk_state(model, equilibrium_model, &problem, &current_y, &params)?;
-            let solver = solver_call("SDIRK new", || match method {
-                DiffsolMethod::Esdirk34 => problem.esdirk34_solver::<LinearSolver>(state),
-                _ => problem.tr_bdf2_solver::<LinearSolver>(state),
-            })?;
-            Box::new(DiffsolStepper::new(DiffsolStepperInputs {
-                solver,
-                model,
-                equilibrium_model,
-                runtime,
-                runtime_params: runtime_params.clone(),
-                opts,
-                mode: DiffsolMode::General,
-            }))
-        }
-    };
+    let mut stepper = build_general_stepper(GeneralStepperInput {
+        model,
+        opts,
+        equilibrium_model,
+        runtime,
+        runtime_params: runtime_params.clone(),
+        problem: &problem,
+        current_y: &current_y,
+        params: &params,
+    })?;
     let result = simulate_state_targets(
         model,
         opts,
@@ -302,6 +277,89 @@ fn simulate_with_states(
             current_y,
         },
     )
+}
+
+struct GeneralStepperInput<'a, 'b, Eqn>
+where
+    Eqn: OdeEquations,
+{
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    equilibrium_model: &'a Arc<OdeModel>,
+    runtime: &'a Arc<SolveRuntime>,
+    runtime_params: RuntimeParameters,
+    problem: &'a OdeSolverProblem<Eqn>,
+    current_y: &'b [f64],
+    params: &'b [f64],
+}
+
+fn build_general_stepper<'a, Eqn>(
+    input: GeneralStepperInput<'a, '_, Eqn>,
+) -> Result<Box<dyn SolverStepper + 'a>, SimError>
+where
+    Eqn:
+        OdeEquationsImplicit<M = Matrix, V = Vector, T = f64, C = <Matrix as MatrixCommon>::C> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+{
+    let GeneralStepperInput {
+        model,
+        opts,
+        equilibrium_model,
+        runtime,
+        runtime_params,
+        problem,
+        current_y,
+        params,
+    } = input;
+    match opts.diffsol_method {
+        DiffsolMethod::Bdf => {
+            let state = initial_bdf_state(
+                model,
+                equilibrium_model.as_ref(),
+                problem,
+                current_y,
+                params,
+            )?;
+            let nl_solver = NewtonNonlinearSolver::new(
+                LinearSolver::default(),
+                BacktrackingLineSearch::default(),
+            );
+            let solver = solver_call("BDF new", || {
+                diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(problem, state, nl_solver)
+            })?;
+            Ok(Box::new(DiffsolStepper::new(DiffsolStepperInputs {
+                solver,
+                model,
+                equilibrium_model: equilibrium_model.as_ref(),
+                runtime: runtime.as_ref(),
+                runtime_params,
+                opts,
+                mode: DiffsolMode::General,
+            })))
+        }
+        method @ (DiffsolMethod::Esdirk34 | DiffsolMethod::TrBdf2) => {
+            let state = initial_rk_state(
+                model,
+                equilibrium_model.as_ref(),
+                problem,
+                current_y,
+                params,
+            )?;
+            let solver = solver_call("SDIRK new", || match method {
+                DiffsolMethod::Esdirk34 => problem.esdirk34_solver::<LinearSolver>(state),
+                _ => problem.tr_bdf2_solver::<LinearSolver>(state),
+            })?;
+            Ok(Box::new(DiffsolStepper::new(DiffsolStepperInputs {
+                solver,
+                model,
+                equilibrium_model: equilibrium_model.as_ref(),
+                runtime: runtime.as_ref(),
+                runtime_params,
+                opts,
+                mode: DiffsolMode::General,
+            })))
+        }
+    }
 }
 
 /// Owned trajectory buffers + context needed to turn a `simulate_state_targets`
@@ -340,14 +398,19 @@ fn finalize_state_simulation(
                 fin.opts.atol.max(1.0e-10),
             )?;
             fin.runtime_params.borrow_mut().copy_from_slice(&fin.params);
+            let mut samples = SampleRecorder {
+                runtime: Some(fin.runtime.as_ref()),
+                model: fin.model,
+                recorded_times: &mut fin.recorded_times,
+                data: &mut fin.data,
+            };
             record_sample_if_new(
-                Some(fin.runtime),
-                fin.model,
-                &fin.current_y,
-                &fin.params,
-                &mut fin.recorded_times,
-                &mut fin.data,
-                time,
+                &mut samples,
+                SamplePoint {
+                    y: &fin.current_y,
+                    params: &fin.params,
+                    t: time,
+                },
             )?;
             Ok(build_sim_result_from_solve_model(
                 fin.model,
@@ -372,24 +435,30 @@ fn simulate_state_only_bdf(
     let mut recorded_times = Vec::with_capacity(times.len());
     let mut current_t = opts.t_start;
     let mut current_y = model.initial_y.clone();
-    initialize_state_runtime_values(
+    let initial_observations = initialize_state_runtime_values(
         model,
         opts,
         runtime,
         equilibrium_model,
         &mut current_y,
         &mut params,
-        current_t,
+        &mut current_t,
     )?;
     let current_state = current_y[..model.state_scalar_count()].to_vec();
-    record_sample_if_new(
-        Some(runtime),
+    let mut samples = SampleRecorder {
+        runtime: Some(runtime.as_ref()),
         model,
-        &current_y,
-        &params,
-        &mut recorded_times,
-        &mut data,
-        current_t,
+        recorded_times: &mut recorded_times,
+        data: &mut data,
+    };
+    record_initial_samples(
+        &mut samples,
+        SamplePoint {
+            y: &current_y,
+            params: &params,
+            t: current_t,
+        },
+        &initial_observations,
     )?;
 
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
@@ -706,16 +775,13 @@ where
         p: &[f64],
         t: f64,
     ) -> Result<(), SimDriverError> {
-        record_sample_if_new(
-            Some(self.runtime),
-            self.model,
-            y,
-            p,
+        let mut samples = SampleRecorder {
+            runtime: Some(self.runtime),
+            model: self.model,
             recorded_times,
             data,
-            t,
-        )
-        .map_err(sim_to_driver)
+        };
+        record_sample_if_new(&mut samples, SamplePoint { y, params: p, t }).map_err(sim_to_driver)
     }
 
     fn refresh_observation(
@@ -759,34 +825,64 @@ where
     }
 }
 
-fn record_sample_if_new(
-    runtime: Option<&SolveRuntime>,
-    model: &solve::SolveModel,
-    y: &[f64],
-    params: &[f64],
-    recorded_times: &mut Vec<f64>,
-    data: &mut [Vec<f64>],
-    t: f64,
+pub(crate) struct SampleRecorder<'a> {
+    pub(crate) runtime: Option<&'a SolveRuntime>,
+    pub(crate) model: &'a solve::SolveModel,
+    pub(crate) recorded_times: &'a mut Vec<f64>,
+    pub(crate) data: &'a mut [Vec<f64>],
+}
+
+pub(crate) struct SamplePoint<'a> {
+    pub(crate) y: &'a [f64],
+    pub(crate) params: &'a [f64],
+    pub(crate) t: f64,
+}
+
+pub(crate) fn record_sample_if_new(
+    recorder: &mut SampleRecorder<'_>,
+    sample: SamplePoint<'_>,
 ) -> Result<(), SimError> {
-    let values = if let Some(runtime) = runtime {
+    let values = if let Some(runtime) = recorder.runtime {
         runtime
-            .visible_values(y, params, t)
+            .visible_values(sample.y, sample.params, sample.t)
             .map_err(|err| SimError::SolveIr(err.to_string()))?
     } else {
-        visible_values(model, y, params, t)?
+        visible_values(recorder.model, sample.y, sample.params, sample.t)?
     };
-    if recorded_times
+    if recorder
+        .recorded_times
         .last()
-        .is_some_and(|last| sample_time_match_with_tol(*last, t))
+        .is_some_and(|last| sample_time_match_with_tol(*last, sample.t))
     {
-        if let Some(last) = recorded_times.last_mut() {
-            *last = t;
+        if let Some(last) = recorder.recorded_times.last_mut() {
+            *last = sample.t;
         }
-        replace_last_visible_values(data, &values)?;
+        replace_last_visible_values(recorder.data, &values)?;
         return Ok(());
     }
-    recorded_times.push(t);
-    push_visible_values(data, &values)?;
+    recorder.recorded_times.push(sample.t);
+    push_visible_values(recorder.data, &values)?;
+    Ok(())
+}
+
+fn record_initial_samples(
+    recorder: &mut SampleRecorder<'_>,
+    current: SamplePoint<'_>,
+    observations: &[solve_eval::InitialEventObservation],
+) -> Result<(), SimError> {
+    if observations.is_empty() {
+        return record_sample_if_new(recorder, current);
+    }
+    for observation in observations {
+        record_sample_if_new(
+            recorder,
+            SamplePoint {
+                y: &observation.y,
+                params: &observation.p,
+                t: observation.t,
+            },
+        )?;
+    }
     Ok(())
 }
 
