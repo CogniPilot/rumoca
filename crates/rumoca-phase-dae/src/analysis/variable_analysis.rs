@@ -78,6 +78,9 @@ pub(crate) fn find_overconstrained_derivative_alias_roots(
     let mut aliases = FxHashMap::default();
 
     for (name, record_path) in state_record_paths {
+        if top_level_component_has_outputs(&name, flat) {
+            continue;
+        }
         let Some(component_id) = component_of.get(record_path.as_str()) else {
             continue;
         };
@@ -94,6 +97,17 @@ pub(crate) fn find_overconstrained_derivative_alias_roots(
     }
 
     aliases
+}
+
+fn top_level_component_has_outputs(name: &VarName, flat: &Model) -> bool {
+    let Some(component) = get_top_level_prefix(name.as_str()) else {
+        return false;
+    };
+    let prefix = format!("{component}.");
+    flat.variables.iter().any(|(candidate, variable)| {
+        candidate.as_str().starts_with(&prefix)
+            && matches!(variable.causality, rumoca_core::Causality::Output(_))
+    })
 }
 
 fn filter_overconstrained_alias_states(
@@ -1901,7 +1915,7 @@ mod tests {
     }
 
     #[test]
-    fn overconstrained_alias_states_alias_output_sensor_derivative_state() {
+    fn overconstrained_alias_states_keep_output_sensor_derivative_state() {
         let mut flat = Model::new();
         let root = add_oc_gamma(&mut flat, "source.port_p.reference");
         let physical = add_oc_gamma(&mut flat, "reluctance.port_p.reference");
@@ -1922,11 +1936,11 @@ mod tests {
         let alias_roots = find_overconstrained_derivative_alias_roots(&states, &flat);
         let filtered = filter_overconstrained_alias_states(states, &flat);
 
-        assert_eq!(alias_roots.len(), 2);
+        assert_eq!(alias_roots.len(), 1);
         assert_eq!(alias_roots.get(&physical), Some(&root));
-        assert_eq!(alias_roots.get(&sensor), Some(&root));
+        assert!(!alias_roots.contains_key(&sensor));
         assert!(filtered.contains(&root));
         assert!(!filtered.contains(&physical));
-        assert!(!filtered.contains(&sensor));
+        assert!(filtered.contains(&sensor));
     }
 }

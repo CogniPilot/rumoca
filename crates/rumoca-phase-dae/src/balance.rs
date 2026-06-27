@@ -50,6 +50,38 @@ pub struct BalanceDetail {
     pub oc_break_edge_scalar_count: usize,
 }
 
+/// Balance detail after applying initialization-only deficit closure.
+///
+/// Modelica initialization has its own equation system: fixed starts and
+/// initial equations constrain otherwise free initial unknowns without making
+/// an overdetermined simulation DAE acceptable. This detail is therefore
+/// deficit-only: initial equations can close missing scalar equations, but they
+/// never mask surplus equations.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InitialClosureBalanceDetail {
+    pub scalar_equations: usize,
+    pub scalar_unknowns: usize,
+    pub deficit_before: i64,
+    pub initial_equation_scalars: i64,
+    pub initial_algorithm_scalars: i64,
+    pub closure_used: i64,
+    pub deficit_after: i64,
+}
+
+impl InitialClosureBalanceDetail {
+    pub fn scalar_equations_with_closure(&self) -> usize {
+        self.scalar_equations + self.closure_used as usize
+    }
+
+    pub fn balance_with_closure(&self) -> i64 {
+        self.scalar_equations_with_closure() as i64 - self.scalar_unknowns as i64
+    }
+
+    pub fn is_admissible(&self) -> bool {
+        self.balance_with_closure() == 0
+    }
+}
+
 impl BalanceDetail {
     pub fn balance(&self) -> i64 {
         balance_from_detail(self)
@@ -119,6 +151,34 @@ pub fn is_balanced(dae_model: &dae::Dae) -> BalanceResult<bool> {
     Ok(balance(dae_model)? == 0)
 }
 
+/// Return strict DAE admission balance after initialization deficit closure.
+///
+/// Raw continuous/event balance remains canonical for steady-state matching.
+/// This helper only admits a raw underdetermined DAE when generated
+/// initialization equations close the exact missing scalar count. It does not
+/// use initialization equations to hide overdetermined systems.
+pub fn initial_closure_balance_detail(
+    dae_model: &dae::Dae,
+) -> BalanceResult<InitialClosureBalanceDetail> {
+    let (scalar_equations, scalar_unknowns) = equations_unknowns(dae_model)?;
+    Ok(initial_closure_balance_detail_from_counts(
+        dae_model,
+        scalar_equations,
+        scalar_unknowns,
+    ))
+}
+
+pub fn is_balanced_for_admission(dae_model: &dae::Dae) -> BalanceResult<bool> {
+    let raw_balance = balance(dae_model)?;
+    if raw_balance == 0 {
+        return Ok(true);
+    }
+    if raw_balance > 0 {
+        return Ok(false);
+    }
+    Ok(initial_closure_balance_detail(dae_model)?.is_admissible())
+}
+
 /// Return detailed breakdown of the balance calculation components.
 pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
     let state_unknowns: usize = dae_model.variables.states.values().map(|v| v.size()).sum();
@@ -165,6 +225,34 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
 pub fn equations_unknowns(dae_model: &dae::Dae) -> BalanceResult<(usize, usize)> {
     let detail = balance_detail(dae_model)?;
     Ok(detail.equations_unknowns())
+}
+
+fn initial_closure_balance_detail_from_counts(
+    dae_model: &dae::Dae,
+    scalar_equations: usize,
+    scalar_unknowns: usize,
+) -> InitialClosureBalanceDetail {
+    let scalar_equations = scalar_equations as i64;
+    let scalar_unknowns = scalar_unknowns as i64;
+    let deficit_before = (scalar_unknowns - scalar_equations).max(0);
+    let initial_equation_scalars = dae_model
+        .initialization
+        .equations
+        .iter()
+        .map(|eq| eq.scalar_count as i64)
+        .sum::<i64>();
+    let initial_algorithm_scalars = 0;
+    let closure_used = (initial_equation_scalars + initial_algorithm_scalars).min(deficit_before);
+    let deficit_after = deficit_before - closure_used;
+    InitialClosureBalanceDetail {
+        scalar_equations: scalar_equations as usize,
+        scalar_unknowns: scalar_unknowns as usize,
+        deficit_before,
+        initial_equation_scalars,
+        initial_algorithm_scalars,
+        closure_used,
+        deficit_after,
+    }
 }
 
 fn balance_from_detail(detail: &BalanceDetail) -> i64 {
@@ -1446,6 +1534,76 @@ mod tests {
         dae.continuous.equations.push(scalar_eq(4));
         dae.metadata.overconstrained_interface_count = 9;
         assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn admission_accepts_exact_initial_deficit_closure() {
+        let mut dae = dae_with_unknown_scalars(3);
+        dae.continuous.equations.push(scalar_eq(1));
+        dae.initialization
+            .equations
+            .push(scalar_eq_with_lhs("x", 2));
+
+        let detail =
+            initial_closure_balance_detail(&dae).expect("valid DAE initial balance fixture");
+
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -2);
+        assert_eq!(detail.deficit_before, 2);
+        assert_eq!(detail.initial_equation_scalars, 2);
+        assert_eq!(detail.closure_used, 2);
+        assert_eq!(detail.deficit_after, 0);
+        assert!(detail.is_admissible());
+        assert!(is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
+    }
+
+    #[test]
+    fn admission_rejects_partial_initial_deficit_closure() {
+        let mut dae = dae_with_unknown_scalars(4);
+        dae.continuous.equations.push(scalar_eq(1));
+        dae.initialization
+            .equations
+            .push(scalar_eq_with_lhs("x", 2));
+
+        let detail =
+            initial_closure_balance_detail(&dae).expect("valid DAE initial balance fixture");
+
+        assert_eq!(detail.deficit_before, 3);
+        assert_eq!(detail.closure_used, 2);
+        assert_eq!(detail.deficit_after, 1);
+        assert!(!detail.is_admissible());
+        assert!(!is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
+    }
+
+    #[test]
+    fn admission_rejects_missing_initial_deficit_closure() {
+        let mut dae = dae_with_unknown_scalars(2);
+        dae.continuous.equations.push(scalar_eq(1));
+
+        let detail =
+            initial_closure_balance_detail(&dae).expect("valid DAE initial balance fixture");
+
+        assert_eq!(detail.deficit_before, 1);
+        assert_eq!(detail.initial_equation_scalars, 0);
+        assert_eq!(detail.deficit_after, 1);
+        assert!(!is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
+    }
+
+    #[test]
+    fn admission_does_not_mask_overdetermined_balance_with_initial_equations() {
+        let mut dae = dae_with_unknown_scalars(1);
+        dae.continuous.equations.push(scalar_eq(2));
+        dae.initialization
+            .equations
+            .push(scalar_eq_with_lhs("x", 3));
+
+        let detail =
+            initial_closure_balance_detail(&dae).expect("valid DAE initial balance fixture");
+
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 1);
+        assert_eq!(detail.deficit_before, 0);
+        assert_eq!(detail.closure_used, 0);
+        assert!(!detail.is_admissible());
+        assert!(!is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
     }
 
     #[test]

@@ -946,7 +946,11 @@ impl Session {
                 8,
             ));
         }
-        match compile_model_dae_internal_allow_unbalanced_for_diagnostics(tree, model_name) {
+        match compile_model_dae_internal_allow_unbalanced_for_diagnostics(
+            tree,
+            model_name,
+            self.instantiation_options.clone(),
+        ) {
             DaePhaseResult::Success(result) => Ok(result),
             DaePhaseResult::NeedsInner { missing_inners, .. } => Err(format!(
                 "{model_name} requires inner declarations: {}",

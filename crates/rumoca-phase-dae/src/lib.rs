@@ -86,7 +86,10 @@ use variable_analysis::{
 };
 use when_conversion::convert_when_clause;
 
-pub use balance::{BalanceError, balance, balance_detail, equations_unknowns, is_balanced};
+pub use balance::{
+    BalanceError, InitialClosureBalanceDetail, balance, balance_detail, equations_unknowns,
+    initial_closure_balance_detail, is_balanced, is_balanced_for_admission,
+};
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
     prepare_dae_for_codegen, scalarize_phantom_vector_equations,
@@ -463,7 +466,10 @@ fn finalize_lowered_dae(
         })?;
     }
 
-    if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae)? != 0 {
+    if options.error_on_unbalanced
+        && !dae.metadata.is_partial
+        && !balance::is_balanced_for_admission(dae)?
+    {
         let (equations, unknowns) = balance::equations_unknowns(dae)?;
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }

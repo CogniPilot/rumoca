@@ -579,30 +579,6 @@ fn strict_dae_failure_phase(failure_summary: &str) -> &'static str {
         .unwrap_or("ToDae")
 }
 
-fn initialization_balance_check(
-    dae: &rumoca_compile::compile::Dae,
-    scalar_unknowns: i64,
-    scalar_equations: i64,
-) -> (i64, i64, i64, i64, i64) {
-    let deficit_before = (scalar_unknowns - scalar_equations).max(0);
-    let initial_equation_scalars = dae
-        .initialization
-        .equations
-        .iter()
-        .map(|eq| eq.scalar_count as i64)
-        .sum::<i64>();
-    let initial_algorithm_scalars = 0;
-    let closure_used = (initial_equation_scalars + initial_algorithm_scalars).min(deficit_before);
-    let deficit_after = deficit_before - closure_used;
-    (
-        deficit_before,
-        initial_equation_scalars,
-        initial_algorithm_scalars,
-        closure_used,
-        deficit_after,
-    )
-}
-
 fn summarize_dae_success(
     model_name: &str,
     result: &rumoca_compile::compile::DaeCompilationResult,
@@ -610,16 +586,12 @@ fn summarize_dae_success(
 ) -> WorkerModelResult {
     let detail = &result.balance_detail;
     let (scalar_equations, scalar_unknowns) = detail.equations_unknowns();
+    let closure_detail =
+        rumoca_compile::analysis::initial_closure_balance_detail(result.dae.as_ref())
+            .expect("successful DAE compilation has valid balance metadata");
     let scalar_equations = scalar_equations as i64;
     let scalar_unknowns = scalar_unknowns as i64;
-    let (
-        deficit_before,
-        initial_equation_scalars,
-        initial_algorithm_scalars,
-        closure_used,
-        deficit_after,
-    ) = initialization_balance_check(result.dae.as_ref(), scalar_unknowns, scalar_equations);
-    let scalar_equations_with_init = scalar_equations + closure_used;
+    let scalar_equations_with_init = scalar_equations + closure_detail.closure_used;
     let input_scalars = result
         .dae
         .variables
@@ -647,12 +619,12 @@ fn summarize_dae_success(
     row.class_type = Some(result.dae.metadata.class_type.as_str().to_string());
     row.scalar_equations = usize::try_from(scalar_equations_for_report).ok();
     row.scalar_unknowns = usize::try_from(scalar_unknowns_for_report).ok();
-    row.initial_equation_scalars = usize::try_from(initial_equation_scalars).ok();
-    row.initial_algorithm_scalars = usize::try_from(initial_algorithm_scalars).ok();
-    row.initial_balance_deficit_before = Some(deficit_before);
-    row.initial_closure_used = usize::try_from(closure_used).ok();
-    row.initial_balance_deficit_after = Some(deficit_after);
-    row.initial_balance_ok = Some(deficit_after == 0);
+    row.initial_equation_scalars = usize::try_from(closure_detail.initial_equation_scalars).ok();
+    row.initial_algorithm_scalars = usize::try_from(closure_detail.initial_algorithm_scalars).ok();
+    row.initial_balance_deficit_before = Some(closure_detail.deficit_before);
+    row.initial_closure_used = usize::try_from(closure_detail.closure_used).ok();
+    row.initial_balance_deficit_after = Some(closure_detail.deficit_after);
+    row.initial_balance_ok = Some(closure_detail.deficit_after == 0);
     row.compile_seconds = Some(compile_seconds);
     row
 }

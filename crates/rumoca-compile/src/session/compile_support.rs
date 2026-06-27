@@ -260,11 +260,12 @@ pub(super) fn compile_model_dae_internal_with_options(
 pub(super) fn compile_model_dae_internal_allow_unbalanced_for_diagnostics(
     tree: &ast::ClassTree,
     model_name: &str,
+    instantiation_options: InstantiateOptions,
 ) -> DaePhaseResult {
     let dae_outcome = dae_model_outcome_internal_with_phase_options(
         tree,
         model_name,
-        InstantiateOptions::default(),
+        instantiation_options,
         ToDaeOptions {
             error_on_unbalanced: false,
         },
