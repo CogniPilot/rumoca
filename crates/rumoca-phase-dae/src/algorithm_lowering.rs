@@ -4,6 +4,7 @@ use crate::{
     dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
     flat_to_dae_expression_with_refs, flat_to_dae_var_name,
 };
+mod alias_canonicalization;
 mod current_value_rewrite;
 mod for_lowering;
 mod guarded_expr;
@@ -12,6 +13,10 @@ mod rewrite_discrete;
 mod slice_lowering;
 mod substitution;
 mod target_names;
+use alias_canonicalization::{
+    defined_target_reroute_alias_rhs_target, is_binding_equation_origin,
+    is_connection_equation_origin, reroutable_alias_rhs_target,
+};
 use current_value_rewrite::{
     algorithm_variable_dims, current_value_subscript_expr, rewrite_algorithm_current_refs,
 };
@@ -237,10 +242,6 @@ pub(super) fn route_discrete_event_equations(
     Ok(())
 }
 
-fn is_connection_equation_origin(origin: &str) -> bool {
-    origin.contains("connection equation:")
-}
-
 fn anchored_collision_targets(
     grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
 ) -> std::collections::HashSet<VarName> {
@@ -249,7 +250,7 @@ fn anchored_collision_targets(
         .filter(|(_, equations)| {
             equations
                 .iter()
-                .any(|equation| !is_connection_equation_origin(&equation.origin))
+                .any(|equation| reroutable_alias_rhs_target(equation).is_none())
         })
         .map(|(lhs, _)| lhs.clone())
         .collect()
@@ -270,8 +271,7 @@ fn choose_collision_keep_index(
     flipped_once: &std::collections::HashSet<(String, String, String)>,
 ) -> Option<usize> {
     for (idx, equation) in equations.iter().enumerate() {
-        let rhs_expr = dae_to_flat_expression(&equation.rhs);
-        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+        let Some(rhs_target) = reroutable_alias_rhs_target(equation) else {
             continue;
         };
         let reverse_key = flip_edge_key(&equation.origin, &rhs_target, lhs);
@@ -281,8 +281,7 @@ fn choose_collision_keep_index(
     }
 
     for (idx, equation) in equations.iter().enumerate() {
-        let rhs_expr = dae_to_flat_expression(&equation.rhs);
-        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+        let Some(rhs_target) = reroutable_alias_rhs_target(equation) else {
             continue;
         };
         if anchored_targets.contains(&rhs_target) {
@@ -299,11 +298,7 @@ fn has_reverse_connection_alias(
 ) -> bool {
     grouped.get(rhs_target).is_some_and(|rhs_equations| {
         rhs_equations.iter().any(|rhs_equation| {
-            if !is_connection_equation_origin(&rhs_equation.origin) {
-                return false;
-            }
-            let rhs_expr = dae_to_flat_expression(&rhs_equation.rhs);
-            discrete_assignment_rhs_var_name(&rhs_expr)
+            reroutable_alias_rhs_target(rhs_equation)
                 .as_ref()
                 .is_some_and(|candidate| candidate == lhs)
         })
@@ -343,8 +338,7 @@ fn process_collision_equation(
     flipped_once: &mut std::collections::HashSet<(String, String, String)>,
     debug_canonicalize: bool,
 ) -> Result<bool, ToDaeError> {
-    let rhs_expr = dae_to_flat_expression(&equation.rhs);
-    let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+    let Some(rhs_target) = reroutable_alias_rhs_target(&equation) else {
         if debug_canonicalize {
             crate::log_fm_canon_debug(format!(
                 "f_m canonicalize no-rhs-var lhs={} origin={}",
@@ -435,7 +429,7 @@ fn resolve_connection_alias_target_collisions(
             }
             if equations
                 .iter()
-                .any(|equation| !is_connection_equation_origin(&equation.origin))
+                .any(|equation| reroutable_alias_rhs_target(equation).is_none())
             {
                 continue;
             }
@@ -486,7 +480,7 @@ pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) -> Resul
     {
         let (mut grouped, passthrough) =
             drain_grouped_discrete_assignments(&mut dae.discrete.valued_updates);
-        reroute_connection_aliases_for_defined_targets(&mut grouped, dae)?;
+        reroute_aliases_for_defined_targets(&mut grouped, dae)?;
         resolve_connection_alias_target_collisions(&mut grouped, dae)?;
         debug_log_grouped_target_collisions(debug_canonicalize, "f_m", &grouped);
         dae.discrete.valued_updates =
@@ -537,29 +531,38 @@ fn rebuild_canonicalized_discrete_assignments(
     Ok(rebuilt)
 }
 
-fn reroute_connection_aliases_for_defined_targets(
+fn reroute_aliases_for_defined_targets(
     grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
     dae: &Dae,
 ) -> Result<(), ToDaeError> {
     let mut rerouted: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
     for (lhs, equations) in grouped.iter_mut() {
-        if equations.len() <= 1
-            || !equations
-                .iter()
-                .any(|equation| !is_connection_equation_origin(&equation.origin))
-        {
+        if equations.len() <= 1 {
+            continue;
+        }
+        let has_binding_anchor = equations
+            .iter()
+            .any(|equation| is_binding_equation_origin(&equation.origin));
+        let has_non_alias_anchor = equations
+            .iter()
+            .any(|equation| reroutable_alias_rhs_target(equation).is_none());
+        if !has_non_alias_anchor {
             continue;
         }
 
-        for equation in equations
-            .iter()
-            .filter(|equation| is_connection_equation_origin(&equation.origin))
-        {
-            let rhs_expr = dae_to_flat_expression(&equation.rhs);
-            let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+        let mut kept = Vec::with_capacity(equations.len());
+        for equation in std::mem::take(equations) {
+            let rhs_target = reroutable_alias_rhs_target(&equation).or_else(|| {
+                has_binding_anchor
+                    .then(|| defined_target_reroute_alias_rhs_target(&equation))
+                    .flatten()
+            });
+            let Some(rhs_target) = rhs_target else {
+                kept.push(equation);
                 continue;
             };
             if keep_collision_equation_without_flip(dae, lhs, &rhs_target) {
+                kept.push(equation);
                 continue;
             }
             let mut flipped = equation.clone();
@@ -581,6 +584,7 @@ fn reroute_connection_aliases_for_defined_targets(
             });
             rerouted.entry(rhs_target).or_default().push(flipped);
         }
+        *equations = kept;
     }
     for (lhs, aliases) in rerouted {
         grouped.entry(lhs).or_default().extend(aliases);
@@ -611,9 +615,9 @@ fn canonicalize_assignment_group(
 
     if equations
         .iter()
-        .any(|equation| !is_connection_equation_origin(&equation.origin))
+        .any(|equation| reroutable_alias_rhs_target(equation).is_none())
     {
-        equations.retain(|equation| !is_connection_equation_origin(&equation.origin));
+        equations.retain(|equation| reroutable_alias_rhs_target(equation).is_none());
     }
 
     let mut rewritten_equations = Vec::with_capacity(equations.len());

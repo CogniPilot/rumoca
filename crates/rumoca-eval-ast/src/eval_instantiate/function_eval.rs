@@ -1471,6 +1471,36 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_component_condition_unknown_modifier_blocks_declaration_default() {
+        let mut components = IndexMap::default();
+        components.insert(
+            "condition".to_string(),
+            ast::Component {
+                name: "condition".to_string(),
+                type_name: ast::Name::from_string("Boolean"),
+                binding: Some(bool_expr(true)),
+                has_explicit_binding: true,
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+        let mut mod_env = ast::ModificationEnvironment::new();
+        mod_env.add(
+            ast::QualifiedName::from_ident("condition"),
+            ast::ModificationValue::simple(ast::Expression::ComponentReference(cref("start"))),
+        );
+
+        let condition = ast::Expression::ComponentReference(cref("condition"));
+        let ctx = InstantiateEvalCtx {
+            tree: &ast::ClassTree::new(),
+            mod_env: &mod_env,
+            effective_components: &components,
+            resolve_class_components: no_op_resolve_class_components,
+        };
+
+        assert_eq!(evaluate_component_condition(&ctx, &condition), None);
+    }
+
+    #[test]
     fn evaluate_component_condition_with_unresolved_enum_ref_is_unknown() {
         let mut components = IndexMap::default();
         let model_structure = ast::Component {

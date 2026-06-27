@@ -14,6 +14,24 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
 
+mod component_params;
+mod function_eval;
+mod scoped_condition;
+
+pub(super) use component_params::{
+    component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,
+    enclosing_scope_candidates,
+};
+pub use component_params::{
+    eval_state_select_expr, eval_state_select_expr_with_source_scope, expr_to_string,
+    extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,
+    parse_state_select, propagate_record_alias_integer_params, try_eval_string_expr,
+};
+pub use function_eval::{
+    evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,
+};
+use scoped_condition::eval_scoped_string_condition_with_depth;
+
 /// Maximum recursion depth for condition evaluation (prevents stack overflow)
 const MAX_CONDITION_DEPTH: usize = 10;
 
@@ -199,6 +217,46 @@ fn evaluate_component_condition_with_depth(
         return Some(val);
     }
 
+    // Case 6: Boolean if-expression
+    if let ast::Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = condition
+    {
+        for (branch_condition, branch_value) in branches {
+            match evaluate_component_condition_with_depth(
+                branch_condition,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                depth + 1,
+            ) {
+                Some(true) => {
+                    return evaluate_component_condition_with_depth(
+                        branch_value,
+                        mod_env,
+                        effective_components,
+                        tree,
+                        resolve_class_components,
+                        depth + 1,
+                    );
+                }
+                Some(false) => continue,
+                None => return None,
+            }
+        }
+        return evaluate_component_condition_with_depth(
+            else_branch,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            depth + 1,
+        );
+    }
+
     None
 }
 
@@ -222,6 +280,22 @@ fn eval_param_ref(
         if let Some(val) = expr_to_bool(&mod_value.value) {
             return Some(val);
         }
+        if let Some(source_scope) = mod_value.source_scope.as_ref() {
+            let scope_prefix = source_scope.to_flat_string();
+            if let Some(val) = eval_scoped_string_condition_with_depth(
+                &mod_value.value,
+                ConditionEvalEnv {
+                    mod_env,
+                    effective_components,
+                    tree,
+                    resolve_class_components,
+                },
+                Some(scope_prefix.as_str()),
+                depth + 1,
+            ) {
+                return Some(val);
+            }
+        }
         // Recursively evaluate only if mod_env value is a ast::ComponentReference
         // (another parameter ref like smpmData.useDamperCage → false)
         if matches!(&mod_value.value, ast::Expression::ComponentReference(_))
@@ -236,6 +310,7 @@ fn eval_param_ref(
         {
             return Some(val);
         }
+        return None;
     }
 
     // Look up the parameter's default value from effective components (single-part only)
@@ -822,153 +897,6 @@ fn transparent_self_modifier(candidate: &str, value: &ast::Expression) -> bool {
         return false;
     };
     comp_ref.parts[0].ident.text.as_ref() == name
-}
-
-fn eval_scoped_string_condition_with_depth(
-    condition: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    if depth > MAX_CONDITION_DEPTH {
-        return None;
-    }
-
-    if let Some(val) = expr_to_bool(condition) {
-        return Some(val);
-    }
-
-    let recurse = |expr: &ast::Expression| {
-        eval_scoped_string_condition_with_depth(expr, env, scope_prefix, depth + 1)
-    };
-
-    match condition {
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => recurse(rhs).map(|v| !v),
-        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
-        ast::Expression::Binary { op, lhs, rhs, .. } => eval_scoped_string_binary_condition(
-            op,
-            lhs,
-            rhs,
-            env,
-            ScopedEvalState {
-                scope_prefix,
-                depth: depth + 1,
-            },
-        )
-        .or_else(|| {
-            evaluate_component_condition_with_depth(
-                condition,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth + 1,
-            )
-        }),
-        _ => evaluate_component_condition_with_depth(
-            condition,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        ),
-    }
-}
-
-struct ScopedEvalState<'a> {
-    scope_prefix: Option<&'a str>,
-    depth: usize,
-}
-
-fn eval_scoped_string_binary_condition(
-    op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    state: ScopedEvalState<'_>,
-) -> Option<bool> {
-    match op {
-        rumoca_core::OpBinary::Or => eval_scoped_or(lhs, rhs, env, state.scope_prefix, state.depth),
-        rumoca_core::OpBinary::And => {
-            eval_scoped_and(lhs, rhs, env, state.scope_prefix, state.depth)
-        }
-        rumoca_core::OpBinary::Eq => {
-            eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth)
-        }
-        rumoca_core::OpBinary::Neq => {
-            eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth).map(|v| !v)
-        }
-        _ => None,
-    }
-}
-
-fn eval_scoped_or(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let recurse = |expr| eval_scoped_string_condition_with_depth(expr, env, scope_prefix, depth);
-    let (l, r) = (recurse(lhs), recurse(rhs));
-    if l == Some(true) || r == Some(true) {
-        return Some(true);
-    }
-    if l == Some(false) && r == Some(false) {
-        return Some(false);
-    }
-    None
-}
-
-fn eval_scoped_and(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let recurse = |expr| eval_scoped_string_condition_with_depth(expr, env, scope_prefix, depth);
-    let (l, r) = (recurse(lhs), recurse(rhs));
-    if l == Some(false) || r == Some(false) {
-        return Some(false);
-    }
-    if l == Some(true) && r == Some(true) {
-        return Some(true);
-    }
-    None
-}
-
-fn eval_scoped_enum_equality(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let lhs_val = enum_value_for_comparison_with_depth(
-        lhs,
-        env.mod_env,
-        env.effective_components,
-        env.tree,
-        env.resolve_class_components,
-        scope_prefix,
-        depth,
-    )?;
-    let rhs_val = enum_value_for_comparison_with_depth(
-        rhs,
-        env.mod_env,
-        env.effective_components,
-        env.tree,
-        env.resolve_class_components,
-        scope_prefix,
-        depth,
-    )?;
-    Some(enum_values_equal(&lhs_val, &rhs_val))
 }
 
 fn resolve_scoped_record_field_expr(
@@ -1939,18 +1867,3 @@ fn eval_user_defined_integer_function(
 
     local_values.get(&output_name).copied()
 }
-
-mod component_params;
-mod function_eval;
-pub(super) use component_params::{
-    component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,
-    enclosing_scope_candidates,
-};
-pub use component_params::{
-    eval_state_select_expr, expr_to_string, extract_binding, extract_bool_params_with_mods,
-    extract_int_params_with_mods, parse_state_select, propagate_record_alias_integer_params,
-    try_eval_string_expr,
-};
-pub use function_eval::{
-    evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,
-};

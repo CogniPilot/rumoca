@@ -115,6 +115,36 @@ fn parameter(name: &str, start: Option<rumoca_core::Expression>) -> dae::Variabl
     }
 }
 
+fn add_any_true_function(dae: &mut Dae) {
+    let mut function =
+        rumoca_core::Function::new("Modelica.Math.BooleanVectors.anyTrue", test_span());
+    function.inputs.push(rumoca_core::FunctionParam {
+        def_id: None,
+        name: "b".to_string(),
+        span: test_span(),
+        type_name: "Boolean".to_string(),
+        type_class: None,
+        dims: vec![0],
+        shape_expr: Vec::new(),
+        default: None,
+        description: None,
+    });
+    function.outputs.push(rumoca_core::FunctionParam {
+        def_id: None,
+        name: "result".to_string(),
+        span: test_span(),
+        type_name: "Boolean".to_string(),
+        type_class: None,
+        dims: Vec::new(),
+        shape_expr: Vec::new(),
+        default: None,
+        description: None,
+    });
+    dae.symbols
+        .functions
+        .insert(function.name.clone(), function);
+}
+
 /// Collect all VarRef names from an expression (for assertions).
 fn all_var_names(expr: &rumoca_core::Expression) -> Vec<String> {
     let mut names = Vec::new();
@@ -180,6 +210,23 @@ fn collect_var_names_rec(expr: &rumoca_core::Expression, names: &mut Vec<String>
             collect_var_names_rec(base, names);
         }
         _ => {}
+    }
+}
+
+fn assert_any_true_array_arg(expr: &rumoca_core::Expression, expected_names: &[&str]) {
+    let rumoca_core::Expression::FunctionCall { args, .. } = expr else {
+        panic!("expected anyTrue function call");
+    };
+    let rumoca_core::Expression::Array { elements, .. } = &args[0] else {
+        panic!("array-formal phantom argument should become an array literal");
+    };
+    assert_eq!(elements.len(), expected_names.len());
+    let names = all_var_names(&args[0]);
+    for expected_name in expected_names {
+        assert!(
+            names.contains(&expected_name.to_string()),
+            "missing {expected_name} from anyTrue argument: {names:?}"
+        );
     }
 }
 
@@ -520,6 +567,102 @@ fn test_scalarize_singleton_phantom_connector_reference() {
     assert!(names.contains(&"boundary.ports[1].C_outflow".to_string()));
     assert!(names.contains(&"boundary.C".to_string()));
     assert!(!names.contains(&"boundary.ports.C_outflow".to_string()));
+}
+
+#[test]
+fn test_scalarize_singleton_phantom_array_formal_function_argument() {
+    let mut dae = Dae::new();
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("step.inPort[1].set"),
+        dae::Variable::new(rumoca_core::VarName::new("step.inPort[1].set"), test_span()),
+    );
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("step.newActive"),
+        dae::Variable::new(rumoca_core::VarName::new("step.newActive"), test_span()),
+    );
+    add_any_true_function(&mut dae);
+    dae.discrete.valued_updates.push(dae::Equation::explicit(
+        rumoca_core::Reference::new("step.newActive"),
+        function_call(
+            "Modelica.Math.BooleanVectors.anyTrue",
+            vec![var_ref("step.inPort.set")],
+        ),
+        test_span(),
+        "StateGraph step activation",
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.discrete.valued_updates[0].rhs
+    else {
+        panic!("expected scalar-output function call to remain a function call");
+    };
+    let rumoca_core::Expression::Array { elements, .. } = &args[0] else {
+        panic!("array-formal phantom argument should become an array literal");
+    };
+    assert_eq!(elements.len(), 1);
+    let names = all_var_names(&args[0]);
+    assert!(names.contains(&"step.inPort[1].set".to_string()));
+    assert!(!names.contains(&"step.inPort.set".to_string()));
+}
+
+#[test]
+fn test_vectorizes_multi_element_phantom_array_formal_in_scalar_equation() {
+    let mut dae = Dae::new();
+    for name in [
+        "step.inPort[1].set",
+        "step.inPort[2].set",
+        "step.outPort[1].reset",
+        "step.newActive",
+    ] {
+        dae.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name), test_span()),
+        );
+    }
+    add_any_true_function(&mut dae);
+
+    let in_port_active = function_call(
+        "Modelica.Math.BooleanVectors.anyTrue",
+        vec![var_ref("step.inPort.set")],
+    );
+    let out_port_reset = function_call(
+        "Modelica.Math.BooleanVectors.anyTrue",
+        vec![var_ref("step.outPort.reset")],
+    );
+    let rhs = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Or,
+        lhs: Box::new(in_port_active),
+        rhs: Box::new(rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs: Box::new(out_port_reset),
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+    dae.discrete.valued_updates.push(dae::Equation::explicit(
+        rumoca_core::Reference::new("step.newActive"),
+        rhs,
+        test_span(),
+        "StateGraph composite step activation",
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.discrete.valued_updates.len(), 1);
+    assert_eq!(dae.discrete.valued_updates[0].scalar_count, 1);
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = &dae.discrete.valued_updates[0].rhs
+    else {
+        panic!("expected composite boolean expression");
+    };
+    assert_any_true_array_arg(lhs, &["step.inPort[1].set", "step.inPort[2].set"]);
+    let rumoca_core::Expression::Unary { rhs, .. } = rhs.as_ref() else {
+        panic!("expected negated outPort reset check");
+    };
+    assert_any_true_array_arg(rhs, &["step.outPort[1].reset"]);
+    let names = all_var_names(&dae.discrete.valued_updates[0].rhs);
+    assert!(!names.contains(&"step.inPort.set".to_string()));
+    assert!(!names.contains(&"step.outPort.reset".to_string()));
 }
 
 #[test]
