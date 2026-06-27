@@ -1293,12 +1293,28 @@ fn can_resolve_missing_inner(
     missing: &MissingInnerInfo,
 ) -> bool {
     missing.name == name
+        && inner_visible_to_outer(inner_decl, missing)
         && is_type_compatible_with_def_id(
             tree,
             &missing.type_name,
             missing.type_def_id,
             &inner_decl.type_name,
             inner_decl.type_def_id,
+        )
+}
+
+fn inner_visible_to_outer(inner_decl: &InnerDeclaration, missing: &MissingInnerInfo) -> bool {
+    let inner_scope = inner_decl.qualified_name.parent().unwrap_or_default();
+    let outer_scope = missing.outer_path.parent().unwrap_or_default();
+    path_is_ancestor_or_same(&inner_scope, &outer_scope)
+}
+
+fn path_is_ancestor_or_same(ancestor: &ast::QualifiedName, path: &ast::QualifiedName) -> bool {
+    ancestor.parts.len() <= path.parts.len()
+        && ancestor.parts.iter().zip(path.parts.iter()).all(
+            |((ancestor_name, ancestor_subs), (path_name, path_subs))| {
+                ancestor_name == path_name && ancestor_subs == path_subs
+            },
         )
 }
 

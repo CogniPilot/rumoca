@@ -1386,6 +1386,7 @@ fn scalarize_function_call_at(
     span: rumoca_core::Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
+    let function = ctx.functions.get(&rumoca_core::VarName::new(name.as_str()));
     let first_output_size =
         first_function_output_size(name.as_str(), ctx.functions).ok_or_else(|| {
             ToDaeError::runtime_contract_violation_at(
@@ -1416,13 +1417,100 @@ fn scalarize_function_call_at(
     }
     Ok(rumoca_core::Expression::FunctionCall {
         name: name.clone(),
-        args: args
-            .iter()
-            .map(|a| scalarize_expr_with_context(a, ctx))
-            .collect::<Result<Vec<_>, _>>()?,
+        args: scalarize_function_call_args(args, function, ctx)?,
         is_constructor,
         span,
     })
+}
+
+fn scalarize_function_call_args(
+    args: &[rumoca_core::Expression],
+    function: Option<&rumoca_core::Function>,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<Vec<rumoca_core::Expression>, ToDaeError> {
+    args.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if function_input_expects_array(function, arg, index) {
+                return Ok(vectorize_phantom_expr(arg, ctx.phantom_map));
+            }
+            scalarize_expr_with_context(arg, ctx)
+        })
+        .collect()
+}
+
+fn function_input_expects_array(
+    function: Option<&rumoca_core::Function>,
+    arg: &rumoca_core::Expression,
+    index: usize,
+) -> bool {
+    let Some(function) = function else {
+        return false;
+    };
+    let input_name = named_argument_input_name(arg);
+    let param = input_name
+        .and_then(|name| function.inputs.iter().find(|param| param.name == name))
+        .or_else(|| function.inputs.get(index));
+    param.is_some_and(|param| !param.dims.is_empty() || !param.shape_expr.is_empty())
+}
+
+fn named_argument_input_name(arg: &rumoca_core::Expression) -> Option<&str> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor: true,
+        ..
+    } = arg
+    else {
+        return None;
+    };
+    name.as_str().strip_prefix("__rumoca_named_arg__.")
+}
+
+fn vectorize_phantom_array_formal_args(
+    expr: &rumoca_core::Expression,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> rumoca_core::Expression {
+    PhantomArrayFormalArgVectorizer {
+        phantom_map,
+        functions,
+    }
+    .rewrite_expression(expr)
+}
+
+struct PhantomArrayFormalArgVectorizer<'a> {
+    phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
+    functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+}
+
+impl ExpressionRewriter for PhantomArrayFormalArgVectorizer<'_> {
+    fn walk_function_call_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let function = self
+            .functions
+            .get(&rumoca_core::VarName::new(name.as_str()));
+        rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: args
+                .iter()
+                .enumerate()
+                .map(|(index, arg)| {
+                    if function_input_expects_array(function, arg, index) {
+                        vectorize_phantom_expr(arg, self.phantom_map)
+                    } else {
+                        self.rewrite_expression(arg)
+                    }
+                })
+                .collect(),
+            is_constructor,
+            span,
+        }
+    }
 }
 
 fn one_based_scalar_index(
@@ -1730,6 +1818,9 @@ fn scalarize_equation_list(
                 rhs: scalar_rhs,
                 ..eq
             });
+        } else if phantom_width.is_some() {
+            let rhs = vectorize_phantom_array_formal_args(&eq.rhs, phantom_map, functions);
+            new_equations.push(dae::Equation { rhs, ..eq });
         } else {
             new_equations.push(eq);
         }

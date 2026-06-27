@@ -803,7 +803,10 @@ fn process_nested_modifications_recursive(
 }
 
 fn preserves_source_scoped_attribute(attr_name: &str) -> bool {
-    matches!(attr_name, "start" | "min" | "max" | "nominal")
+    matches!(
+        attr_name,
+        "start" | "min" | "max" | "nominal" | "stateSelect"
+    )
 }
 
 #[cfg(test)]

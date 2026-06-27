@@ -952,6 +952,68 @@ fn test_todae_keeps_time_guarded_discrete_output_binding_and_alias_consumer() {
 }
 
 #[test]
+fn test_todae_preserves_discrete_output_binding_as_relation_anchor() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("root.suspend"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("root.suspend"),
+            causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
+            is_discrete_type: true,
+            binding: Some(Expression::Literal {
+                value: Literal::Boolean(false),
+                span: crate::test_support::test_span(),
+            }),
+            ..rumoca_ir_flat::Variable::empty_with_span(crate::test_support::test_span())
+        }),
+    );
+    flat.add_variable(
+        VarName::new("root.subgraph.suspend"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("root.subgraph.suspend"),
+            causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
+            is_discrete_type: true,
+            ..rumoca_ir_flat::Variable::empty_with_span(crate::test_support::test_span())
+        }),
+    );
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: sub_expr(
+            make_var_ref("root.suspend"),
+            make_var_ref("root.subgraph.suspend"),
+        ),
+        span: crate::test_support::test_span(),
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "root".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("todae should preserve discrete output binding relation anchors");
+
+    assert!(
+        dae.discrete.valued_updates.iter().any(|eq| {
+            eq.origin.contains("binding equation for root.suspend")
+                && eq
+                    .lhs
+                    .as_ref()
+                    .is_some_and(|lhs| lhs.as_str() == "root.suspend")
+        }),
+        "constant discrete output binding must remain as the value anchor"
+    );
+    assert_eq!(
+        crate::balance::balance(&dae).expect("fixture balance should be computable"),
+        0,
+        "binding anchor plus relation equation should balance both discrete variables"
+    );
+}
+
+#[test]
 fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
     let mut flat = Model::new();
     flat.add_variable(

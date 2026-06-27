@@ -743,10 +743,46 @@ fn redirect_qualified_name(
     }
 }
 
+fn bridge_scope_matches_connection_scope(inner_outer_prefix: &str, connection_scope: &str) -> bool {
+    let bridge_scope = ast::QualifiedName::from_dotted(inner_outer_prefix)
+        .parent()
+        .unwrap_or_default();
+    bridge_scope == ast::QualifiedName::from_dotted(connection_scope)
+}
+
+fn redirect_inner_outer_bridge_for_scope(
+    qn: &mut ast::QualifiedName,
+    inner_outer_to_parent_inner: &ast::AstIndexMap<String, String>,
+    connection_scope: &str,
+) {
+    if inner_outer_to_parent_inner.is_empty() {
+        return;
+    }
+    let flat = qn.to_flat_string();
+    for (inner_outer_prefix, parent_inner_prefix) in inner_outer_to_parent_inner {
+        if !bridge_scope_matches_connection_scope(inner_outer_prefix, connection_scope) {
+            continue;
+        }
+        if flat == *inner_outer_prefix || flat.starts_with(&format!("{inner_outer_prefix}.")) {
+            let new_flat = if flat == *inner_outer_prefix {
+                parent_inner_prefix.clone()
+            } else {
+                format!(
+                    "{}{}",
+                    parent_inner_prefix,
+                    &flat[inner_outer_prefix.len()..]
+                )
+            };
+            *qn = ast::QualifiedName::from_dotted(&new_flat);
+            return;
+        }
+    }
+}
+
 /// MLS §5.4: Apply outer→inner and inner-outer bridge redirects to a connection.
 ///
 /// First pass: redirect pure `outer` component references to their matching `inner`.
-/// Second pass: if no redirect happened (same-level connection), redirect `inner outer`
+/// Second pass: if no redirect happened, redirect same-level `inner outer`
 /// component references to the parent's inner for correct flow equation scoping.
 /// In both cases, reset the scope to root so flow sums merge properly.
 fn redirect_connection_for_inner_outer(
@@ -770,8 +806,16 @@ fn redirect_connection_for_inner_outer(
 
     // Second pass: inner outer bridge redirect (only when first pass had no effect)
     if !overlay.inner_outer_to_parent_inner.is_empty() {
-        redirect_qualified_name(&mut redirected.a, &overlay.inner_outer_to_parent_inner);
-        redirect_qualified_name(&mut redirected.b, &overlay.inner_outer_to_parent_inner);
+        redirect_inner_outer_bridge_for_scope(
+            &mut redirected.a,
+            &overlay.inner_outer_to_parent_inner,
+            &conn.scope,
+        );
+        redirect_inner_outer_bridge_for_scope(
+            &mut redirected.b,
+            &overlay.inner_outer_to_parent_inner,
+            &conn.scope,
+        );
         let a_bridged = a_after != redirected.a.to_flat_string();
         let b_bridged = b_after != redirected.b.to_flat_string();
         if a_bridged || b_bridged {
@@ -788,6 +832,26 @@ fn redirect_connection_for_inner_outer(
 #[cfg(test)]
 mod equation_generation_tests {
     use super::is_single_identifier_relative_path;
+    use super::*;
+
+    fn conn(a: &str, b: &str, scope: &str) -> ast::InstanceConnection {
+        ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted(a),
+            b: ast::QualifiedName::from_dotted(b),
+            connector_type: None,
+            span: rumoca_core::Span::DUMMY,
+            scope: scope.to_string(),
+        }
+    }
+
+    fn overlay_with_inner_outer_bridge() -> ast::InstanceOverlay {
+        let mut overlay = ast::InstanceOverlay::default();
+        overlay.inner_outer_to_parent_inner.insert(
+            "tankController.makeProduct.stateGraphRoot".to_string(),
+            "stateGraphRoot".to_string(),
+        );
+        overlay
+    }
 
     #[test]
     fn single_identifier_relative_path_ignores_dot_inside_subscript_expression() {
@@ -799,5 +863,49 @@ mod equation_generation_tests {
     fn single_identifier_relative_path_rejects_top_level_member_access() {
         assert!(!is_single_identifier_relative_path("plug.p"));
         assert!(!is_single_identifier_relative_path("plug[data.medium].p"));
+    }
+
+    #[test]
+    fn inner_outer_bridge_redirects_same_scope_connection_to_parent_inner() {
+        let overlay = overlay_with_inner_outer_bridge();
+        let input = conn(
+            "tankController.makeProduct.outerState.subgraphStatePort",
+            "tankController.makeProduct.stateGraphRoot.subgraphStatePort",
+            "tankController.makeProduct",
+        );
+
+        let redirected = redirect_connection_for_inner_outer(&input, &overlay);
+
+        assert_eq!(
+            redirected.a.to_flat_string(),
+            "tankController.makeProduct.outerState.subgraphStatePort"
+        );
+        assert_eq!(
+            redirected.b.to_flat_string(),
+            "stateGraphRoot.subgraphStatePort"
+        );
+        assert_eq!(redirected.scope, "");
+    }
+
+    #[test]
+    fn inner_outer_bridge_keeps_child_scope_connection_on_local_inner() {
+        let overlay = overlay_with_inner_outer_bridge();
+        let input = conn(
+            "tankController.makeProduct.fillTank1.outerStatePort.subgraphStatePort",
+            "tankController.makeProduct.stateGraphRoot.subgraphStatePort",
+            "tankController.makeProduct.fillTank1",
+        );
+
+        let redirected = redirect_connection_for_inner_outer(&input, &overlay);
+
+        assert_eq!(
+            redirected.a.to_flat_string(),
+            "tankController.makeProduct.fillTank1.outerStatePort.subgraphStatePort"
+        );
+        assert_eq!(
+            redirected.b.to_flat_string(),
+            "tankController.makeProduct.stateGraphRoot.subgraphStatePort"
+        );
+        assert_eq!(redirected.scope, "tankController.makeProduct.fillTank1");
     }
 }

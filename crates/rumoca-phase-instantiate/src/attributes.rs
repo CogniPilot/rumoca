@@ -1,6 +1,7 @@
 use super::*;
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, eval_state_select_expr, expr_to_bool, expr_to_string, parse_state_select,
+    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_bool, expr_to_string,
+    parse_state_select,
 };
 
 pub(super) struct ComponentAttrsAndBinding {
@@ -344,9 +345,15 @@ pub(super) fn extract_attributes(
         Some(value.value.clone())
     };
 
-    let outer_state_select = mod_env.get_attr(comp_name, "stateSelect");
+    let state_select_path = ast::QualifiedName::from_ident(comp_name).child("stateSelect");
+    let outer_state_select = mod_env.get(&state_select_path);
     let outer_state_select = match outer_state_select {
-        Some(value) => Some(parse_required_state_select(value, eval_ctx, imports)?),
+        Some(value) => Some(parse_required_state_select(
+            &value.value,
+            eval_ctx,
+            imports,
+            value.source_scope.as_ref(),
+        )?),
         None => None,
     };
     let has_outer_state_select = outer_state_select.is_some();
@@ -384,7 +391,7 @@ pub(super) fn extract_attributes(
                 attrs.display_unit = expr_to_string(value)
             }
             "stateSelect" if !has_outer_state_select => {
-                attrs.state_select = parse_required_state_select(value, eval_ctx, imports)?
+                attrs.state_select = parse_required_state_select(value, eval_ctx, imports, None)?
             }
             _ => {}
         }
@@ -402,15 +409,16 @@ fn parse_required_state_select(
     value: &ast::Expression,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
+    source_scope: Option<&ast::QualifiedName>,
 ) -> InstantiateResult<rumoca_core::StateSelect> {
     parse_state_select(value)
-        .or_else(|| eval_state_select_expr(eval_ctx, value))
+        .or_else(|| eval_state_select_expr_with_source_scope(eval_ctx, value, source_scope))
         .or_else(|| {
             // Enclosing-scope constants (MLS §5.3.2) appear unqualified in
             // declaration-side attributes; qualify them through the package
             // constant aliases and retry before failing.
             let qualified = crate::dims::qualify_shape_expr_imports(value, imports);
-            eval_state_select_expr(eval_ctx, &qualified)
+            eval_state_select_expr_with_source_scope(eval_ctx, &qualified, source_scope)
         })
         .ok_or_else(|| {
             Box::new(InstantiateError::InvalidTypeAttribute {
