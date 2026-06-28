@@ -1,0 +1,156 @@
+name: MSL Baseline Ratchet
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: ['main']
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: msl-baseline-ratchet-main
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote Improved MSL Baseline
+    if: |
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+          fetch-depth: 0
+          ref: main
+
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Confirm CI run is current main
+        id: current-main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          current="$(git rev-parse origin/main)"
+          run_sha="${{ github.event.workflow_run.head_sha }}"
+          if [[ "$current" != "$run_sha" ]]; then
+            echo "Current origin/main is $current, but CI run used $run_sha; skipping stale artifact."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download MSL quality artifact
+        id: download
+        if: steps.current-main.outputs.current == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const run_id = context.payload.workflow_run.id;
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id,
+              per_page: 100,
+            });
+            const artifact = artifacts.find(item =>
+              item.name === 'msl-compatibility-report' && !item.expired
+            );
+            if (!artifact) {
+              core.info(`No msl-compatibility-report artifact found for workflow run ${run_id}.`);
+              core.setOutput('found', 'false');
+              return;
+            }
+            const zip = await github.rest.actions.downloadArtifact({
+              owner,
+              repo,
+              artifact_id: artifact.id,
+              archive_format: 'zip',
+            });
+            fs.mkdirSync('target/msl-baseline-ratchet', { recursive: true });
+            fs.writeFileSync(
+              'target/msl-baseline-ratchet/msl-compatibility-report.zip',
+              Buffer.from(zip.data)
+            );
+            core.setOutput('found', 'true');
+
+      - name: Extract MSL quality artifact
+        if: steps.download.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl-baseline-ratchet/extracted
+          mkdir -p target/msl-baseline-ratchet/extracted
+          unzip -q \
+            target/msl-baseline-ratchet/msl-compatibility-report.zip \
+            -d target/msl-baseline-ratchet/extracted
+          find target/msl-baseline-ratchet/extracted -maxdepth 4 -type f | sort
+
+      - name: Locate MSL quality snapshot
+        id: snapshot
+        if: steps.download.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="target/msl-baseline-ratchet/extracted"
+          snapshot=""
+          for candidate in \
+            "$root/results/msl_quality_current.json" \
+            "$root/msl_quality_current.json" \
+            "$root/target/msl/results/msl_quality_current.json"
+          do
+            if [[ -f "$candidate" ]]; then
+              snapshot="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$snapshot" ]]; then
+            echo "No msl_quality_current.json found in msl-compatibility-report artifact."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "path=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Promote baseline if the artifact improves it
+        if: steps.snapshot.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .github/scripts/msl-baseline-ratchet.mjs \
+            --source "${{ steps.snapshot.outputs.path }}" \
+            --baseline crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json
+
+      - name: Commit promoted baseline
+        if: steps.snapshot.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline="crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json"
+          if git diff --quiet -- "$baseline"; then
+            echo "MSL quality baseline did not change."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$baseline"
+          git commit \
+            -m "Ratchet MSL quality baseline [skip ci]" \
+            -m "Promoted from successful CI workflow run ${{ github.event.workflow_run.id }} for ${{ github.event.workflow_run.head_sha }}."
+          git push origin HEAD:main
