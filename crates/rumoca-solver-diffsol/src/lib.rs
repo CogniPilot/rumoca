@@ -130,13 +130,14 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
     }
 
     let equilibrium_model = Arc::new(OdeModel::new(model)?);
+    let runtime = Arc::new(SolveRuntime::new(model)?);
     let mut current_y = model.initial_y.clone();
     let mut params = model.parameters.clone();
     let mut current_t = opts.t_start;
     initialize_state_runtime_values(
         model,
         opts,
-        &SolveRuntime::new(model)?,
+        runtime.as_ref(),
         &equilibrium_model,
         &mut current_y,
         &mut params,
@@ -150,6 +151,7 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
         current_t,
         current_y.clone(),
         equilibrium_model.clone(),
+        runtime,
     )?;
     initial_bdf_state(model, &equilibrium_model, &problem, &current_y, &params).map(|_| ())
 }
@@ -234,6 +236,7 @@ fn simulate_with_states(
         current_t,
         current_y.clone(),
         equilibrium_model.clone(),
+        runtime.clone(),
     )?;
     let mut stepper = build_general_stepper(GeneralStepperInput {
         model,
