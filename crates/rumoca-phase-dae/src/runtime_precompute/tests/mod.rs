@@ -1085,6 +1085,80 @@ fn test_runtime_precompute_collects_sample_start_interval_schedule() {
 }
 
 #[test]
+fn test_runtime_precompute_collects_sample_schedule_from_initial_time_parameter() {
+    let mut dae_model = dae::Dae::default();
+    let mut frequency = dae::Variable::new(
+        rumoca_core::VarName::new("mean.f"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    frequency.start = Some(lit(150.0));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("mean.f"), frequency);
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("mean.t0"),
+        dae::Variable::new(
+            rumoca_core::VarName::new("mean.t0"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("s"),
+        dae::Variable::new(
+            rumoca_core::VarName::new("s"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            sub(var("mean.t0"), var("time")),
+            test_span(1, 2),
+            "initial t0 = time",
+        ));
+
+    let interval = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Div,
+        lhs: Box::new(lit(1.0)),
+        rhs: Box::new(var("mean.f")),
+        span: test_span(140, 148),
+    };
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::residual(
+            sub(
+                var("s"),
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME)
+                        .into(),
+                    args: vec![
+                        rumoca_core::Expression::Binary {
+                            op: rumoca_core::OpBinary::Add,
+                            lhs: Box::new(var("mean.t0")),
+                            rhs: Box::new(interval.clone()),
+                            span: test_span(130, 148),
+                        },
+                        interval,
+                    ],
+                    is_constructor: false,
+                    span: test_span(120, 149),
+                },
+            ),
+            test_span(1, 2),
+            "periodic sample with initial-time origin",
+        ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert_eq!(dae_model.clocks.schedules.len(), 1);
+    assert!((dae_model.clocks.schedules[0].period_seconds - 1.0 / 150.0).abs() <= 1e-12);
+    assert!((dae_model.clocks.schedules[0].phase_seconds - 1.0 / 150.0).abs() <= 1e-12);
+}
+
+#[test]
 fn test_runtime_precompute_assigns_implicit_sample_interval_from_unique_schedule() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.discrete_reals.insert(

@@ -54,7 +54,8 @@ use random_runtime::{
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
 pub use runtime::{
-    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, ProjectedEventUpdateInput,
+    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
+    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
     SolveRuntime, apply_discrete_slot_value,
 };
 pub use runtime_events::{

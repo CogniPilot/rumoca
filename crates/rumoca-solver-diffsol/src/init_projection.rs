@@ -5,6 +5,7 @@
 //! parameter vector before time integration starts.
 
 use super::*;
+use rumoca_solver::EventActionOutcome;
 
 pub(crate) fn initialize_state_runtime_values(
     model: &solve::SolveModel,
@@ -13,53 +14,53 @@ pub(crate) fn initialize_state_runtime_values(
     equilibrium_model: &OdeModel,
     current_y: &mut [f64],
     params: &mut [f64],
-    current_t: f64,
-) -> Result<(), SimError> {
+    current_t: &mut f64,
+) -> Result<Vec<solve_eval::InitialEventObservation>, SimError> {
     let tol = opts.atol.max(1.0e-10);
-    set_initial_event_flag(model, params, true);
+    runtime.set_initial_event_flag(params, true);
     let event_pre = InitialEventPreValues::snapshot(current_y, params);
+    let t_start = *current_t;
     let initial_projection_params = state_initial_projection_params(
         model,
         runtime,
         equilibrium_model,
         current_y,
         params,
-        current_t,
+        t_start,
         tol,
     )?;
     params.copy_from_slice(&initial_projection_params);
-    let initial_event = initial_runtime_event_stop(
-        &model.problem,
-        current_t,
-        current_dynamic_time_event_stop(
-            model,
-            &equilibrium_model.runtime_state,
-            current_y,
-            params,
-            current_t,
-        )?,
-    );
+    let dynamic_event = current_dynamic_time_event_stop(
+        model,
+        &equilibrium_model.runtime_state,
+        current_y,
+        params,
+        t_start,
+    )?;
     settle_algebraics_and_relation_memory(
         runtime,
         equilibrium_model,
         current_y,
         params,
-        current_t,
+        t_start,
         model.state_scalar_count(),
         tol,
     )?;
-    apply_state_initial_event_updates(StateInitialEventUpdates {
+    let outcome = apply_state_initial_event_updates(StateInitialEventUpdates {
         model,
+        opts,
         runtime,
         equilibrium_model,
         current_y,
         params,
-        current_t,
+        current_t: t_start,
         tol,
-        initial_event,
+        dynamic_event,
         event_pre: &event_pre,
     })?;
-    Ok(())
+    initial_event_action_to_result(outcome.action, outcome.final_t)?;
+    *current_t = outcome.final_t;
+    Ok(outcome.observations)
 }
 
 struct InitialEventPreValues {
@@ -131,62 +132,75 @@ fn state_initial_projection_params(
 
 struct StateInitialEventUpdates<'a> {
     model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
     runtime: &'a SolveRuntime,
     equilibrium_model: &'a OdeModel,
     current_y: &'a mut [f64],
     params: &'a mut [f64],
     current_t: f64,
     tol: f64,
-    initial_event: Option<RuntimeEventStop>,
+    dynamic_event: Option<RuntimeEventStop>,
     event_pre: &'a InitialEventPreValues,
 }
 
-fn apply_state_initial_event_updates(ctx: StateInitialEventUpdates<'_>) -> Result<(), SimError> {
+fn apply_state_initial_event_updates(
+    ctx: StateInitialEventUpdates<'_>,
+) -> Result<solve_eval::ProjectedInitialEventOutcome, SimError> {
     let StateInitialEventUpdates {
         model,
+        opts,
         runtime,
         equilibrium_model,
         current_y,
         params,
         current_t,
         tol,
-        initial_event,
+        dynamic_event,
         event_pre,
     } = ctx;
-    if initial_event.is_some() {
-        apply_event_updates_with_event_pre(EventUpdateInput {
-            runtime,
-            ode_model: equilibrium_model,
+    let outcome = runtime.apply_projected_initial_event_boundary(
+        solve_eval::ProjectedInitialEventInput {
             y: current_y,
             p: params,
-            t: current_t,
+            t_start: current_t,
+            t_end: opts.t_end,
             tol,
             event_pre_y: &event_pre.y,
             event_pre_p: &event_pre.p,
-        })?;
-    } else {
-        apply_event_updates(
-            runtime,
-            equilibrium_model,
-            current_y,
-            params,
-            current_t,
-            tol,
-        )?;
-    }
-    set_initial_event_flag(model, params, false);
-    if initial_event.is_some() {
-        apply_post_initial_event_updates(
-            runtime,
-            equilibrium_model,
-            current_y,
-            params,
-            current_t,
-            tol,
-        )?;
-    }
+            max_iters: EVENT_UPDATE_MAX_ITERS,
+            dynamic_event,
+            apply_without_initial_event: true,
+        },
+        |y, p, t| {
+            project_algebraics_and_detect_changes(
+                equilibrium_model,
+                y,
+                p,
+                t,
+                equilibrium_model.state_count_for_projection(),
+                tol,
+            )
+        },
+    )?;
     commit_pre_params_after_event(model, current_y, params, tol);
-    Ok(())
+    Ok(outcome)
+}
+
+fn initial_event_action_to_result(
+    outcome: EventActionOutcome,
+    event_t: f64,
+) -> Result<(), SimError> {
+    match outcome {
+        EventActionOutcome::Continue => Ok(()),
+        EventActionOutcome::AssertionFailed { time, message } => Err(SimError::AssertionFailed {
+            time: if time.is_finite() { time } else { event_t },
+            message,
+        }),
+        EventActionOutcome::Terminated { time, message } => Err(SimError::Terminated {
+            time: if time.is_finite() { time } else { event_t },
+            message,
+        }),
+    }
 }
 
 fn project_initial_algebraics_and_updates(
@@ -286,14 +300,19 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
             event_t,
             self.tol,
         )?;
+        let mut samples = SampleRecorder {
+            runtime: Some(self.runtime),
+            model: self.model,
+            recorded_times: &mut *self.recorded_times,
+            data: &mut *self.data,
+        };
         record_sample_if_new(
-            Some(self.runtime),
-            self.model,
-            self.y,
-            self.params,
-            self.recorded_times,
-            self.data,
-            event_t,
+            &mut samples,
+            SamplePoint {
+                y: self.y,
+                params: self.params,
+                t: event_t,
+            },
         )?;
         Ok(())
     }
@@ -321,24 +340,20 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
             right_t,
             self.tol,
         )?;
+        let mut samples = SampleRecorder {
+            runtime: Some(self.runtime),
+            model: self.model,
+            recorded_times: &mut *self.recorded_times,
+            data: &mut *self.data,
+        };
         record_sample_if_new(
-            Some(self.runtime),
-            self.model,
-            self.y,
-            self.params,
-            self.recorded_times,
-            self.data,
-            right_t,
+            &mut samples,
+            SamplePoint {
+                y: self.y,
+                params: self.params,
+                t: right_t,
+            },
         )?;
         Ok(())
-    }
-}
-
-pub(crate) fn set_initial_event_flag(model: &solve::SolveModel, params: &mut [f64], value: bool) {
-    let Some(index) = model.problem.solve_layout.initial_event_parameter_index else {
-        return;
-    };
-    if let Some(slot) = params.get_mut(index) {
-        *slot = f64::from(value);
     }
 }
