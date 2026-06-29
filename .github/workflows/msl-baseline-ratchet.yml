@@ -9,7 +9,6 @@ on:
 permissions:
   actions: read
   contents: write
-  pull-requests: write
 
 concurrency:
   group: msl-baseline-ratchet-main
@@ -25,25 +24,14 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     env:
-      MSL_BASELINE_RATCHET_BRANCH: automation/msl-quality-baseline
-      # Prefer a bot/App token so the promotion branch push can trigger PR CI.
-      # GITHUB_TOKEN is a safe fallback, but GitHub may suppress CI for events
-      # created by it, leaving branch-protected auto-merge waiting for checks.
-      MSL_BASELINE_RATCHET_TOKEN: ${{ secrets.MSL_BASELINE_RATCHET_TOKEN || github.token }}
-      MSL_BASELINE_RATCHET_TOKEN_SOURCE: ${{ secrets.MSL_BASELINE_RATCHET_TOKEN && 'MSL_BASELINE_RATCHET_TOKEN' || 'GITHUB_TOKEN' }}
+      MSL_BASELINE_RELEASE_TAG: msl-quality-baseline
+      MSL_BASELINE_RELEASE_ASSET: msl_quality_baseline.json
     steps:
       - uses: actions/checkout@v5
         with:
-          token: ${{ env.MSL_BASELINE_RATCHET_TOKEN }}
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 0
           ref: main
-
-      - name: Warn when ratchet uses GITHUB_TOKEN fallback
-        if: env.MSL_BASELINE_RATCHET_TOKEN_SOURCE == 'GITHUB_TOKEN'
-        run: |
-          echo "::warning::MSL_BASELINE_RATCHET_TOKEN is not configured."
-          echo "::warning::The ratchet can open/update a baseline PR with GITHUB_TOKEN, but GitHub may suppress CI for bot-created branch updates, so branch-protected auto-merge may not complete."
 
       - name: Install Node
         uses: actions/setup-node@v5
@@ -141,117 +129,145 @@ jobs:
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "path=$snapshot" >> "$GITHUB_OUTPUT"
 
+      - name: Load current promoted baseline
+        id: release-baseline
+        if: steps.snapshot.outputs.found == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const tag = process.env.MSL_BASELINE_RELEASE_TAG;
+            const assetName = process.env.MSL_BASELINE_RELEASE_ASSET;
+            const outputPath = 'target/msl-baseline-ratchet/current-baseline.json';
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              const asset = release.data.assets.find(item => item.name === assetName);
+              if (!asset) {
+                core.info(`Release ${tag} has no ${assetName}; using checked-in fallback.`);
+                fs.copyFileSync(
+                  'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+                  outputPath
+                );
+              } else {
+                const download = await github.rest.repos.getReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: asset.id,
+                  headers: { accept: 'application/octet-stream' },
+                });
+                fs.writeFileSync(outputPath, Buffer.from(download.data));
+                core.info(`Loaded current promoted baseline from release ${tag}/${assetName}.`);
+              }
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`Release ${tag} does not exist; using checked-in fallback.`);
+              fs.copyFileSync(
+                'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+                outputPath
+              );
+            }
+            core.setOutput('path', outputPath);
+
       - name: Promote baseline if the artifact improves it
+        id: promote
         if: steps.snapshot.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          previous="${{ steps.release-baseline.outputs.path }}"
+          promoted="target/msl-baseline-ratchet/$MSL_BASELINE_RELEASE_ASSET"
+          cp "$previous" "$promoted"
           node .github/scripts/msl-baseline-ratchet.mjs \
             --source "${{ steps.snapshot.outputs.path }}" \
-            --baseline crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json
+            --baseline "$promoted"
 
-      - name: Commit promoted baseline to ratchet branch
-        id: commit
-        if: steps.snapshot.outputs.found == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          baseline="crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json"
-          if git diff --quiet -- "$baseline"; then
-            echo "MSL quality baseline did not change."
+          if cmp -s "$previous" "$promoted"; then
+            echo "MSL quality baseline did not improve the promoted release baseline."
             echo "promoted=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          promotion_branch="$MSL_BASELINE_RATCHET_BRANCH"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$promotion_branch"
-          git add "$baseline"
-          git commit \
-            -s \
-            -m "Ratchet MSL quality baseline" \
-            -m "Promoted from successful CI workflow run ${{ github.event.workflow_run.id }} for ${{ github.event.workflow_run.head_sha }}."
-          git push --force-with-lease origin "HEAD:$promotion_branch"
+          echo "MSL quality baseline improved the promoted release baseline."
           echo "promoted=true" >> "$GITHUB_OUTPUT"
-          echo "branch=$promotion_branch" >> "$GITHUB_OUTPUT"
+          echo "path=$promoted" >> "$GITHUB_OUTPUT"
 
-      - name: Open or update baseline promotion PR
-        if: steps.commit.outputs.promoted == 'true'
+      - name: Publish promoted baseline release asset
+        if: steps.promote.outputs.promoted == 'true'
         uses: actions/github-script@v8
         with:
-          github-token: ${{ env.MSL_BASELINE_RATCHET_TOKEN }}
           script: |
+            const fs = require('fs');
             const { owner, repo } = context.repo;
-            const branch = '${{ steps.commit.outputs.branch }}';
+            const tag = process.env.MSL_BASELINE_RELEASE_TAG;
+            const assetName = process.env.MSL_BASELINE_RELEASE_ASSET;
+            const assetPath = '${{ steps.promote.outputs.path }}';
             const runId = context.payload.workflow_run.id;
             const runSha = context.payload.workflow_run.head_sha;
-            const title = 'Ratchet MSL quality baseline';
-            const marker = '<!-- rumoca-msl-baseline-ratchet -->';
             const body = [
-              marker,
-              '',
-              'Promotes `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` from a successful main CI artifact.',
+              'Mutable release that stores the latest promoted MSL quality baseline.',
               '',
               `Source CI run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
               `Source commit: \`${runSha}\``,
               '',
-              'This PR is generated by the MSL Baseline Ratchet workflow. The baseline helper already verified that the artifact is a full MSL quality snapshot and that every ratcheted metric is non-regressing.',
-              '',
-              'Auto-merge is requested when the repository allows it; branch protection may still require code-owner approval or required checks before GitHub can merge this PR.',
+              '`cargo xtask verify msl-parity` downloads this asset when available and falls back to the checked-in baseline when offline.',
               '',
             ].join('\n');
 
-            const existing = await github.paginate(github.rest.pulls.list, {
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: release.data.id,
+                name: 'MSL Quality Baseline',
+                body,
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: 'main',
+                name: 'MSL Quality Baseline',
+                body,
+                draft: false,
+                prerelease: false,
+              });
+            }
+
+            const existingAsset = release.data.assets.find(asset => asset.name === assetName);
+            if (existingAsset) {
+              await github.rest.repos.deleteReleaseAsset({
+                owner,
+                repo,
+                asset_id: existingAsset.id,
+              });
+            }
+
+            const data = fs.readFileSync(assetPath);
+            await github.rest.repos.uploadReleaseAsset({
               owner,
               repo,
-              state: 'open',
-              head: `${owner}:${branch}`,
-              base: 'main',
-              per_page: 100,
+              release_id: release.data.id,
+              name: assetName,
+              data,
+              headers: {
+                'content-type': 'application/json',
+                'content-length': data.length,
+              },
             });
-
-            let pull;
-            if (existing.length > 0) {
-              const response = await github.rest.pulls.update({
-                owner,
-                repo,
-                pull_number: existing[0].number,
-                title,
-                body,
-                maintainer_can_modify: true,
-              });
-              pull = response.data;
-              core.info(`Updated baseline promotion PR #${pull.number}.`);
-            } else {
-              const response = await github.rest.pulls.create({
-                owner,
-                repo,
-                title,
-                head: branch,
-                base: 'main',
-                body,
-                maintainer_can_modify: true,
-              });
-              pull = response.data;
-              core.info(`Opened baseline promotion PR #${pull.number}.`);
-            }
-
-            try {
-              await github.graphql(
-                `mutation($pullRequestId: ID!) {
-                  enablePullRequestAutoMerge(input: {
-                    pullRequestId: $pullRequestId,
-                    mergeMethod: SQUASH
-                  }) {
-                    pullRequest {
-                      number
-                    }
-                  }
-                }`,
-                { pullRequestId: pull.node_id },
-              );
-              core.info(`Enabled auto-merge for baseline promotion PR #${pull.number}.`);
-            } catch (error) {
-              core.warning(`Could not enable auto-merge for baseline promotion PR #${pull.number}: ${error.message}`);
-            }
+            core.info(`Published ${assetName} to release ${tag}.`);

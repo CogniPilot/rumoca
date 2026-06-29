@@ -32,7 +32,7 @@ enum Commands {
     Rerun(rerun::Args),
     /// Regenerate OMC+Rumoca traces and plot them for one model
     PlotCompare(plot_compare::Args),
-    /// Promote target quality snapshot to committed baseline JSON
+    /// Promote target quality snapshot to the checked-in fallback baseline JSON
     PromoteQualityBaseline(promote_quality_baseline::Args),
 }
 

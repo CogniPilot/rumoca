@@ -465,7 +465,7 @@ enum RepoMslCommand {
     // -- Catalog & baseline maintenance --
     /// Catalog MSL-shipped ModelicaTest cases by semantic feature area
     ModelicaTestCatalog(msl_tools::modelica_test_catalog::Args),
-    /// Promote a quality snapshot to the committed baseline JSON
+    /// Promote a quality snapshot to the checked-in fallback baseline JSON
     PromoteQualityBaseline(msl_tools::promote_quality_baseline::Args),
 }
 
