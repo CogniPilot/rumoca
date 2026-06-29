@@ -879,10 +879,10 @@ fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
 }
 
 fn parent_component_scope(name: &str) -> String {
-    rumoca_core::ComponentPath::from_flat_path(name)
-        .parent()
-        .unwrap_or_else(rumoca_core::ComponentPath::root)
-        .to_flat_string()
+    rumoca_core::VarName::new(name)
+        .enclosing_scope()
+        .unwrap_or("")
+        .to_string()
 }
 
 fn substitute_assert_equations(
@@ -1045,21 +1045,40 @@ fn substitute_known_constants_expr_with_options(
     prefer_scoped_parameters: bool,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     KnownConstantSubstituter {
-        ctx,
-        live_vars,
-        locals,
-        scope,
-        prefer_scoped_parameters,
+        env: ConstantSubstitutionEnv {
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+        },
     }
     .rewrite_expression(&expr)
 }
 
 struct KnownConstantSubstituter<'a> {
+    env: ConstantSubstitutionEnv<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct ConstantSubstitutionEnv<'a> {
     ctx: &'a Context,
     live_vars: &'a rustc_hash::FxHashSet<String>,
     locals: &'a HashSet<String>,
     scope: &'a str,
     prefer_scoped_parameters: bool,
+}
+
+impl<'a> ConstantSubstitutionEnv<'a> {
+    fn with_scope<'b>(&'b self, scope: &'b str) -> ConstantSubstitutionEnv<'b> {
+        ConstantSubstitutionEnv {
+            ctx: self.ctx,
+            live_vars: self.live_vars,
+            locals: self.locals,
+            scope,
+            prefer_scoped_parameters: self.prefer_scoped_parameters,
+        }
+    }
 }
 
 impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
@@ -1104,15 +1123,7 @@ impl KnownConstantSubstituter<'_> {
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::Expression, FlattenError> {
         if subscripts.is_empty() {
-            if let Some(replaced) = substitute_scalar_var_ref(
-                name,
-                span,
-                self.ctx,
-                self.live_vars,
-                self.locals,
-                self.scope,
-                self.prefer_scoped_parameters,
-            )? {
+            if let Some(replaced) = substitute_scalar_var_ref(name, span, self.env)? {
                 return Ok(replaced);
             }
             return Ok(rumoca_core::Expression::VarRef {
@@ -1123,7 +1134,7 @@ impl KnownConstantSubstituter<'_> {
         }
 
         let rewritten_subscripts = self.rewrite_subscripts(subscripts)?;
-        if self.locals.contains(name.as_str()) {
+        if self.env.locals.contains(name.as_str()) {
             return Ok(rumoca_core::Expression::VarRef {
                 name: name.clone(),
                 subscripts: rewritten_subscripts,
@@ -1134,8 +1145,8 @@ impl KnownConstantSubstituter<'_> {
             name,
             rewritten_subscripts.clone(),
             span,
-            self.ctx,
-            self.live_vars,
+            self.env.ctx,
+            self.env.live_vars,
         ) {
             return Ok(replaced);
         }
@@ -1166,7 +1177,7 @@ impl KnownConstantSubstituter<'_> {
             }
             if args.is_empty()
                 && let Some(resolved) =
-                    resolve_constant_field_access(name.as_str(), field, span, self.ctx)
+                    resolve_constant_field_access(name.as_str(), field, span, self.env.ctx)
             {
                 return Ok(resolved);
             }
@@ -1179,8 +1190,8 @@ impl KnownConstantSubstituter<'_> {
                 subscripts,
                 field,
                 span,
-                self.ctx,
-                self.live_vars,
+                self.env.ctx,
+                self.env.live_vars,
             )
         {
             return self.rewrite_expression(&resolved);
@@ -1189,10 +1200,10 @@ impl KnownConstantSubstituter<'_> {
             name, subscripts, ..
         } = &rewritten_base
             && subscripts.is_empty()
-            && !self.live_vars.contains(name.as_str())
-            && !reference_root_is_local(name, self.locals)
+            && !self.env.live_vars.contains(name.as_str())
+            && !reference_root_is_local(name, self.env.locals)
             && let Some(resolved) =
-                resolve_constant_field_access(name.as_str(), field, span, self.ctx)
+                resolve_constant_field_access(name.as_str(), field, span, self.env.ctx)
         {
             return Ok(resolved);
         }
@@ -1359,141 +1370,113 @@ fn substitute_indexed_constant_var_ref(
 fn substitute_scalar_var_ref(
     name: &rumoca_core::Reference,
     span: rumoca_core::Span,
-    ctx: &Context,
-    live_vars: &rustc_hash::FxHashSet<String>,
-    locals: &HashSet<String>,
-    scope: &str,
-    prefer_scoped_parameters: bool,
+    env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
-    if live_vars.contains(key) || reference_root_is_local(name, locals) {
+    if env.live_vars.contains(key) || reference_root_is_local(name, env.locals) {
         return Ok(None);
     }
-    if inline_index_base_is_live_or_local(key, live_vars, locals) {
+    if inline_index_base_is_live_or_local(key, env.live_vars, env.locals) {
         return Ok(None);
     }
-    let has_array_shape = reference_has_array_shape(name, key, ctx, scope);
-    if prefer_scoped_parameters
-        && !scope.is_empty()
-        && let Some(expr) = substitute_scoped_scalar_var_ref(
-            key,
-            span,
-            ctx,
-            live_vars,
-            locals,
-            scope,
-            prefer_scoped_parameters,
-        )?
+    let has_array_shape = reference_has_array_shape(name, key, env.ctx, env.scope);
+    if env.prefer_scoped_parameters
+        && !env.scope.is_empty()
+        && let Some(expr) = substitute_scoped_scalar_var_ref(key, span, env)?
     {
         return Ok(Some(expr));
     }
-    if let Some(v) = resolve_constant_value_expr_for_ref(name, ctx) {
+    if let Some(v) = resolve_constant_value_expr_for_ref(name, env.ctx) {
         if has_array_shape && !constant_expr_preserves_array_shape(v) {
             return Ok(None);
         }
-        return Ok(Some(substitute_resolved_constant_expr(
-            key,
-            v,
-            span,
-            ctx,
-            live_vars,
-            locals,
-            scope,
-            prefer_scoped_parameters,
-        )?));
+        return Ok(Some(substitute_resolved_constant_expr(key, v, span, env)?));
     }
-    if !has_array_shape && let Some(literal) = scalar_parameter_literal(key, span, ctx) {
+    if !has_array_shape && let Some(literal) = scalar_parameter_literal(key, span, env.ctx) {
         return Ok(Some(literal));
     }
-    if let Some(expr) = resolve_inline_indexed_constant(key, span, ctx)? {
+    if let Some(expr) = resolve_inline_indexed_constant(key, span, env.ctx)? {
         return Ok(Some(expr));
     }
-    if let Some(expr) = resolve_projected_constant_path(key, span, ctx) {
+    if let Some(expr) = resolve_projected_constant_path(key, span, env.ctx) {
         return Ok(Some(substitute_known_constants_expr_with_options(
             expr,
-            ctx,
-            live_vars,
-            locals,
-            scope,
-            prefer_scoped_parameters,
+            env.ctx,
+            env.live_vars,
+            env.locals,
+            env.scope,
+            env.prefer_scoped_parameters,
         )?));
     }
-    if !prefer_scoped_parameters
-        && !scope.is_empty()
-        && let Some(expr) = substitute_scoped_scalar_var_ref(
-            key,
-            span,
-            ctx,
-            live_vars,
-            locals,
-            scope,
-            prefer_scoped_parameters,
-        )?
+    if !env.prefer_scoped_parameters
+        && !env.scope.is_empty()
+        && let Some(expr) = substitute_scoped_scalar_var_ref(key, span, env)?
     {
         return Ok(Some(expr));
     }
 
-    if let Some(resolved_key) = resolve_varref_through_constant_aliases(key, ctx, scope)
-        && resolved_key != key
-    {
-        if let Some(v) = resolve_constant_value_expr(&resolved_key, ctx) {
-            if reference_key_has_array_shape(&resolved_key, ctx, scope)
-                && !constant_expr_preserves_array_shape(v)
-            {
-                return Ok(None);
-            }
-            return Ok(Some(substitute_resolved_constant_expr(
-                &resolved_key,
-                v,
-                span,
-                ctx,
-                live_vars,
-                locals,
-                scope,
-                prefer_scoped_parameters,
-            )?));
-        }
-        if !reference_key_has_array_shape(&resolved_key, ctx, scope)
-            && let Some(literal) = scalar_parameter_literal(&resolved_key, span, ctx)
-        {
-            return Ok(Some(literal));
-        }
-        if let Some(expr) = resolve_inline_indexed_constant(&resolved_key, span, ctx)? {
-            return Ok(Some(expr));
-        }
-        return Ok(Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(resolved_key),
-            subscripts: vec![],
-            span,
-        }));
-    }
+    substitute_alias_resolved_scalar_var_ref(key, span, env)
+}
 
-    Ok(None)
+fn substitute_alias_resolved_scalar_var_ref(
+    key: &str,
+    span: rumoca_core::Span,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let Some(resolved_key) = resolve_varref_through_constant_aliases(key, env.ctx, env.scope)
+    else {
+        return Ok(None);
+    };
+    if resolved_key == key {
+        return Ok(None);
+    }
+    if let Some(v) = resolve_constant_value_expr(&resolved_key, env.ctx) {
+        if reference_key_has_array_shape(&resolved_key, env.ctx, env.scope)
+            && !constant_expr_preserves_array_shape(v)
+        {
+            return Ok(None);
+        }
+        return Ok(Some(substitute_resolved_constant_expr(
+            &resolved_key,
+            v,
+            span,
+            env,
+        )?));
+    }
+    if !reference_key_has_array_shape(&resolved_key, env.ctx, env.scope)
+        && let Some(literal) = scalar_parameter_literal(&resolved_key, span, env.ctx)
+    {
+        return Ok(Some(literal));
+    }
+    if let Some(expr) = resolve_inline_indexed_constant(&resolved_key, span, env.ctx)? {
+        return Ok(Some(expr));
+    }
+    Ok(Some(rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(resolved_key),
+        subscripts: vec![],
+        span,
+    }))
 }
 
 fn substitute_resolved_constant_expr(
     key: &str,
     expr: &rumoca_core::Expression,
     span: rumoca_core::Span,
-    ctx: &Context,
-    live_vars: &rustc_hash::FxHashSet<String>,
-    locals: &HashSet<String>,
-    fallback_scope: &str,
-    prefer_scoped_parameters: bool,
+    env: ConstantSubstitutionEnv<'_>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let declaration_scope = parent_component_scope(key);
     let scope = if declaration_scope.is_empty() {
-        fallback_scope
+        env.scope
     } else {
         &declaration_scope
     };
     substitute_known_constants_expr_with_options(
         expr.clone().with_span(span),
-        ctx,
-        live_vars,
-        locals,
+        env.ctx,
+        env.live_vars,
+        env.locals,
         scope,
-        prefer_scoped_parameters,
+        env.prefer_scoped_parameters,
     )
 }
 
@@ -1575,39 +1558,32 @@ fn reference_key_has_array_shape(key: &str, ctx: &Context, scope: &str) -> bool 
 fn substitute_scoped_scalar_var_ref(
     key: &str,
     span: rumoca_core::Span,
-    ctx: &Context,
-    live_vars: &rustc_hash::FxHashSet<String>,
-    locals: &HashSet<String>,
-    scope: &str,
-    prefer_scoped_parameters: bool,
+    env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
-    for (candidate, candidate_scope) in scoped_lookup_candidates_with_scope(key, scope) {
+    for (candidate, candidate_scope) in scoped_lookup_candidates_with_scope(key, env.scope) {
         if candidate == key {
             continue;
         }
         let candidate_has_array_shape =
-            reference_key_has_array_shape(&candidate, ctx, &candidate_scope);
+            reference_key_has_array_shape(&candidate, env.ctx, &candidate_scope);
         if !candidate_has_array_shape
-            && let Some(literal) = scalar_parameter_literal(&candidate, span, ctx)
+            && let Some(literal) = scalar_parameter_literal(&candidate, span, env.ctx)
         {
             return Ok(Some(literal));
         }
-        if let Some(v) = resolve_constant_value_expr(&candidate, ctx) {
+        if let Some(v) = resolve_constant_value_expr(&candidate, env.ctx) {
             if candidate_has_array_shape && !constant_expr_preserves_array_shape(v) {
                 continue;
             }
+            let candidate_env = env.with_scope(&candidate_scope);
             return Ok(Some(substitute_resolved_constant_expr(
                 &candidate,
                 v,
                 span,
-                ctx,
-                live_vars,
-                locals,
-                &candidate_scope,
-                prefer_scoped_parameters,
+                candidate_env,
             )?));
         }
-        if let Some(expr) = resolve_inline_indexed_constant(&candidate, span, ctx)? {
+        if let Some(expr) = resolve_inline_indexed_constant(&candidate, span, env.ctx)? {
             return Ok(Some(expr));
         }
     }
@@ -1619,15 +1595,16 @@ fn resolve_projected_constant_path(
     span: rumoca_core::Span,
     ctx: &Context,
 ) -> Option<rumoca_core::Expression> {
-    let path = rumoca_core::ComponentPath::from_flat_path(name);
-    let parts = path.parts();
-    if parts.len() < 2 {
+    let path = rumoca_core::VarName::new(name);
+    let part_count = path.segment_count();
+    if part_count < 2 {
         return None;
     }
+    let parts = path.segments();
 
-    for split in (1..parts.len()).rev() {
-        let prefix = path.prefix(split)?.to_flat_string();
-        let Some(mut expr) = resolve_constant_value_expr(&prefix, ctx).cloned() else {
+    for split in (1..part_count).rev() {
+        let prefix = path.prefix_segments(split)?;
+        let Some(mut expr) = resolve_constant_value_expr(prefix, ctx).cloned() else {
             continue;
         };
         let mut resolved = true;
@@ -1927,11 +1904,13 @@ fn substitute_known_constants_statement(
     scope: &str,
 ) -> Result<(), FlattenError> {
     *statement = KnownConstantSubstituter {
-        ctx,
-        live_vars,
-        locals,
-        scope,
-        prefer_scoped_parameters: false,
+        env: ConstantSubstitutionEnv {
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters: false,
+        },
     }
     .rewrite_statement(statement)?;
     Ok(())

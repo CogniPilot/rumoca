@@ -272,7 +272,7 @@ fn canonicalize_var_ref_if_enum_literal(
     if let Some(canonical) = enum_literals.canonicalize(name)
         && canonical != raw
     {
-        *name = rumoca_core::Reference::new(canonical.to_string());
+        *name = rumoca_core::Reference::new(canonical);
     }
 }
 

@@ -2,6 +2,7 @@ use rumoca_core::{ComponentRefPart, ComponentReference, Reference, SourceMap};
 use rumoca_core::{DefId, Span};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use std::collections::HashSet;
 
 use crate::FlattenError;
 use crate::source_spans::required_location_span;
@@ -11,8 +12,60 @@ type LowerResult<T> = Result<T, FlattenError>;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LoweringContext<'a> {
-    pub(crate) def_map: Option<&'a IndexMap<DefId, String>>,
+    pub(crate) def_map: Option<DefMapLookup<'a>>,
     pub(crate) instance_name: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DefMapLookup<'a> {
+    base: &'a IndexMap<DefId, String>,
+    overrides: Option<&'a IndexMap<DefId, String>>,
+    hidden_prefix: Option<&'a str>,
+    hidden_locals: Option<&'a HashSet<String>>,
+}
+
+impl<'a> DefMapLookup<'a> {
+    pub(crate) fn new(base: &'a IndexMap<DefId, String>) -> Self {
+        Self {
+            base,
+            overrides: None,
+            hidden_prefix: None,
+            hidden_locals: None,
+        }
+    }
+
+    pub(crate) fn with_overrides(mut self, overrides: &'a IndexMap<DefId, String>) -> Self {
+        self.overrides = Some(overrides);
+        self
+    }
+
+    pub(crate) fn with_hidden_function_locals(
+        mut self,
+        prefix: &'a str,
+        locals: &'a HashSet<String>,
+    ) -> Self {
+        self.hidden_prefix = Some(prefix);
+        self.hidden_locals = Some(locals);
+        self
+    }
+
+    fn get(self, def_id: &DefId) -> Option<&'a str> {
+        if let Some(path) = self.overrides.and_then(|map| map.get(def_id)) {
+            return Some(path.as_str());
+        }
+        let path = self.base.get(def_id)?.as_str();
+        (!self.path_is_hidden(path)).then_some(path)
+    }
+
+    fn path_is_hidden(self, path: &str) -> bool {
+        let (Some(prefix), Some(locals)) = (self.hidden_prefix, self.hidden_locals) else {
+            return false;
+        };
+        let Some(suffix) = path.strip_prefix(prefix) else {
+            return false;
+        };
+        suffix.find('.').is_none() && locals.contains(suffix)
+    }
 }
 
 pub(crate) fn expression_from_ast(expr: &ast::Expression) -> LowerResult<rumoca_core::Expression> {
@@ -26,7 +79,7 @@ pub(crate) fn expression_from_ast_with_def_map(
     expression_from_ast_with_context(
         expr,
         LoweringContext {
-            def_map,
+            def_map: def_map.map(DefMapLookup::new),
             instance_name: None,
         },
     )
@@ -169,7 +222,7 @@ pub(crate) fn statement_from_ast_with_def_map_and_source_map(
     statement_from_ast_with_context_and_source_map(
         stmt,
         LoweringContext {
-            def_map,
+            def_map: def_map.map(DefMapLookup::new),
             instance_name: None,
         },
         source_map,
@@ -309,7 +362,7 @@ fn if_statement_from_ast(
 
 fn output_component_reference_from_ast(
     expr: &ast::Expression,
-    def_map: Option<&IndexMap<DefId, String>>,
+    def_map: Option<DefMapLookup<'_>>,
 ) -> LowerResult<Option<rumoca_core::ComponentReference>> {
     match expr {
         ast::Expression::ComponentReference(comp) => Ok(Some(
@@ -416,7 +469,7 @@ fn statement_block_from_ast_with_context_and_source_map(
 
 fn component_reference_from_ast_with_def_map(
     comp: &ast::ComponentReference,
-    def_map: Option<&IndexMap<DefId, String>>,
+    def_map: Option<DefMapLookup<'_>>,
 ) -> LowerResult<rumoca_core::ComponentReference> {
     let comp_span = required_ast_span(comp.span, "AST component reference")?;
     if comp.parts.is_empty()
@@ -446,7 +499,7 @@ fn component_reference_from_ast_with_def_map(
 
 fn function_component_ref_from_ast(
     comp: &ast::ComponentReference,
-    def_map: Option<&IndexMap<DefId, String>>,
+    def_map: Option<DefMapLookup<'_>>,
 ) -> LowerResult<rumoca_core::ComponentReference> {
     let comp_span = required_ast_span(comp.span, "function component reference")?;
     if let Some(def_id) = comp.def_id
@@ -502,7 +555,7 @@ fn component_part_subscripts_from_ast(
 
 fn expression_from_component_ref_with_def_map(
     cr: &ast::ComponentReference,
-    def_map: Option<&IndexMap<DefId, String>>,
+    def_map: Option<DefMapLookup<'_>>,
 ) -> LowerResult<rumoca_core::Expression> {
     let cr_span = required_ast_span(cr.span, "AST component reference expression")?;
     if cr.parts.is_empty()
@@ -722,7 +775,7 @@ fn convert_function_call_with_def_map(
         comp,
         args,
         LoweringContext {
-            def_map,
+            def_map: def_map.map(DefMapLookup::new),
             instance_name: None,
         },
     )
@@ -820,7 +873,7 @@ fn lower_get_instance_name_call(
 
 fn resolved_function_call_reference(
     comp: &ast::ComponentReference,
-    def_map: Option<&IndexMap<DefId, String>>,
+    def_map: Option<DefMapLookup<'_>>,
 ) -> Option<Reference> {
     let def_id = comp.def_id?;
     let resolved = resolved_function_call_name(comp, def_map)?;
@@ -831,13 +884,13 @@ fn resolved_function_call_reference(
 
 fn resolved_function_call_name(
     comp: &ast::ComponentReference,
-    def_map: Option<&IndexMap<DefId, String>>,
+    def_map: Option<DefMapLookup<'_>>,
 ) -> Option<String> {
     let resolved = comp
         .def_id
         .and_then(|def_id| def_map.and_then(|map| map.get(&def_id)))?;
     let call_leaf = comp.parts.last()?.ident.text.as_ref();
-    let resolved_leaf = crate::path_utils::leaf_segment(resolved.as_str());
+    let resolved_leaf = crate::path_utils::leaf_segment(resolved);
     if !resolved_path_ends_with_component_ref(resolved, comp)
         && !is_receiver_member_function_call(comp, call_leaf, resolved_leaf)
     {
@@ -850,7 +903,7 @@ fn resolved_function_call_name(
     // `world` in `world.gravityAcceleration(...)`, keep the textual member
     // call so flatten's component-override rewrite can resolve it from the
     // receiver type.
-    (resolved_leaf == call_leaf).then(|| resolved.clone())
+    (resolved_leaf == call_leaf).then(|| resolved.to_string())
 }
 
 fn is_receiver_member_function_call(
@@ -1026,7 +1079,11 @@ fn convert_class_modification_with_context(
     let target_span = required_ast_span(target.span, "class modification target")?;
     let constructor_name = target
         .def_id
-        .and_then(|def_id| context.def_map.and_then(|map| map.get(&def_id).cloned()))
+        .and_then(|def_id| {
+            context
+                .def_map
+                .and_then(|map| map.get(&def_id).map(str::to_string))
+        })
         .map_or_else(
             || {
                 component_reference_from_ast(target)
@@ -1170,7 +1227,10 @@ mod tests {
             def_id: Some(receiver_def),
         };
 
-        assert_eq!(resolved_function_call_name(&comp, Some(&def_map)), None);
+        assert_eq!(
+            resolved_function_call_name(&comp, Some(DefMapLookup::new(&def_map))),
+            None
+        );
 
         let expr = convert_function_call_with_def_map(&comp, &[], Some(&def_map)).unwrap();
         let rumoca_core::Expression::FunctionCall { name, .. } = expr else {
@@ -1192,7 +1252,7 @@ mod tests {
         };
 
         assert_eq!(
-            resolved_function_call_name(&comp, Some(&def_map)).as_deref(),
+            resolved_function_call_name(&comp, Some(DefMapLookup::new(&def_map))).as_deref(),
             Some("Pkg.Receiver.member")
         );
     }
@@ -1305,7 +1365,10 @@ mod tests {
             def_id: Some(partial_function_def),
         };
 
-        assert_eq!(resolved_function_call_name(&comp, Some(&def_map)), None);
+        assert_eq!(
+            resolved_function_call_name(&comp, Some(DefMapLookup::new(&def_map))),
+            None
+        );
         let expr = convert_function_call_with_def_map(&comp, &[], Some(&def_map)).unwrap();
         let rumoca_core::Expression::FunctionCall { name, .. } = expr else {
             panic!("expected function call");
@@ -1337,7 +1400,9 @@ mod tests {
             def_id: Some(variable_def),
         };
 
-        let expr = expression_from_component_ref_with_def_map(&comp, Some(&def_map)).unwrap();
+        let expr =
+            expression_from_component_ref_with_def_map(&comp, Some(DefMapLookup::new(&def_map)))
+                .unwrap();
         let rumoca_core::Expression::Index {
             base, subscripts, ..
         } = expr

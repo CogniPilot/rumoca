@@ -498,7 +498,7 @@ pub(super) fn scalarized_equation_lhs(
         return Ok(Some(indexed));
     }
     Ok(Some(structured_scalar_target(
-        &rumoca_core::VarName::new(indexed.as_str().to_string()),
+        &rumoca_core::VarName::new(indexed.as_str()),
         span,
     )))
 }

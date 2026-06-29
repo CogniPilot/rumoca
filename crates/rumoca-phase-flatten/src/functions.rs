@@ -401,7 +401,9 @@ impl rumoca_core::ExpressionVisitor for FunctionCallCollector<'_> {
         args: &[rumoca_core::Expression],
         is_constructor: bool,
     ) {
-        self.calls.insert(FunctionRequest::from_reference(name));
+        if should_collect_function_reference(name) {
+            self.calls.insert(FunctionRequest::from_reference(name));
+        }
         self.walk_function_call(name, args, is_constructor);
     }
 }
@@ -413,8 +415,10 @@ impl rumoca_ir_flat::visitor::StatementVisitor for FunctionCallCollector<'_> {
         args: &[rumoca_core::Expression],
         outputs: &[rumoca_core::ComponentReference],
     ) {
-        self.calls
-            .insert(FunctionRequest::from_component_reference(comp));
+        if should_collect_component_function_reference(comp) {
+            self.calls
+                .insert(FunctionRequest::from_component_reference(comp));
+        }
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
@@ -423,6 +427,21 @@ impl rumoca_ir_flat::visitor::StatementVisitor for FunctionCallCollector<'_> {
             self.visit_component_reference(output);
         }
     }
+}
+
+fn should_collect_function_reference(name: &rumoca_core::Reference) -> bool {
+    !rumoca_core::is_builtin_function(name.as_str())
+}
+
+fn should_collect_component_function_reference(comp: &rumoca_core::ComponentReference) -> bool {
+    !single_part_builtin_function(comp)
+}
+
+fn single_part_builtin_function(comp: &rumoca_core::ComponentReference) -> bool {
+    let [part] = comp.parts.as_slice() else {
+        return false;
+    };
+    rumoca_core::is_builtin_function(part.ident.as_str())
 }
 
 /// Collect function calls from an expression using the visitor pattern.
@@ -1660,31 +1679,14 @@ fn convert_function<'tree>(
     // fully-qualified path (e.g., `Modelica.Math.Nonlinear.quadratureLobatto.f`)
     // during AST lowering. The qualified path would produce a non-existent
     // global name after dot-to-underscore sanitization.
-    let func_prefix_dot = format!("{qualified_name}.");
     let active_constant_def_overrides =
         active_constant_def_overrides(tree, class_index, class_def, def_map);
-    let filtered_def_map: crate::ResolveDefMap = def_map
-        .iter()
-        .filter(|(_, path)| {
-            if let Some(suffix) = path.strip_prefix(&func_prefix_dot) {
-                // Keep only entries that are NOT simple local parameter names.
-                // Multi-segment suffixes (e.g., "sub.field") are kept since they
-                // reference nested paths, not direct local parameters.
-                !(suffix.find('.').is_none() && function_locals.contains(suffix))
-            } else {
-                true
-            }
-        })
-        .map(|(k, v)| {
-            (
-                *k,
-                active_constant_def_overrides
-                    .get(k)
-                    .cloned()
-                    .unwrap_or_else(|| v.clone()),
-            )
-        })
-        .collect();
+    let func_prefix_dot = format!("{qualified_name}.");
+    let mut def_lookup = ast_lower::DefMapLookup::new(def_map)
+        .with_hidden_function_locals(&func_prefix_dot, &function_locals);
+    if !active_constant_def_overrides.is_empty() {
+        def_lookup = def_lookup.with_overrides(&active_constant_def_overrides);
+    }
 
     for alg in &context.algorithms {
         let flat_alg = algorithms::flatten_algorithm_section(
@@ -1692,7 +1694,7 @@ fn convert_function<'tree>(
             algorithms::AlgorithmSectionContext {
                 prefix: &prefix,
                 imports: &import_map,
-                def_map: Some(&filtered_def_map),
+                def_map: Some(def_lookup),
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
                 instance_name: None,
@@ -1870,29 +1872,28 @@ fn active_constant_def_overrides(
     if package_chain.is_empty() {
         package_chain.push(active_package_def_id);
     }
-    let package_chain: FxHashSet<rumoca_core::DefId> = package_chain.into_iter().collect();
-    def_map
-        .iter()
-        .filter_map(|(def_id, _resolved_path)| {
-            let source_def_id = class_index.parent_def_id(*def_id)?;
-            if source_def_id == active_package_def_id {
-                return None;
-            }
-            if !package_chain.contains(&source_def_id) {
-                return None;
-            }
-            let source_class = class_index.get(source_def_id)?;
-            let leaf = class_index.local_name(*def_id)?;
-            let component = source_class.components.get(leaf)?;
-            if component.def_id != Some(*def_id)
+    let mut overrides = crate::ResolveDefMap::default();
+    for source_def_id in package_chain {
+        if source_def_id == active_package_def_id {
+            continue;
+        }
+        let Some(source_class) = class_index.get(source_def_id) else {
+            continue;
+        };
+        for (leaf, component) in &source_class.components {
+            let Some(def_id) = component.def_id else {
+                continue;
+            };
+            if !def_map.contains_key(&def_id)
                 || !matches!(
                     component.variability,
                     rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
                 )
             {
-                return None;
+                continue;
             }
-            Some((*def_id, format!("{active_package}.{leaf}")))
-        })
-        .collect()
+            overrides.insert(def_id, format!("{active_package}.{leaf}"));
+        }
+    }
+    overrides
 }

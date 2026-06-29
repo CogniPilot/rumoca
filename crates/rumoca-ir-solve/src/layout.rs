@@ -83,7 +83,7 @@ impl std::fmt::Display for ComponentReferenceKeyError {
 impl std::error::Error for ComponentReferenceKeyError {}
 
 impl ComponentReferenceKey {
-    pub fn generated(name: impl Into<String>) -> Self {
+    pub fn generated(name: impl AsRef<str>) -> Self {
         Self::Generated {
             name: VarName::new(name),
         }

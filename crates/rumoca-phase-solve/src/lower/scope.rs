@@ -257,7 +257,7 @@ pub(super) fn local_indexed_binding(
     })
 }
 
-pub(super) fn generated_scope_key(name: impl Into<String>) -> ComponentReferenceKey {
+pub(super) fn generated_scope_key(name: impl AsRef<str>) -> ComponentReferenceKey {
     ComponentReferenceKey::generated(name)
 }
 

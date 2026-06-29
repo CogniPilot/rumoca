@@ -1630,8 +1630,8 @@ fn eval_user_func_integer(
 
     // Try to find and evaluate the user-defined function using rumoca_eval_const
     let func = ctx.functions.get(name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
+    let eval_ctx = build_user_func_eval_ctx(ctx);
     let span = user_function_eval_span(name, call_span, func)?;
 
     let result = crate::constant::function_eval::eval_function_with_call_args(
@@ -1666,8 +1666,8 @@ fn eval_user_func_real_with_span(
 ) -> Option<f64> {
     let name_str = name.as_str();
     let func = ctx.functions.get(name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
+    let eval_ctx = build_user_func_eval_ctx(ctx);
     let span = user_function_eval_span(name, call_span, func)?;
 
     let result = crate::constant::function_eval::eval_function_with_call_args(

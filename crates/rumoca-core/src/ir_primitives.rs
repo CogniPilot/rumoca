@@ -436,7 +436,7 @@ pub struct Reference {
 }
 
 impl Reference {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl AsRef<str>) -> Self {
         Self {
             name: VarName::new(name),
             component_ref: None,
@@ -452,7 +452,7 @@ impl Reference {
         }
     }
 
-    pub fn generated(name: impl Into<String>) -> Self {
+    pub fn generated(name: impl AsRef<str>) -> Self {
         Self {
             name: VarName::new(name),
             component_ref: None,
@@ -495,7 +495,7 @@ impl Reference {
     }
 
     pub fn with_component_reference(
-        name: impl Into<String>,
+        name: impl AsRef<str>,
         component_ref: ComponentReference,
     ) -> Self {
         Self {
@@ -531,6 +531,12 @@ impl Reference {
     /// Top-level segments of the referenced name (see [`VarName::segments`]).
     pub fn segments(&self) -> Vec<&str> {
         self.name.segments()
+    }
+
+    /// Visit top-level segments of the referenced name without allocating a
+    /// segment Vec.
+    pub fn visit_segments<'a>(&'a self, visit: impl FnMut(&'a str)) {
+        self.name.visit_segments(visit);
     }
 
     pub fn var_name(&self) -> &VarName {
