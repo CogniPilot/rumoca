@@ -424,7 +424,7 @@ fn candidate_from_state_constraint(
         .state_terms(state_name_set)
         .filter(|name| !when_assigned_states.contains(*name))
         .filter_map(|name| {
-            let state_name = VarName::new(name);
+            let state_name = VarName::new(name.to_string());
             dae.variables
                 .states
                 .get(&state_name)

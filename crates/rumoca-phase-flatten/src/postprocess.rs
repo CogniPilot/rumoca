@@ -879,10 +879,10 @@ fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
 }
 
 fn parent_component_scope(name: &str) -> String {
-    rumoca_core::VarName::new(name)
-        .enclosing_scope()
-        .unwrap_or("")
-        .to_string()
+    rumoca_core::ComponentPath::from_flat_path(name)
+        .parent()
+        .unwrap_or_else(rumoca_core::ComponentPath::root)
+        .to_flat_string()
 }
 
 fn substitute_assert_equations(
@@ -1595,16 +1595,15 @@ fn resolve_projected_constant_path(
     span: rumoca_core::Span,
     ctx: &Context,
 ) -> Option<rumoca_core::Expression> {
-    let path = rumoca_core::VarName::new(name);
-    let part_count = path.segment_count();
-    if part_count < 2 {
+    let path = rumoca_core::ComponentPath::from_flat_path(name);
+    let parts = path.parts();
+    if parts.len() < 2 {
         return None;
     }
-    let parts = path.segments();
 
-    for split in (1..part_count).rev() {
-        let prefix = path.prefix_segments(split)?;
-        let Some(mut expr) = resolve_constant_value_expr(prefix, ctx).cloned() else {
+    for split in (1..parts.len()).rev() {
+        let prefix = path.prefix(split)?.to_flat_string();
+        let Some(mut expr) = resolve_constant_value_expr(&prefix, ctx).cloned() else {
             continue;
         };
         let mut resolved = true;

@@ -296,7 +296,7 @@ fn record_param_reference(param: &str, span: rumoca_core::Span) -> rumoca_core::
         }],
         def_id: None,
     };
-    rumoca_core::Reference::with_component_reference(param, component_ref)
+    rumoca_core::Reference::with_component_reference(param.to_string(), component_ref)
 }
 
 // =============================================================================

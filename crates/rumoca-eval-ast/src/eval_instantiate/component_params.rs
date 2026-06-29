@@ -359,20 +359,12 @@ pub(crate) fn component_expr_for_structural_eval(
 /// Example: `pipe2.flowModel.nFM` -> [`pipe2.nFM`, `nFM`]
 /// This models lexical scope climbing for nested component members.
 pub(crate) fn enclosing_scope_candidates(dotted: &str) -> Vec<String> {
-    let parts = rumoca_core::split_path_with_indices(dotted);
-    let mut candidates = Vec::with_capacity(parts.len().saturating_sub(1));
-    for remove_idx in (0..parts.len().saturating_sub(1)).rev() {
-        let mut candidate = String::with_capacity(dotted.len());
-        for (idx, part) in parts.iter().enumerate() {
-            if idx == remove_idx {
-                continue;
-            }
-            if !candidate.is_empty() {
-                candidate.push('.');
-            }
-            candidate.push_str(part);
-        }
-        candidates.push(candidate);
+    let mut parts = rumoca_core::ComponentPath::from_flat_path(dotted).into_parts();
+    let mut candidates = Vec::new();
+    while parts.len() > 1 {
+        let remove_idx = parts.len() - 2;
+        parts.remove(remove_idx);
+        candidates.push(parts.join("."));
     }
     candidates
 }

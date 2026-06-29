@@ -179,8 +179,11 @@ impl ComponentPath {
         // thereby normalizes empty segments), so only fall back to it when
         // normalization would change the text.
         let interned = VarName::new(path);
-        let mut parts = Vec::with_capacity(interned.segment_count());
-        interned.visit_segments(|segment| parts.push(segment.to_string()));
+        let parts: Vec<String> = interned
+            .segments()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
         if interned.as_str().len() == path.len() && !parts.is_empty() {
             let joined_len: usize = parts.iter().map(|part| part.len() + 1).sum::<usize>() - 1;
             if joined_len == path.len() {
@@ -657,7 +660,7 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn new(name: impl AsRef<str>, span: Span) -> Self {
+    pub fn new(name: impl Into<String>, span: Span) -> Self {
         Self {
             name: VarName::new(name),
             def_id: None,

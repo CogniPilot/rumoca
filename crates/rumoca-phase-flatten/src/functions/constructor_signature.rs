@@ -218,7 +218,7 @@ impl ExpressionRewriter for FunctionLocalReferenceNormalizer {
             } => {
                 if let Some(local_name) = self.local_reference(name.as_str()) {
                     return rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::new(local_name),
+                        name: rumoca_core::Reference::new(local_name.to_string()),
                         subscripts: self.rewrite_subscripts(subscripts),
                         span: *span,
                     };

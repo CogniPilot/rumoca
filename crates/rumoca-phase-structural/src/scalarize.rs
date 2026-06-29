@@ -1573,14 +1573,14 @@ pub fn target_var_ref_expr_with_span(
             .map(|index| generated_index_subscript(index, span, "scalar target subscript"))
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(Expression::VarRef {
-            name: rumoca_core::Reference::new(scalar.base),
+            name: rumoca_core::Reference::new(scalar.base.to_string()),
             subscripts,
             span,
         });
     }
 
     Ok(Expression::VarRef {
-        name: rumoca_core::Reference::new(target),
+        name: rumoca_core::Reference::new(target.to_string()),
         subscripts: Vec::new(),
         span,
     })

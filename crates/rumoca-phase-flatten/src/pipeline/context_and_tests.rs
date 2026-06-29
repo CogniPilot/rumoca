@@ -424,9 +424,9 @@ impl Context {
         const MAX_PASSES: usize = 10;
         for _pass in 0..MAX_PASSES {
             let enum_progress = self.eval_enum_param_bindings(params);
+            let real_progress = self.eval_real_params(params);
             let int_progress = self.eval_integer_param_bindings(params);
             let bool_progress = self.eval_boolean_params(params);
-            let real_progress = self.eval_real_params(params);
             let dim_progress = self.eval_array_dimensions(var_bindings);
             let varref_dim_progress = self.propagate_varref_dimensions(var_bindings);
             let alias_progress = self.propagate_through_aliases(params);
@@ -704,11 +704,6 @@ impl Context {
                      binding_from_modification,
                      ..
                  }| {
-                    if self.parameter_values.contains_key(*name)
-                        && Self::is_context_free_integer_binding(binding)
-                    {
-                        return None;
-                    }
                     if let Some(val) = self.try_eval_modifier_scoped_integer_alias(
                         name,
                         binding,
@@ -801,55 +796,23 @@ impl Context {
     fn eval_real_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
         let new_vals: Vec<(String, f64)> = params
             .iter()
-            .filter_map(
-                |ParamBinding {
-                     name,
-                     binding,
-                     binding_from_modification,
-                     ..
-                 }| {
-                    if self.real_parameter_values.contains_key(*name)
-                        && Self::is_context_free_real_binding(binding)
-                    {
-                        return None;
-                    }
-                    if let Some(val) = try_eval_flat_expr_real(
-                        binding,
-                        &self.parameter_values,
-                        &self.real_parameter_values,
-                    ) {
-                        return Some(((*name).to_string(), val));
-                    }
-                    if let Some(val) = self.try_eval_modifier_scoped_real_alias(
-                        name,
-                        binding,
-                        *binding_from_modification,
-                    ) {
-                        return Some(((*name).to_string(), val));
-                    }
-                    if *binding_from_modification && unqualified_varref_name(binding).is_some() {
-                        return None;
-                    }
-                    if !*binding_from_modification && !Self::needs_contextual_real_eval(binding) {
-                        return None;
-                    }
-                    let real_ctx = ParamEvalContext {
-                        known_ints: &self.parameter_values,
-                        known_reals: &self.real_parameter_values,
-                        known_bools: &self.boolean_parameter_values,
-                        known_enums: &self.enum_parameter_values,
-                        array_dims: &self.array_dimensions,
-                        functions: &self.functions,
-                        var_context: Some(name),
-                    };
-                    if let Some(val) = try_eval_real_with_context(binding, &real_ctx) {
-                        return Some(((*name).to_string(), val));
-                    }
-                    // Try user-defined function evaluation for function call bindings
-                    self.try_eval_real_func_call(name, binding)
-                        .map(|val| ((*name).to_string(), val))
-                },
-            )
+            .filter_map(|ParamBinding { name, binding, .. }| {
+                let real_ctx = ParamEvalContext {
+                    known_ints: &self.parameter_values,
+                    known_reals: &self.real_parameter_values,
+                    known_bools: &self.boolean_parameter_values,
+                    known_enums: &self.enum_parameter_values,
+                    array_dims: &self.array_dimensions,
+                    functions: &self.functions,
+                    var_context: Some(name),
+                };
+                if let Some(val) = try_eval_real_with_context(binding, &real_ctx) {
+                    return Some(((*name).to_string(), val));
+                }
+                // Try user-defined function evaluation for function call bindings
+                self.try_eval_real_func_call(name, binding)
+                    .map(|val| ((*name).to_string(), val))
+            })
             .collect();
 
         let mut progress = false;
@@ -865,101 +828,6 @@ impl Context {
             }
         }
         progress
-    }
-
-    fn is_context_free_integer_binding(binding: &Expression) -> bool {
-        match binding {
-            Expression::Literal {
-                value: Literal::Integer(_),
-                ..
-            } => true,
-            Expression::Unary {
-                op:
-                    rumoca_core::OpUnary::Plus
-                    | rumoca_core::OpUnary::Minus
-                    | rumoca_core::OpUnary::DotPlus
-                    | rumoca_core::OpUnary::DotMinus,
-                rhs,
-                ..
-            } => Self::is_context_free_integer_binding(rhs),
-            _ => false,
-        }
-    }
-
-    fn is_context_free_real_binding(binding: &Expression) -> bool {
-        match binding {
-            Expression::Literal {
-                value: Literal::Integer(_) | Literal::Real(_),
-                ..
-            } => true,
-            Expression::Unary {
-                op:
-                    rumoca_core::OpUnary::Plus
-                    | rumoca_core::OpUnary::Minus
-                    | rumoca_core::OpUnary::DotPlus
-                    | rumoca_core::OpUnary::DotMinus,
-                rhs,
-                ..
-            } => Self::is_context_free_real_binding(rhs),
-            _ => false,
-        }
-    }
-
-    fn needs_contextual_real_eval(binding: &Expression) -> bool {
-        match binding {
-            Expression::FieldAccess { .. }
-            | Expression::If { .. }
-            | Expression::BuiltinCall { .. }
-            | Expression::FunctionCall { .. } => true,
-            Expression::Unary { rhs, .. } => Self::needs_contextual_real_eval(rhs),
-            Expression::Binary { lhs, rhs, .. } => {
-                Self::needs_contextual_real_eval(lhs) || Self::needs_contextual_real_eval(rhs)
-            }
-            Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
-                elements.iter().any(Self::needs_contextual_real_eval)
-            }
-            Expression::Range {
-                start, step, end, ..
-            } => {
-                Self::needs_contextual_real_eval(start)
-                    || step
-                        .as_ref()
-                        .is_some_and(|step| Self::needs_contextual_real_eval(step))
-                    || Self::needs_contextual_real_eval(end)
-            }
-            Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-                ..
-            } => {
-                Self::needs_contextual_real_eval(expr)
-                    || indices
-                        .iter()
-                        .any(|index| Self::needs_contextual_real_eval(&index.range))
-                    || filter
-                        .as_ref()
-                        .is_some_and(|filter| Self::needs_contextual_real_eval(filter))
-            }
-            Expression::Index {
-                base, subscripts, ..
-            } => {
-                Self::needs_contextual_real_eval(base)
-                    || subscripts
-                        .iter()
-                        .any(Self::subscript_needs_contextual_real_eval)
-            }
-            Expression::Literal { .. } | Expression::VarRef { .. } | Expression::Empty { .. } => {
-                false
-            }
-        }
-    }
-
-    fn subscript_needs_contextual_real_eval(subscript: &rumoca_core::Subscript) -> bool {
-        match subscript {
-            rumoca_core::Subscript::Expr { expr, .. } => Self::needs_contextual_real_eval(expr),
-            rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
-        }
     }
 
     /// Try evaluating a function call binding as a real value.
@@ -982,20 +850,6 @@ impl Context {
             var_context: Some(name),
         };
         eval_user_func_real(func_name, args, &int_ctx)
-    }
-
-    fn try_eval_modifier_scoped_real_alias(
-        &self,
-        name: &str,
-        binding: &Expression,
-        binding_from_modification: bool,
-    ) -> Option<f64> {
-        if !binding_from_modification {
-            return None;
-        }
-        let target = unqualified_varref_name(binding)?;
-        let source_scope = modifier_source_scope(name)?;
-        rumoca_core::EvalLookup::lookup_real(self, target, source_scope.as_str())
     }
 
     /// Extract enumeration parameter values (MLS §4.9.5).
@@ -1464,14 +1318,15 @@ fn unqualified_varref_name(expr: &Expression) -> Option<&str> {
     if !subscripts.is_empty() {
         return None;
     }
-    let name = name.as_str();
-    (rumoca_core::VarName::new(name).segment_count() == 1).then_some(name)
+    let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
+    (path.len() == 1).then_some(name.as_str())
 }
 
 fn modifier_source_scope(name: &str) -> Option<String> {
-    let path = rumoca_core::VarName::new(name);
-    let component_count = path.segment_count().checked_sub(2)?;
-    Some(path.prefix_segments(component_count)?.to_string())
+    let variable_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let component_scope = variable_path.parent()?;
+    let source_scope = component_scope.parent()?;
+    Some(source_scope.to_flat_string())
 }
 
 impl Default for Context {
@@ -1749,7 +1604,7 @@ pub(crate) fn flatten_algorithm_section(
         algorithms::AlgorithmSectionContext {
             prefix,
             imports,
-            def_map: def_map.map(crate::ast_lower::DefMapLookup::new),
+            def_map,
             initial_locals: &no_locals,
             source_map: Some(source_map),
             instance_name,
@@ -1971,7 +1826,7 @@ fn qualify_expression_with_effective_imports(
     crate::ast_lower::expression_from_ast_with_context(
         &qualified,
         crate::ast_lower::LoweringContext {
-            def_map: def_map.map(crate::ast_lower::DefMapLookup::new),
+            def_map,
             instance_name,
         },
     )

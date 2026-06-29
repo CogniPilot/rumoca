@@ -685,9 +685,8 @@ fn get_enum_value_with_depth(
 }
 
 fn parent_dotted_scope(path: &str) -> Option<String> {
-    rumoca_core::parent_scope(path)
-        .filter(|scope| !scope.is_empty())
-        .map(str::to_string)
+    let enclosing = rumoca_core::ComponentPath::from_flat_path(path).parent()?;
+    (!enclosing.is_root()).then(|| enclosing.to_flat_string())
 }
 
 fn eval_if_enum_value(
@@ -890,7 +889,14 @@ fn transparent_self_modifier(candidate: &str, value: &ast::Expression) -> bool {
     if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
         return false;
     }
-    comp_ref.parts[0].ident.text.as_ref() == rumoca_core::top_level_last_segment(candidate)
+    let Some(name) = rumoca_core::ComponentPath::from_flat_path(candidate)
+        .into_parts()
+        .last()
+        .cloned()
+    else {
+        return false;
+    };
+    comp_ref.parts[0].ident.text.as_ref() == name
 }
 
 fn resolve_scoped_record_field_expr(
@@ -1810,7 +1816,12 @@ fn lookup_unique_short_function_name<'a>(
     let mut matches = tree
         .def_map
         .values()
-        .filter(|qualified| rumoca_core::top_level_last_segment(qualified) == func_name)
+        .filter(|qualified| {
+            rumoca_core::ComponentPath::from_flat_path(qualified)
+                .parts()
+                .last()
+                .is_some_and(|leaf| leaf == func_name)
+        })
         .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))
         .filter(|class| class.class_type == rumoca_core::ClassType::Function);
     let first = matches.next()?;

@@ -2,7 +2,7 @@ use super::*;
 
 impl Function {
     /// Create a new function definition.
-    pub fn new(name: impl AsRef<str>, span: Span) -> Self {
+    pub fn new(name: impl Into<String>, span: Span) -> Self {
         Self {
             name: VarName::new(name),
             inputs: Vec::new(),

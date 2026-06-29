@@ -229,7 +229,7 @@ pub(crate) fn extract_outputs(
 pub(crate) struct AlgorithmSectionContext<'a> {
     pub(crate) prefix: &'a ast::QualifiedName,
     pub(crate) imports: &'a ImportMap,
-    pub(crate) def_map: Option<ast_lower::DefMapLookup<'a>>,
+    pub(crate) def_map: Option<&'a crate::ResolveDefMap>,
     pub(crate) initial_locals: &'a HashSet<String>,
     pub(crate) source_map: Option<&'a SourceMap>,
     pub(crate) instance_name: Option<&'a str>,

@@ -66,8 +66,8 @@ impl VarNameData {
 
 impl VarName {
     /// Create a new variable name.
-    pub fn new(name: impl AsRef<str>) -> Self {
-        intern_var_name(name.as_ref())
+    pub fn new(name: impl Into<String>) -> Self {
+        intern_var_name(&name.into())
     }
 
     /// Get the variable name as a string slice.
@@ -97,23 +97,6 @@ impl VarName {
         self.scope_split().map(|(scope, _)| scope)
     }
 
-    /// Return the rendered prefix containing the first `count` top-level
-    /// segments. Returns `None` when `count` is greater than the segment count.
-    pub fn prefix_segments(&self, count: usize) -> Option<&str> {
-        if count == 0 {
-            return Some("");
-        }
-        let segment_count = self.segment_count();
-        if count > segment_count {
-            return None;
-        }
-        if count == segment_count {
-            return Some(self.as_str());
-        }
-        let end = *self.data.top_level_dots.get(count - 1)? as usize;
-        Some(&self.as_str()[..end])
-    }
-
     /// True when the name is nested inside a component scope.
     pub fn is_nested(&self) -> bool {
         !self.data.top_level_dots.is_empty()
@@ -128,34 +111,21 @@ impl VarName {
     /// Top-level segments of the name; subscript brackets keep their embedded
     /// dots (`bus[data.medium].pin.v` yields `["bus[data.medium]", "pin", "v"]`).
     pub fn segments(&self) -> Vec<&str> {
-        let mut segments = Vec::with_capacity(self.segment_count());
-        self.visit_segments(|segment| segments.push(segment));
-        segments
-    }
-
-    /// Number of top-level segments in this name.
-    pub fn segment_count(&self) -> usize {
-        if self.as_str().is_empty() {
-            0
-        } else {
-            self.data.top_level_dots.len() + 1
-        }
-    }
-
-    /// Visit top-level segments without allocating a segment Vec.
-    pub fn visit_segments<'a>(&'a self, mut visit: impl FnMut(&'a str)) {
         let text = self.as_str();
+        let dots = &self.data.top_level_dots;
+        let mut segments = Vec::with_capacity(dots.len() + 1);
         let mut start = 0usize;
-        for dot in self.data.top_level_dots.iter() {
+        for dot in dots.iter() {
             let dot = *dot as usize;
             if start < dot {
-                visit(&text[start..dot]);
+                segments.push(&text[start..dot]);
             }
             start = dot + 1;
         }
         if start < text.len() {
-            visit(&text[start..]);
+            segments.push(&text[start..]);
         }
+        segments
     }
 
     /// Get the compact process-local interned identity.

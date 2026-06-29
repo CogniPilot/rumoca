@@ -65,7 +65,9 @@ fn promote(
     let is_array_variable = |target: &rumoca_core::VarName| {
         dae.variables
             .algebraics
-            .contains_key(&rumoca_core::VarName::new(base(target.as_str())))
+            .contains_key(&rumoca_core::VarName::new(
+                base(target.as_str()).to_string(),
+            ))
     };
     // Only promote algebraics that a state derivative actually depends on
     // (transitively). That is precisely where inlining a large parameter-variable
@@ -132,7 +134,7 @@ fn promote(
             continue;
         }
         if let Some((target, binding)) = removable.remove(&index) {
-            let key = rumoca_core::VarName::new(base(target.as_str()));
+            let key = rumoca_core::VarName::new(base(target.as_str()).to_string());
             binding_span
                 .entry(key.clone())
                 .or_insert(dae.continuous.equations[index].span);

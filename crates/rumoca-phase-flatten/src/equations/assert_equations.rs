@@ -259,13 +259,6 @@ fn is_structural_assert_intrinsic(comp: &ast::ComponentReference) -> bool {
     }
 }
 
-fn is_cardinality_call(comp: &ast::ComponentReference) -> bool {
-    matches!(
-        comp.parts.as_slice(),
-        [name] if name.ident.text.as_ref() == "cardinality"
-    )
-}
-
 fn subscript_contains_structural_assert_intrinsic(subscript: &ast::Subscript) -> bool {
     match subscript {
         ast::Subscript::Expression(expr) => contains_structural_assert_intrinsic(expr),
@@ -494,7 +487,7 @@ fn cardinality_integer_value(
     prefix: &ast::QualifiedName,
 ) -> Option<i64> {
     match expr {
-        ast::Expression::FunctionCall { comp, .. } if is_cardinality_call(comp) => {
+        ast::Expression::FunctionCall { comp, .. } if comp.to_string() == "cardinality" => {
             try_eval_integer_for_comparison(Some(ctx), expr, prefix)
         }
         _ => None,
