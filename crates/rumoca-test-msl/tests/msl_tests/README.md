@@ -83,10 +83,12 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   counts for the fixed root-example denominator: parse/IR-AST, flatten/IR-flat,
   DAE/IR-DAE, solve/IR-Solve, initial-condition solve, and simulation. The CI
   gate treats any increase in an early-stage cumulative count as an improvement
-  and fails only when a cumulative stage count drops below the committed
-  baseline for the same fixed target set. Promote reviewed full-run data, and
-  keep the committed stage counts conservative enough to absorb compile-timeout
-  jitter; focused subsets and one-off explicit target files are not baselines.
+  and fails only when a cumulative stage count drops below the resolved
+  promoted baseline for the same fixed target set. `cargo xtask verify
+  msl-parity` downloads the latest promoted baseline from the
+  `msl-quality-baseline` GitHub release asset and falls back to the checked-in
+  JSON when offline. Focused subsets and one-off explicit target files are not
+  baselines.
 - Baseline JSON also captures OMC parity distributions for this set (runtime
   speedup ratio + trace-accuracy min/median/mean/max), populated from
   `omc_simulation_reference.json`.
@@ -96,7 +98,7 @@ This directory contains helper includes for `tests/msl_tests.rs`.
     OMC-vs-Rumoca trace deviation metrics unless deterministic parity support is added.
 - Successful baseline `test_msl_all` runs write current quality snapshot:
   - `target/msl/results/msl_quality_current.json`
-- Committed baseline updates are explicit/manual:
+- Checked-in fallback baseline updates are explicit/manual:
   - `cargo xtask repo msl promote-quality-baseline`
 - Alternate simulation sets:
   - unset or `RUMOCA_MSL_SIM_SET=full` to keep all models from the selected list

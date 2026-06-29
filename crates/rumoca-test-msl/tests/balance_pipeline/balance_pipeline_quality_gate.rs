@@ -340,6 +340,9 @@ pub(super) fn balance_success_rate(
 }
 
 pub(super) fn msl_quality_baseline_path() -> PathBuf {
+    if let Some(path) = quality_baseline_file_override() {
+        return path;
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join(MSL_QUALITY_BASELINE_FILE_REL)
 }
 
@@ -1169,7 +1172,7 @@ pub(super) fn write_current_msl_quality_snapshot(summary: &MslSummary) -> io::Re
         .map_err(|error| io::Error::other(format!("failed to serialize baseline JSON: {error}")))?;
     fs::write(&baseline_path, baseline_json)?;
     println!(
-        "MSL current quality snapshot written to {}. Promote with `rum repo msl promote-quality-baseline` after approved full baseline runs; committed baseline path is {}.",
+        "MSL current quality snapshot written to {}. Promote with `rum repo msl promote-quality-baseline` after approved full baseline runs; fallback baseline path is {}.",
         baseline_path.display(),
         msl_quality_baseline_path().display()
     );

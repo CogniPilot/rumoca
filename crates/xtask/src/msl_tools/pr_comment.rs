@@ -27,7 +27,7 @@ pub struct Args {
     /// Markdown file to write for CI PR publication
     #[arg(long)]
     pub out: Option<PathBuf>,
-    /// Committed quality baseline used to render summary deltas
+    /// Quality baseline used to render summary deltas
     #[arg(long, default_value = DEFAULT_BASELINE_FILE)]
     pub baseline: PathBuf,
 }
@@ -120,7 +120,7 @@ fn render_quality_snapshot_summary(
     let mut delta_note = String::new();
     if let Some(baseline) = baseline.as_ref() {
         delta_note.push_str(
-            "\n_Deltas compare numerator/denominator against the committed MSL quality baseline._\n",
+            "\n_Deltas compare numerator/denominator against the resolved MSL quality baseline._\n",
         );
         delta_note.push_str(&baseline_identity_note(baseline));
         if let Some(trace_note) = trace_baseline_delta_note(&json, baseline) {

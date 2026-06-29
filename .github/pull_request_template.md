@@ -31,7 +31,7 @@ Alignment". Update both files together if you change either one.
 - For compiler/simulator changes: did you run the MSL gate
   (`cargo test --release --package rumoca-test-msl --features msl-full-test --test msl_tests
   balance_pipeline::balance_pipeline_core::test_msl_all -- --nocapture`) and
-  confirm no regression vs `msl_quality_baseline.json`?
+  confirm no regression vs the resolved `msl_quality_baseline.json`?
 
 ## Code Size Budget (required)
 

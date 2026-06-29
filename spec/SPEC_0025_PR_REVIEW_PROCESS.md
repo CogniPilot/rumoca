@@ -127,13 +127,13 @@ Rust developer workflow MUST remain Cargo-native.
 |---|---|
 | Run the unified MSL gate for any parser, instantiate, flatten, ToDae, or sim change | One gate produces consistent OMC reference + sim trace + quality artifacts |
 | Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
-| Compare against `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` | Baseline is the regression bar |
+| Compare against the resolved MSL quality baseline (`cargo xtask verify msl-parity` downloads the promoted `msl-quality-baseline/msl_quality_baseline.json` release asset and falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` offline) | Baseline is the regression bar |
 | Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, simulation) MUST NOT materially decrease on the fixed root-example baseline denominator; full-library runs may tolerate one-model runner jitter | Early-stage pass-rate increases are always improvements, later stages are compared against their own cumulative counts, and CI/OMC host variance must not block equivalent runs |
 | Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
 | Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |
-| Trace-quality metrics MUST be gated against the committed baseline when OMC parity data is available | Prevents balanced-but-numerically-worse simulations from passing unnoticed |
+| Trace-quality metrics MUST be gated against the resolved promoted baseline when OMC parity data is available | Prevents balanced-but-numerically-worse simulations from passing unnoticed |
 | Runtime speedup medians (system & wall) MUST NOT regress by > 35% | Tolerates 4-core hosted-runner noise without hiding material regressions |
-| Baseline updates require explicit `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
+| Promoted baseline release-asset updates require a successful full main CI run and a non-regressing ratchet decision; checked-in fallback updates remain explicit via `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
 | Coverage trim/gate updates follow `cargo xtask coverage {run,report,gate}` workflow | Coverage promotion is explicit only |
 
 ### 5. Code Size Budget
@@ -187,7 +187,7 @@ they are enforced by §4 commands.
 | `cargo clippy --all-features -- -D warnings` | SPEC_0021 maintainability limits |
 | `cargo test --workspace` | All tests including `architecture_hardening_test` (SPEC_0029) and `spec_budget_test` (SPEC_0000 §3) |
 | `cargo doc --no-deps` | Docs build without errors |
-| MSL gate (compiler/sim changes) | `msl_quality_baseline.json` regressions |
+| MSL gate (compiler/sim changes) | resolved `msl_quality_baseline.json` regressions |
 | ModelicaTest semantic gate (semantic compiler/sim changes) | selected `ModelicaTest.*` models compile, simulate, and preserve assertion/parity diagnostics |
 
 ## References

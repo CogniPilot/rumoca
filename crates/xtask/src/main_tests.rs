@@ -212,6 +212,25 @@ fn cli_parses_verify_msl_parity_job() {
 }
 
 #[test]
+fn cli_parses_verify_msl_parity_quality_baseline_flags() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "msl-parity",
+        "--quality-baseline",
+        "baseline.json",
+        "--no-remote-quality-baseline",
+    ])
+    .expect("parse verify msl-parity baseline flags");
+    match cli.command {
+        Commands::Verify(args) => {
+            assert!(matches!(args.command, VerifyCommand::MslParity(_)))
+        }
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_verify_msl_hotspots_job() {
     let cli = Cli::try_parse_from(["xtask", "verify", "msl-hotspots"])
         .expect("parse verify msl-hotspots");

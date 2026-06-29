@@ -20,11 +20,13 @@ use crate::{
 };
 
 mod msl_cargo_setup_timing;
+mod msl_quality_baseline;
 
 use msl_cargo_setup_timing::{
     MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
     write_msl_cargo_setup_timing_report,
 };
+use msl_quality_baseline::resolve_msl_quality_baseline;
 
 const MSL_VERSION: &str = "4.1.0";
 const MSL_RELEASE_ZIP_URL: &str = "https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip";
@@ -105,6 +107,12 @@ pub(crate) struct VerifyMslParityArgs {
     /// Total simulation memory budget in MB (caps the sim worker count)
     #[arg(long)]
     sim_total_memory_mb: Option<usize>,
+    /// Explicit MSL quality baseline JSON for baseline-relative gates
+    #[arg(long)]
+    quality_baseline: Option<PathBuf>,
+    /// Use the checked-in MSL quality baseline instead of downloading the latest promoted asset
+    #[arg(long)]
+    no_remote_quality_baseline: bool,
 }
 
 impl VerifyMslParityArgs {
@@ -161,6 +169,12 @@ impl VerifyMslParityArgs {
         if let Some(value) = self.sim_total_memory_mb {
             config.insert("sim_total_memory_mb".into(), value.into());
         }
+        if let Some(value) = &self.quality_baseline {
+            config.insert(
+                "quality_baseline_file".into(),
+                value.to_string_lossy().into_owned().into(),
+            );
+        }
         serde_json::Value::Object(config)
     }
 
@@ -169,6 +183,16 @@ impl VerifyMslParityArgs {
             || self.sim_targets_file.is_some()
             || !self.sim_match.is_empty()
             || self.sim_limit.is_some()
+    }
+
+    fn uses_baseline_relative_quality_gate(&self) -> bool {
+        if self.requires_selected_targets_success() {
+            return false;
+        }
+        if !matches!(self.target_scope.as_deref(), None | Some("root-examples")) {
+            return false;
+        }
+        matches!(self.sim_set.as_deref(), None | Some("full"))
     }
 }
 
@@ -187,7 +211,11 @@ fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let json = serde_json::to_string_pretty(&args.to_parity_config_json())?;
+    let mut config = args.clone();
+    if args.quality_baseline.is_some() || args.uses_baseline_relative_quality_gate() {
+        config.quality_baseline = Some(resolve_msl_quality_baseline(root, args)?);
+    }
+    let json = serde_json::to_string_pretty(&config.to_parity_config_json())?;
     fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -1720,6 +1748,7 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+        assert!(!args.uses_baseline_relative_quality_gate());
     }
 
     #[test]

@@ -31,8 +31,12 @@ Local full runs also generate OMC compile/flatten reference data in
 cold GitHub runners repeatedly reload MSL for the compile reference; the CI
 gate still checks Rumoca stage counts and OMC simulation trace parity.
 
-CI compares the current run against
-`crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`.
+CI compares the current run against the resolved MSL quality baseline.
+`cargo xtask verify msl-parity` downloads the latest promoted
+`msl_quality_baseline.json` from the stable `msl-quality-baseline` GitHub
+release asset when available, caches it under `target/msl/baselines/`, and
+falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
+for offline runs.
 The stage checks are cumulative over the fixed root-example denominator:
 parse/IR-AST, flatten/IR-flat, DAE/IR-DAE, solve/IR-Solve,
 initial-condition solve, and simulation. Increasing an early-stage pass count
@@ -56,14 +60,14 @@ On pull requests, CI also generates
 publishes it as a sticky PR comment. The comment embeds the package pass-rate,
 MLS contract coverage, and OMC trace-accuracy markdown tables so reviewers can
 inspect the MSL gate without downloading artifacts first. Its top summary also
-shows deltas against the committed MSL quality baseline. Forked pull requests
+shows deltas against the resolved MSL quality baseline. Forked pull requests
 receive the uploaded artifacts from the read-only CI run, then a separate
 `workflow_run` publisher comments from the artifact using repository write
 permissions.
 
-When a full run is promoted, use reviewed full-run data and keep the committed
-stage counts conservative enough to absorb compile-timeout jitter. Do not
-promote focused subsets or one-off explicit target files as the baseline.
+When a full main CI run improves every ratcheted metric without regressions, the
+MSL Baseline Ratchet workflow publishes the new baseline to that release asset.
+Do not promote focused subsets or one-off explicit target files as the baseline.
 Promotion requires a full-run snapshot with non-empty `omc_version` metadata.
 
 Focused debugging runs can use `RUMOCA_MSL_SIM_MATCH`,
