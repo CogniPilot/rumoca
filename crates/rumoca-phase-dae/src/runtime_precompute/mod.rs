@@ -58,6 +58,14 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
             &mut synthetic_roots,
         );
     }
+    for action in &dae_model.events.event_actions {
+        clock::collect_synthetic_root_conditions_expr(
+            &action.condition,
+            false,
+            &compile_time_scalars,
+            &mut synthetic_roots,
+        );
+    }
     let mut synthetic_roots = synthetic_roots.into_vec();
     log_runtime_precompute_profile("synthetic_roots", synthetic_root_start);
 

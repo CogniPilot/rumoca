@@ -18,6 +18,27 @@ pub(super) fn direct_assignment_component(
     })
 }
 
+pub(super) fn scalar_literal_projection(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    owner_span: Option<rumoca_core::Span>,
+) -> Result<bool, LowerError> {
+    if !matches!(base, rumoca_core::Expression::Literal { .. }) || subscripts.len() != 1 {
+        return Ok(false);
+    }
+    let span = base
+        .span()
+        .filter(|span| !span.is_dummy())
+        .or_else(|| owner_span.filter(|span| !span.is_dummy()))
+        .ok_or_else(|| LowerError::UnspannedContractViolation {
+            reason: "literal scalar projection requires source span".to_string(),
+        })?;
+    let Some(indices) = static_subscript_indices_with_owner(subscripts, span)? else {
+        return Ok(false);
+    };
+    Ok(indices.first().is_some_and(|index| *index > 0))
+}
+
 pub(super) fn complex_operator_call_op(name: &str) -> Option<BinaryOp> {
     match name {
         "Complex.'+'" => Some(BinaryOp::Add),

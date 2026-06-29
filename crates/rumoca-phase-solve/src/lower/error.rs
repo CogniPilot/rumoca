@@ -245,6 +245,16 @@ impl LowerError {
         self.projection_budget_exceeded_parts().is_some()
     }
 
+    pub fn is_missing_binding(&self) -> bool {
+        match self {
+            Self::MissingBinding { .. } => true,
+            Self::Spanned { source, .. } | Self::WithContext { source, .. } => {
+                source.is_missing_binding()
+            }
+            _ => false,
+        }
+    }
+
     pub fn with_fallback_span(self, span: rumoca_core::Span) -> Self {
         if span.is_dummy() || self.source_span().is_some() {
             return self;

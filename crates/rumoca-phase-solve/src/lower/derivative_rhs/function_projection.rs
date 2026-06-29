@@ -5,9 +5,7 @@
 use std::cell::RefCell;
 
 use indexmap::IndexMap;
-use rumoca_core::{
-    ExpressionRewriter, FallibleExpressionVisitor, Literal, NAMED_FUNCTION_ARG_PREFIX, OpBinary,
-};
+use rumoca_core::{ExpressionRewriter, Literal, NAMED_FUNCTION_ARG_PREFIX, OpBinary};
 use rumoca_ir_dae as dae;
 
 use crate::lower::{LowerError, unsupported_at};
@@ -24,6 +22,8 @@ mod entrypoints;
 mod inline_budget;
 #[path = "function_projection/loop_projection.rs"]
 mod loop_projection;
+#[path = "function_projection/projection_helpers.rs"]
+mod projection_helpers;
 mod projection_selection;
 #[path = "function_projection/selected_output.rs"]
 mod selected_output;
@@ -56,11 +56,21 @@ use inline_budget::{
     projection_budget_exceeded,
 };
 use loop_projection::ForProjectionCtx;
+use projection_helpers::{
+    ArrayProjectionValueCtx, IfStatementProjection, IndexedAssignment, MatrixVectorProductDims,
+    ProjectionAssignmentTarget, ProjectionValueCtx, ScalarSelectionCtx, array_element_scalar_width,
+    inherited_projection_source_span, inherited_projection_span, matrix_column_child_flat_index,
+    matrix_column_operand_count, matrix_elements_are_row_literals,
+    outputs_contain_unresolved_function_scope_refs, projection_actual_with_span,
+    projection_arg_or_context_span, projection_value_ctx,
+};
 use projection_selection::*;
 use selected_output::selected_function_output_call;
 use target_projection::{project_reference_field_path_and_indices, projected_target_binding_key};
 
-use super::super::helpers::{format_i64_dims, is_record_constructor_signature};
+use super::super::helpers::{
+    field_access_binding_key, format_i64_dims, is_record_constructor_signature,
+};
 use super::{
     dae_variable_ref_expr, is_add, is_div, is_mul, is_sub, split_subtraction, sub_with_span,
     variable_by_name,
@@ -87,84 +97,6 @@ struct FunctionProjectionScope {
     full: IndexMap<String, rumoca_core::Expression>,
     scalars: IndexMap<String, Vec<rumoca_core::Expression>>,
     dims: IndexMap<String, Vec<i64>>,
-}
-
-struct ProjectionValueCtx<'a> {
-    dims: &'a [i64],
-    flat_index: usize,
-    scope: &'a FunctionProjectionScope,
-    depth: usize,
-    span: rumoca_core::Span,
-}
-
-struct MatrixVectorProductDims<'a> {
-    lhs_dims: &'a [i64],
-    rhs_dims: &'a [i64],
-    rows: i64,
-    cols: i64,
-}
-
-struct ProjectionAssignmentTarget {
-    base: String,
-    indices: Option<Vec<i64>>,
-    span: rumoca_core::Span,
-}
-
-struct IndexedAssignment<'a> {
-    target: &'a str,
-    indices: &'a [i64],
-    value: &'a rumoca_core::Expression,
-    span: rumoca_core::Span,
-    depth: usize,
-}
-
-struct IfStatementProjection<'a> {
-    cond_blocks: &'a [rumoca_core::StatementBlock],
-    else_block: &'a Option<Vec<rumoca_core::Statement>>,
-    span: rumoca_core::Span,
-    depth: usize,
-}
-
-struct ScalarSelectionCtx<'a> {
-    name: &'a str,
-    subscripts: &'a [rumoca_core::Subscript],
-    dims: &'a [i64],
-    values: &'a [rumoca_core::Expression],
-    span: rumoca_core::Span,
-    depth: usize,
-}
-
-fn projection_arg_or_context_span(
-    expr: &rumoca_core::Expression,
-    context_span: rumoca_core::Span,
-) -> Result<rumoca_core::Span, LowerError> {
-    expr.span()
-        .or_else(|| (!context_span.is_dummy()).then_some(context_span))
-        .ok_or_else(|| LowerError::UnspannedContractViolation {
-            reason: "missing source provenance for function projection argument".to_string(),
-        })
-}
-
-fn projection_actual_with_span(
-    actual: &rumoca_core::Expression,
-    input_span: rumoca_core::Span,
-) -> Result<(&rumoca_core::Expression, rumoca_core::Span), LowerError> {
-    projection_arg_or_context_span(actual, input_span).map(|actual_span| (actual, actual_span))
-}
-
-fn inherited_projection_span(
-    span: rumoca_core::Span,
-    owner_span: rumoca_core::Span,
-) -> rumoca_core::Span {
-    if span.is_dummy() { owner_span } else { span }
-}
-
-fn inherited_projection_source_span(
-    span: Option<rumoca_core::Span>,
-    owner_span: rumoca_core::Span,
-) -> rumoca_core::Span {
-    span.map(|span| inherited_projection_span(span, owner_span))
-        .unwrap_or(owner_span)
 }
 
 impl<'a> FunctionProjectionAnalysis<'a> {
@@ -334,7 +266,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         {
             return Err(projection_budget_exceeded(function));
         }
-        self.initialize_projected_declared_arrays(function, &mut scope, function_span)?;
+        self.initialize_projected_declared_arrays(function, &mut scope, depth + 1, function_span)?;
         let mut projected = projection_vec_with_capacity(
             function.body.len(),
             "projected function body output count",
@@ -361,6 +293,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 .any(|output| exceeds_projection_node_budget(&output.expr))
         {
             return Err(projection_budget_exceeded(function));
+        }
+        if outputs_contain_unresolved_function_scope_refs(function, outputs.as_deref()) {
+            return Ok(None);
         }
         Ok(outputs)
     }
@@ -434,9 +369,13 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         &self,
         function: &rumoca_core::Function,
         scope: &mut FunctionProjectionScope,
+        depth: usize,
         owner_span: rumoca_core::Span,
     ) -> Result<(), LowerError> {
         for param in function.outputs.iter().chain(function.locals.iter()) {
+            if self.initialize_declared_default(param, scope, depth + 1, owner_span)? {
+                continue;
+            }
             if param.dims.is_empty() || scope.scalars.contains_key(param.name.as_str()) {
                 continue;
             }
@@ -463,6 +402,45 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             scope.scalars.insert(param.name.clone(), scalars);
         }
         Ok(())
+    }
+
+    fn initialize_declared_default(
+        &self,
+        param: &rumoca_core::FunctionParam,
+        scope: &mut FunctionProjectionScope,
+        depth: usize,
+        owner_span: rumoca_core::Span,
+    ) -> Result<bool, LowerError> {
+        let Some(default) = &param.default else {
+            return Ok(false);
+        };
+        let param_span = inherited_projection_span(param.span, owner_span);
+        let default_span = inherited_projection_source_span(default.span(), param_span);
+        let value = self.substitute(default, scope)?;
+        scope.full.insert(param.name.clone(), value.clone());
+        if param.dims.is_empty() {
+            return Ok(true);
+        }
+        let dims = copy_projection_dims(
+            &param.dims,
+            "projected declared array dimension count",
+            param_span,
+        )?;
+        let scalars = self
+            .project_value_scalars(&value, &dims, scope, depth + 1, default_span)
+            .map_err(|err| err.with_fallback_span(default_span))?
+            .ok_or_else(|| {
+                unsupported_at(
+                    format!(
+                        "declaration binding for `{}` could not be projected",
+                        param.name
+                    ),
+                    default_span,
+                )
+            })?;
+        scope.dims.insert(param.name.clone(), dims);
+        scope.scalars.insert(param.name.clone(), scalars);
+        Ok(true)
     }
 
     fn insert_input_scalar_projection(
@@ -1297,16 +1275,14 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     span,
                 }))
             }
-            rumoca_core::Expression::Array { elements, span, .. } => {
+            rumoca_core::Expression::Array {
+                elements,
+                is_matrix,
+                span,
+            } => {
                 let span = inherited_projection_span(*span, owner_span);
-                let flattened = flatten_array_elements(elements, span)?;
-                let Some(element) = flattened.get(flat_index).cloned() else {
-                    return Err(LowerError::contract_violation(
-                        format!("flat index {flat_index} is out of bounds for array expression"),
-                        span,
-                    ));
-                };
-                Ok(Some(self.substitute(&element, scope)?))
+                let ctx = projection_value_ctx(dims, flat_index, scope, depth, span);
+                self.project_array_expression_value(elements, *is_matrix, &ctx)
             }
             rumoca_core::Expression::If {
                 branches,
@@ -1314,13 +1290,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 span,
             } => {
                 let span = inherited_projection_span(*span, owner_span);
-                let ctx = ProjectionValueCtx {
-                    dims,
-                    flat_index,
-                    scope,
-                    depth,
-                    span,
-                };
+                let ctx = projection_value_ctx(dims, flat_index, scope, depth, span);
                 self.project_if_value(branches, else_branch, &ctx)
             }
             rumoca_core::Expression::BuiltinCall {
@@ -1333,13 +1303,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             rumoca_core::Expression::Unary { op, rhs, span } => {
                 let span = inherited_projection_span(*span, owner_span);
-                let ctx = ProjectionValueCtx {
-                    dims,
-                    flat_index,
-                    scope,
-                    depth,
-                    span,
-                };
+                let ctx = projection_value_ctx(dims, flat_index, scope, depth, span);
                 self.project_unary_value(op, rhs, &ctx)
             }
             rumoca_core::Expression::BuiltinCall {
@@ -1357,16 +1321,186 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 if is_mul(op) || is_add(op) || is_sub(op) || is_div(op) =>
             {
                 let span = inherited_projection_span(*span, owner_span);
-                let ctx = ProjectionValueCtx {
-                    dims,
-                    flat_index,
-                    scope,
-                    depth,
-                    span,
-                };
+                let ctx = projection_value_ctx(dims, flat_index, scope, depth, span);
                 self.project_binary_value(op, lhs, rhs, &ctx)
             }
             other => self.project_indexed_value(other, dims, flat_index, scope, owner_span),
+        }
+    }
+
+    fn project_array_expression_value(
+        &self,
+        elements: &[rumoca_core::Expression],
+        is_matrix: bool,
+        ctx: &ProjectionValueCtx<'_>,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let child_dims = self.array_child_dims(elements, ctx.scope, ctx.depth, ctx.span)?;
+        let array_ctx = ArrayProjectionValueCtx {
+            elements,
+            child_dims: &child_dims,
+            projection: ctx,
+        };
+        if is_matrix && let Some(expr) = self.project_matrix_array_expression_value(&array_ctx)? {
+            return Ok(Some(expr));
+        }
+        if let Some(expr) = self.project_array_sequence_value(
+            elements,
+            ctx.flat_index,
+            &child_dims,
+            ctx.scope,
+            ctx.depth,
+            ctx.span,
+        )? {
+            return Ok(Some(expr));
+        }
+        let flattened = flatten_array_elements(elements, ctx.span)?;
+        let Some(element) = flattened.get(ctx.flat_index).cloned() else {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "flat index {} is out of bounds for array expression",
+                    ctx.flat_index
+                ),
+                ctx.span,
+            ));
+        };
+        Ok(Some(self.substitute(&element, ctx.scope)?))
+    }
+
+    fn array_child_dims(
+        &self,
+        elements: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<Option<Vec<i64>>>, LowerError> {
+        elements
+            .iter()
+            .map(|element| self.expr_dims_with_owner(element, scope, depth + 1, span))
+            .collect()
+    }
+
+    fn project_array_sequence_value(
+        &self,
+        elements: &[rumoca_core::Expression],
+        flat_index: usize,
+        child_dims: &[Option<Vec<i64>>],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let mut offset = 0usize;
+        for (element, dims) in elements.iter().zip(child_dims) {
+            let width = array_element_scalar_width(dims.as_deref(), span)?;
+            let end = offset.checked_add(width).ok_or_else(|| {
+                LowerError::contract_violation(
+                    "array expression scalar offset overflows host index range",
+                    span,
+                )
+            })?;
+            if flat_index < end {
+                return self.project_array_child_value(
+                    element,
+                    dims.as_deref(),
+                    flat_index - offset,
+                    scope,
+                    depth + 1,
+                    span,
+                );
+            }
+            offset = end;
+        }
+        Ok(None)
+    }
+
+    fn project_matrix_array_expression_value(
+        &self,
+        ctx: &ArrayProjectionValueCtx<'_>,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        if matrix_elements_are_row_literals(ctx.elements) {
+            return self.project_array_sequence_value(
+                ctx.elements,
+                ctx.projection.flat_index,
+                ctx.child_dims,
+                ctx.projection.scope,
+                ctx.projection.depth,
+                ctx.projection.span,
+            );
+        }
+        let [rows, cols] = ctx.projection.dims else {
+            return Ok(None);
+        };
+        let rows = valid_product_dim(*rows, ctx.projection.span, "matrix expression row count")?;
+        let cols = valid_product_dim(*cols, ctx.projection.span, "matrix expression column count")?;
+        if rows == 0 || cols == 0 {
+            return Ok(None);
+        }
+        let row = ctx.projection.flat_index / cols;
+        let col = ctx.projection.flat_index % cols;
+        if row >= rows {
+            return Ok(None);
+        }
+        self.project_matrix_column_value(ctx, row, col, rows)
+    }
+
+    fn project_matrix_column_value(
+        &self,
+        ctx: &ArrayProjectionValueCtx<'_>,
+        row: usize,
+        col: usize,
+        rows: usize,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let mut offset = 0usize;
+        for (element, dims) in ctx.elements.iter().zip(ctx.child_dims) {
+            let Some(cols) =
+                matrix_column_operand_count(dims.as_deref(), rows, ctx.projection.span)?
+            else {
+                return Ok(None);
+            };
+            let end = offset.checked_add(cols).ok_or_else(|| {
+                LowerError::contract_violation(
+                    "matrix expression column offset overflows host index range",
+                    ctx.projection.span,
+                )
+            })?;
+            if col < end {
+                let child_flat_index = matrix_column_child_flat_index(
+                    dims.as_deref(),
+                    row,
+                    col - offset,
+                    ctx.projection.span,
+                )?;
+                return self.project_array_child_value(
+                    element,
+                    dims.as_deref(),
+                    child_flat_index,
+                    ctx.projection.scope,
+                    ctx.projection.depth + 1,
+                    ctx.projection.span,
+                );
+            }
+            offset = end;
+        }
+        Ok(None)
+    }
+
+    fn project_array_child_value(
+        &self,
+        element: &rumoca_core::Expression,
+        dims: Option<&[i64]>,
+        flat_index: usize,
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        match dims {
+            Some(dims) if !dims.is_empty() => {
+                self.project_value(element, dims, flat_index, scope, depth, span)
+            }
+            _ if flat_index == 0 => Ok(Some(self.substitute(element, scope)?)),
+            _ => Err(LowerError::contract_violation(
+                format!("flat index {flat_index} is out of bounds for scalar array element"),
+                span,
+            )),
         }
     }
 

@@ -26,11 +26,16 @@ use crate::static_subscripts::try_constant_integer;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
 pub(crate) mod affine;
+mod assert_equations;
 mod conditional_and_eval;
 mod connections_graph;
 mod flattened_equations;
 mod structured_domain;
 mod zero_sized_reductions;
+use assert_equations::{
+    AssertEquationLowering, flatten_assert_equation, flatten_assert_function_call,
+    is_assert_function_call,
+};
 pub(crate) use conditional_and_eval::build_eval_context;
 use conditional_and_eval::*;
 pub(crate) use conditional_and_eval::{
@@ -506,7 +511,7 @@ pub(crate) fn flatten_equation_with_def_map(
         }
 
         ast::Equation::FunctionCall { comp, args } => {
-            flatten_function_call_equation(ctx, comp, args, prefix, span, def_map)
+            flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, &origin)
         }
 
         ast::Equation::Assert {
@@ -514,48 +519,12 @@ pub(crate) fn flatten_equation_with_def_map(
             message,
             level,
         } => flatten_assert_equation(
-            ctx,
+            AssertEquationLowering::new(ctx, prefix, span, def_map, origin),
             condition,
             message,
             level.as_ref(),
-            prefix,
-            span,
-            def_map,
         ),
     }
-}
-
-fn flatten_assert_equation(
-    ctx: &Context,
-    condition: &ast::Expression,
-    message: &ast::Expression,
-    level: Option<&ast::Expression>,
-    prefix: &ast::QualifiedName,
-    span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
-) -> Result<FlattenedEquations, FlattenError> {
-    // MLS §8.3.7: preserve assert-equations for runtime checks in flat output.
-    // They do not contribute to the DAE residual equation system.
-    let imports = &ctx.current_imports;
-    let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx)?,
-        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx)?,
-        level
-            .map(|expr| {
-                qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
-            })
-            .transpose()?,
-        span,
-    );
-    Ok(FlattenedEquations {
-        equations: vec![],
-        structured_equations: vec![],
-        assert_equations: vec![assert_eq],
-        when_clauses: vec![],
-        definite_roots: vec![],
-        branches: vec![],
-        potential_roots: vec![],
-    })
 }
 
 fn flatten_function_call_equation(
@@ -565,82 +534,15 @@ fn flatten_function_call_equation(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
+    origin: &flat::EquationOrigin,
 ) -> Result<FlattenedEquations, FlattenError> {
     if is_assert_function_call(comp) {
-        return flatten_assert_function_call(ctx, args, prefix, span, def_map);
+        return flatten_assert_function_call(
+            AssertEquationLowering::new(ctx, prefix, span, def_map, origin.clone()),
+            args,
+        );
     }
     extract_vcg_data_from_function_call(comp, args, prefix)
-}
-
-fn is_assert_function_call(comp: &ast::ComponentReference) -> bool {
-    comp.parts
-        .last()
-        .map(|part| part.ident.text.as_ref() == "assert")
-        .unwrap_or(false)
-}
-
-fn flatten_assert_function_call(
-    ctx: &Context,
-    args: &[ast::Expression],
-    prefix: &ast::QualifiedName,
-    span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
-) -> Result<FlattenedEquations, FlattenError> {
-    let positional: Vec<&ast::Expression> = args
-        .iter()
-        .filter(|arg| !matches!(arg, ast::Expression::NamedArgument { .. }))
-        .collect();
-    let condition = named_call_arg(args, "condition").or_else(|| positional.first().copied());
-    let message = named_call_arg(args, "message").or_else(|| positional.get(1).copied());
-    let level = named_call_arg(args, "level").or_else(|| positional.get(2).copied());
-
-    let (condition, message) = match (condition, message) {
-        (Some(condition), Some(message)) => (condition, message),
-        _ => {
-            return Err(FlattenError::unsupported_equation(
-                "assert() equation requires at least condition and message arguments",
-                span,
-            ));
-        }
-    };
-
-    let imports = &ctx.current_imports;
-    let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx)?,
-        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx)?,
-        level
-            .map(|expr| {
-                qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
-            })
-            .transpose()?,
-        span,
-    );
-
-    Ok(FlattenedEquations {
-        equations: vec![],
-        structured_equations: vec![],
-        assert_equations: vec![assert_eq],
-        when_clauses: vec![],
-        definite_roots: vec![],
-        branches: vec![],
-        potential_roots: vec![],
-    })
-}
-
-fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast::Expression> {
-    args.iter().find_map(|arg| {
-        if let ast::Expression::NamedArgument {
-            name: arg_name,
-            value,
-            ..
-        } = arg
-            && arg_name.text.as_ref() == name
-        {
-            Some(value.as_ref())
-        } else {
-            None
-        }
-    })
 }
 
 /// Create a residual expression: lhs - rhs

@@ -53,6 +53,10 @@ enum LocalSubscriptResolution {
     Values(Vec<Reg>),
 }
 
+fn is_modelica_array_constructor_function(name: &rumoca_core::Reference) -> bool {
+    name.as_str() == "array"
+}
+
 /// Row-major cartesian product over per-dimension sorted selections,
 /// collecting the entries present in the indexed metadata. Enumerating the
 /// product directly replaces the previous whole-group filter walk, which
@@ -933,6 +937,9 @@ impl<'a> LowerBuilder<'a> {
                 None => Ok(Vec::new()),
             };
         }
+        if is_modelica_array_constructor_function(name) {
+            return self.lower_array_constructor_values(args, false, scope, call_depth);
+        }
         if let Some(values) =
             self.lower_random_array_values(name, args, call_span, scope, call_depth)?
         {
@@ -1747,6 +1754,9 @@ impl<'a> LowerBuilder<'a> {
             return Ok(values);
         }
         if is_static_singleton_scalar_projection(base, subscripts)? {
+            return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
+        }
+        if scalar_literal_projection(base, subscripts, owner_span)? {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
         }
         let base_key = dynamic_binding_base_key(base)?;

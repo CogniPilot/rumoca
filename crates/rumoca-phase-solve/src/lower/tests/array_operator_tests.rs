@@ -554,6 +554,39 @@ fn lower_residual_lowers_slice_of_scalarized_record_field_array() {
 }
 
 #[test]
+fn lower_residual_lowers_scalarized_record_matrix_field() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("M"),
+        dae::Variable {
+            dims: vec![3, 3],
+            ..scalar_var("M")
+        },
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("R.T"),
+        dae::Variable {
+            dims: vec![3, 3],
+            ..scalar_var("R.T")
+        },
+    );
+
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var("M"), field_access(var("R"), "T")),
+        span: lower_test_span(),
+        origin: "record matrix field residual".to_string(),
+        scalar_count: 9,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("scalarized record matrix field should lower as matrix residual");
+
+    assert_eq!(rows.len(), 9);
+}
+
+#[test]
 fn lower_expression_lowers_sum_of_scalarized_record_field_array() {
     let mut dae_model = dae::Dae::default();
     for idx in 1..=3 {

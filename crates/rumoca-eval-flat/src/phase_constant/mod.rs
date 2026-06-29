@@ -606,7 +606,7 @@ fn lookup_unique_suffix_real(name: &str, ctx: &ParamEvalContext) -> Option<f64> 
 }
 
 /// Evaluate a flat expression to a real using scoped lookup context.
-fn try_eval_real_with_context(
+pub fn try_eval_real_with_context(
     expr: &rumoca_core::Expression,
     ctx: &ParamEvalContext,
 ) -> Option<f64> {
@@ -644,6 +644,99 @@ fn try_eval_real_with_context(
                 rumoca_core::OpBinary::Div => (r != 0.0).then_some(l / r),
                 _ => None,
             }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => eval_real_if_expression(branches, else_branch, ctx),
+        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+            eval_builtin_real_with_context(*function, args, ctx)
+        }
+        rumoca_core::Expression::FunctionCall {
+            name, args, span, ..
+        } => eval_real_function_call_with_context(name, args, *span, ctx),
+        _ => None,
+    }
+}
+
+fn eval_real_if_expression(
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    ctx: &ParamEvalContext,
+) -> Option<f64> {
+    let mut unknown_branch_values: Vec<f64> = Vec::new();
+    for (cond, then_expr) in branches {
+        match try_eval_flat_expr_boolean_with_context(cond, ctx) {
+            Some(true) => return try_eval_real_with_context(then_expr, ctx),
+            Some(false) => continue,
+            None => unknown_branch_values.push(try_eval_real_with_context(then_expr, ctx)?),
+        }
+    }
+
+    let else_value = try_eval_real_with_context(else_branch, ctx)?;
+    if unknown_branch_values.is_empty() {
+        return Some(else_value);
+    }
+    unknown_branch_values
+        .iter()
+        .all(|value| real_values_equivalent(*value, else_value))
+        .then_some(else_value)
+}
+
+fn real_values_equivalent(lhs: f64, rhs: f64) -> bool {
+    lhs.to_bits() == rhs.to_bits() || (lhs - rhs).abs() <= f64::EPSILON
+}
+
+fn eval_real_function_call_with_context(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    span: rumoca_core::Span,
+    ctx: &ParamEvalContext,
+) -> Option<f64> {
+    let short_name = name.last_segment();
+    if let Some(function) = rumoca_core::BuiltinFunction::from_name(short_name)
+        && let Some(value) = eval_builtin_real_with_context(function, args, ctx)
+    {
+        return Some(value);
+    }
+    if let Some(function) =
+        rumoca_core::BuiltinFunction::from_name(&short_name.to_ascii_lowercase())
+        && let Some(value) = eval_builtin_real_with_context(function, args, ctx)
+    {
+        return Some(value);
+    }
+    eval_user_func_real_with_span(name, args, ctx, Some(span))
+}
+
+fn eval_builtin_real_with_context(
+    function: rumoca_core::BuiltinFunction,
+    args: &[rumoca_core::Expression],
+    ctx: &ParamEvalContext,
+) -> Option<f64> {
+    match function {
+        rumoca_core::BuiltinFunction::NoEvent | rumoca_core::BuiltinFunction::Delay => {
+            try_eval_real_with_context(args.first()?, ctx)
+        }
+        rumoca_core::BuiltinFunction::Smooth => try_eval_real_with_context(args.get(1)?, ctx),
+        rumoca_core::BuiltinFunction::Homotopy => try_eval_real_with_context(args.first()?, ctx),
+        rumoca_core::BuiltinFunction::Integer => {
+            try_eval_integer_with_context(args.first()?, ctx).map(|value| value as f64)
+        }
+        rumoca_core::BuiltinFunction::SemiLinear if args.len() >= 3 => {
+            let x = try_eval_real_with_context(&args[0], ctx)?;
+            let positive = try_eval_real_with_context(&args[1], ctx)?;
+            let negative = try_eval_real_with_context(&args[2], ctx)?;
+            Some(if x >= 0.0 { positive * x } else { negative * x })
+        }
+        function if args.len() == 1 => {
+            let arg = try_eval_real_with_context(&args[0], ctx)?;
+            rumoca_core::apply_scalar_unary_math(function, arg)
+        }
+        function if args.len() == 2 => {
+            let lhs = try_eval_real_with_context(&args[0], ctx)?;
+            let rhs = try_eval_real_with_context(&args[1], ctx)?;
+            rumoca_core::apply_scalar_binary_math(function, lhs, rhs)
         }
         _ => None,
     }

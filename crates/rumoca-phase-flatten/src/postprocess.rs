@@ -892,16 +892,31 @@ fn substitute_assert_equations(
     locals: &HashSet<String>,
 ) -> Result<(), FlattenError> {
     for assert_eq in equations {
-        assert_eq.condition = substitute_known_constants_expr(
+        let scope = equation_origin_scope(&assert_eq.origin);
+        assert_eq.condition = substitute_known_constants_expr_with_options(
             assert_eq.condition.clone(),
             ctx,
             live_vars,
             locals,
-            "",
+            &scope,
+            true,
         )?;
-        assert_eq.message =
-            substitute_known_constants_expr(assert_eq.message.clone(), ctx, live_vars, locals, "")?;
-        substitute_opt_expr(&mut assert_eq.level, ctx, live_vars, locals, "")?;
+        assert_eq.message = substitute_known_constants_expr_with_options(
+            assert_eq.message.clone(),
+            ctx,
+            live_vars,
+            locals,
+            &scope,
+            true,
+        )?;
+        substitute_opt_expr_with_options(
+            &mut assert_eq.level,
+            ctx,
+            live_vars,
+            locals,
+            &scope,
+            true,
+        )?;
     }
     Ok(())
 }
@@ -987,8 +1002,26 @@ fn substitute_opt_expr(
     locals: &HashSet<String>,
     scope: &str,
 ) -> Result<(), FlattenError> {
+    substitute_opt_expr_with_options(expr, ctx, live_vars, locals, scope, false)
+}
+
+fn substitute_opt_expr_with_options(
+    expr: &mut Option<rumoca_core::Expression>,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    prefer_scoped_parameters: bool,
+) -> Result<(), FlattenError> {
     if let Some(expr) = expr {
-        *expr = substitute_known_constants_expr(expr.clone(), ctx, live_vars, locals, scope)?;
+        *expr = substitute_known_constants_expr_with_options(
+            expr.clone(),
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+        )?;
     }
     Ok(())
 }
@@ -1000,11 +1033,23 @@ pub(crate) fn substitute_known_constants_expr(
     locals: &HashSet<String>,
     scope: &str,
 ) -> Result<rumoca_core::Expression, FlattenError> {
+    substitute_known_constants_expr_with_options(expr, ctx, live_vars, locals, scope, false)
+}
+
+fn substitute_known_constants_expr_with_options(
+    expr: rumoca_core::Expression,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    prefer_scoped_parameters: bool,
+) -> Result<rumoca_core::Expression, FlattenError> {
     KnownConstantSubstituter {
         ctx,
         live_vars,
         locals,
         scope,
+        prefer_scoped_parameters,
     }
     .rewrite_expression(&expr)
 }
@@ -1014,6 +1059,7 @@ struct KnownConstantSubstituter<'a> {
     live_vars: &'a rustc_hash::FxHashSet<String>,
     locals: &'a HashSet<String>,
     scope: &'a str,
+    prefer_scoped_parameters: bool,
 }
 
 impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
@@ -1065,6 +1111,7 @@ impl KnownConstantSubstituter<'_> {
                 self.live_vars,
                 self.locals,
                 self.scope,
+                self.prefer_scoped_parameters,
             )? {
                 return Ok(replaced);
             }
@@ -1316,6 +1363,7 @@ fn substitute_scalar_var_ref(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
+    prefer_scoped_parameters: bool,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
     if live_vars.contains(key) || reference_root_is_local(name, locals) {
@@ -1325,12 +1373,33 @@ fn substitute_scalar_var_ref(
         return Ok(None);
     }
     let has_array_shape = reference_has_array_shape(name, key, ctx, scope);
+    if prefer_scoped_parameters
+        && !scope.is_empty()
+        && let Some(expr) = substitute_scoped_scalar_var_ref(
+            key,
+            span,
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+        )?
+    {
+        return Ok(Some(expr));
+    }
     if let Some(v) = resolve_constant_value_expr_for_ref(name, ctx) {
         if has_array_shape && !constant_expr_preserves_array_shape(v) {
             return Ok(None);
         }
         return Ok(Some(substitute_resolved_constant_expr(
-            key, v, span, ctx, live_vars, locals, scope,
+            key,
+            v,
+            span,
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
         )?));
     }
     if !has_array_shape && let Some(literal) = scalar_parameter_literal(key, span, ctx) {
@@ -1340,13 +1409,26 @@ fn substitute_scalar_var_ref(
         return Ok(Some(expr));
     }
     if let Some(expr) = resolve_projected_constant_path(key, span, ctx) {
-        return Ok(Some(substitute_known_constants_expr(
-            expr, ctx, live_vars, locals, scope,
+        return Ok(Some(substitute_known_constants_expr_with_options(
+            expr,
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
         )?));
     }
-    if !scope.is_empty()
-        && let Some(expr) =
-            substitute_scoped_scalar_var_ref(key, span, ctx, live_vars, locals, scope)?
+    if !prefer_scoped_parameters
+        && !scope.is_empty()
+        && let Some(expr) = substitute_scoped_scalar_var_ref(
+            key,
+            span,
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+        )?
     {
         return Ok(Some(expr));
     }
@@ -1368,6 +1450,7 @@ fn substitute_scalar_var_ref(
                 live_vars,
                 locals,
                 scope,
+                prefer_scoped_parameters,
             )?));
         }
         if !reference_key_has_array_shape(&resolved_key, ctx, scope)
@@ -1396,6 +1479,7 @@ fn substitute_resolved_constant_expr(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     fallback_scope: &str,
+    prefer_scoped_parameters: bool,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let declaration_scope = parent_component_scope(key);
     let scope = if declaration_scope.is_empty() {
@@ -1403,7 +1487,14 @@ fn substitute_resolved_constant_expr(
     } else {
         &declaration_scope
     };
-    substitute_known_constants_expr(expr.clone().with_span(span), ctx, live_vars, locals, scope)
+    substitute_known_constants_expr_with_options(
+        expr.clone().with_span(span),
+        ctx,
+        live_vars,
+        locals,
+        scope,
+        prefer_scoped_parameters,
+    )
 }
 
 fn constant_expr_preserves_array_shape(expr: &rumoca_core::Expression) -> bool {
@@ -1488,15 +1579,21 @@ fn substitute_scoped_scalar_var_ref(
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
     scope: &str,
+    prefer_scoped_parameters: bool,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     for (candidate, candidate_scope) in scoped_lookup_candidates_with_scope(key, scope) {
         if candidate == key {
             continue;
         }
+        let candidate_has_array_shape =
+            reference_key_has_array_shape(&candidate, ctx, &candidate_scope);
+        if !candidate_has_array_shape
+            && let Some(literal) = scalar_parameter_literal(&candidate, span, ctx)
+        {
+            return Ok(Some(literal));
+        }
         if let Some(v) = resolve_constant_value_expr(&candidate, ctx) {
-            if reference_key_has_array_shape(&candidate, ctx, &candidate_scope)
-                && !constant_expr_preserves_array_shape(v)
-            {
+            if candidate_has_array_shape && !constant_expr_preserves_array_shape(v) {
                 continue;
             }
             return Ok(Some(substitute_resolved_constant_expr(
@@ -1507,12 +1604,8 @@ fn substitute_scoped_scalar_var_ref(
                 live_vars,
                 locals,
                 &candidate_scope,
+                prefer_scoped_parameters,
             )?));
-        }
-        if !reference_key_has_array_shape(&candidate, ctx, &candidate_scope)
-            && let Some(literal) = scalar_parameter_literal(&candidate, span, ctx)
-        {
-            return Ok(Some(literal));
         }
         if let Some(expr) = resolve_inline_indexed_constant(&candidate, span, ctx)? {
             return Ok(Some(expr));
@@ -1838,6 +1931,7 @@ fn substitute_known_constants_statement(
         live_vars,
         locals,
         scope,
+        prefer_scoped_parameters: false,
     }
     .rewrite_statement(statement)?;
     Ok(())

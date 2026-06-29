@@ -412,6 +412,63 @@ fn eval_integer_div_builtin_remains_truncating() {
 }
 
 #[test]
+fn eval_real_with_context_evaluates_builtin_sqrt_chain() {
+    let mut known_reals = FxHashMap::default();
+    known_reals.insert("l".to_string(), 1.0e-6);
+    known_reals.insert("c".to_string(), 15.0e-12);
+    known_reals.insert("len".to_string(), 100.0e3);
+    let known_ints = FxHashMap::default();
+    let known_bools = FxHashMap::default();
+    let known_enums = FxHashMap::default();
+    let array_dims = FxHashMap::default();
+    let functions = FxHashMap::default();
+    let ctx = empty_param_context(
+        &known_ints,
+        &known_reals,
+        &known_bools,
+        &known_enums,
+        &array_dims,
+        &functions,
+    );
+
+    let c0 = binary(
+        rumoca_core::OpBinary::Div,
+        real(1.0),
+        call(
+            rumoca_core::BuiltinFunction::Sqrt,
+            vec![binary(rumoca_core::OpBinary::Mul, var("l"), var("c"))],
+        ),
+    );
+    let td = binary(rumoca_core::OpBinary::Div, var("len"), c0);
+
+    let value = try_eval_real_with_context(&td, &ctx).expect("td should evaluate");
+    let expected = 100.0e3 * (1.0e-6_f64 * 15.0e-12_f64).sqrt();
+    assert!((value - expected).abs() < 1.0e-15);
+}
+
+#[test]
+fn eval_real_with_context_evaluates_named_builtin_sqrt() {
+    let known_ints = FxHashMap::default();
+    let known_reals = FxHashMap::default();
+    let known_bools = FxHashMap::default();
+    let known_enums = FxHashMap::default();
+    let array_dims = FxHashMap::default();
+    let functions = FxHashMap::default();
+    let ctx = empty_param_context(
+        &known_ints,
+        &known_reals,
+        &known_bools,
+        &known_enums,
+        &array_dims,
+        &functions,
+    );
+
+    let value = try_eval_real_with_context(&function_call("sqrt", vec![real(4.0)]), &ctx)
+        .expect("named builtin sqrt should evaluate");
+    assert!((value - 2.0).abs() < 1.0e-15);
+}
+
+#[test]
 fn eval_integer_mod_builtin_uses_floor_semantics() {
     let expr = call(rumoca_core::BuiltinFunction::Mod, vec![int(-7), int(3)]);
     let known_ints = FxHashMap::default();
