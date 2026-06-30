@@ -28,10 +28,8 @@ pub(super) fn lower_discrete_observation_refresh(
         for (idx, row) in rows.iter().enumerate() {
             if !refresh[idx]
                 && row.safe
-                && row
-                    .reads
-                    .iter()
-                    .any(|slot| active_targets.iter().any(|target| target == slot))
+                && (row_reads_active_target(row, &active_targets)
+                    || active_row_reads_target(&rows, &refresh, row.target))
             {
                 refresh[idx] = true;
             }
@@ -51,6 +49,25 @@ fn row_reads_runtime_assignment_target(
             .iter()
             .any(|target| target == slot)
     })
+}
+
+fn row_reads_active_target(
+    row: &DiscreteObservationRefreshRow,
+    active_targets: &[solve::ScalarSlot],
+) -> bool {
+    row.reads
+        .iter()
+        .any(|slot| active_targets.iter().any(|target| target == slot))
+}
+
+fn active_row_reads_target(
+    rows: &[DiscreteObservationRefreshRow],
+    refresh: &[bool],
+    target: solve::ScalarSlot,
+) -> bool {
+    rows.iter()
+        .zip(refresh.iter().copied())
+        .any(|(row, active)| active && row.reads.iter().any(|slot| slot == &target))
 }
 
 #[derive(Debug)]
@@ -314,6 +331,7 @@ impl ExpressionVisitor for ClockedValueOperatorChecker<'_> {
     ) {
         if *function == rumoca_core::BuiltinFunction::Sample
             && !sample_args_are_event_indicator(self.dae_model, args)
+            && !sample_args_are_time_value(args)
         {
             self.found = true;
             return;
@@ -359,6 +377,17 @@ fn sample_args_are_event_indicator(dae_model: &dae::Dae, args: &[rumoca_core::Ex
         }
         _ => false,
     }
+}
+
+fn sample_args_are_time_value(args: &[rumoca_core::Expression]) -> bool {
+    matches!(
+        args,
+        [rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        }] if subscripts.is_empty() && name.as_str() == "time"
+    )
 }
 
 fn expression_is_parameter_like_event_arg(

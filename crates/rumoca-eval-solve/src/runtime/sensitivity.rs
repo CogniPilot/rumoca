@@ -578,6 +578,11 @@ impl SolveRuntime {
                     ..self.row_eval_context()
                 },
             )
-            .map_err(Into::into)
+            .map_err(|err| {
+                RuntimeSolveError::solve_ir(format!(
+                    "implicit Jacobian seed row {} output {} failed: {err}",
+                    row.row_idx, row.output_offset
+                ))
+            })
     }
 }

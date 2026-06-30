@@ -165,6 +165,81 @@ fn refresh_plan_accepts_scaled_affine_residual_target() {
 }
 
 #[test]
+fn refresh_once_batches_shapeless_multi_output_assignment_program() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.state_scalar_count = 1;
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model.problem.solve_layout.solver_maps.names =
+        vec!["x".to_string(), "a".to_string(), "b".to_string()];
+    model.problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(multi_output_assignment_block());
+    model.problem.continuous.implicit_row_targets = vec![
+        Some(solve::scalar_slot_y(0)),
+        Some(solve::scalar_slot_y(1)),
+        Some(solve::scalar_slot_y(2)),
+    ];
+
+    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+
+    assert_eq!(runtime.algebraic_refresh.rows.len(), 2);
+    assert_eq!(runtime.algebraic_refresh.rows[0].row_idx, 1);
+    assert_eq!(runtime.algebraic_refresh.rows[0].output_offset, 0);
+    assert_eq!(runtime.algebraic_refresh.rows[1].row_idx, 1);
+    assert_eq!(runtime.algebraic_refresh.rows[1].output_offset, 1);
+
+    let mut solver_y = vec![5.0, 0.0, 0.0];
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-9, 4)
+        .expect("multi-output refresh should update both targets");
+
+    assert_eq!(solver_y, vec![5.0, 10.0, 20.0]);
+}
+
+#[test]
+fn batched_assignment_refresh_preserves_row_order_dependencies() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "a".to_string(), "b".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        derivative_placeholder_row(0),
+                        add_assignment_residual_row(1, 0, 2.0),
+                        scale_assignment_residual_row(2, 1, 3.0),
+                    ],
+                    "batched_assignment_refresh.mo",
+                )),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(0)),
+                    Some(solve::scalar_slot_y(1)),
+                    Some(solve::scalar_slot_y(2)),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![1.0, 0.0, 0.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let mut solver_y = model.initial_y.clone();
+
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
+        .expect("batched assignment refresh should evaluate");
+
+    assert_eq!(solver_y, vec![1.0, 3.0, 9.0]);
+}
+
+#[test]
 fn refresh_plan_accepts_direct_affine_residual_target() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
@@ -605,6 +680,66 @@ fn assignment_residual_row() -> Vec<solve::LinearOp> {
     ]
 }
 
+fn add_assignment_residual_row(target: usize, source: usize, offset: f64) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: target,
+        },
+        solve::LinearOp::LoadY {
+            dst: 1,
+            index: source,
+        },
+        solve::LinearOp::Const {
+            dst: 2,
+            value: offset,
+        },
+        solve::LinearOp::Binary {
+            dst: 3,
+            op: solve::BinaryOp::Add,
+            lhs: 1,
+            rhs: 2,
+        },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]
+}
+
+fn scale_assignment_residual_row(target: usize, source: usize, scale: f64) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: target,
+        },
+        solve::LinearOp::LoadY {
+            dst: 1,
+            index: source,
+        },
+        solve::LinearOp::Const {
+            dst: 2,
+            value: scale,
+        },
+        solve::LinearOp::Binary {
+            dst: 3,
+            op: solve::BinaryOp::Mul,
+            lhs: 1,
+            rhs: 2,
+        },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]
+}
+
 fn scaled_assignment_residual_row() -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::LoadP { dst: 0, index: 0 },
@@ -629,6 +764,35 @@ fn scaled_assignment_residual_row() -> Vec<solve::LinearOp> {
         },
         solve::LinearOp::StoreOutput { src: 5 },
     ]
+}
+
+fn multi_output_assignment_block() -> solve::ScalarProgramBlock {
+    solve::ScalarProgramBlock::with_output_indices(
+        vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const {
+                    dst: 0,
+                    value: 10.0,
+                },
+                solve::LinearOp::StoreOutput { src: 0 },
+                solve::LinearOp::Const {
+                    dst: 1,
+                    value: 20.0,
+                },
+                solve::LinearOp::StoreOutput { src: 1 },
+            ],
+        ],
+        vec![
+            test_span("multi_output_assignment.mo"),
+            test_span("multi_output_assignment.mo"),
+        ],
+        vec![0, 1, 2],
+    )
+    .expect("multi-output assignment fixture should be valid")
 }
 
 fn const_visible_value_row(value: f64) -> Vec<solve::LinearOp> {

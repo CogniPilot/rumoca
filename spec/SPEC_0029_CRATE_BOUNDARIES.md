@@ -242,8 +242,9 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Transformation Scope |
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
-| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI, and packaging text |
-| Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
+| Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
+| Textual generated artifacts and templates | `rumoca-phase-codegen` | Rendering owns generated C, Rust, CUDA C, MLIR, FMI, and packaging text |
+| Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
 | Simulation facade/runner | `rumoca-sim` | Composes solvers/reporting/viz behind features |
@@ -256,8 +257,8 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 Execution adapter crates are not compiler phases. Textual C/Rust/CUDA
 C/MLIR/FMI artifacts are rendered by `rumoca-phase-codegen`; `rumoca-exec-*`
 crates wrap tool invocation, ABI adaptation, loading, GPU/accelerator
-integration, packaging, runtime compilation, or stable APIs over compiled
-artifacts. Text-only targets stay in codegen. Non-codegen phase crates MUST NOT
+integration, packaging, or runtime compilation. Text-only targets stay in
+codegen. Non-codegen phase crates MUST NOT
 depend on target encoder/JIT libraries such as `wasm-encoder`, Cranelift,
 Inkwell, LLVM ORC bindings, CUDA Driver APIs, or NVRTC; backend bytecode,
 native/JIT execution, runtime compilation, and device launch policy belong in
@@ -294,7 +295,7 @@ downward.
 
 ```
 Tier 6 — Binary & bindings: rumoca, bind-python, bind-wasm, contracts
-Tier 5 — Integration/runtime: codec/input/solver/sim/viz/tool-lsp families
+Tier 5 — Integration/runtime: codec/input/solver/sim/opt/viz/tool-lsp families
 Tier 4 — Orchestration: rumoca-compile, tool-fmt, tool-lint
 Tier 3 — Phases & evaluation: rumoca-phase-*, rumoca-eval-*
 Tier 2 — IR data: rumoca-ir-*

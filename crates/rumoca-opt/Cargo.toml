@@ -1,0 +1,23 @@
+[package]
+name = "rumoca-opt"
+description = "Optimization and training APIs over Rumoca differentiable Solve IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-sim = { workspace = true, features = ["native-solvers"] }
+rumoca-solver = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rumoca = { workspace = true }
+
+[lints]
+workspace = true

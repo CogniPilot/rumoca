@@ -1,0 +1,36 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "../models/NeuralPredatorPrey.mo"
+name = "NeuralPredatorPrey"
+
+[viewer]
+mode = "results_panel"
+
+[sim]
+solver = "rk-like"
+dt = 0.02
+t_end = 24.0
+
+[[plot.views]]
+id = "populations_time"
+title = "Predator-Prey Populations"
+type = "timeseries"
+x = "time"
+y = ["population[1]", "population[2]", "interactionIndex"]
+
+[[plot.views]]
+id = "growth_time"
+title = "Neural Growth Rates"
+type = "timeseries"
+x = "time"
+y = ["growth[1]", "growth[2]"]
+
+[[plot.views]]
+id = "phase_portrait"
+title = "Predator-Prey Phase Portrait"
+type = "scatter"
+x = "population[1]"
+y = ["population[2]"]

@@ -709,6 +709,9 @@ fn reference_is_parameter_variable(
     algebraics: &HashSet<String>,
     parameter_variable: &HashSet<String>,
 ) -> bool {
+    if r == "time" {
+        return false;
+    }
     if disqualifying.contains(r) {
         return false;
     }
@@ -774,5 +777,25 @@ impl ExpressionVisitor for ReferencedBases {
         for subscript in subscripts {
             self.visit_subscript(subscript);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_is_not_parameter_variable_reference() {
+        let disqualifying = HashSet::new();
+        let algebraics = HashSet::new();
+        let parameter_variable = HashSet::from(["time".to_string()]);
+
+        assert!(!reference_is_parameter_variable(
+            "time",
+            "sampleX",
+            &disqualifying,
+            &algebraics,
+            &parameter_variable,
+        ));
     }
 }
