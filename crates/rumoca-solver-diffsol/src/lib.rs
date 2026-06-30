@@ -845,13 +845,18 @@ pub(crate) fn record_sample_if_new(
     recorder: &mut SampleRecorder<'_>,
     sample: SamplePoint<'_>,
 ) -> Result<(), SimError> {
-    let values = if let Some(runtime) = recorder.runtime {
-        runtime
-            .visible_values(sample.y, sample.params, sample.t)
-            .map_err(|err| SimError::SolveIr(err.to_string()))?
-    } else {
-        visible_values(recorder.model, sample.y, sample.params, sample.t)?
-    };
+    if let Some(runtime) = recorder.runtime {
+        return runtime
+            .record_visible_sample_if_new(
+                recorder.recorded_times,
+                recorder.data,
+                sample.y,
+                sample.params,
+                sample.t,
+            )
+            .map_err(|err| SimError::SolveIr(err.to_string()));
+    }
+    let values = visible_values(recorder.model, sample.y, sample.params, sample.t)?;
     if recorder
         .recorded_times
         .last()
