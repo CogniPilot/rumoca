@@ -1789,4 +1789,79 @@ fn shift_structured_families_drops_family_with_removed_interior_row() {
     );
 }
 
+/// A substitution can rewrite a structured family's row bodies while leaving the
+/// row count unchanged. The original family proof no longer applies, so the
+/// family must be dropped and lowered as scalar rows.
+#[test]
+fn drop_structured_families_touching_equations_drops_rewritten_family() {
+    let family = |first_equation_index: usize| dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        first_equation_index,
+        equation_counts: vec![1, 1],
+        span: test_span(),
+        origin: "test".to_string(),
+        regular: None,
+        template: None,
+        interiors_materialized: true,
+    };
+    let mut dae = Dae::new();
+    dae.continuous.structured_equations = vec![family(1), family(4)];
+
+    drop_structured_families_touching_equations(&mut dae, &[2]);
+
+    assert_eq!(dae.continuous.structured_equations.len(), 1);
+    assert_eq!(
+        dae.continuous.structured_equations[0].first_equation_index,
+        4
+    );
+}
+
+/// Residual rows have no `lhs`, so substitution used to rewrite the RHS and
+/// return before recording the touched row. Structured metadata for that row
+/// must still be dropped because its compact body proof is now stale.
+#[test]
+fn substitution_drops_structured_family_for_rewritten_residual_row() {
+    let mut dae = Dae::new();
+    dae.continuous.equations.push(residual(
+        var_ref("x"),
+        var_ref("s"),
+        1,
+        "structured_residual",
+    ));
+    dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        },
+        first_equation_index: 0,
+        equation_counts: vec![1],
+        span: test_span(),
+        origin: "test".to_string(),
+        regular: None,
+        template: None,
+        interiors_materialized: true,
+    }];
+
+    structural_ok(apply_substitutions_to_remaining_once(
+        &mut dae,
+        &[false],
+        &[test_substitution("s", real(1.0))],
+    ));
+
+    assert!(dae.continuous.structured_equations.is_empty());
+}
+
 mod boundary_cases;

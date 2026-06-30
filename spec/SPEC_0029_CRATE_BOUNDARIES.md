@@ -242,6 +242,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Transformation Scope |
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
+| Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
 | GALEC `.alg` text (recorded exception) | `rumoca-ir-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
@@ -257,8 +258,8 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 
 Execution adapter crates are not compiler phases. `rumoca-exec-*`
 crates wrap tool invocation, ABI adaptation, loading, GPU/accelerator
-integration, packaging, runtime compilation, or stable APIs over compiled
-artifacts. Text-only targets stay in codegen. Non-codegen phase crates MUST NOT
+integration, packaging, or runtime compilation. Text-only targets stay in
+codegen. Non-codegen phase crates MUST NOT
 depend on target encoder/JIT libraries such as `wasm-encoder`, Cranelift,
 Inkwell, LLVM ORC bindings, CUDA Driver APIs, or NVRTC; backend bytecode,
 native/JIT execution, and device launch policy belong in `rumoca-exec-*`, above
@@ -295,7 +296,7 @@ downward.
 
 ```
 Tier 6 — Binary & bindings: rumoca, bind-python, bind-wasm, contracts
-Tier 5 — Integration/runtime: codec/input/solver/sim/viz/tool-lsp families
+Tier 5 — Integration/runtime: codec/input/solver/sim/opt/viz/tool-lsp families
 Tier 4 — Orchestration: rumoca-compile, tool-fmt, tool-lint
 Tier 3 — Phases & evaluation: rumoca-phase-*, rumoca-eval-*
 Tier 2 — IR data: rumoca-ir-*

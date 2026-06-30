@@ -113,9 +113,12 @@ pub(crate) fn build_implicit_rhs_compute_block(
         residual_to_implicit_rows,
         state_scalar_count,
         span,
-    )? && let Some(residual_nodes) =
-        remap_residual_compute_nodes(residual_block, residual_to_implicit_rows, span)?
-    {
+    )? && let Some(residual_nodes) = remap_residual_compute_nodes(
+        residual_block,
+        residual_to_implicit_rows,
+        state_scalar_count,
+        span,
+    )? {
         reserve_implicit_rhs_capacity(
             &mut nodes,
             residual_nodes.len(),
@@ -385,6 +388,7 @@ fn uncovered_implicit_tail_rows(
 fn remap_residual_compute_nodes(
     residual_block: &solve::ComputeBlock,
     residual_to_implicit_rows: &[Option<usize>],
+    implicit_output_cursor: usize,
     context_span: rumoca_core::Span,
 ) -> Result<Option<Vec<solve::ComputeNode>>, LowerError> {
     if residual_block.nodes.is_empty() {
@@ -396,11 +400,25 @@ fn remap_residual_compute_nodes(
         "residual compute node remap count",
         span,
     )?;
-    for node in &residual_block.nodes {
-        let Some(remapped) = remap_residual_compute_node(node, residual_to_implicit_rows, span)?
+    let mut residual_output_cursor = 0usize;
+    let mut implicit_output_cursor = implicit_output_cursor;
+    for (node_index, node) in residual_block.nodes.iter().enumerate() {
+        let residual_indices =
+            residual_compute_node_output_indices(node, node_index, residual_output_cursor, span)?;
+        let Some(implicit_indices) =
+            remap_residual_output_indices(&residual_indices, residual_to_implicit_rows, span)?
         else {
             return Ok(None);
         };
+        let Some(remapped) =
+            remap_residual_compute_node(node, &implicit_indices, implicit_output_cursor, span)?
+        else {
+            return Ok(None);
+        };
+        residual_output_cursor =
+            next_output_cursor_from_indices(&residual_indices, residual_output_cursor, span)?;
+        implicit_output_cursor =
+            remapped_compute_node_next_output_cursor(&remapped, implicit_output_cursor, span)?;
         nodes.push(remapped);
     }
     Ok(Some(nodes))
@@ -408,8 +426,9 @@ fn remap_residual_compute_nodes(
 
 fn remap_residual_compute_node(
     node: &solve::ComputeNode,
-    residual_to_implicit_rows: &[Option<usize>],
-    context_span: rumoca_core::Span,
+    implicit_indices: &[usize],
+    implicit_output_cursor: usize,
+    _context_span: rumoca_core::Span,
 ) -> Result<Option<solve::ComputeNode>, LowerError> {
     match node {
         solve::ComputeNode::ScalarPrograms(block) => {
@@ -422,37 +441,24 @@ fn remap_residual_compute_node(
                     )?,
                 )));
             }
-            let span = first_non_dummy_span(&block.program_spans).unwrap_or(context_span);
-            let mut output_indices = implicit_rhs_vec_with_capacity(
-                block.output_indices.len(),
-                "scalar residual output remap count",
-                span,
-            )?;
-            for index in &block.output_indices {
-                let Some(output_index) = residual_to_implicit_rows.get(*index).copied().flatten()
-                else {
-                    return Ok(None);
-                };
-                output_indices.push(output_index);
-            }
             Ok(Some(solve::ComputeNode::ScalarPrograms(
                 solve::ScalarProgramBlock::with_output_indices(
                     block.programs.clone(),
                     block.program_spans.clone(),
-                    output_indices,
+                    implicit_indices.to_vec(),
                 )?,
             )))
         }
         solve::ComputeNode::Map {
             domain,
-            output_map,
             base_ops,
             load_strides,
             const_strides,
             metadata,
             span,
+            ..
         } => Ok(
-            remap_tensor_output_map(domain, output_map, residual_to_implicit_rows, *span)?.map(
+            stencil::tensor_output_map_from_values(domain, implicit_indices, *span)?.map(
                 |output_map| solve::ComputeNode::Map {
                     domain: domain.clone(),
                     output_map,
@@ -466,14 +472,14 @@ fn remap_residual_compute_node(
         ),
         solve::ComputeNode::AffineStencil {
             domain,
-            output_map,
             base_ops,
             load_strides,
             const_strides,
             metadata,
             span,
+            ..
         } => Ok(
-            remap_tensor_output_map(domain, output_map, residual_to_implicit_rows, *span)?.map(
+            stencil::tensor_output_map_from_values(domain, implicit_indices, *span)?.map(
                 |output_map| solve::ComputeNode::AffineStencil {
                     domain: domain.clone(),
                     output_map,
@@ -485,32 +491,112 @@ fn remap_residual_compute_node(
                 },
             ),
         ),
-        solve::ComputeNode::MatMul { .. } | solve::ComputeNode::LinSolve { .. } => Ok(None),
+        solve::ComputeNode::MatMul { .. } | solve::ComputeNode::LinSolve { .. } => Ok(
+            contiguous_at_cursor(implicit_indices, implicit_output_cursor).then(|| node.clone()),
+        ),
     }
 }
 
-fn remap_tensor_output_map(
-    domain: &rumoca_core::StructuredIndexDomain,
-    output_map: &solve::TensorOutputMap,
+fn remap_residual_output_indices(
+    residual_indices: &[usize],
     residual_to_implicit_rows: &[Option<usize>],
     span: rumoca_core::Span,
-) -> Result<Option<solve::TensorOutputMap>, LowerError> {
-    let output_indices = match output_map.output_indices(domain) {
-        Ok(output_indices) => output_indices,
-        Err(_) => return Ok(None),
-    };
+) -> Result<Option<Vec<usize>>, LowerError> {
     let mut implicit_indices = implicit_rhs_vec_with_capacity(
-        output_indices.len(),
+        residual_indices.len(),
         "tensor residual output remap count",
         span,
     )?;
-    for index in output_indices {
-        let Some(implicit_index) = residual_to_implicit_rows.get(index).copied().flatten() else {
+    for index in residual_indices {
+        let Some(implicit_index) = residual_to_implicit_rows.get(*index).copied().flatten() else {
             return Ok(None);
         };
         implicit_indices.push(implicit_index);
     }
-    stencil::tensor_output_map_from_values(domain, &implicit_indices, span)
+    Ok(Some(implicit_indices))
+}
+
+fn residual_compute_node_output_indices(
+    node: &solve::ComputeNode,
+    node_index: usize,
+    output_cursor: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    match node {
+        solve::ComputeNode::ScalarPrograms(block) => block
+            .compute_block_output_indices("implicit RHS residual remap", node_index, output_cursor)
+            .map_err(shape_contract_lower_error),
+        solve::ComputeNode::Map {
+            domain, output_map, ..
+        }
+        | solve::ComputeNode::AffineStencil {
+            domain, output_map, ..
+        } => output_map.output_indices(domain).map_err(|err| {
+            implicit_rhs_contract_violation(
+                format!("implicit RHS residual tensor output map is invalid: {err:?}"),
+                span,
+            )
+        }),
+        solve::ComputeNode::MatMul { m, n, .. } => {
+            contiguous_output_indices(output_cursor, checked_output_product(*m, *n, span)?, span)
+        }
+        solve::ComputeNode::LinSolve { n, .. } => {
+            contiguous_output_indices(output_cursor, *n, span)
+        }
+    }
+}
+
+fn remapped_compute_node_next_output_cursor(
+    node: &solve::ComputeNode,
+    output_cursor: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let indices = residual_compute_node_output_indices(node, 0, output_cursor, span)?;
+    next_output_cursor_from_indices(&indices, output_cursor, span)
+}
+
+fn next_output_cursor_from_indices(
+    indices: &[usize],
+    fallback: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    indices.iter().copied().max().map_or(Ok(fallback), |index| {
+        index.checked_add(1).ok_or_else(|| {
+            implicit_rhs_contract_violation("implicit RHS output cursor overflows", span)
+        })
+    })
+}
+
+fn contiguous_output_indices(
+    start: usize,
+    count: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    let end = start.checked_add(count).ok_or_else(|| {
+        implicit_rhs_contract_violation("implicit RHS contiguous output range overflows", span)
+    })?;
+    let mut indices =
+        implicit_rhs_vec_with_capacity(count, "implicit RHS contiguous output count", span)?;
+    indices.extend(start..end);
+    Ok(indices)
+}
+
+fn checked_output_product(
+    lhs: usize,
+    rhs: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    lhs.checked_mul(rhs).ok_or_else(|| {
+        implicit_rhs_contract_violation("implicit RHS tensor output count overflows", span)
+    })
+}
+
+fn contiguous_at_cursor(indices: &[usize], cursor: usize) -> bool {
+    indices
+        .iter()
+        .copied()
+        .enumerate()
+        .all(|(offset, index)| cursor.checked_add(offset) == Some(index))
 }
 
 // SPEC_0021: Exception - residual placement mutates row storage, target maps,
@@ -719,5 +805,95 @@ mod tests {
         );
         assert_eq!(residual_to_implicit_rows, vec![Some(2)]);
         Ok(())
+    }
+
+    #[test]
+    fn remapped_implicit_rhs_preserves_contiguous_matmul_residual() -> Result<(), LowerError> {
+        let span = test_span();
+        let derivative_rhs = derivative_compute_block(span);
+        let residual_block = solve::ComputeBlock {
+            nodes: vec![two_output_matmul_node(span)],
+        };
+        let scalar_programs = vec![zero_rhs_row(), zero_rhs_row(), zero_rhs_row()];
+        let residual_to_implicit_rows = vec![Some(1), Some(2)];
+
+        let block = build_implicit_rhs_compute_block(
+            &derivative_rhs,
+            &residual_block,
+            &residual_to_implicit_rows,
+            scalar_programs,
+            1,
+            span,
+        )?;
+
+        assert_eq!(block.compute_node_counts().matmul, 1);
+        assert_eq!(block.len().map_err(shape_contract_lower_error)?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn remapped_implicit_rhs_scalarizes_sparse_matmul_residual() -> Result<(), LowerError> {
+        let span = test_span();
+        let derivative_rhs = derivative_compute_block(span);
+        let residual_block = solve::ComputeBlock {
+            nodes: vec![two_output_matmul_node(span)],
+        };
+        let scalar_programs = vec![
+            zero_rhs_row(),
+            zero_rhs_row(),
+            zero_rhs_row(),
+            zero_rhs_row(),
+        ];
+        let residual_to_implicit_rows = vec![Some(1), Some(3)];
+
+        let block = build_implicit_rhs_compute_block(
+            &derivative_rhs,
+            &residual_block,
+            &residual_to_implicit_rows,
+            scalar_programs,
+            1,
+            span,
+        )?;
+
+        assert_eq!(block.compute_node_counts().matmul, 0);
+        assert_eq!(block.len().map_err(shape_contract_lower_error)?, 4);
+        Ok(())
+    }
+
+    fn derivative_compute_block(span: rumoca_core::Span) -> solve::ComputeBlock {
+        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::with_source_span(
+            vec![zero_rhs_row()],
+            span,
+        ))
+    }
+
+    fn two_output_matmul_node(span: rumoca_core::Span) -> solve::ComputeNode {
+        solve::ComputeNode::MatMul {
+            lhs_ops: vec![
+                solve::LinearOp::Const { dst: 0, value: 2.0 },
+                solve::LinearOp::Const { dst: 1, value: 3.0 },
+            ],
+            lhs_start: 0,
+            rhs_ops: vec![
+                solve::LinearOp::Const { dst: 2, value: 5.0 },
+                solve::LinearOp::Const { dst: 3, value: 7.0 },
+                solve::LinearOp::Const {
+                    dst: 4,
+                    value: 11.0,
+                },
+                solve::LinearOp::Const {
+                    dst: 5,
+                    value: 13.0,
+                },
+            ],
+            rhs_start: 2,
+            m: 1,
+            k: 2,
+            n: 2,
+            lhs_sparsity: solve::SparsityPattern::Dense,
+            rhs_sparsity: solve::SparsityPattern::Dense,
+            metadata: solve::TensorNodeMetadata::default(),
+            span,
+        }
     }
 }

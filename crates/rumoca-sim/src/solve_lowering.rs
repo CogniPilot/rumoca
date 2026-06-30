@@ -42,8 +42,6 @@ pub use structure_report::{
     diagnose_structural_singularity, structural_report_for_dae,
 };
 
-// Only the diffsol build pipeline consumes the staged-timing entry point.
-#[cfg(feature = "solver-diffsol")]
 pub(crate) use entry::lower_dae_for_simulation_with_stage_timing;
 pub(crate) use overrides::apply_simulation_overrides;
 pub use overrides::lower_for_simulation_with_overrides;

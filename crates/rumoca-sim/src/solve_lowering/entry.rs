@@ -4,7 +4,7 @@
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
-use rumoca_solver::SimOptions;
+use rumoca_solver::{SimOptions, SimSolverMode};
 
 use super::structural_lowering::{
     metadata_attachment_lower_error, structurally_lower_dae_for_simulation,
@@ -62,12 +62,7 @@ pub(crate) fn lower_dae_for_simulation_with_param_overrides(
     param_overrides: &std::collections::HashMap<String, f64>,
 ) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
     let structurally_lowered = structurally_lower_dae_for_simulation(dae_model, opts)?;
-    rumoca_phase_solve::lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides(
-        structurally_lowered.dae,
-        structurally_lowered.visible_expressions,
-        &structurally_lowered.metadata_dae,
-        param_overrides,
-    )
+    lower_structured_dae_for_simulation(structurally_lowered, opts, param_overrides)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -77,7 +72,6 @@ pub(crate) struct SolveLoweringTimings {
 }
 
 impl SolveLoweringTimings {
-    #[cfg(feature = "solver-diffsol")]
     pub(crate) fn total_seconds(self) -> f64 {
         self.structural_dae_seconds + self.solve_ir_seconds
     }
@@ -98,12 +92,11 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
     begin_stage("ir_solve");
     log_solve_lowering_start("solve_ir.lower_dae_to_solve_model");
     let solve_ir_start = stage_timer_start();
-    let solve_model =
-        rumoca_phase_solve::lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata(
-            structurally_lowered.dae,
-            structurally_lowered.visible_expressions,
-            &structurally_lowered.metadata_dae,
-        )?;
+    let solve_model = lower_structured_dae_for_simulation(
+        structurally_lowered,
+        opts,
+        &std::collections::HashMap::new(),
+    )?;
     timings.solve_ir_seconds = stage_timer_elapsed_seconds(solve_ir_start);
     log_solve_lowering_done("solve_ir.lower_dae_to_solve_model", solve_ir_start);
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
@@ -159,6 +152,31 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
         }
     }
     Ok((solve_model, timings))
+}
+
+fn lower_structured_dae_for_simulation(
+    structurally_lowered: super::structural_lowering::StructurallyLoweredDae,
+    opts: &SimOptions,
+    param_overrides: &std::collections::HashMap<String, f64>,
+) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
+    match opts.solver_mode {
+        SimSolverMode::RkLike => {
+            rumoca_phase_solve::lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides(
+                structurally_lowered.dae,
+                structurally_lowered.visible_expressions,
+                &structurally_lowered.metadata_dae,
+                param_overrides,
+            )
+        }
+        SimSolverMode::Auto | SimSolverMode::Bdf => {
+            rumoca_phase_solve::lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides(
+                structurally_lowered.dae,
+                structurally_lowered.visible_expressions,
+                &structurally_lowered.metadata_dae,
+                param_overrides,
+            )
+        }
+    }
 }
 
 pub fn structurally_lowered_dae_for_simulation_artifact(

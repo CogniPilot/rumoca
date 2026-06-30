@@ -1,3 +1,4 @@
+mod direct_matmul;
 mod equation_collection;
 #[path = "derivative_rhs/function_projection.rs"]
 mod function_projection;
@@ -60,6 +61,12 @@ pub(crate) struct DerivativeRhsAnalysis {
 impl DerivativeRhsAnalysis {
     pub(crate) fn equation_flags(&self) -> &[bool] {
         &self.equation_flags
+    }
+
+    pub(crate) fn direct_dae_equation_index_for_state(&self, state_name: &str) -> Option<usize> {
+        self.direct_equations
+            .get(state_name)
+            .and_then(|equation| self.equations[*equation].dae_equation_index)
     }
 
     /// Drop direct-assignment definitions for algebraics that are retained solver
@@ -367,7 +374,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
 
         if let Some(group_len) = direct_vector_group_len(analysis, &processed, i) {
             match lower_direct_row_group(analysis, i, group_len, &lowering_ctx) {
-                Ok(row) => {
+                Ok(DirectRowGroupLowering::Scalar(row)) => {
                     flush_pending_derivative_programs(
                         &mut block.nodes,
                         &mut pending_derivative_programs,
@@ -388,6 +395,23 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                         span,
                     )?;
                     block.nodes.push(ComputeNode::ScalarPrograms(scalar_block));
+                    processed[i..i + group_len].fill(true);
+                    i += group_len;
+                    continue;
+                }
+                Ok(DirectRowGroupLowering::Tensor(node)) => {
+                    flush_pending_derivative_programs(
+                        &mut block.nodes,
+                        &mut pending_derivative_programs,
+                        dae_model,
+                    )?;
+                    reserve_derivative_capacity(
+                        &mut block.nodes,
+                        1,
+                        "derivative direct vector tensor node count",
+                        derivative_state_or_context_span(dae_model, state)?,
+                    )?;
+                    block.nodes.push(node);
                     processed[i..i + group_len].fill(true);
                     i += group_len;
                     continue;
@@ -1287,10 +1311,32 @@ fn direct_vector_group_len(
     Some(base_size)
 }
 
+enum DirectRowGroupLowering {
+    Scalar(Vec<LinearOp>),
+    Tensor(ComputeNode),
+}
+
 /// Lower a group of consecutive vector-state components that share one direct
-/// RHS into a single multi-output program: compute the RHS vector once, then
-/// emit `value[component] / coeff` + StoreOutput for each component in order.
+/// RHS. Direct tensor products stay as tensor nodes when the group can use the
+/// product output stream directly; everything else falls back to one
+/// multi-output scalar program.
 fn lower_direct_row_group(
+    analysis: &DerivativeRhsAnalysis,
+    start: usize,
+    group_len: usize,
+    ctx: &DerivativeRhsLoweringContext<'_>,
+) -> Result<DirectRowGroupLowering, LowerError> {
+    if let Some(node) =
+        direct_matmul::lower_direct_row_group_matmul(analysis, start, group_len, ctx)?
+    {
+        return Ok(DirectRowGroupLowering::Tensor(node));
+    }
+
+    lower_direct_row_group_scalar(analysis, start, group_len, ctx)
+        .map(DirectRowGroupLowering::Scalar)
+}
+
+fn lower_direct_row_group_scalar(
     analysis: &DerivativeRhsAnalysis,
     start: usize,
     group_len: usize,

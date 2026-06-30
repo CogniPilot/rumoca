@@ -343,9 +343,7 @@ fn algebraic_refresh_rows_from_row_targets(
         let Some(position) = output_row_positions.get(&row_idx).copied() else {
             continue;
         };
-        if position.output_offset != 0
-            || !block.can_evaluate_target_assignment(position.program_index, target_index)
-        {
+        if !block.can_evaluate_target_assignment(position.program_index, target_index) {
             continue;
         }
         reserve_refresh_index_set_capacity(&mut claimed_targets, 1, "claimed row targets", span)?;

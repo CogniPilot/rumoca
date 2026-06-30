@@ -4575,6 +4575,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-opt"
+version = "0.9.9"
+dependencies = [
+ "indexmap",
+ "rumoca",
+ "rumoca-eval-solve",
+ "rumoca-ir-dae",
+ "rumoca-ir-solve",
+ "rumoca-sim",
+ "rumoca-solver",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "rumoca-phase-codegen"
 version = "0.9.9"
 dependencies = [

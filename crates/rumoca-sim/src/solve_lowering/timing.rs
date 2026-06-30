@@ -31,4 +31,11 @@ pub(super) fn stage_timer_elapsed_seconds(_start: StageTimer) -> f64 {
 
 pub(super) fn log_solve_lowering_start(_label: &str) {}
 
-pub(super) fn log_solve_lowering_done(_label: &str, _start: StageTimer) {}
+pub(super) fn log_solve_lowering_done(label: &str, start: StageTimer) {
+    tracing::debug!(
+        target: "rumoca_sim::solve_lowering",
+        phase = label,
+        elapsed_seconds = stage_timer_elapsed_seconds(start),
+        "solve lowering stage"
+    );
+}

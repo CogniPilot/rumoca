@@ -1,0 +1,36 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "../models/NeuralODEBackprop.mo"
+name = "NeuralODEBackprop"
+
+[viewer]
+mode = "results_panel"
+
+[sim]
+solver = "rk-like"
+dt = 0.05
+t_end = 8.0
+
+[[plot.views]]
+id = "training_loss"
+title = "Native Backprop Training Loss"
+type = "timeseries"
+x = "time"
+y = ["loss", "rmsError"]
+
+[[plot.views]]
+id = "dx1_fit"
+title = "First Sample dx[1] Fit"
+type = "timeseries"
+x = "time"
+y = ["learnedDX[1]", "targetFirst[1]"]
+
+[[plot.views]]
+id = "dx2_fit"
+title = "First Sample dx[2] Fit"
+type = "timeseries"
+x = "time"
+y = ["learnedDX[2]", "targetFirst[2]"]

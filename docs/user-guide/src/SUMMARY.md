@@ -13,6 +13,7 @@
 - [Modeling with Equations](./language/overview.md)
 - [Events and Discrete Behavior](./language/events.md)
 - [Arrays and Discretized PDEs](./language/arrays-pde.md)
+- [Neural ODEs](./language/neural-odes.md)
 - [Using Modelica Libraries](./language/libraries.md)
 - [Language Support Status](./language/support-status.md)
 

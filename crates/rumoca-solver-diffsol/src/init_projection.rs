@@ -292,9 +292,10 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
     type Error = SimError;
 
     fn on_event_time(&mut self, event_t: f64, _event: RuntimeEventStop) -> Result<(), Self::Error> {
-        refresh_observation_discrete_rows(
+        refresh_observation_rows_and_relation_memory(
             self.model,
-            &self.equilibrium_model.runtime_state,
+            self.runtime,
+            self.equilibrium_model,
             self.y,
             self.params,
             event_t,
@@ -332,9 +333,10 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
             event_pre_y: self.event_pre_y,
             event_pre_p: self.event_pre_p,
         })?;
-        refresh_observation_discrete_rows(
+        refresh_observation_rows_and_relation_memory(
             self.model,
-            &self.equilibrium_model.runtime_state,
+            self.runtime,
+            self.equilibrium_model,
             self.y,
             self.params,
             right_t,
