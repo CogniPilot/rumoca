@@ -1,14 +1,9 @@
-// SPEC_0021 file-size exception: Solve runtime still coordinates row
-// evaluation, events, visible values, and history state. split plan: move event
-// dispatch and visibility/history helpers behind focused runtime modules.
-
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    EventActionOutcome, EventPreMode, EventPreSources, RuntimeEventStop, RuntimeSolveError,
-    SolveStopSchedule, discrete_row_pre_mode, event_eval_params_for_row_pre_mode,
-    push_visible_values, replace_last_visible_values, row_reads_solver_or_time,
-    timeline::sample_time_match_with_tol, update_relation_memory_slots,
+    EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
+    discrete_row_pre_mode, push_visible_values, replace_last_visible_values,
+    row_reads_solver_or_time, timeline::sample_time_match_with_tol, update_relation_memory_slots,
 };
 use std::{cell::RefCell, collections::HashMap};
 
@@ -26,102 +21,26 @@ use crate::{
     RowEvalContext, to_scalar_program_block,
 };
 
+mod event_update;
 mod initial_event;
+mod plans;
 mod sensitivity;
 mod support;
+use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput, EventEvalParamCache};
+pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 pub use initial_event::{
     InitialEventObservation, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
+};
+use plans::{
+    RootConditionPlan, RootConditionPlanEntry, VisibleValuePlan, VisibleValuePlanEntry,
+    copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_time,
+    direct_time_root_value, direct_visible_value, root_condition_plan, visible_value_plan,
 };
 use support::{
     NewtonProbe, apply_newton_steps, copy_runtime_values, copy_runtime_values_into,
     reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
     write_refresh_targets, zero_runtime_values,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EventUpdateRowFilter {
-    All,
-    FollowCurrentOnly,
-}
-
-impl EventUpdateRowFilter {
-    fn accepts(self, mode: EventPreMode) -> bool {
-        matches!(self, Self::All)
-            || matches!(
-                (self, mode),
-                (Self::FollowCurrentOnly, EventPreMode::FollowCurrent)
-            )
-    }
-}
-
-pub struct ProjectedEventUpdateInput<'a> {
-    pub y: &'a mut [f64],
-    pub p: &'a mut [f64],
-    pub t: f64,
-    pub tol: f64,
-    pub event_pre_y: &'a [f64],
-    pub event_pre_p: &'a [f64],
-    pub max_iters: usize,
-    pub row_filter: EventUpdateRowFilter,
-    pub root_relation_overrides: &'a [(usize, f64)],
-}
-
-struct DiscretePreSnapshot<'a> {
-    event_pre_y: &'a [f64],
-    event_pre_p: &'a [f64],
-    iter_pre_y: &'a [f64],
-    iter_pre_p: &'a [f64],
-    row_filter: EventUpdateRowFilter,
-    root_relation_overrides: &'a [(usize, f64)],
-    event_iteration: usize,
-}
-
-impl<'a> DiscretePreSnapshot<'a> {
-    fn event_pre_sources(&self) -> EventPreSources<'a> {
-        EventPreSources {
-            event_pre_y: self.event_pre_y,
-            event_pre_p: self.event_pre_p,
-            iter_pre_y: self.iter_pre_y,
-            iter_pre_p: self.iter_pre_p,
-            event_iteration: self.event_iteration,
-        }
-    }
-}
-
-struct DiscreteRowsSettleInput<'a> {
-    y: &'a mut [f64],
-    p: &'a mut [f64],
-    t: f64,
-    tol: f64,
-    max_iters: usize,
-}
-
-#[derive(Default)]
-struct EventEvalParamCache {
-    event_entry: Option<Vec<f64>>,
-    fixed: Option<Vec<f64>>,
-    follow_current: Option<Vec<f64>>,
-}
-
-impl EventEvalParamCache {
-    fn params<'a>(
-        &'a mut self,
-        model: &solve::SolveModel,
-        base_p: &[f64],
-        mode: EventPreMode,
-        sources: &EventPreSources<'_>,
-        tol: f64,
-    ) -> &'a [f64] {
-        let slot = match mode {
-            EventPreMode::EventEntry => &mut self.event_entry,
-            EventPreMode::Fixed => &mut self.fixed,
-            EventPreMode::FollowCurrent => &mut self.follow_current,
-        };
-        slot.get_or_insert_with(|| {
-            event_eval_params_for_row_pre_mode(model, base_p, mode, sources, tol)
-        })
-    }
-}
 
 struct RefreshSlotArgs<'a> {
     t: f64,
@@ -166,8 +85,13 @@ pub struct SolveRuntime {
     algebraic_refresh: RefreshPlan,
     derivative_refresh: RefreshPlan,
     root_refresh: RefreshPlan,
+    root_condition_rows: PreparedScalarProgramBlock,
+    root_condition_plan: Option<RootConditionPlan>,
     visible_name_index: HashMap<String, usize>,
     visible_value_rows: PreparedScalarProgramBlock,
+    visible_value_plan: Option<VisibleValuePlan>,
+    visible_scratch: RefCell<Vec<f64>>,
+    refresh_probe_scratch: RefCell<Vec<f64>>,
     runtime_state: solve_eval::SimulationRuntimeState,
     derivative_scratch: RefCell<StateDerivativeScratch>,
     root_scratch: RefCell<Vec<f64>>,
@@ -190,6 +114,8 @@ impl SolveRuntime {
         trace_refresh_plan(model, "algebraic", &algebraic_refresh);
         trace_refresh_plan(model, "derivative", &derivative_refresh);
         trace_refresh_plan(model, "root", &root_refresh);
+        let visible_value_plan = visible_value_plan(model);
+        let root_condition_plan = root_condition_plan(model);
         Ok(Self {
             model: model.clone(),
             state_count: model.state_scalar_count(),
@@ -217,6 +143,10 @@ impl SolveRuntime {
             algebraic_refresh,
             derivative_refresh,
             root_refresh,
+            root_condition_rows: PreparedScalarProgramBlock::new(
+                model.problem.events.root_conditions.clone(),
+            )?,
+            root_condition_plan,
             visible_name_index: model
                 .visible_names
                 .iter()
@@ -224,6 +154,9 @@ impl SolveRuntime {
                 .map(|(idx, name)| (name.clone(), idx))
                 .collect(),
             visible_value_rows: PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?,
+            visible_value_plan,
+            visible_scratch: RefCell::new(Vec::new()),
+            refresh_probe_scratch: RefCell::new(Vec::new()),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             derivative_scratch: RefCell::new(StateDerivativeScratch::default()),
             root_scratch: RefCell::new(Vec::new()),
@@ -719,9 +652,10 @@ impl SolveRuntime {
     ) -> Result<f64, RuntimeSolveError> {
         let index = row.target_index;
         let current = solver_y[index];
-        let mut probe_y = Vec::new();
+        let mut probe_y = self.refresh_probe_scratch.borrow_mut();
+        probe_y.clear();
         reserve_runtime_vec_capacity(&mut probe_y, solver_y.len(), "refresh residual probe")?;
-        probe_y.extend(solver_y);
+        probe_y.extend_from_slice(solver_y);
         probe_y[index] = current + 1.0;
         let probe_residual = self.refresh_row_residual(row, t, &probe_y, params)?;
         let slope = probe_residual - residual;
@@ -938,15 +872,183 @@ impl SolveRuntime {
                 max_iters,
             },
         )?;
-        solve_eval::eval_scalar_program_block_with_context(
-            roots,
-            &solver_y,
-            params,
-            t,
-            self.row_eval_context(),
-            out,
-        )?;
+        self.eval_root_conditions_from_refreshed_solver_y(t, &solver_y, params, out)?;
         Ok(())
+    }
+
+    pub fn eval_root_search_conditions_into(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &[f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let roots = &self.model.problem.events.root_conditions;
+        if roots.is_empty() {
+            if let Some(first) = out.first_mut() {
+                *first = 1.0;
+            }
+            return Ok(());
+        }
+        let Some(plan) = &self.root_condition_plan else {
+            return self.eval_root_conditions_into(t, state, params, tol, max_iters, out);
+        };
+        self.validate_root_plan_output_len(plan, out)?;
+        if plan.search_rows.is_empty() {
+            self.write_planned_root_search_defaults(plan, params, t, out)?;
+            return Ok(());
+        }
+        let mut solver_y = self.root_scratch.borrow_mut();
+        self.populate_solver_y_from_state(&mut solver_y, state)?;
+        self.refresh_slots_with_plan(
+            &self.root_refresh,
+            RefreshSlotArgs {
+                t,
+                solver_y: &mut solver_y,
+                params,
+                tol,
+                max_iters,
+            },
+        )?;
+        self.write_planned_root_search_conditions(plan, &solver_y, params, t, out)
+    }
+
+    pub fn next_planned_time_root(
+        &self,
+        params: &[f64],
+        current_t: f64,
+        target: f64,
+        tol: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(plan) = &self.root_condition_plan else {
+            return Ok(None);
+        };
+        let mut next = None;
+        for entry in &plan.entries {
+            let RootConditionPlanEntry::DirectTime(root) = entry else {
+                continue;
+            };
+            let event_time = direct_time_root_time(*root, params)?;
+            if !event_time.is_finite() {
+                continue;
+            }
+            if event_time > current_t + tol
+                && (event_time < target || sample_time_match_with_tol(event_time, target))
+            {
+                next = Some(next.map_or(event_time, |current: f64| current.min(event_time)));
+            }
+        }
+        Ok(next)
+    }
+
+    fn eval_root_conditions_from_refreshed_solver_y(
+        &self,
+        t: f64,
+        y: &[f64],
+        p: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if let Some(plan) = &self.root_condition_plan {
+            return self.write_planned_root_conditions(plan, y, p, t, out);
+        }
+        self.root_condition_rows
+            .eval_with_context(y, p, t, self.row_eval_context(), out)
+            .map_err(Into::into)
+    }
+
+    fn write_planned_root_conditions(
+        &self,
+        plan: &RootConditionPlan,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.validate_root_plan_output_len(plan, out)?;
+        for (slot, entry) in out.iter_mut().zip(plan.entries.iter().copied()) {
+            *slot = match entry {
+                RootConditionPlanEntry::ConstantNonZero(value) => value,
+                RootConditionPlanEntry::DirectTime(root) => {
+                    direct_time_root_value(root, params, t)?
+                }
+                RootConditionPlanEntry::StaticParameter => 0.0,
+                RootConditionPlanEntry::Dynamic => 0.0,
+            };
+        }
+        self.eval_planned_root_rows(&plan.evaluated_rows, y, params, t, out)
+    }
+
+    fn write_planned_root_search_conditions(
+        &self,
+        plan: &RootConditionPlan,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.write_planned_root_search_defaults(plan, params, t, out)?;
+        self.eval_planned_root_rows(&plan.search_rows, y, params, t, out)
+    }
+
+    fn write_planned_root_search_defaults(
+        &self,
+        plan: &RootConditionPlan,
+        params: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.validate_root_plan_output_len(plan, out)?;
+        for (slot, entry) in out.iter_mut().zip(plan.entries.iter().copied()) {
+            *slot = match entry {
+                RootConditionPlanEntry::ConstantNonZero(_)
+                | RootConditionPlanEntry::StaticParameter
+                | RootConditionPlanEntry::Dynamic => 1.0,
+                RootConditionPlanEntry::DirectTime(root) => {
+                    direct_time_root_search_default(root, params, t)?
+                }
+            };
+        }
+        Ok(())
+    }
+
+    fn eval_planned_root_rows(
+        &self,
+        row_indices: &[usize],
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if row_indices.is_empty() {
+            return Ok(());
+        }
+        self.root_condition_rows
+            .eval_single_output_rows_unchecked_with_context(
+                row_indices,
+                y,
+                params,
+                t,
+                self.row_eval_context(),
+                out,
+            )
+            .map_err(Into::into)
+    }
+
+    fn validate_root_plan_output_len(
+        &self,
+        plan: &RootConditionPlan,
+        out: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if out.len() >= plan.entries.len() {
+            return Ok(());
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "root condition plan output index {} out of bounds for {} values",
+            plan.entries.len().saturating_sub(1),
+            out.len()
+        )))
     }
 
     pub fn update_relation_memory_from_state(
@@ -1482,19 +1584,12 @@ impl SolveRuntime {
         y: &[f64],
         p: &[f64],
     ) -> Result<Vec<f64>, RuntimeSolveError> {
-        let roots = &self.model.problem.events.root_conditions;
-        if roots.is_empty() {
+        if self.model.problem.events.root_conditions.is_empty() {
             return Ok(Vec::new());
         }
-        let mut values = zero_runtime_values(roots.len(), "root condition output")?;
-        solve_eval::eval_scalar_program_block_with_context(
-            roots,
-            y,
-            p,
-            t,
-            self.row_eval_context(),
-            &mut values,
-        )?;
+        let mut values =
+            zero_runtime_values(self.root_condition_rows.len(), "root condition output")?;
+        self.eval_root_conditions_from_refreshed_solver_y(t, y, p, &mut values)?;
         Ok(values)
     }
 
@@ -1520,7 +1615,8 @@ impl SolveRuntime {
         params: &[f64],
         t: f64,
     ) -> Result<(), RuntimeSolveError> {
-        let values = self.visible_values(solver_y, params, t)?;
+        let mut values = self.visible_scratch.borrow_mut();
+        self.visible_values_into(solver_y, params, t, &mut values)?;
         push_visible_values(data, &values)
     }
 
@@ -1532,7 +1628,8 @@ impl SolveRuntime {
         params: &[f64],
         t: f64,
     ) -> Result<(), RuntimeSolveError> {
-        let values = self.visible_values(solver_y, params, t)?;
+        let mut values = self.visible_scratch.borrow_mut();
+        self.visible_values_into(solver_y, params, t, &mut values)?;
         if recorded_times
             .last()
             .is_some_and(|last| sample_time_match_with_tol(*last, t))
@@ -1554,18 +1651,65 @@ impl SolveRuntime {
         params: &[f64],
         t: f64,
     ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let mut values = Vec::new();
+        self.visible_values_into(y, params, t, &mut values)?;
+        Ok(values)
+    }
+
+    fn visible_values_into(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        values: &mut Vec<f64>,
+    ) -> Result<(), RuntimeSolveError> {
+        if let Some(plan) = &self.visible_value_plan {
+            resize_runtime_values(values, plan.entries.len(), 0.0, "visible values")?;
+            self.write_planned_visible_values(plan, y, params, t, values)?;
+            return Ok(());
+        }
         if self.visible_value_rows.len() == self.model.visible_names.len() {
-            let mut values = zero_runtime_values(self.visible_value_rows.len(), "visible values")?;
+            resize_runtime_values(values, self.visible_value_rows.len(), 0.0, "visible values")?;
             self.visible_value_rows.eval_with_context(
                 y,
                 params,
                 t,
                 self.row_eval_context(),
-                &mut values,
+                values,
             )?;
-            return Ok(values);
+            return Ok(());
         }
-        visible_values_with_context(&self.model, y, params, t, self.row_eval_context())
+        let computed =
+            visible_values_with_context(&self.model, y, params, t, self.row_eval_context())?;
+        copy_runtime_values_into(values, &computed, "visible values")
+    }
+
+    fn write_planned_visible_values(
+        &self,
+        plan: &VisibleValuePlan,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        values: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        for (slot, entry) in values.iter_mut().zip(plan.entries.iter().copied()) {
+            if let VisibleValuePlanEntry::Direct(source) = entry {
+                *slot = direct_visible_value(source, y, params, t)?;
+            }
+        }
+        if !plan.expression_rows.is_empty() {
+            self.visible_value_rows
+                .eval_single_output_rows_unchecked_with_context(
+                    &plan.expression_rows,
+                    y,
+                    params,
+                    t,
+                    self.row_eval_context(),
+                    values,
+                )?;
+            copy_grouped_expression_values(plan, values)?;
+        }
+        Ok(())
     }
 
     pub fn visible_values_for_names(

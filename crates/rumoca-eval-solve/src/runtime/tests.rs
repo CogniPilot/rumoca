@@ -385,6 +385,164 @@ fn visible_values_for_names_preserves_requested_order() {
 }
 
 #[test]
+fn visible_values_fast_path_reads_direct_sources() {
+    let model = solve::SolveModel {
+        visible_names: vec!["y2".to_string(), "p1".to_string(), "time".to_string()],
+        visible_value_rows: spanned_block(
+            vec![
+                direct_y_visible_value_row(1),
+                direct_param_visible_value_row(0),
+                direct_time_visible_value_row(),
+            ],
+            "visible_fast_path.mo",
+        ),
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+
+    let values = runtime
+        .visible_values(&[10.0, 20.0], &[3.5], 4.25)
+        .expect("direct visible values should evaluate");
+
+    assert_eq!(values, vec![20.0, 3.5, 4.25]);
+}
+
+#[test]
+fn visible_values_mixed_plan_keeps_expression_rows() {
+    let model = solve::SolveModel {
+        visible_names: vec!["y2".to_string(), "computed".to_string()],
+        visible_value_rows: spanned_block(
+            vec![direct_y_visible_value_row(1), positive_sum_residual_row()],
+            "visible_mixed_plan.mo",
+        ),
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+
+    let values = runtime
+        .visible_values(&[10.0, 20.0], &[], 0.0)
+        .expect("mixed visible values should evaluate");
+
+    assert_eq!(values, vec![20.0, 30.0]);
+}
+
+#[test]
+fn visible_value_plan_deduplicates_equal_expression_rows() {
+    let model = solve::SolveModel {
+        visible_names: vec![
+            "y2".to_string(),
+            "computed_a".to_string(),
+            "computed_b".to_string(),
+        ],
+        visible_value_rows: spanned_block(
+            vec![
+                direct_y_visible_value_row(1),
+                positive_sum_residual_row(),
+                positive_sum_residual_row(),
+            ],
+            "visible_duplicate_expressions.mo",
+        ),
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let plan = runtime
+        .visible_value_plan
+        .as_ref()
+        .expect("visible value plan should build");
+
+    assert_eq!(plan.expression_rows, vec![1]);
+    assert_eq!(plan.expression_groups.len(), 1);
+    assert_eq!(plan.expression_groups[0].row_index, 1);
+    assert_eq!(plan.expression_groups[0].output_indices, vec![1, 2]);
+
+    let values = runtime
+        .visible_values(&[10.0, 20.0], &[], 0.0)
+        .expect("deduplicated visible values should evaluate");
+
+    assert_eq!(values, vec![20.0, 30.0, 30.0]);
+}
+
+#[test]
+fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            events: solve::SolveEventPartition {
+                root_conditions: spanned_block(
+                    vec![
+                        constant_expression_root_row(),
+                        param_minus_time_root_row(0),
+                        direct_param_visible_value_row(1),
+                        time_plus_one_root_row(),
+                    ],
+                    "root_plan.mo",
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![2.5, 9.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let plan = runtime
+        .root_condition_plan
+        .as_ref()
+        .expect("root condition plan should build");
+
+    assert_eq!(plan.evaluated_rows, vec![2, 3]);
+    assert_eq!(plan.search_rows, vec![3]);
+
+    let full = runtime
+        .eval_root_conditions_from_solver_y(1.0, &[], &model.parameters)
+        .expect("full root values should evaluate");
+    assert_eq!(full, vec![5.0, 1.5, 9.0, 2.0]);
+
+    let mut search = vec![0.0; 4];
+    runtime
+        .eval_root_search_conditions_into(1.0, &[], &model.parameters, 1.0e-12, 1, &mut search)
+        .expect("search root values should evaluate");
+    assert_eq!(search, vec![1.0, 1.0, 1.0, 2.0]);
+}
+
+#[test]
+fn root_condition_plan_reports_next_direct_time_root() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            events: solve::SolveEventPartition {
+                root_conditions: spanned_block(
+                    vec![param_minus_time_root_row(0)],
+                    "direct_time_root.mo",
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![2.5],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+
+    assert_eq!(
+        runtime
+            .next_planned_time_root(&model.parameters, 1.0, 3.0, 1.0e-12)
+            .expect("direct time root should be found"),
+        Some(2.5)
+    );
+    assert_eq!(
+        runtime
+            .next_planned_time_root(&model.parameters, 2.5, 3.0, 1.0e-12)
+            .expect("current root should not be rescheduled"),
+        None
+    );
+    assert_eq!(
+        runtime
+            .next_planned_time_root(&model.parameters, 1.0, 2.0, 1.0e-12)
+            .expect("future root beyond target should be ignored"),
+        None
+    );
+}
+
+#[test]
 fn visible_value_runtime_errors_keep_row_span() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("visible.mo"),
@@ -477,6 +635,69 @@ fn const_visible_value_row(value: f64) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::Const { dst: 0, value },
         solve::LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
+fn direct_y_visible_value_row(index: usize) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY { dst: 0, index },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
+fn direct_param_visible_value_row(index: usize) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadP { dst: 0, index },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
+fn direct_time_visible_value_row() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadTime { dst: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
+fn param_minus_time_root_row(index: usize) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadP { dst: 0, index },
+        solve::LinearOp::LoadTime { dst: 1 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ]
+}
+
+fn constant_expression_root_row() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::Const { dst: 0, value: 2.0 },
+        solve::LinearOp::Const { dst: 1, value: 3.0 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ]
+}
+
+fn time_plus_one_root_row() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadTime { dst: 0 },
+        solve::LinearOp::Const { dst: 1, value: 1.0 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
     ]
 }
 

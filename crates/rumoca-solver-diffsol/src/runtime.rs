@@ -326,7 +326,7 @@ fn record_no_state_event_step(
             step.tol,
         )?;
         let mut samples = SampleRecorder {
-            runtime: None,
+            runtime: Some(&runtime.runtime),
             model,
             recorded_times: &mut runtime.recorded_times,
             data: &mut runtime.data,
@@ -400,7 +400,7 @@ fn settle_and_record_no_state_output(
         opts.atol.max(1.0e-10),
     )?;
     let mut samples = SampleRecorder {
-        runtime: None,
+        runtime: Some(&runtime.runtime),
         model,
         recorded_times: &mut runtime.recorded_times,
         data: &mut runtime.data,
@@ -461,7 +461,7 @@ fn initialize_no_state_runtime(
     let mut recorded_times = Vec::with_capacity(output_count);
     for observation in &outcome.observations {
         let mut samples = SampleRecorder {
-            runtime: None,
+            runtime: Some(&runtime),
             model,
             recorded_times: &mut recorded_times,
             data: &mut data,
@@ -496,6 +496,9 @@ fn next_no_state_root_event_time(
     target: f64,
     tol: f64,
 ) -> Result<Option<f64>, SimError> {
+    if let Some(root_time) = runtime.next_planned_time_root(p, current_t, target, tol)? {
+        return Ok(Some(root_time));
+    }
     let Some(root_time) = first_root_crossing_time(runtime, model, y, p, current_t, target, tol)?
     else {
         return Ok(None);
@@ -590,7 +593,7 @@ fn eval_refreshed_roots(
     out: &mut [f64],
 ) -> Result<(), SimError> {
     runtime
-        .eval_root_conditions_into(t, y, p, tol, EVENT_UPDATE_MAX_ITERS, out)
+        .eval_root_search_conditions_into(t, y, p, tol, EVENT_UPDATE_MAX_ITERS, out)
         .map_err(Into::into)
 }
 

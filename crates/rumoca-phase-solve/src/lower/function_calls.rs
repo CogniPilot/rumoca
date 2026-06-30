@@ -5,6 +5,7 @@
 use super::function_projection::FunctionOutputProjection;
 use super::*;
 use rumoca_ir_solve::RandomGenerator;
+mod complex_inputs;
 mod helpers;
 mod random;
 mod runtime_intrinsics;
@@ -1156,6 +1157,18 @@ impl<'a> LowerBuilder<'a> {
         if self.bind_record_function_call_input(input, expr, expr_scope, &mut state, call_depth)? {
             return Ok(());
         }
+        if input.type_class == Some(rumoca_core::ClassType::Record)
+            && !is_complex_param(input)
+            && self.bind_record_input_components(
+                state.scope,
+                &input.name,
+                expr,
+                expr_scope,
+                input.span,
+            )?
+        {
+            return Ok(());
+        }
         if is_complex_param(input) {
             self.bind_complex_input(
                 state.scope,
@@ -1167,75 +1180,123 @@ impl<'a> LowerBuilder<'a> {
             )?;
             return Ok(());
         }
-        if !input.dims.is_empty() {
-            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            let binding_dims =
-                self.resolve_function_input_binding_dims(function_name, input, expr, expr_scope)?;
-            let expected = dims_scalar_count(
-                &binding_dims,
+        if self.bind_declared_array_function_input(
+            &mut state,
+            function_name,
+            input,
+            expr,
+            expr_scope,
+            call_depth,
+        )? {
+            return Ok(());
+        }
+        if self
+            .bind_inferred_array_function_input(&mut state, input, expr, expr_scope, call_depth)?
+        {
+            return Ok(());
+        }
+        self.bind_scalar_function_input_value(state, input, expr, expr_scope, call_depth)
+    }
+
+    fn bind_declared_array_function_input(
+        &mut self,
+        state: &mut FunctionInputBindState<'_>,
+        function_name: &str,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
+        if input.dims.is_empty() {
+            return Ok(false);
+        }
+        let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+        let binding_dims =
+            self.resolve_function_input_binding_dims(function_name, input, expr, expr_scope)?;
+        let span = expr.span().unwrap_or(input.span);
+        let expected = dims_scalar_count(
+            &binding_dims,
+            format!(
+                "function `{function_name}` input `{}` declared shape",
+                input.name
+            ),
+            span,
+        )?;
+        if values.len() != expected {
+            let shape = format_i64_dims(&binding_dims);
+            return Err(LowerError::contract_violation(
                 format!(
-                    "function `{function_name}` input `{}` declared shape",
-                    input.name
+                    "function `{function_name}` input `{}` expected {expected} scalar value(s) for shape {shape}, got {}",
+                    input.name,
+                    values.len(),
                 ),
-                expr.span().unwrap_or(input.span),
-            )?;
-            if values.len() != expected {
-                let shape = format_i64_dims(&binding_dims);
-                return Err(LowerError::contract_violation(
-                    format!(
-                        "function `{function_name}` input `{}` expected {expected} scalar value(s) for shape {shape}, got {}",
-                        input.name,
-                        values.len(),
-                    ),
-                    expr.span().unwrap_or(input.span),
-                ));
-            }
-            self.bind_assignment_values_with_dims(
-                state.scope,
-                &input.name,
-                &values,
-                &binding_dims,
-                expr.span().unwrap_or(input.span),
-            )?;
-            self.bind_local_array_shape(
-                &input.name,
-                &binding_dims,
-                values.len(),
-                expr.span().unwrap_or(input.span),
-            )?;
-            return Ok(());
+                span,
+            ));
         }
+        self.bind_assignment_values_with_dims(
+            &mut *state.scope,
+            &input.name,
+            &values,
+            &binding_dims,
+            span,
+        )?;
+        self.bind_local_array_shape(&input.name, &binding_dims, values.len(), span)?;
+        Ok(true)
+    }
+
+    fn bind_inferred_array_function_input(
+        &mut self,
+        state: &mut FunctionInputBindState<'_>,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
         let inferred_dims = self.infer_expr_dims(expr, expr_scope)?;
-        if !inferred_dims.is_empty() {
-            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            if bind_singleton_array_actual_to_scalar_formal(
-                state.scope,
-                &input.name,
-                &inferred_dims,
-                &values,
-            ) {
-                return Ok(());
-            }
-            let dims = checked_usize_dims_to_i64(
-                &inferred_dims,
-                "function input actual shape",
-                expr.span().unwrap_or(input.span),
-            )?;
-            let span = expr.span().unwrap_or(input.span);
-            self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &dims, span)?;
-            self.bind_local_array_shape(&input.name, &dims, values.len(), span)?;
-            return Ok(());
+        if inferred_dims.is_empty() {
+            return Ok(false);
         }
+        let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+        if bind_singleton_array_actual_to_scalar_formal(
+            &mut *state.scope,
+            &input.name,
+            &inferred_dims,
+            &values,
+        ) {
+            return Ok(true);
+        }
+        let span = expr.span().unwrap_or(input.span);
+        let dims = checked_usize_dims_to_i64(&inferred_dims, "function input actual shape", span)?;
+        self.bind_assignment_values_with_dims(
+            &mut *state.scope,
+            &input.name,
+            &values,
+            &dims,
+            span,
+        )?;
+        self.bind_local_array_shape(&input.name, &dims, values.len(), span)?;
+        Ok(true)
+    }
+
+    fn bind_scalar_function_input_value(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(), LowerError> {
         let reg = match self.lower_expr(expr, expr_scope, call_depth) {
             Ok(reg) => reg,
-            Err(LowerError::MissingBinding { .. })
-                if self.bind_record_input_components(
-                    state.scope,
-                    &input.name,
-                    expr,
-                    expr_scope,
-                    input.span,
-                )? =>
+            Err(err)
+                if err.is_missing_binding()
+                    && self.bind_record_input_components(
+                        state.scope,
+                        &input.name,
+                        expr,
+                        expr_scope,
+                        input.span,
+                    )? =>
             {
                 return Ok(());
             }
@@ -1331,6 +1392,12 @@ impl<'a> LowerBuilder<'a> {
             slots.push((key.clone(), suffix.to_string(), *slot));
         }
         for (key, suffix, slot) in slots {
+            if self
+                .bind_record_input_layout_array_component(scope, input_name, &key, &suffix, span)?
+            {
+                bound_any = true;
+                continue;
+            }
             let local_key = format!("{input_name}.{suffix}");
             let local_path = generated_scope_key(&local_key);
             if scope.contains_key(&local_path) {
@@ -1346,6 +1413,45 @@ impl<'a> LowerBuilder<'a> {
         Ok(bound_any)
     }
 
+    fn bind_record_input_layout_array_component(
+        &mut self,
+        scope: &mut Scope,
+        input_name: &str,
+        source_key: &str,
+        suffix: &str,
+        span: rumoca_core::Span,
+    ) -> Result<bool, LowerError> {
+        let entries = indexed_entries_for_key(&self.indexed_bindings, source_key);
+        if entries.is_empty() {
+            return Ok(false);
+        }
+        let local_base = format!("{input_name}.{suffix}");
+        let local_path = generated_scope_key(&local_base);
+        for entry in sorted_flat_entries(&entries) {
+            let reg = self.emit_slot_load(entry.slot, span)?;
+            scope.insert_indexed(&local_path, &entry.indices, reg, span)?;
+            upsert_local_indexed_binding(
+                self.local_indexed_bindings
+                    .entry(local_base.clone())
+                    .or_default(),
+                &entry.indices,
+                reg,
+                span,
+            )?;
+            let indexed_key = format_subscript_binding_key(&local_base, &entry.indices);
+            scope.insert(generated_scope_key(indexed_key), reg);
+        }
+        if let Some(first) = self
+            .local_indexed_bindings
+            .get(local_base.as_str())
+            .and_then(|bindings| bindings.first())
+        {
+            scope.insert(local_path, first.reg);
+        }
+        self.copy_record_input_component_dims(source_key, &local_base, span)?;
+        Ok(true)
+    }
+
     fn bind_record_input_component(
         &mut self,
         scope: &mut Scope,
@@ -1357,10 +1463,47 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<(), LowerError> {
         let local_key = format!("{input_name}.{suffix}");
         scope.insert(generated_scope_key(&local_key), reg);
+        self.bind_record_input_indexed_component(scope, &local_key, reg, span)?;
         if let Some(source_key) = generated_scope_key_name(key) {
             self.copy_record_input_component_dims(source_key, &local_key, span)?;
+            self.copy_record_input_indexed_component_dims(source_key, &local_key, span)?;
         }
         Ok(())
+    }
+
+    fn bind_record_input_indexed_component(
+        &mut self,
+        scope: &mut Scope,
+        local_key: &str,
+        reg: Reg,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
+        let Some((base, indices)) = parse_indexed_binding_key(local_key) else {
+            return Ok(());
+        };
+        let base_path = generated_scope_key(&base);
+        scope.insert_indexed(&base_path, &indices, reg, span)?;
+        upsert_local_indexed_binding(
+            self.local_indexed_bindings.entry(base).or_default(),
+            &indices,
+            reg,
+            span,
+        )
+    }
+
+    fn copy_record_input_indexed_component_dims(
+        &mut self,
+        source_key: &str,
+        local_key: &str,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
+        let (Some((source_base, _)), Some((local_base, _))) = (
+            parse_indexed_binding_key(source_key),
+            parse_indexed_binding_key(local_key),
+        ) else {
+            return Ok(());
+        };
+        self.copy_record_input_component_dims(&source_base, &local_base, span)
     }
 
     fn bind_record_function_call_input(
@@ -1561,6 +1704,7 @@ impl<'a> LowerBuilder<'a> {
             local_indexed_bindings: self.local_indexed_bindings.clone(),
             local_binding_dims: self.local_binding_dims.clone(),
             known_empty_local_arrays: self.known_empty_local_arrays.clone(),
+            guarded_uninitialized_locals: self.guarded_uninitialized_locals.clone(),
             local_const_bindings: self.local_const_bindings.clone(),
             function_closures: self.function_closures.clone(),
         };
@@ -1569,6 +1713,7 @@ impl<'a> LowerBuilder<'a> {
         self.local_indexed_bindings = frame.local_indexed_bindings;
         self.local_binding_dims = frame.local_binding_dims;
         self.known_empty_local_arrays = frame.known_empty_local_arrays;
+        self.guarded_uninitialized_locals = frame.guarded_uninitialized_locals;
         self.local_const_bindings = frame.local_const_bindings;
         self.function_closures = frame.function_closures;
         result
@@ -1580,38 +1725,57 @@ impl<'a> LowerBuilder<'a> {
         scope: &mut Scope,
         call_depth: usize,
     ) -> Result<(), LowerError> {
-        for param in function.outputs.iter().chain(function.locals.iter()) {
-            if param.default.is_some() {
-                let values = self.initial_function_param_values(param, scope, call_depth)?;
-                self.bind_assignment_values_with_dims(
-                    scope,
-                    &param.name,
-                    &values,
-                    &param.dims,
-                    param.span,
-                )?;
-                self.bind_local_array_shape(&param.name, &param.dims, values.len(), param.span)?;
-                self.bind_initial_function_param_const(param);
-                continue;
-            }
-            // A function output/local that shadows a caller variable of the
-            // same name (e.g. a library `product` whose output is `X` called
-            // from a model whose state is also `X`) must start fresh. Drop any
-            // inherited caller bindings for this name first; otherwise stale
-            // caller elements (e.g. `X[11..13]` of a larger caller array) leak
-            // into reads of this function's array output.
-            if !param.dims.is_empty() {
-                super::function_projection::clear_indexed_scope_bindings(
-                    scope,
-                    &param.name,
-                    param.span,
-                )?;
-                scope.shift_remove(&generated_scope_key(&param.name));
-                self.local_indexed_bindings
-                    .shift_remove(param.name.as_str());
-            }
-            self.initialize_declared_function_param(param)?;
+        for param in &function.outputs {
+            self.initialize_function_scope_param(param, scope, call_depth, false)?;
         }
+        for param in &function.locals {
+            self.initialize_function_scope_param(param, scope, call_depth, true)?;
+        }
+        Ok(())
+    }
+
+    fn initialize_function_scope_param(
+        &mut self,
+        param: &rumoca_core::FunctionParam,
+        scope: &mut Scope,
+        call_depth: usize,
+        guarded_local: bool,
+    ) -> Result<(), LowerError> {
+        self.guarded_uninitialized_locals
+            .shift_remove(param.name.as_str());
+        if param.default.is_some() {
+            let values = self.initial_function_param_values(param, scope, call_depth)?;
+            self.bind_assignment_values_with_dims(
+                scope,
+                &param.name,
+                &values,
+                &param.dims,
+                param.span,
+            )?;
+            self.bind_local_array_shape(&param.name, &param.dims, values.len(), param.span)?;
+            self.bind_initial_function_param_const(param);
+            return Ok(());
+        }
+        if guarded_local {
+            self.guarded_uninitialized_locals.insert(param.name.clone());
+        }
+        // A function output/local that shadows a caller variable of the
+        // same name (e.g. a library `product` whose output is `X` called
+        // from a model whose state is also `X`) must start fresh. Drop any
+        // inherited caller bindings for this name first; otherwise stale
+        // caller elements (e.g. `X[11..13]` of a larger caller array) leak
+        // into reads of this function's array output.
+        if !param.dims.is_empty() {
+            super::function_projection::clear_indexed_scope_bindings(
+                scope,
+                &param.name,
+                param.span,
+            )?;
+            scope.shift_remove(&generated_scope_key(&param.name));
+            self.local_indexed_bindings
+                .shift_remove(param.name.as_str());
+        }
+        self.initialize_declared_function_param(param)?;
         Ok(())
     }
 
@@ -1781,199 +1945,6 @@ impl<'a> LowerBuilder<'a> {
                 rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Index { .. } => None,
             })
             .collect()
-    }
-
-    fn bind_complex_input(
-        &mut self,
-        scope: &mut Scope,
-        function_name: &str,
-        input: &rumoca_core::FunctionParam,
-        expr: &rumoca_core::Expression,
-        expr_scope: &Scope,
-        call_depth: usize,
-    ) -> Result<(), LowerError> {
-        if input.dims.is_empty() {
-            let owner_span = expr.span().unwrap_or(input.span);
-            let (re, im) =
-                self.lower_complex_operand_parts(expr, owner_span, expr_scope, call_depth)?;
-            self.bind_complex_scalar_components(scope, &input.name, re, im);
-            return Ok(());
-        }
-
-        let binding_dims =
-            self.resolve_function_input_binding_dims(function_name, input, expr, expr_scope)?;
-        let span = expr.span().unwrap_or(input.span);
-        let expected = dims_scalar_count(
-            &binding_dims,
-            format!(
-                "function `{function_name}` input `{}` declared shape",
-                input.name
-            ),
-            span,
-        )?;
-        if let rumoca_core::Expression::FieldAccess { field, .. } = expr
-            && matches!(field.as_str(), "re" | "im")
-        {
-            let component_values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-            validate_complex_component_width(
-                function_name,
-                input,
-                &binding_dims,
-                expected,
-                component_values.len(),
-                span,
-            )?;
-            let zeros = self.complex_zero_values(component_values.len(), span)?;
-            if field == "re" {
-                self.bind_complex_component_values(
-                    scope,
-                    &input.name,
-                    &component_values,
-                    &zeros,
-                    expected,
-                    span,
-                )?;
-            } else {
-                self.bind_complex_component_values(
-                    scope,
-                    &input.name,
-                    &zeros,
-                    &component_values,
-                    expected,
-                    span,
-                )?;
-            }
-            self.bind_local_array_shape(&input.name, &binding_dims, expected, span)?;
-            return Ok(());
-        }
-
-        let re_expr = rumoca_core::Expression::FieldAccess {
-            base: Box::new(expr.clone()),
-            field: "re".to_string(),
-            span,
-        };
-        let im_expr = rumoca_core::Expression::FieldAccess {
-            base: Box::new(expr.clone()),
-            field: "im".to_string(),
-            span,
-        };
-
-        let re_values = self.lower_array_like_values(&re_expr, expr_scope, call_depth)?;
-        let im_values = self.lower_array_like_values(&im_expr, expr_scope, call_depth)?;
-        validate_complex_component_width(
-            function_name,
-            input,
-            &binding_dims,
-            expected,
-            re_values.len(),
-            span,
-        )?;
-        validate_complex_component_width(
-            function_name,
-            input,
-            &binding_dims,
-            expected,
-            im_values.len(),
-            span,
-        )?;
-        self.bind_complex_component_values(
-            scope,
-            &input.name,
-            &re_values,
-            &im_values,
-            expected,
-            span,
-        )?;
-        self.bind_local_array_shape(&input.name, &binding_dims, expected, span)?;
-        Ok(())
-    }
-
-    fn bind_complex_scalar_components(
-        &mut self,
-        scope: &mut Scope,
-        base_name: &str,
-        re: Reg,
-        im: Reg,
-    ) {
-        // MLS §3.7.2 and §12.6: Complex is a record with Real fields `re`
-        // and `im`; scalar function inputs must bind those field components
-        // whether the caller passed a record expression or an already-projected
-        // component reference.
-        scope.insert(generated_scope_key(base_name), re);
-        scope.insert(generated_scope_key(format!("{base_name}.re")), re);
-        scope.insert(generated_scope_key(format!("{base_name}.im")), im);
-    }
-
-    fn bind_complex_component_values(
-        &mut self,
-        scope: &mut Scope,
-        base_name: &str,
-        re_values: &[Reg],
-        im_values: &[Reg],
-        expected: usize,
-        span: rumoca_core::Span,
-    ) -> Result<(), LowerError> {
-        let width = re_values.len().max(im_values.len());
-        if width != expected {
-            return Err(LowerError::contract_violation(
-                format!(
-                    "Complex input `{base_name}` expected {expected} scalar value(s), got {width}"
-                ),
-                span,
-            ));
-        }
-        let zero_values = self.complex_zero_values(width, span)?;
-        if let Some(first) = re_values.first().copied() {
-            scope.insert(generated_scope_key(base_name), first);
-        }
-        if let Some(re) = re_values.first().copied() {
-            scope.insert(generated_scope_key(format!("{base_name}.re")), re);
-        }
-        if let Some(im) = im_values.first().copied() {
-            scope.insert(generated_scope_key(format!("{base_name}.im")), im);
-        }
-        self.bind_assignment_values_at(scope, &format!("{base_name}[:].re"), re_values, span)?;
-        self.bind_assignment_values_at(scope, &format!("{base_name}[:].im"), im_values, span)?;
-        self.bind_assignment_values_at(scope, &format!("{base_name}[:].re.re"), re_values, span)?;
-        self.bind_assignment_values_at(
-            scope,
-            &format!("{base_name}[:].re.im"),
-            &zero_values,
-            span,
-        )?;
-        self.bind_assignment_values_at(
-            scope,
-            &format!("{base_name}[:].im.re"),
-            &zero_values,
-            span,
-        )?;
-        self.bind_assignment_values_at(scope, &format!("{base_name}[:].im.im"), im_values, span)?;
-        for (idx, reg) in re_values.iter().copied().enumerate() {
-            scope.insert(
-                generated_scope_key(format!("{base_name}[{}].re", idx + 1)),
-                reg,
-            );
-        }
-        for (idx, reg) in im_values.iter().copied().enumerate() {
-            scope.insert(
-                generated_scope_key(format!("{base_name}[{}].im", idx + 1)),
-                reg,
-            );
-        }
-        Ok(())
-    }
-
-    fn complex_zero_values(
-        &mut self,
-        width: usize,
-        span: rumoca_core::Span,
-    ) -> Result<Vec<Reg>, LowerError> {
-        let mut values =
-            crate::lower_vec_with_capacity(width, "Complex zero component value count", span)?;
-        for _ in 0..width {
-            values.push(self.emit_const_at(0.0, span)?);
-        }
-        Ok(values)
     }
 }
 

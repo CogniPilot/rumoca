@@ -408,6 +408,82 @@ fn lower_residual_preserves_function_record_matrix_field_shape() {
 }
 
 #[test]
+fn lower_residual_lowers_record_input_matrix_field_multiply() {
+    let span = discrete_array_source_span(44, 91, 99);
+    let mut dae_model = dae::Dae::default();
+    for (name, dims) in [
+        ("frame.R.T", vec![3, 3]),
+        ("frame.R.w", vec![3]),
+        ("v2", vec![3]),
+    ] {
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable {
+                dims,
+                ..scalar_var(name)
+            },
+        );
+    }
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("v1"),
+        dae::Variable {
+            dims: vec![3],
+            ..scalar_var("v1")
+        },
+    );
+
+    let mut resolve1 = rumoca_core::Function::new("Pkg.resolve1", span);
+    resolve1.inputs.push(
+        function_param_with_type_span("R", "Pkg.Orientation", &[], span)
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    resolve1
+        .inputs
+        .push(function_param_with_type_span("v2", "Real", &[3], span));
+    resolve1
+        .outputs
+        .push(function_param_with_type_span("v1", "Real", &[3], span));
+    resolve1.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref_with_span("v1", span),
+        value: binary(
+            rumoca_core::OpBinary::Mul,
+            builtin_with_span(
+                rumoca_core::BuiltinFunction::Transpose,
+                vec![field_access(var("R"), "T")],
+                span,
+            ),
+            var("v2"),
+        ),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(resolve1.name.clone(), resolve1);
+
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            var("v1"),
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("Pkg.resolve1").into(),
+                args: vec![var("frame.R"), var("v2")],
+                is_constructor: false,
+                span,
+            },
+        ),
+        span,
+        origin: "record input matrix field multiply".to_string(),
+        scalar_count: 3,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("record input matrix field should lower as a full matrix");
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
 fn lower_residual_rejects_function_record_matrix_field_shape_mismatch() {
     let span = discrete_array_source_span(44, 100, 140);
     let mut dae_model = dae::Dae::default();

@@ -378,6 +378,7 @@ struct LowerBuilder<'a> {
     local_indexed_bindings: IndexMap<String, Vec<LocalIndexedBinding>>,
     local_binding_dims: IndexMap<String, Vec<i64>>,
     known_empty_local_arrays: IndexSet<String>,
+    guarded_uninitialized_locals: IndexSet<String>,
     local_const_bindings: IndexMap<String, f64>,
     function_closures: IndexMap<ComponentReferenceKey, FunctionClosure>,
     is_initial_mode: bool,
@@ -477,6 +478,7 @@ impl<'a> LowerBuilder<'a> {
             local_indexed_bindings: IndexMap::new(),
             local_binding_dims: IndexMap::new(),
             known_empty_local_arrays: IndexSet::new(),
+            guarded_uninitialized_locals: IndexSet::new(),
             local_const_bindings: IndexMap::new(),
             function_closures: IndexMap::new(),
             is_initial_mode: metadata.is_initial_mode,
@@ -543,6 +545,7 @@ impl<'a> LowerBuilder<'a> {
             local_indexed_bindings: IndexMap::new(),
             local_binding_dims: IndexMap::new(),
             known_empty_local_arrays: IndexSet::new(),
+            guarded_uninitialized_locals: self.guarded_uninitialized_locals.clone(),
             local_const_bindings: self.local_const_bindings.clone(),
             function_closures: self.function_closures.clone(),
             is_initial_mode: self.is_initial_mode,
@@ -925,13 +928,16 @@ impl<'a> LowerBuilder<'a> {
 
     /// Resolves a scalar binding key through the pre-mode slot, direct
     /// assignment value, and layout binding lookups, in that order.
-    fn lower_var_ref_binding_key(
+    pub(in crate::lower) fn lower_var_ref_binding_key(
         &mut self,
         key: &str,
         owner_span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
+        if let Some(reg) = scope.get(&generated_scope_key(key)).copied() {
+            return Ok(Some(reg));
+        }
         if let Some(slot) = self.pre_mode_slot_for_key(key) {
             return self.emit_slot_load(slot, owner_span).map(Some);
         }
@@ -1142,6 +1148,10 @@ impl<'a> LowerBuilder<'a> {
         }
 
         if is_static_singleton_scalar_projection(base, subscripts)? {
+            return self.lower_expr(base, scope, call_depth);
+        }
+
+        if scalar_literal_projection(base, subscripts, owner_span)? {
             return self.lower_expr(base, scope, call_depth);
         }
 
@@ -1618,14 +1628,15 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let key = field_access_binding_key(base, field)?;
-        if let Some(reg) = scope.get(&generated_scope_key(&key)).copied() {
+        let span = Self::non_dummy_span(field_access_span)
+            .or_else(|| base.span().filter(|span| !span.is_dummy()))
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("field access `{key}` requires source span metadata"),
+            })?;
+        if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {
             return Ok(reg);
         }
-        let slot = self
-            .layout
-            .binding(&key)
-            .ok_or(LowerError::MissingBinding { name: key })?;
-        self.emit_slot_load(slot, required_expression_span(base, "field slot load")?)
+        Err(LowerError::MissingBinding { name: key })
     }
 
     fn lower_function_output_name_field_access(

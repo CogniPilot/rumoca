@@ -8,6 +8,7 @@
 //! runtime call is the semantically equivalent lowering.
 
 use super::*;
+use rumoca_core::FallibleExpressionVisitor;
 
 pub(super) struct CallOutputsCacheEntry {
     pub(super) call: rumoca_core::Expression,

@@ -1415,7 +1415,7 @@ impl<'a> LowerBuilder<'a> {
         let mut guarded =
             crate::lower_vec_with_capacity(values.len(), "guarded assignment value count", span)?;
         for (idx, new_value) in values.into_iter().enumerate() {
-            let old_value = old_assignment_value(scope, target, idx, span)?;
+            let old_value = self.old_assignment_or_dead_local_value(scope, target, idx, span)?;
             guarded.push(self.emit_select_at(guard, old_value, new_value, span)?);
         }
         Ok(guarded)
@@ -1438,10 +1438,43 @@ impl<'a> LowerBuilder<'a> {
             span,
         )?;
         for new_value in values {
-            let old_value = old_indexed_assignment_value(scope, target, indices, span)?;
+            let old_value =
+                self.old_indexed_assignment_or_dead_local_value(scope, target, indices, span)?;
             guarded.push(self.emit_select_at(guard, old_value, new_value, span)?);
         }
         Ok(guarded)
+    }
+
+    fn old_assignment_or_dead_local_value(
+        &mut self,
+        scope: &Scope,
+        target: &str,
+        idx: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        match old_assignment_value(scope, target, idx, span) {
+            Ok(value) => Ok(value),
+            Err(_) if self.guarded_uninitialized_locals.contains(target) => {
+                self.emit_const_at(0.0, span)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn old_indexed_assignment_or_dead_local_value(
+        &mut self,
+        scope: &Scope,
+        target: &str,
+        indices: &[usize],
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        match old_indexed_assignment_value(scope, target, indices, span) {
+            Ok(value) => Ok(value),
+            Err(_) if self.guarded_uninitialized_locals.contains(target) => {
+                self.emit_const_at(0.0, span)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     fn assignment_control_guard(

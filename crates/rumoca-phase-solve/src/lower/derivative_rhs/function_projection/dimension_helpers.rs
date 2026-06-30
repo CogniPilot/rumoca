@@ -472,6 +472,9 @@ pub(super) fn required_flat_index_to_subscripts(
     flat_index: usize,
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
+    if dims.is_empty() && flat_index == 0 {
+        return Ok(Vec::new());
+    }
     dae::flat_index_to_subscripts(dims, flat_index).ok_or_else(|| {
         LowerError::contract_violation(
             format!(
@@ -496,34 +499,183 @@ pub(super) fn valid_product_dim(
 pub(super) fn array_expression_dims(
     elements: &[rumoca_core::Expression],
     is_matrix: bool,
+    child_dims: &[Option<Vec<i64>>],
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<i64>>, LowerError> {
     if !is_matrix {
+        return array_sequence_dims(elements.len(), child_dims, span).map(Some);
+    }
+    if let [Some(dims)] = child_dims
+        && dims.len() > 1
+    {
+        return copy_projection_dims(dims, "matrix expression dimension count", span).map(Some);
+    }
+    let Some(first) = elements.first() else {
+        return Ok(None);
+    };
+    if matches!(
+        first,
+        rumoca_core::Expression::Array { .. } | rumoca_core::Expression::Tuple { .. }
+    ) && elements.iter().all(|element| {
+        matches!(
+            element,
+            rumoca_core::Expression::Array { .. } | rumoca_core::Expression::Tuple { .. }
+        )
+    }) {
+        return matrix_row_literal_dims(elements.len(), child_dims, span).map(Some);
+    }
+    if let Some(dims) = matrix_column_concat_dims(elements.len(), child_dims, span)? {
+        return Ok(Some(dims));
+    }
+    if child_dims.iter().all(|dims| {
+        dims.as_ref()
+            .is_none_or(|candidate_dims| candidate_dims.is_empty())
+    }) {
         return Ok(Some(copy_projection_dims(
+            &[
+                1,
+                checked_usize_to_i64(elements.len(), "matrix column count", span)?,
+            ],
+            "matrix expression dimension count",
+            span,
+        )?));
+    }
+    Ok(None)
+}
+
+fn array_sequence_dims(
+    element_count: usize,
+    child_dims: &[Option<Vec<i64>>],
+    span: rumoca_core::Span,
+) -> Result<Vec<i64>, LowerError> {
+    let Some(Some(first_dims)) = child_dims.first() else {
+        return copy_projection_dims(
             &[checked_usize_to_i64(
-                elements.len(),
+                element_count,
                 "array expression dimension",
                 span,
             )?],
             "array expression dimension count",
             span,
-        )?));
+        );
+    };
+    if first_dims.is_empty()
+        || child_dims
+            .iter()
+            .skip(1)
+            .any(|dims| dims.as_ref() != Some(first_dims))
+    {
+        return copy_projection_dims(
+            &[checked_usize_to_i64(
+                element_count,
+                "array expression dimension",
+                span,
+            )?],
+            "array expression dimension count",
+            span,
+        );
     }
-    let Some(first) = elements.first() else {
+    let mut dims = projection_vec_with_capacity(
+        first_dims.len() + 1,
+        "array expression dimension count",
+        span,
+    )?;
+    dims.push(checked_usize_to_i64(
+        element_count,
+        "array expression dimension",
+        span,
+    )?);
+    dims.extend(first_dims.iter().copied());
+    Ok(dims)
+}
+
+fn matrix_row_literal_dims(
+    row_count: usize,
+    child_dims: &[Option<Vec<i64>>],
+    span: rumoca_core::Span,
+) -> Result<Vec<i64>, LowerError> {
+    let Some(cols) = child_dims
+        .first()
+        .and_then(Option::as_ref)
+        .and_then(|dims| matrix_row_literal_column_count(dims))
+    else {
+        return copy_projection_dims(
+            &[
+                checked_usize_to_i64(row_count, "matrix row count", span)?,
+                1,
+            ],
+            "matrix expression dimension count",
+            span,
+        );
+    };
+    if child_dims.iter().all(|dims| {
+        dims.as_ref()
+            .and_then(|candidate_dims| matrix_row_literal_column_count(candidate_dims))
+            == Some(cols)
+    }) {
+        copy_projection_dims(
+            &[
+                checked_usize_to_i64(row_count, "matrix row count", span)?,
+                cols,
+            ],
+            "matrix expression dimension count",
+            span,
+        )
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn matrix_row_literal_column_count(dims: &[i64]) -> Option<i64> {
+    match dims {
+        [cols] => Some(*cols),
+        [1, cols] => Some(*cols),
+        _ => None,
+    }
+}
+
+fn matrix_column_concat_dims(
+    operand_count: usize,
+    child_dims: &[Option<Vec<i64>>],
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<i64>>, LowerError> {
+    let Some(Some(first)) = child_dims.first() else {
         return Ok(None);
     };
-    let cols = match first {
-        rumoca_core::Expression::Array { elements, .. } => elements.len(),
-        _ => return Ok(None),
-    };
-    Ok(Some(copy_projection_dims(
-        &[
-            checked_usize_to_i64(elements.len(), "matrix row count", span)?,
-            checked_usize_to_i64(cols, "matrix column count", span)?,
-        ],
-        "matrix expression dimension count",
-        span,
-    )?))
+    match first.as_slice() {
+        [rows]
+            if *rows > 0
+                && child_dims.iter().all(|dims| {
+                    matches!(dims.as_deref(), Some([candidate]) if *candidate == *rows)
+                }) =>
+        {
+            Ok(Some(copy_projection_dims(
+                &[
+                    *rows,
+                    checked_usize_to_i64(operand_count, "matrix column count", span)?,
+                ],
+                "matrix expression dimension count",
+                span,
+            )?))
+        }
+        [rows, _]
+            if *rows > 0
+                && child_dims.iter().all(|dims| {
+                    matches!(dims.as_deref(), Some([candidate_rows, _]) if *candidate_rows == *rows)
+                }) =>
+        {
+            let cols = child_dims
+                .iter()
+                .filter_map(|dims| dims.as_ref().and_then(|dims| dims.get(1)).copied())
+                .sum();
+            Ok(Some(copy_projection_dims(
+                &[*rows, cols],
+                "matrix expression dimension count",
+                span,
+            )?))
+        }
+        _ => Ok(None),
+    }
 }
 
 pub(super) fn binary_mul_dims(

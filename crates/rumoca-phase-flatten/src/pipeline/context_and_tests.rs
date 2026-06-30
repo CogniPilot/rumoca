@@ -797,12 +797,16 @@ impl Context {
         let new_vals: Vec<(String, f64)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
-                // Try simple real evaluation first
-                if let Some(val) = try_eval_flat_expr_real(
-                    binding,
-                    &self.parameter_values,
-                    &self.real_parameter_values,
-                ) {
+                let real_ctx = ParamEvalContext {
+                    known_ints: &self.parameter_values,
+                    known_reals: &self.real_parameter_values,
+                    known_bools: &self.boolean_parameter_values,
+                    known_enums: &self.enum_parameter_values,
+                    array_dims: &self.array_dimensions,
+                    functions: &self.functions,
+                    var_context: Some(name),
+                };
+                if let Some(val) = try_eval_real_with_context(binding, &real_ctx) {
                     return Some(((*name).to_string(), val));
                 }
                 // Try user-defined function evaluation for function call bindings

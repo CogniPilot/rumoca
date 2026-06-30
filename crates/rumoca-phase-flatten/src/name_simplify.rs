@@ -412,6 +412,7 @@ fn remap_assert_equations(
         remap_expression(&mut equation.condition, ctx)?;
         remap_expression(&mut equation.message, ctx)?;
         remap_optional_expression(&mut equation.level, ctx)?;
+        remap_equation_origin(&mut equation.origin, ctx.rename_map);
     }
     Ok(())
 }

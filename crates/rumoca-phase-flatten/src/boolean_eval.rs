@@ -327,7 +327,7 @@ pub(crate) fn try_resolve_enum_value(
 ///
 /// This is a simplified version that handles common cases needed for
 /// boolean comparison operations (e.g., `n > 0`).
-fn try_eval_integer_for_comparison(
+pub(crate) fn try_eval_integer_for_comparison(
     ctx: Option<&Context>,
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,

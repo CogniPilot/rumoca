@@ -119,6 +119,47 @@ mod tests {
         }
     }
 
+    fn real_lit(value: f64) -> Expression {
+        Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn var_ref(name: &str) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn div_expr(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn mul_expr(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn sqrt_expr(arg: Expression) -> Expression {
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sqrt,
+            args: vec![arg],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     fn int_array(values: &[i64]) -> Expression {
         Expression::Array {
             elements: values.iter().copied().map(int_lit).collect(),
@@ -376,6 +417,84 @@ mod tests {
             "modifier-origin binding should replace component declaration default"
         );
         assert_eq!(ctx.get_integer_param("filter.order"), Some(3));
+    }
+
+    #[test]
+    fn real_modifier_bindings_resolve_in_enclosing_scope_for_sibling_instances() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+
+        for (name, binding, from_modification) in [
+            ("td", real_lit(0.002), false),
+            ("line1.TD", div_expr(var_ref("td"), int_lit(2)), true),
+            ("line2.TD", div_expr(var_ref("line2.td"), int_lit(2)), true),
+        ] {
+            let var_name = rumoca_core::VarName::new(name);
+            flat.add_variable(
+                var_name.clone(),
+                flat::Variable {
+                    name: var_name,
+                    variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                    binding: Some(binding),
+                    binding_from_modification: from_modification,
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        assert_eq!(ctx.real_parameter_values.get("line1.TD"), Some(&0.001));
+        assert_eq!(ctx.real_parameter_values.get("line2.TD"), Some(&0.001));
+    }
+
+    #[test]
+    fn real_modifier_bindings_resolve_transmission_line_delay_chain() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+
+        let c0 = div_expr(
+            real_lit(1.0),
+            sqrt_expr(mul_expr(var_ref("l"), var_ref("c"))),
+        );
+        let td = div_expr(var_ref("len"), var_ref("c0"));
+        for (name, binding, from_modification) in [
+            ("l", real_lit(1.0e-6), false),
+            ("c", real_lit(15.0e-12), false),
+            ("len", real_lit(100.0e3), false),
+            ("c0", c0, false),
+            ("td", td, false),
+            ("line1.TD", div_expr(var_ref("td"), int_lit(2)), true),
+            ("line2.TD", div_expr(var_ref("td"), int_lit(2)), true),
+        ] {
+            let var_name = rumoca_core::VarName::new(name);
+            flat.add_variable(
+                var_name.clone(),
+                flat::Variable {
+                    name: var_name,
+                    variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                    binding: Some(binding),
+                    binding_from_modification: from_modification,
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let expected = 100.0e3 * (1.0e-6_f64 * 15.0e-12_f64).sqrt() / 2.0;
+        for name in ["line1.TD", "line2.TD"] {
+            let value = ctx
+                .real_parameter_values
+                .get(name)
+                .copied()
+                .expect("line delay should evaluate");
+            assert!((value - expected).abs() < 1.0e-15);
+        }
     }
 
     #[test]

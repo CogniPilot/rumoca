@@ -10,7 +10,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -77,6 +77,7 @@ pub use update_rows::{
 
 static ROW_EVAL_CALLS: AtomicU64 = AtomicU64::new(0);
 static ROW_EVAL_NANOS: AtomicU64 = AtomicU64::new(0);
+static ROW_EVAL_TRACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BlockEvalStats {
@@ -337,7 +338,9 @@ impl From<SolveProblemShapeContractError> for EvalSolveError {
 }
 
 pub fn reset_solve_row_eval_trace() {
-    if !solve_row_eval_trace_enabled() {
+    let enabled = solve_row_eval_trace_requested();
+    ROW_EVAL_TRACE_ACTIVE.store(enabled, Ordering::Relaxed);
+    if !enabled {
         return;
     }
     ROW_EVAL_CALLS.store(0, Ordering::Relaxed);
@@ -349,7 +352,7 @@ pub fn reset_solve_row_eval_trace() {
 }
 
 pub fn trace_solve_row_eval_snapshot(label: &str) {
-    if !solve_row_eval_trace_enabled() {
+    if !solve_row_eval_trace_active() {
         return;
     }
     let calls = ROW_EVAL_CALLS.load(Ordering::Relaxed);
@@ -381,12 +384,18 @@ pub fn trace_solve_row_eval_snapshot(label: &str) {
     }
 }
 
-fn solve_row_eval_trace_enabled() -> bool {
+fn solve_row_eval_trace_requested() -> bool {
     tracing::enabled!(target: "rumoca_eval_solve::row", tracing::Level::DEBUG)
 }
 
+#[inline(always)]
+fn solve_row_eval_trace_active() -> bool {
+    ROW_EVAL_TRACE_ACTIVE.load(Ordering::Relaxed)
+}
+
+#[inline(always)]
 pub(crate) fn record_solve_block_eval(kind: &'static str, len: usize, rows: usize) {
-    if !solve_row_eval_trace_enabled() {
+    if !solve_row_eval_trace_active() {
         return;
     }
     let mut stats = block_eval_stats()
@@ -813,13 +822,14 @@ pub(crate) fn eval_program_single(
     Ok(buf[0])
 }
 
+#[inline(always)]
 pub(crate) fn eval_row_prepared_maybe_fast(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
     sink: &mut OutputCursor<'_>,
 ) -> Result<(), EvalSolveError> {
-    let start = solve_row_eval_trace_enabled().then(Instant::now);
+    let start = solve_row_eval_trace_active().then(Instant::now);
     let result = if register_safe {
         eval_row_prepared_fast(input, scratch, sink)
     } else {

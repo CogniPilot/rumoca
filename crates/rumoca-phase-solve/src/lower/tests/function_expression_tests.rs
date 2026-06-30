@@ -970,6 +970,110 @@ fn lower_expression_binds_record_function_result_to_flattened_record_inputs() {
 }
 
 #[test]
+fn lower_expression_binds_same_named_local_record_actual_to_record_input() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut make_local = rumoca_core::Function::new("My.makeLocal", span);
+    make_local.inputs.push(function_param("u"));
+    make_local
+        .outputs
+        .push(record_param("local", "My.LocalRecord"));
+    make_local.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("local.d"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var("u")),
+            rhs: Box::new(real_lit(10.0)),
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_local.name.clone(), make_local);
+
+    let mut use_local = rumoca_core::Function::new("My.useLocal", span);
+    use_local.inputs.push(record_param("f", "My.LocalRecord"));
+    use_local.outputs.push(record_param("aux", "My.AuxRecord"));
+    use_local.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("aux.rho"),
+        value: rumoca_core::Expression::FieldAccess {
+            base: Box::new(var("f")),
+            field: "d".to_string(),
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(use_local.name.clone(), use_local);
+
+    let mut build_aux = rumoca_core::Function::new("My.buildAux", span);
+    build_aux.inputs.push(function_param("u"));
+    build_aux.outputs.push(record_param("aux", "My.AuxRecord"));
+    build_aux.locals.push(record_param("f", "My.LocalRecord"));
+    build_aux.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("f"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.makeLocal",
+            )),
+            args: vec![var("u")],
+            is_constructor: false,
+            span,
+        },
+        span,
+    });
+    build_aux.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("aux"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.useLocal",
+            )),
+            args: vec![var("f")],
+            is_constructor: false,
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(build_aux.name.clone(), build_aux);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.buildAux",
+            )),
+            args: vec![var("u")],
+            is_constructor: false,
+            span,
+        }),
+        field: "rho".to_string(),
+        span,
+    };
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("same-named record actual should bind components into callee input scope");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "u", 5.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 15.0).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_projects_record_field_from_function_result() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();

@@ -193,6 +193,45 @@ fn lower_array_like_values_uses_tuple_owner_for_unspanned_elements() -> Result<(
 }
 
 #[test]
+fn lower_array_like_values_lowers_modelica_array_constructor_call() -> Result<(), LowerError> {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("array_constructor_function.mo"),
+        12,
+        24,
+    );
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("array").into(),
+        args: vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span,
+            },
+        ],
+        is_constructor: false,
+        span,
+    };
+
+    let values = builder.lower_array_like_values(&expr, &Scope::new(), 0)?;
+
+    assert_eq!(values, vec![0, 1]);
+    assert_eq!(
+        builder.ops,
+        vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::Const { dst: 1, value: 2.0 },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn lower_min_max_builtin_rejects_empty_args_without_dummy_span() -> Result<(), LowerError> {
     let layout = VarLayout::default();
     let functions = IndexMap::new();

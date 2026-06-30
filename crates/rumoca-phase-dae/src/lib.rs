@@ -23,6 +23,7 @@
 mod algorithm_lowering;
 mod analysis;
 mod appendix_b_validation;
+mod assertion_actions;
 pub mod balance;
 mod binding_conversion;
 mod condition_activation;
@@ -305,6 +306,9 @@ pub fn to_dae_with_options(
             route_discrete_event_equations(&mut dae, &dae_when)?;
         }
         Ok::<(), ToDaeError>(())
+    })?;
+    run_todae_phase(todae_subphase_timing, "assertion_actions", || {
+        assertion_actions::lower_assert_equations_to_event_actions(&mut dae, flat)
     })?;
 
     // Process model/initial algorithms strictly through equation lowering.

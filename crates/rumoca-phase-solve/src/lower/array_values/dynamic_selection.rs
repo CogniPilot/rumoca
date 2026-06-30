@@ -496,18 +496,23 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(values);
         }
-        if let Ok(key) = field_access_binding_key(base, field)
-            && let Some(values) = self.lower_indexed_binding_values_at(
-                key.as_str(),
-                owner_span.ok_or_else(|| LowerError::UnspannedContractViolation {
-                    reason: format!(
-                        "field access `{}` requires source span metadata",
-                        key.as_str()
-                    ),
-                })?,
-            )?
-        {
-            return Ok(values);
+        if let Ok(key) = field_access_binding_key(base, field) {
+            let span = owner_span.ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: format!("field access `{key}` requires source span metadata"),
+            })?;
+            let generated_key = generated_scope_key(&key);
+            if let Some(values) = scoped_indexed_binding_values(scope, &generated_key, span)? {
+                return Ok(values);
+            }
+            if let Some(values) = self.local_indexed_binding_values(&key) {
+                return Ok(values);
+            }
+            if let Some(values) = self.lower_indexed_binding_values_at(key.as_str(), span)? {
+                return Ok(values);
+            }
+            if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {
+                return single_reg_vec(reg, "scalarized record field access value count", span);
+            }
         }
         if let Some(values) = self.lower_structural_field_values(base, field, scope, call_depth)? {
             return Ok(values);

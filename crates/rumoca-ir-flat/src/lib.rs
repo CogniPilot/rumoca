@@ -668,6 +668,12 @@ impl EquationOrigin {
     }
 }
 
+fn default_equation_origin() -> EquationOrigin {
+    EquationOrigin::ComponentEquation {
+        component: String::new(),
+    }
+}
+
 /// Equation in residual form: 0 = residual
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Equation {
@@ -789,6 +795,9 @@ pub struct AssertEquation {
     pub level: Option<Expression>,
     /// Source span for diagnostics and traceability.
     pub span: Span,
+    /// Typed origin for scoped parameter/constant substitution.
+    #[serde(default = "default_equation_origin")]
+    pub origin: EquationOrigin,
 }
 
 impl AssertEquation {
@@ -798,12 +807,14 @@ impl AssertEquation {
         message: Expression,
         level: Option<Expression>,
         span: Span,
+        origin: EquationOrigin,
     ) -> Self {
         Self {
             condition,
             message,
             level,
             span,
+            origin,
         }
     }
 }
