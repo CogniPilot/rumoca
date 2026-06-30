@@ -1,6 +1,7 @@
 //! DAE → simulation solve-model lowering, organized into cohesive stages:
 //!
 //! - [`diagnostics`] — the [`SimulationDiagnosticError`] surfaced by every entry.
+//! - [`direct`] — the guarded explicit/direct fast path before structural work.
 //! - [`overrides`] — solver-neutral tunable-parameter / state-start overrides.
 //! - [`entry`] — the public lowering entry points and per-stage timings.
 //! - [`probe`] — the `--inspect eval` / `--inspect jacobian` debug probes.
@@ -12,6 +13,7 @@
 //! facade (`lib.rs`) and the solver backends keep referring to the same paths.
 
 mod diagnostics;
+mod direct;
 mod entry;
 mod expr_util;
 mod overrides;
