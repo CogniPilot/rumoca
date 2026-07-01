@@ -31,7 +31,7 @@ use serde::Deserialize;
 
 use crate::runner::devices::{self, Devices};
 
-use crate::runner::config::{ResetConfig, SimulationConfig};
+use crate::runner::config::{LockstepConfig, ResetConfig, SimulationConfig};
 
 fn wall_ms_since_unix_epoch() -> Result<f64> {
     Ok(SystemTime::now()
@@ -379,6 +379,8 @@ struct FrameCtx<'a> {
     debug: bool,
     dt: f64,
     mode: SimPacingMode,
+    steps_per_packet: usize,
+    lockstep_schedule: Option<LockstepSchedule>,
 }
 
 /// Mutable per-frame state that carries across iterations.
@@ -388,6 +390,26 @@ struct FrameState {
     frame_num: u64,
     last_poll: Instant,
     trace: Option<TraceLogger>,
+    lockstep_schedule_initialized: bool,
+    next_lockstep_send_time: f64,
+    next_lockstep_control_time: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LockstepSchedule {
+    send_dt: f64,
+    receive_dt: f64,
+    max_step_dt: f64,
+}
+
+impl LockstepSchedule {
+    fn from_config(lockstep: &LockstepConfig, sim_dt: f64) -> Self {
+        Self {
+            send_dt: 1.0 / lockstep.send_rate_hz,
+            receive_dt: 1.0 / lockstep.receive_rate_hz,
+            max_step_dt: lockstep.max_step_dt.unwrap_or(sim_dt),
+        }
+    }
 }
 
 pub struct SimLoopArgs<'a> {
@@ -493,14 +515,40 @@ where
         anyhow::bail!(error);
     }
 
+    let steps_per_packet = cfg.sim.steps_per_packet;
+    let lockstep_schedule = cfg
+        .lockstep
+        .as_ref()
+        .map(|lockstep| LockstepSchedule::from_config(lockstep, cfg.sim.dt));
     status_line(&format!(
         "  Pacing: {}",
         match mode {
             SimPacingMode::AsFastAsPossible => "as_fast_as_possible",
             SimPacingMode::Realtime => "realtime",
+            SimPacingMode::Lockstep if lockstep_schedule.is_some() => {
+                "lockstep (multirate scheduled)"
+            }
+            SimPacingMode::Lockstep if steps_per_packet > 1 => {
+                "lockstep (input-packet-paced, multistep)"
+            }
             SimPacingMode::Lockstep => "lockstep (input-packet-paced)",
         }
     ));
+    if matches!(mode, SimPacingMode::Lockstep)
+        && let Some(schedule) = lockstep_schedule
+    {
+        status_line(&format!(
+            "  Lockstep send: {:.3} Hz, receive barrier: {:.3} Hz, max step dt: {} s",
+            1.0 / schedule.send_dt,
+            1.0 / schedule.receive_dt,
+            schedule.max_step_dt
+        ));
+    } else if matches!(mode, SimPacingMode::Lockstep) && steps_per_packet > 1 {
+        status_line(&format!(
+            "  Lockstep steps/packet: {steps_per_packet} ({} s simulated per packet)",
+            cfg.sim.dt * steps_per_packet as f64
+        ));
+    }
     status_line("");
     status_line("Ready. Simulation running.");
     status_line(&format!(
@@ -521,6 +569,8 @@ where
         debug,
         dt: cfg.sim.dt,
         mode,
+        steps_per_packet,
+        lockstep_schedule,
     };
     let trace = open_trace_logger(cfg)?;
     let mut state = FrameState {
@@ -529,6 +579,9 @@ where
         frame_num: 0,
         last_poll: Instant::now(),
         trace,
+        lockstep_schedule_initialized: false,
+        next_lockstep_send_time: 0.0,
+        next_lockstep_control_time: 0.0,
     };
     while let FrameControl::Continue =
         ctx.run_one_frame(&mut state, stepper, &mut engine, &mut input_runtime)?
@@ -619,6 +672,19 @@ impl FrameCtx<'_> {
             return Ok(FrameControl::Break);
         }
 
+        if matches!(self.mode, SimPacingMode::Lockstep)
+            && let Some(schedule) = self.lockstep_schedule
+        {
+            return self.run_scheduled_lockstep_frame(
+                schedule,
+                state,
+                stepper,
+                engine,
+                input_runtime,
+                viewer_input,
+            );
+        }
+
         // Pacing-specific receive + step gate.
         match self.mode {
             SimPacingMode::AsFastAsPossible | SimPacingMode::Realtime => {
@@ -634,8 +700,13 @@ impl FrameCtx<'_> {
             }
         }
 
+        let steps_this_frame = if matches!(self.mode, SimPacingMode::Lockstep) {
+            self.steps_per_packet
+        } else {
+            1
+        };
         let poll_dt = if matches!(self.mode, SimPacingMode::Lockstep | SimPacingMode::Realtime) {
-            self.dt
+            self.dt * steps_this_frame as f64
         } else {
             let elapsed = state.last_poll.elapsed().as_secs_f64();
             state.last_poll = Instant::now();
@@ -646,21 +717,13 @@ impl FrameCtx<'_> {
             return Ok(FrameControl::Break);
         }
         self.apply_stepper_inputs(state, stepper, engine, input_runtime)?;
-        step_substeps(stepper, self.dt)?;
+        for _ in 0..steps_this_frame {
+            step_substeps(stepper, self.dt)?;
+        }
 
         self.emit_payloads(state, stepper, engine, input_runtime)?;
 
-        // Status line (~1 Hz). In lockstep the period is approximate because
-        // frame rate depends on external input pacing.
-        let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
-        if state.frame_num.is_multiple_of(status_period) {
-            eprint!(
-                "\r[sim] t={:.1}s frame={} pkts={}            ",
-                stepper.time(),
-                state.frame_num,
-                state.pkt_count
-            );
-        }
+        self.emit_status(state, stepper);
 
         // Realtime pacing is an explicit mode. Lockstep is paced by input
         // arrival, and as-fast-as-possible intentionally never sleeps here.
@@ -671,7 +734,57 @@ impl FrameCtx<'_> {
                 thread::sleep(target - elapsed);
             }
         }
-        state.frame_num += 1;
+        state.frame_num += steps_this_frame as u64;
+        Ok(FrameControl::Continue)
+    }
+
+    fn run_scheduled_lockstep_frame(
+        &self,
+        schedule: LockstepSchedule,
+        state: &mut FrameState,
+        stepper: &mut impl InteractiveStepper,
+        engine: &mut InputEngine,
+        input_runtime: &mut Devices,
+        viewer_input: ViewerInputDrain,
+    ) -> Result<FrameControl> {
+        const EPS: f64 = 1e-9;
+
+        let now = stepper.time();
+        if !state.lockstep_schedule_initialized {
+            state.lockstep_schedule_initialized = true;
+            state.next_lockstep_control_time = now + schedule.receive_dt;
+            state.next_lockstep_send_time = now;
+        }
+
+        let control_time = state.next_lockstep_control_time;
+        let poll_dt = (control_time - now).max(0.0);
+        input_runtime.poll_with_keyboard_events(engine, poll_dt, viewer_input.keys);
+        if let FrameControl::Break = self.handle_signals(engine, stepper)? {
+            return Ok(FrameControl::Break);
+        }
+        self.apply_stepper_inputs(state, stepper, engine, input_runtime)?;
+
+        while state.next_lockstep_send_time <= control_time + EPS {
+            let target = state.next_lockstep_send_time;
+            let step_dt = target - stepper.time();
+            if step_dt > EPS {
+                step_with_max_dt(stepper, step_dt, schedule.max_step_dt)?;
+            }
+            self.emit_payloads(state, stepper, engine, input_runtime)?;
+            state.frame_num += 1;
+            self.emit_status(state, stepper);
+            state.next_lockstep_send_time += schedule.send_dt;
+        }
+
+        let remaining_dt = control_time - stepper.time();
+        if remaining_dt > EPS {
+            step_with_max_dt(stepper, remaining_dt, schedule.max_step_dt)?;
+        }
+
+        let transport_packet = self.wait_for_command(state, stepper, engine)?;
+        if transport_packet {
+            state.next_lockstep_control_time += schedule.receive_dt;
+        }
         Ok(FrameControl::Continue)
     }
 
@@ -741,6 +854,20 @@ impl FrameCtx<'_> {
         }
         let _ = self.state_tx.send(json);
         Ok(())
+    }
+
+    fn emit_status(&self, state: &FrameState, stepper: &impl InteractiveStepper) {
+        // Status line (~1 Hz). In lockstep the period is approximate because
+        // frame rate depends on external input pacing.
+        let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
+        if state.frame_num.is_multiple_of(status_period) {
+            eprint!(
+                "\r[sim] t={:.1}s frame={} pkts={}            ",
+                stepper.time(),
+                state.frame_num,
+                state.pkt_count
+            );
+        }
     }
 
     /// Lockstep receive: consume one transport packet, apply to stepper/locals.
@@ -976,12 +1103,25 @@ where
 // ── Step helper ────────────────────────────────────────────────────────────
 
 fn step_substeps(stepper: &mut impl InteractiveStepper, dt: f64) -> Result<()> {
+    let max_step_dt = stepper.max_runner_step_dt().unwrap_or(dt);
+    step_with_max_dt(stepper, dt, max_step_dt)
+}
+
+fn step_with_max_dt(
+    stepper: &mut impl InteractiveStepper,
+    dt: f64,
+    max_step_dt: f64,
+) -> Result<()> {
     let target = stepper.time() + dt;
     let step_dt = target - stepper.time();
     if step_dt <= 0.0 {
         return Ok(());
     }
-    let max_sub_dt = stepper.max_runner_step_dt().unwrap_or(step_dt);
+    let max_sub_dt = stepper
+        .max_runner_step_dt()
+        .map(|stepper_dt| stepper_dt.min(max_step_dt))
+        .unwrap_or(max_step_dt)
+        .min(step_dt);
     let n_steps = ((step_dt / max_sub_dt).ceil() as usize).max(1);
     let sub_dt = step_dt / n_steps as f64;
     for i in 0..n_steps {
