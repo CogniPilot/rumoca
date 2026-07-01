@@ -747,6 +747,10 @@ impl FrameCtx<'_> {
         input_runtime: &mut Devices,
         viewer_input: ViewerInputDrain,
     ) -> Result<FrameControl> {
+        // Slack for comparing accumulated send/control times against each other:
+        // the schedule advances `next_lockstep_send_time` by `send_dt` each send,
+        // so exact `==` would be defeated by float rounding. 1 ns is far below any
+        // realistic sim dt yet large enough to absorb that accumulation drift.
         const EPS: f64 = 1e-9;
 
         let now = stepper.time();
@@ -771,6 +775,10 @@ impl FrameCtx<'_> {
                 step_with_max_dt(stepper, step_dt, schedule.max_step_dt)?;
             }
             self.emit_payloads(state, stepper, engine, input_runtime)?;
+            // In this scheduled path `frame_num` counts *sends* (one per emitted
+            // payload), whereas the packet-paced path counts internal solver
+            // steps. The viewer only needs a monotonic frame counter, so the
+            // differing units are intentional.
             state.frame_num += 1;
             self.emit_status(state, stepper);
             state.next_lockstep_send_time += schedule.send_dt;
