@@ -927,6 +927,12 @@ impl<'a> LowerBuilder<'a> {
                 if subscripts.is_empty() && const_scope.contains_key(name.as_str()) {
                     return true;
                 }
+                if self
+                    .dae_variables
+                    .is_some_and(|variables| !var_ref_is_translation_constant(variables, name))
+                {
+                    return false;
+                }
                 compile_time_var_key(name, subscripts, const_scope, *span)
                     .ok()
                     .is_some_and(|key| {
@@ -1098,6 +1104,20 @@ impl<'a> LowerBuilder<'a> {
             _ => Vec::new(),
         })
     }
+}
+
+fn var_ref_is_translation_constant(
+    variables: &dae::DaeVariables,
+    name: &rumoca_core::Reference,
+) -> bool {
+    let var_name = name.var_name();
+    if variables.constants.contains_key(var_name) {
+        return true;
+    }
+    if let Some(parameter) = variables.parameters.get(var_name) {
+        return !parameter.is_tunable;
+    }
+    false
 }
 
 fn required_arg<'a>(

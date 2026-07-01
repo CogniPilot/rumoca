@@ -1,5 +1,6 @@
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
+use rumoca_ir_solve as solve;
 
 use crate::InteractiveStepper;
 use crate::solve_lowering::{SimulationDiagnosticError, lower_dae_for_simulation};
@@ -55,6 +56,16 @@ impl SimStepper {
             &opts,
             true,
         )?;
+        Self::from_solve_model(solve_model, opts)
+    }
+
+    /// Build directly from an already-lowered, override-applied solve model, so
+    /// callers that lowered once (e.g. the auto-stepper dispatch that first
+    /// probes for a pure-discrete model) do not lower the model a second time.
+    pub(crate) fn from_solve_model(
+        solve_model: solve::SolveModel,
+        opts: rumoca_solver::SimOptions,
+    ) -> Result<Self, SimulationDiagnosticError> {
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

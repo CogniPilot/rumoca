@@ -27,6 +27,8 @@ pub use rumoca_solver::{
 };
 
 pub mod bulk;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod discrete_stepper;
 mod interactive_stepper;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod sim_stepper;
