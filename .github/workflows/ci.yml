@@ -581,7 +581,7 @@ jobs:
 
       - name: Run full MSL quality gate
         # Keep the full parity run conservative on standard GitHub-hosted
-        # runners. The committed quality baseline is promoted from this CI
+        # runners. The promoted quality baseline is ratcheted from this CI
         # worker context rather than from a larger local workstation.
         run: >
           cargo xtask verify msl-parity
@@ -641,7 +641,15 @@ jobs:
       - name: Generate MSL PR summary comment
         if: always()
         shell: bash
-        run: cargo xtask repo msl pr-comment --results-dir target/msl/results
+        run: |
+          set -euo pipefail
+          baseline="crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json"
+          if [[ -f target/msl/baselines/msl_quality_baseline.json ]]; then
+            baseline="target/msl/baselines/msl_quality_baseline.json"
+          fi
+          cargo xtask repo msl pr-comment \
+            --results-dir target/msl/results \
+            --baseline "$baseline"
 
       - name: Upload MSL compatibility artifacts
         if: always()

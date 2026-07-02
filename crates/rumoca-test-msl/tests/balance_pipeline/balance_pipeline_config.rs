@@ -55,6 +55,9 @@ pub(crate) struct MslParityConfig {
     pub sim_worker_memory_mb: Option<usize>,
     /// Total simulation memory budget in MB; caps the sim worker count.
     pub sim_total_memory_mb: Option<usize>,
+    /// Resolved quality baseline JSON file. Relative paths are resolved from
+    /// the workspace root.
+    pub quality_baseline_file: Option<PathBuf>,
     /// Opt into the generated simulation-targets file when no explicit file or
     /// committed file applies.
     pub generated_sim_targets_file: Option<bool>,
@@ -95,4 +98,15 @@ pub(crate) fn msl_results_dir() -> PathBuf {
         return path.clone();
     }
     workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR")).join(path)
+}
+
+pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {
+    let path = parity_config().quality_baseline_file.as_ref()?;
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path.clone());
+    }
+    Some(workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR")).join(path))
 }

@@ -8,6 +8,11 @@
 
 use std::sync::Arc;
 
+mod shape_inference;
+pub(crate) use shape_inference::{
+    ExpressionShape, infer_component_ref_shape, infer_simple_equation_scalar_count,
+};
+
 // Conditional tracing support (SPEC_0024)
 use rumoca_eval_flat::constant::{EvalContext, Value};
 use rumoca_ir_ast as ast;
@@ -24,11 +29,17 @@ use crate::pipeline::try_eval_const_boolean_with_scope;
 use crate::static_subscripts::try_constant_integer;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
+pub(crate) mod affine;
+mod assert_equations;
 mod conditional_and_eval;
 mod connections_graph;
 mod flattened_equations;
 mod structured_domain;
 mod zero_sized_reductions;
+use assert_equations::{
+    AssertEquationLowering, flatten_assert_equation, flatten_assert_function_call,
+    is_assert_function_call,
+};
 pub(crate) use conditional_and_eval::build_eval_context;
 use conditional_and_eval::*;
 pub(crate) use conditional_and_eval::{
@@ -613,7 +624,7 @@ pub(crate) fn flatten_equation_with_def_map(
         }
 
         ast::Equation::FunctionCall { comp, args } => {
-            flatten_function_call_equation(ctx, comp, args, prefix, span, def_map)
+            flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, &origin)
         }
 
         ast::Equation::Assert {
@@ -621,48 +632,12 @@ pub(crate) fn flatten_equation_with_def_map(
             message,
             level,
         } => flatten_assert_equation(
-            ctx,
+            AssertEquationLowering::new(ctx, prefix, span, def_map, origin),
             condition,
             message,
             level.as_ref(),
-            prefix,
-            span,
-            def_map,
         ),
     }
-}
-
-fn flatten_assert_equation(
-    ctx: &Context,
-    condition: &ast::Expression,
-    message: &ast::Expression,
-    level: Option<&ast::Expression>,
-    prefix: &ast::QualifiedName,
-    span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
-) -> Result<FlattenedEquations, FlattenError> {
-    // MLS §8.3.7: preserve assert-equations for runtime checks in flat output.
-    // They do not contribute to the DAE residual equation system.
-    let imports = &ctx.current_imports;
-    let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx)?,
-        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx)?,
-        level
-            .map(|expr| {
-                qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
-            })
-            .transpose()?,
-        span,
-    );
-    Ok(FlattenedEquations {
-        equations: vec![],
-        structured_equations: vec![],
-        assert_equations: vec![assert_eq],
-        when_clauses: vec![],
-        definite_roots: vec![],
-        branches: vec![],
-        potential_roots: vec![],
-    })
 }
 
 fn flatten_function_call_equation(
@@ -672,82 +647,15 @@ fn flatten_function_call_equation(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
+    origin: &flat::EquationOrigin,
 ) -> Result<FlattenedEquations, FlattenError> {
     if is_assert_function_call(comp) {
-        return flatten_assert_function_call(ctx, args, prefix, span, def_map);
+        return flatten_assert_function_call(
+            AssertEquationLowering::new(ctx, prefix, span, def_map, origin.clone()),
+            args,
+        );
     }
     extract_vcg_data_from_function_call(comp, args, prefix)
-}
-
-fn is_assert_function_call(comp: &ast::ComponentReference) -> bool {
-    comp.parts
-        .last()
-        .map(|part| part.ident.text.as_ref() == "assert")
-        .unwrap_or(false)
-}
-
-fn flatten_assert_function_call(
-    ctx: &Context,
-    args: &[ast::Expression],
-    prefix: &ast::QualifiedName,
-    span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
-) -> Result<FlattenedEquations, FlattenError> {
-    let positional: Vec<&ast::Expression> = args
-        .iter()
-        .filter(|arg| !matches!(arg, ast::Expression::NamedArgument { .. }))
-        .collect();
-    let condition = named_call_arg(args, "condition").or_else(|| positional.first().copied());
-    let message = named_call_arg(args, "message").or_else(|| positional.get(1).copied());
-    let level = named_call_arg(args, "level").or_else(|| positional.get(2).copied());
-
-    let (condition, message) = match (condition, message) {
-        (Some(condition), Some(message)) => (condition, message),
-        _ => {
-            return Err(FlattenError::unsupported_equation(
-                "assert() equation requires at least condition and message arguments",
-                span,
-            ));
-        }
-    };
-
-    let imports = &ctx.current_imports;
-    let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx)?,
-        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx)?,
-        level
-            .map(|expr| {
-                qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
-            })
-            .transpose()?,
-        span,
-    );
-
-    Ok(FlattenedEquations {
-        equations: vec![],
-        structured_equations: vec![],
-        assert_equations: vec![assert_eq],
-        when_clauses: vec![],
-        definite_roots: vec![],
-        branches: vec![],
-        potential_roots: vec![],
-    })
-}
-
-fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast::Expression> {
-    args.iter().find_map(|arg| {
-        if let ast::Expression::NamedArgument {
-            name: arg_name,
-            value,
-            ..
-        } = arg
-            && arg_name.text.as_ref() == name
-        {
-            Some(value.as_ref())
-        } else {
-            None
-        }
-    })
 }
 
 /// Create a residual expression: lhs - rhs
@@ -1025,327 +933,6 @@ fn expand_array_comprehension_recursive(
 // Array flat::Equation Expansion (MLS §10.5)
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExpressionShape {
-    Scalar,
-    Vector(i64),
-    Matrix(i64, i64),
-    Other,
-}
-
-fn expression_shape_from_dims(dims: &[i64]) -> ExpressionShape {
-    match dims {
-        [] => ExpressionShape::Scalar,
-        [n] => ExpressionShape::Vector((*n).max(0)),
-        [r, c] => ExpressionShape::Matrix((*r).max(0), (*c).max(0)),
-        _ => ExpressionShape::Other,
-    }
-}
-
-fn infer_component_ref_shape(
-    cr: &ast::ComponentReference,
-    prefix: &ast::QualifiedName,
-    ctx: &Context,
-) -> ExpressionShape {
-    let qualified = build_qualified_name(prefix, cr);
-    // Exact lookup already includes any expanded parent indices in the key
-    // (e.g. `medium_T[2].state.X`), so dims are already projected.
-    if let Some(dims) = ctx.get_array_dimensions(&qualified) {
-        return expression_shape_from_dims(dims);
-    }
-
-    // Fall back to the unscripted path and project by subscripts in the reference.
-    // This handles references like `A[i]` when only `A` has known dimensions.
-    let unscripted = strip_subscripts_from_component_ref(cr);
-    let qualified_unscripted = build_qualified_name(prefix, &unscripted);
-    let Some(dims) = ctx.get_array_dimensions(&qualified_unscripted) else {
-        return ExpressionShape::Scalar;
-    };
-    expression_shape_from_dims(&project_component_dims_by_subscripts(dims, cr))
-}
-
-fn strip_subscripts_from_component_ref(cr: &ast::ComponentReference) -> ast::ComponentReference {
-    let mut stripped = cr.clone();
-    for part in &mut stripped.parts {
-        part.subs = None;
-    }
-    stripped
-}
-
-fn project_component_dims_by_subscripts(dims: &[i64], cr: &ast::ComponentReference) -> Vec<i64> {
-    if dims.is_empty() {
-        return Vec::new();
-    }
-
-    let mut remaining_dims = Vec::new();
-    let mut dim_idx = 0usize;
-
-    for part in &cr.parts {
-        let Some(subs) = &part.subs else {
-            continue;
-        };
-        for sub in subs {
-            if dim_idx >= dims.len() {
-                break;
-            }
-            match sub {
-                ast::Subscript::Expression(_) => {
-                    dim_idx += 1;
-                }
-                ast::Subscript::Range { .. } => {
-                    remaining_dims.push(dims[dim_idx]);
-                    dim_idx += 1;
-                }
-                ast::Subscript::Empty => {}
-            }
-        }
-    }
-
-    remaining_dims.extend_from_slice(&dims[dim_idx..]);
-    remaining_dims
-}
-
-fn combine_additive_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
-    match (lhs, rhs) {
-        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
-        (ExpressionShape::Vector(n), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Vector(n)) => ExpressionShape::Vector(n),
-        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Matrix(r, c)) => ExpressionShape::Matrix(r, c),
-        (ExpressionShape::Vector(a), ExpressionShape::Vector(b)) if a == b => {
-            ExpressionShape::Vector(a)
-        }
-        (ExpressionShape::Matrix(r1, c1), ExpressionShape::Matrix(r2, c2))
-            if r1 == r2 && c1 == c2 =>
-        {
-            ExpressionShape::Matrix(r1, c1)
-        }
-        _ => ExpressionShape::Other,
-    }
-}
-
-fn combine_mul_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
-    match (lhs, rhs) {
-        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
-        (ExpressionShape::Vector(n), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Vector(n)) => ExpressionShape::Vector(n),
-        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Matrix(r, c)) => ExpressionShape::Matrix(r, c),
-        // Modelica vector * vector is dot-product.
-        (ExpressionShape::Vector(a), ExpressionShape::Vector(b)) if a == b => {
-            ExpressionShape::Scalar
-        }
-        (ExpressionShape::Vector(v), ExpressionShape::Matrix(r, c)) if v == r => {
-            ExpressionShape::Vector(c)
-        }
-        (ExpressionShape::Matrix(r, c), ExpressionShape::Vector(v)) if c == v => {
-            ExpressionShape::Vector(r)
-        }
-        (ExpressionShape::Matrix(r1, c1), ExpressionShape::Matrix(r2, c2)) if c1 == r2 => {
-            ExpressionShape::Matrix(r1, c2)
-        }
-        _ => ExpressionShape::Other,
-    }
-}
-
-fn combine_elementwise_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
-    match (lhs, rhs) {
-        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
-        (ExpressionShape::Vector(n), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Vector(n)) => ExpressionShape::Vector(n),
-        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Matrix(r, c)) => ExpressionShape::Matrix(r, c),
-        (ExpressionShape::Vector(a), ExpressionShape::Vector(b)) if a == b => {
-            ExpressionShape::Vector(a)
-        }
-        (ExpressionShape::Matrix(r1, c1), ExpressionShape::Matrix(r2, c2))
-            if r1 == r2 && c1 == c2 =>
-        {
-            ExpressionShape::Matrix(r1, c1)
-        }
-        _ => ExpressionShape::Other,
-    }
-}
-
-fn infer_scalar_rhs_shape(
-    lhs_shape: ExpressionShape,
-    rhs_shape: ExpressionShape,
-) -> ExpressionShape {
-    match (lhs_shape, rhs_shape) {
-        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
-        (ExpressionShape::Vector(n), ExpressionShape::Scalar) => ExpressionShape::Vector(n),
-        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar) => ExpressionShape::Matrix(r, c),
-        _ => ExpressionShape::Other,
-    }
-}
-
-fn infer_binary_shape(
-    op: &rumoca_core::OpBinary,
-    lhs_shape: ExpressionShape,
-    rhs_shape: ExpressionShape,
-) -> ExpressionShape {
-    match op {
-        rumoca_core::OpBinary::Add
-        | rumoca_core::OpBinary::Sub
-        | rumoca_core::OpBinary::AddElem
-        | rumoca_core::OpBinary::SubElem => combine_additive_shapes(lhs_shape, rhs_shape),
-        rumoca_core::OpBinary::Mul => combine_mul_shapes(lhs_shape, rhs_shape),
-        rumoca_core::OpBinary::MulElem
-        | rumoca_core::OpBinary::DivElem
-        | rumoca_core::OpBinary::ExpElem => combine_elementwise_shapes(lhs_shape, rhs_shape),
-        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::Exp => {
-            infer_scalar_rhs_shape(lhs_shape, rhs_shape)
-        }
-        rumoca_core::OpBinary::Eq
-        | rumoca_core::OpBinary::Neq
-        | rumoca_core::OpBinary::Lt
-        | rumoca_core::OpBinary::Le
-        | rumoca_core::OpBinary::Gt
-        | rumoca_core::OpBinary::Ge
-        | rumoca_core::OpBinary::And
-        | rumoca_core::OpBinary::Or
-        | rumoca_core::OpBinary::Assign
-        | rumoca_core::OpBinary::Empty => ExpressionShape::Scalar,
-    }
-}
-
-fn infer_expression_shape(
-    expr: &ast::Expression,
-    prefix: &ast::QualifiedName,
-    ctx: &Context,
-) -> ExpressionShape {
-    match expr {
-        ast::Expression::Terminal { .. } => ExpressionShape::Scalar,
-        ast::Expression::ComponentReference(cr) => infer_component_ref_shape(cr, prefix, ctx),
-        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs, .. } => {
-            infer_expression_shape(rhs, prefix, ctx)
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs_shape = infer_expression_shape(lhs, prefix, ctx);
-            let rhs_shape = infer_expression_shape(rhs, prefix, ctx);
-            infer_binary_shape(op, lhs_shape, rhs_shape)
-        }
-        ast::Expression::FunctionCall { comp, .. } => {
-            if is_reduction_operator(comp) {
-                ExpressionShape::Scalar
-            } else {
-                ExpressionShape::Other
-            }
-        }
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let else_shape = infer_expression_shape(else_branch, prefix, ctx);
-            if branches
-                .iter()
-                .all(|(_, expr)| infer_expression_shape(expr, prefix, ctx) == else_shape)
-            {
-                else_shape
-            } else {
-                ExpressionShape::Other
-            }
-        }
-        ast::Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => {
-            if *is_matrix {
-                ExpressionShape::Other
-            } else if elements
-                .iter()
-                .all(|e| infer_expression_shape(e, prefix, ctx) == ExpressionShape::Scalar)
-            {
-                ExpressionShape::Vector(elements.len() as i64)
-            } else {
-                ExpressionShape::Other
-            }
-        }
-        ast::Expression::Range { .. }
-        | ast::Expression::FieldAccess { .. }
-        | ast::Expression::Tuple { .. }
-        | ast::Expression::ArrayComprehension { .. }
-        | ast::Expression::ArrayIndex { .. }
-        | ast::Expression::NamedArgument { .. }
-        | ast::Expression::Modification { .. }
-        | ast::Expression::ClassModification { .. }
-        | ast::Expression::Empty { .. } => ExpressionShape::Other,
-    }
-}
-
-fn shape_scalar_size(shape: ExpressionShape) -> Option<usize> {
-    match shape {
-        ExpressionShape::Scalar => Some(1),
-        ExpressionShape::Vector(n) => Some(n.max(0) as usize),
-        ExpressionShape::Matrix(r, c) => {
-            Some((r.max(0) as usize).saturating_mul(c.max(0) as usize))
-        }
-        ExpressionShape::Other => None,
-    }
-}
-
-fn dims_scalar_size(dims: &[i64]) -> usize {
-    if dims.is_empty() {
-        1
-    } else {
-        dims.iter()
-            .fold(1usize, |acc, d| acc.saturating_mul((*d).max(0) as usize))
-    }
-}
-
-/// Infer scalar equation count for a simple equation without expanding it.
-///
-/// This preserves array equations as single residuals while still carrying scalar
-/// size information for balance checking.
-fn infer_simple_equation_scalar_count(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    prefix: &ast::QualifiedName,
-    ctx: &Context,
-) -> usize {
-    let lhs_shape = infer_expression_shape(lhs, prefix, ctx);
-    let rhs_shape = infer_expression_shape(rhs, prefix, ctx);
-
-    match (lhs_shape, rhs_shape) {
-        (ExpressionShape::Scalar, ExpressionShape::Scalar) => return 1,
-        (ExpressionShape::Vector(n), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Vector(n)) => return n.max(0) as usize,
-        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar)
-        | (ExpressionShape::Scalar, ExpressionShape::Matrix(r, c)) => {
-            return (r.max(0) as usize).saturating_mul(c.max(0) as usize);
-        }
-        (ExpressionShape::Vector(a), ExpressionShape::Vector(b)) if a == b => {
-            return a.max(0) as usize;
-        }
-        (ExpressionShape::Matrix(r1, c1), ExpressionShape::Matrix(r2, c2))
-            if r1 == r2 && c1 == c2 =>
-        {
-            return (r1.max(0) as usize).saturating_mul(c1.max(0) as usize);
-        }
-        _ => {}
-    }
-
-    // Prefer LHS shape when available (equation result shape is usually driven by LHS).
-    if let Some(size) = shape_scalar_size(lhs_shape)
-        && size != 1
-    {
-        return size;
-    }
-    if let Some(size) = shape_scalar_size(rhs_shape)
-        && size != 1
-    {
-        return size;
-    }
-
-    // Fallback to array-reference dimensional metadata.
-    if let Some(array_ref) = find_array_refs_needing_expansion(lhs, prefix, ctx).first() {
-        return dims_scalar_size(&array_ref.dims);
-    }
-    1
-}
-
 /// Find array variables in an expression that need index expansion.
 ///
 /// Returns (qualified_path, dimensions) for each array variable found that:
@@ -1542,6 +1129,51 @@ fn expand_for_equation(
         return flatten_equations_list(ctx, equations, prefix, span, origin, def_map);
     }
 
+    // Classify regularity from the still-symbolic body BEFORE materializing, so the
+    // decision to cheapen interior cells is available to `collect_for_iterations`.
+    let regular = {
+        let resolve = |cr: &ast::ComponentReference| {
+            try_eval_integer_with_ctx(
+                ctx,
+                &ast::Expression::ComponentReference(cr.clone()),
+                prefix,
+            )
+        };
+        affine::classify_regular_for_family(indices, equations, &resolve)
+    };
+    // Capture the comprehension body from the ORIGINAL (un-substituted) loop body, so
+    // every binder -- including the outer one when this is a nested `for i for j` --
+    // stays symbolic. Needed BEFORE the cheapen decision: a parameter-variability
+    // family is only cheapenable when its template can rebuild the promoted value.
+    let template = capture_comprehension_template(ctx, equations, prefix, def_map);
+
+    // A regular family lowered with materialization off keeps only its corner cells
+    // (base + one neighbor per binder) with full bodies; the interior cells get a
+    // cheap placeholder body, and the family is flagged so downstream phases rebuild
+    // their incidence/strides from the corners. Two cheapenable kinds:
+    //   * STATE-DERIVATIVE bodies (`der(x[...]) = ...`): solve rebuilds the stencil
+    //     from the corners, so interior bodies are never read.
+    //   * PARAMETER-VARIABILITY algebraic assignments (e.g. `sc[i,j] = geometry`) with
+    //     a captured template: the DAE promotes the array to a derived parameter,
+    //     reconstructing its value array-natively from that template and dropping the
+    //     per-cell bodies (`promote_parameter_variable`). A fail-early DAE guard
+    //     rejects any cheapened algebraic family that promotion does not template-
+    //     reconstruct, so cheapening to 0 here can never silently survive.
+    let cheapen_plan = if !ctx.materialize_structured_families
+        && regular.is_some()
+        && (is_state_derivative_body(equations)
+            || (template.is_some()
+                && crate::param_variability::is_parameter_variability_assignment_body(
+                    indices,
+                    equations,
+                    &ctx.param_variability_family_bases,
+                ))) {
+        build_cheapen_plan(ctx, indices, prefix, span)?
+    } else {
+        None
+    };
+    let interiors_materialized = cheapen_plan.is_none();
+
     let mut iterations = Vec::new();
     let mut result = FlattenedEquations::default();
     let mut index_values = Vec::with_capacity(indices.len());
@@ -1559,13 +1191,19 @@ fn expand_for_equation(
         &mut index_values,
         &mut iterations,
         &mut result,
+        cheapen_plan.as_ref(),
     )?;
     if iterations.is_empty() {
         return Ok(result);
     }
     let domain = compact_domain_from_iterations(indices, &iterations, span)?;
-    let nested_family_lifted =
-        lift_full_iteration_child_family(&mut result.structured_equations, &domain, &iterations);
+    let nested_family_lifted = lift_full_iteration_child_family(
+        &mut result.structured_equations,
+        &domain,
+        &iterations,
+        regular.clone(),
+        template.clone(),
+    );
     if nested_family_lifted {
         return Ok(result);
     }
@@ -1580,9 +1218,60 @@ fn expand_for_equation(
                 .collect(),
             span,
             origin: origin.clone(),
+            regular,
+            template,
+            interiors_materialized,
         });
 
     Ok(result)
+}
+
+/// Capture the family's canonical comprehension body: flatten each loop-body
+/// equation ONCE with the binder indices left symbolic (e.g. `u[i - 1, j]` stays an
+/// indexed access instead of concretizing to `u[3, 4]`). The domain already records
+/// the binders, so the residual bodies plus the domain fully describe the family as
+/// `{ body(i, j) for i, j }`.
+///
+/// Returns `None` when the body is not a flat list of simple `lhs = rhs` residual
+/// equations (e.g. nested `for`/`if`/`when`), leaving the historical materialized
+/// path in charge for those shapes.
+fn capture_comprehension_template(
+    ctx: &Context,
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    def_map: Option<&crate::ResolveDefMap>,
+) -> Option<rumoca_core::ComprehensionTemplate> {
+    let mut body = Vec::new();
+    collect_template_residuals(ctx, equations, prefix, def_map, &mut body)?;
+    (!body.is_empty()).then_some(rumoca_core::ComprehensionTemplate { body })
+}
+
+/// Append the symbolic residual of every leaf `lhs = rhs` equation in `equations`
+/// to `body`, descending through nested `for` equations (a `for i for j` body).
+/// The inner binders are never substituted here, so they stay symbolic in the
+/// qualified residual. Returns `None` for any non-elementwise shape (`if`/`when`/
+/// function-call/connect), which falls back to the materialized path.
+fn collect_template_residuals(
+    ctx: &Context,
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    def_map: Option<&crate::ResolveDefMap>,
+    body: &mut Vec<rumoca_core::Expression>,
+) -> Option<()> {
+    for equation in equations {
+        match equation {
+            ast::Equation::Simple { lhs, rhs } => {
+                body.push(make_residual(ctx, lhs, rhs, prefix, def_map).ok()?);
+            }
+            ast::Equation::For {
+                equations: inner, ..
+            } => {
+                collect_template_residuals(ctx, inner, prefix, def_map, body)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(())
 }
 
 struct ForIterationEnv<'a> {
@@ -1600,16 +1289,23 @@ fn collect_for_iterations(
     index_values: &mut Vec<i64>,
     iterations: &mut Vec<SourceStructuredIteration>,
     out: &mut FlattenedEquations,
+    cheapen_plan: Option<&CheapenPlan>,
 ) -> Result<(), FlattenError> {
     if indices.is_empty() {
-        let flattened = flatten_equations_list(
-            env.ctx,
-            equations,
-            env.prefix,
-            env.span,
-            env.origin,
-            env.def_map,
-        )?;
+        // Interior cells of a cheapened regular family get a placeholder body, so
+        // the expensive flatten expansion runs only for the corner cells. The
+        // equation count is preserved (each `Simple` cheapens to one `Simple`), so
+        // the cell-to-row layout downstream is unchanged.
+        let cheapened;
+        let body = match cheapen_plan {
+            Some(plan) if !plan.is_corner(index_values) => {
+                cheapened = cheapen_equation_bodies(equations, env.span);
+                cheapened.as_slice()
+            }
+            _ => equations,
+        };
+        let flattened =
+            flatten_equations_list(env.ctx, body, env.prefix, env.span, env.origin, env.def_map)?;
         iterations.push(SourceStructuredIteration {
             index_values: index_values.clone(),
             equation_count: flattened.equations.len(),
@@ -1636,11 +1332,99 @@ fn collect_for_iterations(
             index_values,
             iterations,
             out,
+            cheapen_plan,
         )?;
         index_values.pop();
     }
 
     Ok(())
+}
+
+/// Per-binder base and optional `+step` neighbor values used to identify a regular
+/// family's corner cells during materialization. A cell is a corner when its index
+/// tuple equals the base, or differs from the base in exactly one binder, at that
+/// binder's neighbor value.
+struct CheapenPlan {
+    binders: Vec<(i64, Option<i64>)>,
+}
+
+impl CheapenPlan {
+    fn is_corner(&self, index_values: &[i64]) -> bool {
+        let mut differing = false;
+        for (&(base, neighbor), &value) in self.binders.iter().zip(index_values) {
+            if value == base {
+                continue;
+            }
+            if differing || neighbor != Some(value) {
+                return false;
+            }
+            differing = true;
+        }
+        true
+    }
+}
+
+/// True when every equation in the body is a state-derivative assignment
+/// `der(x[...]) = ...`. Only these are safe to cheapen: solve reconstructs the
+/// derivative from the corner stencil at runtime, so the interior bodies are never
+/// read. Algebraic assignments are excluded -- their per-cell values feed
+/// compile-time derived-parameter promotion.
+fn is_state_derivative_body(equations: &[ast::Equation]) -> bool {
+    !equations.is_empty()
+        && equations.iter().all(|equation| match equation {
+            ast::Equation::Simple { lhs, .. } => is_der_call(lhs),
+            _ => false,
+        })
+}
+
+/// True when `expr` is a `der(...)` call.
+fn is_der_call(expr: &ast::Expression) -> bool {
+    matches!(
+        expr,
+        ast::Expression::FunctionCall { comp, .. }
+            if comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "der"
+    )
+}
+
+/// Build the corner predicate for a regular for-family by expanding each binder's
+/// range to read its base (first) and neighbor (second) values. `None` when any
+/// binder range is empty (the family has no cells, so nothing to cheapen).
+fn build_cheapen_plan(
+    ctx: &Context,
+    indices: &[ast::ForIndex],
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+) -> Result<Option<CheapenPlan>, FlattenError> {
+    let mut binders = Vec::with_capacity(indices.len());
+    for index in indices {
+        let values = expand_range_indices(ctx, &index.range, prefix, span)?;
+        let Some(&base) = values.first() else {
+            return Ok(None);
+        };
+        binders.push((base, values.get(1).copied()));
+    }
+    Ok(Some(CheapenPlan { binders }))
+}
+
+/// Replace each `Simple` equation's right-hand side with a real `0.0` literal,
+/// keeping the left-hand side. Used for a regular family's interior cells, whose
+/// real bodies are reconstructed downstream from the corner cells. Non-`Simple`
+/// equations are left unchanged (a regular family's body is `Simple`; this only
+/// guards against unexpected shapes).
+fn cheapen_equation_bodies(
+    equations: &[ast::Equation],
+    span: rumoca_core::Span,
+) -> Vec<ast::Equation> {
+    equations
+        .iter()
+        .map(|equation| match equation {
+            ast::Equation::Simple { lhs, .. } => ast::Equation::Simple {
+                lhs: lhs.clone(),
+                rhs: zero_sized_reductions::real_literal_expr(0.0, span),
+            },
+            other => other.clone(),
+        })
+        .collect()
 }
 
 #[derive(Clone)]

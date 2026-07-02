@@ -66,7 +66,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 elements,
                 is_matrix,
                 ..
-            } => array_expression_dims(elements, *is_matrix, span),
+            } => self.array_expression_dims(elements, *is_matrix, scope, depth, span),
             rumoca_core::Expression::Literal { .. } => Ok(Some(Vec::new())),
             rumoca_core::Expression::Unary { rhs, .. } => {
                 self.expr_dims_with_owner(rhs, scope, depth, span)
@@ -99,12 +99,18 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     span,
                 )?))
             }
+            rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+                self.linear_algebra_builtin_dims(function, args, scope, depth, span)
+            }
             rumoca_core::Expression::FunctionCall {
                 name,
                 is_constructor: false,
                 ..
             } => self.function_call_expr_dims(name, expr, span, depth),
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
+                if let Some(dims) = self.bound_field_access_dims(base, field, scope, span, depth)? {
+                    return Ok(Some(dims));
+                }
                 self.function_field_access_dims(base, field, span, depth)
             }
             rumoca_core::Expression::Binary { op, lhs, rhs, .. } if is_mul(op) => {
@@ -136,6 +142,116 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn linear_algebra_builtin_dims(
+        &self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        match function {
+            rumoca_core::BuiltinFunction::Cross => {
+                copy_projection_dims(&[3], "cross product dimension count", span).map(Some)
+            }
+            rumoca_core::BuiltinFunction::Skew => {
+                copy_projection_dims(&[3, 3], "skew matrix dimension count", span).map(Some)
+            }
+            rumoca_core::BuiltinFunction::Diagonal => {
+                self.diagonal_builtin_dims(args, scope, depth, span)
+            }
+            rumoca_core::BuiltinFunction::OuterProduct => {
+                self.outer_product_builtin_dims(args, scope, depth, span)
+            }
+            rumoca_core::BuiltinFunction::Symmetric => {
+                self.symmetric_builtin_dims(args, scope, depth, span)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn diagonal_builtin_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let Some(arg) = args.first() else {
+            return Ok(None);
+        };
+        let Some(dims) = self.expr_dims_with_owner(arg, scope, depth + 1, span)? else {
+            return Ok(None);
+        };
+        let [len] = dims.as_slice() else {
+            return Ok(None);
+        };
+        copy_projection_dims(&[*len, *len], "diagonal matrix dimension count", span).map(Some)
+    }
+
+    fn outer_product_builtin_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let (Some(lhs), Some(rhs)) = (args.first(), args.get(1)) else {
+            return Ok(None);
+        };
+        let Some(lhs_dims) = self.expr_dims_with_owner(lhs, scope, depth + 1, span)? else {
+            return Ok(None);
+        };
+        let Some(rhs_dims) = self.expr_dims_with_owner(rhs, scope, depth + 1, span)? else {
+            return Ok(None);
+        };
+        let ([rows], [cols]) = (lhs_dims.as_slice(), rhs_dims.as_slice()) else {
+            return Ok(None);
+        };
+        copy_projection_dims(
+            &[*rows, *cols],
+            "outer product matrix dimension count",
+            span,
+        )
+        .map(Some)
+    }
+
+    fn symmetric_builtin_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let Some(arg) = args.first() else {
+            return Ok(None);
+        };
+        let Some(dims) = self.expr_dims_with_owner(arg, scope, depth + 1, span)? else {
+            return Ok(None);
+        };
+        match dims.as_slice() {
+            [rows, cols] if rows == cols => {
+                copy_projection_dims(&dims, "symmetric matrix dimension count", span).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn array_expression_dims(
+        &self,
+        elements: &[rumoca_core::Expression],
+        is_matrix: bool,
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let child_dims = elements
+            .iter()
+            .map(|element| self.expr_dims_with_owner(element, scope, depth + 1, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        array_expression_dims(elements, is_matrix, &child_dims, span)
     }
 
     pub(super) fn known_expr_dims(
@@ -174,6 +290,52 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             return Ok(None);
         };
         projected_field_output_dims(&outputs, field, span)
+    }
+
+    fn bound_field_access_dims(
+        &self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+        depth: usize,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let Ok(key) = field_access_binding_key(base, field) else {
+            return Ok(None);
+        };
+        if let Some(dims) = scope.dims.get(key.as_str()) {
+            return copy_projection_dims(dims, "field access scope dimension count", span)
+                .map(Some);
+        }
+        if let Some(values) = scope.scalars.get(key.as_str()) {
+            return Self::projected_scalar_values_dims(values, span).map(Some);
+        }
+        if let Some(expr) = scope.full.get(key.as_str())
+            && !is_same_plain_var_ref(expr, key.as_str())
+        {
+            return self.expr_dims_with_owner(expr, scope, depth + 1, span);
+        }
+        variable_by_name(self.dae_model, key.as_str())
+            .map(|variable| variable_dims_i64(variable, span))
+            .transpose()
+    }
+
+    fn projected_scalar_values_dims(
+        values: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> Result<Vec<i64>, LowerError> {
+        match values.len() {
+            0 | 1 => Ok(Vec::new()),
+            len => copy_projection_dims(
+                &[checked_usize_to_i64(
+                    len,
+                    "projected scalar value count",
+                    span,
+                )?],
+                "projected scalar dimension count",
+                span,
+            ),
+        }
     }
 
     fn function_call_expr_dims(

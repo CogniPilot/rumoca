@@ -3,6 +3,8 @@ use indexmap::IndexSet;
 use rumoca_ir_ast as ast;
 
 type FlowVarSet = IndexSet<rumoca_core::VarName>;
+type InterfaceConnectorRootSet = IndexSet<rumoca_core::ComponentPath>;
+pub(super) type InterfaceConnectorRootsByScope = IndexMap<String, InterfaceConnectorRootSet>;
 
 /// Compute scalar count from variable dimensions.
 ///
@@ -221,9 +223,18 @@ fn is_outside_flow_var_for_scope(
     scope: &str,
     interface_flow_vars_by_scope: &IndexMap<String, FlowVarSet>,
 ) -> bool {
-    interface_flow_vars_by_scope
-        .get(scope)
-        .is_some_and(|scope_vars| scope_vars.contains(var_name))
+    let Some(scope_vars) = interface_flow_vars_by_scope.get(scope) else {
+        return false;
+    };
+    if scope_vars.contains(var_name) {
+        return true;
+    }
+
+    // Connector-array expansion can generate scalar flow variables such as
+    // `plug.pin[1].i` while interface discovery records the connector member as
+    // `plug.pin.i`. They have the same inside/outside role for MLS §9.2 signs.
+    strip_embedded_array_indices(var_name.as_str())
+        .is_some_and(|base_name| scope_vars.contains(&rumoca_core::VarName::new(base_name)))
 }
 
 // =============================================================================
@@ -335,8 +346,14 @@ pub(crate) fn process_connections(
     let flow_vars_at_scope =
         collect_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
 
-    let interface_flow_vars_by_scope =
-        collect_interface_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
+    let interface_connector_roots_by_scope = collect_interface_connector_roots_by_scope(overlay);
+    let interface_flow_vars_by_scope = collect_interface_flow_vars_by_scope(
+        &all_connections,
+        flat,
+        &prefix_children,
+        &var_index,
+        &interface_connector_roots_by_scope,
+    );
 
     // Build connection sets (variables connected together)
     let (connection_sets, raw_stream_groups, stream_interface_equation_count) =
@@ -382,6 +399,7 @@ pub(crate) fn process_connections(
         &all_connections,
         &prefix_children,
         &var_index,
+        &interface_connector_roots_by_scope,
     )?;
 
     Ok(())
@@ -487,16 +505,39 @@ fn collect_flow_vars_from_conn_path(
     }
 }
 
+fn collect_interface_connector_roots_by_scope(
+    overlay: &ast::InstanceOverlay,
+) -> InterfaceConnectorRootsByScope {
+    let mut result: InterfaceConnectorRootsByScope = IndexMap::default();
+
+    for instance in overlay.components.values() {
+        if !instance.is_connector_type || instance.is_protected {
+            continue;
+        }
+        let path = instance.qualified_name.to_component_path();
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        result
+            .entry(parent.to_flat_string())
+            .or_default()
+            .insert(path);
+    }
+
+    result
+}
+
 /// Collect flow variables on interface connectors at each scope level (MLS §9.2).
 ///
-/// An interface connector is referenced as a single identifier (no dots) relative
-/// to its connection scope. These are the model boundary connectors that may need
-/// `flow = 0` at the parent scope if not connected there.
+/// An interface connector is a public connector-typed component declared directly
+/// in the connection scope. Connection paths can name the connector itself or a
+/// nested connector member below that root, e.g. `plug.pin`.
 fn collect_interface_flow_vars_by_scope(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
+    interface_connector_roots_by_scope: &InterfaceConnectorRootsByScope,
 ) -> IndexMap<String, FlowVarSet> {
     let mut result: IndexMap<String, FlowVarSet> = IndexMap::default();
 
@@ -505,14 +546,11 @@ fn collect_interface_flow_vars_by_scope(
 
         for path_qn in [&conn.a, &conn.b] {
             let path = path_qn.to_flat_string();
-
-            let Some(relative) = relative_component_path(&path, scope) else {
-                continue;
-            };
-
-            // Interface connector: single identifier (no top-level dots in relative path).
-            // Dots inside bracketed subscripts are part of subscript expressions.
-            if is_single_identifier_path(&relative) {
+            if is_interface_connection_path_for_scope(
+                &path,
+                scope,
+                interface_connector_roots_by_scope,
+            ) {
                 let scope_set = result.entry(scope.clone()).or_default();
                 collect_flow_vars_from_conn_path(
                     flat,
@@ -526,6 +564,24 @@ fn collect_interface_flow_vars_by_scope(
     }
 
     result
+}
+
+pub(super) fn is_interface_connection_path_for_scope(
+    path: &str,
+    scope: &str,
+    interface_connector_roots_by_scope: &InterfaceConnectorRootsByScope,
+) -> bool {
+    let path = rumoca_core::ComponentPath::from_flat_path(path);
+    if let Some(scope_roots) = interface_connector_roots_by_scope.get(scope)
+        && scope_roots
+            .iter()
+            .any(|root| path == *root || path.starts_with(root))
+    {
+        return true;
+    }
+
+    relative_component_path_from_path(&path, scope)
+        .is_some_and(|relative| is_single_identifier_path(&relative))
 }
 
 /// MLS §15.2 inStream() rewrite for two-connector stream connection sets.
@@ -594,13 +650,15 @@ fn is_single_identifier_path(path: &rumoca_core::ComponentPath) -> bool {
     path.len() == 1
 }
 
-fn relative_component_path(path: &str, scope: &str) -> Option<rumoca_core::ComponentPath> {
-    let path = rumoca_core::ComponentPath::from_flat_path(path);
+fn relative_component_path_from_path(
+    path: &rumoca_core::ComponentPath,
+    scope: &str,
+) -> Option<rumoca_core::ComponentPath> {
     let scope = rumoca_core::ComponentPath::from_flat_path(scope);
     if scope.is_root() {
-        return Some(path);
+        return Some(path.clone());
     }
-    component_path_has_scope_prefix(&path, &scope)
+    component_path_has_scope_prefix(path, &scope)
         .then(|| path.suffix_from(scope.len()))
         .flatten()
 }
@@ -663,9 +721,15 @@ fn generate_external_unconnected_flow_equations(
     connections: &[&ast::InstanceConnection],
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
+    interface_connector_roots_by_scope: &InterfaceConnectorRootsByScope,
 ) -> Result<(), FlattenError> {
-    let interface_flow_vars_by_scope =
-        collect_interface_flow_vars_by_scope(connections, flat, prefix_children, var_index);
+    let interface_flow_vars_by_scope = collect_interface_flow_vars_by_scope(
+        connections,
+        flat,
+        prefix_children,
+        var_index,
+        interface_connector_roots_by_scope,
+    );
     let need_flow_zero =
         find_unconnected_interface_flows(&interface_flow_vars_by_scope, flow_vars_at_scope, flat);
 
@@ -747,10 +811,46 @@ fn redirect_qualified_name(
     }
 }
 
+fn bridge_scope_matches_connection_scope(inner_outer_prefix: &str, connection_scope: &str) -> bool {
+    let bridge_scope = ast::QualifiedName::from_dotted(inner_outer_prefix)
+        .parent()
+        .unwrap_or_default();
+    bridge_scope == ast::QualifiedName::from_dotted(connection_scope)
+}
+
+fn redirect_inner_outer_bridge_for_scope(
+    qn: &mut ast::QualifiedName,
+    inner_outer_to_parent_inner: &ast::AstIndexMap<String, String>,
+    connection_scope: &str,
+) {
+    if inner_outer_to_parent_inner.is_empty() {
+        return;
+    }
+    let flat = qn.to_flat_string();
+    for (inner_outer_prefix, parent_inner_prefix) in inner_outer_to_parent_inner {
+        if !bridge_scope_matches_connection_scope(inner_outer_prefix, connection_scope) {
+            continue;
+        }
+        if flat == *inner_outer_prefix || flat.starts_with(&format!("{inner_outer_prefix}.")) {
+            let new_flat = if flat == *inner_outer_prefix {
+                parent_inner_prefix.clone()
+            } else {
+                format!(
+                    "{}{}",
+                    parent_inner_prefix,
+                    &flat[inner_outer_prefix.len()..]
+                )
+            };
+            *qn = ast::QualifiedName::from_dotted(&new_flat);
+            return;
+        }
+    }
+}
+
 /// MLS §5.4: Apply outer→inner and inner-outer bridge redirects to a connection.
 ///
 /// First pass: redirect pure `outer` component references to their matching `inner`.
-/// Second pass: if no redirect happened (same-level connection), redirect `inner outer`
+/// Second pass: if no redirect happened, redirect same-level `inner outer`
 /// component references to the parent's inner for correct flow equation scoping.
 /// In both cases, reset the scope to root so flow sums merge properly.
 fn redirect_connection_for_inner_outer(
@@ -774,8 +874,16 @@ fn redirect_connection_for_inner_outer(
 
     // Second pass: inner outer bridge redirect (only when first pass had no effect)
     if !overlay.inner_outer_to_parent_inner.is_empty() {
-        redirect_qualified_name(&mut redirected.a, &overlay.inner_outer_to_parent_inner);
-        redirect_qualified_name(&mut redirected.b, &overlay.inner_outer_to_parent_inner);
+        redirect_inner_outer_bridge_for_scope(
+            &mut redirected.a,
+            &overlay.inner_outer_to_parent_inner,
+            &conn.scope,
+        );
+        redirect_inner_outer_bridge_for_scope(
+            &mut redirected.b,
+            &overlay.inner_outer_to_parent_inner,
+            &conn.scope,
+        );
         let a_bridged = a_after != redirected.a.to_flat_string();
         let b_bridged = b_after != redirected.b.to_flat_string();
         if a_bridged || b_bridged {
@@ -792,6 +900,26 @@ fn redirect_connection_for_inner_outer(
 #[cfg(test)]
 mod equation_generation_tests {
     use super::is_single_identifier_relative_path;
+    use super::*;
+
+    fn conn(a: &str, b: &str, scope: &str) -> ast::InstanceConnection {
+        ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted(a),
+            b: ast::QualifiedName::from_dotted(b),
+            connector_type: None,
+            span: rumoca_core::Span::DUMMY,
+            scope: scope.to_string(),
+        }
+    }
+
+    fn overlay_with_inner_outer_bridge() -> ast::InstanceOverlay {
+        let mut overlay = ast::InstanceOverlay::default();
+        overlay.inner_outer_to_parent_inner.insert(
+            "tankController.makeProduct.stateGraphRoot".to_string(),
+            "stateGraphRoot".to_string(),
+        );
+        overlay
+    }
 
     #[test]
     fn single_identifier_relative_path_ignores_dot_inside_subscript_expression() {
@@ -803,5 +931,49 @@ mod equation_generation_tests {
     fn single_identifier_relative_path_rejects_top_level_member_access() {
         assert!(!is_single_identifier_relative_path("plug.p"));
         assert!(!is_single_identifier_relative_path("plug[data.medium].p"));
+    }
+
+    #[test]
+    fn inner_outer_bridge_redirects_same_scope_connection_to_parent_inner() {
+        let overlay = overlay_with_inner_outer_bridge();
+        let input = conn(
+            "tankController.makeProduct.outerState.subgraphStatePort",
+            "tankController.makeProduct.stateGraphRoot.subgraphStatePort",
+            "tankController.makeProduct",
+        );
+
+        let redirected = redirect_connection_for_inner_outer(&input, &overlay);
+
+        assert_eq!(
+            redirected.a.to_flat_string(),
+            "tankController.makeProduct.outerState.subgraphStatePort"
+        );
+        assert_eq!(
+            redirected.b.to_flat_string(),
+            "stateGraphRoot.subgraphStatePort"
+        );
+        assert_eq!(redirected.scope, "");
+    }
+
+    #[test]
+    fn inner_outer_bridge_keeps_child_scope_connection_on_local_inner() {
+        let overlay = overlay_with_inner_outer_bridge();
+        let input = conn(
+            "tankController.makeProduct.fillTank1.outerStatePort.subgraphStatePort",
+            "tankController.makeProduct.stateGraphRoot.subgraphStatePort",
+            "tankController.makeProduct.fillTank1",
+        );
+
+        let redirected = redirect_connection_for_inner_outer(&input, &overlay);
+
+        assert_eq!(
+            redirected.a.to_flat_string(),
+            "tankController.makeProduct.fillTank1.outerStatePort.subgraphStatePort"
+        );
+        assert_eq!(
+            redirected.b.to_flat_string(),
+            "tankController.makeProduct.stateGraphRoot.subgraphStatePort"
+        );
+        assert_eq!(redirected.scope, "tankController.makeProduct.fillTank1");
     }
 }

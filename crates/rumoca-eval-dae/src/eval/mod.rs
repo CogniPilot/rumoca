@@ -441,6 +441,10 @@ impl<T: Clone> VarScope<T> {
         Arc::make_mut(&mut self.frame).local.insert(name, value)
     }
 
+    pub fn remove(&mut self, name: &str) -> Option<T> {
+        Arc::make_mut(&mut self.frame).local.shift_remove(name)
+    }
+
     pub fn extend<I>(&mut self, iter: I)
     where
         I: IntoIterator<Item = (String, T)>,
@@ -579,6 +583,11 @@ impl<T: SimFloat> VarEnv<T> {
 
     pub fn set(&mut self, name: &str, value: T) {
         set_env_key(self, name, value);
+    }
+
+    pub(crate) fn remove(&mut self, name: &str) -> Option<T> {
+        self.clear_function_output_cache();
+        self.vars.remove(name)
     }
 
     pub(crate) fn get_function_output_cache(&self, key: &FunctionOutputCacheKey) -> Option<T> {

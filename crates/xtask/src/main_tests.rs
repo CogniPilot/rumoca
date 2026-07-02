@@ -2,7 +2,7 @@ use super::{
     Cli, Commands, CoverageCommand, PlaygroundCommand, PythonCommand, RepoCliCommand, RepoCommand,
     RepoCompletionsCommand, RepoGraphCommand, RepoHooksCommand, RepoMslCommand, RepoPolicyCommand,
     RepoUbuntuCommand, VscodeCommand, WebCommand, classify_candidate,
-    is_line_count_excluded_rust_file,
+    docs_wasm_package_is_up_to_date, is_line_count_excluded_rust_file,
 };
 use crate::docs_cmd::{DocsBook, DocsCommand};
 use crate::modelica_dependency_cache::{CmmCommand, ModelicaDepsCommand};
@@ -203,6 +203,25 @@ fn cli_parses_verify_wasm_editor_msl_job() {
 fn cli_parses_verify_msl_parity_job() {
     let cli =
         Cli::try_parse_from(["xtask", "verify", "msl-parity"]).expect("parse verify msl-parity");
+    match cli.command {
+        Commands::Verify(args) => {
+            assert!(matches!(args.command, VerifyCommand::MslParity(_)))
+        }
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_verify_msl_parity_quality_baseline_flags() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "msl-parity",
+        "--quality-baseline",
+        "baseline.json",
+        "--no-remote-quality-baseline",
+    ])
+    .expect("parse verify msl-parity baseline flags");
     match cli.command {
         Commands::Verify(args) => {
             assert!(matches!(args.command, VerifyCommand::MslParity(_)))
@@ -880,4 +899,64 @@ fn generated_completions_include_repo_graph_crates_flags_and_repo_msl_commands()
     assert!(script.contains("xtask__repo__msl"));
     assert!(script.contains("promote-quality-baseline"));
     assert!(script.contains("--baseline"));
+}
+
+/// Set a file's modification time to `seconds` after the Unix epoch, so the
+/// freshness gate can be exercised without flaky wall-clock sleeps.
+fn set_mtime(path: &Path, seconds: u64) {
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open file to set mtime")
+        .set_modified(when)
+        .expect("set mtime");
+}
+
+#[test]
+fn docs_wasm_freshness_gate_tracks_source_edits() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+
+    // A crate source file (a WASM build input) and a compiled wasm artifact.
+    let src = root.join("crates/demo/src/lib.rs");
+    std::fs::create_dir_all(src.parent().expect("src parent")).expect("create crate dirs");
+    std::fs::write(&src, "// demo").expect("write source");
+
+    let pkg = root.join("packages/rumoca/dist/release-full-web");
+    std::fs::create_dir_all(&pkg).expect("create pkg dir");
+    let wasm = pkg.join("rumoca_bind_wasm_bg.wasm");
+    std::fs::write(&wasm, b"\0asm").expect("write wasm");
+
+    // Artifact newer than the source -> up to date (no rebuild).
+    set_mtime(&src, 1_000);
+    set_mtime(&wasm, 2_000);
+    assert!(docs_wasm_package_is_up_to_date(root, &pkg).expect("freshness check"));
+
+    // Source edited after the artifact was built -> stale (rebuild).
+    set_mtime(&src, 3_000);
+    assert!(!docs_wasm_package_is_up_to_date(root, &pkg).expect("freshness check"));
+
+    // An embedded template edit must also count as a build input, even though it
+    // is not a `.rs` file: the gate considers every file under `crates/`.
+    let template = root.join("crates/demo/src/templates/dae-modelica/model.mo.jinja");
+    std::fs::create_dir_all(template.parent().expect("template parent")).expect("template dirs");
+    std::fs::write(&template, "{{ x }}").expect("write template");
+    set_mtime(&src, 1_000);
+    set_mtime(&template, 5_000);
+    assert!(!docs_wasm_package_is_up_to_date(root, &pkg).expect("freshness check"));
+}
+
+#[test]
+fn docs_wasm_freshness_gate_rebuilds_when_no_artifact_present() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("crates")).expect("create crates dir");
+
+    // Package directory exists but holds no compiled `.wasm` output: cannot be
+    // confirmed up to date, so the gate asks for a rebuild rather than serving it.
+    let pkg = root.join("packages/rumoca/dist/release-full-web");
+    std::fs::create_dir_all(&pkg).expect("create pkg dir");
+    std::fs::write(pkg.join("rumoca_bind_wasm.js"), "// glue").expect("write glue");
+    assert!(!docs_wasm_package_is_up_to_date(root, &pkg).expect("freshness check"));
 }

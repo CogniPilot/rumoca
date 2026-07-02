@@ -12,6 +12,7 @@ use rumoca_ir_solve::{
 };
 use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
+use crate::refresh_plan::AlgebraicRefreshRow;
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
     RowInputRequirements, SimulationRuntimeState,
@@ -29,24 +30,28 @@ use crate::{
 /// Reusable evaluator for one Solve-IR row block.
 pub struct PreparedScalarProgramBlock {
     block: ScalarProgramBlock,
+    output_count: usize,
     row_registers: Vec<usize>,
     row_requirements: Vec<RowInputRequirements>,
     row_register_safe: Vec<bool>,
     row_assignment_shapes: Vec<Option<TargetAssignmentShape>>,
     requirements: RowInputRequirements,
     scratch: RefCell<RowEvalScratch>,
+    row_output_scratch: RefCell<Vec<f64>>,
 }
 
 impl Clone for PreparedScalarProgramBlock {
     fn clone(&self) -> Self {
         Self {
             block: self.block.clone(),
+            output_count: self.output_count,
             row_registers: self.row_registers.clone(),
             row_requirements: self.row_requirements.clone(),
             row_register_safe: self.row_register_safe.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
             requirements: self.requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
+            row_output_scratch: RefCell::new(Vec::new()),
         }
     }
 }
@@ -54,6 +59,7 @@ impl Clone for PreparedScalarProgramBlock {
 impl PreparedScalarProgramBlock {
     pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
         let row_count = block.programs.len();
+        let output_count = block.output_count();
         let block_span = block.program_span(0);
         let mut row_registers =
             prepared_vec_with_capacity(row_count, "prepared row register count", block_span)?;
@@ -83,12 +89,14 @@ impl PreparedScalarProgramBlock {
         }
         Ok(Self {
             block,
+            output_count,
             row_registers,
             row_requirements,
             row_register_safe,
             row_assignment_shapes,
             requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
+            row_output_scratch: RefCell::new(Vec::new()),
         })
     }
 
@@ -104,7 +112,7 @@ impl PreparedScalarProgramBlock {
     /// matmul/linsolve program may exceed its program count for. Consumers size
     /// their output buffers from this.
     pub fn len(&self) -> usize {
-        self.block.output_count()
+        self.output_count
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,6 +121,30 @@ impl PreparedScalarProgramBlock {
 
     pub fn requirements(&self) -> RowInputRequirements {
         self.requirements
+    }
+
+    /// Reverse-mode VJP: accumulate `Jᵀ · output_cotangents` of this block into
+    /// `cot` at the `LoadY` / `LoadP` / `LoadSeed` input sites (Track A scalar
+    /// reverse core). `scratch` is caller-owned so a hot loop stays
+    /// allocation-free. See [`crate::reverse`].
+    pub(crate) fn reverse_vjp(
+        &self,
+        inputs: &crate::reverse::ReverseInputs<'_>,
+        output_cotangents: &[f64],
+        cot: &mut crate::reverse::ReverseCotangents<'_>,
+        scratch: &mut crate::reverse::ReverseScratch,
+    ) -> Result<(), EvalSolveError> {
+        crate::reverse::reverse_scalar_block_vjp(
+            &crate::reverse::ScalarVjpProgram {
+                block: &self.block,
+                row_registers: &self.row_registers,
+                requirements: self.requirements,
+            },
+            inputs,
+            output_cotangents,
+            cot,
+            scratch,
+        )
     }
 
     pub fn eval_with_context(
@@ -131,7 +163,7 @@ impl PreparedScalarProgramBlock {
                 context.with_runtime_state(&local_runtime_state)
             }
         };
-        validate_output_len(out, self.block.output_count())?;
+        validate_output_len(out, self.output_count)?;
         validate_input_requirements(self.requirements, y, p, context.seed)?;
         out.fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
@@ -187,7 +219,7 @@ impl PreparedScalarProgramBlock {
         validate_input_requirements(requirements, y, p, context.seed)?;
         out[..output_count].fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval("scalar_prefix", self.block.len(), output_count);
+        record_solve_block_eval("scalar_prefix", self.output_count, output_count);
         let mut sink = OutputCursor::with_output_indices(out, prefix_output_indices);
         for (row_idx, row) in prefix.iter().enumerate() {
             eval_row_prepared_maybe_fast(
@@ -261,6 +293,50 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    pub(crate) fn eval_single_output_rows_unchecked_with_context(
+        &self,
+        row_indices: &[usize],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        let mut scratch = self.scratch.borrow_mut();
+        record_solve_block_eval(
+            "scalar_selected_rows_unchecked",
+            self.output_count,
+            row_indices.len(),
+        );
+        let out_len = out.len();
+        for &row_idx in row_indices {
+            let row = self
+                .block
+                .programs
+                .get(row_idx)
+                .ok_or(EvalSolveError::OutputTooSmall {
+                    required: checked_required_row_count(row_idx)?,
+                    len: self.block.row_count(),
+                    span: self.block.program_span(row_idx),
+                })?;
+            let slot = out.get_mut(row_idx).ok_or(EvalSolveError::OutputTooSmall {
+                required: checked_required_row_count(row_idx)?,
+                len: out_len,
+                span: self.block.program_span(row_idx),
+            })?;
+            let mut sink = OutputCursor::new(std::slice::from_mut(slot));
+            eval_row_prepared_maybe_fast(
+                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                    .with_source_span(self.block.program_span(row_idx)),
+                self.row_register_safe[row_idx],
+                &mut scratch,
+                &mut sink,
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))?;
+        }
+        Ok(())
+    }
+
     fn eval_row_inner(&self, request: RowEvalRequest<'_>) -> Result<f64, EvalSolveError> {
         let row =
             self.block
@@ -281,7 +357,7 @@ impl PreparedScalarProgramBlock {
             )?;
         }
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval(request.label, self.block.len(), 1);
+        record_solve_block_eval(request.label, self.output_count, 1);
         eval_program_single(
             PreparedRowEval::new(
                 row,
@@ -327,14 +403,17 @@ impl PreparedScalarProgramBlock {
                 span: self.block.program_span(request.row_idx),
             });
         }
-        let mut out = prepared_vec_with_capacity(
+        let mut out = self.row_output_scratch.borrow_mut();
+        reserve_prepared_vec_capacity(
+            &mut out,
             output_count,
             "prepared row output scratch count",
             self.block.program_span(request.row_idx),
         )?;
         out.resize(output_count, 0.0);
+        out[..output_count].fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval(request.label, self.block.len(), output_count);
+        record_solve_block_eval(request.label, self.output_count, output_count);
         let mut sink = OutputCursor::new(&mut out);
         eval_row_prepared_maybe_fast(
             PreparedRowEval::new(
@@ -392,6 +471,13 @@ impl PreparedScalarProgramBlock {
             .is_some_and(|shape| shape.is_some())
     }
 
+    pub(crate) fn row_output_count(&self, row_idx: usize) -> Option<usize> {
+        self.block
+            .programs
+            .get(row_idx)
+            .map(|row| ScalarProgramBlock::program_output_count(row))
+    }
+
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;
@@ -423,6 +509,78 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    pub(crate) fn eval_row_outputs_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        let row = self
+            .block
+            .programs
+            .get(row_idx)
+            .ok_or(EvalSolveError::OutputTooSmall {
+                required: checked_required_row_count(row_idx)?,
+                len: self.block.row_count(),
+                span: self.block.program_span(row_idx),
+            })?;
+        let output_count = ScalarProgramBlock::program_output_count(row);
+        out.resize(output_count, 0.0);
+        out.fill(0.0);
+        let mut scratch = self.scratch.borrow_mut();
+        record_solve_block_eval(
+            "scalar_row_outputs_unchecked",
+            self.block.len(),
+            output_count,
+        );
+        let mut sink = OutputCursor::new(out.as_mut_slice());
+        eval_row_prepared_maybe_fast(
+            PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                .with_source_span(self.block.program_span(row_idx)),
+            self.row_register_safe[row_idx],
+            &mut scratch,
+            &mut sink,
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))
+    }
+
+    pub(crate) fn apply_target_assignment_rows_unchecked_with_context(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<(), EvalSolveError> {
+        let local_runtime_state;
+        let context = match context.runtime_state {
+            Some(_) => context,
+            None => {
+                local_runtime_state = SimulationRuntimeState::new();
+                context.with_runtime_state(&local_runtime_state)
+            }
+        };
+        let mut scratch = self.scratch.borrow_mut();
+        record_solve_block_eval("target_rows_batch", self.block.len(), rows.len());
+        for row in rows {
+            let value =
+                self.eval_target_assignment_row_with_scratch(TargetAssignmentScratchRequest {
+                    row_idx: row.row_idx,
+                    target_y_index: row.target_index,
+                    y,
+                    p,
+                    t,
+                    context,
+                    scratch: &mut scratch,
+                })?;
+            y[row.target_index] = value;
+        }
+        Ok(())
+    }
+
     fn eval_target_assignment_row_inner(
         &self,
         request: TargetAssignmentRowRequest<'_>,
@@ -446,7 +604,7 @@ impl PreparedScalarProgramBlock {
             )?;
         }
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval(request.label, self.block.len(), 1);
+        record_solve_block_eval(request.label, self.output_count, 1);
         let Some(shape) = self.row_assignment_shapes[request.row_idx] else {
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
@@ -494,6 +652,58 @@ impl PreparedScalarProgramBlock {
         Ok(Some(value))
     }
 
+    fn eval_target_assignment_row_with_scratch(
+        &self,
+        request: TargetAssignmentScratchRequest<'_>,
+    ) -> Result<f64, EvalSolveError> {
+        let row =
+            self.block
+                .programs
+                .get(request.row_idx)
+                .ok_or(EvalSolveError::OutputTooSmall {
+                    required: checked_required_row_count(request.row_idx)?,
+                    len: self.block.row_count(),
+                    span: self.block.program_span(request.row_idx),
+                })?;
+        let Some(shape) = self.row_assignment_shapes[request.row_idx] else {
+            return Err(invalid_prepared_row_with_span(
+                "batched target assignment row has no assignment shape",
+                self.block.program_span(request.row_idx),
+            ));
+        };
+        if shape.target_y_index() != request.target_y_index {
+            return Err(invalid_prepared_row_with_span(
+                format!(
+                    "batched target assignment row targets y[{}], not y[{}]",
+                    shape.target_y_index(),
+                    request.target_y_index
+                ),
+                self.block.program_span(request.row_idx),
+            ));
+        }
+        eval_program_single(
+            PreparedRowEval::new(
+                &row[..shape.expr_eval_len()],
+                self.row_registers[request.row_idx],
+                request.y,
+                request.p,
+                request.t,
+                request.context,
+            )
+            .with_source_span(self.block.program_span(request.row_idx)),
+            self.row_register_safe[request.row_idx],
+            &mut *request.scratch,
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+        shape
+            .eval_value(
+                request.row_idx,
+                &request.scratch.regs,
+                self.block.program_span(request.row_idx),
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
+    }
+
     fn eval_rows_unchecked(
         &self,
         y: &[f64],
@@ -505,8 +715,8 @@ impl PreparedScalarProgramBlock {
     ) -> Result<(), EvalSolveError> {
         record_solve_block_eval(
             "scalar_rows_unchecked",
-            self.block.len(),
-            self.block.output_count(),
+            self.output_count,
+            self.output_count,
         );
         let mut sink = OutputCursor::with_output_indices(out, &self.block.output_indices);
         for (row_idx, row) in self.block.programs.iter().enumerate() {
@@ -553,6 +763,16 @@ struct TargetAssignmentRowRequest<'a> {
     context: RowEvalContext<'a>,
     validate_inputs: bool,
     label: &'static str,
+}
+
+struct TargetAssignmentScratchRequest<'a> {
+    row_idx: usize,
+    target_y_index: usize,
+    y: &'a [f64],
+    p: &'a [f64],
+    t: f64,
+    context: RowEvalContext<'a>,
+    scratch: &'a mut RowEvalScratch,
 }
 
 #[derive(Clone, Copy)]
@@ -1623,6 +1843,22 @@ fn prepared_vec_with_capacity<T>(
         invalid_prepared_row_with_span(format!("{context} exceeds host memory limits"), span)
     })?;
     Ok(values)
+}
+
+fn reserve_prepared_vec_capacity<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    context: &'static str,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    if values.capacity() >= capacity {
+        return Ok(());
+    }
+    values
+        .try_reserve_exact(capacity - values.capacity())
+        .map_err(|_| {
+            invalid_prepared_row_with_span(format!("{context} exceeds host memory limits"), span)
+        })
 }
 
 fn checked_prepared_sum(

@@ -218,6 +218,78 @@ fn lower_expands_visible_observation_for_scalarized_record_field_slice() {
 }
 
 #[test]
+fn value_only_lowering_skips_eager_sensitivity_artifacts() {
+    let dae_model = single_state_zero_derivative_model();
+    let value_only =
+        lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata(
+            dae_model.clone(),
+            Vec::new(),
+            &dae_model,
+        )
+        .expect("value-only lowering should produce a simulation problem");
+
+    assert!(
+        !value_only
+            .problem
+            .continuous
+            .derivative_rhs
+            .nodes
+            .is_empty()
+    );
+    assert!(
+        value_only
+            .artifacts
+            .continuous
+            .implicit_jacobian_v
+            .nodes
+            .is_empty()
+    );
+    assert!(
+        value_only
+            .artifacts
+            .continuous
+            .implicit_jacobian_v_scalar
+            .programs
+            .is_empty()
+    );
+    assert!(
+        value_only
+            .artifacts
+            .continuous
+            .full_jacobian_v
+            .programs
+            .is_empty()
+    );
+    assert!(value_only.artifacts.continuous.mass_matrix.is_empty());
+
+    let full = lower_dae_to_solve_model(&dae_model)
+        .expect("full runtime lowering should still produce sensitivity artifacts");
+    assert_eq!(full.artifacts.continuous.mass_matrix, vec![vec![1.0]]);
+    assert!(
+        !full
+            .artifacts
+            .continuous
+            .full_jacobian_v
+            .programs
+            .is_empty()
+    );
+}
+
+fn single_state_zero_derivative_model() -> dae::Dae {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(der(var("x")), real_expr(0.0)),
+        solve_model_test_span(),
+        "der(x) = 0",
+    ));
+    dae_model
+}
+
+#[test]
 fn seed_var_values_rejects_empty_scalar_seed() {
     let var = scalar_var("p");
     let mut env = rumoca_eval_dae::VarEnv::<f64>::new();
@@ -619,8 +691,13 @@ fn initial_solver_values_preserve_vector_start_reference() {
     q.start = Some(var("body1.Q_start"));
     dae_model.variables.states.insert(q.name.clone(), q);
 
-    let params = default_parameter_values(&dae_model, None, Arc::new(EvalRuntimeState::default()))
-        .expect("parameter vector should lower");
+    let params = default_parameter_values(
+        &dae_model,
+        None,
+        Arc::new(EvalRuntimeState::default()),
+        &std::collections::HashMap::new(),
+    )
+    .expect("parameter vector should lower");
     assert_eq!(params, vec![0.0, 0.0, 0.0, 0.0, 1.0]);
 
     let initial_y = initial_solver_values(

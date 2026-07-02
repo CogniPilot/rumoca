@@ -53,7 +53,7 @@ pub(super) fn instantiate_effective_components(
             ctx.mod_env(),
             effective_components,
             tree,
-            &resolve_effective_components_for_eval,
+            resolve_effective_components_for_eval,
         );
         if let Some(dims) = dims.as_ref()
             && dims.contains(&0)

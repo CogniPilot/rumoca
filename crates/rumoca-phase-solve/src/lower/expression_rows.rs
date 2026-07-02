@@ -1088,18 +1088,13 @@ fn lower_residual_rows_from_equations_core<'a>(
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let structural_bindings = compile_time::structural_bindings(dae_model)?;
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
-    let mut state_names = if let Some(first_state) = dae_model.variables.states.values().next() {
-        expression_vec_with_capacity(
-            dae_model.variables.states.len(),
-            "state name count",
-            first_state.source_span,
-        )?
-    } else {
-        Vec::new()
-    };
-    for name in dae_model.variables.states.keys() {
-        state_names.push(name.as_str().to_string());
-    }
+    // O(1) membership for the indexed-field probe below (see `analyze_derivative_rhs`).
+    let state_names: std::collections::HashSet<String> = dae_model
+        .variables
+        .states
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect();
     let direct_assignments = derivative_rhs::collect_missing_indexed_record_field_assignments(
         dae_model,
         &state_names,

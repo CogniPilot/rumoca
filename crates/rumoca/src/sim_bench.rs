@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::Serialize;
 
-use rumoca_sim::{SimOptions, SimSolverMode};
+use rumoca_sim::{BuildSimulationTimings, SimOptions, SimSolverMode};
 
 use crate::cli::{
     DiagnosticsArgs, ModelInputArgs, ModelOptions, SimulateSolverMode,
@@ -51,8 +51,8 @@ pub struct SimBenchArgs {
     #[arg(long)]
     pub(crate) dt: Option<f64>,
 
-    /// Solver mode. Prepared hot benchmarking uses the BDF/diffsol path; the
-    /// rk-like backend is not benchmarkable here, so it is not offered.
+    /// Solver mode. Hot benchmarking uses the prepared BDF/diffsol path or the
+    /// reusable rk-like stepper, depending on this selection.
     #[arg(long, value_enum)]
     pub(crate) solver: Option<BenchSolverMode>,
 
@@ -71,6 +71,8 @@ pub struct SimBenchArgs {
 pub(crate) enum BenchSolverMode {
     Auto,
     Bdf,
+    #[value(name = "rk-like")]
+    RkLike,
 }
 
 impl From<BenchSolverMode> for SimulateSolverMode {
@@ -78,6 +80,7 @@ impl From<BenchSolverMode> for SimulateSolverMode {
         match value {
             BenchSolverMode::Auto => SimulateSolverMode::Auto,
             BenchSolverMode::Bdf => SimulateSolverMode::Bdf,
+            BenchSolverMode::RkLike => SimulateSolverMode::RkLike,
         }
     }
 }
@@ -90,6 +93,22 @@ struct BenchInput {
     solver_label: String,
 }
 
+struct HotRunSummary {
+    points: usize,
+    final_time: Option<f64>,
+}
+
+enum PreparedHotBench {
+    Bdf(Box<rumoca_sim::PreparedSimulation>),
+    RkLike(Box<RkLikeHotBench>),
+}
+
+struct RkLikeHotBench {
+    stepper: rumoca_sim::rk45::SimStepper,
+    sample_times: Vec<f64>,
+    t_start: f64,
+}
+
 #[derive(Debug, Serialize)]
 struct SimBenchReport {
     model: String,
@@ -100,6 +119,13 @@ struct SimBenchReport {
     warmups: usize,
     compile_seconds: f64,
     prepare_seconds: f64,
+    prepare_ir_solve_structural_dae_seconds: f64,
+    prepare_ir_solve_lower_seconds: f64,
+    prepare_ir_solve_seconds: f64,
+    prepare_override_apply_seconds: f64,
+    prepare_backend_build_seconds: f64,
+    prepare_accounted_seconds: f64,
+    prepare_other_seconds: f64,
     hot_total_seconds: f64,
     hot_average_seconds: f64,
     hot_best_seconds: f64,
@@ -116,12 +142,6 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     }
 
     let bench = resolve_bench_input(&args)?;
-    if bench.solver_mode == SimSolverMode::RkLike {
-        bail!(
-            "rumoca sim bench measures the reusable prepared hot path, which currently uses \
-             the BDF/diffsol backend; pass --solver bdf or --solver auto"
-        );
-    }
 
     init_debug_tracing(&args.diagnostics)?;
 
@@ -137,13 +157,13 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     };
 
     let prepare_start = Instant::now();
-    let prepared = rumoca_sim::build_simulation(result.dae.as_ref(), &opts)
-        .map_err(|err| anyhow::anyhow!("failed to prepare simulation: {err}"))?;
+    let (mut prepared, prepare_timings) = PreparedHotBench::build(result.dae.as_ref(), &opts)?;
     let prepare_elapsed = prepare_start.elapsed();
+    let prepare_seconds = duration_secs(prepare_elapsed);
 
     for _ in 0..args.warmups {
         prepared
-            .run()
+            .run_hot()
             .map_err(|err| anyhow::anyhow!("warmup simulation failed: {err}"))?;
     }
 
@@ -152,13 +172,13 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     let mut last_final_time = None;
     for _ in 0..args.iterations {
         let run_start = Instant::now();
-        let sim = prepared
-            .run()
+        let summary = prepared
+            .run_hot()
             .map_err(|err| anyhow::anyhow!("hot simulation failed: {err}"))?;
         let elapsed = run_start.elapsed();
         run_seconds.push(duration_secs(elapsed));
-        last_points = sim.times.len();
-        last_final_time = sim.times.last().copied();
+        last_points = summary.points;
+        last_final_time = summary.final_time;
     }
 
     let hot_total_seconds = run_seconds.iter().sum::<f64>();
@@ -174,7 +194,14 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
         iterations: args.iterations,
         warmups: args.warmups,
         compile_seconds: duration_secs(compile_elapsed),
-        prepare_seconds: duration_secs(prepare_elapsed),
+        prepare_seconds,
+        prepare_ir_solve_structural_dae_seconds: prepare_timings.ir_solve_structural_dae_seconds,
+        prepare_ir_solve_lower_seconds: prepare_timings.ir_solve_lower_seconds,
+        prepare_ir_solve_seconds: prepare_timings.ir_solve_seconds,
+        prepare_override_apply_seconds: prepare_timings.override_apply_seconds,
+        prepare_backend_build_seconds: prepare_timings.backend_build_seconds,
+        prepare_accounted_seconds: prepare_timings.accounted_seconds(),
+        prepare_other_seconds: prepare_other_seconds(prepare_seconds, prepare_timings),
         hot_total_seconds,
         hot_average_seconds,
         hot_best_seconds,
@@ -191,6 +218,75 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
         print_human_report(&report);
     }
     Ok(())
+}
+
+impl PreparedHotBench {
+    fn build(
+        dae: &rumoca_compile::compile::Dae,
+        opts: &SimOptions,
+    ) -> Result<(Self, BuildSimulationTimings)> {
+        match opts.solver_mode {
+            SimSolverMode::RkLike => {
+                let (bench, timings) = RkLikeHotBench::build(dae, opts)?;
+                Ok((Self::RkLike(Box::new(bench)), timings))
+            }
+            SimSolverMode::Auto | SimSolverMode::Bdf => {
+                rumoca_sim::build_simulation_with_stage_timing(dae, opts, ignore_build_stage)
+                    .map(|(prepared, timings)| (Self::Bdf(Box::new(prepared)), timings))
+                    .map_err(|err| anyhow::anyhow!("failed to prepare simulation: {err}"))
+            }
+        }
+    }
+
+    fn run_hot(&mut self) -> Result<HotRunSummary> {
+        match self {
+            Self::Bdf(prepared) => {
+                let sim = prepared.run()?;
+                Ok(HotRunSummary {
+                    points: sim.times.len(),
+                    final_time: sim.times.last().copied(),
+                })
+            }
+            Self::RkLike(prepared) => prepared.run_hot(),
+        }
+    }
+}
+
+fn ignore_build_stage(_: &'static str) {}
+
+impl RkLikeHotBench {
+    fn build(
+        dae: &rumoca_compile::compile::Dae,
+        opts: &SimOptions,
+    ) -> Result<(Self, BuildSimulationTimings)> {
+        let (stepper, timings) =
+            rumoca_sim::rk45::SimStepper::new_with_stage_timing(dae, opts.clone(), |_| {})
+                .map_err(|err| anyhow::anyhow!("failed to prepare rk-like simulation: {err}"))?;
+        Ok((
+            Self {
+                stepper,
+                sample_times: build_output_times(opts.t_start, opts.t_end, bench_output_dt(opts)),
+                t_start: opts.t_start,
+            },
+            timings,
+        ))
+    }
+
+    fn run_hot(&mut self) -> Result<HotRunSummary> {
+        self.stepper
+            .reset(self.t_start)
+            .map_err(|err| anyhow::anyhow!("failed to reset rk-like simulation: {err}"))?;
+        for &target in self.sample_times.iter().skip(1) {
+            let dt = target - self.stepper.time();
+            self.stepper
+                .step(dt)
+                .map_err(|err| anyhow::anyhow!("failed to step rk-like simulation: {err}"))?;
+        }
+        Ok(HotRunSummary {
+            points: self.sample_times.len(),
+            final_time: Some(self.stepper.time()),
+        })
+    }
 }
 
 fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
@@ -259,7 +355,6 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
             options: ModelOptions {
                 model: Some(model_name),
                 source_roots,
-                allow_non_param_evaluate_annotation: false,
             },
         },
         t_end: args.t_end.unwrap_or(config.sim.t_end),
@@ -281,12 +376,64 @@ fn duration_secs(duration: Duration) -> f64 {
     duration.as_secs_f64()
 }
 
+fn bench_output_dt(opts: &SimOptions) -> f64 {
+    opts.dt
+        .filter(|dt| dt.is_finite() && *dt > 0.0)
+        .unwrap_or_else(|| ((opts.t_end - opts.t_start).abs() / 500.0).max(1.0e-3))
+}
+
+fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
+    if !dt.is_finite() || dt <= 0.0 {
+        return if sample_time_match(t_start, t_end) {
+            vec![t_start]
+        } else {
+            vec![t_start, t_end]
+        };
+    }
+
+    let mut times = Vec::new();
+    let mut k = 0usize;
+    loop {
+        let t_raw = t_start + (k as f64) * dt;
+        if t_raw > t_end && !sample_time_match(t_raw, t_end) {
+            break;
+        }
+        times.push(if sample_time_match(t_raw, t_end) {
+            t_end
+        } else {
+            t_raw
+        });
+        if times.last().copied().is_some_and(|time| time >= t_end) {
+            return times;
+        }
+        k += 1;
+    }
+    if times
+        .last()
+        .copied()
+        .is_none_or(|last| !sample_time_match(last, t_end))
+    {
+        times.push(t_end);
+    }
+    times
+}
+
+fn sample_time_match(a: f64, b: f64) -> bool {
+    let tol = 1e-12 * (1.0 + a.abs().max(b.abs()));
+    (a - b).abs() <= tol
+}
+
 fn realtime_factor(sim_seconds: f64, wall_seconds: f64) -> f64 {
     if wall_seconds > 0.0 {
         sim_seconds / wall_seconds
     } else {
         f64::INFINITY
     }
+}
+
+fn prepare_other_seconds(total: f64, timings: BuildSimulationTimings) -> f64 {
+    let other = total - timings.accounted_seconds();
+    if other > 0.0 { other } else { 0.0 }
 }
 
 fn print_human_report(report: &SimBenchReport) {
@@ -307,6 +454,23 @@ fn print_human_report(report: &SimBenchReport) {
     );
     println!("  Compile: {:.6}s", report.compile_seconds);
     println!("  Prepare: {:.6}s", report.prepare_seconds);
+    println!(
+        "    Solve structural DAE: {:.6}s",
+        report.prepare_ir_solve_structural_dae_seconds
+    );
+    println!(
+        "    Solve IR lowering: {:.6}s",
+        report.prepare_ir_solve_lower_seconds
+    );
+    println!(
+        "    Apply overrides: {:.6}s",
+        report.prepare_override_apply_seconds
+    );
+    println!(
+        "    Backend build: {:.6}s",
+        report.prepare_backend_build_seconds
+    );
+    println!("    Other: {:.6}s", report.prepare_other_seconds);
     println!(
         "  Hot run avg: {:.6}s ({:.2}x realtime)",
         report.hot_average_seconds, report.average_realtime_factor

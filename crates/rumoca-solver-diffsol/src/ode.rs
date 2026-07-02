@@ -12,7 +12,7 @@ use rumoca_eval_solve::{
 use rumoca_ir_solve as solve;
 use rumoca_solver::{AlgebraicProjectionModel, PreparedMassMatrix, RuntimeSolveError, SimOptions};
 
-use crate::{Matrix, RuntimeParameters, Scalar, SimError, Vector};
+use crate::{EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError, Vector};
 
 #[derive(Debug, Default)]
 pub(crate) struct BdfEvalCounters {
@@ -108,7 +108,7 @@ pub(crate) struct OdeModel {
     state_count: usize,
     implicit_rhs: PreparedComputeBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
-    initial_residual: PreparedScalarProgramBlock,
+    initial_residual: PreparedComputeBlock,
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
     pub(crate) root_conditions: PreparedScalarProgramBlock,
@@ -130,8 +130,9 @@ impl OdeModel {
             implicit_scalar_rhs: PreparedScalarProgramBlock::new(
                 solve_eval::to_scalar_program_block(&model.problem.continuous.implicit_rhs)?,
             )?,
-            initial_residual: PreparedScalarProgramBlock::new(
-                model.problem.initialization.residual.clone(),
+            initial_residual: PreparedComputeBlock::new_with_label(
+                &model.problem.initialization.residual,
+                "ode_initial_residual",
             )?,
             initial_targets: model.problem.initialization.row_targets.clone(),
             implicit_jacobian_v: PreparedComputeBlock::new_with_label(
@@ -348,6 +349,7 @@ pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
     t_start: f64,
     initial_y: Vec<f64>,
     ode_model: Arc<OdeModel>,
+    root_runtime: Arc<SolveRuntime>,
 ) -> Result<
     OdeSolverProblem<
         impl OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
@@ -362,6 +364,7 @@ pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
         initial_y,
         Some(runtime_params),
         ode_model,
+        root_runtime,
     )
 }
 
@@ -412,14 +415,16 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         with_runtime_params(&jac_params, p.as_slice(), |params| {
             if jac_runtime
                 .eval_state_jacobian_v_ad_into(
-                    t,
-                    y.as_slice(),
-                    params,
-                    v.as_slice(),
-                    solve_eval::AlgebraicSettle {
-                        tol,
-                        max_iters: 256,
+                    solve_eval::AlgebraicLinearization {
+                        t,
+                        params,
+                        settle: solve_eval::AlgebraicSettle {
+                            tol,
+                            max_iters: 256,
+                        },
                     },
+                    y.as_slice(),
+                    v.as_slice(),
                     out.as_mut_slice(),
                 )
                 .is_err()
@@ -435,7 +440,14 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         let start = root_counters.as_ref().map(|_| Instant::now());
         with_runtime_params(&root_params, p.as_slice(), |params| {
             if root_runtime
-                .eval_root_conditions_into(t, y.as_slice(), params, tol, 256, out.as_mut_slice())
+                .eval_root_conditions_into(
+                    t,
+                    y.as_slice(),
+                    params,
+                    tol,
+                    EVENT_UPDATE_MAX_ITERS,
+                    out.as_mut_slice(),
+                )
                 .is_err()
             {
                 fill_eval_error(out.as_mut_slice());
@@ -471,6 +483,7 @@ fn build_ode_problem_with_initial(
     initial_y: Vec<f64>,
     runtime_params: Option<RuntimeParameters>,
     ode_model: Arc<OdeModel>,
+    root_runtime: Arc<SolveRuntime>,
 ) -> Result<
     OdeSolverProblem<
         impl OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
@@ -493,7 +506,7 @@ fn build_ode_problem_with_initial(
     let jac_runtime_params = runtime_params.clone();
     let root_runtime_params = runtime_params.clone();
     let jac_model = ode_model.clone();
-    let root_model = ode_model.clone();
+    let tol = opts.atol.max(1.0e-10);
     let jac_fn = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
         with_runtime_params(&jac_runtime_params, p.as_slice(), |params| {
             if jac_model
@@ -506,8 +519,15 @@ fn build_ode_problem_with_initial(
     };
     let root_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         with_runtime_params(&root_runtime_params, p.as_slice(), |params| {
-            if root_model
-                .eval_roots(y.as_slice(), params, t, out.as_mut_slice())
+            if root_runtime
+                .eval_root_conditions_into(
+                    t,
+                    y.as_slice(),
+                    params,
+                    tol,
+                    EVENT_UPDATE_MAX_ITERS,
+                    out.as_mut_slice(),
+                )
                 .is_err()
             {
                 fill_eval_error(out.as_mut_slice());

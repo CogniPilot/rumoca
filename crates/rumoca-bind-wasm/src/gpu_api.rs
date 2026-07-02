@@ -42,7 +42,9 @@ fn source_key(source: &str, model_name: &str) -> u64 {
 ///   "layout": { ...the wgsl-solve layout manifest... },
 ///   "y0": [..], "p0": [..],
 ///   "n_states": 3,
-///   "t_start": 0.0, "t_end": 1.0, "dt": 0.01
+///   "t_start": 0.0, "t_end": 1.0,
+///   "dt": 0.1,
+///   "internal_dt": 0.0125
 /// }
 /// ```
 ///
@@ -93,16 +95,36 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             })?
             .to_vec();
 
+        // The GPU fixed-step RK4 driver uses `dt` as its output/sample interval
+        // and `internal_dt` as its integration step. Models can set the latter
+        // with `annotation(__rumoca(Solver(FixedStep=...)))`; otherwise the
+        // driver keeps the old behavior and uses the output interval as the RK4
+        // step.
+        let dt = opts
+            .dt
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or_else(|| {
+                const DEFAULT_GPU_OUTPUT_STEPS: f64 = 500.0;
+                (opts.t_end - opts.t_start) / DEFAULT_GPU_OUTPUT_STEPS
+            });
+        let internal_dt = result
+            .rumoca_solver_fixed_step
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(dt);
+
         let response = serde_json::json!({
             "wgsl": wgsl,
             "layout": layout,
+            "var_layout": solve_model.problem.layout,
+            "input_names": solve_model.problem.solve_layout.input_scalar_names(),
             "y0": solve_model.initial_y,
             "p0": solve_model.parameters,
             "n_states": state_count,
             "state_names": state_names,
             "t_start": opts.t_start,
             "t_end": opts.t_end,
-            "dt": opts.dt,
+            "dt": dt,
+            "internal_dt": internal_dt,
         });
         let text = serde_json::to_string(&response)
             .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))?;
@@ -155,8 +177,14 @@ pub fn update_gpu_parameters(
         session.update_document("input.mo", source);
         let requested_model = qualify_input_model_name(session, model_name);
         let result = compile_requested_model(session, &requested_model)?;
-        let (opts, _solver_label) = build_simulation_options(&result, 0.0, 0.0, "");
-        let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &opts)
+        let (mut opts, _solver_label) = build_simulation_options(&result, 0.0, 0.0, "");
+        // Apply the overrides *during* lowering so parameter-derived array masks
+        // (e.g. an immersed-boundary `sig` that depends on `aoa`) re-derive from the
+        // new value at parameter-set time. `refresh_prepared_vectors` only re-settles
+        // solver algebraics, not promoted derived parameters, so without this the
+        // mask would stay frozen at the declared `aoa` until a full recompile.
+        opts.param_overrides = staged_overrides.clone();
+        let solve_model = rumoca_sim::lower_for_simulation_with_overrides(&result.dae, &opts)
             .map_err(|e| JsValue::from_str(&format!("Solve lowering failed: {e}")))?;
         let (y0, p0) =
             rumoca_sim::refresh_prepared_vectors(&solve_model, t_start, &staged_overrides)

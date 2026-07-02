@@ -140,6 +140,11 @@ pub(super) fn flatten_options_for_tree() -> FlattenOptions {
     FlattenOptions {
         strict_connection_validation: true,
         simplify_variable_names: false,
+        // Family-native lowering: regular state-derivative for-families materialize
+        // only their corner cells; the interior cells are reconstructed downstream
+        // from the corners (byte-identical output, far less compile-time memory).
+        // Full materialization is retained only as a debug toggle.
+        materialize_structured_families: false,
     }
 }
 
@@ -557,6 +562,7 @@ fn dae_compilation_result_from_artifact(
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,
         experiment_interval: experiment_settings.interval,
+        rumoca_solver_fixed_step: experiment_settings.solver_fixed_step,
         experiment_solver: experiment_settings.solver,
     })
 }
@@ -717,6 +723,7 @@ pub(super) fn compile_phase_result_from_dae(
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,
         experiment_interval: experiment_settings.interval,
+        rumoca_solver_fixed_step: experiment_settings.solver_fixed_step,
         experiment_solver: experiment_settings.solver,
     }))
 }

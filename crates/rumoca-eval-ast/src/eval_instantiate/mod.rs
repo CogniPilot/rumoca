@@ -6,12 +6,37 @@
 //! - Enum comparisons for parameter-based conditions
 //! - StateSelect parsing from annotations
 
+use rumoca_core::{
+    IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
+    eval_integer_div_builtin,
+};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
 
-pub type ResolveClassComponents<'a> =
-    dyn Fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component> + 'a;
+pub(super) type ResolveClassComponents =
+    fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>;
+
+mod component_params;
+mod function_eval;
+mod real_eval;
+mod scoped_condition;
+
+pub(super) use component_params::{
+    component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,
+    enclosing_scope_candidates,
+};
+pub use component_params::{
+    eval_state_select_expr, eval_state_select_expr_with_source_scope, expr_to_string,
+    extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,
+    extract_int_params_with_mods_and_known, parse_state_select,
+    propagate_record_alias_integer_params, try_eval_string_expr,
+};
+pub use function_eval::{
+    evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,
+};
+use real_eval::try_eval_real_expr_with_depth_and_scope;
+use scoped_condition::eval_scoped_string_condition_with_depth;
 
 /// Maximum recursion depth for condition evaluation (prevents stack overflow)
 const MAX_CONDITION_DEPTH: usize = 10;
@@ -27,7 +52,8 @@ pub struct InstantiateEvalCtx<'a> {
     /// Resolve effective components of an arbitrary class (including inherited).
     /// Implementations must return the class's own components when inherited
     /// component expansion is unavailable.
-    pub resolve_class_components: &'a ResolveClassComponents<'a>,
+    pub resolve_class_components:
+        fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
 }
 
 #[derive(Copy, Clone)]
@@ -35,7 +61,8 @@ struct ConditionEvalEnv<'a> {
     mod_env: &'a ast::ModificationEnvironment,
     effective_components: &'a IndexMap<String, ast::Component>,
     tree: &'a ast::ClassTree,
-    resolve_class_components: &'a ResolveClassComponents<'a>,
+    resolve_class_components:
+        fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
 }
 
 /// Look up a class by name in the class tree.
@@ -112,7 +139,7 @@ pub fn evaluate_component_condition(
         mod_env,
         effective_components,
         tree,
-        resolve_class_components,
+        *resolve_class_components,
         0,
     )
 }
@@ -122,7 +149,10 @@ fn evaluate_component_condition_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     depth: usize,
 ) -> Option<bool> {
     if depth > MAX_CONDITION_DEPTH {
@@ -187,11 +217,50 @@ fn evaluate_component_condition_with_depth(
                 tree,
                 resolve_class_components,
             },
-            None,
             depth,
         )
     {
         return Some(val);
+    }
+
+    // Case 6: Boolean if-expression
+    if let ast::Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = condition
+    {
+        for (branch_condition, branch_value) in branches {
+            match evaluate_component_condition_with_depth(
+                branch_condition,
+                mod_env,
+                effective_components,
+                tree,
+                resolve_class_components,
+                depth + 1,
+            ) {
+                Some(true) => {
+                    return evaluate_component_condition_with_depth(
+                        branch_value,
+                        mod_env,
+                        effective_components,
+                        tree,
+                        resolve_class_components,
+                        depth + 1,
+                    );
+                }
+                Some(false) => continue,
+                None => return None,
+            }
+        }
+        return evaluate_component_condition_with_depth(
+            else_branch,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+            depth + 1,
+        );
     }
 
     None
@@ -203,7 +272,10 @@ fn eval_param_ref(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     depth: usize,
 ) -> Option<bool> {
     // Build qualified path for multi-part references (e.g., smpmData.useDamperCage)
@@ -213,6 +285,22 @@ fn eval_param_ref(
     if let Some(mod_value) = mod_env.get(&param_path) {
         if let Some(val) = expr_to_bool(&mod_value.value) {
             return Some(val);
+        }
+        if let Some(source_scope) = mod_value.source_scope.as_ref() {
+            let scope_prefix = source_scope.to_flat_string();
+            if let Some(val) = eval_scoped_string_condition_with_depth(
+                &mod_value.value,
+                ConditionEvalEnv {
+                    mod_env,
+                    effective_components,
+                    tree,
+                    resolve_class_components,
+                },
+                Some(scope_prefix.as_str()),
+                depth + 1,
+            ) {
+                return Some(val);
+            }
         }
         // Recursively evaluate only if mod_env value is a ast::ComponentReference
         // (another parameter ref like smpmData.useDamperCage → false)
@@ -228,6 +316,7 @@ fn eval_param_ref(
         {
             return Some(val);
         }
+        return None;
     }
 
     // Type attributes may be evaluated while extracting fields of a structured
@@ -322,54 +411,6 @@ fn eval_binary_condition(
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let enum_eq = || {
-        evaluate_enum_equality_with_depth(
-            lhs,
-            rhs,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        )
-    };
-
-    match op {
-        rumoca_core::OpBinary::Or | rumoca_core::OpBinary::And => {
-            return eval_boolean_binary_condition(op, lhs, rhs, env, depth);
-        }
-        rumoca_core::OpBinary::Eq => {
-            // Enum equality is more specific than integer equality.
-            if let Some(val) = enum_eq() {
-                return Some(val);
-            }
-            return eval_numeric_binary_condition(op, lhs, rhs, env, scope_prefix, depth);
-        }
-        rumoca_core::OpBinary::Neq => {
-            if let Some(val) = enum_eq() {
-                return Some(!val);
-            }
-            return eval_numeric_binary_condition(op, lhs, rhs, env, scope_prefix, depth);
-        }
-        rumoca_core::OpBinary::Lt
-        | rumoca_core::OpBinary::Le
-        | rumoca_core::OpBinary::Gt
-        | rumoca_core::OpBinary::Ge => {
-            return eval_numeric_binary_condition(op, lhs, rhs, env, scope_prefix, depth);
-        }
-        _ => {}
-    }
-    None
-}
-
-fn eval_boolean_binary_condition(
-    op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
     depth: usize,
 ) -> Option<bool> {
     let eval = |e| {
@@ -382,29 +423,77 @@ fn eval_boolean_binary_condition(
             depth + 1,
         )
     };
-    let (lhs, rhs) = (eval(lhs), eval(rhs));
+    let enum_eq = || {
+        evaluate_enum_equality_with_depth(
+            lhs,
+            rhs,
+            env.mod_env,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+            depth + 1,
+        )
+    };
     match op {
-        rumoca_core::OpBinary::Or if lhs == Some(true) || rhs == Some(true) => Some(true),
-        rumoca_core::OpBinary::Or if lhs == Some(false) && rhs == Some(false) => Some(false),
-        rumoca_core::OpBinary::And if lhs == Some(false) || rhs == Some(false) => Some(false),
-        rumoca_core::OpBinary::And if lhs == Some(true) && rhs == Some(true) => Some(true),
-        _ => None,
+        rumoca_core::OpBinary::Or => {
+            let (l, r) = (eval(lhs), eval(rhs));
+            if l == Some(true) || r == Some(true) {
+                return Some(true);
+            }
+            if l == Some(false) && r == Some(false) {
+                return Some(false);
+            }
+        }
+        rumoca_core::OpBinary::And => {
+            let (l, r) = (eval(lhs), eval(rhs));
+            if l == Some(false) || r == Some(false) {
+                return Some(false);
+            }
+            if l == Some(true) && r == Some(true) {
+                return Some(true);
+            }
+        }
+        rumoca_core::OpBinary::Eq => {
+            // Enum equality is more specific than integer equality.
+            if let Some(val) = enum_eq() {
+                return Some(val);
+            }
+            return eval_numeric_condition(op, lhs, rhs, env, depth);
+        }
+        rumoca_core::OpBinary::Neq => {
+            if let Some(val) = enum_eq() {
+                return Some(!val);
+            }
+            return eval_numeric_condition(op, lhs, rhs, env, depth);
+        }
+        rumoca_core::OpBinary::Lt
+        | rumoca_core::OpBinary::Le
+        | rumoca_core::OpBinary::Gt
+        | rumoca_core::OpBinary::Ge => {
+            return eval_numeric_condition(op, lhs, rhs, env, depth);
+        }
+        _ => {}
     }
+    None
 }
 
-fn eval_numeric_binary_condition(
+fn eval_numeric_condition(
     op: &rumoca_core::OpBinary,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<bool> {
-    eval_integer_binary_condition(op, lhs, rhs, env, depth)
-        .or_else(|| eval_real_binary_condition(op, lhs, rhs, env, scope_prefix, depth))
+    if let Some(value) = eval_integer_condition(op, lhs, rhs, env, depth) {
+        return Some(value);
+    }
+
+    let lhs = try_eval_real_expr_with_depth_and_scope(lhs, env, None, depth + 1)?;
+    let rhs = try_eval_real_expr_with_depth_and_scope(rhs, env, None, depth + 1)?;
+    eval_ordered_values(op, lhs, rhs)
 }
 
-fn eval_integer_binary_condition(
+fn eval_integer_condition(
     op: &rumoca_core::OpBinary,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
@@ -421,35 +510,14 @@ fn eval_integer_binary_condition(
             depth + 1,
         )
     };
-    compare_ordered_values(op, eval(lhs)?, eval(rhs)?)
+    eval_ordered_values(op, eval(lhs)?, eval(rhs)?)
 }
 
-fn eval_real_binary_condition(
+fn eval_ordered_values<T: PartialOrd + PartialEq>(
     op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
+    lhs: T,
+    rhs: T,
 ) -> Option<bool> {
-    let eval = |expr| {
-        try_eval_real_expr_with_depth(
-            expr,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            scope_prefix,
-            depth + 1,
-        )
-    };
-    compare_ordered_values(op, eval(lhs)?, eval(rhs)?)
-}
-
-fn compare_ordered_values<T>(op: &rumoca_core::OpBinary, lhs: T, rhs: T) -> Option<bool>
-where
-    T: PartialOrd,
-{
     match op {
         rumoca_core::OpBinary::Eq => Some(lhs == rhs),
         rumoca_core::OpBinary::Neq => Some(lhs != rhs),
@@ -470,7 +538,10 @@ fn evaluate_enum_equality_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     depth: usize,
 ) -> Option<bool> {
     // Prevent deep recursion
@@ -514,7 +585,10 @@ fn enum_value_for_comparison_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<String> {
@@ -587,109 +661,6 @@ fn enum_values_equal(a: &str, b: &str) -> bool {
     rumoca_core::enum_values_equal(a, b)
 }
 
-fn try_eval_real_expr_with_depth(
-    expr: &ast::Expression,
-    mod_env: &ast::ModificationEnvironment,
-    effective_components: &IndexMap<String, ast::Component>,
-    tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<f64> {
-    if depth > MAX_EXPR_EVAL_DEPTH {
-        return None;
-    }
-    let recurse = |expr, scope_prefix| {
-        try_eval_real_expr_with_depth(
-            expr,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            scope_prefix,
-            depth + 1,
-        )
-    };
-
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedReal,
-            token,
-            ..
-        } => token.text.parse::<f64>().ok(),
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse::<f64>().ok(),
-        ast::Expression::ComponentReference(comp_ref) => resolve_component_ref_expr(
-            comp_ref,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            scope_prefix,
-        )
-        .and_then(|(resolved_expr, next_scope)| {
-            try_eval_real_expr_with_depth(
-                &resolved_expr,
-                mod_env,
-                effective_components,
-                tree,
-                resolve_class_components,
-                next_scope.as_deref(),
-                depth + 1,
-            )
-        }),
-        ast::Expression::Parenthesized { inner, .. } => recurse(inner, scope_prefix),
-        ast::Expression::Unary { op, rhs, .. } => {
-            let value = recurse(rhs, scope_prefix)?;
-            match op {
-                rumoca_core::OpUnary::Minus => Some(-value),
-                rumoca_core::OpUnary::Plus => Some(value),
-                _ => None,
-            }
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = recurse(lhs, scope_prefix)?;
-            let rhs = recurse(rhs, scope_prefix)?;
-            match op {
-                rumoca_core::OpBinary::Add => Some(lhs + rhs),
-                rumoca_core::OpBinary::Sub => Some(lhs - rhs),
-                rumoca_core::OpBinary::Mul => Some(lhs * rhs),
-                rumoca_core::OpBinary::Div => Some(lhs / rhs),
-                _ => None,
-            }
-        }
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let env = ConditionEvalEnv {
-                mod_env,
-                effective_components,
-                tree,
-                resolve_class_components,
-            };
-            for (condition, branch_expr) in branches {
-                match eval_scoped_string_condition_with_depth(
-                    condition,
-                    env,
-                    scope_prefix,
-                    depth + 1,
-                ) {
-                    Some(true) => return recurse(branch_expr, scope_prefix),
-                    Some(false) => continue,
-                    None => return None,
-                }
-            }
-            recurse(else_branch, scope_prefix)
-        }
-        _ => None,
-    }
-}
-
 /// Get an enum value from an expression.
 ///
 /// Handles:
@@ -700,7 +671,10 @@ fn get_enum_value_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<String> {
@@ -823,7 +797,7 @@ fn resolve_component_ref_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &dyn Fn(
+    resolve_class_components: fn(
         &ast::ClassTree,
         &ast::ClassDef,
     ) -> IndexMap<String, ast::Component>,
@@ -868,7 +842,7 @@ fn resolve_component_ref_expr(
 fn resolve_class_constant_binding(
     comp_ref: &ast::ComponentReference,
     tree: &ast::ClassTree,
-    resolve_class_components: &dyn Fn(
+    resolve_class_components: fn(
         &ast::ClassTree,
         &ast::ClassDef,
     ) -> IndexMap<String, ast::Component>,
@@ -900,7 +874,7 @@ fn resolve_class_redeclare_field_expr(
     comp_ref: &ast::ComponentReference,
     mod_env: &ast::ModificationEnvironment,
     tree: &ast::ClassTree,
-    resolve_class_components: &dyn Fn(
+    resolve_class_components: fn(
         &ast::ClassTree,
         &ast::ClassDef,
     ) -> IndexMap<String, ast::Component>,
@@ -958,7 +932,7 @@ fn lookup_exact_component_ref(
     scope_prefix: Option<&str>,
 ) -> Option<(ast::Expression, Option<String>)> {
     for candidate in candidate_paths {
-        if let Some(mod_value) = get_modification_by_flat_candidate(mod_env, candidate)
+        if let Some(mod_value) = mod_env.get(&ast::QualifiedName::from_dotted(candidate))
             && !transparent_self_modifier(candidate, &mod_value.value)
         {
             return Some((
@@ -982,23 +956,6 @@ fn lookup_exact_component_ref(
     None
 }
 
-fn get_modification_by_flat_candidate<'a>(
-    mod_env: &'a ast::ModificationEnvironment,
-    candidate: &str,
-) -> Option<&'a ast::ModificationValue> {
-    mod_env
-        .get(&ast::QualifiedName::from_dotted(candidate))
-        .or_else(|| {
-            candidate.contains('[').then(|| {
-                mod_env
-                    .active
-                    .iter()
-                    .find(|(key, _)| key.to_flat_string() == candidate)
-                    .map(|(_, value)| value)
-            })?
-        })
-}
-
 fn transparent_self_modifier(candidate: &str, value: &ast::Expression) -> bool {
     let ast::Expression::ComponentReference(comp_ref) = value else {
         return false;
@@ -1014,191 +971,6 @@ fn transparent_self_modifier(candidate: &str, value: &ast::Expression) -> bool {
         return false;
     };
     comp_ref.parts[0].ident.text.as_ref() == name
-}
-
-fn eval_scoped_string_condition_with_depth(
-    condition: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    if depth > MAX_CONDITION_DEPTH {
-        return None;
-    }
-
-    if let Some(val) = expr_to_bool(condition) {
-        return Some(val);
-    }
-
-    let recurse = |expr: &ast::Expression| {
-        eval_scoped_string_condition_with_depth(expr, env, scope_prefix, depth + 1)
-    };
-
-    match condition {
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => recurse(rhs).map(|v| !v),
-        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
-        ast::Expression::Binary { op, lhs, rhs, .. } => eval_scoped_string_binary_condition(
-            op,
-            lhs,
-            rhs,
-            env,
-            ScopedEvalState {
-                scope_prefix,
-                depth: depth + 1,
-            },
-        )
-        .or_else(|| {
-            evaluate_component_condition_with_depth(
-                condition,
-                env.mod_env,
-                env.effective_components,
-                env.tree,
-                env.resolve_class_components,
-                depth + 1,
-            )
-        }),
-        _ => evaluate_component_condition_with_depth(
-            condition,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        ),
-    }
-}
-
-struct ScopedEvalState<'a> {
-    scope_prefix: Option<&'a str>,
-    depth: usize,
-}
-
-fn eval_scoped_string_binary_condition(
-    op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    state: ScopedEvalState<'_>,
-) -> Option<bool> {
-    match op {
-        rumoca_core::OpBinary::Or => eval_scoped_or(lhs, rhs, env, state.scope_prefix, state.depth),
-        rumoca_core::OpBinary::And => {
-            eval_scoped_and(lhs, rhs, env, state.scope_prefix, state.depth)
-        }
-        rumoca_core::OpBinary::Eq => {
-            eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth)
-                .or_else(|| eval_scoped_numeric_relation(op, lhs, rhs, env, state))
-        }
-        rumoca_core::OpBinary::Neq => {
-            eval_scoped_enum_equality(lhs, rhs, env, state.scope_prefix, state.depth)
-                .map(|v| !v)
-                .or_else(|| eval_scoped_numeric_relation(op, lhs, rhs, env, state))
-        }
-        rumoca_core::OpBinary::Lt
-        | rumoca_core::OpBinary::Le
-        | rumoca_core::OpBinary::Gt
-        | rumoca_core::OpBinary::Ge => eval_scoped_numeric_relation(op, lhs, rhs, env, state),
-        _ => None,
-    }
-}
-
-fn eval_scoped_numeric_relation(
-    op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    state: ScopedEvalState<'_>,
-) -> Option<bool> {
-    let eval = |expr| {
-        try_eval_real_expr_with_depth(
-            expr,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            state.scope_prefix,
-            state.depth + 1,
-        )
-    };
-    let lhs = eval(lhs)?;
-    let rhs = eval(rhs)?;
-    match op {
-        rumoca_core::OpBinary::Eq => Some(lhs == rhs),
-        rumoca_core::OpBinary::Neq => Some(lhs != rhs),
-        rumoca_core::OpBinary::Lt => Some(lhs < rhs),
-        rumoca_core::OpBinary::Le => Some(lhs <= rhs),
-        rumoca_core::OpBinary::Gt => Some(lhs > rhs),
-        rumoca_core::OpBinary::Ge => Some(lhs >= rhs),
-        _ => None,
-    }
-}
-
-fn eval_scoped_or(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let recurse = |expr| eval_scoped_string_condition_with_depth(expr, env, scope_prefix, depth);
-    let (l, r) = (recurse(lhs), recurse(rhs));
-    if l == Some(true) || r == Some(true) {
-        return Some(true);
-    }
-    if l == Some(false) && r == Some(false) {
-        return Some(false);
-    }
-    None
-}
-
-fn eval_scoped_and(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let recurse = |expr| eval_scoped_string_condition_with_depth(expr, env, scope_prefix, depth);
-    let (l, r) = (recurse(lhs), recurse(rhs));
-    if l == Some(false) || r == Some(false) {
-        return Some(false);
-    }
-    if l == Some(true) && r == Some(true) {
-        return Some(true);
-    }
-    None
-}
-
-fn eval_scoped_enum_equality(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    scope_prefix: Option<&str>,
-    depth: usize,
-) -> Option<bool> {
-    let lhs_val = enum_value_for_comparison_with_depth(
-        lhs,
-        env.mod_env,
-        env.effective_components,
-        env.tree,
-        env.resolve_class_components,
-        scope_prefix,
-        depth,
-    )?;
-    let rhs_val = enum_value_for_comparison_with_depth(
-        rhs,
-        env.mod_env,
-        env.effective_components,
-        env.tree,
-        env.resolve_class_components,
-        scope_prefix,
-        depth,
-    )?;
-    Some(enum_values_equal(&lhs_val, &rhs_val))
 }
 
 fn resolve_scoped_record_field_expr(
@@ -1251,7 +1023,8 @@ pub(super) struct IntegerEvalEnv<'a> {
     mod_env: &'a ast::ModificationEnvironment,
     effective_components: &'a IndexMap<String, ast::Component>,
     tree: &'a ast::ClassTree,
-    resolve_class_components: &'a ResolveClassComponents<'a>,
+    resolve_class_components:
+        fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
 }
 
 /// Try to evaluate an integer expression for array dimension expansion.
@@ -1268,7 +1041,7 @@ pub fn try_eval_integer_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) -
         mod_env,
         effective_components,
         tree,
-        resolve_class_components,
+        *resolve_class_components,
         0,
         None,
     )
@@ -1279,7 +1052,10 @@ fn try_eval_integer_expr_with_depth(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     depth: usize,
 ) -> Option<i64> {
     try_eval_integer_expr_with_depth_and_locals(
@@ -1298,7 +1074,10 @@ fn try_eval_integer_expr_with_depth_and_locals(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    resolve_class_components: &ResolveClassComponents<'_>,
+    resolve_class_components: fn(
+        &ast::ClassTree,
+        &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component>,
     depth: usize,
     local_ints: Option<&FxHashMap<String, i64>>,
 ) -> Option<i64> {
@@ -1336,7 +1115,7 @@ fn try_eval_integer_expr_with_depth_and_locals(
         ast::Expression::Binary { op, lhs, rhs, .. } => {
             let l = recurse(lhs)?;
             let r = recurse(rhs)?;
-            function_eval::eval_integer_binary(op, l, r)
+            eval_integer_binary(op, l, r)
         }
         ast::Expression::Unary { op, rhs, .. } => {
             let r = recurse(rhs)?;
@@ -1361,7 +1140,7 @@ fn try_eval_integer_expr_with_depth_and_locals(
             recurse(else_branch)
         }
         ast::Expression::FunctionCall { comp, args, .. } => {
-            function_eval::eval_integer_function_call(comp, args, env, depth, local_ints)
+            eval_integer_function_call(comp, args, env, depth, local_ints)
         }
         _ => None,
     }
@@ -1418,7 +1197,7 @@ pub(super) fn try_eval_bool_expr_with_local_values(
         } => Some(!recurse(rhs)?),
         ast::Expression::Parenthesized { inner, .. } => recurse(inner),
         ast::Expression::ComponentReference(comp_ref) => {
-            local_bools.and_then(|values| function_eval::lookup_local_bool(comp_ref, values))
+            local_bools.and_then(|values| lookup_local_bool(comp_ref, values))
         }
         ast::Expression::FunctionCall { comp, args, .. } => {
             eval_bool_function_call(comp, args, env, depth, local_ints, local_bools)
@@ -1469,8 +1248,7 @@ fn eval_bool_function_call(
         .and_then(|did| env.tree.def_map.get(&did))
         .map(String::as_str);
 
-    let function_def =
-        function_eval::lookup_function_definition(&func_name, qualified_name, env.tree)?;
+    let function_def = lookup_function_definition(&func_name, qualified_name, env.tree)?;
     function_eval::eval_user_defined_bool_function(
         function_def,
         args,
@@ -1500,7 +1278,7 @@ fn eval_integer_component_ref(
     };
 
     if let Some(local_values) = local_ints
-        && let Some(value) = function_eval::lookup_local_integer(comp_ref, local_values)
+        && let Some(value) = lookup_local_integer(comp_ref, local_values)
     {
         return Some(value);
     }
@@ -1942,18 +1720,224 @@ fn extract_field_override_from_class_modification<'a>(
     resolved
 }
 
-mod component_params;
-mod function_eval;
-pub(super) use component_params::{
-    component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,
-    enclosing_scope_candidates,
-};
-pub use component_params::{
-    eval_state_select_expr, eval_state_select_expr_with_scope, expr_to_string, extract_binding,
-    extract_bool_params_with_mods, extract_int_params_with_mods,
-    extract_int_params_with_mods_and_known, parse_state_select,
-    propagate_record_alias_integer_params, try_eval_string_expr,
-};
-pub use function_eval::{
-    evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,
-};
+fn eval_integer_binary(op: &rumoca_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+    let operator = match op {
+        rumoca_core::OpBinary::Add => IntegerBinaryOperator::Add,
+        rumoca_core::OpBinary::Sub => IntegerBinaryOperator::Sub,
+        rumoca_core::OpBinary::Mul => IntegerBinaryOperator::Mul,
+        rumoca_core::OpBinary::Div => IntegerBinaryOperator::Div,
+        _ => return None,
+    };
+    eval_common_integer_binary(operator, lhs, rhs)
+}
+
+fn lookup_local_integer(
+    comp_ref: &ast::ComponentReference,
+    local_values: &FxHashMap<String, i64>,
+) -> Option<i64> {
+    if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
+        return None;
+    }
+    let dotted = comp_ref
+        .parts
+        .iter()
+        .map(|p| p.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    if let Some(value) = local_values.get(&dotted) {
+        return Some(*value);
+    }
+    if comp_ref.parts.len() == 1 {
+        let name = comp_ref.parts[0].ident.text.as_ref();
+        return local_values.get(name).copied();
+    }
+    None
+}
+
+fn lookup_local_bool(
+    comp_ref: &ast::ComponentReference,
+    local_values: &FxHashMap<String, bool>,
+) -> Option<bool> {
+    if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
+        return None;
+    }
+    let dotted = comp_ref
+        .parts
+        .iter()
+        .map(|p| p.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    if let Some(value) = local_values.get(&dotted) {
+        return Some(*value);
+    }
+    if comp_ref.parts.len() == 1 {
+        let name = comp_ref.parts[0].ident.text.as_ref();
+        return local_values.get(name).copied();
+    }
+    None
+}
+
+/// Evaluate a function call to an integer value during instantiation.
+///
+/// Handles Modelica builtins (integer, mod, div, abs) and user-defined pure
+/// functions by looking them up in the ast::ClassTree and evaluating with rumoca_eval_const.
+fn eval_integer_function_call(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    local_ints: Option<&FxHashMap<String, i64>>,
+) -> Option<i64> {
+    // Build function name from parts
+    let func_name = comp
+        .parts
+        .iter()
+        .map(|p| p.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+
+    // Also try the qualified name via def_id (resolve phase may have set this)
+    let qualified_name = comp
+        .def_id
+        .and_then(|did| env.tree.def_map.get(&did))
+        .cloned();
+
+    let recurse = |e| {
+        try_eval_integer_expr_with_depth_and_locals(
+            e,
+            env.mod_env,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+            depth + 1,
+            local_ints,
+        )
+    };
+
+    // Handle Modelica builtins that return integers
+    match func_name.as_str() {
+        "integer" => {
+            // MLS §3.7.2: integer(x) truncates Real to Integer
+            let val = recurse(args.first()?)?;
+            return Some(val);
+        }
+        "mod" => {
+            // MLS §3.7.2: mod(x, y) = x - floor(x/y)*y
+            let x = recurse(args.first()?)?;
+            let y = recurse(args.get(1)?)?;
+            return if y != 0 {
+                Some(((x % y) + y) % y)
+            } else {
+                None
+            };
+        }
+        "div" => {
+            // MLS §3.7.2: div(x, y) = truncate(x/y)
+            let x = recurse(args.first()?)?;
+            let y = recurse(args.get(1)?)?;
+            return eval_integer_div_builtin(x, y);
+        }
+        "abs" => {
+            let x = recurse(args.first()?)?;
+            return Some(x.abs());
+        }
+        "min" => {
+            let x = recurse(args.first()?)?;
+            let y = recurse(args.get(1)?)?;
+            return Some(x.min(y));
+        }
+        "max" => {
+            let x = recurse(args.first()?)?;
+            let y = recurse(args.get(1)?)?;
+            return Some(x.max(y));
+        }
+        _ => {}
+    }
+
+    let function_def = lookup_function_definition(&func_name, qualified_name.as_deref(), env.tree)?;
+    eval_user_defined_integer_function(function_def, args, env, depth, local_ints)
+}
+
+fn lookup_function_definition<'a>(
+    func_name: &str,
+    qualified_name: Option<&str>,
+    tree: &'a ast::ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if let Some(name) = qualified_name
+        && let Some(class) = tree.get_class_by_qualified_name(name)
+        && class.class_type == rumoca_core::ClassType::Function
+    {
+        return Some(class);
+    }
+
+    if let Some(class) = tree.get_class_by_qualified_name(func_name)
+        && class.class_type == rumoca_core::ClassType::Function
+    {
+        return Some(class);
+    }
+
+    lookup_unique_short_function_name(func_name, tree)
+}
+
+fn lookup_unique_short_function_name<'a>(
+    func_name: &str,
+    tree: &'a ast::ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if func_name.contains('.') {
+        return None;
+    }
+
+    let mut matches = tree
+        .def_map
+        .values()
+        .filter(|qualified| {
+            rumoca_core::ComponentPath::from_flat_path(qualified)
+                .parts()
+                .last()
+                .is_some_and(|leaf| leaf == func_name)
+        })
+        .filter_map(|qualified| tree.get_class_by_qualified_name(qualified))
+        .filter(|class| class.class_type == rumoca_core::ClassType::Function);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn eval_user_defined_integer_function(
+    function_def: &ast::ClassDef,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    caller_locals: Option<&FxHashMap<String, i64>>,
+) -> Option<i64> {
+    if !function_def.pure || function_def.external.is_some() {
+        return None;
+    }
+    if depth >= MAX_EXPR_EVAL_DEPTH {
+        return None;
+    }
+
+    let mut local_values = FxHashMap::default();
+    function_eval::bind_function_inputs(
+        function_def,
+        args,
+        env,
+        depth + 1,
+        caller_locals,
+        &mut local_values,
+    )?;
+    function_eval::initialize_function_locals(function_def, env, depth + 1, &mut local_values);
+    let output_name = function_eval::find_scalar_function_output_name(function_def)?;
+
+    for algorithm in &function_def.algorithms {
+        if function_eval::interpret_function_statements(
+            algorithm,
+            env,
+            depth + 1,
+            &mut local_values,
+        )? {
+            break;
+        }
+    }
+
+    local_values.get(&output_name).copied()
+}

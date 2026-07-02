@@ -563,6 +563,22 @@ fn lower_expression_accepts_singleton_projection_of_scalarized_expression() {
 }
 
 #[test]
+fn lower_expression_accepts_generated_projection_of_scalar_literal() {
+    let span = lower_test_span();
+    let expr = rumoca_core::Expression::Index {
+        base: Box::new(real_lit(4.0)),
+        subscripts: vec![rumoca_core::Subscript::generated_index(2, span)],
+        span,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
+        .expect("generated scalar literal projection should lower");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 4.0);
+}
+
+#[test]
 fn lower_expression_accepts_singleton_projection_of_scalar_function_call() {
     let span = lower_test_span();
     let expr = rumoca_core::Expression::Index {

@@ -1005,7 +1005,7 @@ fn instantiate_class(
             tree,
             mod_env: ctx.mod_env(),
             effective_components,
-            resolve_class_components: &resolve_effective_components_for_eval,
+            resolve_class_components: resolve_effective_components_for_eval,
         };
         let int_params = extract_int_params_with_mods_and_known(&eval_ctx, &ctx.known_int_params);
         ctx.register_known_int_params(&qualified_name, &int_params);
@@ -1119,7 +1119,7 @@ fn mark_disabled_component_if_needed(
             tree,
             mod_env: ctx.mod_env(),
             effective_components,
-            resolve_class_components: &resolve_effective_components_for_eval,
+            resolve_class_components: resolve_effective_components_for_eval,
         };
         evaluate_component_condition(&eval_ctx, cond) == Some(false)
     });
@@ -1293,12 +1293,28 @@ fn can_resolve_missing_inner(
     missing: &MissingInnerInfo,
 ) -> bool {
     missing.name == name
+        && inner_visible_to_outer(inner_decl, missing)
         && is_type_compatible_with_def_id(
             tree,
             &missing.type_name,
             missing.type_def_id,
             &inner_decl.type_name,
             inner_decl.type_def_id,
+        )
+}
+
+fn inner_visible_to_outer(inner_decl: &InnerDeclaration, missing: &MissingInnerInfo) -> bool {
+    let inner_scope = inner_decl.qualified_name.parent().unwrap_or_default();
+    let outer_scope = missing.outer_path.parent().unwrap_or_default();
+    path_is_ancestor_or_same(&inner_scope, &outer_scope)
+}
+
+fn path_is_ancestor_or_same(ancestor: &ast::QualifiedName, path: &ast::QualifiedName) -> bool {
+    ancestor.parts.len() <= path.parts.len()
+        && ancestor.parts.iter().zip(path.parts.iter()).all(
+            |((ancestor_name, ancestor_subs), (path_name, path_subs))| {
+                ancestor_name == path_name && ancestor_subs == path_subs
+            },
         )
 }
 
@@ -1681,7 +1697,7 @@ fn prepare_component_binding_info(
         tree,
         mod_env: ctx.mod_env(),
         effective_components,
-        resolve_class_components: &resolve_effective_components_for_eval,
+        resolve_class_components: resolve_effective_components_for_eval,
     };
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let ComponentAttrsAndBinding {

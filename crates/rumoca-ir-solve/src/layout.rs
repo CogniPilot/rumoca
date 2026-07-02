@@ -377,7 +377,27 @@ impl VarLayout {
     }
 
     pub fn binding(&self, name: &str) -> Option<ScalarSlot> {
-        self.bindings.get(name).copied()
+        if let Some(slot) = self.bindings.get(name).copied() {
+            return Some(slot);
+        }
+        // Fall back to deriving an array element's slot from its base slot + shape.
+        // Array Y/P slots are contiguous in row-major order, so `x[i,j]` lives at
+        // `base + flat_index(i,j)` — no need to materialize a `bindings` entry per
+        // element. (Constant arrays hold distinct per-element values and are not
+        // derivable this way; their elements stay in `bindings`.)
+        self.derive_array_element_binding(name)
+    }
+
+    /// Derive an array element's `ScalarSlot` from its base slot + shape, for a
+    /// concrete element name like `x[2,3]` (1-based, row-major). Returns `None` when
+    /// the name is not a subscripted element, the base has no contiguous slot, or any
+    /// subscript is out of bounds.
+    fn derive_array_element_binding(&self, name: &str) -> Option<ScalarSlot> {
+        let scalar = rumoca_core::parse_scalar_name(name)?;
+        let root = self.bindings.get(scalar.base).copied()?;
+        let dims = self.shapes.get(scalar.base)?;
+        let flat = row_major_flat_index(&scalar.indices, dims)?;
+        offset_contiguous_slot(root, flat)
     }
 
     pub fn shape(&self, name: &str) -> Option<&[usize]> {
@@ -746,6 +766,33 @@ fn flat_index_to_subscripts(
     Ok(Some(subscripts))
 }
 
+/// Row-major flat offset of 1-based `indices` within `dims`, or `None` if the count
+/// mismatches or any index is out of `1..=dim`.
+fn row_major_flat_index(indices: &[i64], dims: &[usize]) -> Option<usize> {
+    if indices.len() != dims.len() || dims.is_empty() {
+        return None;
+    }
+    let mut flat = 0usize;
+    for (&index, &dim) in indices.iter().zip(dims) {
+        let index = usize::try_from(index).ok()?;
+        if index < 1 || index > dim {
+            return None;
+        }
+        flat = flat.checked_mul(dim)?.checked_add(index - 1)?;
+    }
+    Some(flat)
+}
+
+/// Offset a contiguous (`Y`/`P`) base slot by `flat` elements. `None` for `Time` or
+/// `Constant`, whose array elements are not a contiguous offset of the base.
+fn offset_contiguous_slot(root: ScalarSlot, flat: usize) -> Option<ScalarSlot> {
+    match root {
+        ScalarSlot::Y { index, .. } => Some(scalar_slot_y(index.checked_add(flat)?)),
+        ScalarSlot::P { index, .. } => Some(scalar_slot_p(index.checked_add(flat)?)),
+        ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+    }
+}
+
 pub fn scalar_slot_y(index: usize) -> ScalarSlot {
     ScalarSlot::Y {
         index,
@@ -771,6 +818,43 @@ mod tests {
             start,
             end,
         )
+    }
+
+    #[test]
+    fn binding_derives_array_element_slots_from_base_and_shape() {
+        // Only the base slot + shape are stored; element slots are derived.
+        let bindings = IndexMap::from([
+            ("u".to_string(), scalar_slot_y(0)),
+            ("p".to_string(), scalar_slot_p(10)),
+        ]);
+        let shapes = IndexMap::from([
+            ("u".to_string(), vec![2usize, 3]),
+            ("p".to_string(), vec![4usize]),
+        ]);
+        let layout = VarLayout {
+            bindings,
+            shapes,
+            shape_spans: IndexMap::new(),
+            shape_indexed_keys: IndexMap::new(),
+            indexed_bindings: IndexMap::new(),
+            y_scalars: 6,
+            p_scalars: 14,
+        };
+
+        // Row-major 2x3: u[i,j] -> base + (i-1)*3 + (j-1).
+        assert_eq!(layout.binding("u[1,1]"), Some(scalar_slot_y(0)));
+        assert_eq!(layout.binding("u[1,3]"), Some(scalar_slot_y(2)));
+        assert_eq!(layout.binding("u[2,1]"), Some(scalar_slot_y(3)));
+        assert_eq!(layout.binding("u[2,3]"), Some(scalar_slot_y(5)));
+        // 1-D parameter array p[k] -> base + (k-1).
+        assert_eq!(layout.binding("p[1]"), Some(scalar_slot_p(10)));
+        assert_eq!(layout.binding("p[4]"), Some(scalar_slot_p(13)));
+        // The whole-array base still resolves directly.
+        assert_eq!(layout.binding("u"), Some(scalar_slot_y(0)));
+        // Out-of-bounds and shape-mismatched subscripts derive nothing.
+        assert_eq!(layout.binding("u[3,1]"), None);
+        assert_eq!(layout.binding("u[1]"), None);
+        assert_eq!(layout.binding("u[0,1]"), None);
     }
 
     #[test]

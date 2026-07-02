@@ -1,6 +1,8 @@
 use super::*;
 
+mod assertion_actions_tests;
 mod clocked_tuple_tests;
+mod parameter_binding_tests;
 mod regression_more_tests;
 mod when_inactive_tests;
 mod when_lowering_tests;
@@ -952,6 +954,68 @@ fn test_todae_keeps_time_guarded_discrete_output_binding_and_alias_consumer() {
 }
 
 #[test]
+fn test_todae_preserves_discrete_output_binding_as_relation_anchor() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("root.suspend"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("root.suspend"),
+            causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
+            is_discrete_type: true,
+            binding: Some(Expression::Literal {
+                value: Literal::Boolean(false),
+                span: crate::test_support::test_span(),
+            }),
+            ..rumoca_ir_flat::Variable::empty_with_span(crate::test_support::test_span())
+        }),
+    );
+    flat.add_variable(
+        VarName::new("root.subgraph.suspend"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("root.subgraph.suspend"),
+            causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
+            is_discrete_type: true,
+            ..rumoca_ir_flat::Variable::empty_with_span(crate::test_support::test_span())
+        }),
+    );
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: sub_expr(
+            make_var_ref("root.suspend"),
+            make_var_ref("root.subgraph.suspend"),
+        ),
+        span: crate::test_support::test_span(),
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "root".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("todae should preserve discrete output binding relation anchors");
+
+    assert!(
+        dae.discrete.valued_updates.iter().any(|eq| {
+            eq.origin.contains("binding equation for root.suspend")
+                && eq
+                    .lhs
+                    .as_ref()
+                    .is_some_and(|lhs| lhs.as_str() == "root.suspend")
+        }),
+        "constant discrete output binding must remain as the value anchor"
+    );
+    assert_eq!(
+        crate::balance::balance(&dae).expect("fixture balance should be computable"),
+        0,
+        "binding anchor plus relation equation should balance both discrete variables"
+    );
+}
+
+#[test]
 fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
     let mut flat = Model::new();
     flat.add_variable(
@@ -1878,83 +1942,4 @@ fn collect_edge_guard_names(expr: &rumoca_core::Expression, names: &mut Vec<Stri
         }
         _ => {}
     }
-}
-
-/// A scalar parameter binding that references a known variable must keep
-/// that reference; the record-field start alias selection used to graft the
-/// LHS leaf onto the RHS and suffix-resolve to an unrelated variable
-/// (`resistor.m = multiStar.mBasic` became the top-level `m`, so MSL
-/// PowerConverters models evaluated `fill(300.15, m)` with the wrong phase
-/// count).
-#[test]
-fn test_scalar_binding_to_known_variable_keeps_reference() {
-    let mut flat = Model::new();
-    for (name, value) in [("m", 3), ("multiStar.mBasic", 1)] {
-        let var_name = VarName::new(name);
-        flat.add_variable(
-            var_name.clone(),
-            crate::test_support::with_component_ref(flat::Variable {
-                name: var_name,
-                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-                binding: Some(Expression::Literal {
-                    value: rumoca_core::Literal::Integer(value),
-                    span: crate::test_support::test_span(),
-                }),
-                is_primitive: true,
-                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            }),
-        );
-    }
-    let target = VarName::new("multiStar.resistor.m");
-    flat.add_variable(
-        target.clone(),
-        crate::test_support::with_component_ref(flat::Variable {
-            name: target.clone(),
-            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-            binding: Some(Expression::VarRef {
-                name: rumoca_core::Reference::from_component_reference(
-                    rumoca_core::component_reference_from_flat_name(
-                        &VarName::new("multiStar.mBasic"),
-                        crate::test_support::test_span(),
-                    )
-                    .expect("fixture name must form a component reference"),
-                ),
-                subscripts: vec![],
-                span: crate::test_support::test_span(),
-            }),
-            is_primitive: true,
-            ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                rumoca_core::SourceId::from_source_name(file!()),
-                1,
-                2,
-            ))
-        }),
-    );
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("scalar parameter bindings should convert");
-
-    let var = dae
-        .variables
-        .parameters
-        .get(&target)
-        .expect("target parameter should exist in DAE");
-    let start = var.start.as_ref().expect("binding becomes parameter start");
-    let Expression::VarRef { name, .. } = start else {
-        panic!("expected a variable reference start, got {start:?}");
-    };
-    assert_eq!(
-        name.var_name().as_str(),
-        "multiStar.mBasic",
-        "binding reference must not be grafted onto an unrelated variable"
-    );
 }

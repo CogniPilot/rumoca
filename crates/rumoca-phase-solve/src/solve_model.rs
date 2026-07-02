@@ -3,10 +3,6 @@
 //! This is the last DAE-aware step before runtime backends. Backends should
 //! receive only `rumoca-ir-solve` data.
 //!
-//! SPEC_0021 file-size exception: solve-model lowering still coordinates model
-//! inventory, RHS assembly, visibility rows, and tensor preservation.
-//! split plan: move visibility assembly and model inventory helpers into submodules.
-
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{ExpressionVisitor, Literal, OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
@@ -29,26 +25,36 @@ use rumoca_eval_dae::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod state_derivative_ordering;
 mod variable_meta;
+mod visible;
+use state_derivative_ordering::order_state_derivative_rows;
+#[cfg(test)]
+use state_derivative_ordering::{
+    reserve_state_derivative_order_capacity, reserve_state_derivative_order_flags,
+};
 use variable_meta::{
     continuous_real_role_is_event_discontinuous, event_discontinuous_scalar_names,
     variable_meta_classification,
 };
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct VisibleExpression {
-    pub name: String,
-    pub expr: rumoca_core::Expression,
-}
+use visible::lower_visible_observations;
+#[cfg(test)]
+use visible::visible_subscripts_from_usize;
+pub use visible::{VisibleExpression, visible_expressions_for_dae};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SolveModelLoweringProfile {
     Runtime,
+    RuntimeValueOnly,
     GpuPreparation,
 }
 
 impl SolveModelLoweringProfile {
     fn needs_runtime_support(self) -> bool {
+        matches!(self, Self::Runtime | Self::RuntimeValueOnly)
+    }
+
+    fn needs_solve_artifacts(self) -> bool {
         self == Self::Runtime
     }
 }
@@ -159,7 +165,13 @@ pub fn lower_dae_to_solve_model_owned(
     dae_model: dae::Dae,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
     crate::clear_solve_lowering_runtime_state();
-    lower_dae_to_solve_model_inner(dae_model, None, None, SolveModelLoweringProfile::Runtime)
+    lower_dae_to_solve_model_inner(
+        dae_model,
+        None,
+        None,
+        SolveModelLoweringProfile::Runtime,
+        &HashMap::new(),
+    )
 }
 
 pub fn lower_dae_to_solve_model_owned_with_visible_expressions(
@@ -172,6 +184,7 @@ pub fn lower_dae_to_solve_model_owned_with_visible_expressions(
         Some(visible_expressions),
         None,
         SolveModelLoweringProfile::Runtime,
+        &HashMap::new(),
     )
 }
 
@@ -180,12 +193,60 @@ pub fn lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata(
     visible_expressions: Vec<VisibleExpression>,
     metadata_dae_model: &dae::Dae,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
+    lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides(
+        dae_model,
+        visible_expressions,
+        metadata_dae_model,
+        &HashMap::new(),
+    )
+}
+
+/// As [`lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata`], but
+/// applies tunable scalar-parameter overrides while computing parameter values, so
+/// parameter-derived quantities (including array masks) re-derive from the override
+/// at parameter-set time instead of being baked at the declared default.
+pub fn lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
     crate::clear_solve_lowering_runtime_state();
     lower_dae_to_solve_model_inner(
         dae_model,
         Some(visible_expressions),
         Some(metadata_dae_model),
         SolveModelLoweringProfile::Runtime,
+        param_overrides,
+    )
+}
+
+pub fn lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
+    lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides(
+        dae_model,
+        visible_expressions,
+        metadata_dae_model,
+        &HashMap::new(),
+    )
+}
+
+pub fn lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
+    crate::clear_solve_lowering_runtime_state();
+    lower_dae_to_solve_model_inner(
+        dae_model,
+        Some(visible_expressions),
+        Some(metadata_dae_model),
+        SolveModelLoweringProfile::RuntimeValueOnly,
+        param_overrides,
     )
 }
 
@@ -193,12 +254,28 @@ pub fn lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata(
     dae_model: dae::Dae,
     metadata_dae_model: &dae::Dae,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
+    lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_overrides(
+        dae_model,
+        metadata_dae_model,
+        &HashMap::new(),
+    )
+}
+
+/// As [`lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata`], but
+/// applies tunable scalar-parameter overrides while computing parameter values
+/// (see the override-aware runtime entry above for the rationale).
+pub fn lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_overrides(
+    dae_model: dae::Dae,
+    metadata_dae_model: &dae::Dae,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
     crate::clear_solve_lowering_runtime_state();
     lower_dae_to_solve_model_inner(
         dae_model,
         None,
         Some(metadata_dae_model),
         SolveModelLoweringProfile::GpuPreparation,
+        param_overrides,
     )
 }
 
@@ -209,12 +286,88 @@ pub fn lower_dae_to_solve_model(
     lower_dae_to_solve_model_owned(dae_model.clone())
 }
 
+fn lower_profiled_solve_problem(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+    model_span: rumoca_core::Span,
+    profile: SolveModelLoweringProfile,
+) -> Result<solve::SolveProblem, LowerError> {
+    match profile {
+        SolveModelLoweringProfile::Runtime => {
+            crate::lower_solve_problem_with_solver_len_and_model_span(
+                dae_model,
+                solver_len,
+                Some(model_span),
+            )
+        }
+        SolveModelLoweringProfile::RuntimeValueOnly => {
+            crate::lower_solve_problem_with_solver_len_and_model_span_and_profile(
+                dae_model,
+                solver_len,
+                Some(model_span),
+                crate::SolveProblemLoweringProfile::RuntimeValueOnly,
+            )
+        }
+        SolveModelLoweringProfile::GpuPreparation => {
+            crate::lower_solve_problem_with_solver_len_and_model_span_and_profile(
+                dae_model,
+                solver_len,
+                Some(model_span),
+                crate::SolveProblemLoweringProfile::GpuPreparation,
+            )
+        }
+    }
+}
+
+fn profiled_solver_len(
+    dae_model: &dae::Dae,
+    state_count: usize,
+    profile: SolveModelLoweringProfile,
+) -> Result<usize, SolveModelLowerError> {
+    match profile {
+        SolveModelLoweringProfile::Runtime | SolveModelLoweringProfile::RuntimeValueOnly => {
+            Ok(solver_visible_scalar_count(dae_model)?.max(dae_model.continuous.equations.len()))
+        }
+        SolveModelLoweringProfile::GpuPreparation => Ok(state_count),
+    }
+}
+
+fn lower_runtime_visible_outputs(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    visible_expressions: &[VisibleExpression],
+    metadata_dae_model: Option<&dae::Dae>,
+    profile: SolveModelLoweringProfile,
+) -> Result<
+    (
+        Vec<String>,
+        solve::ScalarProgramBlock,
+        Vec<solve::SolveVariableMeta>,
+    ),
+    SolveModelLowerError,
+> {
+    if !profile.needs_runtime_support() {
+        return Ok((Vec::new(), solve::ScalarProgramBlock::default(), Vec::new()));
+    }
+    let timer = crate::timing::stage_start();
+    let (visible_names, visible_value_rows) =
+        lower_visible_observations(dae_model, layout, visible_expressions)?;
+    crate::timing::log_stage("model.lower_visible_observations", timer);
+    let timer = crate::timing::stage_start();
+    let variable_meta =
+        build_variable_meta(metadata_dae_model.unwrap_or(dae_model), &visible_names)?;
+    crate::timing::log_stage("model.build_variable_meta", timer);
+    Ok((visible_names, visible_value_rows, variable_meta))
+}
+
 fn lower_dae_to_solve_model_inner(
     mut dae_model: dae::Dae,
     visible_expressions: Option<Vec<VisibleExpression>>,
     metadata_dae_model: Option<&dae::Dae>,
     profile: SolveModelLoweringProfile,
+    param_overrides: &HashMap<String, f64>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
+    let timer = crate::timing::stage_start();
     let visible_expressions = if profile.needs_runtime_support() {
         match visible_expressions {
             Some(visible_expressions) => visible_expressions,
@@ -223,30 +376,41 @@ fn lower_dae_to_solve_model_inner(
     } else {
         Vec::new()
     };
+    crate::timing::log_stage("model.visible_expressions", timer);
     let state_count = scalar_count(dae_model.variables.states.values())?;
     let eval_runtime = Arc::new(EvalRuntimeState::default());
-    let base_parameters =
-        default_parameter_values(&dae_model, metadata_dae_model, eval_runtime.clone())?;
-    order_state_derivative_rows(
-        &mut dae_model,
-        state_count,
-        &base_parameters,
-        eval_runtime.clone(),
-    )?;
-    let solver_len =
-        solver_visible_scalar_count(&dae_model)?.max(dae_model.continuous.equations.len());
-    let model_span = model_provenance_span(&dae_model, metadata_dae_model)?;
-    let problem = crate::lower_solve_problem_with_solver_len_and_model_span(
+    let timer = crate::timing::stage_start();
+    let base_parameters = default_parameter_values(
         &dae_model,
-        solver_len,
-        Some(model_span),
+        metadata_dae_model,
+        eval_runtime.clone(),
+        param_overrides,
     )?;
-    let artifacts = if profile.needs_runtime_support() {
+    crate::timing::log_stage("model.default_parameter_values", timer);
+    if profile.needs_runtime_support() {
+        let timer = crate::timing::stage_start();
+        order_state_derivative_rows(
+            &mut dae_model,
+            state_count,
+            &base_parameters,
+            eval_runtime.clone(),
+        )?;
+        crate::timing::log_stage("model.order_state_derivative_rows", timer);
+    }
+    let solver_len = profiled_solver_len(&dae_model, state_count, profile)?;
+    let model_span = model_provenance_span(&dae_model, metadata_dae_model)?;
+    let timer = crate::timing::stage_start();
+    let problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
+    crate::timing::log_stage("model.lower_solve_problem", timer);
+    let timer = crate::timing::stage_start();
+    let artifacts = if profile.needs_solve_artifacts() {
         let mass_matrix = state_identity_mass_matrix(state_count, model_span)?;
         crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?
     } else {
         solve::SolveArtifacts::default()
     };
+    crate::timing::log_stage("model.lower_solve_artifacts", timer);
+    let timer = crate::timing::stage_start();
     let mut parameters = compiled_parameter_values(
         &dae_model,
         metadata_dae_model,
@@ -254,6 +418,8 @@ fn lower_dae_to_solve_model_inner(
         base_parameters,
         eval_runtime.clone(),
     )?;
+    crate::timing::log_stage("model.compiled_parameter_values", timer);
+    let timer = crate::timing::stage_start();
     let mut initial_y = initial_solver_values(
         &dae_model,
         metadata_dae_model,
@@ -261,6 +427,8 @@ fn lower_dae_to_solve_model_inner(
         problem.solve_layout.solver_scalar_count(),
         eval_runtime.clone(),
     )?;
+    crate::timing::log_stage("model.initial_solver_values", timer);
+    let timer = crate::timing::stage_start();
     apply_initial_equations_to_start_values(
         &dae_model,
         &problem.layout,
@@ -268,6 +436,8 @@ fn lower_dae_to_solve_model_inner(
         &mut initial_y,
         eval_runtime.clone(),
     )?;
+    crate::timing::log_stage("model.apply_initial_equations", timer);
+    let timer = crate::timing::stage_start();
     let table_env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         &dae_model,
         &parameters,
@@ -276,16 +446,14 @@ fn lower_dae_to_solve_model_inner(
     )
     .map_err(|source| runtime_tail_error(&dae_model, source))?;
     let external_tables = external_table_data_for_parameter_values_in(&table_env, &parameters);
-    let (visible_names, visible_value_rows) = if profile.needs_runtime_support() {
-        lower_visible_observations(&dae_model, &problem.layout, &visible_expressions)?
-    } else {
-        (Vec::new(), solve::ScalarProgramBlock::default())
-    };
-    let variable_meta = if profile.needs_runtime_support() {
-        build_variable_meta(metadata_dae_model.unwrap_or(&dae_model), &visible_names)?
-    } else {
-        Vec::new()
-    };
+    crate::timing::log_stage("model.external_tables", timer);
+    let (visible_names, visible_value_rows, variable_meta) = lower_runtime_visible_outputs(
+        &dae_model,
+        &problem.layout,
+        &visible_expressions,
+        metadata_dae_model,
+        profile,
+    )?;
 
     Ok(solve::SolveModel {
         problem,
@@ -296,161 +464,6 @@ fn lower_dae_to_solve_model_inner(
         visible_names,
         visible_value_rows,
         variable_meta,
-    })
-}
-
-fn lower_visible_observations(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-    visible_expressions: &[VisibleExpression],
-) -> Result<(Vec<String>, solve::ScalarProgramBlock), SolveModelLowerError> {
-    let mut names = Vec::new();
-    let mut rows = Vec::new();
-    let mut program_spans = Vec::new();
-    let structural_bindings = crate::lower::structural_bindings_for_dae(dae_model)?;
-    let indexed_bindings = crate::lower::indexed_bindings_for_layout(layout);
-    for visible in visible_expressions {
-        if is_unbound_identity_observation(layout, visible) {
-            continue;
-        }
-        match crate::lower::lower_observation_rhs_with_structural_bindings(
-            dae_model,
-            layout,
-            std::slice::from_ref(&visible.expr),
-            &structural_bindings,
-            &indexed_bindings,
-        ) {
-            Ok(mut lowered) => {
-                let span = visible_expression_span(visible)?;
-                append_visible_names(&mut names, &visible.name, lowered.len());
-                program_spans.extend(std::iter::repeat_n(span, lowered.len()));
-                rows.append(&mut lowered);
-            }
-            Err(err) if should_skip_unbound_observation(layout, visible, &err) => {}
-            Err(err) if should_skip_unsupported_observation(&err) => {}
-            Err(err) => {
-                return Err(
-                    crate::lower_problem_context(err, "lower visible observation rows").into(),
-                );
-            }
-        }
-    }
-    Ok((
-        names,
-        solve::ScalarProgramBlock::with_program_spans(rows, program_spans)
-            .map_err(LowerError::from)?,
-    ))
-}
-
-fn visible_expression_span(
-    visible: &VisibleExpression,
-) -> Result<rumoca_core::Span, SolveModelLowerError> {
-    visible.expr.span().ok_or_else(|| {
-        SolveModelLowerError::Lower(LowerError::UnspannedContractViolation {
-            reason: format!(
-                "visible observation `{}` reached solve-model lowering without expression provenance",
-                visible.name
-            ),
-        })
-    })
-}
-
-fn append_visible_names(names: &mut Vec<String>, base_name: &str, row_count: usize) {
-    if row_count == 1 {
-        names.push(base_name.to_string());
-        return;
-    }
-    names.extend((1..=row_count).map(|index| format!("{base_name}[{index}]")));
-}
-
-fn should_skip_unbound_observation(
-    layout: &solve::VarLayout,
-    _visible: &VisibleExpression,
-    err: &LowerError,
-) -> bool {
-    let Some(name) = observation_missing_binding_name(err) else {
-        return false;
-    };
-    layout.binding(name).is_none()
-}
-
-fn observation_missing_binding_name(err: &LowerError) -> Option<&str> {
-    match err {
-        LowerError::MissingBinding { name } => Some(name.as_str()),
-        LowerError::Spanned { source, .. } | LowerError::WithContext { source, .. } => {
-            observation_missing_binding_name(source)
-        }
-        _ => None,
-    }
-}
-
-/// Observation (visible-expression) declines: constructs the solve lowering
-/// cannot express yet. Classification is variant-based; an error that is not
-/// one of these typed declines fails the compile.
-fn should_skip_unsupported_observation(err: &LowerError) -> bool {
-    match err {
-        LowerError::DynamicSubscript
-        | LowerError::ForRangeUnknownDimension { .. }
-        | LowerError::MissingActualArgument { .. }
-        | LowerError::DynamicBindingBase { .. }
-        | LowerError::MissingFunction { .. } => true,
-        LowerError::Spanned { source, .. } | LowerError::WithContext { source, .. } => {
-            should_skip_unsupported_observation(source)
-        }
-        _ => false,
-    }
-}
-
-fn is_unbound_identity_observation(layout: &solve::VarLayout, visible: &VisibleExpression) -> bool {
-    layout.binding(&visible.name).is_none()
-        && matches!(
-            &visible.expr,
-            rumoca_core::Expression::VarRef {
-                name,
-                subscripts,
-                ..
-            } if subscripts.is_empty() && name.as_str() == visible.name
-        )
-}
-
-pub fn visible_expressions_for_dae(
-    dae_model: &dae::Dae,
-) -> Result<Vec<VisibleExpression>, LowerError> {
-    let solver_len =
-        solver_visible_scalar_count(dae_model)?.max(dae_model.continuous.equations.len());
-    let mut expressions = collect_visible_solver_expressions(dae_model, solver_len)?;
-    let runtime_expressions = collect_visible_runtime_expressions(dae_model)?;
-    reserve_lower_capacity(
-        &mut expressions,
-        runtime_expressions.len(),
-        "visible expression count",
-        dae_model_span(dae_model, "visible expression inventory")?,
-    )?;
-    expressions.extend(runtime_expressions);
-    Ok(expressions)
-}
-
-fn lower_vec_with_capacity<T>(
-    capacity: usize,
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<T>, LowerError> {
-    let mut values = Vec::new();
-    reserve_lower_capacity(&mut values, capacity, context, span)?;
-    Ok(values)
-}
-
-fn reserve_lower_capacity<T>(
-    values: &mut Vec<T>,
-    additional: usize,
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<(), LowerError> {
-    values.try_reserve_exact(additional).map_err(|_| {
-        lower_contract_violation(
-            format!("{context} capacity exceeds host memory limits"),
-            span,
-        )
     })
 }
 
@@ -492,280 +505,6 @@ fn dae_model_span(
         .ok_or_else(|| LowerError::UnspannedContractViolation {
             reason: format!("DAE model has no source provenance for {context}"),
         })
-}
-
-fn collect_visible_solver_expressions(
-    dae_model: &dae::Dae,
-    solver_len: usize,
-) -> Result<Vec<VisibleExpression>, LowerError> {
-    let span = dae_model_span(dae_model, "visible solver expression count")?;
-    let mut expressions =
-        lower_vec_with_capacity(solver_len, "visible solver expression count", span)?;
-    for (name, var) in dae_model
-        .variables
-        .states
-        .iter()
-        .chain(dae_model.variables.algebraics.iter())
-        .chain(dae_model.variables.outputs.iter())
-        .filter(|(name, _)| !crate::layout::is_runtime_parameter_tail_variable(dae_model, name))
-    {
-        let variable_expressions = visible_expressions_for_variable(name, var)?;
-        reserve_lower_capacity(
-            &mut expressions,
-            variable_expressions.len(),
-            "visible solver expression count",
-            var.source_span,
-        )?;
-        expressions.extend(variable_expressions);
-    }
-    expressions.truncate(solver_len);
-    Ok(expressions)
-}
-
-fn collect_visible_runtime_expressions(
-    dae_model: &dae::Dae,
-) -> Result<Vec<VisibleExpression>, LowerError> {
-    let span = dae_model_span(dae_model, "visible runtime expression count")?;
-    let capacity = checked_lower_count_add(
-        dae_model.variables.inputs.len(),
-        dae_model.variables.discrete_reals.len(),
-        "visible runtime expression count",
-        span,
-    )?;
-    let capacity = checked_lower_count_add(
-        capacity,
-        dae_model.variables.discrete_valued.len(),
-        "visible runtime expression count",
-        span,
-    )?;
-    let mut expressions =
-        lower_vec_with_capacity(capacity, "visible runtime expression count", span)?;
-    for (name, var) in dae_model
-        .variables
-        .inputs
-        .iter()
-        .chain(dae_model.variables.discrete_reals.iter())
-        .chain(dae_model.variables.discrete_valued.iter())
-    {
-        let variable_expressions = visible_expressions_for_variable(name, var)?;
-        reserve_lower_capacity(
-            &mut expressions,
-            variable_expressions.len(),
-            "visible runtime expression count",
-            var.source_span,
-        )?;
-        expressions.extend(variable_expressions);
-    }
-    Ok(expressions)
-}
-
-fn checked_lower_count_add(
-    lhs: usize,
-    rhs: usize,
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<usize, LowerError> {
-    lhs.checked_add(rhs).ok_or_else(|| {
-        lower_contract_violation(format!("{context} exceeds host index range"), span)
-    })
-}
-
-fn visible_expressions_for_variable(
-    name: &rumoca_core::VarName,
-    var: &dae::Variable,
-) -> Result<Vec<VisibleExpression>, LowerError> {
-    let size = variable_size(var)?;
-    if size <= 1 && var.dims.is_empty() {
-        let mut expressions =
-            lower_vec_with_capacity(1, "visible variable expression count", var.source_span)?;
-        expressions.push(visible_expression_for_variable_scalar(
-            name,
-            var,
-            name.as_str().to_string(),
-            Vec::new(),
-        )?);
-        return Ok(expressions);
-    }
-    let mut expressions =
-        lower_vec_with_capacity(size, "visible variable expression count", var.source_span)?;
-    for idx in 0..size {
-        let subscripts = dae::flat_index_to_subscripts(&var.dims, idx).ok_or_else(|| {
-            lower_contract_violation(
-                format!(
-                    "visible expression scalar index {idx} is outside variable `{}` shape",
-                    name.as_str()
-                ),
-                var.source_span,
-            )
-        })?;
-        expressions.push(visible_expression_for_variable_scalar(
-            name,
-            var,
-            dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, idx),
-            subscripts,
-        )?);
-    }
-    Ok(expressions)
-}
-
-fn visible_expression_for_variable_scalar(
-    name: &rumoca_core::VarName,
-    var: &dae::Variable,
-    scalar_name: String,
-    subscripts: Vec<usize>,
-) -> Result<VisibleExpression, LowerError> {
-    let reference = match var.origin {
-        dae::VariableOrigin::Generated => rumoca_core::Reference::generated(name.as_str()),
-        dae::VariableOrigin::Source => {
-            #[cfg(test)]
-            if var.source_span.is_dummy() {
-                return Ok(VisibleExpression {
-                    name: scalar_name,
-                    expr: rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::generated(name.as_str()),
-                        subscripts: visible_subscripts_from_usize(subscripts, var.source_span)?,
-                        span: var.source_span,
-                    },
-                });
-            }
-            let component_ref =
-                var.component_ref
-                    .clone()
-                    .ok_or_else(|| {
-                        lower_contract_violation(
-                            format!(
-                                "source DAE variable `{}` lost structured component-reference metadata before visible observation lowering",
-                                name.as_str()
-                            ),
-                            var.source_span,
-                        )
-                    })?;
-            rumoca_core::Reference::from_component_reference(component_ref)
-        }
-    };
-    Ok(VisibleExpression {
-        name: scalar_name,
-        expr: rumoca_core::Expression::VarRef {
-            name: reference,
-            subscripts: visible_subscripts_from_usize(subscripts, var.source_span)?,
-            span: var.source_span,
-        },
-    })
-}
-
-fn visible_subscripts_from_usize(
-    subscripts: Vec<usize>,
-    span: rumoca_core::Span,
-) -> Result<Vec<rumoca_core::Subscript>, LowerError> {
-    let mut lowered =
-        lower_vec_with_capacity(subscripts.len(), "visible variable subscript count", span)?;
-    for index in subscripts {
-        let value = i64::try_from(index).map_err(|_| {
-            lower_contract_violation(
-                "visible variable subscript exceeds Modelica integer range".to_string(),
-                span,
-            )
-        })?;
-        lowered.push(rumoca_core::Subscript::index(value, span));
-    }
-    Ok(lowered)
-}
-
-fn order_state_derivative_rows(
-    dae_model: &mut dae::Dae,
-    state_count: usize,
-    params: &[f64],
-    runtime: Arc<EvalRuntimeState>,
-) -> Result<(), SolveModelLowerError> {
-    if state_count == 0 || dae_model.continuous.equations.len() <= state_count {
-        return Ok(());
-    }
-    let Some(first_state) = dae_model.variables.states.values().next() else {
-        return Ok(());
-    };
-    let span = first_state.source_span;
-    let mut state_names = solve_model_vec_with_capacity(
-        dae_model.variables.states.len(),
-        "state derivative name count",
-        span,
-    )?;
-    for (name, var) in &dae_model.variables.states {
-        let names = scalar_names(name.as_str(), var)?;
-        reserve_solve_model_capacity(
-            &mut state_names,
-            names.len(),
-            "state derivative name count",
-            var.source_span,
-        )?;
-        state_names.extend(names);
-    }
-    let env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
-        dae_model, params, 0.0, runtime,
-    )
-    .map_err(|source| runtime_tail_error(dae_model, source))?;
-    let equation_count = dae_model.continuous.equations.len();
-    let span = dae_model.continuous.equations[0].span;
-    let mut used = reserve_state_derivative_order_flags(equation_count, span)?;
-    let mut ordered = Vec::new();
-    reserve_state_derivative_order_capacity(&mut ordered, equation_count, span)?;
-
-    for state_name in state_names.iter().take(state_count) {
-        let Some((row_idx, _)) = dae_model
-            .continuous
-            .equations
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| !used[*idx])
-            .filter_map(|(idx, equation)| {
-                derivative_coefficient_expr(&equation.rhs, state_name, equation.span)
-                    .ok()
-                    .and_then(|expr| eval_expr::<f64>(&expr, &env).ok().map(|value| (idx, value)))
-            })
-            .find(|(_, coeff)| coeff.abs() > 1.0e-15)
-        else {
-            continue;
-        };
-        used[row_idx] = true;
-        ordered.push(dae_model.continuous.equations[row_idx].clone());
-    }
-
-    if ordered.len() != state_count {
-        return Ok(());
-    }
-    ordered.extend(
-        dae_model
-            .continuous
-            .equations
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| !used[*idx])
-            .map(|(_, equation)| equation.clone()),
-    );
-    dae_model.continuous.equations = ordered;
-    Ok(())
-}
-
-fn reserve_state_derivative_order_flags(
-    count: usize,
-    span: rumoca_core::Span,
-) -> Result<Vec<bool>, SolveModelLowerError> {
-    let mut used = Vec::new();
-    reserve_state_derivative_order_capacity(&mut used, count, span)?;
-    used.resize(count, false);
-    Ok(used)
-}
-
-fn reserve_state_derivative_order_capacity<T>(
-    values: &mut Vec<T>,
-    capacity: usize,
-    span: rumoca_core::Span,
-) -> Result<(), SolveModelLowerError> {
-    values.try_reserve_exact(capacity).map_err(|_| {
-        solve_model_contract_violation(
-            "state derivative row ordering capacity overflows".to_string(),
-            span,
-        )
-    })
 }
 
 fn variable_size(var: &dae::Variable) -> Result<usize, LowerError> {
@@ -811,6 +550,7 @@ fn default_parameter_values(
     dae_model: &dae::Dae,
     metadata_dae_model: Option<&dae::Dae>,
     runtime: Arc<EvalRuntimeState>,
+    param_overrides: &HashMap<String, f64>,
 ) -> Result<Vec<f64>, SolveModelLowerError> {
     let mut params = Vec::new();
     let mut slots = Vec::new();
@@ -826,12 +566,27 @@ fn default_parameter_values(
     }
     for (name, var) in &dae_model.variables.parameters {
         let offset = params.len();
-        let values = start_values(dae_model, var, &env)?;
+        // A tunable-parameter override replaces this parameter's start value, so its
+        // dependents (e.g. parameter-derived array masks `sc/nc/sig` that read `aoa`)
+        // re-derive from the new value array-natively below instead of being baked at
+        // the declared default. Parameters are in dependency order, so seeding the
+        // override here makes every later dependent see it.
+        let values = match param_overrides.get(name.as_str()) {
+            Some(&value) => vec![value],
+            None => start_values(dae_model, var, &env)?,
+        };
         append_values_for_var(&mut params, name.as_str(), var, &values)?;
         slots.push((name, var, offset));
         seed_var_values(&mut env, name.as_str(), var, &values)?;
     }
-    refine_parameter_start_values(dae_model, metadata_dae_model, &mut params, &slots, runtime)?;
+    refine_parameter_start_values(
+        dae_model,
+        metadata_dae_model,
+        &mut params,
+        &slots,
+        runtime,
+        param_overrides,
+    )?;
     Ok(params)
 }
 
@@ -1000,6 +755,7 @@ fn refine_parameter_start_values(
     params: &mut [f64],
     slots: &[(&rumoca_core::VarName, &dae::Variable, usize)],
     runtime: Arc<EvalRuntimeState>,
+    param_overrides: &HashMap<String, f64>,
 ) -> Result<(), SolveModelLowerError> {
     for _ in 0..slots.len().clamp(1, 32) {
         let mut changed = false;
@@ -1014,6 +770,12 @@ fn refine_parameter_start_values(
             seed_missing_default_values_for_all_variables(metadata_dae_model, &mut env)?;
         }
         for (name, var, offset) in slots {
+            // Pinned overrides keep their value: the env above was rebuilt from
+            // `params` (which already holds the override at this slot), so dependents
+            // still read it — we just must not overwrite it with the declared start.
+            if param_overrides.contains_key(name.as_str()) {
+                continue;
+            }
             let values = start_values(dae_model, var, &env)?;
             changed |= replace_values_for_var(params, *offset, name.as_str(), var, &values)?;
             seed_var_values(&mut env, name.as_str(), var, &values)?;

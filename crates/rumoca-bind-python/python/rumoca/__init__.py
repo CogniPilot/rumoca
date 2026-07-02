@@ -48,6 +48,7 @@ StructuralInfo = _native.StructuralInfo
 
 # ── results & codegen ───────────────────────────────────────────────────────
 Result = _native.Result
+GradientResult = _native.GradientResult
 CodegenResult = _native.CodegenResult
 GeneratedFile = _native.GeneratedFile
 Target = _native.Target
@@ -86,6 +87,7 @@ __all__ = [
     "StructuralInfo",
     # results & codegen
     "Result",
+    "GradientResult",
     "CodegenResult",
     "GeneratedFile",
     "Target",

@@ -58,6 +58,14 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
             &mut synthetic_roots,
         );
     }
+    for action in &dae_model.events.event_actions {
+        clock::collect_synthetic_root_conditions_expr(
+            &action.condition,
+            false,
+            &compile_time_scalars,
+            &mut synthetic_roots,
+        );
+    }
     let mut synthetic_roots = synthetic_roots.into_vec();
     log_runtime_precompute_profile("synthetic_roots", synthetic_root_start);
 
@@ -92,13 +100,15 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     log_runtime_precompute_profile("scheduled_time_events", time_event_start);
 
     let clock_metadata_start = maybe_start_timer_if(profile);
+    let clock_compile_time_scalars =
+        collect_clock_compile_time_scalars(dae_model, &compile_time_scalars);
     let (
         clock_constructor_exprs,
         clock_schedules,
         clock_intervals,
         clock_timings,
         triggered_clock_conditions,
-    ) = clock::compute_clock_runtime_metadata(dae_model, &compile_time_scalars)?;
+    ) = clock::compute_clock_runtime_metadata(dae_model, &clock_compile_time_scalars)?;
     log_runtime_precompute_profile("clock_metadata", clock_metadata_start);
 
     let prune_start = maybe_start_timer_if(profile);
@@ -155,10 +165,16 @@ fn prune_unreferenced_condition_memory(
     let mut kept_conditions = Vec::with_capacity(old_conditions.len());
     let mut replacements = Vec::with_capacity(old_relations.len());
 
+    // Collect every referenced condition-memory index in a SINGLE walk of the
+    // model. The previous code re-walked the whole model once per relation,
+    // which is O(relations * equations) = O(n^2) on large array models (one
+    // relation per unrolled cell, every cell equation walked for each).
+    let referenced = collect_referenced_condition_indices(dae_model, &condition_name);
+
     for (old_index, (relation, equation)) in
         old_relations.into_iter().zip(old_conditions).enumerate()
     {
-        if !condition_memory_is_referenced(dae_model, &condition_name, old_index + 1)
+        if !referenced.contains(&(old_index + 1))
             && condition_memory_can_be_direct(&relation, constants)
         {
             replacements.push(ConditionMemoryReplacement::Direct(relation));
@@ -258,15 +274,17 @@ fn runtime_contract(detail: impl Into<String>, span: Option<rumoca_core::Span>) 
     }
 }
 
-fn condition_memory_is_referenced(
+/// Walk the model once and collect every condition-memory index referenced by
+/// any equation, update, initialization, or event condition. Replaces the prior
+/// per-index re-walk so pruning is O(n) in the model size instead of O(n^2).
+fn collect_referenced_condition_indices(
     dae_model: &dae::Dae,
     condition_name: &str,
-    condition_index: usize,
-) -> bool {
-    let mut checker = ConditionMemoryUseChecker {
+) -> std::collections::HashSet<usize> {
+    let mut collector = ConditionMemoryUseCollector {
         condition_name,
-        condition_index,
-        found: false,
+        pre_condition_name: format!("__pre__.{condition_name}"),
+        referenced: std::collections::HashSet::new(),
     };
     for expr in dae_model
         .continuous
@@ -284,30 +302,30 @@ fn condition_memory_is_referenced(
                 .map(|action| &action.condition),
         )
     {
-        checker.visit_expression(expr);
-        if checker.found {
-            return true;
-        }
+        collector.visit_expression(expr);
     }
-    false
+    collector.referenced
 }
 
-struct ConditionMemoryUseChecker<'a> {
+struct ConditionMemoryUseCollector<'a> {
     condition_name: &'a str,
-    condition_index: usize,
-    found: bool,
+    pre_condition_name: String,
+    referenced: std::collections::HashSet<usize>,
 }
 
-impl ExpressionVisitor for ConditionMemoryUseChecker<'_> {
+impl ExpressionVisitor for ConditionMemoryUseCollector<'_> {
     fn visit_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) {
-        if condition_memory_index(name.as_str(), subscripts, self.condition_name)
-            .is_some_and(|(_, index)| index == self.condition_index)
-        {
-            self.found = true;
+        if let Some((_, index)) = condition_memory_index(
+            name.as_str(),
+            subscripts,
+            self.condition_name,
+            &self.pre_condition_name,
+        ) {
+            self.referenced.insert(index);
             return;
         }
         for subscript in subscripts {
@@ -333,6 +351,7 @@ fn rewrite_condition_memory_references(
 
     let mut rewriter = ConditionMemoryReindexer {
         condition_name,
+        pre_condition_name: format!("__pre__.{condition_name}"),
         replacements,
         error: None,
     };
@@ -364,6 +383,7 @@ fn rewrite_equation_rhs(
 
 struct ConditionMemoryReindexer<'a> {
     condition_name: &'a str,
+    pre_condition_name: String,
     replacements: &'a [ConditionMemoryReplacement],
     error: Option<ToDaeError>,
 }
@@ -378,8 +398,12 @@ impl ExpressionRewriter for ConditionMemoryReindexer<'_> {
             subscripts,
             span,
         } = expr
-            && let Some((is_pre, old_index)) =
-                condition_memory_index(name.as_str(), subscripts, self.condition_name)
+            && let Some((is_pre, old_index)) = condition_memory_index(
+                name.as_str(),
+                subscripts,
+                self.condition_name,
+                &self.pre_condition_name,
+            )
             && let Some(replacement) = old_index
                 .checked_sub(1)
                 .and_then(|index| self.replacements.get(index))
@@ -459,12 +483,16 @@ fn generated_index_subscript(
     })
 }
 
+// `pre_condition_name` is `format!("__pre__.{condition_name}")`, precomputed by
+// the caller. It is hoisted out because this is called once per visited
+// var-ref; allocating it here turned a model walk into per-var-ref string
+// formatting (a measurable hot spot on large array models).
 fn condition_memory_index(
     name: &str,
     subscripts: &[rumoca_core::Subscript],
     condition_name: &str,
+    pre_condition_name: &str,
 ) -> Option<(bool, usize)> {
-    let pre_condition_name = format!("__pre__.{condition_name}");
     if name == condition_name {
         return one_based_static_index(subscripts).map(|index| (false, index));
     }
@@ -612,6 +640,98 @@ fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
 
     values
 }
+
+fn collect_clock_compile_time_scalars(
+    dae_model: &dae::Dae,
+    compile_time_scalars: &HashMap<String, f64>,
+) -> HashMap<String, f64> {
+    let mut values = compile_time_scalars.clone();
+    for name in initial_time_parameter_names(dae_model) {
+        values.insert(name, 0.0);
+    }
+    values
+}
+
+fn initial_time_parameter_names(dae_model: &dae::Dae) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    for equation in &dae_model.initialization.equations {
+        if let Some(name) = initial_time_parameter_name_from_equation(dae_model, equation)
+            && seen.insert(name.clone())
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn initial_time_parameter_name_from_equation(
+    dae_model: &dae::Dae,
+    equation: &dae::Equation,
+) -> Option<String> {
+    if let Some(lhs) = &equation.lhs
+        && expr_is_time_ref(&equation.rhs)
+        && dae_model
+            .variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new(lhs.as_str()))
+    {
+        return Some(lhs.as_str().to_string());
+    }
+
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &equation.rhs
+    else {
+        return None;
+    };
+
+    match (
+        initial_time_parameter_var_ref(dae_model, lhs),
+        expr_is_time_ref(rhs),
+        expr_is_time_ref(lhs),
+        initial_time_parameter_var_ref(dae_model, rhs),
+    ) {
+        (Some(name), true, _, _) | (_, _, true, Some(name)) => Some(name),
+        _ => None,
+    }
+}
+
+fn initial_time_parameter_var_ref(
+    dae_model: &dae::Dae,
+    expr: &rumoca_core::Expression,
+) -> Option<String> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty()
+        || !dae_model
+            .variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new(name.as_str()))
+    {
+        return None;
+    }
+    Some(name.as_str().to_string())
+}
+
+fn expr_is_time_ref(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if name.as_str() == "time" && subscripts.is_empty()
+    )
+}
+
 fn eval_scalar_const_expr(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,

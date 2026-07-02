@@ -2029,6 +2029,19 @@ pub(crate) struct Context {
     pub current_class_scope_path: Option<String>,
     /// Unqualified name of the simulated root model/block for MLS getInstanceName().
     pub simulated_root_name: Option<String>,
+    /// Mirror of `FlattenOptions::materialize_structured_families`. When false, a
+    /// regular elementwise for-family materializes only its corner cells (base + one
+    /// neighbor per binder) with full bodies; interior cells get a cheap placeholder
+    /// body and the family is marked `interiors_materialized = false` so downstream
+    /// phases reconstruct interior incidence/strides from the corners.
+    pub materialize_structured_families: bool,
+    /// Array base-names assigned by parameter-variability for-equation families: a
+    /// family every reference of which resolves (transitively) to a parameter/constant
+    /// or another such family. Their per-cell values are time-invariant, so flatten may
+    /// cheapen their interior cells (the DAE promotes them array-natively from the
+    /// captured comprehension template). Computed once before equation expansion in
+    /// `prepare_context_for_equation_flattening`.
+    pub param_variability_family_bases: rustc_hash::FxHashSet<String>,
 }
 
 #[cfg(test)]

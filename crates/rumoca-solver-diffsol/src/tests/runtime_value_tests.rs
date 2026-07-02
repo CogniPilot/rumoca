@@ -11,18 +11,30 @@ fn event_sample_replaces_near_duplicate_output_sample() {
     let mut times = Vec::new();
     let mut data = vec![Vec::new()];
 
+    let mut samples = SampleRecorder {
+        runtime: None,
+        model: &model,
+        recorded_times: &mut times,
+        data: &mut data,
+    };
     record_sample_if_new(
-        None,
-        &model,
-        &[],
-        &[5.0],
-        &mut times,
-        &mut data,
-        4.999999999999981,
+        &mut samples,
+        SamplePoint {
+            y: &[],
+            params: &[5.0],
+            t: 4.999999999999981,
+        },
     )
     .expect("pre-event output sample should be recorded");
-    record_sample_if_new(None, &model, &[], &[7.0], &mut times, &mut data, 5.0)
-        .expect("near-duplicate event sample should replace the stale output value");
+    record_sample_if_new(
+        &mut samples,
+        SamplePoint {
+            y: &[],
+            params: &[7.0],
+            t: 5.0,
+        },
+    )
+    .expect("near-duplicate event sample should replace the stale output value");
 
     assert_eq!(times, vec![5.0]);
     assert_eq!(data, vec![vec![7.0]]);
@@ -90,6 +102,110 @@ fn simulate_no_state_solve_ir_stops_for_root_event_updates() {
         },
     )
     .expect("MLS Appendix B root events should settle no-state solve-IR updates");
+
+    assert_eq!(result.times.len(), 3);
+    assert_eq!(result.times[0], 0.0);
+    assert!((result.times[1] - 0.05).abs() <= 2.0e-6);
+    assert_eq!(result.times[2], 0.1);
+    assert_eq!(result.data, vec![vec![0.0, 2.0, 2.0]]);
+}
+
+#[test]
+fn no_state_root_search_refreshes_algebraic_root_dependencies() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.algebraic_scalar_count = 1;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+    model.problem.solve_layout.solver_maps.names = vec!["u".to_string()];
+    model.problem.solve_layout.solver_maps.name_to_idx =
+        indexmap::IndexMap::from([("u".to_string(), 0)]);
+    model.problem.solve_layout.solver_maps.base_to_indices =
+        indexmap::IndexMap::from([("u".to_string(), vec![0])]);
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadTime { dst: 1 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    install_dense_algebraic_projection_plan(&mut model);
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 2.0 },
+            solve::LinearOp::LoadP { dst: 4, index: 0 },
+            solve::LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        fixture_span!(),
+    );
+    model.initial_y = vec![0.0];
+    model.parameters = vec![0.0];
+    model.visible_names = vec!["m".to_string()];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("no-state root search should refresh algebraics before evaluating roots");
 
     assert_eq!(result.times.len(), 3);
     assert_eq!(result.times[0], 0.0);
@@ -485,9 +601,11 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
-    model.problem.initialization.residual = solve::ScalarProgramBlock::with_source_span(
-        vec![zero_row(), z_minus_one()],
-        fixture_span!(),
+    model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![zero_row(), z_minus_one()],
+            fixture_span!(),
+        ),
     );
     model.problem.initialization.projection_indices = vec![1];
     model.initial_y = vec![0.0, 0.0];
@@ -522,8 +640,9 @@ fn initialization_projects_demoted_state_layout_slots() {
     );
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
-    model.problem.initialization.residual =
-        solve::ScalarProgramBlock::with_source_span(vec![z_minus_one()], fixture_span!());
+    model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(vec![z_minus_one()], fixture_span!()),
+    );
     model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(1))];
     model.problem.initialization.projection_indices = vec![1];
     model.initial_y = vec![0.0, 0.0];
@@ -548,6 +667,7 @@ fn initialization_projects_demoted_state_layout_slots() {
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let mut y = model.initial_y.clone();
     let mut params = model.parameters.clone();
+    let mut current_t = 0.0;
     initialize_state_runtime_values(
         &model,
         &SimOptions::default(),
@@ -555,7 +675,7 @@ fn initialization_projects_demoted_state_layout_slots() {
         &ode_model,
         &mut y,
         &mut params,
-        0.0,
+        &mut current_t,
     )
     .expect("demoted state-layout slots should be projected by initialization");
 
@@ -643,9 +763,11 @@ fn simulate_records_algebraically_consistent_initial_sample() {
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
-    model.problem.initialization.residual = solve::ScalarProgramBlock::with_source_span(
-        vec![zero_row(), z_plus_one()],
-        fixture_span!(),
+    model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![zero_row(), z_plus_one()],
+            fixture_span!(),
+        ),
     );
     model.initial_y = vec![0.0, 0.0];
     model.visible_names = vec!["z".to_string()];
@@ -690,9 +812,11 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
-    model.problem.initialization.residual = solve::ScalarProgramBlock::with_source_span(
-        vec![zero_row(), z_minus_two()],
-        fixture_span!(),
+    model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![zero_row(), z_minus_two()],
+            fixture_span!(),
+        ),
     );
     model.problem.initialization.projection_indices = vec![1];
     model.problem.initialization.update_rhs = solve::ScalarProgramBlock::with_source_span(
@@ -750,9 +874,11 @@ fn simulate_seeds_initial_discrete_conditions_before_initial_residual() {
     model.problem.discrete.rhs =
         solve::ScalarProgramBlock::with_source_span(vec![const_one_row()], fixture_span!());
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.initialization.residual = solve::ScalarProgramBlock::with_source_span(
-        vec![zero_row(), z_minus_selected_condition()],
-        fixture_span!(),
+    model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![zero_row(), z_minus_selected_condition()],
+            fixture_span!(),
+        ),
     );
     model.initial_y = vec![0.0, 0.0];
     model.parameters = vec![0.0];

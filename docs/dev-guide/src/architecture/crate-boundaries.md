@@ -16,6 +16,7 @@ this page is the orientation map.
 | Facade | `rumoca-compile` | Session/compilation API the tools use |
 | Evaluators | `rumoca-eval-ast`, `-eval-flat`, `-eval-dae`, `-eval-solve` | Stage-appropriate evaluation |
 | Runtime | `rumoca-sim`, `rumoca-solver`, `rumoca-solver-rk45`, `rumoca-solver-diffsol`, `rumoca-worker` | Simulation orchestration and solver backends |
+| Optimization | `rumoca-opt` | Training and optimization over differentiable Solve runtime |
 | Execution adapters | `rumoca-exec-cranelift`, `rumoca-exec-mlir`, `rumoca-exec-wasm` | JIT/compiled execution over Solve |
 | Interactive I/O | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad`, `rumoca-signal-frame`, `rumoca-transport-udp`, `rumoca-transport-websocket`, `rumoca-web` | Devices, signals, transports, viewer |
 | Tools | `rumoca-tool-fmt`, `rumoca-tool-lint`, `rumoca-tool-lsp` | Formatter, linter, language server logic |

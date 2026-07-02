@@ -47,7 +47,7 @@ pub(super) fn validate_solve_problem_appendix_b_invariants(
         &problem.continuous.derivative_rhs,
         SeedUse::Forbidden,
     )?;
-    validate_scalar_program_block(
+    validate_compute_block(
         "initialization.residual",
         &problem.initialization.residual,
         SeedUse::Forbidden,

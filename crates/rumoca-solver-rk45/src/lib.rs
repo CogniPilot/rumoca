@@ -5,15 +5,18 @@
 use std::{cell::RefCell, time::Instant};
 
 use indexmap::IndexMap;
-use rumoca_eval_solve::{EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime};
+use rumoca_eval_solve::{
+    EventUpdateRowFilter, InitialEventObservation, ProjectedEventUpdateInput,
+    ProjectedInitialEventInput, SolveRuntime,
+};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
     BackendState, EventActionOutcome, EventPreMode, RootCrossing, RuntimeEventBoundary,
     RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimResult,
     SimSolverMode, SimTermination, SimulationBackend, SolveStopSchedule, StepUntilOutcome,
     TimeoutBudget, TimeoutExceeded, commit_pre_params_after_event, convert_variable_meta,
-    initial_runtime_event_stop, process_runtime_event_boundary,
-    root_crossings_with_relation_memory, root_value_crossed, runtime_event_horizon, timeline,
+    process_runtime_event_boundary, root_crossings_with_relation_memory, root_value_crossed,
+    runtime_event_horizon, timeline,
 };
 
 mod reset;
@@ -224,6 +227,26 @@ impl SimStepper {
     }
 }
 
+fn record_rk_initial_samples(
+    model: &SolveRuntime,
+    backend: &Rk45Backend<'_>,
+    data: &mut [Vec<f64>],
+    times: &mut Vec<f64>,
+    t_start: f64,
+) -> Result<(), SimError> {
+    if backend.initial_observations.is_empty() {
+        let solver_y = backend.current_solver_y()?;
+        model.record_visible_sample(data, &solver_y, &backend.params, t_start)?;
+        times.push(t_start);
+        return Ok(());
+    }
+    for observation in &backend.initial_observations {
+        model.record_visible_sample(data, &observation.y, &observation.p, observation.t)?;
+        times.push(observation.t);
+    }
+    Ok(())
+}
+
 fn collect_visible_values(
     names: &[String],
     values: Vec<f64>,
@@ -282,6 +305,7 @@ struct Rk45Backend<'a> {
     solver_y_guess: RefCell<Vec<f64>>,
     derivative_cache: RefCell<Option<CachedDerivative>>,
     root_cache: RefCell<Option<CachedRootConditions>>,
+    initial_observations: Vec<InitialEventObservation>,
 }
 
 struct TrialStep {
@@ -342,9 +366,7 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
             "RK45 output samples",
         )?);
     }
-    let solver_y = backend.current_solver_y()?;
-    model.record_visible_sample(&mut data, &solver_y, &backend.params, opts.t_start)?;
-    times.push(opts.t_start);
+    record_rk_initial_samples(&model, &backend, &mut data, &mut times, opts.t_start)?;
 
     for &target_t in sample_times.iter().skip(1) {
         advance_backend_to(&mut backend, target_t)?;
@@ -470,6 +492,7 @@ impl<'a> Rk45Backend<'a> {
             solver_y_guess: RefCell::new(Vec::new()),
             derivative_cache: RefCell::new(None),
             root_cache: RefCell::new(None),
+            initial_observations: Vec::new(),
         })
     }
 
@@ -1056,6 +1079,7 @@ impl<'a> Rk45Backend<'a> {
 
 impl SimulationBackend for Rk45Backend<'_> {
     fn init(&mut self) -> Result<(), Self::Error> {
+        self.model.set_initial_event_flag(&mut self.params, true);
         let startup_event_pre_y = self.current_solver_y()?;
         let startup_event_pre_p = self.params.clone();
         let mut solver_y = self.current_solver_y()?;
@@ -1074,25 +1098,31 @@ impl SimulationBackend for Rk45Backend<'_> {
             self.atol,
             UPDATE_MAX_ITERS,
         )?;
-        let initial_event = initial_runtime_event_stop(
-            &self.model.model.problem,
-            self.time,
+        let dynamic_event =
             self.model
-                .current_dynamic_time_event_stop(&solver_y, &self.params, self.time)?,
-        );
-        if let Some(event) = initial_event {
-            self.pending_event_pre_y = Some(startup_event_pre_y);
-            self.pending_event_pre_p = Some(startup_event_pre_p);
-            let outcome = process_runtime_event_boundary(
-                RuntimeEventBoundary {
-                    event_t: self.time,
-                    horizon_t: self.time,
-                    event,
-                },
-                self,
-            )?;
-            self.apply_event_actions(outcome.final_t)?;
-        }
+                .current_dynamic_time_event_stop(&solver_y, &self.params, self.time)?;
+        let runtime = self.model;
+        let state_count = runtime.state_count;
+        let tol = self.atol;
+        let outcome = runtime.apply_projected_initial_event_boundary(
+            ProjectedInitialEventInput {
+                y: &mut solver_y,
+                p: &mut self.params,
+                t_start: self.time,
+                t_end: self.t_end,
+                tol,
+                event_pre_y: &startup_event_pre_y,
+                event_pre_p: &startup_event_pre_p,
+                max_iters: UPDATE_MAX_ITERS,
+                dynamic_event,
+                apply_without_initial_event: false,
+            },
+            move |y, p, t| project_rk_algebraics(runtime, y, p, t, state_count, tol),
+        )?;
+        self.copy_state_from_solver_y(&solver_y);
+        self.time = outcome.final_t;
+        self.initial_observations = outcome.observations;
+        self.apply_event_action_outcome(outcome.action, outcome.final_t)?;
         let post_initial_y = self.current_solver_y()?;
         commit_pre_params_after_event(
             &self.model.model,

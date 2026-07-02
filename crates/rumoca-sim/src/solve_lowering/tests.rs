@@ -4,10 +4,10 @@
 
 use rumoca_core::{BuiltinFunction, Expression, OpBinary, SourceId, Span, Subscript, VarName};
 use rumoca_ir_dae as dae;
-use rumoca_solver::SimOptions;
+use rumoca_solver::{SimOptions, SimSolverMode};
 
 use super::diagnostics::SimulationDiagnosticError;
-use super::entry::lower_dae_for_simulation;
+use super::entry::{lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing};
 use super::probe::{eval_dae_at, jacobian_for_dae};
 use super::structural_lowering::{
     metadata_attachment_lower_error, structurally_lower_dae_for_simulation,
@@ -183,6 +183,59 @@ fn simulation_structural_lowering_keeps_cross_coupled_ode_states() {
 
     assert_eq!(model.state_scalar_count(), 2);
     assert_eq!(model.problem.solve_layout.solver_maps.names, ["x", "v"]);
+}
+
+#[test]
+fn simulation_direct_lowering_accepts_state_only_ode() {
+    let dae = state_only_ode_dae();
+    let opts = SimOptions {
+        solver_mode: SimSolverMode::RkLike,
+        ..Default::default()
+    };
+    let mut stages = Vec::new();
+    let (model, timings) =
+        lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
+            .expect("state-only ODE should lower directly");
+
+    assert_eq!(timings.structural_dae_seconds, 0.0);
+    assert_eq!(model.state_scalar_count(), 1);
+    assert_eq!(model.problem.solve_layout.algebraic_scalar_count(), 0);
+    assert!(stages.contains(&"ir_solve_direct"));
+    assert!(!stages.contains(&"ir_solve_structural_dae"));
+}
+
+#[test]
+fn simulation_direct_lowering_falls_back_for_projected_derivative_dependency() {
+    let dae = explicit_algebraic_ode_dae();
+    let opts = SimOptions {
+        solver_mode: SimSolverMode::RkLike,
+        ..Default::default()
+    };
+    let mut stages = Vec::new();
+    let (model, _) =
+        lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
+            .expect("algebraic derivative dependency should structurally lower for now");
+
+    assert_eq!(model.state_scalar_count(), 1);
+    assert!(stages.contains(&"ir_solve_direct"));
+    assert!(stages.contains(&"ir_solve_structural_dae"));
+}
+
+#[test]
+fn simulation_direct_lowering_falls_back_for_state_selection() {
+    let dae = constrained_state_dae();
+    let opts = SimOptions {
+        solver_mode: SimSolverMode::RkLike,
+        ..Default::default()
+    };
+    let mut stages = Vec::new();
+    let (model, _) =
+        lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
+            .expect("constrained state model should fall back to structural lowering");
+
+    assert_eq!(model.state_scalar_count(), 1);
+    assert!(stages.contains(&"ir_solve_direct"));
+    assert!(stages.contains(&"ir_solve_structural_dae"));
 }
 
 #[test]
@@ -558,6 +611,49 @@ fn constrained_state_dae() -> dae::Dae {
         .continuous
         .equations
         .push(eq(sub(der(var("x3")), time())));
+    model
+}
+
+fn explicit_algebraic_ode_dae() -> dae::Dae {
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    model.variables.algebraics.insert(
+        VarName::new("a"),
+        dae::Variable::new(
+            VarName::new("a"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    model
+        .continuous
+        .equations
+        .push(eq(sub(var("a"), mul(real(2.0), var("x")))));
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("x")), var("a"))));
+    model
+}
+
+fn state_only_ode_dae() -> dae::Dae {
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(
+            VarName::new("x"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("x")), mul(real(2.0), var("x")))));
     model
 }
 

@@ -594,6 +594,77 @@ fn lower_expression_rejects_guarded_assignment_without_prior_binding() {
 }
 
 #[test]
+fn lower_expression_allows_dead_local_assignment_after_return() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut maybe_return = rumoca_core::Function::new("My.localAfterReturn", lower_test_span());
+    maybe_return.inputs.push(function_param("u"));
+    maybe_return.outputs.push(function_param("out"));
+    maybe_return.locals.push(function_param("tmp"));
+    maybe_return.body = vec![
+        rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Gt,
+                    lhs: Box::new(var("u")),
+                    rhs: Box::new(real_lit(0.0)),
+                    span: lower_test_span(),
+                },
+                stmts: vec![
+                    rumoca_core::Statement::Assignment {
+                        comp: component_ref("out"),
+                        value: real_lit(2.0),
+                        span: lower_test_span(),
+                    },
+                    rumoca_core::Statement::Return {
+                        span: lower_test_span(),
+                    },
+                ],
+            }],
+            else_block: None,
+            span: lower_test_span(),
+        },
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("tmp"),
+            value: real_lit(1.0),
+            span: lower_test_span(),
+        },
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("out"),
+            value: var("tmp"),
+            span: lower_test_span(),
+        },
+    ];
+    dae_model
+        .symbols
+        .functions
+        .insert(maybe_return.name.clone(), maybe_return);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.localAfterReturn",
+        )),
+        args: vec![var("u")],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("dead local after return should lower");
+
+    let (positive_regs, _) = eval_linear_ops(&lowered.ops, &[1.0], &[], 0.0);
+    let (negative_regs, _) = eval_linear_ops(&lowered.ops, &[-1.0], &[], 0.0);
+
+    assert_eq!(read_reg(&positive_regs, lowered.result), 2.0);
+    assert_eq!(read_reg(&negative_regs, lowered.result), 1.0);
+}
+
+#[test]
 fn lower_expression_inlines_user_function_for_statement() {
     let mut dae_model = dae::Dae::default();
     dae_model

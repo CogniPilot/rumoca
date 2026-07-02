@@ -27,9 +27,10 @@ use convert_from_ast::{
 };
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
-    BuiltinFunction, Causality, ClassType, ComponentReference, DefId, Expression, ForIndex,
-    Function, FunctionShapeContractError, Reference, Span, StateSelect, Statement, StatementBlock,
-    StructuredIndexDomain, Subscript, TypeId, VarName, Variability,
+    BuiltinFunction, Causality, ClassType, ComponentReference, ComprehensionTemplate, DefId,
+    Expression, ForIndex, Function, FunctionShapeContractError, Reference, RegularForFamily, Span,
+    StateSelect, Statement, StatementBlock, StructuredIndexDomain, Subscript, TypeId, VarName,
+    Variability,
 };
 #[cfg(test)]
 use rumoca_core::{ComprehensionIndex, Literal};
@@ -675,6 +676,12 @@ impl EquationOrigin {
     }
 }
 
+fn default_equation_origin() -> EquationOrigin {
+    EquationOrigin::ComponentEquation {
+        component: String::new(),
+    }
+}
+
 /// Equation in residual form: 0 = residual
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Equation {
@@ -710,11 +717,41 @@ pub struct StructuredEquationFamily {
     pub span: Span,
     /// Typed origin for traceability.
     pub origin: EquationOrigin,
+    /// Family-native classification: present when this family is a regular
+    /// elementwise stencil whose array accesses are all affine in the binders,
+    /// carrying the per-access stride table the Solve-IR lowering needs to build
+    /// a compact `AffineStencil` without materializing one row per index tuple.
+    /// `None` means the family is materialized the historical (scalar) way.
+    #[serde(default)]
+    pub regular: Option<RegularForFamily>,
+    /// The family's canonical comprehension body, captured by flatten before the
+    /// loop is expanded. When present, downstream phases read the template directly
+    /// (printing it as a `for`-comprehension, deriving strides, building a compact
+    /// kernel) instead of reconstructing it from materialized corner cells. `None`
+    /// for families flattened before this representation existed. See
+    /// [`rumoca_core::ComprehensionTemplate`].
+    #[serde(default)]
+    pub template: Option<ComprehensionTemplate>,
+    /// Whether the interior cells' scalar bodies are materialized in the equation
+    /// vector. `true` (the default) is the historical behavior: every cell carries
+    /// a full body. When a regular family is lowered with
+    /// `FlattenOptions::materialize_structured_families = false`, only the corner
+    /// cells (base + one neighbor per binder) carry real bodies and this is `false`,
+    /// signaling downstream phases to reconstruct interior incidence/strides from
+    /// the corners instead of reading the (placeholder) interior bodies.
+    #[serde(default = "default_true")]
+    pub interiors_materialized: bool,
 }
 
 /// Default scalar count for equations (1 for serde deserialization).
 fn default_scalar_count() -> usize {
     1
+}
+
+/// Serde default for `interiors_materialized` (historical behavior: all cells
+/// carry full bodies).
+fn default_true() -> bool {
+    true
 }
 
 impl Equation {
@@ -766,6 +803,9 @@ pub struct AssertEquation {
     pub level: Option<Expression>,
     /// Source span for diagnostics and traceability.
     pub span: Span,
+    /// Typed origin for scoped parameter/constant substitution.
+    #[serde(default = "default_equation_origin")]
+    pub origin: EquationOrigin,
 }
 
 impl AssertEquation {
@@ -775,12 +815,14 @@ impl AssertEquation {
         message: Expression,
         level: Option<Expression>,
         span: Span,
+        origin: EquationOrigin,
     ) -> Self {
         Self {
             condition,
             message,
             level,
             span,
+            origin,
         }
     }
 }

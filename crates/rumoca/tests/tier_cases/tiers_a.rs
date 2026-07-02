@@ -739,6 +739,34 @@ end ForExpansionBasic;
     }
 
     #[test]
+    fn t4_04b_parameter_variable_array_in_derivative_path_is_promoted() {
+        // A parameter-variable array (its definition depends only on parameters)
+        // that a state derivative reads is promoted to a derived parameter, so its
+        // equations leave the continuous system and only `der(x)` remains. This is
+        // the optimization that keeps large constant fields (e.g. an immersed mask)
+        // out of the per-step / codegen hot path.
+        let source = r#"
+model PromotedField
+    parameter Real a = 2.0;
+    Real m[3];
+    Real x(start = 0);
+equation
+    for i in 1:3 loop
+        m[i] = a * i;
+    end for;
+    der(x) = m[2];
+end PromotedField;
+"#;
+        let r = assert_compiles(source, "PromotedField");
+        // Only `der(x)` remains continuous; the three `m[i]` equations promoted out.
+        assert_eq!(
+            r.f_x_count, 1,
+            "parameter-variable array read by a derivative should promote out of f_x"
+        );
+        assert!(r.is_balanced());
+    }
+
+    #[test]
     fn t4_05_for_equation_range_step() {
         let source = r#"
 model ForRangeStep

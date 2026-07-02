@@ -8,6 +8,10 @@ at the model it needs.
 - `Ball.mo`: bouncing ball with `reinit` event behavior.
 - `Circuit.mo`: small package-style circuit model.
 - `KalmanFilterStepTest.mo`: MSL-backed Kalman filter step test.
+- `NeuralLatentOscillator.mo`: larger latent Neural ODE with learned decoder.
+- `NeuralODEBackprop.mo`: native backpropagation training demonstration.
+- `NeuralODETensor.mo`: tensor-shaped spiral Neural ODE with matrix-vector layers.
+- `NeuralPredatorPrey.mo`: tensor-shaped predator-prey Neural ODE.
 - `PIDMSL.mo`: MSL-backed PID example.
 - `SwitchedRLC.mo`: local switched RLC model.
 - `SwitchedRLC_MSL.mo`: MSL-backed switched RLC model.

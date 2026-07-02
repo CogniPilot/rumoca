@@ -293,6 +293,7 @@ pub(super) fn flatten_equations_list(
                         })
                         .transpose()?,
                     span,
+                    origin.clone(),
                 );
                 result.assert_equations.push(assert_eq);
             }
@@ -308,7 +309,7 @@ pub(super) fn flatten_equations_list(
             }
             ast::Equation::FunctionCall { comp, args } => {
                 let flattened =
-                    flatten_function_call_equation(ctx, comp, args, prefix, span, def_map)?;
+                    flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, origin)?;
                 if flattened.is_empty() && !is_side_effect_only_function(comp) {
                     return Err(FlattenError::unsupported_equation(
                         format!(
@@ -495,7 +496,7 @@ fn expand_linspace_range_indices(
 }
 
 /// Try to evaluate an expression to a constant integer, with parameter lookup.
-fn try_eval_integer_with_ctx(
+pub(crate) fn try_eval_integer_with_ctx(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &QualifiedName,

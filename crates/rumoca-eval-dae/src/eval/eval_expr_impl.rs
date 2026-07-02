@@ -1193,6 +1193,19 @@ pub(super) fn eval_index_from_env_path<T: SimFloat>(
         .map(|dim| usize::try_from(*dim).ok())
         .collect::<Option<Vec<_>>>()?;
     let flat_index = flat_index_from_dims(&dims, indices)?;
+
+    let subscript_key = dae::format_subscript_key(base_path, indices);
+    if let Some(value) = env.vars.get(&subscript_key).copied() {
+        return Some(value);
+    }
+
+    let flat_key = dae::format_subscript_key(base_path, &[flat_index + 1]);
+    if flat_key != subscript_key
+        && let Some(value) = env.vars.get(&flat_key).copied()
+    {
+        return Some(value);
+    }
+
     let values = array_values_from_env_name_generic(base_path, env).ok()??;
     values.get(flat_index).copied()
 }

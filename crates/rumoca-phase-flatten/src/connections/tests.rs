@@ -1355,6 +1355,125 @@ fn test_generate_flow_equation_sign_for_nested_outside_connector_member() {
 }
 
 #[test]
+fn test_generate_flow_equation_sign_for_scalarized_outside_connector_array_member() {
+    let mut flat = flat::Model::new();
+
+    let outside_scalarized = flat::Variable {
+        flow: true,
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(
+        rumoca_core::VarName::new("cell.plug.pin[1].i"),
+        outside_scalarized,
+    );
+
+    let inside = flat::Variable {
+        flow: true,
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("cell.diode.p.i"), inside);
+
+    let vars = vec![
+        rumoca_core::VarName::new("cell.plug.pin[1].i"),
+        rumoca_core::VarName::new("cell.diode.p.i"),
+    ];
+    let mut interface_flow_vars_by_scope = IndexMap::default();
+    interface_flow_vars_by_scope.insert(
+        "cell".to_string(),
+        indexmap::IndexSet::from([rumoca_core::VarName::new("cell.plug.pin.i")]),
+    );
+    generate_flow_equation(
+        &mut flat,
+        &vars,
+        "cell",
+        &interface_flow_vars_by_scope,
+        test_span(),
+    )
+    .unwrap();
+
+    let origin = &flat.equations[0].origin;
+    let origin_str = origin.to_string();
+    assert!(
+        origin_str.contains("-cell.plug.pin[1].i") && origin_str.contains("cell.diode.p.i"),
+        "Expected scalarized outside connector array member to be negated, got: {}",
+        origin_str
+    );
+}
+
+#[test]
+fn test_process_connections_negates_nested_connector_under_outside_root() {
+    let mut flat = flat::Model::new();
+    for name in ["cell.plug.pin[1].i", "cell.diode.p.i"] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                flow: true,
+                is_primitive: true,
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_component(ast::InstanceData {
+        instance_id: ast::InstanceId(1),
+        qualified_name: ast::QualifiedName::from_dotted("cell.plug"),
+        is_connector_type: true,
+        is_protected: false,
+        ..Default::default()
+    });
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_dotted("cell"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("cell.plug.pin"),
+            b: ast::QualifiedName::from_dotted("cell.diode.p"),
+            connector_type: None,
+            span: test_span(),
+            scope: "cell".to_string(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("nested connector connection");
+
+    let flow_origins: Vec<String> = flat
+        .equations
+        .iter()
+        .map(|eq| eq.origin.to_string())
+        .collect();
+    assert!(
+        flow_origins.iter().any(|origin| {
+            origin.contains("-cell.plug.pin[1].i") && origin.contains("cell.diode.p.i")
+        }),
+        "Expected nested connector member under outside root to be negated, got: {:?}",
+        flow_origins
+    );
+}
+
+#[test]
+fn test_interface_path_uses_single_identifier_fallback_when_roots_do_not_match() {
+    let mut roots = InterfaceConnectorRootsByScope::default();
+    roots
+        .entry("cell".to_string())
+        .or_default()
+        .insert(rumoca_core::ComponentPath::from_flat_path("cell.unrelated"));
+
+    assert!(is_interface_connection_path_for_scope(
+        "cell.plug",
+        "cell",
+        &roots
+    ));
+    assert!(!is_interface_connection_path_for_scope(
+        "cell.inner.plug",
+        "cell",
+        &roots
+    ));
+}
+
+#[test]
 fn test_generate_flow_equation_uses_scope_specific_interface_flows() {
     let mut flat = flat::Model::new();
     flat.add_variable(

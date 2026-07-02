@@ -56,6 +56,7 @@ impl SimStepper {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
         let runtime = SolveRuntime::new(model)?;
+        let root_runtime = Arc::new(runtime.clone());
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
         let initial_y = settled_initial_y(model, &runtime, &ode_model, &opts, &runtime_params)?;
@@ -67,6 +68,7 @@ impl SimStepper {
             opts.t_start,
             initial_y.clone(),
             ode_model.clone(),
+            root_runtime,
         )?;
         let problem_ref = Box::leak(Box::new(problem));
         let newton = || {
@@ -112,6 +114,7 @@ impl SimStepper {
             };
             let ode_model = Arc::new(OdeModel::new(&event_reset_model)?);
             let reset_runtime = SolveRuntime::new(&event_reset_model)?;
+            let root_runtime = Arc::new(reset_runtime.clone());
             let initial_y = settled_problem_y(
                 &event_reset_model,
                 &reset_runtime,
@@ -128,6 +131,7 @@ impl SimStepper {
                 t_start,
                 initial_y.clone(),
                 ode_model.clone(),
+                root_runtime,
             )?;
             let problem_ref = Box::leak(Box::new(problem));
             let state = {
@@ -766,7 +770,7 @@ mod tests {
                     derivative_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
-                    residual: zero.clone(),
+                    residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                     row_targets: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),
@@ -851,7 +855,10 @@ mod tests {
                     derivative_rhs: ComputeBlock::from_scalar_program_block(derivative.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
-                    residual: scalar_block(vec![zero_row(), zero_row()]),
+                    residual: ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                        zero_row(),
+                        zero_row(),
+                    ])),
                     row_targets: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),

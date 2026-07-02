@@ -60,6 +60,7 @@ impl SimConfig {
 
 use crate::codegen::CodegenResult;
 use crate::error::{ApiError, ApiResult};
+use crate::gradient::GradientResult;
 use crate::metadata::{ParamView, ParameterInfo, VarView, VariableInfo};
 use crate::result::Result as SimPyResult;
 use crate::{PyRuntimeStringError, render_target_files};
@@ -470,6 +471,82 @@ impl Model {
             None,
             Some(simulate_seconds),
         ))
+    }
+
+    /// Steady-state gradient `d(objective)/dp` of a solver-y variable (a state or
+    /// solver algebraic) with respect to the model's tunable parameters, at a
+    /// settled linearization point.
+    ///
+    /// `state` names the settled point (state name → value); any state omitted
+    /// keeps its model initial value, so for a model whose initial values already
+    /// sit at steady state you can call this with no `state`. `t` is the
+    /// linearization time. `mode` selects `"forward"` (implicit-function
+    /// sensitivity; cheap when parameters are few) or `"adjoint"`/`"reverse"`
+    /// (matrix-free reverse adjoint; cost independent of parameter count). Both
+    /// return the same gradient.
+    ///
+    /// Tunable-parameter overrides from [`Model::with_params`] linearize the
+    /// gradient at the overridden values. The result is only meaningful at/near a
+    /// steady state `f(y, p) = 0`; the caller is responsible for supplying a
+    /// settled `state`.
+    #[pyo3(signature = (objective, *, state=None, t=0.0, mode="forward"))]
+    fn objective_gradient(
+        &self,
+        objective: &str,
+        state: Option<HashMap<String, f64>>,
+        t: f64,
+        mode: &str,
+    ) -> ApiResult<GradientResult> {
+        let adjoint = match mode {
+            "forward" => false,
+            "adjoint" | "reverse" => true,
+            other => {
+                return Err(ApiError::Sim(format!(
+                    "unknown gradient mode {other:?}; expected \"forward\" or \"adjoint\""
+                )));
+            }
+        };
+
+        // The linearization state point: model start handles merged with call-time
+        // `state` (call-time wins), validated as real state names before use.
+        let state_point = merge_overrides(&self.start_overrides, &to_pairs(state));
+        self.validate_start_overrides(&state_point)?;
+        // Tunable-parameter overrides carry into the lowering (honored by the
+        // overrides-aware probe); validate them up front for a precise error.
+        self.validate_param_overrides(&self.param_overrides)?;
+
+        let opts = SimOptions {
+            param_overrides: self.param_overrides.clone(),
+            ..SimOptions::default()
+        };
+
+        let dae = &self.result.dae;
+        let probe = if adjoint {
+            rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
+                dae,
+                &opts,
+                &state_point,
+                objective,
+                t,
+            )
+        } else {
+            rumoca_sim::steady_state_objective_gradient_for_dae(
+                dae,
+                &opts,
+                &state_point,
+                objective,
+                t,
+            )
+        }
+        .map_err(|e| ApiError::Sim(format!("{e}")))?;
+
+        // Surface a gradient-evaluation error (e.g. a non-solver-y objective, an
+        // unsettled/singular point) as a typed exception rather than an empty
+        // result the caller might read as a zero gradient.
+        if let Some(error) = &probe.report.error {
+            return Err(ApiError::Sim(error.clone()));
+        }
+        Ok(GradientResult::from_probe(self.name.clone(), mode, probe))
     }
 
     // ── live symbolic exports — render the existing target in memory, then

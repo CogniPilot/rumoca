@@ -558,7 +558,7 @@ fn binding_defines_underdefined_unknown(
     })
 }
 
-/// Collect all unknowns (state/algebraic/output variables).
+/// Collect all unknowns whose bindings can constrain the DAE.
 fn collect_unknowns(flat: &Model, state_vars: &IndexSet<VarName>) -> HashSet<VarName> {
     flat.variables
         .iter()

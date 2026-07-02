@@ -53,6 +53,7 @@ mod function_precollect;
 mod functions;
 mod name_simplify;
 mod outer_refs;
+mod param_variability;
 mod path_utils;
 mod pipeline;
 mod postprocess;
@@ -116,8 +117,8 @@ use rumoca_eval_flat::phase_constant::{
     EnumCanonicalizer, ParamEvalContext, build_eval_context, eval_user_func_real,
     infer_array_dimensions, infer_array_dimensions_full_with_functions,
     looks_like_enum_literal_path, try_eval_flat_expr_boolean_with_context,
-    try_eval_flat_expr_enum_with_canonicalizer, try_eval_flat_expr_real,
-    try_eval_integer_with_context, try_infer_better_dims,
+    try_eval_flat_expr_enum_with_canonicalizer, try_eval_integer_with_context,
+    try_eval_real_with_context, try_infer_better_dims,
 };
 
 /// Options controlling flatten strictness.
@@ -131,6 +132,18 @@ pub struct FlattenOptions {
     /// The default keeps source-like instance paths for diagnostics, simulation
     /// results, and stable public compiler output.
     pub simplify_variable_names: bool,
+    /// Whether `for`/array equations are fully materialized into per-element scalar
+    /// equations during flattening.
+    ///
+    /// The default (`false`) is family-native lowering: a regular state-derivative
+    /// elementwise family (`der(x[...]) = stencil`) materializes full bodies only
+    /// for its corner cells (base + one neighbor per binder); interior cells get a
+    /// cheap placeholder body, and downstream phases reconstruct their
+    /// incidence/strides/values from the corners. This avoids the O(cells)
+    /// memory/time of building and carrying the unrolled interior bodies. Setting
+    /// `true` forces full materialization -- retained as a debug toggle, which also
+    /// exercises the corner-vs-full equivalence assertions.
+    pub materialize_structured_families: bool,
 }
 
 impl Default for FlattenOptions {
@@ -138,6 +151,7 @@ impl Default for FlattenOptions {
         Self {
             strict_connection_validation: true,
             simplify_variable_names: false,
+            materialize_structured_families: false,
         }
     }
 }
@@ -340,6 +354,7 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.materialize_structured_families = options.materialize_structured_families;
     ctx.simulated_root_name = simulated_root_name(tree, overlay, model_name);
     let class_index = ast::ClassDefIndex::from_tree(tree);
     ctx.class_def_ids = std::sync::Arc::new(class_index.def_ids().collect());

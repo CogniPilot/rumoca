@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 pub mod codegen;
 pub mod diagnostics;
 pub mod error;
+pub mod gradient;
 pub mod metadata;
 pub mod model;
 pub mod result;
@@ -646,6 +647,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<metadata::VariableInfo>()?;
     m.add_class::<metadata::ParameterInfo>()?;
     m.add_class::<result::Result>()?;
+    m.add_class::<gradient::GradientResult>()?;
     m.add_class::<codegen::CodegenResult>()?;
     m.add_class::<codegen::GeneratedFile>()?;
     m.add_class::<targets::Target>()?;

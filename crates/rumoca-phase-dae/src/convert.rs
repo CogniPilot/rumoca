@@ -1224,6 +1224,9 @@ fn remap_flat_structured_equation(
         equation_counts,
         span: family.span,
         origin: family.origin.to_string(),
+        regular: family.regular.clone(),
+        template: family.template.clone(),
+        interiors_materialized: family.interiors_materialized,
     })
 }
 

@@ -7,9 +7,14 @@ use std::sync::Arc;
 /// Default implementations recursively transform children.
 pub trait ExpressionTransformer {
     /// Transform any expression.
+    fn transform_expression(&mut self, expr: Expression) -> Expression {
+        self.walk_expression(expr)
+    }
+
+    /// Recursively transform an expression using the default traversal.
     // SPEC_0021: Exception - exhaustive visitor transform over AST expression variants.
     #[allow(clippy::too_many_lines)]
-    fn transform_expression(&mut self, expr: Expression) -> Expression {
+    fn walk_expression(&mut self, expr: Expression) -> Expression {
         match expr {
             Expression::Empty { span } => Expression::Empty { span },
             Expression::Terminal {

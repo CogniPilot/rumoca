@@ -558,7 +558,7 @@ fn collect_structural_integer_fields_from_sibling_reference(
         tree,
         mod_env,
         effective_components,
-        resolve_class_components: &resolve_effective_components_for_eval,
+        resolve_class_components: resolve_effective_components_for_eval,
     };
     source_component
         .modifications
@@ -641,7 +641,7 @@ fn resolve_modification_expr_with_depth(
         tree,
         mod_env,
         effective_components,
-        resolve_class_components: &resolve_effective_components_for_eval,
+        resolve_class_components: resolve_effective_components_for_eval,
     };
 
     // Resolve booleans first (e.g., useFilter=useFilter) so conditional
@@ -913,7 +913,10 @@ fn process_nested_modifications_recursive(
 }
 
 fn preserves_source_scoped_attribute(attr_name: &str) -> bool {
-    matches!(attr_name, "start" | "min" | "max" | "nominal")
+    matches!(
+        attr_name,
+        "start" | "min" | "max" | "nominal" | "stateSelect"
+    )
 }
 
 #[cfg(test)]

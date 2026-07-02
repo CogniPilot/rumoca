@@ -20,22 +20,34 @@ use rumoca_core::{
 };
 use rumoca_ir_dae as dae;
 
+mod aggregate_alias;
+mod boundary_scan;
 mod connection_policy;
 mod diagnostics;
+mod direct_definition_index;
 mod flow_policy;
 mod orphan_unknowns;
+mod profiling;
 mod runtime_known;
 mod runtime_protection;
 mod scalar_shape;
 mod solve_for_unknown;
 mod substitution_application;
+mod substitution_target;
 mod tearing_elimination;
 mod unknown_index;
 
+use aggregate_alias::{
+    aggregate_alias_for_elimination, aggregate_variable_fully_resolved,
+    is_scalarized_element_of_aggregate,
+};
+use boundary_scan::{BoundaryScanCtx, BoundaryScanState, scan_boundary_equations};
 use connection_policy::should_skip_connection_equation;
 use diagnostics::trace_singular_reduced_rows;
+use direct_definition_index::DirectDefinitionIndex;
 use flow_policy::{expr_contains_indexed_multiscalar_ref, is_flow_equation_origin};
 use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_contains_unknown};
+use profiling::{eliminate_profile_enabled, log_eliminate_profile};
 use runtime_known::singular_rows_are_runtime_known_assignments;
 use runtime_protection::{
     assignment_target_name, expr_references_any_discrete_name,
@@ -48,6 +60,9 @@ pub use solve_for_unknown::try_solve_for_unknown;
 use substitution_application::{
     apply_substitutions_in_order, apply_substitutions_to_dae_partitions,
     apply_substitutions_to_remaining_once, equation_analysis_expr,
+};
+use substitution_target::{
+    expr_contains_derivative_substitution_target, expr_contains_substitution_target,
 };
 use tearing_elimination::tear_and_eliminate_loop_block;
 use unknown_index::{
@@ -129,11 +144,20 @@ struct ZeroUnknownEliminationCtx<'a> {
 /// base variable names (not expanded scalar names).
 pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralError> {
     let trace = eliminate_trace_enabled();
+    let profile = eliminate_profile_enabled();
     let t_total = maybe_start_timer_if(trace);
+    let p_total = maybe_start_timer_if(profile);
 
     // Phase A: resolve boundary equations to make the system non-singular.
     let t_boundary = maybe_start_timer_if(trace);
+    let p_boundary = maybe_start_timer_if(profile);
     let (mut result, direct_demoted) = resolve_boundary_and_direct_demotions_to_fixpoint(dae)?;
+    log_eliminate_profile(
+        profile,
+        "boundary_fixpoint",
+        p_boundary,
+        result.n_eliminated,
+    );
     if trace {
         crate::structural_trace!(
             "[sim-trace] eliminate_trivial boundary elapsed={:.3}s eliminated_eqs={} demoted_states={}",
@@ -146,8 +170,23 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
     // Phase B: BLT scalar-block elimination on the (now hopefully non-singular) system.
     // Extract blocks before mutating dae (SortedDae borrows dae immutably).
     let mut blt_error = None;
+    let p_clone = maybe_start_timer_if(profile);
     let mut sort_input = dae.clone();
+    log_eliminate_profile(
+        profile,
+        "clone_sort_input",
+        p_clone,
+        sort_input.continuous.equations.len(),
+    );
+    let p_drop = maybe_start_timer_if(profile);
     drop_unreferenced_continuous_unknowns(&mut sort_input);
+    log_eliminate_profile(
+        profile,
+        "drop_unreferenced_unknowns",
+        p_drop,
+        sort_input.continuous.equations.len(),
+    );
+    let p_sort = maybe_start_timer_if(profile);
     let blocks = match sort_dae(&sort_input) {
         Ok(sorted) => Some(sorted.blocks.clone()),
         Err(StructuralError::EmptySystem) => None,
@@ -158,10 +197,18 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
             None
         }
     };
+    log_eliminate_profile(
+        profile,
+        "sort_dae",
+        p_sort,
+        blocks.as_ref().map_or(0, Vec::len),
+    );
     if let Some(blocks) = blocks {
         let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
         let t_blt = maybe_start_timer_if(trace);
+        let p_blt = maybe_start_timer_if(profile);
         let blt_result = eliminate_via_blt(dae, &blocks, &state_names)?;
+        log_eliminate_profile(profile, "eliminate_via_blt", p_blt, blt_result.n_eliminated);
         if trace {
             crate::structural_trace!(
                 "[sim-trace] eliminate_trivial blt elapsed={:.3}s eliminated_eqs={}",
@@ -173,7 +220,15 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         result.n_eliminated += blt_result.n_eliminated;
     }
     result.blt_error = blt_error;
+    let p_apply = maybe_start_timer_if(profile);
     apply_substitutions_to_dae_partitions(dae, &result.substitutions)?;
+    log_eliminate_profile(
+        profile,
+        "apply_substitutions_to_partitions",
+        p_apply,
+        result.substitutions.len(),
+    );
+    log_eliminate_profile(profile, "total", p_total, result.n_eliminated);
     if trace {
         crate::structural_trace!(
             "[sim-trace] eliminate_trivial total elapsed={:.3}s eliminated_eqs={}",
@@ -204,14 +259,24 @@ fn resolve_boundary_and_direct_demotions_to_fixpoint(
 ) -> Result<(EliminationResult, usize), StructuralError> {
     let mut result = EliminationResult::default();
     let mut total_demoted = 0usize;
+    let profile = eliminate_profile_enabled();
 
     loop {
+        let p_boundary = maybe_start_timer_if(profile);
         let pass = resolve_boundary_equations_to_fixpoint(dae)?;
+        log_eliminate_profile(
+            profile,
+            "boundary_equations_to_fixpoint",
+            p_boundary,
+            pass.n_eliminated,
+        );
         let eliminated = pass.n_eliminated;
         result.n_eliminated += pass.n_eliminated;
         result.substitutions.extend(pass.substitutions);
 
+        let p_demote = maybe_start_timer_if(profile);
         let demoted = crate::dae_prepare::demote_direct_assigned_states(dae)?;
+        log_eliminate_profile(profile, "boundary_direct_demotion", p_demote, demoted);
         total_demoted += demoted;
         if eliminated == 0 && demoted == 0 {
             return Ok((result, total_demoted));
@@ -242,107 +307,79 @@ fn eliminate_trace_enabled() -> bool {
 ///
 /// ODE equations (containing `der(state)`) are always skipped.
 fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, StructuralError> {
+    let profile = eliminate_profile_enabled();
+    let p_unknowns = maybe_start_timer_if(profile);
     let all_unknowns = collect_boundary_unknowns(dae)?;
+    log_eliminate_profile(
+        profile,
+        "boundary_collect_unknowns",
+        p_unknowns,
+        all_unknowns.len(),
+    );
+    let p_index = maybe_start_timer_if(profile);
     let unknown_index = BoundaryUnknownIndex::build(dae, &all_unknowns)?;
+    log_eliminate_profile(
+        profile,
+        "boundary_build_unknown_index",
+        p_index,
+        all_unknowns.len(),
+    );
+    let p_runtime = maybe_start_timer_if(profile);
     let runtime_protected_unknowns = runtime_protected_unknown_names(dae);
     let runtime_defined_discrete_targets = runtime_defined_discrete_target_names(dae);
+    log_eliminate_profile(
+        profile,
+        "boundary_runtime_protection_sets",
+        p_runtime,
+        runtime_protected_unknowns.len() + runtime_defined_discrete_targets.len(),
+    );
 
     let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
     let state_derivative_matcher = DerivativeNameMatcher::from_var_names(&state_names);
-    // Track which unknowns have been resolved (removed from the live set).
-    let mut resolved: HashSet<VarName> = HashSet::new();
-    let mut substitutions: Vec<Substitution> = Vec::new();
-    let mut eliminated_eq_indices: Vec<usize> = Vec::new();
-    let mut eliminated_eq_flags = vec![false; dae.continuous.equations.len()];
+    let p_direct = maybe_start_timer_if(profile);
+    let direct_definitions = DirectDefinitionIndex::build(dae);
+    log_eliminate_profile(
+        profile,
+        "boundary_direct_definition_index",
+        p_direct,
+        direct_definitions.len(),
+    );
+    let mut scan_state = BoundaryScanState::new(dae.continuous.equations.len());
 
-    let eq_order = boundary_equation_order(dae, &unknown_index, &resolved)?;
+    let p_order = maybe_start_timer_if(profile);
+    let eq_order = boundary_equation_order(dae, &unknown_index, &scan_state.resolved)?;
+    log_eliminate_profile(profile, "boundary_equation_order", p_order, eq_order.len());
 
-    for (eq_idx, _) in eq_order {
-        if eliminated_eq_flags[eq_idx] {
-            continue;
-        }
-
-        let expr = equation_analysis_expr(&dae.continuous.equations[eq_idx]);
-        let eq_rhs = apply_substitutions_in_order(&expr, &substitutions)?;
-        let is_connection_eq = dae.continuous.equations[eq_idx]
-            .origin
-            .starts_with("connection equation:");
-
-        // Re-count live unknowns (may have decreased due to prior resolutions).
-        let live: Vec<VarName> = find_live_scalar_unknowns(&eq_rhs, &unknown_index, &resolved)?;
-
-        if should_skip_connection_equation(
+    let p_loop = maybe_start_timer_if(profile);
+    {
+        let scan_ctx = BoundaryScanCtx {
             dae,
-            &eq_rhs,
-            is_connection_eq,
-            &live,
-            &runtime_defined_discrete_targets,
-        ) {
-            continue;
-        }
-        let has_state_derivative = expr_contains_der_of_any(&eq_rhs, &state_derivative_matcher);
-        if let Some((var_name, solution)) = aggregate_alias_for_elimination(
-            dae,
-            &eq_rhs,
-            &runtime_protected_unknowns,
-            &runtime_defined_discrete_targets,
-        )? {
-            substitutions.push(substitution_for_var(dae, var_name.clone(), solution)?);
-            eliminated_eq_indices.push(eq_idx);
-            eliminated_eq_flags[eq_idx] = true;
-            resolved.insert(var_name);
-            continue;
-        }
-        if live.is_empty() {
-            let mut zero_unknown_ctx = ZeroUnknownEliminationCtx {
-                dae,
-                state_names: &state_names,
-                unknown_index: &unknown_index,
-                resolved: &resolved,
-                runtime_protected_unknowns: &runtime_protected_unknowns,
-                runtime_defined_discrete_targets: &runtime_defined_discrete_targets,
-                substitutions: &mut substitutions,
-                eliminated_eq_indices: &mut eliminated_eq_indices,
-                eliminated_eq_flags: &mut eliminated_eq_flags,
-            };
-            try_eliminate_zero_unknown_equation(
-                eq_idx,
-                &eq_rhs,
-                has_state_derivative,
-                &mut zero_unknown_ctx,
-            )?;
-            continue;
-        }
-        if is_flow_equation_origin(&dae.continuous.equations[eq_idx].origin)
-            && expr_contains_indexed_multiscalar_ref(&eq_rhs, dae)?
-        {
-            continue;
-        }
-
-        let Some((var_name, solution)) = choose_solvable_unknown_for_elimination(
-            dae,
-            eq_idx,
-            &eq_rhs,
-            &live,
-            has_state_derivative,
-            &runtime_protected_unknowns,
-        )?
-        else {
-            continue;
+            state_names: &state_names,
+            unknown_index: &unknown_index,
+            state_derivative_matcher: &state_derivative_matcher,
+            runtime_protected_unknowns: &runtime_protected_unknowns,
+            runtime_defined_discrete_targets: &runtime_defined_discrete_targets,
+            direct_definitions: &direct_definitions,
         };
-        substitutions.push(substitution_for_var(dae, var_name.clone(), solution)?);
-        eliminated_eq_indices.push(eq_idx);
-        eliminated_eq_flags[eq_idx] = true;
-        resolved.insert(var_name.clone());
+        scan_boundary_equations(eq_order, &scan_ctx, &mut scan_state)?;
     }
+    log_eliminate_profile(
+        profile,
+        "boundary_scan_equations",
+        p_loop,
+        scan_state.substitutions.len(),
+    );
 
-    finish_boundary_elimination(
+    let p_finish = maybe_start_timer_if(profile);
+    let result = finish_boundary_elimination(
         dae,
-        substitutions,
-        eliminated_eq_flags,
-        eliminated_eq_indices,
-        &resolved,
-    )
+        scan_state.substitutions,
+        scan_state.eliminated_eq_flags,
+        scan_state.eliminated_eq_indices,
+        &scan_state.resolved,
+    )?;
+    log_eliminate_profile(profile, "boundary_finish", p_finish, result.n_eliminated);
+    Ok(result)
 }
 
 fn boundary_equation_order(
@@ -384,6 +421,60 @@ fn collect_boundary_unknowns(dae: &Dae) -> Result<Vec<VarName>, StructuralError>
     Ok(unknowns)
 }
 
+/// Keep `continuous.structured_equations` pointing at their (now-compacted) equation
+/// blocks after `removed_sorted` equations were removed from `continuous.equations`.
+///
+/// A family whose block stays intact is shifted down by the number of removed
+/// equations positioned strictly before it. Most trivial/boundary eliminations are
+/// scalar (`x = const`, aliases) sitting outside any family block, so only the start
+/// index moves; without this a method-of-lines interior `der` family would silently
+/// absorb the adjacent boundary `der` row and compute it with the wrong body.
+///
+/// A family one of whose own rows is removed (e.g. a constant `for k loop a[k]=k*c`
+/// family folded away) can no longer describe a contiguous array block, so it is
+/// dropped: the surviving rows lower as plain scalars rather than indexing a hole.
+fn shift_structured_families_after_equation_removal(dae: &mut Dae, removed_sorted: &[usize]) {
+    if removed_sorted.is_empty() {
+        return;
+    }
+    dae.continuous.structured_equations.retain_mut(|family| {
+        let total: usize = family.equation_counts.iter().sum();
+        let block_end = family.first_equation_index + total;
+        let removed_inside_block = removed_sorted
+            .iter()
+            .any(|&idx| idx >= family.first_equation_index && idx < block_end);
+        if removed_inside_block {
+            return false;
+        }
+        let shift = removed_sorted
+            .iter()
+            .filter(|&&idx| idx < family.first_equation_index)
+            .count();
+        family.first_equation_index -= shift;
+        true
+    });
+}
+
+/// Drop structured families whose row bodies were symbolically rewritten.
+///
+/// Substitutions can change a family row's LHS/RHS without changing row count.
+/// The old compact family metadata was proven for the pre-substitution body, so
+/// keeping it would let downstream Solve-IR rebuild a tensor node from stale row
+/// provenance. Regenerating a family proof belongs in a dedicated pass; the safe
+/// structural-elimination behavior is to scalarize rewritten families.
+fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[usize]) {
+    if touched_sorted.is_empty() {
+        return;
+    }
+    dae.continuous.structured_equations.retain(|family| {
+        let total: usize = family.equation_counts.iter().sum();
+        let block_end = family.first_equation_index + total;
+        !touched_sorted
+            .iter()
+            .any(|&idx| idx >= family.first_equation_index && idx < block_end)
+    });
+}
+
 fn finish_boundary_elimination(
     dae: &mut Dae,
     substitutions: Vec<Substitution>,
@@ -397,6 +488,7 @@ fn finish_boundary_elimination(
     for &idx in eliminated_eq_indices.iter().rev() {
         dae.continuous.equations.remove(idx);
     }
+    shift_structured_families_after_equation_removal(dae, &eliminated_eq_indices);
     for name in fully_resolved_continuous_unknowns(dae, resolved)? {
         dae.variables.algebraics.shift_remove(&name);
         dae.variables.outputs.shift_remove(&name);
@@ -424,96 +516,6 @@ fn fully_resolved_continuous_unknowns(
         }
     }
     Ok(removable)
-}
-
-fn aggregate_variable_fully_resolved(
-    name: &VarName,
-    var: &dae::Variable,
-    resolved: &HashSet<VarName>,
-) -> Result<bool, StructuralError> {
-    if var.dims.is_empty() {
-        return Ok(false);
-    }
-    let scalar_count = scalar_count_from_dims(name, &var.dims)?;
-    if scalar_count <= 1 {
-        return Ok(false);
-    }
-    for flat_index in 0..scalar_count {
-        let scalar_name = VarName::new(dae::scalar_name_text_for_flat_index(
-            name.as_str(),
-            &var.dims,
-            flat_index,
-        ));
-        if !resolved.contains(&scalar_name) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn is_scalarized_element_of_aggregate(dae: &Dae, name: &VarName) -> Result<bool, StructuralError> {
-    let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) else {
-        return Ok(false);
-    };
-    if DaeVariableScope::new(dae).exact(name).is_some() {
-        return Ok(false);
-    }
-    let base_name = VarName::new(scalar.base);
-    let Some(base_var) = DaeVariableScope::new(dae).exact(&base_name) else {
-        return Ok(false);
-    };
-    Ok(scalar_count_from_dims(&base_name, &base_var.dims)? > 1)
-}
-
-fn aggregate_alias_for_elimination(
-    dae: &Dae,
-    rhs: &Expression,
-    runtime_protected_unknowns: &IndexSet<String>,
-    runtime_defined_discrete_targets: &HashSet<String>,
-) -> Result<Option<(VarName, Expression)>, StructuralError> {
-    let Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        rhs,
-        ..
-    } = rhs
-    else {
-        return Ok(None);
-    };
-    let Some(lhs_ref) = full_var_ref(lhs) else {
-        return Ok(None);
-    };
-    let Some(rhs_ref) = full_var_ref(rhs) else {
-        return Ok(None);
-    };
-    if lhs_ref.var_name() == rhs_ref.var_name() {
-        return Ok(None);
-    }
-    if !same_aggregate_shape(dae, lhs_ref.var_name(), rhs_ref.var_name())? {
-        return Ok(None);
-    }
-
-    let lhs_candidate = aggregate_alias_candidate(
-        dae,
-        lhs_ref,
-        rhs_ref,
-        rhs.span(),
-        runtime_protected_unknowns,
-        runtime_defined_discrete_targets,
-    )?;
-    let rhs_candidate = aggregate_alias_candidate(
-        dae,
-        rhs_ref,
-        lhs_ref,
-        lhs.span(),
-        runtime_protected_unknowns,
-        runtime_defined_discrete_targets,
-    )?;
-    Ok(match (lhs_candidate, rhs_candidate) {
-        (Some(lhs), Some(rhs)) => Some(preferred_aggregate_alias_candidate(lhs, rhs)),
-        (Some(candidate), None) | (None, Some(candidate)) => Some(candidate),
-        (None, None) => None,
-    })
 }
 
 pub(super) fn full_var_ref(expr: &Expression) -> Option<&Reference> {
@@ -654,11 +656,12 @@ fn choose_solvable_unknown_for_elimination(
     live: &[VarName],
     has_state_derivative: bool,
     runtime_protected_unknowns: &IndexSet<String>,
+    direct_definitions: &DirectDefinitionIndex,
 ) -> Result<Option<(VarName, Expression)>, StructuralError> {
     let mut candidates: Vec<&VarName> = live.iter().collect();
     candidates.sort_by(|a, b| {
-        let a_has_definition = has_other_direct_definition(dae, eq_idx, a);
-        let b_has_definition = has_other_direct_definition(dae, eq_idx, b);
+        let a_has_definition = direct_definitions.has_other_direct_definition(eq_idx, a);
+        let b_has_definition = direct_definitions.has_other_direct_definition(eq_idx, b);
         let a_is_output = output_partition_contains_unknown(dae, a);
         let b_is_output = output_partition_contains_unknown(dae, b);
         a_has_definition
@@ -726,16 +729,6 @@ fn choose_solvable_unknown_for_elimination(
         return Ok(Some((candidate.clone(), solution)));
     }
     Ok(None)
-}
-
-fn has_other_direct_definition(dae: &Dae, current_eq_idx: usize, candidate: &VarName) -> bool {
-    dae.continuous
-        .equations
-        .iter()
-        .enumerate()
-        .any(|(eq_idx, eq)| {
-            eq_idx != current_eq_idx && has_direct_assignment_form(&eq.rhs, candidate)
-        })
 }
 
 fn choose_solvable_non_unknown_alias_for_elimination(
@@ -1078,6 +1071,7 @@ fn eliminate_via_blt(
     for &idx in eliminated_eq_indices.iter().rev() {
         dae.continuous.equations.remove(idx);
     }
+    shift_structured_families_after_equation_removal(dae, &eliminated_eq_indices);
 
     // Remove eliminated variables from algebraics and outputs.
     for name in &eliminated_var_names {
@@ -1282,77 +1276,6 @@ pub(crate) fn apply_substitutions_to_expr_with_derivatives(
         }
     }
     Ok(out)
-}
-
-fn expr_contains_substitution_target(expr: &Expression, substitution: &Substitution) -> bool {
-    let mut checker = SubstitutionTargetChecker {
-        substitution,
-        found: false,
-    };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-struct SubstitutionTargetChecker<'a> {
-    substitution: &'a Substitution,
-    found: bool,
-}
-
-impl ExpressionVisitor for SubstitutionTargetChecker<'_> {
-    fn visit_expression(&mut self, expr: &Expression) {
-        if !self.found {
-            self.walk_expression(expr);
-        }
-    }
-
-    fn visit_var_ref(&mut self, name: &Reference, subscripts: &[rumoca_core::Subscript]) {
-        if aggregate_subscript_ref_matches_var(name, subscripts, self.substitution)
-            || var_ref_matches_unknown_for_substitution(name, subscripts, self.substitution)
-            || embedded_alias_indices_for_substitution(name, subscripts, self.substitution)
-                .is_some()
-        {
-            self.found = true;
-            return;
-        }
-        for subscript in subscripts {
-            self.visit_subscript(subscript);
-        }
-    }
-}
-
-fn expr_contains_derivative_substitution_target(
-    expr: &Expression,
-    substitution: &Substitution,
-) -> bool {
-    let mut checker = DerivativeSubstitutionTargetChecker {
-        substitution,
-        found: false,
-    };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-struct DerivativeSubstitutionTargetChecker<'a> {
-    substitution: &'a Substitution,
-    found: bool,
-}
-
-impl ExpressionVisitor for DerivativeSubstitutionTargetChecker<'_> {
-    fn visit_expression(&mut self, expr: &Expression) {
-        if self.found {
-            return;
-        }
-        match expr {
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args,
-                ..
-            } if der_call_matches_scalar_substitution(args, self.substitution) => {
-                self.found = true;
-            }
-            _ => self.walk_expression(expr),
-        }
-    }
 }
 
 fn apply_record_field_aggregate_substitutions(
@@ -1712,7 +1635,7 @@ fn expr_contains_unsliced_multiscalar_ref(
     Ok(false)
 }
 
-fn embedded_alias_indices_for_substitution(
+pub(super) fn embedded_alias_indices_for_substitution(
     name: &Reference,
     subscripts: &[rumoca_core::Subscript],
     substitution: &Substitution,
@@ -1841,7 +1764,7 @@ fn replacement_indices_for_alias(
     indices.to_vec()
 }
 
-fn var_ref_matches_unknown_for_substitution(
+pub(super) fn var_ref_matches_unknown_for_substitution(
     name: &Reference,
     subscripts: &[rumoca_core::Subscript],
     substitution: &Substitution,
@@ -1874,7 +1797,7 @@ fn var_ref_matches_unknown_for_substitution(
     var_ref_matches_unknown(name, subscripts, &substitution.var_name)
 }
 
-fn aggregate_subscript_ref_matches_var(
+pub(super) fn aggregate_subscript_ref_matches_var(
     name: &Reference,
     subscripts: &[rumoca_core::Subscript],
     substitution: &Substitution,
@@ -1978,7 +1901,10 @@ impl SubstituteVarRewriter<'_> {
     }
 }
 
-fn der_call_matches_scalar_substitution(args: &[Expression], substitution: &Substitution) -> bool {
+pub(super) fn der_call_matches_scalar_substitution(
+    args: &[Expression],
+    substitution: &Substitution,
+) -> bool {
     if !substitution.var_dims.is_empty() {
         return false;
     }

@@ -23,6 +23,7 @@
 mod algorithm_lowering;
 mod analysis;
 mod appendix_b_validation;
+mod assertion_actions;
 pub mod balance;
 mod binding_conversion;
 mod condition_activation;
@@ -39,6 +40,7 @@ mod name_resolution;
 mod overconstrained_interface;
 mod path_utils;
 mod pre_lowering;
+mod promote_parameter_variable;
 mod reference_validation;
 mod runtime_precompute;
 mod scalar_inference;
@@ -242,12 +244,7 @@ pub fn to_dae_with_options(
         })?;
     }
 
-    // MLS §4.7: Propagate partial status and class type for balance checking
-    dae.metadata.is_partial = flat.is_partial;
-    dae.metadata.class_type = flat.class_type.clone();
-    dae.metadata.model_description = flat.model_description.clone();
-    dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
-    dae.metadata.nonnumeric_variable_names = nonnumeric_variable_names(flat);
+    initialize_dae_metadata(&mut dae, flat);
 
     let classification_indexes = build_variable_classification_indexes(flat)?;
     let prefix_children = &classification_indexes.prefix_children;
@@ -310,6 +307,9 @@ pub fn to_dae_with_options(
         }
         Ok::<(), ToDaeError>(())
     })?;
+    run_todae_phase(todae_subphase_timing, "assertion_actions", || {
+        assertion_actions::lower_assert_equations_to_event_actions(&mut dae, flat)
+    })?;
 
     // Process model/initial algorithms strictly through equation lowering.
     run_todae_phase(todae_subphase_timing, "algorithm_lowering", || {
@@ -329,6 +329,15 @@ pub fn to_dae_with_options(
         "fixed_start_initial_equations",
         || initial::add_fixed_start_initial_equations(&mut dae),
     )?;
+    // Promote parameter-variable algebraics (constant for the whole simulation)
+    // into derived parameters BEFORE condition lowering, so a parameter-variable
+    // `if` condition (e.g. `if sc < pc`) sees its operands as parameters and stays
+    // directly evaluable instead of allocating an Appendix B event/condition
+    // variable. This also moves time-invariant quantities (coordinate transforms,
+    // immersed-boundary masks) out of the per-step / derivative hot path.
+    run_todae_phase(todae_subphase_timing, "promote_parameter_variable", || {
+        promote_parameter_variable::promote_parameter_variable_algebraics(&mut dae)
+    })?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
         populate_canonical_conditions(&mut dae)
     })?;
@@ -357,6 +366,15 @@ pub fn to_dae_with_options(
     finalize_lowered_dae(&mut dae, flat, state_vars, todae_subphase_timing, options)?;
 
     Ok(dae)
+}
+
+fn initialize_dae_metadata(dae: &mut dae::Dae, flat: &flat::Model) {
+    // MLS §4.7: Propagate partial status and class type for balance checking.
+    dae.metadata.is_partial = flat.is_partial;
+    dae.metadata.class_type = flat.class_type.clone();
+    dae.metadata.model_description = flat.model_description.clone();
+    dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
+    dae.metadata.nonnumeric_variable_names = nonnumeric_variable_names(flat);
 }
 
 fn nonnumeric_variable_names(flat: &flat::Model) -> Vec<String> {

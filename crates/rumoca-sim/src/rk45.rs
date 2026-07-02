@@ -1,8 +1,13 @@
+use std::time::Instant;
+
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
+use crate::BuildSimulationTimings;
 use crate::InteractiveStepper;
-use crate::solve_lowering::{SimulationDiagnosticError, lower_dae_for_simulation};
+use crate::solve_lowering::{
+    SimulationDiagnosticError, lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing,
+};
 
 pub use rumoca_solver_rk45::SimError;
 pub use rumoca_solver_rk45::StepperState;
@@ -35,12 +40,36 @@ pub struct SimStepper {
 
 impl SimStepper {
     pub fn new(dae_model: &dae::Dae, opts: rumoca_solver::SimOptions) -> Result<Self, SimError> {
-        let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
+        Self::new_with_stage_timing(dae_model, opts, |_| {}).map(|(stepper, _)| stepper)
+    }
+
+    pub fn new_with_stage_timing(
+        dae_model: &dae::Dae,
+        opts: rumoca_solver::SimOptions,
+        mut begin_stage: impl FnMut(&'static str),
+    ) -> Result<(Self, BuildSimulationTimings), SimError> {
+        let (mut solve_model, solve_timings) =
+            lower_dae_for_simulation_with_stage_timing(dae_model, &opts, &mut begin_stage)
+                .map_err(|err| SimError::SolveIr(err.to_string()))?;
+        begin_stage("sim_overrides");
+        let override_apply_start = Instant::now();
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts, true)
             .map_err(|err| SimError::SolveIr(err.to_string()))?;
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
-            .map_err(|err| SimError::SolveIr(err.to_string()))?;
+        let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
+        begin_stage("sim_build");
+        let backend_build_start = Instant::now();
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)?;
-        Ok(Self { inner })
+        let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
+        Ok((
+            Self { inner },
+            BuildSimulationTimings {
+                ir_solve_structural_dae_seconds: solve_timings.structural_dae_seconds,
+                ir_solve_lower_seconds: solve_timings.solve_ir_seconds,
+                ir_solve_seconds: solve_timings.total_seconds(),
+                override_apply_seconds,
+                backend_build_seconds,
+            },
+        ))
     }
 
     pub fn new_with_diagnostics(
@@ -49,7 +78,12 @@ impl SimStepper {
     ) -> Result<Self, SimulationDiagnosticError> {
         let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
             .map_err(SimulationDiagnosticError::SolveLowering)?;
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)?;
+        crate::solve_lowering::apply_simulation_overrides(
+            &mut solve_model,
+            dae_model,
+            &opts,
+            true,
+        )?;
         let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

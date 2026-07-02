@@ -8,6 +8,75 @@ use record_projection_tests::{projection_assignment, projection_call};
 mod vector_projection_tests;
 
 #[test]
+fn lower_derivative_rhs_preserves_direct_matrix_vector_matmul() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("x")
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("W"),
+        dae::Variable {
+            dims: vec![2, 3],
+            ..scalar_var("W")
+        },
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("v"),
+        dae::Variable {
+            dims: vec![3],
+            ..scalar_var("v")
+        },
+    );
+
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(der(var("x")), mul(var("W"), var("v"))),
+        span: lower_test_span(),
+        origin: "direct derivative matrix-vector multiply".to_string(),
+        scalar_count: 2,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let block = lower_derivative_rhs(&dae_model, &layout)
+        .expect("direct matrix-vector derivative should lower");
+
+    assert!(
+        matches!(
+            block.nodes.as_slice(),
+            [ComputeNode::MatMul {
+                m: 2,
+                k: 3,
+                n: 1,
+                ..
+            }]
+        ),
+        "expected derivative MatMul node, got {:?}",
+        block.nodes
+    );
+
+    let rows = scalar_program_block_fixture(&block);
+    let mut y = vec![0.0; layout.y_scalars()];
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_y_value(&layout, &mut y, "v[1]", 2.0);
+    set_y_value(&layout, &mut y, "v[2]", 3.0);
+    set_y_value(&layout, &mut y, "v[3]", 5.0);
+    set_p_value(&layout, &mut p, "W[1,1]", 7.0);
+    set_p_value(&layout, &mut p, "W[1,2]", 11.0);
+    set_p_value(&layout, &mut p, "W[1,3]", 13.0);
+    set_p_value(&layout, &mut p, "W[2,1]", 17.0);
+    set_p_value(&layout, &mut p, "W[2,2]", 19.0);
+    set_p_value(&layout, &mut p, "W[2,3]", 23.0);
+
+    let actual = eval_block_all_outputs(&rows, &y, &p, 0.0);
+
+    assert_eq!(actual, vec![112.0, 206.0]);
+}
+
+#[test]
 fn lower_derivative_rhs_inlines_direct_matrix_vector_assignment() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
@@ -110,6 +179,9 @@ fn lower_derivative_rhs_keeps_structured_map_through_direct_assignment() {
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 1:3".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("tmp").into()),
@@ -180,6 +252,9 @@ fn lower_derivative_rhs_keeps_structured_map_through_guarded_direct_assignment()
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 1:3".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     for idx in 1..=3 {
         dae_model.continuous.equations.push(dae::Equation {
@@ -265,6 +340,9 @@ fn lower_derivative_rhs_keeps_structured_map_through_direct_coefficient_assignme
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 1:3".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("mass").into()),
@@ -364,6 +442,9 @@ fn lower_derivative_rhs_keeps_structured_stencil_through_chained_flux_assignment
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 2:4".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     dae_model.continuous.equations.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("mass").into()),
@@ -492,6 +573,9 @@ fn lower_derivative_rhs_keeps_structured_stencil_through_turkey_geometry_chain()
             equation_counts: vec![1; 3],
             span: lower_test_span(),
             origin: "for i in 2:4".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
         });
     for idx in 1..=6 {
         dae_model.continuous.equations.push(dae::Equation {

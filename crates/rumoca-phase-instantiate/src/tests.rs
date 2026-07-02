@@ -69,6 +69,18 @@ fn make_real_expr(value: &str) -> ast::Expression {
     }
 }
 
+fn make_if_expr(
+    condition: ast::Expression,
+    then_expr: ast::Expression,
+    else_expr: ast::Expression,
+) -> ast::Expression {
+    ast::Expression::If {
+        branches: vec![(condition, then_expr)],
+        else_branch: std::sync::Arc::new(else_expr),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn test_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_instantiate_tests_source_7.mo"),
@@ -113,7 +125,7 @@ fn make_eval_ctx<'a>(
         tree,
         mod_env,
         effective_components,
-        resolve_class_components: &resolve_effective_components_for_eval,
+        resolve_class_components: resolve_effective_components_for_eval,
     }
 }
 
@@ -264,6 +276,43 @@ fn test_extract_attributes_outer_state_select_overrides_local() {
         .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
+}
+
+#[test]
+fn test_extract_attributes_evaluates_outer_state_select_in_modifier_source_scope() {
+    let comp = make_component("x", "Real", None);
+    let state_select_expr = make_if_expr(
+        make_comp_ref_expr(&["pT_explicit"]),
+        make_comp_ref_expr(&["StateSelect", "prefer"]),
+        make_comp_ref_expr(&["StateSelect", "default"]),
+    );
+
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_dotted("x.stateSelect"),
+        ast::ModificationValue::with_source_scope(
+            state_select_expr,
+            None,
+            Some(ast::QualifiedName::from_dotted("Medium")),
+        ),
+    );
+
+    let mut p_t_explicit = make_component("Medium.pT_explicit", "Boolean", None);
+    p_t_explicit.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    p_t_explicit.binding = Some(make_if_expr(
+        make_bool_expr(true),
+        make_bool_expr(true),
+        make_bool_expr(false),
+    ));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("Medium.pT_explicit".to_string(), p_t_explicit);
+
+    let tree = ast::ClassTree::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", "x", &eval_ctx, &[])
+        .expect("source-scoped stateSelect should evaluate");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
 
 #[test]
@@ -1057,7 +1106,7 @@ fn test_extract_int_params_record_alias_prefers_rebound_field_values() {
         tree: &tree,
         mod_env: &mod_env,
         effective_components: &effective_components,
-        resolve_class_components: &resolve_effective_components_for_eval,
+        resolve_class_components: resolve_effective_components_for_eval,
     };
     let int_params = extract_int_params_with_mods(&eval_ctx);
 
@@ -1151,6 +1200,59 @@ fn test_inner_shadowing() {
     // Now should find the outer "g"
     let inner = ctx.find_inner("g").unwrap();
     assert_eq!(inner.qualified_name.to_flat_string(), "root.g");
+}
+
+fn inner_decl(path: &str) -> InnerDeclaration {
+    InnerDeclaration {
+        qualified_name: ast::QualifiedName::from_dotted(path),
+        type_name: "StateGraphRoot".to_string(),
+        type_def_id: None,
+    }
+}
+
+fn missing_inner_at(path: &str) -> MissingInnerInfo {
+    MissingInnerInfo {
+        name: "stateGraphRoot".to_string(),
+        type_name: "StateGraphRoot".to_string(),
+        type_def_id: None,
+        span: Span::DUMMY,
+        source_location: make_location("inner_visibility.mo", 0, 1),
+        outer_path: ast::QualifiedName::from_dotted(path),
+        is_inner_outer: false,
+    }
+}
+
+#[test]
+fn test_pending_outer_resolution_requires_inner_ancestor_scope() {
+    let inner = inner_decl("tankController.makeProduct.stateGraphRoot");
+    let sibling_outer = missing_inner_at("tankController.s1.stateGraphRoot");
+
+    assert!(
+        !inner_visible_to_outer(&inner, &sibling_outer),
+        "inner declarations in one component must not resolve pending outers in a sibling"
+    );
+}
+
+#[test]
+fn test_pending_outer_resolution_allows_inner_ancestor_scope() {
+    let inner = inner_decl("tankController.makeProduct.stateGraphRoot");
+    let nested_outer = missing_inner_at("tankController.makeProduct.fillTank1.stateGraphRoot");
+
+    assert!(
+        inner_visible_to_outer(&inner, &nested_outer),
+        "inner declarations are visible to nested component scopes"
+    );
+}
+
+#[test]
+fn test_pending_outer_resolution_allows_root_inner_for_nested_outer() {
+    let inner = inner_decl("stateGraphRoot");
+    let nested_outer = missing_inner_at("tankController.s1.stateGraphRoot");
+
+    assert!(
+        inner_visible_to_outer(&inner, &nested_outer),
+        "root inner declarations remain visible to nested outer references"
+    );
 }
 
 #[test]

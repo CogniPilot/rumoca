@@ -1,6 +1,6 @@
 use super::*;
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, eval_state_select_expr_with_scope, expr_to_bool, expr_to_string,
+    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_bool, expr_to_string,
     parse_state_select,
 };
 
@@ -399,12 +399,14 @@ pub(super) fn extract_attributes_in_scope(
         Some(value.value.clone())
     };
 
-    let outer_state_select = mod_env.get_attr(comp_name, "stateSelect");
+    let state_select_path = ast::QualifiedName::from_ident(comp_name).child("stateSelect");
+    let outer_state_select = mod_env.get(&state_select_path);
     let outer_state_select = match outer_state_select {
         Some(value) => Some(parse_required_state_select(
-            value,
+            &value.value,
             eval_ctx,
             imports,
+            value.source_scope.as_ref(),
             declaration_scope,
         )?),
         None => None,
@@ -445,7 +447,7 @@ pub(super) fn extract_attributes_in_scope(
             }
             "stateSelect" if !has_outer_state_select => {
                 attrs.state_select =
-                    parse_required_state_select(value, eval_ctx, imports, declaration_scope)?
+                    parse_required_state_select(value, eval_ctx, imports, None, declaration_scope)?
             }
             _ => {}
         }
@@ -463,17 +465,26 @@ fn parse_required_state_select(
     value: &ast::Expression,
     eval_ctx: &InstantiateEvalCtx<'_>,
     imports: &[(String, String)],
+    source_scope: Option<&ast::QualifiedName>,
     declaration_scope: Option<&ast::QualifiedName>,
 ) -> InstantiateResult<rumoca_core::StateSelect> {
-    let scope_prefix = declaration_scope.map(ast::QualifiedName::to_flat_string);
     parse_state_select(value)
-        .or_else(|| eval_state_select_expr_with_scope(eval_ctx, value, scope_prefix.as_deref()))
+        .or_else(|| eval_state_select_expr_with_source_scope(eval_ctx, value, source_scope))
+        .or_else(|| eval_state_select_expr_with_source_scope(eval_ctx, value, declaration_scope))
         .or_else(|| {
             // Enclosing-scope constants (MLS §5.3.2) appear unqualified in
             // declaration-side attributes; qualify them through the package
             // constant aliases and retry before failing.
             let qualified = crate::dims::qualify_shape_expr_imports(value, imports);
-            eval_state_select_expr_with_scope(eval_ctx, &qualified, scope_prefix.as_deref())
+            eval_state_select_expr_with_source_scope(eval_ctx, &qualified, source_scope).or_else(
+                || {
+                    eval_state_select_expr_with_source_scope(
+                        eval_ctx,
+                        &qualified,
+                        declaration_scope,
+                    )
+                },
+            )
         })
         .ok_or_else(|| {
             Box::new(InstantiateError::InvalidTypeAttribute {

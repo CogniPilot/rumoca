@@ -407,6 +407,116 @@ fn substitutes_scoped_relative_constant_alias_field() {
 }
 
 #[test]
+fn substitutes_assert_condition_with_component_origin_scope() {
+    let mut model = flat::Model::new();
+    model.assert_equations.push(flat::AssertEquation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Gt,
+            lhs: Box::new(var_ref("TD")),
+            rhs: Box::new(int_literal(0)),
+            span: test_span(),
+        },
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("F or TD has to be positive".to_string()),
+            span: test_span(),
+        },
+        None,
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "line".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.real_parameter_values.insert("TD".to_string(), 0.0);
+    ctx.real_parameter_values
+        .insert("line.TD".to_string(), 0.001);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let condition = &model.assert_equations[0].condition;
+    let condition_uses_scoped_td = match condition {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(true),
+            ..
+        } => true,
+        rumoca_core::Expression::Binary { lhs, .. } => matches!(
+            lhs.as_ref(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            } if (*value - 0.001).abs() < f64::EPSILON
+        ),
+        _ => false,
+    };
+    assert!(
+        condition_uses_scoped_td,
+        "unexpected condition: {condition:?}"
+    );
+}
+
+#[test]
+fn substituted_assert_condition_prefers_evaluated_scalar_over_stale_default() {
+    let mut model = flat::Model::new();
+    let condition = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Or,
+        lhs: Box::new(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Gt,
+            lhs: Box::new(var_ref("F")),
+            rhs: Box::new(int_literal(0)),
+            span: test_span(),
+        }),
+        rhs: Box::new(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Gt,
+            lhs: Box::new(var_ref("TD")),
+            rhs: Box::new(int_literal(0)),
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+    model.assert_equations.push(flat::AssertEquation::new(
+        condition,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("F or TD has to be positive".to_string()),
+            span: test_span(),
+        },
+        None,
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "line".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("line.F".to_string(), int_literal(0));
+    ctx.constant_values
+        .insert("line.TD".to_string(), int_literal(0));
+    ctx.real_parameter_values.insert("line.F".to_string(), 0.0);
+    ctx.real_parameter_values
+        .insert("line.TD".to_string(), 0.001);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &model.assert_equations[0].condition else {
+        panic!(
+            "unexpected condition: {:?}",
+            model.assert_equations[0].condition
+        );
+    };
+    let rumoca_core::Expression::Binary { lhs, .. } = rhs.as_ref() else {
+        panic!("unexpected TD comparison: {rhs:?}");
+    };
+    assert!(matches!(
+        lhs.as_ref(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if (*value - 0.001).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
 fn substitutes_function_scope_constants_inside_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);

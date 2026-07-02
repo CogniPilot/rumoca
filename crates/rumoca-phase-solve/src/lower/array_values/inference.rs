@@ -25,7 +25,7 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
                 field_access_binding_key(base, field)
                     .ok()
-                    .and_then(|key| self.layout.shape(&key).map(<[usize]>::to_vec))
+                    .and_then(|key| self.infer_field_access_binding_dims(&key, scope))
                     .map(Ok)
                     .or_else(|| self.infer_function_call_field_dims(base, field).transpose())
                     .transpose()?
@@ -41,6 +41,13 @@ impl<'a> LowerBuilder<'a> {
                 name, args, span, ..
             } if is_synchronous_array_like_intrinsic(name.as_str()) => {
                 self.infer_expr_dims(required_arg(args, name.as_str(), *span)?, scope)?
+            }
+            rumoca_core::Expression::FunctionCall { name, args, .. }
+                if is_modelica_array_constructor_function(name) =>
+            {
+                infer_array_literal_dims_with_result(args, false, |element| {
+                    self.infer_expr_dims(element, scope)
+                })?
             }
             rumoca_core::Expression::FunctionCall { name, span, .. } => {
                 self.infer_function_call_output_dims(name, *span)?
@@ -81,6 +88,29 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::Expression::Literal { value: _, .. }
             | rumoca_core::Expression::Empty { .. } => Vec::new(),
         })
+    }
+
+    fn infer_field_access_binding_dims(&self, key: &str, scope: &Scope) -> Option<Vec<usize>> {
+        if let Some(dims) = self.local_binding_dims.get(key)
+            && dims.iter().all(|dim| *dim >= 0)
+        {
+            return dims.iter().map(|dim| usize::try_from(*dim).ok()).collect();
+        }
+        if let Some(values) = self.local_indexed_binding_values(key) {
+            return Some(vector_dims(values.len()));
+        }
+        if let Some(shape) = self.layout.shape(key) {
+            return Some(shape.to_vec());
+        }
+        if scope.contains_key(&generated_scope_key(key))
+            || self.local_const_bindings.contains_key(key)
+            || self.structural_bindings.contains_key(key)
+            || self.direct_assignments.contains_key(key)
+            || self.layout.binding(key).is_some()
+        {
+            return Some(Vec::new());
+        }
+        None
     }
 
     fn infer_tuple_flat_dims(
@@ -265,14 +295,15 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
-        let name_path = self.scope_key_from_reference(name, span)?;
         let name_text = name.as_str();
         if let Some(dims) = self.local_binding_dims.get(name_text)
             && dims.iter().all(|dim| *dim >= 0)
         {
             return concrete_i64_dims(dims, name_text, "local binding dimensions", span);
         }
-        if let Some(values) = scoped_indexed_binding_values(scope, &name_path, span)? {
+        if let Some(values) =
+            scoped_indexed_binding_values(scope, &generated_scope_key(name_text), span)?
+        {
             return Ok(vector_dims(values.len()));
         }
         if let Some(values) = self.local_indexed_binding_values(name_text) {
@@ -306,9 +337,14 @@ impl<'a> LowerBuilder<'a> {
         }
         if self.local_const_bindings.contains_key(name_text)
             || self.structural_bindings.contains_key(name_text)
+            || scope.contains_key(&generated_scope_key(name_text))
             || self.layout.binding(name_text).is_some()
         {
             return Ok(Vec::new());
+        }
+        let name_path = self.scope_key_from_reference(name, span)?;
+        if let Some(values) = scoped_indexed_binding_values(scope, &name_path, span)? {
+            return Ok(vector_dims(values.len()));
         }
         Ok(Vec::new())
     }

@@ -10,7 +10,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -24,12 +24,14 @@ use rumoca_ir_solve::{
 mod compute_block_scalarize;
 pub mod eval_at;
 mod inspect_alloc;
+mod iterative_solve;
 pub mod jacobian;
 mod linear_solve;
 pub mod nan_trace;
 mod prepared;
 mod random_runtime;
 mod refresh_plan;
+mod reverse;
 mod runtime;
 mod runtime_events;
 pub mod sim_driver;
@@ -42,7 +44,9 @@ pub use compute_block_scalarize::{
     to_scalar_program_block,
 };
 pub use eval_at::{EvalAtReport, EvalAtSlot};
-pub use jacobian::JacobianReport;
+pub use jacobian::{
+    JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
+};
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{PreparedComputeBlock, PreparedScalarProgramBlock};
 use random_runtime::{
@@ -50,8 +54,9 @@ use random_runtime::{
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
 pub use runtime::{
-    AlgebraicSettle, EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime,
-    apply_discrete_slot_value,
+    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
+    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
+    SolveRuntime, apply_discrete_slot_value,
 };
 pub use runtime_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
@@ -72,6 +77,7 @@ pub use update_rows::{
 
 static ROW_EVAL_CALLS: AtomicU64 = AtomicU64::new(0);
 static ROW_EVAL_NANOS: AtomicU64 = AtomicU64::new(0);
+static ROW_EVAL_TRACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BlockEvalStats {
@@ -341,7 +347,9 @@ impl From<SolveProblemShapeContractError> for EvalSolveError {
 }
 
 pub fn reset_solve_row_eval_trace() {
-    if !solve_row_eval_trace_enabled() {
+    let enabled = solve_row_eval_trace_requested();
+    ROW_EVAL_TRACE_ACTIVE.store(enabled, Ordering::Relaxed);
+    if !enabled {
         return;
     }
     ROW_EVAL_CALLS.store(0, Ordering::Relaxed);
@@ -353,7 +361,7 @@ pub fn reset_solve_row_eval_trace() {
 }
 
 pub fn trace_solve_row_eval_snapshot(label: &str) {
-    if !solve_row_eval_trace_enabled() {
+    if !solve_row_eval_trace_active() {
         return;
     }
     let calls = ROW_EVAL_CALLS.load(Ordering::Relaxed);
@@ -385,12 +393,18 @@ pub fn trace_solve_row_eval_snapshot(label: &str) {
     }
 }
 
-fn solve_row_eval_trace_enabled() -> bool {
+fn solve_row_eval_trace_requested() -> bool {
     tracing::enabled!(target: "rumoca_eval_solve::row", tracing::Level::DEBUG)
 }
 
+#[inline(always)]
+fn solve_row_eval_trace_active() -> bool {
+    ROW_EVAL_TRACE_ACTIVE.load(Ordering::Relaxed)
+}
+
+#[inline(always)]
 pub(crate) fn record_solve_block_eval(kind: &'static str, len: usize, rows: usize) {
-    if !solve_row_eval_trace_enabled() {
+    if !solve_row_eval_trace_active() {
         return;
     }
     let mut stats = block_eval_stats()
@@ -817,13 +831,14 @@ pub(crate) fn eval_program_single(
     Ok(buf[0])
 }
 
+#[inline(always)]
 pub(crate) fn eval_row_prepared_maybe_fast(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
     sink: &mut OutputCursor<'_>,
 ) -> Result<(), EvalSolveError> {
-    let start = solve_row_eval_trace_enabled().then(Instant::now);
+    let start = solve_row_eval_trace_active().then(Instant::now);
     let result = if register_safe {
         eval_row_prepared_fast(input, scratch, sink)
     } else {
@@ -1891,7 +1906,7 @@ fn get(
     Ok(value)
 }
 
-fn eval_unary(op: UnaryOp, value: f64) -> f64 {
+pub(crate) fn eval_unary(op: UnaryOp, value: f64) -> f64 {
     match op {
         UnaryOp::Neg => -value,
         UnaryOp::Not => (value == 0.0) as u8 as f64,
@@ -1916,7 +1931,7 @@ fn eval_unary(op: UnaryOp, value: f64) -> f64 {
     }
 }
 
-fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
+pub(crate) fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
     match op {
         BinaryOp::Add => lhs + rhs,
         BinaryOp::Sub => lhs - rhs,
@@ -1939,7 +1954,7 @@ fn guarded_division(lhs: f64, rhs: f64) -> f64 {
     }
 }
 
-fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
+pub(crate) fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
     op.compare_as_f64(lhs, rhs)
 }
 

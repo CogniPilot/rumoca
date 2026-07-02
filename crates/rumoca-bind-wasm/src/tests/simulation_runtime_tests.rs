@@ -214,6 +214,185 @@ fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
+fn test_prepare_gpu_simulation_separates_output_and_fixed_step_intervals() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model GpuFixedStep
+      Real x(start = 1.0, fixed = true);
+    equation
+      der(x) = -x;
+      annotation(__rumoca(Solver(FixedStep = 0.0125)), experiment(StopTime = 1.0, Interval = 0.1, Solver = "rk-like"));
+    end GpuFixedStep;
+    "#;
+
+    let json = prepare_gpu_simulation(source, "GpuFixedStep")
+        .expect("prepare_gpu_simulation should render wgsl-solve payload");
+    let payload: serde_json::Value =
+        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
+
+    assert_eq!(payload["dt"].as_f64(), Some(0.1));
+    assert_eq!(payload["internal_dt"].as_f64(), Some(0.0125));
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_settles_wave_initial_equations() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model GpuWaveInitial
+      parameter Integer N = 5;
+      parameter Real L = 1.0;
+      parameter Real dx = L / (N - 1);
+      Real u[N, N];
+      Real w[N, N];
+    initial equation
+      for i in 1:N loop
+        for j in 1:N loop
+          u[i, j] = exp(-200.0 * (((i - 1) * dx - 0.5 * L) ^ 2
+                                + ((j - 1) * dx - 0.5 * L) ^ 2));
+          w[i, j] = 0.0;
+        end for;
+      end for;
+    equation
+      for i in 1:N loop
+        for j in 1:N loop
+          der(u[i, j]) = w[i, j];
+          der(w[i, j]) = 0.0;
+        end for;
+      end for;
+    end GpuWaveInitial;
+    "#;
+
+    let json = prepare_gpu_simulation(source, "GpuWaveInitial")
+        .expect("prepare_gpu_simulation should settle initial equations");
+    let payload: serde_json::Value =
+        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
+    let names = payload
+        .get("state_names")
+        .and_then(serde_json::Value::as_array)
+        .expect("GPU payload should include state names");
+    let center_index = names
+        .iter()
+        .position(|name| name.as_str() == Some("u[3,3]"))
+        .expect("center displacement should be a GPU state");
+    let y0 = payload
+        .get("y0")
+        .and_then(serde_json::Value::as_array)
+        .expect("GPU payload should include initial y0");
+    let center = y0
+        .get(center_index)
+        .and_then(serde_json::Value::as_f64)
+        .expect("center displacement y0 should be numeric");
+
+    assert!(
+        center > 0.9,
+        "GPU preparation must apply Wave2D-style initial equations; u[3,3]={center}"
+    );
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_exposes_input_slots() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model GpuInputCommand
+      parameter Real u0 = 2.0;
+      input Real u_cmd(start = u0);
+      Real x(start = u0, fixed = true);
+    equation
+      der(x) = u_cmd - x;
+    end GpuInputCommand;
+    "#;
+
+    let json = prepare_gpu_simulation(source, "GpuInputCommand")
+        .expect("prepare_gpu_simulation should expose named input slots");
+    let payload: serde_json::Value =
+        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
+    assert_eq!(
+        payload
+            .get("input_names")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|names| names.first())
+            .and_then(serde_json::Value::as_str),
+        Some("u_cmd")
+    );
+    let input_index = payload
+        .pointer("/var_layout/bindings/u_cmd/P/index")
+        .and_then(serde_json::Value::as_u64)
+        .expect("GPU prep should expose input P-slot index") as usize;
+    assert_eq!(
+        payload
+            .get("p0")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|values| values.get(input_index))
+            .and_then(serde_json::Value::as_f64),
+        Some(2.0)
+    );
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_update_gpu_parameters_refreshes_parameter_bound_arrays() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model GpuParameterMask
+      parameter Real a = 2.0;
+      parameter Real mask[2] = {a * i for i in 1:2};
+      Real x(start = 1.0, fixed = true);
+    equation
+      der(x) = -mask[2] * x;
+    end GpuParameterMask;
+    "#;
+
+    let json = prepare_gpu_simulation(source, "GpuParameterMask")
+        .expect("prepare_gpu_simulation should cache the prepared GPU model");
+    let payload: serde_json::Value =
+        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
+    let mask_index = payload
+        .pointer("/var_layout/bindings/mask[2]/P/index")
+        .and_then(serde_json::Value::as_u64)
+        .expect("parameter-bound array member should be a P slot") as usize;
+    assert_eq!(
+        payload
+            .get("p0")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|values| values.get(mask_index))
+            .and_then(serde_json::Value::as_f64),
+        Some(4.0)
+    );
+
+    let updated_json = update_gpu_parameters(source, "GpuParameterMask", r#"{"a":3.0}"#)
+        .expect("parameter update should refresh derived parameter arrays");
+    let updated: serde_json::Value =
+        serde_json::from_str(&updated_json).expect("parameter update payload should be JSON");
+    assert_eq!(
+        updated
+            .get("p0")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|values| values.get(mask_index))
+            .and_then(serde_json::Value::as_f64),
+        Some(6.0)
+    );
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
 fn test_prepare_gpu_simulation_exposes_scalar_chunk_output_indices() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");

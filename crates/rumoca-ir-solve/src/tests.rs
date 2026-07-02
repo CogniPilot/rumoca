@@ -165,13 +165,13 @@ fn representative_derivative_rhs() -> ComputeBlock {
 fn representative_initialization_system() -> InitializationSolveSystem {
     InitializationSolveSystem {
         row_targets: vec![Some(scalar_slot_y(1))],
-        residual: ScalarProgramBlock::with_source_span(
+        residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 0.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_span(),
-        ),
+        )),
         projection_indices: Vec::new(),
         projection_plan: AlgebraicProjectionPlan::default(),
         update_rhs: ScalarProgramBlock::default(),

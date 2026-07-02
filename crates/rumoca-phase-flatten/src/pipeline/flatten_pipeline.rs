@@ -853,6 +853,16 @@ pub(crate) fn prepare_context_for_equation_flattening(
     ctx.refresh_enum_parameter_lookup(flat);
     pre_evaluate_structural_equations(ctx, overlay, tree)?;
 
+    // Classify parameter-variability for-equation families now that the
+    // parameter/constant key set is stable, so the cheapen gate in equation
+    // expansion can drop their time-invariant per-cell bodies (the DAE promotes them
+    // array-natively from the comprehension template).
+    ctx.param_variability_family_bases =
+        crate::param_variability::parameter_variability_family_bases(
+            overlay,
+            &ctx.flat_parameter_constant_keys,
+        );
+
     let vcg_data = vcg::pre_collect_vcg_data(overlay, ctx)?;
     let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data);
     flat.optional_edges = optional_edges.clone();

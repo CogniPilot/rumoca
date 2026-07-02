@@ -1,0 +1,273 @@
+name: MSL Baseline Ratchet
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: ['main']
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: msl-baseline-ratchet-main
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote Improved MSL Baseline
+    if: |
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    env:
+      MSL_BASELINE_RELEASE_TAG: msl-quality-baseline
+      MSL_BASELINE_RELEASE_ASSET: msl_quality_baseline.json
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: main
+
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Confirm CI run is current main
+        id: current-main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          current="$(git rev-parse origin/main)"
+          run_sha="${{ github.event.workflow_run.head_sha }}"
+          if [[ "$current" != "$run_sha" ]]; then
+            echo "Current origin/main is $current, but CI run used $run_sha; skipping stale artifact."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download MSL quality artifact
+        id: download
+        if: steps.current-main.outputs.current == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const run_id = context.payload.workflow_run.id;
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id,
+              per_page: 100,
+            });
+            const artifact = artifacts.find(item =>
+              item.name === 'msl-compatibility-report' && !item.expired
+            );
+            if (!artifact) {
+              core.info(`No msl-compatibility-report artifact found for workflow run ${run_id}.`);
+              core.setOutput('found', 'false');
+              return;
+            }
+            const zip = await github.rest.actions.downloadArtifact({
+              owner,
+              repo,
+              artifact_id: artifact.id,
+              archive_format: 'zip',
+            });
+            fs.mkdirSync('target/msl-baseline-ratchet', { recursive: true });
+            fs.writeFileSync(
+              'target/msl-baseline-ratchet/msl-compatibility-report.zip',
+              Buffer.from(zip.data)
+            );
+            core.setOutput('found', 'true');
+
+      - name: Extract MSL quality artifact
+        if: steps.download.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl-baseline-ratchet/extracted
+          mkdir -p target/msl-baseline-ratchet/extracted
+          unzip -q \
+            target/msl-baseline-ratchet/msl-compatibility-report.zip \
+            -d target/msl-baseline-ratchet/extracted
+          find target/msl-baseline-ratchet/extracted -maxdepth 4 -type f | sort
+
+      - name: Locate MSL quality snapshot
+        id: snapshot
+        if: steps.download.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="target/msl-baseline-ratchet/extracted"
+          snapshot=""
+          for candidate in \
+            "$root/results/msl_quality_current.json" \
+            "$root/msl_quality_current.json" \
+            "$root/target/msl/results/msl_quality_current.json"
+          do
+            if [[ -f "$candidate" ]]; then
+              snapshot="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$snapshot" ]]; then
+            echo "No msl_quality_current.json found in msl-compatibility-report artifact."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "path=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Load current promoted baseline
+        id: release-baseline
+        if: steps.snapshot.outputs.found == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const tag = process.env.MSL_BASELINE_RELEASE_TAG;
+            const assetName = process.env.MSL_BASELINE_RELEASE_ASSET;
+            const outputPath = 'target/msl-baseline-ratchet/current-baseline.json';
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              const asset = release.data.assets.find(item => item.name === assetName);
+              if (!asset) {
+                core.info(`Release ${tag} has no ${assetName}; using checked-in fallback.`);
+                fs.copyFileSync(
+                  'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+                  outputPath
+                );
+              } else {
+                const download = await github.rest.repos.getReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: asset.id,
+                  headers: { accept: 'application/octet-stream' },
+                });
+                fs.writeFileSync(outputPath, Buffer.from(download.data));
+                core.info(`Loaded current promoted baseline from release ${tag}/${assetName}.`);
+              }
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`Release ${tag} does not exist; using checked-in fallback.`);
+              fs.copyFileSync(
+                'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+                outputPath
+              );
+            }
+            core.setOutput('path', outputPath);
+
+      - name: Promote baseline if the artifact improves it
+        id: promote
+        if: steps.snapshot.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous="${{ steps.release-baseline.outputs.path }}"
+          promoted="target/msl-baseline-ratchet/$MSL_BASELINE_RELEASE_ASSET"
+          cp "$previous" "$promoted"
+          node .github/scripts/msl-baseline-ratchet.mjs \
+            --source "${{ steps.snapshot.outputs.path }}" \
+            --baseline "$promoted"
+
+          if cmp -s "$previous" "$promoted"; then
+            echo "MSL quality baseline did not improve the promoted release baseline."
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "MSL quality baseline improved the promoted release baseline."
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
+          echo "path=$promoted" >> "$GITHUB_OUTPUT"
+
+      - name: Publish promoted baseline release asset
+        if: steps.promote.outputs.promoted == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const tag = process.env.MSL_BASELINE_RELEASE_TAG;
+            const assetName = process.env.MSL_BASELINE_RELEASE_ASSET;
+            const assetPath = '${{ steps.promote.outputs.path }}';
+            const runId = context.payload.workflow_run.id;
+            const runSha = context.payload.workflow_run.head_sha;
+            const body = [
+              'Mutable release that stores the latest promoted MSL quality baseline.',
+              '',
+              `Source CI run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
+              `Source commit: \`${runSha}\``,
+              '',
+              '`cargo xtask verify msl-parity` downloads this asset when available and falls back to the checked-in baseline when offline.',
+              '',
+            ].join('\n');
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: release.data.id,
+                name: 'MSL Quality Baseline',
+                body,
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: 'main',
+                name: 'MSL Quality Baseline',
+                body,
+                draft: false,
+                prerelease: false,
+              });
+            }
+
+            const existingAsset = release.data.assets.find(asset => asset.name === assetName);
+            if (existingAsset) {
+              await github.rest.repos.deleteReleaseAsset({
+                owner,
+                repo,
+                asset_id: existingAsset.id,
+              });
+            }
+
+            const data = fs.readFileSync(assetPath);
+            await github.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.data.id,
+              name: assetName,
+              data,
+              headers: {
+                'content-type': 'application/json',
+                'content-length': data.length,
+              },
+            });
+            core.info(`Published ${assetName} to release ${tag}.`);

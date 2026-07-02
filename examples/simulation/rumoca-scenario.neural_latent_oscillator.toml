@@ -1,0 +1,36 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "../models/NeuralLatentOscillator.mo"
+name = "NeuralLatentOscillator"
+
+[viewer]
+mode = "results_panel"
+
+[sim]
+solver = "rk-like"
+dt = 0.06
+t_end = 12.0
+
+[[plot.views]]
+id = "decoded_time"
+title = "Decoded Latent ODE Signals"
+type = "timeseries"
+x = "time"
+y = ["observed[1]", "observed[2]", "observed[3]", "latentEnergy"]
+
+[[plot.views]]
+id = "latent_pairs"
+title = "Latent Oscillator Pairs"
+type = "timeseries"
+x = "time"
+y = ["latent[1]", "latent[2]", "latent[3]", "latent[4]"]
+
+[[plot.views]]
+id = "decoded_phase"
+title = "Decoded Phase Portrait"
+type = "scatter"
+x = "observed[1]"
+y = ["observed[2]", "observed[3]"]

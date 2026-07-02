@@ -132,6 +132,7 @@ const runtimeFiles = [
   "parse_worker.js",
   "rumoca_gpu.js",
 ];
+const runtimeFileSource = (file) => path.join(webDir, "runtime", file);
 
 const ensureWebVendorAssets = async () => {
   try {
@@ -144,7 +145,7 @@ const ensureWebVendorAssets = async () => {
 
 const copyEditorWorkers = async (pkgDir) => {
   for (const file of runtimeFiles) {
-    await fs.copyFile(path.join(webDir, "runtime", file), path.join(pkgDir, file));
+    await fs.copyFile(runtimeFileSource(file), path.join(pkgDir, file));
   }
 };
 

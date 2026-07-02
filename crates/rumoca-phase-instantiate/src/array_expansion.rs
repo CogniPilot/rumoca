@@ -6,6 +6,7 @@ use super::{InstantiateContext, InstantiateResult, find_class_in_tree, get_effec
 use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use rumoca_ir_ast::ExpressionTransformer;
 use std::sync::Arc;
 
 /// Expand an array component into individual indexed instances.
@@ -627,7 +628,7 @@ fn try_eval_structural_array_expr(
                 tree,
                 mod_env,
                 effective_components,
-                resolve_class_components: &resolve_effective_components_for_eval,
+                resolve_class_components: resolve_effective_components_for_eval,
             };
             let n = try_eval_integer_expr(&eval_ctx, count_expr)?;
             let len = n.max(0) as usize;
@@ -685,7 +686,7 @@ fn try_eval_structural_array_expr(
                 tree,
                 mod_env,
                 effective_components,
-                resolve_class_components: &resolve_effective_components_for_eval,
+                resolve_class_components: resolve_effective_components_for_eval,
             };
             let m = try_eval_integer_expr(&eval_ctx, &args[0])?;
             let values = symmetric_orientation_values(m)?;
@@ -885,7 +886,7 @@ fn eval_range_bounds(
                 tree,
                 mod_env,
                 effective_components,
-                resolve_class_components: &resolve_effective_components_for_eval,
+                resolve_class_components: resolve_effective_components_for_eval,
             };
             let s = try_eval_integer_expr(&eval_ctx, start)?;
             let e = try_eval_integer_expr(&eval_ctx, end)?;
@@ -897,128 +898,7 @@ fn eval_range_bounds(
 
 /// Substitute a component reference to `var_name` with an integer literal.
 fn substitute_var(expr: &ast::Expression, var_name: &str, value: i64) -> ast::Expression {
-    if let Some(replacement) = replace_component_reference_with_integer(expr, var_name, value) {
-        return replacement;
-    }
-
-    match expr {
-        ast::Expression::Array {
-            elements,
-            is_matrix,
-            span,
-        } => ast::Expression::Array {
-            elements: elements
-                .iter()
-                .map(|elem| substitute_var(elem, var_name, value))
-                .collect(),
-            is_matrix: *is_matrix,
-            span: *span,
-        },
-        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
-            op: op.clone(),
-            lhs: Arc::new(substitute_var(lhs, var_name, value)),
-            rhs: Arc::new(substitute_var(rhs, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
-            op: op.clone(),
-            rhs: Arc::new(substitute_var(rhs, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
-            comp: comp.clone(),
-            args: args
-                .iter()
-                .map(|arg| substitute_var(arg, var_name, value))
-                .collect(),
-            span: *span,
-        },
-        ast::Expression::If {
-            branches,
-            else_branch,
-            span,
-        } => ast::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(cond, branch_expr)| {
-                    (
-                        substitute_var(cond, var_name, value),
-                        substitute_var(branch_expr, var_name, value),
-                    )
-                })
-                .collect(),
-            else_branch: Arc::new(substitute_var(else_branch, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::FieldAccess { base, field, span } => ast::Expression::FieldAccess {
-            base: Arc::new(substitute_var(base, var_name, value)),
-            field: field.clone(),
-            span: *span,
-        },
-        ast::Expression::ComponentReference(cref) => {
-            ast::Expression::ComponentReference(substitute_component_ref_var(cref, var_name, value))
-        }
-        ast::Expression::ArrayIndex {
-            base,
-            subscripts,
-            span,
-        } => ast::Expression::ArrayIndex {
-            base: Arc::new(substitute_var(base, var_name, value)),
-            subscripts: subscripts
-                .iter()
-                .map(|sub| substitute_subscript_var(sub, var_name, value))
-                .collect(),
-            span: *span,
-        },
-        ast::Expression::Range {
-            start,
-            step,
-            end,
-            span,
-        } => ast::Expression::Range {
-            start: Arc::new(substitute_var(start, var_name, value)),
-            step: step
-                .as_ref()
-                .map(|inner| Arc::new(substitute_var(inner, var_name, value))),
-            end: Arc::new(substitute_var(end, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::ArrayComprehension {
-            expr: inner_expr,
-            indices,
-            filter,
-            ..
-        } => substitute_array_comprehension_var(expr, inner_expr, indices, filter, var_name, value),
-        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
-            inner: Arc::new(substitute_var(inner, var_name, value)),
-            span: *span,
-        },
-        _ => expr.clone(),
-    }
-}
-
-fn substitute_component_ref_var(
-    cref: &ast::ComponentReference,
-    var_name: &str,
-    value: i64,
-) -> ast::ComponentReference {
-    ast::ComponentReference {
-        local: cref.local,
-        parts: cref
-            .parts
-            .iter()
-            .map(|part| ast::ComponentRefPart {
-                ident: part.ident.clone(),
-                subs: part.subs.as_ref().map(|subs| {
-                    subs.iter()
-                        .map(|sub| substitute_subscript_var(sub, var_name, value))
-                        .collect()
-                }),
-            })
-            .collect(),
-        def_id: cref.def_id,
-        span: cref.span,
-    }
+    LoopIndexSubstituter { var_name, value }.transform_expression(expr.clone())
 }
 
 fn replace_component_reference_with_integer(
@@ -1043,47 +923,57 @@ fn replace_component_reference_with_integer(
     })
 }
 
-fn substitute_subscript_var(
-    sub: &rumoca_ir_ast::Subscript,
-    var_name: &str,
+struct LoopIndexSubstituter<'a> {
+    var_name: &'a str,
     value: i64,
-) -> rumoca_ir_ast::Subscript {
-    match sub {
-        rumoca_ir_ast::Subscript::Expression(sub_expr) => {
-            rumoca_ir_ast::Subscript::Expression(substitute_var(sub_expr, var_name, value))
+}
+
+impl ast::ExpressionTransformer for LoopIndexSubstituter<'_> {
+    fn transform_expression(&mut self, expr: ast::Expression) -> ast::Expression {
+        match expr {
+            ast::Expression::ArrayComprehension {
+                expr: inner_expr,
+                indices,
+                filter,
+                span,
+            } => self.transform_array_comprehension(inner_expr, indices, filter, span),
+            _ => replace_component_reference_with_integer(&expr, self.var_name, self.value)
+                .unwrap_or_else(|| self.walk_expression(expr)),
         }
-        _ => sub.clone(),
     }
 }
 
-fn substitute_array_comprehension_var(
-    original_expr: &ast::Expression,
-    inner_expr: &ast::Expression,
-    indices: &[rumoca_ir_ast::ForIndex],
-    filter: &Option<Arc<ast::Expression>>,
-    var_name: &str,
-    value: i64,
-) -> ast::Expression {
-    if indices
-        .iter()
-        .any(|for_index| for_index.ident.text.as_ref() == var_name)
-    {
-        return original_expr.clone();
-    }
-
-    ast::Expression::ArrayComprehension {
-        expr: Arc::new(substitute_var(inner_expr, var_name, value)),
-        indices: indices
+impl LoopIndexSubstituter<'_> {
+    fn transform_array_comprehension(
+        &mut self,
+        inner_expr: Arc<ast::Expression>,
+        indices: Vec<rumoca_ir_ast::ForIndex>,
+        filter: Option<Arc<ast::Expression>>,
+        span: rumoca_core::Span,
+    ) -> ast::Expression {
+        if indices
             .iter()
-            .map(|for_index| rumoca_ir_ast::ForIndex {
-                ident: for_index.ident.clone(),
-                range: substitute_var(&for_index.range, var_name, value),
-            })
-            .collect(),
-        filter: filter
-            .as_ref()
-            .map(|filter_expr| Arc::new(substitute_var(filter_expr, var_name, value))),
-        span: original_expr.span(),
+            .any(|for_index| for_index.ident.text.as_ref() == self.var_name)
+        {
+            return ast::Expression::ArrayComprehension {
+                expr: inner_expr,
+                indices,
+                filter,
+                span,
+            };
+        }
+
+        ast::Expression::ArrayComprehension {
+            expr: Arc::new(self.transform_expression(inner_expr.as_ref().clone())),
+            indices: indices
+                .into_iter()
+                .map(|for_index| self.transform_for_index(for_index))
+                .collect(),
+            filter: filter.map(|filter_expr| {
+                Arc::new(self.transform_expression(filter_expr.as_ref().clone()))
+            }),
+            span,
+        }
     }
 }
 
@@ -1398,8 +1288,8 @@ mod tests {
         }
     }
 
-    fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
-        ast::Expression::ComponentReference(ast::ComponentReference {
+    fn make_component_ref(names: &[&str]) -> ast::ComponentReference {
+        ast::ComponentReference {
             local: false,
             parts: names
                 .iter()
@@ -1410,7 +1300,11 @@ mod tests {
                 .collect(),
             def_id: None,
             span: rumoca_core::Span::DUMMY,
-        })
+        }
+    }
+
+    fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
+        ast::Expression::ComponentReference(make_component_ref(names))
     }
 
     fn make_indexed_comp_ref_expr(name: &str, index_name: &str) -> ast::Expression {
@@ -1741,6 +1635,107 @@ mod tests {
         };
         let Some(subscripts) = cref.parts[0].subs.as_ref() else {
             panic!("expected subscript");
+        };
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
+        else {
+            panic!("expected literal subscript");
+        };
+        assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_index_binding_for_element_substitutes_comprehension_index_in_class_modification() {
+        let binding = ast::Expression::ArrayComprehension {
+            expr: Arc::new(ast::Expression::ClassModification {
+                target: make_component_ref(&["SalientPermeance"]),
+                modifications: vec![ast::Expression::Modification {
+                    target: make_component_ref(&["d"]),
+                    value: Arc::new(make_indexed_comp_ref_expr("effectiveTurns", "k")),
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                each_flags: vec![false],
+                final_flags: vec![false],
+                redeclare_flags: vec![false],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            indices: vec![ast::ForIndex {
+                ident: make_token("k"),
+                range: make_range_expr(1, 3),
+            }],
+            filter: None,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let indexed = index_binding_for_element(
+            &ast::ClassTree::default(),
+            &IndexMap::default(),
+            &binding,
+            &[2],
+        )
+        .expect("class modification comprehension projection should succeed");
+
+        let ast::Expression::ClassModification { modifications, .. } = indexed else {
+            panic!("array comprehension should project to class modification body");
+        };
+        let ast::Expression::Modification { value, .. } = &modifications[0] else {
+            panic!("expected field modification");
+        };
+        let ast::Expression::ComponentReference(cref) = value.as_ref() else {
+            panic!("expected indexed component reference");
+        };
+        let Some(subscripts) = cref.parts[0].subs.as_ref() else {
+            panic!("expected substituted subscript");
+        };
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
+        else {
+            panic!("expected literal subscript");
+        };
+        assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_resolve_mod_to_array_substitutes_comprehension_index_in_class_modification() {
+        let modifier = ast::Expression::ArrayComprehension {
+            expr: Arc::new(ast::Expression::ClassModification {
+                target: make_component_ref(&["SalientPermeance"]),
+                modifications: vec![ast::Expression::Modification {
+                    target: make_component_ref(&["d"]),
+                    value: Arc::new(make_indexed_comp_ref_expr("effectiveTurns", "k")),
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                each_flags: vec![false],
+                final_flags: vec![false],
+                redeclare_flags: vec![false],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            indices: vec![ast::ForIndex {
+                ident: make_token("k"),
+                range: make_range_expr(1, 3),
+            }],
+            filter: None,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let resolved = resolve_mod_to_array(
+            &modifier,
+            &rumoca_ir_ast::ModificationEnvironment::default(),
+            &IndexMap::default(),
+            &ast::ClassTree::default(),
+        );
+        let ast::Expression::Array { elements, .. } = resolved else {
+            panic!("class modification comprehension should resolve to an array");
+        };
+        let ast::Expression::ClassModification { modifications, .. } = &elements[1] else {
+            panic!("second element should remain a class modification");
+        };
+        let ast::Expression::Modification { value, .. } = &modifications[0] else {
+            panic!("expected field modification");
+        };
+        let ast::Expression::ComponentReference(cref) = value.as_ref() else {
+            panic!("expected indexed component reference");
+        };
+        let Some(subscripts) = cref.parts[0].subs.as_ref() else {
+            panic!("expected substituted subscript");
         };
         let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
         else {

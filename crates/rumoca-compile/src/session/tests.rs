@@ -1063,6 +1063,56 @@ end P;
 }
 
 #[test]
+fn test_compile_substitutes_replaceable_function_modifier_constants_after_rewrite() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+package P
+  package Constants
+    constant Real g_n = 9.81;
+  end Constants;
+
+  partial function PartialGravity
+    input Real r;
+    output Real y;
+  end PartialGravity;
+
+  function StandardGravity
+    extends PartialGravity;
+    input Real g0;
+  algorithm
+    y := g0 + r;
+  end StandardGravity;
+
+  model World
+    parameter Real g = Constants.g_n;
+    replaceable function gravity =
+      StandardGravity(g0 = g) constrainedby PartialGravity;
+  end World;
+
+  model Body
+    outer World world;
+    Real y;
+  equation
+    y = world.gravity(0);
+  end Body;
+
+  model M
+    inner World world;
+    Body body;
+  end M;
+end P;
+"#,
+        )
+        .unwrap();
+
+    let result = session.compile_model("P.M").unwrap();
+    assert!(result.is_balanced());
+}
+
+#[test]
 fn test_compile_extracts_experiment_stop_time() {
     let mut session = Session::default();
     session
@@ -1131,6 +1181,28 @@ fn test_compile_extracts_experiment_tolerance_interval_and_solver() {
     assert_eq!(result.experiment_tolerance, Some(1e-5));
     assert_eq!(result.experiment_interval, Some(0.01));
     assert_eq!(result.experiment_solver.as_deref(), Some("Dassl"));
+}
+
+#[test]
+fn test_compile_extracts_rumoca_fixed_step_annotation() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                model M
+                  Real x(start=0);
+                equation
+                  der(x) = 1;
+                annotation(__rumoca(Solver(FixedStep=0.0125)), experiment(Interval=0.1));
+                end M;
+                "#,
+        )
+        .unwrap();
+
+    let result = session.compile_model("M").unwrap();
+    assert_eq!(result.experiment_interval, Some(0.1));
+    assert_eq!(result.rumoca_solver_fixed_step, Some(0.0125));
 }
 
 #[test]

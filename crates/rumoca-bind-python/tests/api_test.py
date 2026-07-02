@@ -30,6 +30,7 @@ EXPECTED_PUBLIC = {
     "ParameterInfo",
     "StructuralInfo",
     "Result",
+    "GradientResult",
     "CodegenResult",
     "GeneratedFile",
     "Target",
@@ -222,9 +223,10 @@ def test_dependent_param_propagation() -> None:
     assert abs(mc.simulate(t=1.0, dt=0.5, params={"a": 2.0})["x"][-1] - 12.0) < 1e-6
 
 
-def test_unpropagatable_dependent_is_rejected() -> None:
-    # An array parameter that depends on an overridden scalar can't be re-derived
-    # element-wise, so the override is rejected — never run with a stale value.
+def test_array_dependent_param_propagation() -> None:
+    # Array-valued dependent parameters are re-derived during override-aware
+    # lowering. This is required for models such as the airfoil mask, where a
+    # scalar input/parameter changes a whole parameter field.
     src = (
         "model Arr\n"
         "  parameter Real a = 1.0;\n"
@@ -235,13 +237,14 @@ def test_unpropagatable_dependent_is_rejected() -> None:
         "end Arr;\n"
     )
     m = rm.loads(src, model="Arr")
-    m.simulate(t=0.5, dt=0.5)  # no override: fine
-    try:
-        m.simulate(t=0.5, dt=0.5, params={"a": 10.0})
-    except rm.RumocaError as error:
-        assert "could not be re-evaluated" in str(error) or "propagat" in str(error)
-    else:
-        raise AssertionError("override with a non-scalar dependent must be rejected")
+    base = m.simulate(t=0.5, dt=0.5)
+    over = m.simulate(t=0.5, dt=0.5, params={"a": 10.0})
+    for i, (base_expected, over_expected) in enumerate(
+        [(0.5, 5.0), (1.0, 10.0), (1.5, 15.0)],
+        start=1,
+    ):
+        assert abs(base[f"x[{i}]"][-1] - base_expected) < 1e-6
+        assert abs(over[f"x[{i}]"][-1] - over_expected) < 1e-6
 
 
 def test_structural_recompile() -> None:
@@ -273,6 +276,86 @@ def test_structural_recompile_boolean() -> None:
     off = m.simulate(t=0.5, dt=0.25)["x"][-1]
     on = m.with_params(on=True, recompile=True).simulate(t=0.5, dt=0.25)["x"][-1]
     assert off < 1.0 < on
+
+
+# der(x) = -k*x + u  ⇒  steady state x_ss = u/k, with the known analytic gradient
+#   d(x_ss)/dk = -u/k²,   d(x_ss)/du = 1/k.
+# At k=2, u=3: x_ss = 1.5, d/dk = -0.75, d/du = 0.5.
+STEADY = (
+    "model Steady\n"
+    "  parameter Real k = 2.0;\n"
+    "  parameter Real u = 3.0;\n"
+    "  Real x(start=0);\n"
+    "equation\n"
+    "  der(x) = -k*x + u;\n"
+    "end Steady;\n"
+)
+
+
+def test_objective_gradient_forward_matches_analytic() -> None:
+    m = rm.loads(STEADY, model="Steady")
+    grad = m.objective_gradient("x", state={"x": 1.5})
+    assert isinstance(grad, rm.GradientResult)
+    assert grad.objective == "x"
+    assert grad.mode == "forward"
+    assert set(grad.names) == {"k", "u"}
+    assert abs(grad["k"] - (-0.75)) < 1e-6
+    assert abs(grad["u"] - 0.5) < 1e-6
+
+
+def test_objective_gradient_adjoint_matches_forward() -> None:
+    m = rm.loads(STEADY, model="Steady")
+    fwd = m.objective_gradient("x", state={"x": 1.5}, mode="forward")
+    adj = m.objective_gradient("x", state={"x": 1.5}, mode="adjoint")
+    assert adj.mode == "adjoint"
+    for name in fwd.names:
+        assert abs(fwd[name] - adj[name]) < 1e-6
+    # "reverse" is an accepted alias for the adjoint mode.
+    rev = m.objective_gradient("x", state={"x": 1.5}, mode="reverse")
+    assert abs(rev["k"] - adj["k"]) < 1e-9
+
+
+def test_objective_gradient_typed_views() -> None:
+    m = rm.loads(STEADY, model="Steady")
+    grad = m.objective_gradient("x", state={"x": 1.5})
+    # dict view and membership.
+    d = grad.to_dict()
+    assert isinstance(d, dict) and abs(d["u"] - 0.5) < 1e-6
+    assert "k" in grad and "nope" not in grad
+    assert len(grad) == 2
+    # numpy/list vector in `names` order (numpy optional; list fallback otherwise).
+    vec = grad.to_numpy()
+    assert [round(float(v), 6) for v in list(vec)] == [
+        round(grad[n], 6) for n in grad.names
+    ]
+
+
+def test_objective_gradient_honors_param_override() -> None:
+    # with_params linearizes the gradient at the overridden value: at k=4, u=3 the
+    # steady state is 0.75 and d(x_ss)/dk = -u/k² = -3/16.
+    m = rm.loads(STEADY, model="Steady").with_params(k=4.0)
+    grad = m.objective_gradient("x", state={"x": 0.75})
+    assert abs(grad["k"] - (-3.0 / 16.0)) < 1e-6
+    assert abs(grad["u"] - 0.25) < 1e-6
+
+
+def test_objective_gradient_errors_are_typed() -> None:
+    m = rm.loads(STEADY, model="Steady")
+    # An objective that is not a solver-y variable surfaces as SimulationError,
+    # never an empty/zero gradient.
+    try:
+        m.objective_gradient("does_not_exist", state={"x": 1.5})
+    except rm.RumocaError:
+        pass
+    else:
+        raise AssertionError("unknown objective should raise")
+    # An unknown mode is rejected up front.
+    try:
+        m.objective_gradient("x", mode="sideways")
+    except rm.RumocaError:
+        pass
+    else:
+        raise AssertionError("unknown mode should raise")
 
 
 def test_session_from_scenario() -> None:
@@ -371,7 +454,7 @@ def main() -> None:
     test_unknown_start_override_is_keyerror()
     test_override_rejections_are_typed()
     test_dependent_param_propagation()
-    test_unpropagatable_dependent_is_rejected()
+    test_array_dependent_param_propagation()
     test_structural_recompile()
     test_structural_recompile_boolean()
     test_session_from_scenario()

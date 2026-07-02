@@ -79,7 +79,7 @@ pub(super) fn resolve_type_alias_dimensions(
         mod_env,
         effective_components,
         tree,
-        &resolve_effective_components_for_eval,
+        resolve_effective_components_for_eval,
     ) else {
         let name = class_def
             .map(|class| class.name.text.to_string())
@@ -208,7 +208,7 @@ fn eval_shape_expr_dims(
             mod_env,
             effective_components,
             tree,
-            &resolve_effective_components_for_eval,
+            resolve_effective_components_for_eval,
         )?;
         if dim < 0 {
             return None;

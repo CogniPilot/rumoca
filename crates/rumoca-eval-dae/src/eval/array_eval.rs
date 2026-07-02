@@ -2,7 +2,6 @@ use super::*;
 use crate::eval::special::{
     eval_selected_runtime_special_array_output, resolve_runtime_special_target,
 };
-
 pub(super) fn declared_dims<T: SimFloat>(
     name: &str,
     env: &VarEnv<T>,
@@ -14,7 +13,6 @@ pub(super) fn declared_dims<T: SimFloat>(
             name: format!("{name} dimensions"),
         })
 }
-
 pub fn eval_array_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -47,7 +45,6 @@ pub fn eval_array_values<T: SimFloat>(
         },
     )
 }
-
 pub fn eval_shaped_array_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -63,7 +60,6 @@ pub fn eval_shaped_array_values<T: SimFloat>(
     }
     Ok(values)
 }
-
 pub(super) fn eval_array_like_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -138,7 +134,6 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
         },
     )
 }
-
 fn subscripts_are_all_colon(subscripts: &[rumoca_core::Subscript]) -> bool {
     !subscripts.is_empty()
         && subscripts
@@ -535,7 +530,15 @@ fn try_eval_array_comprehension_values<T: SimFloat>(
     };
 
     let mut out = Vec::new();
-    expand_array_comprehension_values(0, expr, indices, filter.as_deref(), env, &mut out)?;
+    let mut local_env = env.clone();
+    expand_array_comprehension_values(
+        0,
+        expr,
+        indices,
+        filter.as_deref(),
+        &mut local_env,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -544,25 +547,32 @@ fn expand_array_comprehension_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     indices: &[rumoca_core::ComprehensionIndex],
     filter: Option<&rumoca_core::Expression>,
-    env: &VarEnv<T>,
+    env: &mut VarEnv<T>,
     out: &mut Vec<T>,
 ) -> Result<(), EvalError> {
     if level >= indices.len() {
         if filter
-            .map(|filter_expr| eval_expr::<T>(filter_expr, env).map(|value| value.to_bool()))
+            .map(|filter_expr| eval_expr::<T>(filter_expr, &*env).map(|value| value.to_bool()))
             .transpose()?
             .unwrap_or(true)
         {
-            out.extend(eval_array_values(expr, env)?);
+            out.extend(eval_array_values(expr, &*env)?);
         }
         return Ok(());
     }
 
     let index = &indices[level];
-    for value in eval_array_values::<T>(&index.range, env)? {
-        let mut local_env = env.clone();
-        local_env.set(index.name.as_str(), value);
-        expand_array_comprehension_values(level + 1, expr, indices, filter, &local_env, out)?;
+    for value in eval_array_values::<T>(&index.range, &*env)? {
+        let previous = env.get_optional(index.name.as_str());
+        env.set(index.name.as_str(), value);
+        let result = expand_array_comprehension_values(level + 1, expr, indices, filter, env, out);
+        match previous {
+            Some(previous) => env.set(index.name.as_str(), previous),
+            None => {
+                env.remove(index.name.as_str());
+            }
+        }
+        result?;
     }
     Ok(())
 }
@@ -1961,7 +1971,6 @@ pub(super) fn eval_linspace_values<T: SimFloat>(
     }
     Ok(out)
 }
-
 pub(super) fn eval_array_like_f64_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -1971,7 +1980,6 @@ pub(super) fn eval_array_like_f64_values<T: SimFloat>(
         .map(|v| v.real())
         .collect())
 }
-
 pub(super) fn eval_columns_arg<T: SimFloat>(
     expr: Option<&rumoca_core::Expression>,
     env: &VarEnv<T>,

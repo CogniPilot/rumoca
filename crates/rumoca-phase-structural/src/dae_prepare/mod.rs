@@ -11,7 +11,7 @@ use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{
     DerivativeNameMatcher, expr_contains_der_of, expr_contains_der_of_any, expr_contains_var,
-    expr_refers_to_var,
+    expr_refers_to_var, var_ref_matches_unknown,
 };
 
 use crate::StructuralError;
@@ -23,6 +23,7 @@ type Expression = rumoca_core::Expression;
 type Literal = rumoca_core::Literal;
 type OpBinary = rumoca_core::OpBinary;
 type OpUnary = rumoca_core::OpUnary;
+type Reference = rumoca_core::Reference;
 type Span = rumoca_core::Span;
 type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
@@ -570,6 +571,10 @@ pub fn compute_full_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
 /// All `der(algebraic)` and `der(compound)` calls are replaced with algebraic
 /// expressions. This prevents spurious state promotion.
 pub fn expand_compound_derivatives(dae: &mut Dae) {
+    if !needs_compound_derivative_expansion(dae) {
+        return;
+    }
+
     let der_map = compute_full_derivative_map(dae);
     if der_map.is_empty() {
         return;
@@ -591,6 +596,50 @@ pub fn expand_compound_derivatives(dae: &mut Dae) {
         .collect();
     for (eq, new_rhs) in dae.continuous.equations.iter_mut().zip(expanded) {
         eq.rhs = new_rhs;
+    }
+}
+
+fn needs_compound_derivative_expansion(dae: &Dae) -> bool {
+    let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
+    let matcher = DerivativeNameMatcher::from_var_names(&state_names);
+    dae.continuous
+        .equations
+        .iter()
+        .any(|eq| expr_contains_expandable_derivative(&eq.rhs, &matcher))
+}
+
+fn expr_contains_expandable_derivative(expr: &Expression, matcher: &DerivativeNameMatcher) -> bool {
+    let mut checker = ExpandableDerivativeChecker {
+        matcher,
+        found: false,
+    };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+struct ExpandableDerivativeChecker<'a> {
+    matcher: &'a DerivativeNameMatcher,
+    found: bool,
+}
+
+impl ExpressionVisitor for ExpandableDerivativeChecker<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+        if *function == BuiltinFunction::Der {
+            self.found = match args.first() {
+                Some(arg) => !self.matcher.expression_refers_to_match(arg),
+                None => true,
+            };
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
     }
 }
 
@@ -1030,7 +1079,7 @@ impl ExpressionVisitor for UnslicedVectorRefChecker<'_> {
         }
     }
 
-    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+    fn visit_var_ref(&mut self, name: &Reference, subscripts: &[Subscript]) {
         if subscripts.is_empty()
             && dae_variable_size(self.dae, name.var_name())
                 .is_ok_and(|size| size.is_some_and(|size| size > 1))
@@ -1520,14 +1569,14 @@ fn extract_state_direct_assignment_equation(
     // Residual form: 0 = expr. If expr is affine in exactly one state with
     // coefficient ±1, solve for that state.
     let mut solved: Option<(VarName, Expression)> = None;
-    for state_name in state_names {
-        if !expr_contains_var(&eq.rhs, state_name) {
+    for state_name in state_value_refs_outside_der(&eq.rhs, state_names) {
+        if expr_contains_der_of(&eq.rhs, &state_name) {
             continue;
         }
-        if expr_contains_der_of_state_or_component(&eq.rhs, state_name) {
+        if expr_contains_der_of_state_or_component(&eq.rhs, &state_name) {
             continue;
         }
-        let Some((coef, remainder)) = split_linear_target(&eq.rhs, state_name, eq.span) else {
+        let Some((coef, remainder)) = split_linear_target(&eq.rhs, &state_name, eq.span) else {
             continue;
         };
         let defining_expr = match coef {
@@ -1582,6 +1631,44 @@ fn der_call_target_subscripts<'a>(
         Some(None)
     } else {
         Some(Some(subscripts.as_slice()))
+    }
+}
+
+fn state_value_refs_outside_der(expr: &Expression, state_names: &[VarName]) -> Vec<VarName> {
+    let mut collector = StateValueRefCollector {
+        state_names,
+        refs: IndexSet::new(),
+    };
+    collector.visit_expression(expr);
+    collector.refs.into_iter().collect()
+}
+
+struct StateValueRefCollector<'a> {
+    state_names: &'a [VarName],
+    refs: IndexSet<VarName>,
+}
+
+impl ExpressionVisitor for StateValueRefCollector<'_> {
+    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+        if *function == BuiltinFunction::Der {
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        if let Some(state_name) = self
+            .state_names
+            .iter()
+            .find(|state_name| var_ref_matches_unknown(name, subscripts, state_name))
+        {
+            self.refs.insert(state_name.clone());
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
     }
 }
 

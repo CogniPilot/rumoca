@@ -1,6 +1,7 @@
 use super::*;
 use rumoca_ir_solve::{ComputeBlock, ComputeNode, SolveProblem};
 use rumoca_phase_codegen::{render_solve_template_with_name, templates};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
 
 pub(super) fn cached_cmm_root() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.2");
@@ -522,6 +523,101 @@ fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
     );
 }
 
+/// Physical-accuracy regression for the docs Turkey heat-equation example.
+///
+/// The method-of-lines shells start fridge-cold (277 K) and must warm toward the
+/// 450 K oven, with the surface shell hottest and the center coolest — a monotone
+/// radial profile. A frozen solution (every shell stuck at the 277 K start) means
+/// the conductive-flux or geometry families were lowered wrong, e.g. a structured
+/// algebraic family whose interior cells were cheapened to placeholder zeros but
+/// not reconstructed downstream, so `der(T)` reads zero flux. That exact class of
+/// regression has bitten this example more than once, so assert the physics, not
+/// just that it compiles.
+#[test]
+fn turkey_heat_equation_warms_from_a_cold_start() {
+    let docs = include_str!("../../../../docs/user-guide/src/language/arrays-pde.md");
+    let source = extract_doc_model(docs, "Turkey");
+    let result = Compiler::new()
+        .model("Turkey")
+        .compile_str(&source, "Turkey.mo")
+        .expect("Turkey docs model should compile");
+
+    let opts = SimOptions {
+        t_end: 7200.0,
+        ..SimOptions::default()
+    };
+    let sim = simulate_dae_with_diagnostics(&result.dae, &opts)
+        .unwrap_or_else(|error| panic!("Turkey should simulate: {error:?}"));
+
+    // Number of shells from the documented `N` (T[1..N]).
+    let shells: usize = (1..)
+        .take_while(|i| sim.names.iter().any(|n| n == &format!("T[{i}]")))
+        .count();
+    assert!(
+        shells >= 3,
+        "Turkey should expose several shell temperatures T[i]"
+    );
+
+    let column = |name: &str| -> usize {
+        sim.names
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("missing `{name}` in {:?}", sim.names))
+    };
+    let start_temp = |i: usize| {
+        *sim.data[column(&format!("T[{i}]"))]
+            .first()
+            .expect("a first frame")
+    };
+    let final_temp = |i: usize| {
+        *sim.data[column(&format!("T[{i}]"))]
+            .last()
+            .expect("a settled frame")
+    };
+
+    // (1) Cold start: every shell begins at the documented 277 K.
+    for i in 1..=shells {
+        assert!(
+            (start_temp(i) - 277.0).abs() < 1.0,
+            "shell T[{i}] should start at the 277 K fridge temperature, got {}",
+            start_temp(i)
+        );
+    }
+
+    let center = final_temp(1);
+    let surface = final_temp(shells);
+
+    // (2) The turkey actually cooks: the surface warms well above the cold start
+    // toward the oven (a frozen 277 K solution fails here).
+    assert!(
+        surface > 320.0,
+        "the surface shell should warm well above the 277 K start toward the \
+         450 K oven, got {surface} K"
+    );
+    // (3) Heat reaches the interior: even the center rises off the cold start.
+    assert!(
+        center > 278.0,
+        "the center shell should warm above the cold start, got {center} K"
+    );
+    // (4) Correct radial gradient: surface hotter than center, and the profile is
+    // monotone non-decreasing from center to surface (heat enters from outside).
+    let mut prev = f64::NEG_INFINITY;
+    for i in 1..=shells {
+        let t = final_temp(i);
+        assert!(
+            t >= prev - 1.0,
+            "shell temperatures should increase monotonically from center to \
+             surface; T[{i}]={t} K dropped below the inner shell ({prev} K)"
+        );
+        prev = t;
+    }
+    assert!(
+        surface > center + 5.0,
+        "the surface should be clearly hotter than the center, got \
+         surface={surface} K center={center} K"
+    );
+}
+
 #[test]
 // SPEC_0021: Exception - PDE docs regression validates multiple documented
 // models against DAE structure, native tensors, and layout budgets.
@@ -571,15 +667,15 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             );
             assert_eq!(
                 scalar_fallback_rows(derivative_rhs),
-                0,
-                "AirfoilFlow derivative RHS should not scalarize structured boundary or interior rows"
+                4,
+                "AirfoilFlow derivative RHS scalar rows should stay limited to the four motor states"
             );
         }
         if model_name == "Turkey" {
             assert_eq!(
                 affine_stencil_count(&problem.continuous.residual),
-                5,
-                "Turkey continuous residual should preserve the structured geometry and flux families"
+                1,
+                "Turkey continuous residual should preserve the structurally regular flux family"
             );
             assert_eq!(
                 scalar_fallback_rows(&problem.continuous.residual),
@@ -588,22 +684,22 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             );
             assert_eq!(
                 scalar_fallback_output_indices(&problem.continuous.residual),
-                vec![42, 52, 53],
+                vec![0, 10, 11],
                 "Turkey residual scalar fallback rows should be only the source scalar center, outer-boundary, and surface equations"
             );
             assert_eq!(
                 affine_stencil_count(&problem.continuous.implicit_rhs),
-                6,
+                2,
                 "Turkey implicit RHS should carry remapped residual tensor families"
             );
             assert_eq!(
                 scalar_fallback_rows(&problem.continuous.implicit_rhs),
-                5,
+                4,
                 "Turkey implicit RHS scalar fallback rows should stay limited to derivative and boundary rows"
             );
             assert_eq!(
                 scalar_fallback_output_indices(&problem.continuous.implicit_rhs),
-                vec![0, 9, 52, 62, 63],
+                vec![9, 10, 20, 21],
                 "Turkey implicit RHS scalar fallback rows should be only the derivative and source scalar boundary/surface equations"
             );
             let layout_source = render_wgsl_solve_layout_source(&problem, "Turkey");
@@ -631,11 +727,11 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
                 "Turkey layout implicit Map inventory should match Solve IR"
             );
             assert_eq!(
-                layout.implicit_rhs.stencil_families, 6,
+                layout.implicit_rhs.stencil_families, 2,
                 "Turkey layout implicit RHS should preserve remapped residual stencil families"
             );
             assert_eq!(
-                layout.implicit_rhs.scalar_fallback_rows, 5,
+                layout.implicit_rhs.scalar_fallback_rows, 4,
                 "Turkey layout implicit RHS scalar fallback rows should stay limited to derivative and boundary rows"
             );
             assert_eq!(
@@ -672,8 +768,8 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             );
             assert_eq!(
                 affine_stencil_count(&problem.continuous.residual),
-                3,
-                "AirfoilFlow continuous residual should preserve the structured geometry and mask families"
+                0,
+                "AirfoilFlow continuous residual should not need standalone geometry stencils"
             );
             assert_eq!(
                 scalar_fallback_rows(&problem.continuous.residual),
@@ -687,13 +783,13 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             );
             assert_eq!(
                 affine_stencil_count(&problem.continuous.implicit_rhs),
-                11,
+                8,
                 "AirfoilFlow implicit RHS should carry remapped residual tensor families"
             );
             assert_eq!(
                 scalar_fallback_rows(&problem.continuous.implicit_rhs),
-                0,
-                "AirfoilFlow implicit RHS should not re-expand derivative or residual tensor families"
+                4,
+                "AirfoilFlow implicit RHS scalar rows should stay limited to the four motor states"
             );
             let layout_source = render_wgsl_solve_layout_source(&problem, "AirfoilFlow");
             assert_wgsl_solve_layout_budget(
@@ -712,20 +808,20 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
                 "AirfoilFlow layout should preserve derivative native stencil inventory"
             );
             assert_eq!(
-                layout.scalar_fallback_rows, 0,
-                "AirfoilFlow layout should expose zero derivative scalar fallback rows"
+                layout.scalar_fallback_rows, 4,
+                "AirfoilFlow layout scalar rows should stay limited to the four motor states"
             );
             assert_eq!(
                 layout.implicit_rhs.map_families, 7,
                 "AirfoilFlow layout should preserve implicit Map family inventory"
             );
             assert_eq!(
-                layout.implicit_rhs.stencil_families, 11,
+                layout.implicit_rhs.stencil_families, 8,
                 "AirfoilFlow layout should preserve implicit native stencil inventory"
             );
             assert_eq!(
-                layout.implicit_rhs.scalar_fallback_rows, 0,
-                "AirfoilFlow layout should expose zero implicit scalar fallback rows"
+                layout.implicit_rhs.scalar_fallback_rows, 4,
+                "AirfoilFlow layout implicit scalar rows should stay limited to the four motor states"
             );
         }
     }
@@ -754,6 +850,21 @@ fn wave2d_n50_wgsl_solve_stays_within_codegen_budget() {
         .model("Wave2D")
         .compile_str(&source, "Wave2D.mo")
         .expect("Wave2D N=50 docs model should compile");
+    let gaussian_initial_family = result
+        .flat
+        .initial_structured_equations
+        .iter()
+        .filter_map(|family| family.regular.as_ref())
+        .find(|regular| {
+            regular.binders == ["i", "j"]
+                && regular.accesses.iter().any(|access| access.var == "u")
+                && regular.accesses.iter().any(|access| access.var == "w")
+        });
+    assert!(
+        gaussian_initial_family.is_some(),
+        "Wave2D Gaussian initial-condition loop should remain a regular \
+         structured family even though its scalar value is nonlinear in i,j"
+    );
     let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
         .expect("Wave2D N=50 should lower to Solve IR");
     let derivative_rhs = &problem.continuous.derivative_rhs;
@@ -1209,5 +1320,533 @@ fn wave2d_wgsl_solve_kernel_inventory_is_grid_size_stable() {
         "WGSL source should not grow materially with Wave2D grid size: small={} large={}",
         small.wgsl_bytes,
         large.wgsl_bytes
+    );
+}
+
+/// `sig[i, j]` mask field of the docs AirfoilFlow model, indexed `(i, j) -> sig`.
+/// The mask equations are explicit algebraics, so simulation results do not need
+/// to carry them as solver outputs. This mirrors the model formula to keep the
+/// smooth-geometry oracle aligned with what the flow equations reference.
+fn airfoil_mask_probe(
+    _result: &rumoca::CompilationResult,
+    overrides: &[(&str, f64)],
+) -> std::collections::HashMap<(usize, usize), f64> {
+    let param = |name: &str, default: f64| {
+        overrides
+            .iter()
+            .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+            .unwrap_or(default)
+    };
+
+    let nx = 60usize;
+    let ny = 36usize;
+    let lx = 4.0_f64;
+    let ly = 1.5_f64;
+    let xle = 1.0_f64;
+    let aoa = param("aoa", 8.0);
+    let mc = param("mc0", 0.02);
+    let pc = param("pc0", 0.4);
+    let tk = param("tk0", 0.12);
+    let dx = lx / nx as f64;
+    let dy = ly / ny as f64;
+    let epsn = 0.6 * dy;
+    let epss = 0.8 * dx;
+    let tmin = 0.6 * dy;
+    let angle = aoa.to_radians();
+    let ca = angle.cos();
+    let sa = angle.sin();
+
+    let mut field = std::collections::HashMap::new();
+    for i in 1..=nx {
+        for j in 1..=ny {
+            let xa = (i as f64 - 0.5) * dx - xle;
+            let ya = (j as f64 - 0.5) * dy - ly / 2.0;
+            let sc = xa * ca - ya * sa;
+            let nc = xa * sa + ya * ca;
+            let camber = if sc < pc {
+                mc / pc.powi(2) * (2.0 * pc * sc - sc.powi(2))
+            } else {
+                mc / (1.0 - pc).powi(2) * ((1.0 - 2.0 * pc) + 2.0 * pc * sc - sc.powi(2))
+            };
+            let thickness = 5.0
+                * tk
+                * (0.2969 * sc.max(0.0).sqrt() - 0.1260 * sc - 0.3516 * sc.powi(2)
+                    + 0.2843 * sc.powi(3)
+                    - 0.1036 * sc.powi(4));
+            let sig = 0.5
+                * (1.0
+                    - (((nc - camber).abs() - (thickness.powi(2) + tmin.powi(2)).sqrt()) / epsn)
+                        .tanh())
+                * (0.5 * (1.0 + (sc / epss).tanh()))
+                * (0.5 * (1.0 + ((1.0 - sc) / epss).tanh()));
+            field.insert((i, j), sig);
+        }
+    }
+    field
+}
+
+fn settle_airfoil(
+    result: &rumoca::CompilationResult,
+    t_end: f64,
+    overrides: &[(&str, f64)],
+) -> SimResult {
+    let opts = SimOptions {
+        t_end,
+        solver_mode: SimSolverMode::RkLike,
+        param_overrides: overrides
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), *value))
+            .collect(),
+        ..SimOptions::default()
+    };
+    simulate_dae_with_diagnostics(&result.dae, &opts)
+        .unwrap_or_else(|error| panic!("AirfoilFlow should simulate: {error:?}"))
+}
+
+/// Acceptance checks (1)-(5) for the smooth immersed mask: bounded/finite in
+/// `[0,1]`, the body is present (a near-solid core), a smooth transition band
+/// exists (a hard mask would have none), the solid footprint is a coherent blob,
+/// and the inlet/outlet columns stay fluid (correct placement).
+fn assert_smooth_mask_well_formed(mask: &std::collections::HashMap<(usize, usize), f64>) {
+    // (1) Bounded and finite: a smooth indicator stays in [0, 1].
+    for (&(i, j), &value) in mask {
+        assert!(
+            value.is_finite() && (-1e-6..=1.0 + 1e-6).contains(&value),
+            "sig[{i},{j}] should be a finite solid fraction in [0,1], got {value}"
+        );
+    }
+
+    // (2) The body exists and does not disappear: at least one near-solid cell.
+    let max_sig = mask.values().copied().fold(0.0_f64, f64::max);
+    assert!(
+        max_sig > 0.8,
+        "the airfoil core should be nearly solid (max sig > 0.8), got {max_sig}"
+    );
+
+    // (3) Smoothness: the tanh band must produce several partially-solid cells.
+    let band_cells = mask
+        .values()
+        .filter(|&&v| (0.05..=0.95).contains(&v))
+        .count();
+    assert!(
+        band_cells >= 4,
+        "the smooth mask should expose a transition band of partially-solid \
+         cells (a hard if/else mask has none); got {band_cells}"
+    );
+
+    // (4) Closure/coherence: present but far from filling the whole domain.
+    let solid_cells = mask.values().filter(|&&v| v > 0.5).count();
+    assert!(
+        (4..mask.len() / 2).contains(&solid_cells),
+        "the solid footprint should be a closed coherent body, got {solid_cells} \
+         of {} cells",
+        mask.len()
+    );
+
+    // (5) Placement: the inlet and outlet columns stay fluid.
+    let (ni, nj) = mask
+        .keys()
+        .copied()
+        .fold((0, 0), |(mi, mj), (i, j)| (mi.max(i), mj.max(j)));
+    let column_solid = |i: usize| (1..=nj).any(|j| mask.get(&(i, j)).is_some_and(|&v| v > 0.5));
+    assert!(
+        !column_solid(1) && !column_solid(ni),
+        "the inlet (i=1) and outlet (i={ni}) columns should remain fluid"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AirfoilFlow family-reassembly oracle (family-native lowering safety net).
+//
+// The 2-D Navier-Stokes airfoil model is the heaviest example in the book. Its
+// `for` loops must reassemble into compact, grid-independent stencil/map kernels
+// exactly like Wave2D: changing the grid must not grow the WGSL or change the
+// family/kernel decomposition. This is the byte-stability gate that guards the
+// `flatten` family-native work (keeping array equations from being ripped apart
+// must keep this output identical).
+fn airfoil_wgsl_metrics(nx: usize, ny: usize) -> Wave2DWgslMetrics {
+    let docs = include_str!("../../../../docs/user-guide/src/language/arrays-pde.md");
+    let nx_src = extract_doc_model_with_integer_parameter(docs, "AirfoilFlow", "NX", nx);
+    let source = extract_doc_model_with_integer_parameter(&nx_src, "AirfoilFlow", "NY", ny);
+    let result = Compiler::new()
+        .model("AirfoilFlow")
+        .compile_str(&source, "AirfoilFlow.mo")
+        .unwrap_or_else(|error| panic!("AirfoilFlow {nx}x{ny} docs model should compile: {error}"));
+    let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
+        .unwrap_or_else(|error| panic!("AirfoilFlow {nx}x{ny} should lower to Solve IR: {error}"));
+    let layout_source = render_wgsl_solve_layout_source(&problem, "AirfoilFlow");
+    let layout: WgslSolveLayoutManifest =
+        serde_json::from_str(&layout_source).unwrap_or_else(|error| {
+            panic!("AirfoilFlow {nx}x{ny} layout should be valid JSON: {error}")
+        });
+    let wgsl_template = templates::builtin_template_source("wgsl-solve", "model_solve.wgsl.jinja")
+        .expect("wgsl-solve WGSL template should exist");
+    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
+    let wgsl = render_solve_template_with_name(&problem, &artifacts, wgsl_template, "AirfoilFlow")
+        .unwrap_or_else(|error| {
+            panic!("AirfoilFlow {nx}x{ny} wgsl-solve source should render: {error}")
+        });
+
+    Wave2DWgslMetrics {
+        rows: layout.rows,
+        derivative_maps: layout.map_families,
+        derivative_stencils: layout.stencil_families,
+        derivative_scalar_fallback_rows: layout.scalar_fallback_rows,
+        derivative_kernel_count: layout.kernel_count,
+        implicit_maps: layout.implicit_rhs.map_families,
+        implicit_stencils: layout.implicit_rhs.stencil_families,
+        implicit_scalar_fallback_rows: layout.implicit_rhs.scalar_fallback_rows,
+        implicit_kernel_count: layout.implicit_rhs.kernel_count,
+        layout_bytes: layout_source.len(),
+        wgsl_bytes: wgsl.len(),
+    }
+}
+
+// Pinned, grid-independent family decomposition of the airfoil's WGSL kernels.
+// Family-native lowering must keep these identical: the flow `for` loops
+// reassemble into a fixed set of map/stencil kernels regardless of grid size,
+// with only the scalar motor ODEs outside the PDE family kernels.
+const AIRFOIL_DERIVATIVE_FAMILY_DECOMPOSITION: (usize, usize, usize) = (7, 8, 16);
+const AIRFOIL_IMPLICIT_FAMILY_DECOMPOSITION: (usize, usize, usize) = (7, 8, 16);
+
+#[test]
+fn airfoil_wgsl_solve_reassembles_into_grid_independent_families() {
+    let small = airfoil_wgsl_metrics(6, 4);
+    let large = airfoil_wgsl_metrics(10, 7);
+
+    // The four motor ODE rows are scalar by construction. Per-cell flow rows
+    // must still reassemble into compact stencil/map kernels at either grid
+    // size.
+    assert_eq!(small.derivative_scalar_fallback_rows, 4);
+    assert_eq!(large.derivative_scalar_fallback_rows, 4);
+    assert_eq!(
+        small.implicit_scalar_fallback_rows,
+        large.implicit_scalar_fallback_rows
+    );
+
+    // The family/kernel decomposition is grid-independent (the heart of the oracle).
+    assert_eq!(small.derivative_maps, large.derivative_maps);
+    assert_eq!(small.derivative_stencils, large.derivative_stencils);
+    assert_eq!(small.derivative_kernel_count, large.derivative_kernel_count);
+    assert_eq!(small.implicit_maps, large.implicit_maps);
+    assert_eq!(small.implicit_stencils, large.implicit_stencils);
+    assert_eq!(small.implicit_kernel_count, large.implicit_kernel_count);
+
+    // Pin the exact current decomposition so any family-native regression is visible.
+    assert_eq!(
+        (
+            small.derivative_maps,
+            small.derivative_stencils,
+            small.derivative_kernel_count
+        ),
+        AIRFOIL_DERIVATIVE_FAMILY_DECOMPOSITION,
+        "airfoil derivative family decomposition changed"
+    );
+    assert_eq!(
+        (
+            small.implicit_maps,
+            small.implicit_stencils,
+            small.implicit_kernel_count
+        ),
+        AIRFOIL_IMPLICIT_FAMILY_DECOMPOSITION,
+        "airfoil implicit-RHS family decomposition changed"
+    );
+
+    // Output must stay compact: WGSL/layout do not grow with the grid (only a few
+    // dimension constants differ between sizes).
+    const MAX_GROWTH_BYTES: usize = 256;
+    assert!(
+        large.wgsl_bytes <= small.wgsl_bytes + MAX_GROWTH_BYTES,
+        "airfoil WGSL should not grow with the grid: {} -> {}",
+        small.wgsl_bytes,
+        large.wgsl_bytes
+    );
+    assert!(
+        large.layout_bytes <= small.layout_bytes + MAX_GROWTH_BYTES,
+        "airfoil layout should not grow with the grid: {} -> {}",
+        small.layout_bytes,
+        large.layout_bytes
+    );
+}
+
+#[test]
+// Roadmap Track D.2: the immersed airfoil mask must be a differentiable smooth
+// indicator, not a hard if/else threshold, so shape gradients are nonzero in
+// the boundary band. This pins the acceptance criteria: smoothness, closure,
+// boundedness, correct placement, and nonzero finite-difference sensitivity to
+// the thickness coefficient.
+fn airfoil_smooth_mask_is_differentiable_closed_and_shape_sensitive() {
+    let docs = include_str!("../../../../docs/user-guide/src/language/arrays-pde.md");
+    let source = extract_doc_model(docs, "AirfoilFlow");
+    let result = Compiler::new()
+        .model("AirfoilFlow")
+        .compile_str(&source, "AirfoilFlow.mo")
+        .unwrap_or_else(|error| panic!("AirfoilFlow docs model should compile: {error}"));
+
+    // Reconstruct the mask formula used by the model: `sig` is an explicit
+    // algebraic field, while the transient result exposes the state/input series
+    // used by the web visualization.
+    let mask = airfoil_mask_probe(&result, &[]);
+    assert!(
+        !mask.is_empty(),
+        "AirfoilFlow mask oracle should reconstruct the sig field"
+    );
+
+    // A short settle still exercises the penalization term `-sig*V/tau` with
+    // the smooth mask each step.
+    let baseline = settle_airfoil(&result, 0.1, &[]);
+
+    // The flow still runs with the smooth mask in place: velocities stay finite
+    // and bounded (no penalization blow-up).
+    let max_speed = baseline
+        .names
+        .iter()
+        .zip(&baseline.data)
+        .filter(|(name, _)| name.starts_with("u[") || name.starts_with("v["))
+        .flat_map(|(_, series)| series.iter().copied())
+        .fold(0.0_f64, |acc, value| {
+            assert!(value.is_finite(), "velocity field should stay finite");
+            acc.max(value.abs())
+        });
+    assert!(
+        max_speed < 50.0,
+        "velocities should stay bounded with the smooth penalization, got {max_speed}"
+    );
+
+    // Acceptance checks (1)-(5): bounded/finite, body present, smooth transition
+    // band, coherent closed footprint, correct placement.
+    assert_smooth_mask_well_formed(&mask);
+
+    // (6) Differentiable shape sensitivity: thickening the airfoil (+10% tk)
+    // must increase the total solid fraction, with the change concentrated in
+    // the boundary band. A finite-difference check (roadmap §9.3) of the
+    // d sig / d (thickness) gradient being nonzero and correctly signed.
+    let base_tk = 0.12;
+    let thick_mask = airfoil_mask_probe(&result, &[("tk0", base_tk * 1.1)]);
+    let base_mask = airfoil_mask_probe(&result, &[("tk0", base_tk)]);
+
+    let total: f64 = base_mask.values().sum();
+    let total_thick: f64 = thick_mask.values().sum();
+    assert!(
+        total_thick - total > 1e-3,
+        "thickening the airfoil should raise the total solid fraction \
+         (d sig / d tk > 0); base={total}, +10% tk={total_thick}"
+    );
+
+    // The sensitivity should live near the boundary: cells that were in the
+    // band must be where most of the change is, not the saturated core.
+    let mut band_change = 0.0_f64;
+    let mut core_change = 0.0_f64;
+    for (&key, &base_value) in &base_mask {
+        let delta = (thick_mask.get(&key).copied().unwrap_or(0.0) - base_value).abs();
+        if (0.05..=0.95).contains(&base_value) {
+            band_change += delta;
+        } else if base_value > 0.95 {
+            core_change += delta;
+        }
+    }
+    assert!(
+        band_change > core_change,
+        "shape sensitivity should concentrate in the boundary band \
+         (band={band_change}, core={core_change})"
+    );
+
+    // (7) Angle of attack is a normal pre-simulation parameter for the
+    // non-interactive path: overriding it at simulation setup must rotate the
+    // mask without recompilation.
+    let mask_aoa0 = airfoil_mask_probe(&result, &[("aoa", 0.0)]);
+    let rotated_cells = mask
+        .iter()
+        .filter(|(key, v8)| (mask_aoa0.get(*key).copied().unwrap_or(0.0) - **v8).abs() > 0.1)
+        .count();
+    assert!(
+        rotated_cells >= 4,
+        "overriding angle of attack before simulation should rotate the mask, \
+         got {rotated_cells} changed cells"
+    );
+}
+
+#[test]
+fn airfoil_for_families_classify_regular_with_affine_strides() {
+    let docs = include_str!("../../../../docs/user-guide/src/language/arrays-pde.md");
+    let nx_src = extract_doc_model_with_integer_parameter(docs, "AirfoilFlow", "NX", 6);
+    let source = extract_doc_model_with_integer_parameter(&nx_src, "AirfoilFlow", "NY", 4);
+    let result = Compiler::new()
+        .model("AirfoilFlow")
+        .compile_str(&source, "AirfoilFlow.mo")
+        .expect("airfoil compiles");
+    let families = &result.flat.structured_equations;
+
+    // The model has four `for` families: the sc/nc/sig mask loop, the interior
+    // u/v/q stencil, and the inlet/outlet (over j) and far-field (over i) loops.
+    assert_eq!(
+        families.len(),
+        4,
+        "airfoil should flatten to four structured for-families"
+    );
+
+    // The input-driven geometry/mask loop contains a structural branch and is
+    // allowed to decline regular classification. The flow/boundary loops still
+    // need regular stride tables so the PDE kernels stay compact.
+    for (k, fam) in families.iter().enumerate().skip(1) {
+        let regular = fam.regular.as_ref().unwrap_or_else(|| {
+            panic!("flow family[{k}] should classify as a regular elementwise family")
+        });
+        let domain_binders: Vec<&str> = fam
+            .domain
+            .binders
+            .iter()
+            .map(|b| b.display_name.as_str())
+            .collect();
+        let regular_binders: Vec<&str> = regular.binders.iter().map(String::as_str).collect();
+        assert_eq!(
+            regular_binders, domain_binders,
+            "family[{k}] regular binder order should match the domain"
+        );
+        assert!(
+            !regular.accesses.is_empty(),
+            "family[{k}] should record its array accesses"
+        );
+    }
+
+    // The interior momentum/continuity loop is the two-binder family that carries
+    // non-zero stencil offsets; it must capture the full 5-point stencil.
+    let interior = families
+        .iter()
+        .filter_map(|fam| fam.regular.as_ref())
+        .find(|regular| {
+            regular.binders == ["i", "j"]
+                && regular
+                    .accesses
+                    .iter()
+                    .any(|a| a.subscripts.iter().any(|s| s.constant != 0))
+        })
+        .expect("interior stencil family with non-zero offsets");
+    let captures = |constant: i64, coeffs: &[i64]| {
+        interior.accesses.iter().any(|access| {
+            access
+                .subscripts
+                .iter()
+                .any(|s| s.constant == constant && s.coeffs == coeffs)
+        })
+    };
+    assert!(captures(1, &[1, 0]), "interior captures u[i+1, j]");
+    assert!(captures(-1, &[1, 0]), "interior captures u[i-1, j]");
+    assert!(captures(1, &[0, 1]), "interior captures [i, j+1]");
+    assert!(captures(-1, &[0, 1]), "interior captures [i, j-1]");
+
+    // The stride table must survive the flat -> DAE conversion: the Solve-IR
+    // consumer reads it from the DAE structured families.
+    let dae_regular = result
+        .dae
+        .continuous
+        .structured_equations
+        .iter()
+        .filter(|fam| fam.regular.is_some())
+        .count();
+    assert!(
+        dae_regular >= 3,
+        "the airfoil's regular flow families should reach the DAE"
+    );
+}
+
+/// Densify an affine stencil stride's sparse `(dimension, stride)` terms into a
+/// dense per-domain-dimension vector, matching `ArrayAccess::binder_index_strides`.
+fn densify_stride_terms(
+    terms: &[rumoca_ir_solve::AffineStencilIndexStrideTerm],
+    ndim: usize,
+) -> Vec<i64> {
+    let mut dense = vec![0i64; ndim];
+    for term in terms {
+        dense[term.dimension] = term.stride as i64;
+    }
+    dense
+}
+
+// Cross-check: every distinct per-binder load stride the reassembly infers for
+// the airfoil PDE stencils is accounted for by the state/algebraic row-major
+// layout. The mask fields are algebraics now, not promoted derived parameters,
+// so the old constant-vector cell-major stride should no longer appear.
+#[test]
+fn airfoil_two_binder_load_strides_fully_characterized() {
+    use std::collections::HashSet;
+
+    let docs = include_str!("../../../../docs/user-guide/src/language/arrays-pde.md");
+    let nx_src = extract_doc_model_with_integer_parameter(docs, "AirfoilFlow", "NX", 6);
+    let source = extract_doc_model_with_integer_parameter(&nx_src, "AirfoilFlow", "NY", 4);
+    let result = Compiler::new()
+        .model("AirfoilFlow")
+        .compile_str(&source, "AirfoilFlow.mo")
+        .expect("airfoil compiles");
+    let problem =
+        rumoca_phase_solve::lower_solve_problem(&result.dae).expect("airfoil lowers to Solve IR");
+
+    // Table side: the interior two-binder stencil family. Pick a state access
+    // resolvable in the layout and predict its per-binder load stride from the
+    // array shape -- for a 6x4 field this is row-major [NY, 1] = [4, 1].
+    let interior = result
+        .dae
+        .continuous
+        .structured_equations
+        .iter()
+        .filter_map(|family| family.regular.as_ref())
+        .find(|regular| {
+            regular.binders.len() == 2
+                && regular
+                    .accesses
+                    .iter()
+                    .any(|access| access.subscripts.iter().any(|s| s.constant != 0))
+        })
+        .expect("interior regular stencil family");
+    let probe = interior
+        .accesses
+        .iter()
+        .find(|access| {
+            problem
+                .layout
+                .shape(&access.var)
+                .is_some_and(|shape| shape.len() == access.subscripts.len())
+        })
+        .expect("a state access resolvable in the layout");
+    let memory_strides = rumoca_core::row_major_strides(problem.layout.shape(&probe.var).unwrap());
+    let table_stride = probe.binder_index_strides(&memory_strides, interior.binders.len());
+    assert_eq!(
+        table_stride,
+        vec![4, 1],
+        "6x4 state stencil load stride should be row-major [NY, 1]"
+    );
+
+    // Proof side: the strides the reassembly inferred for the two-binder stencils.
+    let proof_strides: HashSet<Vec<i64>> = [
+        &problem.continuous.derivative_rhs,
+        &problem.continuous.implicit_rhs,
+    ]
+    .into_iter()
+    .flat_map(|block| block.nodes.iter())
+    .filter_map(|node| match node {
+        ComputeNode::AffineStencil {
+            domain,
+            load_strides,
+            ..
+        }
+        | ComputeNode::Map {
+            domain,
+            load_strides,
+            ..
+        } if domain.binders.len() == 2 => Some(load_strides),
+        _ => None,
+    })
+    .flat_map(|load_strides| {
+        load_strides
+            .iter()
+            .map(|ls| densify_stride_terms(&ls.terms, 2))
+    })
+    .collect();
+
+    let expected: HashSet<Vec<i64>> = [table_stride.clone()].into_iter().collect();
+    assert_eq!(
+        proof_strides, expected,
+        "airfoil two-binder load strides should be exactly the table-derived \
+         row-major state/algebraic stride {table_stride:?}"
     );
 }

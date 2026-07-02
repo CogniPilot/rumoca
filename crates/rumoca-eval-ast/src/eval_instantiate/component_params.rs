@@ -51,7 +51,7 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
         mod_env,
         effective_components,
         tree,
-        resolve_class_components,
+        *resolve_class_components,
         None,
         0,
     )?;
@@ -68,15 +68,15 @@ pub fn eval_state_select_expr(
     ctx: &InstantiateEvalCtx,
     expr: &ast::Expression,
 ) -> Option<rumoca_core::StateSelect> {
-    eval_state_select_expr_with_scope(ctx, expr, None)
+    eval_state_select_expr_with_source_scope(ctx, expr, None)
 }
 
-/// Evaluate an MLS predefined `StateSelect` attribute expression in the
-/// lexical scope of the declaring component.
-pub fn eval_state_select_expr_with_scope(
+/// Evaluate an MLS predefined `StateSelect` attribute expression in the lexical
+/// scope where a modifier was written.
+pub fn eval_state_select_expr_with_source_scope(
     ctx: &InstantiateEvalCtx,
     expr: &ast::Expression,
-    scope_prefix: Option<&str>,
+    source_scope: Option<&ast::QualifiedName>,
 ) -> Option<rumoca_core::StateSelect> {
     let env = ConditionEvalEnv {
         mod_env: ctx.mod_env,
@@ -84,7 +84,8 @@ pub fn eval_state_select_expr_with_scope(
         tree: ctx.tree,
         resolve_class_components: ctx.resolve_class_components,
     };
-    eval_state_select_expr_with_depth(expr, env, scope_prefix, 0)
+    let scope_prefix = source_scope.map(ast::QualifiedName::to_flat_string);
+    eval_state_select_expr_with_depth(expr, env, scope_prefix.as_deref(), 0)
 }
 
 fn eval_state_select_expr_with_depth(
@@ -277,7 +278,7 @@ pub fn extract_int_params_with_mods_and_known(
                 mod_env,
                 effective_components,
                 tree,
-                resolve_class_components,
+                *resolve_class_components,
                 0,
                 Some(&eval_locals),
             )
@@ -293,7 +294,7 @@ pub fn extract_int_params_with_mods_and_known(
                 mod_env,
                 effective_components,
                 tree,
-                resolve_class_components,
+                *resolve_class_components,
                 0,
                 Some(&eval_locals),
             )
@@ -321,7 +322,7 @@ pub fn extract_int_params_with_mods_and_known(
                 mod_env,
                 effective_components,
                 tree,
-                resolve_class_components,
+                *resolve_class_components,
                 0,
                 Some(&eval_locals),
             ) {

@@ -269,7 +269,7 @@ pub fn walk_initialization_system<V: SolveVisitor + ?Sized>(
     visitor: &mut V,
     system: &InitializationSolveSystem,
 ) -> Result<(), V::Error> {
-    visitor.visit_scalar_program_block(&system.residual)?;
+    visitor.visit_compute_block(&system.residual)?;
     visitor.visit_scalar_program_block(&system.update_rhs)
 }
 

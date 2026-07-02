@@ -343,9 +343,7 @@ fn algebraic_refresh_rows_from_row_targets(
         let Some(position) = output_row_positions.get(&row_idx).copied() else {
             continue;
         };
-        if position.output_offset != 0
-            || !block.can_evaluate_target_assignment(position.program_index, target_index)
-        {
+        if !block.can_evaluate_target_assignment(position.program_index, target_index) {
             continue;
         }
         reserve_refresh_index_set_capacity(&mut claimed_targets, 1, "claimed row targets", span)?;
@@ -524,8 +522,22 @@ fn order_refresh_rows(
             }
         }
     }
-    let requires_iteration = ordered.len() != rows.len();
-    if requires_iteration {
+    // A row also needs iteration when it is *nonlinear in its own target*, even
+    // with no dependency cycle: the single secant step that the non-iterative
+    // single pass performs is exact only for residuals that are affine in the
+    // target (slope constant). A self-nonlinear acyclic row (e.g. `z*z = b*x`)
+    // would otherwise be left one secant step short of convergence.
+    let mut self_nonlinear = false;
+    for row in &ordered {
+        if let Some(ops) = block.programs.get(row.row_idx)
+            && row_is_nonlinear_in_target(ops, row.target_index)?
+        {
+            self_nonlinear = true;
+            break;
+        }
+    }
+    let requires_iteration = ordered.len() != rows.len() || self_nonlinear;
+    if ordered.len() != rows.len() {
         let mut emitted = Vec::new();
         reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
         emitted.resize(rows.len(), false);
@@ -548,6 +560,241 @@ fn order_refresh_rows(
         missing_dependencies: Vec::new(),
         iterative: requires_iteration,
     })
+}
+
+/// How a register's value depends on the refresh row's own target solver-Y slot,
+/// holding every other unknown fixed — which is exactly how a single refresh row
+/// is solved for its target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetDep {
+    /// Independent of the target.
+    Independent,
+    /// Affine in the target: `c0 + c1 * target`.
+    Affine,
+    /// Depends on the target nonlinearly.
+    Nonlinear,
+}
+
+impl TargetDep {
+    /// Combine two operands under an addition-like op (Add/Sub, or a Select with
+    /// a target-independent condition): the result is as nonlinear as its most
+    /// nonlinear operand.
+    fn join_additive(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Nonlinear, _) | (_, Self::Nonlinear) => Self::Nonlinear,
+            (Self::Affine, _) | (_, Self::Affine) => Self::Affine,
+            _ => Self::Independent,
+        }
+    }
+
+    fn depends_on_target(self) -> bool {
+        !matches!(self, Self::Independent)
+    }
+}
+
+/// `Nonlinear` if `condition` holds (a target-dependent input to a nonlinear or
+/// non-smooth op), else `Independent`.
+fn nonlinear_if(condition: bool) -> TargetDep {
+    if condition {
+        TargetDep::Nonlinear
+    } else {
+        TargetDep::Independent
+    }
+}
+
+/// Class of register `reg`. `classes` is sized to `max_dst + 1`; every operand is
+/// a prior `dst` in the (SSA) op stream, so the index is in bounds by
+/// construction (a malformed forward-reference panics loudly rather than silently
+/// reading an under-classified `Independent` default).
+fn target_dep(classes: &[TargetDep], reg: solve::Reg) -> TargetDep {
+    classes[reg as usize]
+}
+
+/// Most-nonlinear class among the registers in `[base, base + count)`.
+fn range_target_dep(classes: &[TargetDep], base: solve::Reg, count: usize) -> TargetDep {
+    (0..count).fold(TargetDep::Independent, |acc, offset| {
+        acc.join_additive(target_dep(classes, base + offset as solve::Reg))
+    })
+}
+
+/// Class of a binary op's result given its operand classes.
+fn classify_binary(op: solve::BinaryOp, l: TargetDep, r: TargetDep) -> TargetDep {
+    use TargetDep::{Affine, Nonlinear};
+    match op {
+        solve::BinaryOp::Add | solve::BinaryOp::Sub => l.join_additive(r),
+        // A product is affine only when at most one factor depends on the target;
+        // two target-dependent factors give a quadratic term.
+        solve::BinaryOp::Mul => match (l, r) {
+            (Nonlinear, _) | (_, Nonlinear) | (Affine, Affine) => Nonlinear,
+            (Affine, _) | (_, Affine) => Affine,
+            _ => TargetDep::Independent,
+        },
+        // Dividing by a target-dependent denominator is nonlinear; dividing by a
+        // constant preserves the numerator's class.
+        solve::BinaryOp::Div => {
+            if r.depends_on_target() {
+                Nonlinear
+            } else {
+                l
+            }
+        }
+        // Pow, Atan2, Min, Max, And, Or are nonlinear once any operand depends.
+        _ => nonlinear_if(l.depends_on_target() || r.depends_on_target()),
+    }
+}
+
+/// Class of a single op's destination register given the classes computed so far
+/// (the `StoreOutput` sink has no destination and is handled by the caller).
+fn classify_op_target_dep(
+    op: &solve::LinearOp,
+    classes: &[TargetDep],
+    target_y_index: usize,
+) -> TargetDep {
+    use solve::LinearOp as Op;
+    match *op {
+        // Other unknowns are held fixed while this row solves for its own target,
+        // so only the target itself is (affinely) variable.
+        Op::LoadY { index, .. } if index == target_y_index => TargetDep::Affine,
+        Op::LoadY { .. }
+        | Op::Const { .. }
+        | Op::LoadTime { .. }
+        | Op::LoadP { .. }
+        | Op::LoadSeed { .. }
+        | Op::StoreOutput { .. } => TargetDep::Independent,
+        // A target-dependent subscript selects discontinuously among slots.
+        Op::LoadIndexedP { index, .. } | Op::LoadIndexedSeed { index, .. } => {
+            nonlinear_if(target_dep(classes, index).depends_on_target())
+        }
+        Op::Move { src, .. } => target_dep(classes, src),
+        // Negation preserves affinity; every other unary is nonlinear once its
+        // argument depends on the target.
+        Op::Unary {
+            op: solve::UnaryOp::Neg,
+            arg,
+            ..
+        } => target_dep(classes, arg),
+        Op::Unary { arg, .. } => nonlinear_if(target_dep(classes, arg).depends_on_target()),
+        Op::Binary { op, lhs, rhs, .. } => {
+            classify_binary(op, target_dep(classes, lhs), target_dep(classes, rhs))
+        }
+        Op::Compare { lhs, rhs, .. } => nonlinear_if(
+            target_dep(classes, lhs).depends_on_target()
+                || target_dep(classes, rhs).depends_on_target(),
+        ),
+        Op::Select { cond, .. } if target_dep(classes, cond).depends_on_target() => {
+            TargetDep::Nonlinear
+        }
+        Op::Select {
+            if_true, if_false, ..
+        } => target_dep(classes, if_true).join_additive(target_dep(classes, if_false)),
+        // A target-dependent system matrix makes the solution nonlinear; with a
+        // constant matrix the solution is only as nonlinear as the RHS.
+        Op::LinearSolveComponent {
+            matrix_start, n, ..
+        } if range_target_dep(classes, matrix_start, n.saturating_mul(n)).depends_on_target() => {
+            TargetDep::Nonlinear
+        }
+        Op::LinearSolveComponent { rhs_start, n, .. } => range_target_dep(classes, rhs_start, n),
+        Op::TableBounds { table_id, .. } => {
+            nonlinear_if(target_dep(classes, table_id).depends_on_target())
+        }
+        Op::TableLookup {
+            table_id,
+            column,
+            input,
+            ..
+        }
+        | Op::TableLookupSlope {
+            table_id,
+            column,
+            input,
+            ..
+        } => nonlinear_if(
+            target_dep(classes, table_id).depends_on_target()
+                || target_dep(classes, column).depends_on_target()
+                || target_dep(classes, input).depends_on_target(),
+        ),
+        Op::TableNextEvent { table_id, time, .. } => nonlinear_if(
+            target_dep(classes, table_id).depends_on_target()
+                || target_dep(classes, time).depends_on_target(),
+        ),
+        // Random generators are nonlinear (and non-smooth) in any target-dependent
+        // input; conservatively flag them.
+        Op::RandomInitialState {
+            local_seed,
+            global_seed,
+            ..
+        } => nonlinear_if(
+            target_dep(classes, local_seed).depends_on_target()
+                || target_dep(classes, global_seed).depends_on_target(),
+        ),
+        Op::RandomResult {
+            state_start,
+            state_len,
+            ..
+        }
+        | Op::RandomState {
+            state_start,
+            state_len,
+            ..
+        } => nonlinear_if(range_target_dep(classes, state_start, state_len).depends_on_target()),
+        Op::ImpureRandomInit { seed, .. } => {
+            nonlinear_if(target_dep(classes, seed).depends_on_target())
+        }
+        Op::ImpureRandom { id, .. } => nonlinear_if(target_dep(classes, id).depends_on_target()),
+        Op::ImpureRandomInteger { id, imin, imax, .. } => nonlinear_if(
+            target_dep(classes, id).depends_on_target()
+                || target_dep(classes, imin).depends_on_target()
+                || target_dep(classes, imax).depends_on_target(),
+        ),
+        Op::ExternalCall {
+            args, arg_count, ..
+        } => nonlinear_if(
+            args.iter()
+                .take(arg_count)
+                .any(|arg| target_dep(classes, *arg).depends_on_target()),
+        ),
+    }
+}
+
+/// True when the row's residual program is nonlinear in its own target slot, so
+/// a single secant step does not solve it exactly and the refresh must iterate.
+/// Dependency cycles are handled separately; this catches the *acyclic* case of
+/// a self-nonlinear implicit row (e.g. `z*z = b*x`), which would otherwise be
+/// classified non-iterative and left one secant step short of convergence.
+///
+/// The analysis is a conservative forward dataflow over the row's register
+/// stream (see [`classify_op_target_dep`]): any op that could make the target
+/// enter nonlinearly yields `Nonlinear`. Affine and independent rows keep the
+/// exact single-step fast path.
+fn row_is_nonlinear_in_target(
+    ops: &[solve::LinearOp],
+    target_y_index: usize,
+) -> Result<bool, EvalSolveError> {
+    use solve::LinearOp as Op;
+    let Some(max_reg) = ops.iter().filter_map(solve::LinearOp::dst_register).max() else {
+        return Ok(false);
+    };
+    let len = (max_reg as usize)
+        .checked_add(1)
+        .ok_or_else(|| refresh_plan_capacity_error("target-dependence register map", None))?;
+    let mut classes = Vec::new();
+    reserve_refresh_vec_capacity(&mut classes, len, "target-dependence register map", None)?;
+    classes.resize(len, TargetDep::Independent);
+    let mut output = TargetDep::Independent;
+    for op in ops {
+        if let Op::StoreOutput { src } = *op {
+            output = output.join_additive(target_dep(&classes, src));
+            continue;
+        }
+        let class = classify_op_target_dep(op, &classes, target_y_index);
+        if let Some(dst) = op.dst_register()
+            && let Some(slot) = classes.get_mut(dst as usize)
+        {
+            *slot = class;
+        }
+    }
+    Ok(matches!(output, TargetDep::Nonlinear))
 }
 
 fn derivative_row_dependencies(

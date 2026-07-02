@@ -232,28 +232,27 @@ impl<'a> LowerBuilder<'a> {
             }
             _ => {
                 if let Some(op) = unary_array_builtin_op(&function) {
-                    self.lower_unary_array_builtin_values(
-                        op, function, args, scope, call_depth, call_span,
-                    )
-                } else {
-                    Err(array_builtin_contract_error(
-                        format!(
-                            "{} does not have array-like builtin lowering",
-                            function.name()
-                        ),
-                        args.first()
-                            .and_then(rumoca_core::Expression::span)
-                            .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
-                    ))
+                    return self.lower_unary_builtin_array_like_values(
+                        function, op, args, scope, call_depth, call_span,
+                    );
                 }
+                Err(array_builtin_contract_error(
+                    format!(
+                        "{} does not have array-like builtin lowering",
+                        function.name()
+                    ),
+                    args.first()
+                        .and_then(rumoca_core::Expression::span)
+                        .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
+                ))
             }
         }
     }
 
-    fn lower_unary_array_builtin_values(
+    fn lower_unary_builtin_array_like_values(
         &mut self,
-        op: rumoca_ir_solve::UnaryOp,
         function: rumoca_core::BuiltinFunction,
+        op: UnaryOp,
         args: &[rumoca_core::Expression],
         scope: &Scope,
         call_depth: usize,
