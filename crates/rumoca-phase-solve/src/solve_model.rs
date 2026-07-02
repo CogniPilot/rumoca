@@ -319,17 +319,17 @@ fn lower_profiled_solve_problem(
     }
 }
 
-fn lower_profiled_solve_artifacts(
-    problem: &solve::SolveProblem,
+fn profiled_solver_len(
+    dae_model: &dae::Dae,
     state_count: usize,
-    model_span: rumoca_core::Span,
     profile: SolveModelLoweringProfile,
-) -> Result<solve::SolveArtifacts, SolveModelLowerError> {
-    if !profile.needs_solve_artifacts() {
-        return Ok(solve::SolveArtifacts::default());
+) -> Result<usize, SolveModelLowerError> {
+    match profile {
+        SolveModelLoweringProfile::Runtime | SolveModelLoweringProfile::RuntimeValueOnly => {
+            Ok(solver_visible_scalar_count(dae_model)?.max(dae_model.continuous.equations.len()))
+        }
+        SolveModelLoweringProfile::GpuPreparation => Ok(state_count),
     }
-    let mass_matrix = state_identity_mass_matrix(state_count, model_span)?;
-    crate::lower_solve_artifacts_with_mass_matrix(problem, mass_matrix).map_err(Into::into)
 }
 
 fn lower_runtime_visible_outputs(
@@ -397,18 +397,18 @@ fn lower_dae_to_solve_model_inner(
         )?;
         crate::timing::log_stage("model.order_state_derivative_rows", timer);
     }
-    let solver_len = match profile {
-        SolveModelLoweringProfile::Runtime | SolveModelLoweringProfile::RuntimeValueOnly => {
-            solver_visible_scalar_count(&dae_model)?.max(dae_model.continuous.equations.len())
-        }
-        SolveModelLoweringProfile::GpuPreparation => state_count,
-    };
+    let solver_len = profiled_solver_len(&dae_model, state_count, profile)?;
     let model_span = model_provenance_span(&dae_model, metadata_dae_model)?;
     let timer = crate::timing::stage_start();
     let problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
     crate::timing::log_stage("model.lower_solve_problem", timer);
     let timer = crate::timing::stage_start();
-    let artifacts = lower_profiled_solve_artifacts(&problem, state_count, model_span, profile)?;
+    let artifacts = if profile.needs_solve_artifacts() {
+        let mass_matrix = state_identity_mass_matrix(state_count, model_span)?;
+        crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?
+    } else {
+        solve::SolveArtifacts::default()
+    };
     crate::timing::log_stage("model.lower_solve_artifacts", timer);
     let timer = crate::timing::stage_start();
     let mut parameters = compiled_parameter_values(
