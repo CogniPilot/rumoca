@@ -915,8 +915,23 @@ impl<'a> LowerBuilder<'a> {
                 span,
                 ..
             } => {
+                // MLS §3.7.5/§8.6: `pre(x)` lowers to the synthetic `__pre__.x`
+                // parameter that *holds the previous-event value* of a discrete
+                // (or state) variable. Folding it would pin a runtime array
+                // subscript such as `wp[pre(k), 1]` to its start index, so a
+                // `__pre__.` reference must take the runtime dynamic-selection
+                // path instead of compile-time subscript folding.
+                if name.as_str().starts_with("__pre__.") {
+                    return false;
+                }
                 if subscripts.is_empty() && const_scope.contains_key(name.as_str()) {
                     return true;
+                }
+                if self
+                    .dae_variables
+                    .is_some_and(|variables| !var_ref_is_translation_constant(variables, name))
+                {
+                    return false;
                 }
                 compile_time_var_key(name, subscripts, const_scope, *span)
                     .ok()
@@ -1089,6 +1104,20 @@ impl<'a> LowerBuilder<'a> {
             _ => Vec::new(),
         })
     }
+}
+
+fn var_ref_is_translation_constant(
+    variables: &dae::DaeVariables,
+    name: &rumoca_core::Reference,
+) -> bool {
+    let var_name = name.var_name();
+    if variables.constants.contains_key(var_name) {
+        return true;
+    }
+    if let Some(parameter) = variables.parameters.get(var_name) {
+        return !parameter.is_tunable;
+    }
+    false
 }
 
 fn required_arg<'a>(

@@ -1,31 +1,269 @@
-{#- Embedded C implementation over prepared Solve IR. -#}
+{#- Embedded C implementation over prepared Solve IR.
+
+    Handles continuous ODE models (forward-Euler integration of the derivative
+    RHS) and discrete/sampled models (`when`/`sample`/`pre`). The discrete and
+    event machinery mirrors the FMI 2.0 backend, evaluated over the same Solve
+    IR, but is exposed through a minimal init()/step() API over the flat y[]/p[]
+    vectors.
+-#}
 {%- if ir_kind != "solve" -%}
 {{ fail("embedded-c target requires Solve IR") }}
 {%- endif -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
-{%- set rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs -%}
-{%- set output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices -%}
-{%- set cfg = {"time": "m->time", "y": "m->y[{}]", "p": "m->p[{}]"} -%}
+{%- set MODEL = model_name | upper -%}
+{%- set dae = dae if dae is defined else {} -%}
+
+{#- Symbol policy so render_expr() can emit start expressions that reference
+    constants/parameters by their (sanitized) names as local C aliases. -#}
+{%- set c_symbol_policy = {
+    "separator": "_",
+    "generated_prefixes": ["pre_", "der_"],
+    "reserved": [
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+        "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+        "unsigned", "void", "volatile", "while", "inline", "restrict",
+        "m", "t", "time", "i", "n", "real_t", "pre", "der"
+    ]
+} -%}
+{%- set symbols = target_symbols(dae.symbol_refs | default([]), c_symbol_policy, dae.symbol_aliases | default([])) -%}
+{%- set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(real_t[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} -%}
+
+{#- Solve IR row renderers operate directly on the flat y[]/p[] vectors. -#}
+{%- set row_cfg = {"time": "m->time", "y": "m->y[{}]", "p": "m->p[{}]"} -%}
+{%- set assign_cfg = {"y_set": "m->y[{}] = {}", "p_set": "m->p[{}] = {}"} -%}
+
+{%- set derivative_rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs
+    if solve_blocks is defined and solve_blocks.continuous is defined
+       and solve_blocks.continuous.derivative_rhs is defined
+       and solve_blocks.continuous.derivative_rhs.scalar_programs is defined
+       and solve_blocks.continuous.derivative_rhs.scalar_programs.programs is defined else [] -%}
+{%- set derivative_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices
+    if solve_blocks is defined and solve_blocks.continuous is defined
+       and solve_blocks.continuous.derivative_rhs is defined
+       and solve_blocks.continuous.derivative_rhs.scalar_programs is defined
+       and solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices is defined else [] -%}
+{%- set discrete_rows = solve.discrete.rhs.programs
+    if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined
+       and solve.discrete.rhs.programs is defined else [] -%}
+{%- set discrete_targets = solve.discrete.update_targets
+    if solve is defined and solve.discrete is defined
+       and solve.discrete.update_targets is defined else [] -%}
+{%- set runtime_rows = solve.discrete.runtime_assignment_rhs.programs
+    if solve is defined and solve.discrete is defined
+       and solve.discrete.runtime_assignment_rhs is defined
+       and solve.discrete.runtime_assignment_rhs.programs is defined else [] -%}
+{%- set runtime_targets = solve.discrete.runtime_assignment_targets
+    if solve is defined and solve.discrete is defined
+       and solve.discrete.runtime_assignment_targets is defined else [] -%}
+{%- set pre_bindings = solve.solve_layout.pre_param_bindings
+    if solve is defined and solve.solve_layout is defined
+       and solve.solve_layout.pre_param_bindings is defined else [] -%}
+{%- set initial_event_index = solve.solve_layout.initial_event_parameter_index
+    if solve is defined and solve.solve_layout is defined else none -%}
+{%- set bindings = solve.layout.bindings -%}
+{#- Flat p[] slots of the auto-generated `when`-clause condition variables
+    (origin == "generated" discrete-valued vars). Their pre() memory is reset to
+    the inactive state on every tick so each step() is treated as a fresh sample
+    /event edge — the embedded "one step == one control tick" contract. -#}
+{%- set ns_cond = namespace(slots=[]) -%}
+{%- for name, var in dae.m | default({}) | items -%}
+{%- if var.origin == "generated" -%}
+{%- if var.dims -%}
+{%- for i in range(var.dims | product) -%}
+{%- set slot = bindings[source_ref(name, var.dims, i + 1)] -%}
+{%- if slot and slot.P is defined -%}{%- set ns_cond.slots = ns_cond.slots + [slot.P.index] -%}{%- endif -%}
+{%- endfor -%}
+{%- else -%}
+{%- set slot = bindings[name] -%}
+{%- if slot and slot.P is defined -%}{%- set ns_cond.slots = ns_cond.slots + [slot.P.index] -%}{%- endif -%}
+{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
 #include "{{ model_name }}.h"
 
 #include <math.h>
 #include <string.h>
+
+{# Vector-sum builtin used by some scalarized array reductions. #}
+static real_t __rumoca_sum_d(const real_t *v, int n) {
+    real_t s = 0.0;
+    for (int i = 0; i < n; i++) {
+        s += v[i];
+    }
+    return s;
+}
+
+{#- Macro: declare local C aliases (initialised to 0) for a variable map. -#}
+{%- macro decl_locals(vars) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- for i in range(var.dims | product) %}
+    real_t {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0; (void){{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};
+{%- endfor -%}
+{%- else %}
+    real_t {{ symbol(symbols, name) }} = 0.0; (void){{ symbol(symbols, name) }};
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+
+{#- Macro: evaluate start expressions into the local aliases. -#}
+{%- macro eval_starts(vars) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- for i in range(var.dims | product) -%}
+{%- if var.start and is_string_literal(var.start) != "yes" %}
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ render_expr_at_index(var.start, i + 1, cfg) }};
+{%- endif -%}
+{%- endfor -%}
+{%- else -%}
+{%- if var.start and is_string_literal(var.start) != "yes" %}
+    {{ symbol(symbols, name) }} = {{ render_expr(var.start, cfg) }};
+{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+
+{#- Macro: store the local aliases into their flat Solve IR slot. -#}
+{%- macro store_slots(vars) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- for i in range(var.dims | product) -%}
+{%- set key = source_ref(name, var.dims, i + 1) -%}
+{%- set slot = bindings[key] -%}
+{%- if slot and (slot.Y is defined or slot.P is defined) %}
+    {{ render_solve_slot_assign_c(slot, symbol(symbols, key), assign_cfg) }}
+{%- endif -%}
+{%- endfor -%}
+{%- else -%}
+{%- set slot = bindings[name] -%}
+{%- if slot and (slot.Y is defined or slot.P is defined) %}
+    {{ render_solve_slot_assign_c(slot, symbol(symbols, name), assign_cfg) }}
+{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+
+{# Snapshot pre() parameters: copy current values into their __pre__ slots. #}
+static void {{ model_name }}_snapshot_pre({{ model_name }}_t *m) {
+{%- if pre_bindings | length > 0 %}
+{%- for binding in pre_bindings %}
+{%- if binding.source.P is defined and binding.source.P.index in ns_cond.slots %}
+    m->p[{{ binding.dest_p_index }}] = 0.0;  /* when-condition pre reset */
+{%- else %}
+    {{ render_solve_pre_param_binding_c(binding, row_cfg, assign_cfg) }}
+{%- endif %}
+{%- endfor %}
+{%- else %}
+    (void)m;
+{%- endif %}
+}
+
+{# Evaluate one pass of the runtime-assignment + discrete (when) update rows
+   into their targets. Returns nonzero if any slot changed this pass. #}
+static int {{ model_name }}_event_pass({{ model_name }}_t *m) {
+{%- if (discrete_rows | length > 0) or (runtime_rows | length > 0) %}
+    real_t __p_prev[{{ MODEL }}_P_LEN > 0 ? {{ MODEL }}_P_LEN : 1];
+    memcpy(__p_prev, m->p, sizeof(m->p));
+{%- if (solve.layout.y_scalars | default(0)) > 0 %}
+    real_t __y_prev[{{ MODEL }}_Y_LEN > 0 ? {{ MODEL }}_Y_LEN : 1];
+    memcpy(__y_prev, m->y, sizeof(m->y));
+{%- endif %}
+{%- if runtime_rows | length > 0 %}
+    real_t __rt[{{ runtime_rows | length }}];
+{%- for row in runtime_rows %}
+    __rt[{{ loop.index0 }}] = {{ render_solve_row_c(row, row_cfg) }};
+{%- endfor %}
+{%- for target in runtime_targets %}
+    {{ render_solve_slot_assign_c(target, "__rt[" ~ loop.index0 ~ "]", assign_cfg) }}
+{%- endfor %}
+{%- endif %}
+{%- if discrete_rows | length > 0 %}
+    real_t __dv[{{ discrete_rows | length }}];
+{%- for row in discrete_rows %}
+    __dv[{{ loop.index0 }}] = {{ render_solve_row_c(row, row_cfg) }};
+{%- endfor %}
+{%- for target in discrete_targets %}
+    {{ render_solve_slot_assign_c(target, "__dv[" ~ loop.index0 ~ "]", assign_cfg) }}
+{%- endfor %}
+{%- endif %}
+    if (memcmp(__p_prev, m->p, sizeof(m->p)) != 0) {
+        return 1;
+    }
+{%- if (solve.layout.y_scalars | default(0)) > 0 %}
+    if (memcmp(__y_prev, m->y, sizeof(m->y)) != 0) {
+        return 1;
+    }
+{%- endif %}
+    return 0;
+{%- else %}
+    (void)m;
+    return 0;
+{%- endif %}
+}
+
+{# Iterate the runtime/discrete update rows to a fixed point. The rows self-gate
+   on the sample/event condition derived from m->time; iterating resolves the
+   intra-tick dependency between condition rows and the equations that read
+   them (mirrors the reference event iteration). #}
+static void {{ model_name }}_discrete_updates({{ model_name }}_t *m) {
+    /* Bound on fixed-point passes. `event_pass` returns 0 once a pass changes
+       nothing, which is the normal exit; the cap only guards against a model
+       whose discrete rows never settle (e.g. an ill-posed algebraic loop). It is
+       sized well above the longest real dependency chain so a converging model
+       always breaks out first; if the cap is ever hit the last computed state is
+       used as-is rather than looping forever. */
+    for (int __it = 0; __it < 100; __it++) {
+        if (!{{ model_name }}_event_pass(m)) {
+            break;
+        }
+    }
+}
 
 void {{ model_name }}_init({{ model_name }}_t *m) {
     if (!m) {
         return;
     }
     memset(m, 0, sizeof(*m));
+
+    /* Evaluate start expressions into local aliases (constants first, then
+       parameters/discretes/inputs/states which may reference them), then store
+       each into its flat Solve IR slot. */
+{{ decl_locals(dae.constants | default({})) }}
+{{ decl_locals(dae.p | default({})) }}
+{{ decl_locals(dae.z | default({})) }}
+{{ decl_locals(dae.m | default({})) }}
+{{ decl_locals(dae.u | default({})) }}
+{{ decl_locals(dae.x | default({})) }}
+{{ eval_starts(dae.constants | default({})) }}
+{{ eval_starts(dae.p | default({})) }}
+{{ eval_starts(dae.z | default({})) }}
+{{ eval_starts(dae.m | default({})) }}
+{{ eval_starts(dae.u | default({})) }}
+{{ eval_starts(dae.x | default({})) }}
+{{ store_slots(dae.p | default({})) }}
+{{ store_slots(dae.z | default({})) }}
+{{ store_slots(dae.m | default({})) }}
+{{ store_slots(dae.u | default({})) }}
+{{ store_slots(dae.x | default({})) }}
+{%- if initial_event_index is not none and discrete_rows | length > 0 %}
+
+    /* Run the initialization (`initial()`) event. */
+    m->p[{{ initial_event_index }}] = 1.0;
+    {{ model_name }}_snapshot_pre(m);
+    {{ model_name }}_discrete_updates(m);
+    m->p[{{ initial_event_index }}] = 0.0;
+{%- endif %}
 }
 
 void {{ model_name }}_derivative_rhs(const {{ model_name }}_t *m, real_t *out) {
     if (!m || !out) {
         return;
     }
-    for (int i = 0; i < {{ model_name | upper }}_DERIVATIVE_LEN; ++i) {
+    for (int i = 0; i < {{ MODEL }}_DERIVATIVE_LEN; ++i) {
         out[i] = 0.0;
     }
-{%- set solve_body = render_solve_block_c(rows, cfg, "out[{}] = {}", output_indices) %}
+{%- set solve_body = render_solve_block_c(derivative_rows, row_cfg, "out[{}] = {}", derivative_output_indices) %}
 {%- if solve_body %}
 {{ solve_body }}
 {%- else %}
@@ -38,12 +276,22 @@ void {{ model_name }}_step({{ model_name }}_t *m, real_t dt) {
     if (!m) {
         return;
     }
-    real_t dx[{{ model_name | upper }}_DERIVATIVE_LEN > 0 ? {{ model_name | upper }}_DERIVATIVE_LEN : 1] = {0};
+{%- if derivative_rows | length > 0 %}
+    /* Continuous states: explicit forward-Euler over [t, t+dt]. */
+    real_t dx[{{ MODEL }}_DERIVATIVE_LEN > 0 ? {{ MODEL }}_DERIVATIVE_LEN : 1] = {0};
     {{ model_name }}_derivative_rhs(m, dx);
-    for (int i = 0; i < {{ model_name | upper }}_STATE_LEN; ++i) {
-        if (i < {{ model_name | upper }}_DERIVATIVE_LEN) {
+    for (int i = 0; i < {{ MODEL }}_STATE_LEN; ++i) {
+        if (i < {{ MODEL }}_DERIVATIVE_LEN) {
             m->y[i] += dt * dx[i];
         }
     }
+{%- endif %}
+
     m->time += dt;
+
+{%- if discrete_rows | length > 0 %}
+    /* Discrete/sample tick at the new time. */
+    {{ model_name }}_snapshot_pre(m);
+    {{ model_name }}_discrete_updates(m);
+{%- endif %}
 }
