@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
+use crate::BuildSimulationTimings;
 use crate::InteractiveStepper;
 use crate::solve_lowering::{
     SimulationDiagnosticError, lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing,
@@ -14,14 +15,6 @@ pub(crate) use rumoca_solver_diffsol::stepper::StepperState;
 
 pub struct PreparedSimulation {
     inner: rumoca_solver_diffsol::PreparedSimulation,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BuildSimulationTimings {
-    pub ir_solve_structural_dae_seconds: f64,
-    pub ir_solve_lower_seconds: f64,
-    pub ir_solve_seconds: f64,
-    pub backend_build_seconds: f64,
 }
 
 impl PreparedSimulation {
@@ -80,8 +73,11 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     let (mut solve_model, solve_timings) =
         lower_dae_for_simulation_with_stage_timing(dae_model, opts, &mut begin_stage)
             .map_err(solve_lowering_sim_error)?;
+    begin_stage("sim_overrides");
+    let override_apply_start = Instant::now();
     crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts, true)
         .map_err(|err| SimError::SolverError(err.to_string()))?;
+    let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
     observe_solve_model(&solve_model);
     begin_stage("sim_build");
     let backend_build_start = Instant::now();
@@ -93,6 +89,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
             ir_solve_structural_dae_seconds: solve_timings.structural_dae_seconds,
             ir_solve_lower_seconds: solve_timings.solve_ir_seconds,
             ir_solve_seconds: solve_timings.total_seconds(),
+            override_apply_seconds,
             backend_build_seconds,
         },
     ))

@@ -50,6 +50,7 @@ mod subscript_indices;
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod timing;
 
 pub use ad::{
     lower_compute_block_jvp, lower_initial_residual_ad, lower_initial_residual_full_ad,
@@ -94,6 +95,8 @@ pub use solve_model::{
     lower_dae_to_solve_model_owned,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_overrides,
+    lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata,
+    lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides,
     lower_dae_to_solve_model_owned_with_visible_expressions,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides,
@@ -211,24 +214,29 @@ pub fn lower_solve_problem(dae_model: &dae::Dae) -> Result<solve::SolveProblem, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SolveProblemLoweringProfile {
     Runtime,
+    RuntimeValueOnly,
     GpuPreparation,
 }
 
 impl SolveProblemLoweringProfile {
     fn load_projection_algebraics_in_derivative_rhs(self) -> bool {
-        self == Self::Runtime
+        matches!(self, Self::Runtime | Self::RuntimeValueOnly)
     }
 
     fn lower_residual_equations(self) -> bool {
-        self == Self::Runtime
+        matches!(self, Self::Runtime | Self::RuntimeValueOnly)
     }
 
     fn lower_initialization_system(self) -> bool {
         self == Self::Runtime
     }
 
+    fn lower_initialization_updates(self) -> bool {
+        matches!(self, Self::Runtime | Self::RuntimeValueOnly)
+    }
+
     fn lower_runtime_systems(self) -> bool {
-        self == Self::Runtime
+        matches!(self, Self::Runtime | Self::RuntimeValueOnly)
     }
 }
 
@@ -292,15 +300,22 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     // scalarization pass here for vector-only solver renderers. The existing
     // `phase_structural::scalarize` pass intentionally remains DAE-to-DAE so
     // DAE templates can request scalarized equation form before rendering.
+    let timer = timing::stage_start();
     let layout = build_var_layout_with_solver_len(dae_model, solver_len)?;
+    timing::log_stage("problem.build_var_layout", timer);
     let solver_len = layout.y_scalars();
+    let timer = timing::stage_start();
     let solve_layout = lower_solve_layout_with_var_layout(dae_model, solver_len, &layout)?;
+    timing::log_stage("problem.lower_solve_layout", timer);
 
+    let timer = timing::stage_start();
     let runtime_tail_updates = runtime_tail_update_names(dae_model)?;
     let runtime_assignment_equations =
         runtime_assignment_equations(dae_model, &runtime_tail_updates)?;
     let discrete_update_equations = normalized_discrete_update_equations(dae_model)
         .map_err(|err| lower_problem_context(err, "collect discrete update equations"))?;
+    timing::log_stage("problem.collect_runtime_equations", timer);
+    let timer = timing::stage_start();
     let mut derivative_analysis = lower::analyze_derivative_rhs(dae_model)
         .map_err(|err| lower_problem_context(err, "analyze derivative RHS rows"))?;
     let state_derivative_rows = lower_bool_slice_copy(
@@ -308,6 +323,8 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         "state derivative row flag count",
         model_span,
     )?;
+    timing::log_stage("problem.analyze_derivative_rhs", timer);
+    let timer = timing::stage_start();
     let residual_equations = if profile.lower_residual_equations() {
         solver_residual_equations(dae_model, &runtime_tail_updates, &state_derivative_rows)?
     } else {
@@ -326,6 +343,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         },
     )
     .map_err(|err| lower_problem_context(err, "lower continuous residual rows and targets"))?;
+    timing::log_stage("problem.lower_residual_rows", timer);
     // Derivative lowering must LOAD retained algebraic unknowns from their projected
     // slot rather than inline their definitions (roadmap 4b): inlining a boundary cell
     // whose flux folds to a constant makes a structured derivative family non-uniform
@@ -348,9 +366,11 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     if profile.load_projection_algebraics_in_derivative_rhs() {
         derivative_analysis.load_retained_algebraics(&layout, &solved_algebraic_y);
     }
+    let timer = timing::stage_start();
     let derivative_rhs =
         lower::lower_derivative_rhs_with_analysis(dae_model, &layout, &derivative_analysis)
             .map_err(|err| lower_problem_context(err, "lower derivative RHS rows"))?;
+    timing::log_stage("problem.lower_derivative_rhs", timer);
     let state_scalar_count = solve_layout.state_scalar_count();
     let solver_scalar_count = solve_layout.solver_scalar_count();
     let derivative_rhs_len = derivative_rhs
@@ -359,6 +379,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     let state_only_implicit_rhs = residual.is_empty()
         && solver_scalar_count == state_scalar_count
         && derivative_rhs_len == state_scalar_count;
+    let timer = timing::stage_start();
     let implicit = if state_only_implicit_rhs {
         state_only_implicit_rows_and_targets(state_scalar_count, model_span)?
     } else {
@@ -374,7 +395,9 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
             model_span,
         )?
     };
+    timing::log_stage("problem.build_implicit_rows", timer);
     debug_assert_eq!(implicit.residual_to_implicit_rows.len(), residual.len());
+    let timer = timing::stage_start();
     let algebraic_projection_plan = lower_algebraic_projection_plan(
         &implicit.rows,
         &implicit.row_targets,
@@ -382,6 +405,8 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         solver_scalar_count,
         model_span,
     )?;
+    timing::log_stage("problem.lower_projection_plan", timer);
+    let timer = timing::stage_start();
     let runtime_assignment_targets = if profile.lower_runtime_systems() {
         lower_runtime_assignment_targets(dae_model, &runtime_assignment_equations, &layout)?
     } else {
@@ -392,17 +417,23 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     } else {
         Vec::new()
     };
+    timing::log_stage("problem.lower_runtime_systems", timer);
+    let timer = timing::stage_start();
     let initialization = if profile.lower_initialization_system() {
         lower_initialization_system(dae_model, &layout, &solve_layout)?
+    } else if profile.lower_initialization_updates() {
+        lower_initialization_updates_only(dae_model, &layout)?
     } else {
         solve::InitializationSolveSystem::default()
     };
+    timing::log_stage("problem.lower_initialization", timer);
     let dynamic_time_event_exprs = if profile.lower_runtime_systems() {
         dynamic_events::collect_dynamic_time_event_exprs(dae_model)
             .map_err(|err| lower_problem_context(err, "collect dynamic time event expressions"))?
     } else {
         Vec::new()
     };
+    let timer = timing::stage_start();
     let residual_block = if profile.lower_residual_equations() {
         residual_compute_block::build_residual_compute_block(
             dae_model,
@@ -414,6 +445,8 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     } else {
         solve::ComputeBlock::default()
     };
+    timing::log_stage("problem.build_residual_block", timer);
+    let timer = timing::stage_start();
     let implicit_rhs = build_implicit_rhs_compute_block(
         &derivative_rhs,
         &residual_block,
@@ -423,6 +456,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         model_span,
     )
     .map_err(|err| lower_problem_context(err, "build implicit RHS compute block"))?;
+    timing::log_stage("problem.build_implicit_rhs_block", timer);
     let problem = solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
         continuous: solve::ContinuousSolveSystem {
@@ -708,6 +742,26 @@ fn lower_initialization_system(
     })
 }
 
+fn lower_initialization_updates_only(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+) -> Result<solve::InitializationSolveSystem, LowerError> {
+    let update_equations = lower::initial_condition_update_equations(dae_model)
+        .map_err(|err| lower_problem_context(err, "collect initial condition updates"))?;
+    Ok(solve::InitializationSolveSystem {
+        update_rhs: solve::ScalarProgramBlock::with_program_spans(
+            lower_initial_update_rhs(dae_model, layout)
+                .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
+            program_spans_for_owned_equations(&update_equations)?,
+        )?,
+        update_targets: lower_update_targets_from_equations(dae_model, layout, &update_equations)
+            .map_err(|err| {
+            lower_problem_context(err, "lower initial update targets")
+        })?,
+        ..Default::default()
+    })
+}
+
 fn initial_projection_indices_for_layout(
     dae_model: &dae::Dae,
     solve_layout: &solve::SolveLayout,
@@ -785,7 +839,7 @@ fn lower_continuous_solve_artifacts(
     let implicit_rhs_rows =
         rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs)
             .map_err(|err| lower_problem_context(err.into(), "scalarize implicit RHS rows"))?;
-    let implicit_jacobian_v_scalar = solve::ScalarProgramBlock::with_program_spans(
+    let implicit_jacobian_v_scalar = solve::ScalarProgramBlock::with_output_indices(
         lower_scalar_program_block_full_ad_with_spans(
             &implicit_rhs_rows.programs,
             &implicit_rhs_rows.program_spans,
@@ -793,11 +847,12 @@ fn lower_continuous_solve_artifacts(
         )
         .map_err(|err| lower_problem_context(err, "lower scalar implicit Jacobian rows"))?,
         implicit_rhs_rows.program_spans,
+        implicit_rhs_rows.output_indices,
     )?;
     let derivative_rhs_rows =
         rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)
             .map_err(|err| lower_problem_context(err.into(), "scalarize derivative RHS rows"))?;
-    let full_jacobian_v = solve::ScalarProgramBlock::with_program_spans(
+    let full_jacobian_v = solve::ScalarProgramBlock::with_output_indices(
         lower_scalar_program_block_full_ad_with_spans(
             &derivative_rhs_rows.programs,
             &derivative_rhs_rows.program_spans,
@@ -805,6 +860,7 @@ fn lower_continuous_solve_artifacts(
         )
         .map_err(|err| lower_problem_context(err, "lower derivative Jacobian rows"))?,
         derivative_rhs_rows.program_spans,
+        derivative_rhs_rows.output_indices,
     )?;
 
     Ok(solve::ContinuousSolveArtifacts {

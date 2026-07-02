@@ -317,9 +317,10 @@ fn record_no_state_event_step(
     event_pre_p: &[f64],
 ) -> Result<(), SimError> {
     if step.root_event {
-        refresh_observation_discrete_rows(
+        refresh_observation_rows_and_relation_memory(
             model,
-            &runtime.equilibrium_model.runtime_state,
+            &runtime.runtime,
+            &runtime.equilibrium_model,
             &mut runtime.current_y,
             &mut runtime.params,
             runtime.current_t,
@@ -382,18 +383,10 @@ fn settle_and_record_no_state_output(
     opts: &SimOptions,
     runtime: &mut NoStateRuntime,
 ) -> Result<(), SimError> {
-    settle_algebraics_and_relation_memory(
+    refresh_observation_rows_and_relation_memory(
+        model,
         &runtime.runtime,
         &runtime.equilibrium_model,
-        &mut runtime.current_y,
-        &mut runtime.params,
-        runtime.current_t,
-        0,
-        opts.atol.max(1.0e-10),
-    )?;
-    refresh_observation_discrete_rows(
-        model,
-        &runtime.equilibrium_model.runtime_state,
         &mut runtime.current_y,
         &mut runtime.params,
         runtime.current_t,
@@ -456,6 +449,15 @@ fn initialize_no_state_runtime(
     )?;
     event_action_outcome_to_result(outcome.action, outcome.final_t)?;
     current_t = outcome.final_t;
+    refresh_observation_rows_and_relation_memory(
+        model,
+        &runtime,
+        &equilibrium_model,
+        &mut current_y,
+        &mut params,
+        current_t,
+        tol,
+    )?;
     commit_pre_params_after_event(model, &current_y, &mut params, tol);
     let mut data = vec![Vec::with_capacity(output_count); model.visible_names.len()];
     let mut recorded_times = Vec::with_capacity(output_count);
@@ -466,8 +468,11 @@ fn initialize_no_state_runtime(
             recorded_times: &mut recorded_times,
             data: &mut data,
         };
-        record_sample_if_new(
+        record_prepared_observation_sample(
             &mut samples,
+            &runtime,
+            &equilibrium_model,
+            tol,
             SamplePoint {
                 y: &observation.y,
                 params: &observation.p,

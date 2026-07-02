@@ -196,6 +196,64 @@ fn spanned_eq(rhs: Expression, origin: &str, span: Span) -> Equation {
 }
 
 #[test]
+fn compound_derivative_expansion_skips_plain_state_derivatives() {
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), x);
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 1), int(1))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 2), int(2))));
+
+    assert!(!needs_compound_derivative_expansion(&dae));
+
+    let before: Vec<Expression> = dae
+        .continuous
+        .equations
+        .iter()
+        .map(|eq| eq.rhs.clone())
+        .collect();
+    expand_compound_derivatives(&mut dae);
+    let after: Vec<Expression> = dae
+        .continuous
+        .equations
+        .iter()
+        .map(|eq| eq.rhs.clone())
+        .collect();
+
+    assert_eq!(after, before);
+}
+
+#[test]
+fn compound_derivative_expansion_keeps_algebraic_derivative_path() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(sub(der("x"), int(1))));
+    dae.continuous.equations.push(eq(sub(der("y"), int(0))));
+
+    assert!(needs_compound_derivative_expansion(&dae));
+
+    expand_compound_derivatives(&mut dae);
+
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("y"))),
+        "der(y) should still expand through y = x"
+    );
+}
+
+#[test]
 fn test_split_linear_target_zero_remainder_uses_context_span() {
     let span = Span::from_offsets(
         rumoca_core::SourceId::from_source_name(
