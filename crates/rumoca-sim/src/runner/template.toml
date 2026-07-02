@@ -78,6 +78,17 @@ scene = "my_scene.js"  # relative to this scenario
 # [transport.udp]
 # listen = "0.0.0.0:4244"
 # send   = "127.0.0.1:4242"
+#
+# [transport.zenoh]
+# mode = "peer"
+# endpoint = "tcp/192.168.10.50:7447" # optional router/peer to connect to
+#
+# [publish]
+# sim_input = "synapse/sim_input"
+# motor_output = "synapse/motor_output"
+#
+# [subscribe]
+# motor_output = "synapse/motor_output"
 
 # [external_interface]
 # command = "/path/to/external-process"
