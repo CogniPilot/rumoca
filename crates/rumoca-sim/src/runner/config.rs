@@ -14,6 +14,7 @@ use rumoca_codec::config::{
 use rumoca_input::config::{DeriveSpec, InputConfig, LocalDef, SignalsConfig};
 use rumoca_solver::SimPacingMode;
 use rumoca_transport_udp::UdpConfig;
+use rumoca_transport_zenoh::ZenohConfig;
 
 // ── Top-level ──────────────────────────────────────────────────────────────
 
@@ -84,6 +85,13 @@ pub struct SimulationConfig {
     controller: Option<toml::Value>,
     #[serde(default)]
     pub transport: Option<TransportConfig>,
+    /// Message-name to Zenoh key mapping. Message names may be `send`,
+    /// `receive`, a FlatBuffer root type, or the root type's snake_case leaf.
+    #[serde(default)]
+    pub publish: HashMap<String, String>,
+    /// Message-name to Zenoh key mapping for inbound command messages.
+    #[serde(default)]
+    pub subscribe: HashMap<String, String>,
     #[serde(default)]
     pub locals: HashMap<String, LocalDef>,
     #[serde(default)]
@@ -191,6 +199,8 @@ pub struct ModelConfig {
 pub struct TransportConfig {
     #[serde(default)]
     pub udp: Option<UdpConfig>,
+    #[serde(default)]
+    pub zenoh: Option<ZenohConfig>,
     #[serde(default, rename = "websocket")]
     pub websocket: Option<WebSocketConfig>,
     #[serde(default)]
@@ -450,6 +460,13 @@ impl SimulationConfig {
         Ok(config)
     }
 
+    /// True when a `[transport.zenoh]` section is configured.
+    fn has_zenoh_transport(&self) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(|transport| transport.zenoh.is_some())
+    }
+
     /// The three FB sections must all be present (external coupling) or all
     /// absent (standalone). Any mix is a user error.
     fn validate(&self) -> anyhow::Result<()> {
@@ -493,6 +510,12 @@ impl SimulationConfig {
                  Provide all three ([schema], [receive], [send]) to enable \
                  external-interface coupling, or omit all three for standalone mode."
             );
+        }
+        if !self.publish.is_empty() && !self.has_zenoh_transport() {
+            anyhow::bail!("[publish] requires a [transport.zenoh] section");
+        }
+        if !self.subscribe.is_empty() && !self.has_zenoh_transport() {
+            anyhow::bail!("[subscribe] requires a [transport.zenoh] section");
         }
         if self.controller.is_some() {
             anyhow::bail!(

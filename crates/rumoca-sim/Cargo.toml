@@ -31,6 +31,7 @@ runner = [
     "dep:rumoca-input-gamepad",
     "dep:rumoca-input-keyboard",
     "dep:rumoca-transport-udp",
+    "dep:rumoca-transport-zenoh",
     "dep:rumoca-transport-websocket",
     "dep:rumoca-compile",
     "dep:signal-hook",
@@ -61,6 +62,7 @@ rumoca-codec = { workspace = true, optional = true }
 rumoca-input = { workspace = true, optional = true }
 rumoca-input-keyboard = { workspace = true, optional = true }
 rumoca-transport-udp = { workspace = true, optional = true }
+rumoca-transport-zenoh = { workspace = true, optional = true }
 rumoca-transport-websocket = { workspace = true, optional = true }
 rumoca-compile = { workspace = true, optional = true }
 signal-hook = { version = "0.3", optional = true }

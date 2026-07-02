@@ -27,7 +27,9 @@ use rumoca_input::{
 };
 use rumoca_transport_udp::{UdpConfig, UdpTransport};
 use rumoca_transport_websocket::run_broadcast_server;
+use rumoca_transport_zenoh::ZenohTransport;
 use serde::Deserialize;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::runner::devices::{self, Devices};
 
@@ -235,6 +237,51 @@ fn resolve_udp(cfg: &SimulationConfig) -> Option<&UdpConfig> {
     cfg.transport.as_ref().and_then(|t| t.udp.as_ref())
 }
 
+fn resolve_zenoh(cfg: &SimulationConfig) -> Option<&rumoca_transport_zenoh::ZenohConfig> {
+    cfg.transport.as_ref().and_then(|t| t.zenoh.as_ref())
+}
+
+fn insert_u64(obj: &mut JsonMap<String, JsonValue>, key: &str, value: u64) {
+    obj.insert(key.to_string(), JsonValue::from(value));
+}
+
+fn snake_case_type_leaf(root_type: &str) -> String {
+    // `root_type` is a FlatBuffer fully-qualified type (e.g. `cerebri2.topic.Foo`);
+    // take the segment after the last dot without string tokenization. `.` is
+    // ASCII so byte-index slicing is safe.
+    let leaf = match root_type.rfind('.') {
+        Some(dot) => &root_type[dot + 1..],
+        None => root_type,
+    };
+    let mut out = String::new();
+    let mut prev_lower_or_digit = false;
+    for ch in leaf.chars() {
+        if ch.is_ascii_uppercase() {
+            if prev_lower_or_digit {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+            prev_lower_or_digit = false;
+        } else {
+            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn map_message_name(
+    messages: &std::collections::HashMap<String, String>,
+    alias: &str,
+    root_type: &str,
+) -> Option<String> {
+    let leaf = snake_case_type_leaf(root_type);
+    [alias, root_type, leaf.as_str()]
+        .into_iter()
+        .find(|name| messages.contains_key(*name))
+        .map(str::to_owned)
+}
+
 #[derive(Deserialize)]
 struct ViewerInputCommand {
     key: Option<ViewerKeyCommand>,
@@ -360,10 +407,14 @@ fn browser_key_to_event(key: &ViewerKeyCommand) -> Option<KeyboardEvent> {
 /// `[receive]` + `[send]` are configured (external coupling). Absent in
 /// standalone mode (e.g. rover demo).
 struct FbTransport {
-    udp: UdpTransport,
+    udp: Option<UdpTransport>,
+    zenoh: Option<ZenohTransport>,
     pack: Box<dyn PackCodec>,
     unpack: Box<dyn UnpackCodec>,
     recv_expected: usize,
+    send_publish: Option<String>,
+    receive_publish: Option<String>,
+    receive_subscribe: Option<String>,
 }
 
 /// Immutable per-frame context: FB transport (if any), mapper, and channels.
@@ -387,6 +438,7 @@ struct FrameCtx<'a> {
 struct FrameState {
     recv_buf: [u8; 512],
     pkt_count: u64,
+    send_count: u64,
     frame_num: u64,
     last_poll: Instant,
     trace: Option<TraceLogger>,
@@ -450,6 +502,43 @@ enum FrameControl {
 /// Run the interactive simulation app. Blocks the calling thread. In standalone
 /// mode (no `[schema]`/`[receive]`/`[send]` in config) the UDP socket and
 /// codecs are not created and no external-interface coupling happens.
+fn log_pacing_status(
+    mode: SimPacingMode,
+    lockstep_schedule: Option<LockstepSchedule>,
+    steps_per_packet: usize,
+    dt: f64,
+) {
+    status_line(&format!(
+        "  Pacing: {}",
+        match mode {
+            SimPacingMode::AsFastAsPossible => "as_fast_as_possible",
+            SimPacingMode::Realtime => "realtime",
+            SimPacingMode::Lockstep if lockstep_schedule.is_some() => {
+                "lockstep (multirate scheduled)"
+            }
+            SimPacingMode::Lockstep if steps_per_packet > 1 => {
+                "lockstep (input-packet-paced, multistep)"
+            }
+            SimPacingMode::Lockstep => "lockstep (input-packet-paced)",
+        }
+    ));
+    if matches!(mode, SimPacingMode::Lockstep)
+        && let Some(schedule) = lockstep_schedule
+    {
+        status_line(&format!(
+            "  Lockstep send: {:.3} Hz, receive barrier: {:.3} Hz, max step dt: {} s",
+            1.0 / schedule.send_dt,
+            1.0 / schedule.receive_dt,
+            schedule.max_step_dt
+        ));
+    } else if matches!(mode, SimPacingMode::Lockstep) && steps_per_packet > 1 {
+        status_line(&format!(
+            "  Lockstep steps/packet: {steps_per_packet} ({} s simulated per packet)",
+            dt * steps_per_packet as f64
+        ));
+    }
+}
+
 pub fn run_sim_loop<S>(stepper: &mut S, args: SimLoopArgs<'_>) -> Result<()>
 where
     S: InteractiveStepper,
@@ -520,35 +609,7 @@ where
         .lockstep
         .as_ref()
         .map(|lockstep| LockstepSchedule::from_config(lockstep, cfg.sim.dt));
-    status_line(&format!(
-        "  Pacing: {}",
-        match mode {
-            SimPacingMode::AsFastAsPossible => "as_fast_as_possible",
-            SimPacingMode::Realtime => "realtime",
-            SimPacingMode::Lockstep if lockstep_schedule.is_some() => {
-                "lockstep (multirate scheduled)"
-            }
-            SimPacingMode::Lockstep if steps_per_packet > 1 => {
-                "lockstep (input-packet-paced, multistep)"
-            }
-            SimPacingMode::Lockstep => "lockstep (input-packet-paced)",
-        }
-    ));
-    if matches!(mode, SimPacingMode::Lockstep)
-        && let Some(schedule) = lockstep_schedule
-    {
-        status_line(&format!(
-            "  Lockstep send: {:.3} Hz, receive barrier: {:.3} Hz, max step dt: {} s",
-            1.0 / schedule.send_dt,
-            1.0 / schedule.receive_dt,
-            schedule.max_step_dt
-        ));
-    } else if matches!(mode, SimPacingMode::Lockstep) && steps_per_packet > 1 {
-        status_line(&format!(
-            "  Lockstep steps/packet: {steps_per_packet} ({} s simulated per packet)",
-            cfg.sim.dt * steps_per_packet as f64
-        ));
-    }
+    log_pacing_status(mode, lockstep_schedule, steps_per_packet, cfg.sim.dt);
     status_line("");
     status_line("Ready. Simulation running.");
     status_line(&format!(
@@ -576,6 +637,7 @@ where
     let mut state = FrameState {
         recv_buf: [0u8; 512],
         pkt_count: 0,
+        send_count: 0,
         frame_num: 0,
         last_poll: Instant::now(),
         trace,
@@ -631,16 +693,61 @@ fn setup_fb_transport(cfg: &SimulationConfig) -> Result<Option<FbTransport>> {
     let pack = rumoca_codec::build_pack(schema_cfg, send_cfg).context("Build pack codec")?;
     let unpack = rumoca_codec::build_unpack(schema_cfg, recv_cfg).context("Build unpack codec")?;
     let recv_expected = unpack.expected_size();
-    let udp_cfg = resolve_udp(cfg).context("FB config present but no [transport.udp] section")?;
-    eprintln!("  UDP listen: {}", udp_cfg.listen);
-    eprintln!("  UDP send:   {}", udp_cfg.send);
     eprintln!("  Expecting {recv_expected}-byte receive packets");
-    let udp = UdpTransport::bind(udp_cfg)?;
+    let udp = match resolve_udp(cfg) {
+        Some(udp_cfg) => {
+            eprintln!("  UDP listen: {}", udp_cfg.listen);
+            eprintln!("  UDP send:   {}", udp_cfg.send);
+            Some(UdpTransport::bind(udp_cfg)?)
+        }
+        None => None,
+    };
+    let send_publish = map_message_name(&cfg.publish, "send", &send_cfg.root_type);
+    let receive_publish = map_message_name(&cfg.publish, "receive", &recv_cfg.root_type);
+    let receive_subscribe = map_message_name(&cfg.subscribe, "receive", &recv_cfg.root_type);
+    let zenoh = match resolve_zenoh(cfg) {
+        Some(zenoh_cfg) => {
+            let transport = ZenohTransport::open(zenoh_cfg, &cfg.publish, &cfg.subscribe)?;
+            if let Some(name) = &send_publish
+                && let Some(key) = transport.publish_key_for(name)
+            {
+                eprintln!("  Zenoh publish send '{name}': {key}");
+            }
+            if let Some(name) = &receive_publish
+                && let Some(key) = transport.publish_key_for(name)
+            {
+                eprintln!("  Zenoh publish receive '{name}': {key}");
+            }
+            if let Some(name) = &receive_subscribe
+                && let Some(key) = transport.subscribe_key_for(name)
+            {
+                eprintln!("  Zenoh subscribe receive '{name}': {key}");
+            }
+            Some(transport)
+        }
+        None => None,
+    };
+    if udp.is_none() && receive_subscribe.is_none() {
+        anyhow::bail!(
+            "FB config needs an inbound command transport: configure [transport.udp] or \
+             [transport.zenoh] plus [subscribe] for the [receive] message"
+        );
+    }
+    if udp.is_none() && send_publish.is_none() {
+        anyhow::bail!(
+            "FB config without [transport.udp] needs an outbound sensor transport: \
+             configure [publish] for the [send] message"
+        );
+    }
     Ok(Some(FbTransport {
         udp,
+        zenoh,
         pack,
         unpack,
         recv_expected,
+        send_publish,
+        receive_publish,
+        receive_subscribe,
     }))
 }
 
@@ -757,7 +864,7 @@ impl FrameCtx<'_> {
         if !state.lockstep_schedule_initialized {
             state.lockstep_schedule_initialized = true;
             state.next_lockstep_control_time = now + schedule.receive_dt;
-            state.next_lockstep_send_time = now;
+            state.next_lockstep_send_time = now + schedule.send_dt;
         }
 
         let control_time = state.next_lockstep_control_time;
@@ -768,7 +875,7 @@ impl FrameCtx<'_> {
         }
         self.apply_stepper_inputs(state, stepper, engine, input_runtime)?;
 
-        while state.next_lockstep_send_time <= control_time + EPS {
+        while state.next_lockstep_send_time < control_time - EPS {
             let target = state.next_lockstep_send_time;
             let step_dt = target - stepper.time();
             if step_dt > EPS {
@@ -858,10 +965,54 @@ impl FrameCtx<'_> {
             (send_frame, json)
         };
         if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
-            fb.udp.send(&fb.pack.pack(&frame));
+            let bytes = fb.pack.pack(&frame);
+            if let Some(udp) = &fb.udp {
+                udp.send(&bytes);
+            }
+            if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.send_publish) {
+                zenoh.publish(message, &bytes);
+            }
+            state.send_count += 1;
         }
+        let json = self.with_runtime_transport_fields(json, state, stepper.time())?;
         let _ = self.state_tx.send(json);
         Ok(())
+    }
+
+    fn with_runtime_transport_fields(
+        &self,
+        json: String,
+        state: &FrameState,
+        stepper_time: f64,
+    ) -> Result<String> {
+        let mut value: JsonValue =
+            serde_json::from_str(&json).context("parse viewer JSON for runtime fields")?;
+        let obj = value
+            .as_object_mut()
+            .context("viewer JSON root must be an object")?;
+        insert_u64(obj, "runtime_tx_count", state.send_count);
+        insert_u64(obj, "runtime_rx_count", state.pkt_count);
+        if stepper_time > 0.0 {
+            obj.insert(
+                "runtime_tx_actual_hz".to_string(),
+                JsonValue::from(state.send_count as f64 / stepper_time),
+            );
+            obj.insert(
+                "runtime_rx_actual_hz".to_string(),
+                JsonValue::from(state.pkt_count as f64 / stepper_time),
+            );
+        }
+        if let Some(schedule) = self.lockstep_schedule {
+            obj.insert(
+                "runtime_tx_target_hz".to_string(),
+                JsonValue::from(1.0 / schedule.send_dt),
+            );
+            obj.insert(
+                "runtime_rx_target_hz".to_string(),
+                JsonValue::from(1.0 / schedule.receive_dt),
+            );
+        }
+        Ok(value.to_string())
     }
 
     fn emit_status(&self, state: &FrameState, stepper: &impl InteractiveStepper) {
@@ -889,11 +1040,27 @@ impl FrameCtx<'_> {
         let Some(fb) = self.fb else {
             return Ok(false);
         };
-        let Some(n) = fb.udp.recv_blocking(&mut state.recv_buf) else {
+        if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_subscribe) {
+            let Some(datagram) = zenoh.recv_latest_blocking(message, Duration::from_millis(100))
+            else {
+                return Ok(false);
+            };
+            state.pkt_count += 1;
+            apply_fb_datagram(fb, &datagram, stepper, engine)?;
+            return Ok(true);
+        }
+        let Some(udp) = &fb.udp else {
+            return Ok(false);
+        };
+        let Some(n) = udp.recv_blocking(&mut state.recv_buf) else {
             return Ok(false);
         };
         state.pkt_count += 1;
-        apply_fb_datagram(fb, &state.recv_buf[..n], stepper, engine)?;
+        let datagram = &state.recv_buf[..n];
+        if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_publish) {
+            zenoh.publish(message, datagram);
+        }
+        apply_fb_datagram(fb, datagram, stepper, engine)?;
         Ok(true)
     }
 
@@ -942,11 +1109,20 @@ impl FrameCtx<'_> {
             return Ok(());
         };
         let expected = fb.recv_expected;
+        if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_subscribe) {
+            return drain_zenoh_subscribe(fb, zenoh, message, expected, state, stepper, engine);
+        }
+        let Some(udp) = &fb.udp else {
+            return Ok(());
+        };
         let mut error = None;
-        fb.udp.drain(&mut state.recv_buf, |datagram| {
+        udp.drain(&mut state.recv_buf, |datagram| {
             state.pkt_count += 1;
             if datagram.len() != expected || error.is_some() {
                 return;
+            }
+            if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_publish) {
+                zenoh.publish(message, datagram);
             }
             error = apply_fb_datagram(fb, datagram, stepper, engine).err();
         });
@@ -955,6 +1131,32 @@ impl FrameCtx<'_> {
         }
         Ok(())
     }
+}
+
+/// Drain the Zenoh subscribe key, applying each datagram to the stepper. Split
+/// out of `drain_udp` so the receive closure isn't nested under the transport
+/// match arm.
+fn drain_zenoh_subscribe(
+    fb: &FbTransport,
+    zenoh: &ZenohTransport,
+    message: &str,
+    expected: usize,
+    state: &mut FrameState,
+    stepper: &mut impl InteractiveStepper,
+    engine: &mut InputEngine,
+) -> Result<()> {
+    let mut error = None;
+    zenoh.drain(message, |datagram| {
+        state.pkt_count += 1;
+        if datagram.len() != expected || error.is_some() {
+            return;
+        }
+        error = apply_fb_datagram(fb, datagram, stepper, engine).err();
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn start_external_interface_into(
