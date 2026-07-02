@@ -33,6 +33,7 @@ pub(super) fn apply_substitutions_to_remaining_once(
     }
     let derivative_source = dae.clone();
     let mut derivative_replacements = DerivativeReplacementCache::new(&derivative_source);
+    let mut touched_equations = Vec::new();
     for (i, eq) in dae.continuous.equations.iter_mut().enumerate() {
         let eliminated = eliminated_eq_flags.get(i).ok_or_else(|| {
             StructuralError::ContractViolation {
@@ -46,6 +47,8 @@ pub(super) fn apply_substitutions_to_remaining_once(
         if *eliminated {
             continue;
         }
+        let original_lhs = eq.lhs.clone();
+        let original_rhs = eq.rhs.clone();
         let rhs = apply_substitutions_in_order_with_derivatives(
             &eq.rhs,
             substitutions,
@@ -53,6 +56,9 @@ pub(super) fn apply_substitutions_to_remaining_once(
         )?;
         let Some(lhs) = eq.lhs.as_ref() else {
             eq.rhs = rhs;
+            if eq.rhs != original_rhs {
+                touched_equations.push(i);
+            }
             continue;
         };
         let lhs_expr = Expression::VarRef {
@@ -71,7 +77,11 @@ pub(super) fn apply_substitutions_to_remaining_once(
             eq.lhs = None;
             eq.rhs = subtraction(substituted_lhs, rhs, eq.span);
         }
+        if eq.lhs != original_lhs || eq.rhs != original_rhs {
+            touched_equations.push(i);
+        }
     }
+    super::drop_structured_families_touching_equations(dae, &touched_equations);
     Ok(())
 }
 
@@ -83,11 +93,11 @@ pub(super) fn apply_substitutions_to_dae_partitions(
         return Ok(());
     }
     let derivative_source = dae.clone();
-    SubstitutionDaeRewriter {
+    let mut rewriter = SubstitutionDaeRewriter {
         substitutions,
         derivative_replacements: DerivativeReplacementCache::new(&derivative_source),
-    }
-    .rewrite_dae(dae)
+    };
+    rewriter.rewrite_dae(dae)
 }
 
 pub(super) fn apply_substitutions_in_order(
@@ -278,7 +288,9 @@ struct SubstitutionDaeRewriter<'a> {
 
 impl SubstitutionDaeRewriter<'_> {
     fn rewrite_dae(&mut self, dae: &mut Dae) -> Result<(), StructuralError> {
-        self.rewrite_equations(&mut dae.continuous.equations)?;
+        let touched_equations =
+            self.rewrite_equations_collecting_changes(&mut dae.continuous.equations)?;
+        super::drop_structured_families_touching_equations(dae, &touched_equations);
         self.rewrite_equations(&mut dae.initialization.equations)?;
         self.rewrite_equations(&mut dae.discrete.real_updates)?;
         self.rewrite_equations(&mut dae.discrete.valued_updates)?;
@@ -299,6 +311,22 @@ impl SubstitutionDaeRewriter<'_> {
             self.rewrite_equation(equation)?;
         }
         Ok(())
+    }
+
+    fn rewrite_equations_collecting_changes(
+        &mut self,
+        equations: &mut [rumoca_ir_dae::Equation],
+    ) -> Result<Vec<usize>, StructuralError> {
+        let mut touched = Vec::new();
+        for (index, equation) in equations.iter_mut().enumerate() {
+            let original_lhs = equation.lhs.clone();
+            let original_rhs = equation.rhs.clone();
+            self.rewrite_equation(equation)?;
+            if equation.lhs != original_lhs || equation.rhs != original_rhs {
+                touched.push(index);
+            }
+        }
+        Ok(touched)
     }
 
     fn rewrite_equation(

@@ -1,6 +1,7 @@
 //! DAE → simulation solve-model lowering, organized into cohesive stages:
 //!
 //! - [`diagnostics`] — the [`SimulationDiagnosticError`] surfaced by every entry.
+//! - [`direct`] — the guarded explicit/direct fast path before structural work.
 //! - [`overrides`] — solver-neutral tunable-parameter / state-start overrides.
 //! - [`entry`] — the public lowering entry points and per-stage timings.
 //! - [`probe`] — the `--inspect eval` / `--inspect jacobian` debug probes.
@@ -12,6 +13,7 @@
 //! facade (`lib.rs`) and the solver backends keep referring to the same paths.
 
 mod diagnostics;
+mod direct;
 mod entry;
 mod expr_util;
 mod overrides;
@@ -42,8 +44,6 @@ pub use structure_report::{
     diagnose_structural_singularity, structural_report_for_dae,
 };
 
-// Only the diffsol build pipeline consumes the staged-timing entry point.
-#[cfg(feature = "solver-diffsol")]
 pub(crate) use entry::lower_dae_for_simulation_with_stage_timing;
 pub(crate) use overrides::apply_simulation_overrides;
 pub use overrides::lower_for_simulation_with_overrides;

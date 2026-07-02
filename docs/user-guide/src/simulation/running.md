@@ -77,6 +77,62 @@ A compact circuit-style example with switching behavior:
 rumoca sim -c examples/simulation/rumoca-scenario.switched_rlc.toml
 ```
 
+### NeuralODETensor
+
+A tensor-shaped Neural ODE with matrix-vector network layers and a phase
+portrait plot:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.neural_ode_tensor.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.neural_ode_tensor.toml
+```
+
+See [Neural ODEs](../language/neural-odes.md) for the model structure and
+parameter-count formula.
+
+### NeuralPredatorPrey
+
+A Lotka-Volterra-style Neural ODE whose tensor network predicts per-capita
+growth rates for prey and predator populations:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.neural_predator_prey.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.neural_predator_prey.toml
+```
+
+### NeuralLatentOscillator
+
+A larger latent Neural ODE with eight hidden states, a learned residual vector
+field, a learned decoder, and about 19k trainable parameters by default:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.neural_latent_oscillator.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.neural_latent_oscillator.toml
+```
+
+### NeuralODEBackprop
+
+A native backpropagation training demonstration. The model makes weights into
+states, computes mini-batch vector-field loss, and integrates gradient-descent
+updates directly:
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.neural_ode_backprop.toml
+```
+
+```bash
+rumoca sim -c examples/simulation/rumoca-scenario.neural_ode_backprop.toml
+```
+
 ## What a Run Produces
 
 - **Batch runs** write an HTML report with time-series plots of all

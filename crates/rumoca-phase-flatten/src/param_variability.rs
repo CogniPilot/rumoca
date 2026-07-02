@@ -29,7 +29,7 @@ use std::ops::ControlFlow;
 
 use rumoca_ir_ast::{
     self as ast, ComponentReference, ComponentReferenceContext, Visitor, contains_function_call,
-    walk_component_reference_default,
+    walk_component_reference_default, walk_expression_default,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -108,7 +108,7 @@ fn classify_family(
         return false;
     }
     let provable = family.external_refs.iter().all(|name| {
-        parameter_constant_bases.contains(name.as_str()) || param_variability.contains(name)
+        reference_is_parameter_variability(name, parameter_constant_bases, param_variability)
     });
     if !provable {
         return false;
@@ -118,6 +118,14 @@ fn classify_family(
         changed |= param_variability.insert(lhs.clone());
     }
     changed
+}
+
+fn reference_is_parameter_variability(
+    name: &str,
+    parameter_constant_bases: &FxHashSet<&str>,
+    param_variability: &FxHashSet<String>,
+) -> bool {
+    name != "time" && (parameter_constant_bases.contains(name) || param_variability.contains(name))
 }
 
 /// Variable-dependence over the model equations: which arrays each `der(...)` equation
@@ -342,6 +350,15 @@ struct RefBaseCollector<'a> {
 }
 
 impl Visitor for RefBaseCollector<'_> {
+    fn visit_expression(&mut self, expr: &ast::Expression) -> ControlFlow<()> {
+        if let ast::Expression::Terminal { token, .. } = expr
+            && token.text.as_ref() == "time"
+        {
+            self.bases.insert("time".to_string());
+        }
+        walk_expression_default(self, expr)
+    }
+
     fn visit_component_reference_ctx(
         &mut self,
         cr: &ComponentReference,
@@ -363,4 +380,41 @@ impl Visitor for RefBaseCollector<'_> {
 /// Strip a trailing array subscript so `sig[1,2]` and `sig` compare equal.
 fn base(name: &str) -> &str {
     name.split('[').next().unwrap_or(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_blocks_parameter_variability_family() {
+        let family = FamilyRefs {
+            lhs_bases: FxHashSet::from_iter(["sampleX".to_string()]),
+            external_refs: FxHashSet::from_iter(["time".to_string()]),
+        };
+        let parameter_constant_bases = FxHashSet::from_iter(["time"]);
+        let mut param_variability = FxHashSet::default();
+
+        let changed = classify_family(&family, &parameter_constant_bases, &mut param_variability);
+
+        assert!(!changed);
+        assert!(!param_variability.contains("sampleX"));
+    }
+
+    #[test]
+    fn terminal_time_is_collected_as_runtime_reference() {
+        let expr = ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::End,
+            token: rumoca_core::Token {
+                text: "time".into(),
+                ..Default::default()
+            },
+            span: rumoca_core::Span::DUMMY,
+        };
+        let mut refs = FxHashSet::default();
+
+        collect_reference_bases(&expr, &mut refs);
+
+        assert!(refs.contains("time"));
+    }
 }

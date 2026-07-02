@@ -12,6 +12,7 @@ use rumoca_ir_solve::{
 };
 use rumoca_solver::{MatMulKernel, select_matmul_kernel};
 
+use crate::refresh_plan::AlgebraicRefreshRow;
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
     RowInputRequirements, SimulationRuntimeState,
@@ -470,6 +471,13 @@ impl PreparedScalarProgramBlock {
             .is_some_and(|shape| shape.is_some())
     }
 
+    pub(crate) fn row_output_count(&self, row_idx: usize) -> Option<usize> {
+        self.block
+            .programs
+            .get(row_idx)
+            .map(|row| ScalarProgramBlock::program_output_count(row))
+    }
+
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;
@@ -499,6 +507,78 @@ impl PreparedScalarProgramBlock {
             validate_inputs: false,
             label: "target_row_unchecked",
         })
+    }
+
+    pub(crate) fn eval_row_outputs_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        let row = self
+            .block
+            .programs
+            .get(row_idx)
+            .ok_or(EvalSolveError::OutputTooSmall {
+                required: checked_required_row_count(row_idx)?,
+                len: self.block.row_count(),
+                span: self.block.program_span(row_idx),
+            })?;
+        let output_count = ScalarProgramBlock::program_output_count(row);
+        out.resize(output_count, 0.0);
+        out.fill(0.0);
+        let mut scratch = self.scratch.borrow_mut();
+        record_solve_block_eval(
+            "scalar_row_outputs_unchecked",
+            self.block.len(),
+            output_count,
+        );
+        let mut sink = OutputCursor::new(out.as_mut_slice());
+        eval_row_prepared_maybe_fast(
+            PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                .with_source_span(self.block.program_span(row_idx)),
+            self.row_register_safe[row_idx],
+            &mut scratch,
+            &mut sink,
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))
+    }
+
+    pub(crate) fn apply_target_assignment_rows_unchecked_with_context(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<(), EvalSolveError> {
+        let local_runtime_state;
+        let context = match context.runtime_state {
+            Some(_) => context,
+            None => {
+                local_runtime_state = SimulationRuntimeState::new();
+                context.with_runtime_state(&local_runtime_state)
+            }
+        };
+        let mut scratch = self.scratch.borrow_mut();
+        record_solve_block_eval("target_rows_batch", self.block.len(), rows.len());
+        for row in rows {
+            let value =
+                self.eval_target_assignment_row_with_scratch(TargetAssignmentScratchRequest {
+                    row_idx: row.row_idx,
+                    target_y_index: row.target_index,
+                    y,
+                    p,
+                    t,
+                    context,
+                    scratch: &mut scratch,
+                })?;
+            y[row.target_index] = value;
+        }
+        Ok(())
     }
 
     fn eval_target_assignment_row_inner(
@@ -572,6 +652,58 @@ impl PreparedScalarProgramBlock {
         Ok(Some(value))
     }
 
+    fn eval_target_assignment_row_with_scratch(
+        &self,
+        request: TargetAssignmentScratchRequest<'_>,
+    ) -> Result<f64, EvalSolveError> {
+        let row =
+            self.block
+                .programs
+                .get(request.row_idx)
+                .ok_or(EvalSolveError::OutputTooSmall {
+                    required: checked_required_row_count(request.row_idx)?,
+                    len: self.block.row_count(),
+                    span: self.block.program_span(request.row_idx),
+                })?;
+        let Some(shape) = self.row_assignment_shapes[request.row_idx] else {
+            return Err(invalid_prepared_row_with_span(
+                "batched target assignment row has no assignment shape",
+                self.block.program_span(request.row_idx),
+            ));
+        };
+        if shape.target_y_index() != request.target_y_index {
+            return Err(invalid_prepared_row_with_span(
+                format!(
+                    "batched target assignment row targets y[{}], not y[{}]",
+                    shape.target_y_index(),
+                    request.target_y_index
+                ),
+                self.block.program_span(request.row_idx),
+            ));
+        }
+        eval_program_single(
+            PreparedRowEval::new(
+                &row[..shape.expr_eval_len()],
+                self.row_registers[request.row_idx],
+                request.y,
+                request.p,
+                request.t,
+                request.context,
+            )
+            .with_source_span(self.block.program_span(request.row_idx)),
+            self.row_register_safe[request.row_idx],
+            &mut *request.scratch,
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+        shape
+            .eval_value(
+                request.row_idx,
+                &request.scratch.regs,
+                self.block.program_span(request.row_idx),
+            )
+            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
+    }
+
     fn eval_rows_unchecked(
         &self,
         y: &[f64],
@@ -631,6 +763,16 @@ struct TargetAssignmentRowRequest<'a> {
     context: RowEvalContext<'a>,
     validate_inputs: bool,
     label: &'static str,
+}
+
+struct TargetAssignmentScratchRequest<'a> {
+    row_idx: usize,
+    target_y_index: usize,
+    y: &'a [f64],
+    p: &'a [f64],
+    t: f64,
+    context: RowEvalContext<'a>,
+    scratch: &'a mut RowEvalScratch,
 }
 
 #[derive(Clone, Copy)]

@@ -24,6 +24,7 @@ use crate::{
 mod event_update;
 mod initial_event;
 mod plans;
+mod refresh_batch;
 mod sensitivity;
 mod support;
 use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput, EventEvalParamCache};
@@ -729,10 +730,37 @@ impl SolveRuntime {
         solver_y: &mut [f64],
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        for refresh_row in plan {
+        if self.can_batch_assignment_refresh(plan) {
+            return self
+                .implicit_scalar_rhs
+                .apply_target_assignment_rows_unchecked_with_context(
+                    plan,
+                    solver_y,
+                    params,
+                    t,
+                    self.row_eval_context(),
+                )
+                .map_err(Into::into);
+        }
+        let mut row_outputs = Vec::new();
+        let mut row_pos = 0usize;
+        while row_pos < plan.len() {
+            if let Some(next_pos) = self.try_refresh_shapeless_output_segment(
+                plan,
+                row_pos,
+                t,
+                solver_y,
+                params,
+                &mut row_outputs,
+            )? {
+                row_pos = next_pos;
+                continue;
+            }
+            let refresh_row = &plan[row_pos];
             let index = refresh_row.target_index;
             let value = self.eval_refresh_row(refresh_row, t, solver_y, params)?;
             solver_y[index] = value;
+            row_pos += 1;
         }
         Ok(())
     }
