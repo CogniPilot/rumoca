@@ -53,7 +53,7 @@ include!(concat!(env!("OUT_DIR"), "/schema_assets.rs"));
 
 /// Name of the container content description reserved at the eFMU root by
 /// the standard (ch. 2): `__content.xml`. Every root entry other than this
-/// and [`SCHEMAS_DIR_NAME`] is a tool-named representation container
+/// and the reserved `schemas` directory is a tool-named representation container
 /// directory. Public so packaging drivers can recognize an existing eFMU
 /// root (e.g. to replace their own previous build product before calling
 /// [`write_efmu_container`], which itself never overwrites).
