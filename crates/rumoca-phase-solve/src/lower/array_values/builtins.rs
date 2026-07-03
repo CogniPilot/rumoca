@@ -226,6 +226,20 @@ impl<'a> LowerBuilder<'a> {
                 let arg = required_array_builtin_arg(args, function, 1, call_span)?;
                 self.lower_array_like_values(arg, scope, call_depth)
             }
+            function if unary_array_builtin_op(&function).is_some() => {
+                let op = unary_array_builtin_op(&function)
+                    .expect("guarded unary array builtin should have an op");
+                let arg = required_array_builtin_arg(args, function, 0, call_span)?;
+                let span = expression_or_call_span(arg, call_span);
+                let values = self.lower_array_like_values(arg, scope, call_depth)?;
+                let mut lowered = Vec::new();
+                let context = format!("{} array value count", function.name());
+                reserve_reg_capacity(&mut lowered, values.len(), &context, Some(span))?;
+                for value in values {
+                    lowered.push(self.emit_unary_at(op, value, span)?);
+                }
+                Ok(lowered)
+            }
             rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => {
                 let arg = required_array_builtin_arg(args, function, 0, call_span)?;
                 self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)

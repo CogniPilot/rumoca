@@ -28,6 +28,8 @@ pub use rumoca_solver::{
 
 mod build_timing;
 pub mod bulk;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod discrete_stepper;
 mod interactive_stepper;
 
 /// Lower a DAE model into the runtime Solve model through the simulation facade.

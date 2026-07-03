@@ -14,6 +14,7 @@ use rumoca_codec::config::{
 use rumoca_input::config::{DeriveSpec, InputConfig, LocalDef, SignalsConfig};
 use rumoca_solver::SimPacingMode;
 use rumoca_transport_udp::UdpConfig;
+use rumoca_transport_zenoh::ZenohConfig;
 
 // ── Top-level ──────────────────────────────────────────────────────────────
 
@@ -55,6 +56,8 @@ pub struct SimulationConfig {
     pub rumoca: Option<RumocaMarker>,
 
     pub sim: SimConfig,
+    #[serde(default)]
+    pub lockstep: Option<LockstepConfig>,
 
     /// Additional Modelica package roots loaded before the requested model.
     /// Paths are resolved relative to the config file by the CLI.
@@ -82,6 +85,13 @@ pub struct SimulationConfig {
     controller: Option<toml::Value>,
     #[serde(default)]
     pub transport: Option<TransportConfig>,
+    /// Message-name to Zenoh key mapping. Message names may be `send`,
+    /// `receive`, a FlatBuffer root type, or the root type's snake_case leaf.
+    #[serde(default)]
+    pub publish: HashMap<String, String>,
+    /// Message-name to Zenoh key mapping for inbound command messages.
+    #[serde(default)]
+    pub subscribe: HashMap<String, String>,
     #[serde(default)]
     pub locals: HashMap<String, LocalDef>,
     #[serde(default)]
@@ -143,6 +153,26 @@ pub struct SimConfig {
     /// - `lockstep`: wait for each inbound external-interface packet before stepping.
     #[serde(default)]
     pub mode: Option<SimPacingMode>,
+    /// Number of `dt` runner steps to advance after each received lockstep
+    /// packet. Values greater than 1 are useful for a slower external
+    /// controller driving a faster plant integration rate.
+    #[serde(default = "default_steps_per_packet")]
+    pub steps_per_packet: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockstepConfig {
+    /// Outbound sample stream rate. With the current runner this is the single
+    /// configured `[send]` FlatBuffer message, e.g. fake mocap.
+    pub send_rate_hz: f64,
+    /// Inbound control barrier rate. The runner waits for one received packet
+    /// before advancing beyond each interval.
+    pub receive_rate_hz: f64,
+    /// Maximum plant integration step used while advancing between scheduled
+    /// send/control boundaries. Defaults to `[sim].dt`.
+    #[serde(default)]
+    pub max_step_dt: Option<f64>,
 }
 
 fn default_dt() -> f64 {
@@ -150,6 +180,9 @@ fn default_dt() -> f64 {
 }
 fn default_t_end() -> f64 {
     1.0
+}
+fn default_steps_per_packet() -> usize {
+    1
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────
@@ -166,6 +199,8 @@ pub struct ModelConfig {
 pub struct TransportConfig {
     #[serde(default)]
     pub udp: Option<UdpConfig>,
+    #[serde(default)]
+    pub zenoh: Option<ZenohConfig>,
     #[serde(default, rename = "websocket")]
     pub websocket: Option<WebSocketConfig>,
     #[serde(default)]
@@ -425,9 +460,32 @@ impl SimulationConfig {
         Ok(config)
     }
 
+    /// True when a `[transport.zenoh]` section is configured.
+    fn has_zenoh_transport(&self) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(|transport| transport.zenoh.is_some())
+    }
+
     /// The three FB sections must all be present (external coupling) or all
     /// absent (standalone). Any mix is a user error.
     fn validate(&self) -> anyhow::Result<()> {
+        if self.sim.steps_per_packet == 0 {
+            anyhow::bail!("[sim] steps_per_packet must be at least 1");
+        }
+        if let Some(lockstep) = &self.lockstep {
+            if lockstep.send_rate_hz <= 0.0 || !lockstep.send_rate_hz.is_finite() {
+                anyhow::bail!("[lockstep] send_rate_hz must be a positive finite number");
+            }
+            if lockstep.receive_rate_hz <= 0.0 || !lockstep.receive_rate_hz.is_finite() {
+                anyhow::bail!("[lockstep] receive_rate_hz must be a positive finite number");
+            }
+            if let Some(max_step_dt) = lockstep.max_step_dt
+                && (max_step_dt <= 0.0 || !max_step_dt.is_finite())
+            {
+                anyhow::bail!("[lockstep] max_step_dt must be a positive finite number");
+            }
+        }
         let present = [
             ("schema", self.schema.is_some()),
             ("receive", self.receive.is_some()),
@@ -452,6 +510,12 @@ impl SimulationConfig {
                  Provide all three ([schema], [receive], [send]) to enable \
                  external-interface coupling, or omit all three for standalone mode."
             );
+        }
+        if !self.publish.is_empty() && !self.has_zenoh_transport() {
+            anyhow::bail!("[publish] requires a [transport.zenoh] section");
+        }
+        if !self.subscribe.is_empty() && !self.has_zenoh_transport() {
+            anyhow::bail!("[subscribe] requires a [transport.zenoh] section");
         }
         if self.controller.is_some() {
             anyhow::bail!(
@@ -641,6 +705,73 @@ mode = "{raw}"
             let cfg = toml::from_str::<SimulationConfig>(&text).unwrap();
             assert_eq!(cfg.effective_pacing_mode(), expected);
         }
+    }
+
+    #[test]
+    fn parses_lockstep_steps_per_packet() {
+        let text = r#"
+[sim]
+dt = 0.01
+mode = "lockstep"
+steps_per_packet = 4
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        assert_eq!(cfg.sim.steps_per_packet, 4);
+        cfg.validate()
+            .expect("positive steps_per_packet should validate");
+    }
+
+    #[test]
+    fn rejects_zero_steps_per_packet() {
+        let text = r#"
+[sim]
+dt = 0.01
+steps_per_packet = 0
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("steps_per_packet"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parses_multirate_lockstep_config() {
+        let text = r#"
+[sim]
+dt = 0.002
+mode = "lockstep"
+
+[lockstep]
+send_rate_hz = 240
+receive_rate_hz = 50
+max_step_dt = 0.002
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        let lockstep = cfg.lockstep.as_ref().expect("lockstep config");
+        assert_eq!(lockstep.send_rate_hz, 240.0);
+        assert_eq!(lockstep.receive_rate_hz, 50.0);
+        assert_eq!(lockstep.max_step_dt, Some(0.002));
+        cfg.validate().expect("multirate lockstep validates");
+    }
+
+    #[test]
+    fn rejects_invalid_multirate_lockstep_rates() {
+        let text = r#"
+[sim]
+dt = 0.002
+
+[lockstep]
+send_rate_hz = 0
+receive_rate_hz = 50
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("send_rate_hz"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
