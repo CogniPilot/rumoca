@@ -3760,6 +3760,15 @@ dependencies = [
 [[package]]
 name = "rumoca-target-galec"
 version = "0.9.9"
+dependencies = [
+ "rumoca-core",
+ "rumoca-efmi",
+ "rumoca-galec",
+ "rumoca-ir-dae",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+]
 
 [[package]]
 name = "rumoca-test-msl"

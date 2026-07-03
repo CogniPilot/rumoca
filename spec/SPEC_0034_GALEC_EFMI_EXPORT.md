@@ -3,18 +3,18 @@
 ## Status
 DRAFT
 
-Design contract; module layouts planned, not yet implemented.
+Design contract; CLI and container integration pending.
 
 ## Summary
-Rumoca exports eFMI Algorithm Code (GALEC `.alg` + XML manifests, packaged as
-an eFMU container) as a target-language projection over canonical compiler
-artifacts; GALEC is a first-class target language, never a canonical IR stage.
+Rumoca exports eFMI Algorithm Code (GALEC `.alg` + XML manifests in an eFMU
+container) as a target-language projection over canonical artifacts; GALEC
+is a target language, never a canonical IR stage.
 
 ## Contents
 
-Pipeline Placement · Module Layout · Rules · Resolved Decisions ·
-Conformance Ladder · Variable Classification · Validator Scope ·
-Language Traps (T1–T14) · Testing Requirements · Non-Goals · References
+Pipeline Placement, Module Layout, Rules, Resolved Decisions,
+Conformance Ladder, Variable Classification, Validator Scope,
+Language Traps (T1–T14), Testing Requirements, Non-Goals, References
 
 ## Pipeline Placement
 
@@ -29,8 +29,8 @@ DAE (+ optional provenance)
 ## Module Layout and Dependency Direction
 
 ```text
-crates/rumoca-galec         language: ast (array-native, signals/limit/(min=,max=)/quoted ids),
-                            print (T4-T7/T12), validate (six analyses), diagnostic (SPEC_0008 shape)
+crates/rumoca-galec         language: array-native ast (signals/limit/quoted ids),
+                            print (T4-T7/T12), validate (six analyses), diagnostic
 crates/rumoca-efmi          packaging: content + manifest models, xml serializer,
                             checksum (SHA-1 FIPS 180-4, raw bytes), ids (brace-wrapped UUIDs,
                             per-manifest uniqueness, strict UTC), container (.efmu, schemas/),
@@ -65,8 +65,8 @@ rumoca-compile
 | GAL-013 | Generated C/H/object outputs MUST NOT be committed except as intentional, small, documented fixtures. | CI | Repository hygiene. |
 | GAL-014 | A parser, if added, parses into the GALEC AST only — never into DAE/Solve, never Modelica input. | `rumoca-galec` | Export language stays out of the front end. |
 | GAL-015 | Mangling MUST be injective AND disjoint from keywords/reserved words/builtins/Appendix C names/`__` prefix space; quoted identifiers carry original scalarized Modelica names; round-trip tested incl. `'previous(x)'`. | `rumoca-target-galec` | Injectivity alone still emits illegal names (T13). |
-| GAL-016 | Discrete-time semantics derive from structured compiler metadata, never string/unit/value heuristics; one static base period per block; dynamic clocks and multi-rate rejected pre-projection with stable diagnostics (counter-encoding over one base period: future option, not v1). | `rumoca-target-galec` | **Why** below. |
-| GAL-017 | Block interface: exactly `Startup`/`Recalibrate`/`DoStep` (§3.1.3), stateful, parameter-free; I/O via `self.*`; Startup initializes ALL block variables, builtins only; Recalibrate emitted even when empty; all other functions reachable from DoStep; acyclic call graph. | `rumoca-target-galec` | §3.1.3, §3.2.3–3.2.4. |
+| GAL-016 | Discrete-time semantics derive from structured compiler metadata, never string/unit/value heuristics; one static base period per block; dynamic clocks and multi-rate rejected pre-projection with stable diagnostics (counter-encoding: future option). | `rumoca-target-galec` | **Why** below. |
+| GAL-017 | Block interface: exactly `Startup`/`Recalibrate`/`DoStep` (§3.1.3), stateful, parameter-free; I/O via `self.*`; Startup initializes ALL writable block variables, builtins only (control inputs are read-only in GALEC, environment-provided; their manifest `start` stays the documented default); Recalibrate emitted even when empty; all other functions reachable from DoStep; acyclic call graph. | `rumoca-target-galec` | §3.1.3, §3.2.3–3.2.4. |
 | GAL-018 | Runtime error signaling is language machinery, not SPEC_0008 diagnostics: AST models signals/checks/closures/`limit`; validator implements the §3.2.5 escape-set dataflow (declared == computed); manifest carries per-method Signals and ErrorSignalStatus (32-bit: bits 0–5 predefined, 6–15 reserved-zero, ≤16 user signals). | `rumoca-galec` + `rumoca-efmi` | Conflating the two loses the language feature. |
 | GAL-019 | Printer conformance: parenthesize every cross-precedence-class mix; no unary minus over non-references (rewrite as `0.0 - (e)` or `(-1.0)*(e)`); strict Real literal format; `/* */` comments only; mandatory `else`; parenthesized `not`; no re-association. | `rumoca-galec` printer | T4–T7, T12; evaluation order is normative. |
 | GAL-020 | Variables classify per the Variable Classification table; independent parameters never constant-folded; dependents recomputed in Recalibrate (inline in Startup); every variable has `start`; dimensions are literal integers ≥ 1. | `rumoca-target-galec` + `rumoca-efmi` | §3.1.6 + repo parameters-stay-tunable policy. |
@@ -78,15 +78,14 @@ rumoca-compile
 | GAL-026 | GALEC AST, manifest model, printer, and validator are array-native (dimensions, row-major `start`, for-loops, lifted builtins, indexed quoted identifiers); scalarized lowering is an implementation stage, never a language-layer assumption. | `rumoca-galec` + `rumoca-efmi` | Scalarization curtails Production Code optimization. |
 
 **Why (GAL-016):** GALEC has no `previous()`/`sample()` constructs (T2);
-`<Clock>` is XSD-strict (§3.1.2). `pre(x)` becomes protected state
-`'previous(x)'` (manifest `state` with `start`), committed at end of DoStep;
-the sample period is a `constant` block variable (seconds) referenced by
-manifest `<Clock>`.
+`<Clock>` is XSD-strict (§3.1.2): `pre(x)` becomes protected state
+`'previous(x)'` committed at end of DoStep; the sample period is a
+`constant` (seconds) referenced by manifest `<Clock>`.
 
 **Why (GAL-024):** The Production Code rung requires LogicalData mapping of
-every interface variable and all three BlockMethods, a checksummed
-ManifestReference, and a co-emitted Algorithm Code container (§2.2). C naming
-is convention; the manifest mapping is the conformance surface (ch. 5).
+all interface variables and BlockMethods, a checksummed ManifestReference,
+and a co-emitted Algorithm Code container (§2.2); the manifest mapping, not
+C naming, is the conformance surface (ch. 5).
 
 ### Resolved Decisions (Phase 1 gates)
 
@@ -99,7 +98,7 @@ is convention; the manifest mapping is the conformance surface (ch. 5).
 | D5 | Manifest `renderer` extension | Rejected: covered by D1. |
 | D6 | Clock strictness | XSD-strict per GAL-016 (`constant`, seconds), diverging from Beta-1's nonconforming `tunableParameter` examples. |
 | D7 | Beta-1 grammar gaps | AST adopts `(min=, max=)` attributes, the error-signal statement, and input/output block-entity prefixes; emitter rejects `//` comments and unsigned exponents regardless. |
-| D8 | Slice-1 signal scope | Full signal machinery in AST + validator; slice-1 admissibility rejects lowered Real relational operators (⇒ empty escape sets); NAN accounting (T9) tracked for slice 2. |
+| D8 | Slice-1 signal scope | Full signal machinery in AST + validator; slice-1 lowering emits Real relationals with empty escape sets (matching the validator's NAN deferral) and rejects constructs needing non-empty sets (Real→Integer narrowing, signaling solver builtins) with stable diagnostics; NAN accounting (T9) is slice 2. |
 | D9 | Embedded-C sequencing | Per GAL-024: non-eFMI C export may land after the projection crate; Production Code container deferred until Algorithm Code packaging is solid. |
 | D10 | XSD vendoring | Under `crates/rumoca-efmi/assets/efmi-schemas/` per GAL-023. |
 
@@ -167,7 +166,7 @@ structurally-parametric array sizes rejected.
 | Accept/lower/render parity anchored to the §3.2.6 catalog | GAL-005 |
 | Reserved-name rejection; mangling injective + reserved-disjoint; quoted-identifier round-trip incl. `'previous(x)'` | GAL-015 |
 | Type-inference failure ⇒ diagnostic, not default | GAL-007 |
-| DoStep parameter-free; all manifest variables assigned in Startup; `start` mirrors Startup; empty Recalibrate still emitted | GAL-017 |
+| DoStep parameter-free; all writable (non-input) manifest variables assigned in Startup; `start` mirrors Startup; empty Recalibrate still emitted | GAL-017 |
 | Manifest emit-then-XSD-validate; SHA-1 recomputation; per-manifest id uniqueness | GAL-021 |
 | `rumoca-efmi` negative schema cases: missing elements, wrong child order, bad causality enum, malformed UUID/timestamp, dimension < 1 | GAL-021 |
 | Full-container validation: all eFMU XMLs vs vendored XSDs, all checksums | GAL-021 |
@@ -180,9 +179,9 @@ structurally-parametric array sizes rejected.
 - No Behavioral Model containers (an eFMU is valid without one, ch. 4), no FMU
   embedding (`extra/org.efmi-standard`), no Binary Code representation.
 - Parser deferred to the language-conformance rung or real external GALEC
-  input; never Modelica input (GAL-014). The eventual parser: a parol grammar
-  into the GALEC AST (round-trip print→parse→compare); `.alg` LSP support
-  follows it (diagnostics keep spans).
+  input; never Modelica input (GAL-014). The eventual parser is parol into
+  the GALEC AST (round-trip print→parse→compare); `.alg` LSP follows
+  (diagnostics keep spans).
 - Embedded-C generation does not authorize target-specific rewrites in canonical DAE.
 
 ## References

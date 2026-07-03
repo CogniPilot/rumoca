@@ -7,6 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-galec = { workspace = true }
+rumoca-efmi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true
