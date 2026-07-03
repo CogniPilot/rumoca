@@ -272,7 +272,10 @@ impl<'a> LowerBuilder<'a> {
             }
             rumoca_core::BuiltinFunction::Der => self.emit_const_at(0.0, span),
             rumoca_core::BuiltinFunction::Pre => Err(unsupported_at(
-                "pre() must be lowered to __pre__ parameters before Solve-IR lowering",
+                format!(
+                    "pre() must be lowered to {} parameters before Solve-IR lowering",
+                    rumoca_core::PRE_SLOT_NAMESPACE
+                ),
                 span,
             )),
             rumoca_core::BuiltinFunction::Edge => {

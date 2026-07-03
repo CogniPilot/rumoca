@@ -94,7 +94,9 @@ pub fn galec_variable_name(source_name: &str) -> Result<Name, GalecTargetError> 
 /// `'previous(<base>)'` (rule 1 of the module scheme, trap T2).
 pub fn pre_state_name(base_source_name: &str) -> Result<Name, GalecTargetError> {
     let unrepresentable = |reason| GalecTargetError::UnrepresentableName {
-        variable: format!("__pre__.{base_source_name}"),
+        variable: rumoca_core::pre_slot_name(base_source_name)
+            .as_str()
+            .to_owned(),
         reason,
     };
     check_quotable(base_source_name).map_err(unrepresentable)?;

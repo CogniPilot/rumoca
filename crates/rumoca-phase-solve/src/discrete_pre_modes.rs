@@ -56,7 +56,7 @@ pub(crate) fn expression_contains_lowered_pre_ref(expr: &rumoca_core::Expression
             name: &rumoca_core::Reference,
             subscripts: &[rumoca_core::Subscript],
         ) {
-            if name.as_str().starts_with("__pre__.") {
+            if rumoca_core::is_pre_slot(name.as_str()) {
                 self.contains = true;
                 return;
             }
@@ -148,7 +148,7 @@ pub(crate) fn expression_contains_event_entry_pre_operator(
                 self.contains = true;
                 return;
             }
-            if name.as_str().starts_with("__pre__.") {
+            if rumoca_core::is_pre_slot(name.as_str()) {
                 self.contains = true;
                 return;
             }
@@ -177,7 +177,7 @@ pub(crate) fn expression_contains_event_entry_pre_operator(
 }
 
 fn is_pre_condition_memory_ref(dae_model: &dae::Dae, name: &rumoca_core::VarName) -> bool {
-    let Some(stripped) = name.as_str().strip_prefix("__pre__.") else {
+    let Some(stripped) = rumoca_core::pre_slot_base(name.as_str()) else {
         return false;
     };
     crate::condition_memory_base_name(dae_model).is_some_and(|condition_name| {

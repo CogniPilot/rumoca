@@ -181,7 +181,7 @@ fn checked_layout_remainder(
 fn build_pre_param_bindings(layout: &solve::VarLayout) -> Vec<solve::PreParamBinding> {
     let mut bindings = Vec::new();
     for (name, &slot) in layout.bindings() {
-        let Some(source_name) = name.strip_prefix("__pre__.") else {
+        let Some(source_name) = rumoca_core::pre_slot_base(name) else {
             continue;
         };
         let solve::ScalarSlot::P {

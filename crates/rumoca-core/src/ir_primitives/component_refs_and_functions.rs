@@ -575,6 +575,28 @@ pub fn component_path_base_name(name: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("."))
 }
 
+/// Return the dotted base path and 1-based index of an element name whose
+/// only subscript is a single trailing literal index.
+///
+/// Examples: `c[3]` -> `("c", 3)`, `a.b[2]` -> `("a.b", 2)`.
+///
+/// Returns `None` for mid-path indices (`x[2].y`), multiple or
+/// multi-dimensional subscripts (`c[1][2]`, `c[1,2]`), non-positive or
+/// non-numeric indices, missing subscripts, and any path
+/// [`component_path_base_name`] rejects as malformed.
+pub fn component_path_trailing_index(name: &str) -> Option<(String, usize)> {
+    let (base, raw_index) = split_trailing_subscript_suffix(name)?;
+    // The trailing group must be the only subscript and the base a well-formed
+    // path: subscript stripping through `component_path_base_name` must be the
+    // identity on `base`.
+    let base_path = component_path_base_name(base)?;
+    if base_path != base {
+        return None;
+    }
+    let index = raw_index.parse::<usize>().ok()?;
+    (index >= 1).then_some((base_path, index))
+}
+
 pub(super) fn derivative_state_name(name: &VarName) -> VarName {
     strip_trailing_subscript_suffix(name.as_str()).map_or_else(|| name.clone(), VarName::new)
 }

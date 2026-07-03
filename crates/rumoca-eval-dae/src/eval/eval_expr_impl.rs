@@ -1579,7 +1579,7 @@ fn lowered_pre_parameter_value<T: SimFloat>(
     raw: &str,
     env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
-    let Some(target) = raw.strip_prefix("__pre__.") else {
+    let Some(target) = rumoca_core::pre_slot_base(raw) else {
         return Ok(None);
     };
     if let Some(value) = lookup_pre_value_in(&env.runtime, target) {

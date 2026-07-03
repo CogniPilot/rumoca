@@ -45,15 +45,6 @@ use crate::diagnostic::GalecTargetError;
 use crate::input::GalecInput;
 use crate::mangle;
 
-/// Name prefix of generated previous-value slots.
-///
-/// Mirrors the generator in `crates/rumoca-phase-dae/src/pre_lowering.rs`
-/// (`__pre__.<target>`); there is no shared constant in `rumoca-core` yet —
-/// hoisting one is tracked as follow-up. Recognition additionally requires
-/// `origin == generated`, so a (illegally-named) source variable can never
-/// be mistaken for a pre-slot.
-pub const PRE_SLOT_PREFIX: &str = "__pre__.";
-
 /// GALEC variable class per the GAL-020 classification table, mirroring the
 /// manifest `blockCausality` enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -201,15 +192,15 @@ fn classify_one<'a>(
 }
 
 /// Base name of a generated `__pre__.` slot, when this variable is one.
+///
+/// The naming convention is owned by [`rumoca_core::pre_slot_name`];
+/// recognition additionally requires `origin == generated`, so an
+/// (illegally-named) source variable can never be mistaken for a pre-slot.
 fn pre_slot_base(variable: &Variable) -> Option<String> {
     if variable.origin != VariableOrigin::Generated {
         return None;
     }
-    variable
-        .name
-        .as_str()
-        .strip_prefix(PRE_SLOT_PREFIX)
-        .map(str::to_owned)
+    rumoca_core::pre_slot_base(variable.name.as_str()).map(str::to_owned)
 }
 
 /// The GAL-020 decision table (module docs). Fails early on evidence

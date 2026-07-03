@@ -14,8 +14,8 @@
 //!   relations) inline back to their defining Boolean expressions;
 //! - the clock wiring can read the sample call's period argument.
 
-use rumoca_core::{Expression, Subscript};
-use rumoca_ir_dae::{Dae, component_base_name};
+use rumoca_core::{Expression, Subscript, component_path_trailing_index, pre_slot_name};
+use rumoca_ir_dae::Dae;
 
 use crate::diagnostic::GalecTargetError;
 
@@ -48,7 +48,7 @@ impl<'a> ConditionTable<'a> {
                     detail: "canonical f_c equation without an lhs target".to_owned(),
                 });
             };
-            let Some((base, index)) = split_indexed_name(lhs.as_str()) else {
+            let Some((base, index)) = component_path_trailing_index(lhs.as_str()) else {
                 return Err(GalecTargetError::LoweringInternal {
                     detail: format!(
                         "canonical f_c target `{}` is not of the `c[i]` form",
@@ -126,15 +126,6 @@ fn is_sample_call(expr: &Expression) -> bool {
     }
 }
 
-/// Split a rendered `base[i]` name into its base and 1-based index.
-pub(crate) fn split_indexed_name(name: &str) -> Option<(String, usize)> {
-    let base = component_base_name(name)?;
-    let indexed = name.strip_prefix(&base)?;
-    let index_text = indexed.strip_prefix('[')?.strip_suffix(']')?;
-    let index: usize = index_text.parse().ok()?;
-    (index >= 1).then_some((base, index))
-}
-
 /// The condition-vector element a reference denotes, when `expr` is a
 /// reference to `base_name` with exactly one literal index (either as a
 /// structured subscript or embedded in the rendered name).
@@ -145,10 +136,7 @@ pub(crate) fn condition_ref_index(expr: &Expression, base_name: &str) -> Option<
 /// Same as [`condition_ref_index`] for the generated `__pre__.` slot of the
 /// condition vector.
 pub(crate) fn pre_condition_ref_index(expr: &Expression, base_name: &str) -> Option<usize> {
-    indexed_ref(
-        expr,
-        &format!("{}{base_name}", crate::classify::PRE_SLOT_PREFIX),
-    )
+    indexed_ref(expr, pre_slot_name(base_name).as_str())
 }
 
 fn indexed_ref(expr: &Expression, wanted_base: &str) -> Option<usize> {
@@ -167,6 +155,6 @@ fn indexed_ref(expr: &Expression, wanted_base: &str) -> Option<usize> {
     if !subscripts.is_empty() {
         return None;
     }
-    let (base, index) = split_indexed_name(name.as_str())?;
+    let (base, index) = component_path_trailing_index(name.as_str())?;
     (base == wanted_base).then_some(index)
 }

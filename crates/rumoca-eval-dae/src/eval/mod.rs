@@ -698,10 +698,6 @@ pub(super) fn previous_start_or_default<T: SimFloat>(
     Ok(T::zero())
 }
 
-fn lowered_pre_parameter_target(name: &str) -> Option<&str> {
-    name.strip_prefix("__pre__.")
-}
-
 fn try_seed_lowered_pre_parameter_from_store(
     env: &mut VarEnv<f64>,
     name: &str,
@@ -709,7 +705,7 @@ fn try_seed_lowered_pre_parameter_from_store(
 ) -> bool {
     // MLS §3.7.5 / pre-lowering: lowered `pre(x)` parameters must reflect the
     // event left-limit store, not the static runtime parameter vector.
-    let Some(target_name) = lowered_pre_parameter_target(name) else {
+    let Some(target_name) = rumoca_core::pre_slot_base(name) else {
         return false;
     };
 

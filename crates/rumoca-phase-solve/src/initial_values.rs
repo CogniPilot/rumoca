@@ -228,7 +228,7 @@ fn explicit_start_vars(
 }
 
 fn is_generated_pre_name(name: &rumoca_core::VarName) -> bool {
-    name.as_str().starts_with("__pre__.")
+    rumoca_core::is_pre_slot(name.as_str())
 }
 
 #[derive(Debug, Clone)]
@@ -712,7 +712,7 @@ impl InitialAliasPropagation<'_, '_> {
 
     fn write_value(&mut self, target: &str, value: f64) -> bool {
         self.env.set(target, value);
-        if let Some(pre_target) = target.strip_prefix("__pre__.") {
+        if let Some(pre_target) = rumoca_core::pre_slot_base(target) {
             set_pre_value_in_env(self.env, pre_target, value);
         }
         let dims = assignment_target_dims(self.dae_model, target);
@@ -847,7 +847,7 @@ fn seed_current_slot_from_lowered_pre(
     target: &str,
     value: f64,
 ) -> bool {
-    let Some(current_target) = target.strip_prefix("__pre__.") else {
+    let Some(current_target) = rumoca_core::pre_slot_base(target) else {
         return false;
     };
     env.set(current_target, value);
@@ -863,16 +863,16 @@ fn seed_lowered_pre_from_current_slot(
     target: &str,
     value: f64,
 ) -> bool {
-    if target.starts_with("__pre__.") {
+    if rumoca_core::is_pre_slot(target) {
         return false;
     }
-    let pre_target = format!("__pre__.{target}");
-    if layout.binding(&pre_target).is_none() {
+    let pre_target = rumoca_core::pre_slot_name(target);
+    if layout.binding(pre_target.as_str()).is_none() {
         return false;
     }
-    env.set(&pre_target, value);
+    env.set(pre_target.as_str(), value);
     set_pre_value_in_env(env, target, value);
-    write_initial_slot(layout, params, initial_y, &pre_target, value)
+    write_initial_slot(layout, params, initial_y, pre_target.as_str(), value)
 }
 
 fn assignment_target_dims<'a>(dae_model: &'a dae::Dae, target: &str) -> &'a [i64] {

@@ -193,9 +193,8 @@ impl BuiltinScalarTypeIds {
 mod tests {
     use super::*;
     use crate::compile::{CompilationResult, Session, SessionConfig};
-    use rumoca_core::VarName;
+    use rumoca_core::{VarName, pre_slot_name};
     use rumoca_ir_dae::component_base_name;
-    use rumoca_target_galec::classify::PRE_SLOT_PREFIX;
 
     /// Fixed-sample discrete fixture exercising every mapping rule:
     /// Real/Integer/Boolean parameters and constants, a `pre()` slot on an
@@ -255,9 +254,9 @@ end GalecFacadeDemo;
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
         let map = build_scalar_type_map(&result.flat);
 
-        let pre_count = format!("{PRE_SLOT_PREFIX}count");
+        let pre_count = pre_slot_name("count");
         assert_eq!(
-            get(&map, &pre_count),
+            get(&map, pre_count.as_str()),
             None,
             "facade must not duplicate the projection's pre-slot rule"
         );

@@ -18,10 +18,9 @@
 //! recognizable shape, fail with stable `unsupported-feature` diagnostics
 //! (GAL-007) rather than emitting the guarded form.
 
-use rumoca_core::{BuiltinFunction, Expression, OpBinary, OpUnary, Subscript};
+use rumoca_core::{BuiltinFunction, Expression, OpBinary, OpUnary, Subscript, pre_slot_name};
 use rumoca_ir_dae::Equation;
 
-use crate::classify::PRE_SLOT_PREFIX;
 use crate::diagnostic::GalecTargetError;
 use crate::lower::conditions::{ConditionTable, condition_ref_index, pre_condition_ref_index};
 
@@ -144,7 +143,7 @@ fn is_initial_call(expr: &Expression) -> bool {
 }
 
 fn is_pre_ref_to(expr: &Expression, target: &str) -> bool {
-    is_ref_to(expr, &format!("{PRE_SLOT_PREFIX}{target}"))
+    is_ref_to(expr, pre_slot_name(target).as_str())
 }
 
 /// True when `expr` is a plain reference rendering exactly as `wanted`
