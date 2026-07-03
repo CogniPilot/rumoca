@@ -13,9 +13,12 @@
 //!
 //! SHA-1 checksums recorded in `__content.xml` are computed at write time
 //! from the exact manifest bytes being written — placeholder checksums are
-//! unrepresentable — and every `File/@checksum` entry inside each manifest is
-//! cross-checked against the file bytes actually being written (GAL-021: a
-//! wrong checksum makes the eFMU invalid). Cross-representation rules (unique
+//! unrepresentable — and every `File` entry inside each manifest is
+//! cross-checked against the files actually being written: each listed file
+//! must exist among them, `File/@checksum` entries must match the bytes, and
+//! the registered `manifestRefId` must equal the `id` carried by the manifest
+//! bytes themselves (GAL-021: a wrong checksum or dangling reference makes
+//! the eFMU invalid). Cross-representation rules (unique
 //! names, exactly one Algorithm Code container) are enforced by
 //! [`Content::new`], which this module drives; layout-only rules (reserved
 //! root names, path-safe components, duplicate files, non-empty output
@@ -32,11 +35,10 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
 use crate::checksum::Sha1Hex;
-use crate::content::{
-    Content, ContentParts, ManifestAttributes, ModelRepresentation, ModelRepresentationKind,
-};
+use crate::content::{Content, ContentParts, ModelRepresentation, ModelRepresentationKind};
 use crate::diagnostic::EfmiError;
 use crate::ids::{FilePath, ManifestId, NameWithoutSlashes};
+use crate::manifest_common::ManifestAttributes;
 use crate::xml::content_to_xml;
 
 /// One embedded vendored schema file; `relative_path` is `/`-separated and
@@ -147,7 +149,7 @@ pub fn write_efmu_container(
 ) -> Result<EfmuLayout, EfmiError> {
     for representation in representations {
         validate_representation_layout(representation)?;
-        verify_manifest_file_checksums(representation)?;
+        verify_manifest_consistency(representation)?;
     }
     let checksums: Vec<Sha1Hex> = representations
         .iter()
@@ -156,20 +158,56 @@ pub fn write_efmu_container(
     let content = build_content(representations, &checksums, meta)?;
     let content_bytes = content_to_xml(&content)?;
 
-    prepare_root(out_dir)?;
+    let created_root = prepare_root(out_dir)?;
+    write_layout(representations, checksums, &content_bytes, out_dir)
+        .inspect_err(|_| cleanup_failed_write(out_dir, created_root))
+}
+
+/// Write phase of [`write_efmu_container`]: all validation has passed and the
+/// root exists and is empty; place every file.
+fn write_layout(
+    representations: &[ModelRepresentationFiles],
+    checksums: Vec<Sha1Hex>,
+    content_bytes: &[u8],
+    out_dir: &Path,
+) -> Result<EfmuLayout, EfmiError> {
     let schemas_dir = write_schemas(out_dir)?;
     let mut written = Vec::with_capacity(representations.len());
     for (representation, checksum) in representations.iter().zip(checksums) {
         written.push(write_representation(out_dir, representation, checksum)?);
     }
     let content_xml = out_dir.join(CONTENT_XML_NAME);
-    write_file(&content_xml, &content_bytes)?;
+    write_file(&content_xml, content_bytes)?;
     Ok(EfmuLayout {
         root: out_dir.to_path_buf(),
         content_xml,
         schemas_dir,
         representations: written,
     })
+}
+
+/// Best-effort removal of a partially written eFMU root after a mid-write
+/// I/O failure, so a retry does not hit [`EfmiError::OutputDirNotEmpty`] over
+/// half-written state. Cleanup failures are deliberately ignored: the
+/// original write error is the actionable diagnostic.
+fn cleanup_failed_write(out_dir: &Path, created_root: bool) {
+    if created_root {
+        let _ = fs::remove_dir_all(out_dir);
+        return;
+    }
+    // The (empty) root pre-existed and belongs to the caller: remove only
+    // the entries this writer created inside it.
+    let Ok(entries) = fs::read_dir(out_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let _ = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+    }
 }
 
 /// Zip an eFMU directory (as produced by [`write_efmu_container`]) into a
@@ -256,26 +294,62 @@ struct ManifestFileEntry {
     checksum: Option<String>,
 }
 
-/// GAL-021 write-time gate: every `File/@checksum` recorded inside the
-/// manifest must equal the SHA-1 of the bytes this writer is about to place
-/// at that path. A stale entry — a file edited or regenerated after the
-/// manifest was serialized — would silently produce an invalid eFMU (eFMI
-/// ch. 2.3.5: a wrong checksum makes the eFMU invalid), so it is a hard
-/// error, as is a checksummed file the writer is not writing at all.
-fn verify_manifest_file_checksums(
+/// GAL-021 write-time gate over the caller-supplied manifest bytes:
+///
+/// - the manifest's own `id` must equal the registered `manifest_ref_id`
+///   (otherwise `__content.xml` would carry a dangling `manifestRefId`);
+/// - every `File` entry must name a file this writer is about to place
+///   (`needsChecksum="false"` entries included — an unwritten listed file is
+///   a dangling reference regardless of checksumming);
+/// - every `File/@checksum` must equal the SHA-1 of the bytes being written
+///   at that path (eFMI ch. 2.3.5: a wrong checksum makes the eFMU invalid).
+fn verify_manifest_consistency(representation: &ModelRepresentationFiles) -> Result<(), EfmiError> {
+    let parsed = parse_manifest_bytes(representation)?;
+    verify_manifest_ref_id(representation, parsed.root_id.as_deref())?;
+    verify_manifest_file_entries(representation, parsed.files)
+}
+
+/// The `id` inside the manifest bytes must be the registered
+/// `manifest_ref_id`; a manifest without a root `id` can never be
+/// schema-valid and is rejected outright.
+fn verify_manifest_ref_id(
     representation: &ModelRepresentationFiles,
+    root_id: Option<&str>,
+) -> Result<(), EfmiError> {
+    let Some(found) = root_id else {
+        return Err(EfmiError::InvalidContainerLayout {
+            item: representation.name.as_str().to_owned(),
+            reason: "manifest root element has no `id` attribute".to_owned(),
+        });
+    };
+    let found = ManifestId::parse(found)?;
+    if found != representation.manifest_ref_id {
+        return Err(EfmiError::ManifestRefIdMismatch {
+            representation: representation.name.as_str().to_owned(),
+            registered: representation.manifest_ref_id.to_string(),
+            found: found.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Existence + checksum verification of parsed manifest `File` entries
+/// against the bytes actually being written.
+fn verify_manifest_file_entries(
+    representation: &ModelRepresentationFiles,
+    entries: Vec<ManifestFileEntry>,
 ) -> Result<(), EfmiError> {
     let written = written_bytes_by_path(representation);
-    for entry in parse_manifest_file_entries(representation)? {
-        let Some(listed) = entry.checksum else {
-            continue;
-        };
+    for entry in entries {
         let path = format!("{}{}", entry.path, entry.name);
         let Some(bytes) = written.get(&(entry.path, entry.name)) else {
             return Err(EfmiError::ManifestFileMissing {
                 representation: representation.name.as_str().to_owned(),
                 path,
             });
+        };
+        let Some(listed) = entry.checksum else {
+            continue;
         };
         let computed = Sha1Hex::of_bytes(bytes);
         if computed.as_str() != listed {
@@ -316,20 +390,33 @@ fn written_bytes_by_path(
     written
 }
 
-/// Parse the `File` entries out of the caller-supplied manifest bytes.
-/// Manifest bytes that are not well-formed XML (or whose `File` entries lack
-/// the required attributes) can never be part of a valid eFMU and are
-/// rejected before anything is written.
-fn parse_manifest_file_entries(
+/// What the write-time gate needs out of caller-supplied manifest bytes: the
+/// root element's `id` attribute and every `File` entry.
+struct ParsedManifest {
+    /// `id` attribute of the root element, if present.
+    root_id: Option<String>,
+    /// All `File` entries in document order.
+    files: Vec<ManifestFileEntry>,
+}
+
+/// Parse the root `id` and the `File` entries out of the caller-supplied
+/// manifest bytes. Manifest bytes that are not well-formed XML (or whose
+/// `File` entries lack the required attributes) can never be part of a valid
+/// eFMU and are rejected before anything is written.
+fn parse_manifest_bytes(
     representation: &ModelRepresentationFiles,
-) -> Result<Vec<ManifestFileEntry>, EfmiError> {
+) -> Result<ParsedManifest, EfmiError> {
     let malformed = |reason: String| EfmiError::InvalidContainerLayout {
         item: representation.name.as_str().to_owned(),
         reason,
     };
     let mut reader = Reader::from_reader(representation.manifest_bytes.as_slice());
-    let mut entries = Vec::new();
+    let mut parsed = ParsedManifest {
+        root_id: None,
+        files: Vec::new(),
+    };
     let mut buf = Vec::new();
+    let mut root_seen = false;
     // quick-xml returns a plain Eof for input truncated inside an element,
     // so open elements are counted explicitly to reject such manifests.
     let mut depth: usize = 0;
@@ -351,9 +438,15 @@ fn parse_manifest_file_entries(
                 break;
             }
             Ok(Event::Start(element)) => {
+                if depth == 0 && !root_seen {
+                    root_seen = true;
+                    parsed.root_id = attribute_map(&element).map_err(malformed)?.remove("id");
+                }
                 depth += 1;
                 if element.name().as_ref() == b"File" {
-                    entries.push(parse_file_entry(&element).map_err(malformed)?);
+                    parsed
+                        .files
+                        .push(parse_file_entry(&element).map_err(malformed)?);
                 }
             }
             Ok(Event::End(_)) => {
@@ -364,33 +457,45 @@ fn parse_manifest_file_entries(
                 })?;
             }
             Ok(Event::Empty(element)) => {
+                if depth == 0 && !root_seen {
+                    root_seen = true;
+                    parsed.root_id = attribute_map(&element).map_err(malformed)?.remove("id");
+                }
                 if element.name().as_ref() == b"File" {
-                    entries.push(parse_file_entry(&element).map_err(malformed)?);
+                    parsed
+                        .files
+                        .push(parse_file_entry(&element).map_err(malformed)?);
                 }
             }
             Ok(_) => {}
         }
         buf.clear();
     }
-    Ok(entries)
+    Ok(parsed)
+}
+
+/// Decode all attributes of one element into an owned map.
+fn attribute_map(element: &BytesStart<'_>) -> Result<BTreeMap<String, String>, String> {
+    let mut attributes: BTreeMap<String, String> = BTreeMap::new();
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|e| format!("malformed attribute: {e}"))?;
+        let key = std::str::from_utf8(attribute.key.as_ref())
+            .map_err(|e| format!("non-UTF-8 attribute name: {e}"))?
+            .to_owned();
+        let value = attribute
+            .unescape_value()
+            .map_err(|e| format!("unescapable attribute value: {e}"))?
+            .into_owned();
+        attributes.insert(key, value);
+    }
+    Ok(attributes)
 }
 
 /// Extract `(path, name, checksum-if-needed)` from one manifest `File`
 /// element, enforcing the `needsChecksum`/`checksum` coupling of
 /// `efmiFiles.xsd`.
 fn parse_file_entry(element: &BytesStart<'_>) -> Result<ManifestFileEntry, String> {
-    let mut attributes: BTreeMap<String, String> = BTreeMap::new();
-    for attribute in element.attributes() {
-        let attribute = attribute.map_err(|e| format!("malformed File attribute: {e}"))?;
-        let key = std::str::from_utf8(attribute.key.as_ref())
-            .map_err(|e| format!("non-UTF-8 File attribute name: {e}"))?
-            .to_owned();
-        let value = attribute
-            .unescape_value()
-            .map_err(|e| format!("unescapable File attribute value: {e}"))?
-            .into_owned();
-        attributes.insert(key, value);
-    }
+    let attributes = attribute_map(element)?;
     let required = |name: &str| {
         attributes
             .get(name)
@@ -444,10 +549,12 @@ fn build_content(
 }
 
 /// Create the eFMU root; an existing non-empty directory (or a non-directory)
-/// is rejected instead of being overwritten.
-fn prepare_root(out_dir: &Path) -> Result<(), EfmiError> {
+/// is rejected instead of being overwritten. Returns whether this call
+/// created the root (it then owns the directory for error cleanup).
+fn prepare_root(out_dir: &Path) -> Result<bool, EfmiError> {
     if !out_dir.exists() {
-        return create_dir(out_dir);
+        create_dir(out_dir)?;
+        return Ok(true);
     }
     if !out_dir.is_dir() {
         return Err(EfmiError::InvalidContainerLayout {
@@ -461,7 +568,7 @@ fn prepare_root(out_dir: &Path) -> Result<(), EfmiError> {
             path: out_dir.display().to_string(),
         });
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Populate `schemas/` from the embedded vendored asset tree, byte-identical
@@ -658,13 +765,17 @@ mod tests {
         }
     }
 
+    /// The manifest UUID used by [`representation`], matching both the
+    /// `manifest_ref_id` registration and the `id` inside the manifest bytes.
+    const REP_UUID: &str = "{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}";
+
     fn representation(name: &str) -> ModelRepresentationFiles {
         ModelRepresentationFiles {
             name: NameWithoutSlashes::new(name).unwrap(),
             kind: ModelRepresentationKind::AlgorithmCode,
             manifest_name: NameWithoutSlashes::new("manifest.xml").unwrap(),
-            manifest_ref_id: ManifestId::parse("{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}").unwrap(),
-            manifest_bytes: b"<Manifest/>".to_vec(),
+            manifest_ref_id: ManifestId::parse(REP_UUID).unwrap(),
+            manifest_bytes: format!("<Manifest id=\"{REP_UUID}\"/>").into_bytes(),
             files: vec![],
         }
     }
@@ -682,9 +793,11 @@ mod tests {
         }
     }
 
+    /// `.`/`..` pass `NameWithoutSlashes` but must never become directory
+    /// names; backslashes are already unrepresentable in the name newtypes.
     #[test]
     fn unsafe_path_components_rejected() {
-        for name in ["..", ".", "a\\b"] {
+        for name in ["..", "."] {
             let err = write_efmu_container(
                 &[representation(name)],
                 &meta(),
@@ -693,6 +806,12 @@ mod tests {
             .unwrap_err();
             assert_eq!(err.code(), "EFM026", "unsafe component {name}");
         }
+        // Defense in depth: the layer below the newtypes still rejects `\`.
+        assert_eq!(
+            validate_component("a\\b").unwrap_err().code(),
+            "EFM026",
+            "backslash component"
+        );
     }
 
     #[test]
@@ -742,7 +861,7 @@ mod tests {
     /// matches `body` — nothing copied from the eFMI Standard.
     fn manifest_listing(body: &[u8]) -> Vec<u8> {
         format!(
-            "<Manifest><Files><File id=\"F\" name=\"Model.alg\" path=\"./\" \
+            "<Manifest id=\"{REP_UUID}\"><Files><File id=\"F\" name=\"Model.alg\" path=\"./\" \
              needsChecksum=\"true\" checksum=\"{}\" role=\"Code\"/></Files></Manifest>",
             Sha1Hex::of_bytes(body).as_str()
         )
@@ -788,6 +907,50 @@ mod tests {
         assert_eq!(err.code(), "EFM035");
     }
 
+    /// A `needsChecksum="false"` entry that names an unwritten file is just
+    /// as dangling as a checksummed one and must be rejected too.
+    #[test]
+    fn manifest_listed_unchecksummed_file_must_be_written() {
+        let mut rep = representation("AlgorithmCode");
+        rep.manifest_bytes = format!(
+            "<Manifest id=\"{REP_UUID}\"><Files><File id=\"F\" name=\"Model.alg\" \
+             path=\"./\" needsChecksum=\"false\" role=\"Code\"/></Files></Manifest>"
+        )
+        .into_bytes();
+        rep.files = vec![];
+        let err = write_efmu_container(&[rep], &meta(), Path::new("/nonexistent/never-created"))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            EfmiError::ManifestFileMissing {
+                representation: "AlgorithmCode".into(),
+                path: "./Model.alg".into(),
+            }
+        );
+    }
+
+    /// The registered `manifest_ref_id` must equal the `id` inside the
+    /// manifest bytes; a manifest regenerated with a fresh id but a stale
+    /// registration would otherwise yield a dangling `manifestRefId`.
+    #[test]
+    fn manifest_ref_id_mismatch_rejected() {
+        let mut rep = representation("AlgorithmCode");
+        rep.manifest_bytes = b"<Manifest id=\"{aa6b1a52-4f0e-4d59-9d3b-215f8e5b6a21}\"/>".to_vec();
+        let err = write_efmu_container(
+            std::slice::from_ref(&rep),
+            &meta(),
+            Path::new("/nonexistent/never-created"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "EFM038", "mismatched id must be rejected");
+
+        // A manifest without any root id can never be schema-valid.
+        rep.manifest_bytes = b"<Manifest/>".to_vec();
+        let err = write_efmu_container(&[rep], &meta(), Path::new("/nonexistent/never-created"))
+            .unwrap_err();
+        assert_eq!(err.code(), "EFM026", "missing id must be rejected");
+    }
+
     /// Manifest bytes that are not well-formed XML cannot be cross-checked
     /// (or be part of a valid eFMU) and are rejected up front.
     #[test]
@@ -828,6 +991,38 @@ mod tests {
         assert_eq!(err.code(), "EFM026");
         let err_text = err.to_string();
         assert!(err_text.contains("UTF-8"), "got: {err_text}");
+    }
+
+    /// A mid-write I/O failure must not leave a half-populated eFMU root
+    /// behind (which would trip `OutputDirNotEmpty` on retry). The failure is
+    /// forced by a file whose directory collides with an already-written
+    /// file — a target-path problem only the filesystem reports.
+    #[test]
+    fn failed_write_cleans_up_partial_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("efmu");
+        let mut rep = representation("AlgorithmCode");
+        rep.files = vec![
+            RepresentationFile {
+                directory: FilePath::root(),
+                name: NameWithoutSlashes::new("x").unwrap(),
+                bytes: b"file\n".to_vec(),
+            },
+            RepresentationFile {
+                directory: FilePath::new("./x/").unwrap(),
+                name: NameWithoutSlashes::new("y").unwrap(),
+                bytes: b"needs ./x/ as a directory\n".to_vec(),
+            },
+        ];
+        let err = write_efmu_container(&[rep], &meta(), &root).unwrap_err();
+        assert_eq!(err.code(), "EFM029", "expected an I/O error, got {err:?}");
+        assert!(
+            !root.exists(),
+            "partially written root must be cleaned up after a failed write"
+        );
+        // A retry with a consistent representation now succeeds.
+        write_efmu_container(&[representation("AlgorithmCode")], &meta(), &root)
+            .expect("retry after cleanup must succeed");
     }
 
     #[test]

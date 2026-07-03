@@ -1,23 +1,63 @@
-//! Typed models of the schema parts shared by *all* representation manifests:
-//! `efmiFiles.xsd` ([`File`], [`FileChecksum`], [`FileRole`]),
-//! `efmiUnits.xsd` ([`Unit`], [`BaseUnit`]), and `efmiAnnotation.xsd`
-//! ([`Annotation`]).
+//! Typed models of the schema parts shared by *all* manifest kinds:
+//! the `efmiManifestAttributesBase` attribute group
+//! ([`ManifestAttributes`]), `efmiFiles.xsd` ([`File`], [`FileChecksum`],
+//! [`FileRole`]), `efmiUnits.xsd` ([`Unit`], [`BaseUnit`]), and
+//! `efmiAnnotation.xsd` ([`Annotation`]).
 //!
 //! These XSDs sit at the top level of the vendored schema tree and are
 //! included by every manifest kind (Algorithm Code today; Production Code and
 //! the others when their rungs land), so their models live here rather than
 //! in any kind-specific module.
+//!
+//! `description` attributes are `xs:string` in the XSDs but are modeled as
+//! [`NormalizedText`] here: XML attribute-value normalization silently
+//! replaces tabs/newlines with spaces on re-parse, so accepting them would
+//! serialize bytes that do not round-trip (and XML-illegal control
+//! characters would make the emitted bytes non-well-formed). An absent
+//! description is `None`, never an empty string.
 
 use crate::checksum::Sha1Hex;
-use crate::ids::{FilePath, Identifier, NormalizedText};
+use crate::ids::{
+    FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, UtcTimestamp,
+};
+
+/// Shared top-level manifest attribute group (`efmiManifestAttributesBase`).
+///
+/// Used by `__content.xml` and by every model representation manifest.
+/// The fixed `efmiVersion="1.0.0"` attribute is emitted by the serializer
+/// and is deliberately not a field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestAttributes {
+    /// Brace-wrapped UUID of this manifest file (`id`, required).
+    pub id: ManifestId,
+    /// Name of the block/eFMU as in the source environment (`name`, required).
+    pub name: NormalizedText,
+    /// Brief description (`description`, optional; see the module docs for
+    /// why this is normalized despite the XSD's `xs:string`).
+    pub description: Option<NormalizedText>,
+    /// Block version (`version`, optional).
+    pub version: Option<NormalizedText>,
+    /// Last modification of the manifest or any contents of its container
+    /// (`generationDateAndTime`, required, strict UTC).
+    pub generation_date_and_time: UtcTimestamp,
+    /// Generating tool; `"manual"` if hand-made (`generationTool`, optional).
+    pub generation_tool: Option<NormalizedText>,
+    /// Copyright info (`copyright`, optional).
+    pub copyright: Option<NormalizedText>,
+    /// License info (`license`, optional).
+    pub license: Option<NormalizedText>,
+}
 
 /// One `File` entry of the `Files` list (`efmiFiles.xsd`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct File {
     /// File id (`id`, required), referenced by `fileRefId` attributes.
     pub id: Identifier,
-    /// File name including suffix (`name`, required).
-    pub name: NormalizedText,
+    /// File name including suffix (`name`, required). The XSD type is plain
+    /// `xs:normalizedString`, but a file name containing a path separator
+    /// can never resolve inside a container, so the slash-free newtype is
+    /// the faithful model.
+    pub name: NameWithoutSlashes,
     /// Directory part relative to the container root (`path`, required).
     pub path: FilePath,
     /// Checksum policy; encodes the XSD rule that `checksum` must be given
@@ -27,7 +67,7 @@ pub struct File {
     pub role: FileRole,
     /// Free-text description (`description`, optional), especially for
     /// [`FileRole::Other`].
-    pub description: Option<String>,
+    pub description: Option<NormalizedText>,
 }
 
 /// Checksum policy of a [`File`].

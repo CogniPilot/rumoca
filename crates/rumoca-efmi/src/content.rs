@@ -10,33 +10,8 @@ use std::collections::BTreeSet;
 
 use crate::checksum::Sha1Hex;
 use crate::diagnostic::EfmiError;
-use crate::ids::{ManifestId, NameWithoutSlashes, NormalizedText, UtcTimestamp};
-
-/// Shared top-level manifest attribute group (`efmiManifestAttributesBase`).
-///
-/// Used by `__content.xml` and by every model representation manifest.
-/// The fixed `efmiVersion="1.0.0"` attribute is emitted by the serializer
-/// and is deliberately not a field.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ManifestAttributes {
-    /// Brace-wrapped UUID of this manifest file (`id`, required).
-    pub id: ManifestId,
-    /// Name of the block/eFMU as in the source environment (`name`, required).
-    pub name: NormalizedText,
-    /// Brief description (`description`, optional; unrestricted `xs:string`).
-    pub description: Option<String>,
-    /// Block version (`version`, optional).
-    pub version: Option<NormalizedText>,
-    /// Last modification of the manifest or any contents of its container
-    /// (`generationDateAndTime`, required, strict UTC).
-    pub generation_date_and_time: UtcTimestamp,
-    /// Generating tool; `"manual"` if hand-made (`generationTool`, optional).
-    pub generation_tool: Option<NormalizedText>,
-    /// Copyright info (`copyright`, optional).
-    pub copyright: Option<NormalizedText>,
-    /// License info (`license`, optional).
-    pub license: Option<NormalizedText>,
-}
+use crate::ids::{ManifestId, NameWithoutSlashes};
+use crate::manifest_common::ManifestAttributes;
 
 /// `ModelRepresentation` entry: one registered container.
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +129,7 @@ fn validate_representations(parts: &ContentParts) -> Result<(), EfmiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NormalizedText, UtcTimestamp};
 
     fn attributes() -> ManifestAttributes {
         ManifestAttributes {

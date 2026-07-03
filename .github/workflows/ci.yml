@@ -145,6 +145,15 @@ jobs:
           # libxml2-utils provides xmllint for rumoca-efmi XSD validation tests
           sudo apt-get install -y libudev-dev libxml2-utils
 
+      # macOS ships /usr/bin/xmllint; Windows runner images have no xmllint
+      # contract, so install libxml2's tools explicitly (the rumoca-efmi XSD
+      # validation tests hard-fail rather than skip when xmllint is absent).
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install xsltproc -y --no-progress
+          xmllint --version
+
       - name: Cache rustup toolchain
         uses: actions/cache@v5
         continue-on-error: true
