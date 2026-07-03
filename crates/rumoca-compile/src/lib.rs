@@ -160,9 +160,8 @@ pub mod galec {
     pub use crate::galec_api::{
         GalecExport, GalecExportError, build_scalar_type_map, render_galec_export,
     };
-    pub use rumoca_target_galec::{
-        GalecInput, GalecOptions, GalecTargetError, ScalarType, ScalarTypeMap,
-    };
+    pub use rumoca_galec::ast::ScalarType;
+    pub use rumoca_target_galec::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
 }
 
 /// Read-only DAE analysis helpers exposed through the compile facade.

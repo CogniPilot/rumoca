@@ -32,11 +32,12 @@
 //! default: the projection rejects untypeable variables with `ET011`.
 
 use rumoca_core::TypeId;
+use rumoca_galec::ast::ScalarType;
 use rumoca_ir_ast::TypeTable;
 use rumoca_ir_dae::Dae;
 use rumoca_ir_flat::Model as FlatModel;
 use rumoca_target_galec::{
-    GalecInput, GalecOptions, GalecTargetError, ScalarType, ScalarTypeMap, lower_to_algorithm_code,
+    GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap, lower_to_algorithm_code,
     render_algorithm_code, render_manifest_xml,
 };
 

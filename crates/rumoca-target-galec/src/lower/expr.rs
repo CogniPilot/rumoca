@@ -127,13 +127,13 @@ impl<'a> ExprLowerer<'a> {
                     format!("user-function-call:{}", name.as_str())
                 },
                 format!("call to `{}` in a lowered expression", name.as_str()),
-                *span,
+                Some(*span),
             )),
             Expression::Array { elements, span, .. } => self.lower_array(elements, *span),
             other => Err(unsupported(
                 "expression-form".to_owned(),
                 format!("expression form {} in a lowered position", form_name(other)),
-                other.span().unwrap_or(Span::DUMMY),
+                other.span(),
             )),
         }
     }
@@ -176,7 +176,7 @@ impl<'a> ExprLowerer<'a> {
             return Err(unsupported(
                 "time-in-discrete-block".to_owned(),
                 "reference to the continuous independent variable `time`".to_owned(),
-                span,
+                Some(span),
             ));
         }
         if let Some(condition_base) = &self.conditions.base_name {
@@ -198,7 +198,7 @@ impl<'a> ExprLowerer<'a> {
                         "generated when-edge condition machinery `{name}` referenced \
                          outside a recognizable when-edge guard"
                     ),
-                    span,
+                    Some(span),
                 ));
             }
         }
@@ -293,7 +293,7 @@ impl<'a> ExprLowerer<'a> {
             return Err(unsupported(
                 "condition-memory-outside-guard".to_owned(),
                 format!("generated condition machinery `{name}` referenced as a value"),
-                span,
+                Some(span),
             ));
         }
         galec_subscripts.extend(self.lower_subscripts(subscripts)?);
@@ -326,7 +326,7 @@ impl<'a> ExprLowerer<'a> {
                 Subscript::Colon { span } => Err(unsupported(
                     "array-slice".to_owned(),
                     "`:` array slice subscript".to_owned(),
-                    *span,
+                    Some(*span),
                 )),
             })
             .collect()
@@ -343,7 +343,7 @@ impl<'a> ExprLowerer<'a> {
             return Err(unsupported(
                 "sample-condition-as-value".to_owned(),
                 "the clock sample-tick condition used as a value expression".to_owned(),
-                span,
+                Some(span),
             ));
         }
         if self.inlining.contains(&index) {
@@ -597,7 +597,7 @@ impl<'a> ExprLowerer<'a> {
             return Err(unsupported(
                 "empty-array".to_owned(),
                 "empty array constructor".to_owned(),
-                span,
+                Some(span),
             ));
         }
         let lowered = elements
@@ -638,7 +638,7 @@ impl<'a> ExprLowerer<'a> {
                     "Modelica builtin `{}` has no GALEC §3.2.6 catalog mapping",
                     builtin_feature_name(function)
                 ),
-                span,
+                Some(span),
             ));
         };
         match mapping {
@@ -686,7 +686,7 @@ impl<'a> ExprLowerer<'a> {
                     "Modelica builtin `{}` cannot be lowered to the GALEC §3.2.6 catalog",
                     builtin_feature_name(function)
                 ),
-                span,
+                Some(span),
             )),
         }
     }
@@ -710,7 +710,7 @@ impl<'a> ExprLowerer<'a> {
                      scalar functions only)",
                     builtin_feature_name(function)
                 ),
-                span,
+                Some(span),
             ));
         };
         let first = self.lower(first)?;
@@ -980,7 +980,7 @@ fn lower_literal(value: &Literal, span: Span) -> Result<Typed, GalecTargetError>
         Literal::String(_) => Err(unsupported(
             "string-value".to_owned(),
             "String literal (GALEC has no String type)".to_owned(),
-            span,
+            Some(span),
         )),
     }
 }
@@ -999,11 +999,11 @@ fn mismatch(
     }
 }
 
-fn unsupported(feature: String, detail: String, span: Span) -> GalecTargetError {
+fn unsupported(feature: String, detail: String, span: Option<Span>) -> GalecTargetError {
     GalecTargetError::UnsupportedFeature {
         feature,
         detail,
-        span: optional(span),
+        span: span.filter(|span| !span.is_dummy()),
     }
 }
 

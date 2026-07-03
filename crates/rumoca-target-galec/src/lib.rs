@@ -65,6 +65,3 @@ pub use input::{GalecInput, GalecOptions, GalecProfile, ScalarTypeMap};
 pub use lower::lower_to_algorithm_code;
 pub use manifest_vars::{ManifestVariables, build_manifest_variables};
 pub use package::{AlgorithmCodePackage, ManifestFragment};
-// Re-exported so `ScalarTypeMap` builders (rumoca-compile, GAL-010) can name
-// the map's value type without depending on `rumoca-galec` directly.
-pub use rumoca_galec::ast::ScalarType;
