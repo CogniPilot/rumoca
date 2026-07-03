@@ -35,7 +35,6 @@ mod refresh_plan;
 mod reverse;
 mod runtime;
 mod runtime_events;
-pub mod sim_driver;
 mod sparsity;
 mod table_runtime;
 mod update_rows;
