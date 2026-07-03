@@ -271,11 +271,12 @@ fn external_table_record_constructor_from_fields(
         .iter()
         .map(|field| external_table_record_field_ref(prefix, field, variables))
         .collect::<Option<Vec<_>>>()?;
+    let span = args.first().and_then(rumoca_core::Expression::span)?;
     Some(rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new(constructor_name),
         args,
         is_constructor: true,
-        span: rumoca_core::Span::DUMMY,
+        span,
     })
 }
 
@@ -286,15 +287,15 @@ fn external_table_record_field_ref(
 ) -> Option<rumoca_core::Expression> {
     let name = format!("{prefix}.{field}");
     let var_name = rumoca_core::VarName::new(name.as_str());
-    variables
+    let span = variables
         .parameters
-        .contains_key(&var_name)
-        .then_some(())
-        .or_else(|| variables.constants.contains_key(&var_name).then_some(()))?;
+        .get(&var_name)
+        .or_else(|| variables.constants.get(&var_name))
+        .map(|var| var.source_span)?;
     Some(rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name.as_str()),
         subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     })
 }
 

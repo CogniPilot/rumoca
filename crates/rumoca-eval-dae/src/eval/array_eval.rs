@@ -1599,8 +1599,7 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         && let Some(dims) = env.dims.get(name.as_str())
     {
         let value_count = array_values_from_env_name_generic(name.as_str(), env)?
-            .map(|values| values.len())
-            .unwrap_or(0);
+            .map_or(0, |values| values.len());
         return infer_declared_or_value_dims(dims, value_count);
     }
     if let rumoca_core::Expression::BuiltinCall {
@@ -1799,7 +1798,6 @@ fn function_call_runtime_dims<T: SimFloat>(
 fn runtime_vector_dims(len: usize) -> Vec<usize> {
     (len > 1).then_some(len).into_iter().collect()
 }
-
 fn infer_declared_or_value_dims(dims: &[i64], value_count: usize) -> Result<Vec<usize>, EvalError> {
     if value_count == 0 && !dims.is_empty() {
         return dims
