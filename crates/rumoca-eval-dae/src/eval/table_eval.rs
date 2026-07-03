@@ -62,7 +62,18 @@ pub(super) fn eval_table_matrix_arg<T: SimFloat>(
             else_branch,
             ..
         } => eval_table_if_matrix_arg(branches, else_branch, env),
-        _ => Ok(None),
+        _ => eval_array_values::<T>(expr, env)
+            .map(|values| {
+                Some(if values.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![values.iter().map(|value| value.real()).collect()]
+                })
+            })
+            .or_else(|err| match err {
+                EvalError::UnsupportedExpression { .. } => Ok(None),
+                err => Err(err),
+            }),
     }
 }
 

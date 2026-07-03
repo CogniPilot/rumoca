@@ -1598,7 +1598,10 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         && subscripts.is_empty()
         && let Some(dims) = env.dims.get(name.as_str())
     {
-        return infer_declared_or_value_dims(dims, 0);
+        let value_count = array_values_from_env_name_generic(name.as_str(), env)?
+            .map(|values| values.len())
+            .unwrap_or(0);
+        return infer_declared_or_value_dims(dims, value_count);
     }
     if let rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,

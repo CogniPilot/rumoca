@@ -356,24 +356,168 @@ impl<'a> LowerBuilder<'a> {
         // compiled kernels stay on the compiled path instead of falling back to
         // runtime expression evaluation.
         match external_table_intrinsic_kind(call_name) {
-            Some(ExternalTableIntrinsicKind::Bounds { upper }) => {
-                let table_id = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
+            Some(ExternalTableIntrinsicKind::Bounds { table, upper }) => {
+                let (table_id, _) =
+                    self.lower_external_table_id_arg(table, args, span, scope, call_depth)?;
                 self.emit_table_bounds(table_id, upper, span).map(Some)
             }
-            Some(ExternalTableIntrinsicKind::Lookup) => {
-                let table_id = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
-                let column = self.lower_optional_arg(args, 1, span, scope, call_depth)?;
-                let input = self.lower_optional_arg(args, 2, span, scope, call_depth)?;
+            Some(ExternalTableIntrinsicKind::Lookup { table }) => {
+                let (table_id, next_arg_idx) =
+                    self.lower_external_table_id_arg(table, args, span, scope, call_depth)?;
+                let column =
+                    self.lower_optional_arg(args, next_arg_idx, span, scope, call_depth)?;
+                let input =
+                    self.lower_optional_arg(args, next_arg_idx + 1, span, scope, call_depth)?;
                 self.emit_table_lookup(table_id, column, input, span)
                     .map(Some)
             }
-            Some(ExternalTableIntrinsicKind::NextEvent) => {
-                let table_id = self.lower_optional_arg(args, 0, span, scope, call_depth)?;
-                let time = self.lower_optional_arg(args, 1, span, scope, call_depth)?;
+            Some(ExternalTableIntrinsicKind::NextEvent { table }) => {
+                let (table_id, next_arg_idx) =
+                    self.lower_external_table_id_arg(table, args, span, scope, call_depth)?;
+                let time = self.lower_optional_arg(args, next_arg_idx, span, scope, call_depth)?;
                 self.emit_table_next_event(table_id, time, span).map(Some)
             }
             _ => Ok(None),
         }
+    }
+
+    fn lower_external_table_id_arg(
+        &mut self,
+        table: ExternalTableRecordKind,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(Reg, usize), LowerError> {
+        let Some(arg) = args.first() else {
+            return self
+                .lower_optional_arg(args, 0, span, scope, call_depth)
+                .map(|reg| (reg, 1));
+        };
+        if let Some(table_id) = self.structural_table_id_for_constructor_arg(table, arg) {
+            let consumed = if repeated_external_table_constructor_record_args(table, args) {
+                table.flattened_field_count()
+            } else {
+                1
+            };
+            return self
+                .emit_const_at(table_id, arg.span().unwrap_or(span))
+                .map(|reg| (reg, consumed));
+        }
+        if external_table_constructor_call(arg)
+            && let Some(table_id) = self.eval_external_table_constructor_arg(arg)
+        {
+            let consumed = if repeated_external_table_constructor_record_args(table, args) {
+                table.flattened_field_count()
+            } else {
+                1
+            };
+            return self
+                .emit_const_at(table_id, arg.span().unwrap_or(span))
+                .map(|reg| (reg, consumed));
+        }
+        if let Some(table_id) = self.structural_table_id_for_flattened_args(table, args) {
+            return self
+                .emit_const_at(table_id, arg.span().unwrap_or(span))
+                .map(|reg| (reg, table.flattened_field_count()));
+        }
+        if let Some(flattened_constructor) = flattened_external_table_constructor(table, args, span)
+            && let Some(table_id) = self.eval_external_table_constructor_arg(&flattened_constructor)
+        {
+            return self
+                .emit_const_at(table_id, flattened_constructor.span().unwrap_or(span))
+                .map(|reg| (reg, table.flattened_field_count()));
+        }
+        if let Some(table_id) = self.eval_external_table_constructor_arg(arg) {
+            return self
+                .emit_const_at(table_id, arg.span().unwrap_or(span))
+                .map(|reg| (reg, 1));
+        }
+        self.lower_optional_arg(args, 0, span, scope, call_depth)
+            .map(|reg| (reg, 1))
+    }
+
+    fn structural_table_id_for_flattened_args(
+        &self,
+        table: ExternalTableRecordKind,
+        args: &[rumoca_core::Expression],
+    ) -> Option<f64> {
+        if args.len() < table.flattened_field_count()
+            || external_table_constructor_call(args.first()?)
+        {
+            return None;
+        }
+        let fields = table.flattened_field_names();
+        let first_prefix = external_table_field_prefix(args.first()?, fields.first()?)?;
+        for (arg, field) in args.iter().zip(fields.iter()).take(3) {
+            if external_table_field_prefix(arg, field)? != first_prefix {
+                return None;
+            }
+        }
+        self.structural_bindings
+            .get(format!("{first_prefix}.tableID").as_str())
+            .copied()
+    }
+
+    fn structural_table_id_for_constructor_arg(
+        &self,
+        table: ExternalTableRecordKind,
+        expr: &rumoca_core::Expression,
+    ) -> Option<f64> {
+        if !external_table_constructor_call(expr) {
+            return None;
+        }
+        let rumoca_core::Expression::FunctionCall { args, .. } = expr else {
+            return None;
+        };
+        let mut prefix = None;
+        let fields = table.flattened_field_names();
+        for arg in args {
+            let Some(field_prefix) = external_table_field_prefix_anywhere(arg, fields) else {
+                continue;
+            };
+            if prefix
+                .as_ref()
+                .is_some_and(|existing_prefix| existing_prefix != &field_prefix)
+            {
+                return None;
+            }
+            prefix = Some(field_prefix);
+        }
+        self.structural_bindings
+            .get(format!("{}.tableID", prefix?).as_str())
+            .copied()
+    }
+
+    fn eval_external_table_constructor_arg(&self, expr: &rumoca_core::Expression) -> Option<f64> {
+        let env = self.external_table_eval_env();
+        rumoca_eval_dae::eval_expr::<f64>(expr, &env).ok()
+    }
+
+    fn external_table_eval_env(&self) -> rumoca_eval_dae::VarEnv<f64> {
+        let mut env = rumoca_eval_dae::VarEnv::new();
+        env.functions = Arc::new(
+            self.functions
+                .iter()
+                .map(|(name, func)| (name.as_str().to_string(), func.clone()))
+                .collect(),
+        );
+        if let Some(starts) = self.variable_starts {
+            env.start_exprs = Arc::new(starts.clone());
+        }
+        if let Some(clock_intervals) = self.clock_intervals {
+            env.clock_intervals = Arc::new(clock_intervals.clone());
+        }
+        if let Some(dae_variables) = self.dae_variables {
+            env.dims = Arc::new(dae_variable_dims(dae_variables));
+        }
+        for (name, value) in self.structural_bindings.iter() {
+            env.set(name, *value);
+        }
+        for (name, value) in &self.local_const_bindings {
+            env.set(name, *value);
+        }
+        env
     }
 
     pub(super) fn lower_complex_math_sum_projection(
@@ -2003,6 +2147,143 @@ impl<'a> LowerBuilder<'a> {
             })
             .collect()
     }
+}
+
+fn external_table_constructor_call(expr: &rumoca_core::Expression) -> bool {
+    let rumoca_core::Expression::FunctionCall { name, .. } = expr else {
+        return false;
+    };
+    matches!(
+        name.last_segment(),
+        "ExternalCombiTimeTable" | "ExternalCombiTable1D"
+    )
+}
+
+fn repeated_external_table_constructor_record_args(
+    table: ExternalTableRecordKind,
+    args: &[rumoca_core::Expression],
+) -> bool {
+    let field_count = table.flattened_field_count();
+    args.len() > field_count
+        && args[..field_count]
+            .iter()
+            .all(external_table_constructor_call)
+}
+
+fn external_table_field_prefix(expr: &rumoca_core::Expression, field: &str) -> Option<String> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    name.as_str()
+        .strip_suffix(format!(".{field}").as_str())
+        .map(str::to_string)
+}
+
+fn external_table_field_prefix_anywhere(
+    expr: &rumoca_core::Expression,
+    fields: &[&str],
+) -> Option<String> {
+    let direct = fields
+        .iter()
+        .find_map(|field| external_table_field_prefix(expr, field));
+    if direct.is_some() {
+        return direct;
+    }
+    match expr {
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            first_matching_external_table_field_prefix([lhs.as_ref(), rhs.as_ref()], fields)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            external_table_field_prefix_anywhere(rhs, fields)
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            first_matching_external_table_field_prefix(args.iter(), fields)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => branches
+            .iter()
+            .flat_map(|(condition, value)| [condition, value])
+            .chain([else_branch.as_ref()])
+            .find_map(|expr| external_table_field_prefix_anywhere(expr, fields)),
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => [Some(start.as_ref()), step.as_deref(), Some(end.as_ref())]
+            .into_iter()
+            .flatten()
+            .find_map(|expr| external_table_field_prefix_anywhere(expr, fields)),
+        rumoca_core::Expression::ArrayComprehension { expr, filter, .. } => {
+            [Some(expr.as_ref()), filter.as_deref()]
+                .into_iter()
+                .flatten()
+                .find_map(|expr| external_table_field_prefix_anywhere(expr, fields))
+        }
+        rumoca_core::Expression::Index { base, .. }
+        | rumoca_core::Expression::FieldAccess { base, .. } => {
+            external_table_field_prefix_anywhere(base, fields)
+        }
+        rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Literal { .. }
+        | rumoca_core::Expression::Empty { .. } => None,
+    }
+}
+
+fn first_matching_external_table_field_prefix<'a>(
+    exprs: impl IntoIterator<Item = &'a rumoca_core::Expression>,
+    fields: &[&str],
+) -> Option<String> {
+    exprs
+        .into_iter()
+        .find_map(|expr| external_table_field_prefix_anywhere(expr, fields))
+}
+
+fn flattened_external_table_constructor(
+    table: ExternalTableRecordKind,
+    args: &[rumoca_core::Expression],
+    span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
+    let field_count = table.flattened_field_count();
+    if args.len() < field_count {
+        return None;
+    }
+    if external_table_constructor_call(args.first()?) {
+        return None;
+    }
+    Some(rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from(table.constructor_name()),
+        args: args[..field_count].to_vec(),
+        is_constructor: true,
+        span,
+    })
+}
+
+fn dae_variable_dims(variables: &dae::DaeVariables) -> IndexMap<String, Vec<i64>> {
+    let mut dims = IndexMap::new();
+    for (name, var) in variables
+        .states
+        .iter()
+        .chain(variables.algebraics.iter())
+        .chain(variables.outputs.iter())
+        .chain(variables.parameters.iter())
+        .chain(variables.constants.iter())
+        .chain(variables.inputs.iter())
+        .chain(variables.discrete_reals.iter())
+        .chain(variables.discrete_valued.iter())
+    {
+        dims.insert(name.as_str().to_string(), var.dims.clone());
+    }
+    dims
 }
 
 #[cfg(test)]

@@ -1751,6 +1751,39 @@ fn test_build_env_accepts_zero_length_fill_sized_by_string_fill() {
 }
 
 #[test]
+fn test_build_env_defaults_empty_external_table_bound_start() {
+    let mut dae = rumoca_ir_dae::Dae::default();
+    let mut x = rumoca_ir_dae::Variable::new(
+        rumoca_core::VarName::new("table_u_min"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    let no_name = rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String("NoName".to_string()),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let constructor = fn_call(
+        "ExternalCombiTimeTable",
+        vec![
+            no_name.clone(),
+            no_name,
+            rumoca_core::Expression::Empty {
+                span: rumoca_core::Span::DUMMY,
+            },
+            lit(0.0),
+            arr(vec![int_lit(2)], false),
+            int_lit(3),
+            int_lit(1),
+        ],
+    );
+    x.start = Some(fn_call("getTimeTableTmin", vec![constructor]));
+    dae.variables.parameters.insert("table_u_min".into(), x);
+
+    let env = build_runtime_parameter_tail_env(&dae, &[], 0.0).expect("test env should build");
+
+    assert_eq!(env.vars.get("table_u_min").copied(), Some(0.0));
+}
+
+#[test]
 fn test_build_env_seeds_sum_size_start_for_string_array_literal() {
     let substance_names = arr(
         vec![

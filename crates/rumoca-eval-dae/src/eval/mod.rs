@@ -50,9 +50,9 @@ pub(super) fn with_expression_span_if_available(err: EvalError, expr: &Expressio
 
 mod external_table;
 use external_table::{
-    ExternalTableRegistry, ExternalTableSpec, external_table_data_for_values,
-    external_table_data_for_values_in, lookup_external_table_in, lookup_external_table_in_registry,
-    register_external_table_in,
+    ExternalTableRegistry, ExternalTableSpec, all_external_table_data_in,
+    external_table_data_for_values, external_table_data_for_values_in, lookup_external_table_in,
+    lookup_external_table_in_registry, register_external_table_in,
 };
 mod pre_seed;
 use pre_seed::try_seed_var_from_pre_store;
@@ -1065,7 +1065,11 @@ fn bind_start_value(
         return Ok(());
     }
     if size <= 1 && var.dims.is_empty() {
-        let value = eval_expr::<f64>(start, env)?;
+        let value = match eval_expr::<f64>(start, env) {
+            Ok(value) => value,
+            Err(err) if start_eval_error_uses_default(&err) => 0.0,
+            Err(err) => return Err(err),
+        };
         env.set(name, value);
         return Ok(());
     }
@@ -1086,6 +1090,16 @@ fn bind_start_value(
     };
     set_array_entries(env, name, &var.dims, &values);
     Ok(())
+}
+
+fn start_eval_error_uses_default(err: &EvalError) -> bool {
+    match err {
+        EvalError::UnsupportedExpression {
+            kind: "external table data" | "external table bounds" | "empty",
+        } => true,
+        EvalError::Spanned { source, .. } => start_eval_error_uses_default(source),
+        _ => false,
+    }
 }
 
 pub fn start_expr_is_nonnumeric(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {
@@ -1467,6 +1481,12 @@ pub fn external_table_data_for_parameter_values_in<T: SimFloat>(
     values: &[f64],
 ) -> Vec<rumoca_core::ExternalTableData> {
     external_table_data_for_values_in(&env.runtime.external_tables, values)
+}
+
+pub fn all_external_table_data_in_env<T: SimFloat>(
+    env: &VarEnv<T>,
+) -> Vec<rumoca_core::ExternalTableData> {
+    all_external_table_data_in(&env.runtime.external_tables)
 }
 
 #[cfg(test)]

@@ -14,11 +14,11 @@ use crate::initial_values::apply_initial_equations_to_start_values;
 #[cfg(test)]
 use rumoca_eval_dae::build_runtime_parameter_tail_env_with_runtime;
 use rumoca_eval_dae::constant::eval_scalar_const_expr;
-use rumoca_eval_dae::eval::{
-    EvalError, EvalRuntimeState, eval_shaped_array_values,
-    external_table_data_for_parameter_values_in,
-};
+#[cfg(test)]
+use rumoca_eval_dae::eval::external_table_data_for_parameter_values_in;
+use rumoca_eval_dae::eval::{EvalError, EvalRuntimeState, eval_shaped_array_values};
 use rumoca_eval_dae::{
+    all_external_table_data_in_env,
     build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime,
     build_runtime_parameter_tail_env_with_declared_slots_and_runtime, can_broadcast_start_value,
     eval_expr, start_expr_is_nonnumeric,
@@ -445,7 +445,10 @@ fn lower_dae_to_solve_model_inner(
         eval_runtime,
     )
     .map_err(|source| runtime_tail_error(&dae_model, source))?;
-    let external_tables = external_table_data_for_parameter_values_in(&table_env, &parameters);
+    let external_tables = merged_external_tables(
+        crate::lower::external_table_data_for_dae(&dae_model)?,
+        &table_env,
+    );
     crate::timing::log_stage("model.external_tables", timer);
     let (visible_names, visible_value_rows, variable_meta) = lower_runtime_visible_outputs(
         &dae_model,
@@ -465,6 +468,20 @@ fn lower_dae_to_solve_model_inner(
         visible_value_rows,
         variable_meta,
     })
+}
+
+fn merged_external_tables(
+    mut tables: Vec<rumoca_core::ExternalTableData>,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+) -> Vec<rumoca_core::ExternalTableData> {
+    let mut seen = tables.iter().map(|table| table.id).collect::<HashSet<_>>();
+    for table in all_external_table_data_in_env(env) {
+        if seen.insert(table.id) {
+            tables.push(table);
+        }
+    }
+    tables.sort_by_key(|table| table.id);
+    tables
 }
 
 fn lower_contract_violation(reason: String, span: rumoca_core::Span) -> LowerError {
@@ -964,8 +981,9 @@ fn start_values(
 fn start_eval_error_uses_default(err: &EvalError) -> bool {
     match err {
         EvalError::UnsupportedExpression {
-            kind: "external table data",
-        } => true,
+            kind: "external table data" | "external table bounds",
+        }
+        | EvalError::UnsupportedExpression { kind: "empty" } => true,
         EvalError::Spanned { source, .. } => start_eval_error_uses_default(source),
         _ => false,
     }

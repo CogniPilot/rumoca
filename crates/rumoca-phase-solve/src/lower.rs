@@ -174,6 +174,12 @@ pub(crate) fn structural_bindings_for_structured_access(
     compile_time::structural_bindings(dae_model)
 }
 
+pub(crate) fn external_table_data_for_dae(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_core::ExternalTableData>, LowerError> {
+    compile_time::external_table_data(dae_model)
+}
+
 pub fn lower_derivative_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
