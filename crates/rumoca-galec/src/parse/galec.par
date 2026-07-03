@@ -1,0 +1,329 @@
+%start block
+%title "GALEC grammar (eFMI 1.0.0 Beta 1, §3.2)"
+%comment "GALEC for parol 4.2.2; encodes the normative G-x.y EBNF. See dev/galec/map/efmi-galec-language.md"
+%block_comment "/\*" "\*/"
+%t_type crate::parse::token::ParserToken
+%nt_type block                = crate::ast::Block
+%nt_type name                 = crate::ast::Name
+%nt_type reference            = crate::ast::Reference
+%nt_type ref_part             = crate::ast::RefPart
+%nt_type expression           = crate::ast::Expression
+%nt_type logical_or_expr      = crate::ast::Expression
+%nt_type logical_and_expr     = crate::ast::Expression
+%nt_type equality_expr        = crate::ast::Expression
+%nt_type relational_expr      = crate::ast::Expression
+%nt_type additive_expr        = crate::ast::Expression
+%nt_type multiplicative_expr  = crate::ast::Expression
+%nt_type power_expr           = crate::ast::Expression
+%nt_type unary_expr           = crate::ast::Expression
+%nt_type primary              = crate::ast::Expression
+%nt_type parenthesized_or_if  = crate::ast::Expression
+%nt_type if_expression        = crate::ast::IfExpression
+%nt_type function_call        = crate::ast::FunctionCall
+%nt_type statement            = crate::ast::Statement
+%nt_type condition            = crate::ast::Condition
+%nt_type error_signal_check   = crate::ast::SignalCheck
+%nt_type variable_declaration = crate::ast::VariableDeclaration
+%nt_type dimension            = crate::ast::Dimension
+%nt_type range_attributes     = crate::ast::RangeAttributes
+
+%%
+
+// =============================================================================
+// Block & declarations (§3.5)
+// =============================================================================
+
+block
+    : 'block'^ name
+      { state_entity_declaration }
+      'protected'^
+      { state_compartment_declaration }
+      { state_entity_declaration }
+      { error_signal_declaration }
+      { function_declaration }
+      'public'^
+      { function_declaration }
+      'end'^ name ';'^
+    ;
+
+error_signal_declaration
+    : 'signal'^ ident ';'^
+    ;
+
+state_compartment_declaration
+    : 'record'^ name { state_entity_declaration } 'end'^ name ';'^
+    ;
+
+function_declaration
+    : ( 'function' | 'method' ) name
+      [ signal_interface ]
+      { parameter_declaration }
+      [ 'protected'^ { local_variable_declaration } ]
+      'algorithm'^ { statement }
+      'end'^ name ';'^
+    ;
+
+signal_interface
+    : 'signals'^ ident { ','^ ident } ';'^
+    ;
+
+state_entity_declaration
+    : [ 'constant' | 'parameter' | 'input' | 'output' ] variable_declaration
+    ;
+
+parameter_declaration
+    : ( 'input' | 'output' ) variable_declaration
+    ;
+
+local_variable_declaration
+    : variable_declaration
+    ;
+
+variable_declaration
+    : declared_type name [ constant_dimensions ] [ range_attributes ] ';'^
+    ;
+
+declared_type
+    : 'Boolean' | 'Integer' | 'Real' | name
+    ;
+
+constant_dimensions
+    : '['^ dimension { ','^ dimension } ']'^
+    ;
+
+dimension
+    : ':' | expression
+    ;
+
+range_attributes
+    : '('^ range_attr { ','^ range_attr } ')'^
+    ;
+
+range_attr
+    : ident '='^ expression
+    ;
+
+// =============================================================================
+// Statements (§3.4)
+// =============================================================================
+
+statement
+    : ( name_headed_statement
+      | state_assignment
+      | multi_assignment
+      | if_statement
+      | for_loop
+      | limit_statement
+      | error_signal_statement ) ';'^
+    ;
+
+name_headed_statement
+    : name ( call_args | [ computed_dimensions ] ':='^ expression )
+    ;
+
+state_assignment
+    : state_reference ':='^ expression
+    ;
+
+multi_assignment
+    : '('^ [ reference { ','^ reference } ] ')'^ ':='^ function_call
+    ;
+
+if_statement
+    : 'if'^ condition 'then'^ { statement }
+      { 'elseif'^ condition 'then'^ { statement } }
+      [ 'else'^ { statement } ]
+      'end'^ 'if'^
+    ;
+
+condition
+    : error_signal_check | expression
+    ;
+
+error_signal_check
+    : 'signal'^ [ ident ] [ [ 'not' ] 'in'^ ident { ','^ ident } ] [ 'or'^ expression ]
+    ;
+
+error_signal_statement
+    : 'signal'^ ident { ','^ ident }
+    ;
+
+for_loop
+    : 'for'^ bounded_iteration 'loop'^ { statement } 'end'^ 'for'^
+    ;
+
+bounded_iteration
+    : [ name 'in'^ ] expression ':'^ expression [ ':'^ expression ]
+    ;
+
+limit_statement
+    : 'limit'^ limit_target { ','^ limit_target }
+    ;
+
+limit_target
+    : 'self'^ [ state_reference_tail ]
+    | local_reference
+    ;
+
+// =============================================================================
+// References (§3.4)
+// =============================================================================
+
+reference
+    : state_reference | local_reference
+    ;
+
+state_reference
+    : 'self'^ state_reference_tail
+    ;
+
+state_reference_tail
+    : '.'^ ref_part { '.'^ ref_part }
+    ;
+
+local_reference
+    : name [ computed_dimensions ]
+    ;
+
+ref_part
+    : name [ computed_dimensions ]
+    ;
+
+computed_dimensions
+    : '['^ expression { ','^ expression } ']'^
+    ;
+
+function_call
+    : name call_args
+    ;
+
+call_args
+    : '('^ [ expression { ','^ expression } ] ')'^
+    ;
+
+// =============================================================================
+// Expression precedence cascade (§3.3, trap T6)
+// =============================================================================
+
+expression
+    : logical_or_expr
+    ;
+
+logical_or_expr
+    : logical_and_expr { 'or'^ logical_and_expr }
+    ;
+
+logical_and_expr
+    : equality_expr { 'and'^ equality_expr }
+    ;
+
+equality_expr
+    : relational_expr { equality_operator relational_expr }
+    ;
+
+relational_expr
+    : additive_expr { relational_operator additive_expr }
+    ;
+
+additive_expr
+    : multiplicative_expr { add_operator multiplicative_expr }
+    ;
+
+multiplicative_expr
+    : power_expr { mul_operator power_expr }
+    ;
+
+power_expr
+    : unary_expr { '^' unary_expr }
+    ;
+
+unary_expr
+    : neg | not_expr | primary
+    ;
+
+neg
+    : '-'^ reference
+    ;
+
+not_expr
+    : 'not'^ parenthesized_or_if
+    ;
+
+primary
+    : constant
+    | dimension_query
+    | reference_or_call
+    | parenthesized_or_if
+    | multi_dimension_constructor
+    ;
+
+reference_or_call
+    : state_reference
+    | local_ref_or_call
+    ;
+
+local_ref_or_call
+    : name [ call_args | computed_dimensions ]
+    ;
+
+dimension_query
+    : 'size'^ '('^ reference ','^ expression ')'^
+    ;
+
+parenthesized_or_if
+    : '('^ ( if_expression | expression ) ')'^
+    ;
+
+if_expression
+    : 'if'^ expression 'then'^ expression
+      { 'elseif'^ expression 'then'^ expression }
+      'else'^ expression
+    ;
+
+multi_dimension_constructor
+    : '{'^ expression { ','^ expression } '}'^
+    ;
+
+constant
+    : 'true' | 'false' | integer | real
+    ;
+
+add_operator
+    : '+' | '-'
+    ;
+
+mul_operator
+    : '*' | '/'
+    ;
+
+relational_operator
+    : '<=' | '>=' | '<' | '>'
+    ;
+
+equality_operator
+    : '==' | '<>'
+    ;
+
+// =============================================================================
+// Lexemes (§3.6)
+// =============================================================================
+
+name
+    : ident | quoted
+    ;
+
+ident
+    : /[A-Za-z][A-Za-z0-9_]*/
+    ;
+
+quoted
+    : /'[^'\r\n]*'/
+    ;
+
+integer
+    : /-?(0|[1-9][0-9]*)/
+    ;
+
+real
+    : /-?(0|[1-9][0-9]*)\.[0-9]+(e[+-][0-9]+)?/
+    ;

@@ -27,8 +27,20 @@
 pub mod ast;
 pub mod builtins;
 pub mod diagnostic;
+#[cfg(feature = "parse")]
+pub mod parse;
 pub mod print;
 pub mod validate;
+
+// Re-exports the parol-generated parser expects at crate root (mirrors
+// `rumoca-phase-parse`: the generated parser imports `crate::grammar::<T>` and
+// `crate::grammar_trait::<T>Auto`, see `user_trait_module_name("grammar")`).
+#[cfg(feature = "parse")]
+mod grammar {
+    pub(crate) use crate::parse::GalecGrammar;
+}
+#[cfg(feature = "parse")]
+pub use parse::generated::galec_grammar_trait as grammar_trait;
 
 pub use ast::{Block, BlockMethod, BlockMethodKind, Expression, PredefinedSignal, Statement};
 pub use builtins::{BUILTINS, Builtin, is_reserved_name};

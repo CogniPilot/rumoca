@@ -3476,6 +3476,10 @@ dependencies = [
 name = "rumoca-galec"
 version = "0.9.9"
 dependencies = [
+ "anyhow",
+ "parol",
+ "parol_runtime",
+ "scnr2",
  "thiserror 2.0.17",
 ]
 
