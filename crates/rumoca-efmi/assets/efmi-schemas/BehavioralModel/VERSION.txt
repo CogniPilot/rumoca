@@ -1,0 +1,129 @@
+This file lists the versions of the OriginalCode schema.
+Each version gets an entry of the form:
+- Version: version number in semantic version format consisting of <major>.<minor>.<patch>
+- Revision: SHA1 ID hash of GIT commit
+- Description: May consist of multiple lines.
+The entries should be separated by an empty line.
+
+The recent version number must become the fixed value of the "version" attribute of the Manifest element of the schema file.
+On the other hand, the "eFMUProdCodeDescriptionCreator" writes the supported version number to that attribute.
+Hence, the version number can be used for multiple purposes:
+- For each Manifest file, the considered version of the schema is stored.
+- The validation of the generated Manifest file also checks wether the file fits to the schema.
+  If not, it produces an error message like: "Validation failed: The value of the 'version' attribute does not equal its fixed value."
+
+=============================================================================
+
+Version: <major>.<minor>.<patch>
+Revision: <SHA1 ID of last commit for this version>
+Description: <enter description>
+
+Version: eFMI® Standard Beta 1 (candidate-draft)
+Revision: 8bd467aaaf0947d877d8dabc98ff30301fd16c1b
+Description:
+Christoff Bürger
+ * Removed xsdVersion attribute from <Manifest>.
+ * Aligned modelling of lists:
+   (a) Made implicit multiplicities explicit everywhere.
+   (b) The following sequences now all have a lower multiplicity of 0 instead of 1:
+       <TimeData>, <Data>, <Variable> and <Scenario>.
+       The rationale is, that it is absolutely fine to have a Behavioral
+       Model container not defining any scenario. This case is very useful
+       in IDEs where users can add and remove scenarios; it is not unlikely
+       that in some intermediate stage the last scenario is deleted before a
+       new is created. It would be very annoying if users are FORCED to
+       design a new scenario before they can save the eFMU. The second reason
+       is that in fact there are complicated semantic constraints on how much
+       must be defined to be valid; if we have a scenario for example, its
+       variables must be defined, but which are these depends on the
+       referenced Algorithm Code manifest. It is kind of missleading to model
+       some specific bounds in the XSD Schema if in fact we can not encode the
+	   actual restrictions in the XSD Schema anyway.
+   (c) <Files> is now mandatory, but can be empty (also required for (b) above).
+ * Added variable and equidistant time grid variants for scenarios, including the
+   list of clocks (<Clocks>) for equidistant scenarios and the cross-reference
+   from a equidistant scenario to its clock with sample period.
+   For details see issue #80.
+ * Added explicit units for linked columns/CSV data ("unitRefId" attribute of
+   <TimeData> amd <ReferenceData> elements of <CsvMapping>). This is to detect
+   misalignments between reference trajectories and (regenerated) Algorithm Code
+   manifests that otherwise could slip through silently (causing false-positive
+   tests or failing ones without obvious reason why).
+   Added respective list of units (<Units>) to reference.
+ * Removed <ScenarioPart> element and 2 level-deep nesting <Scenario><ScenarioPart>.
+   The old linking of
+     (Data | TimeData) -> Parts -> Part -links-to-> ScenarioPart
+   instead now just is
+     Scenario -> CsvMapping & TolerancesSetup
+   There is no need for the old 2 level-deep nesting, since we also support
+   arbitrary many Behavioral Model containers within a single eFMU.
+ * Added "description" attribute to <Scenario>. Changed "name" attribute from
+   xs:string to xs:normalizedString (to be consistent with other names).
+ * Extended <efmiSupportedFloatPrecisions> with "any" for floating-point precision
+   of tolerances, denoting that the tolerances configuration can be used for code of
+   any floating-point precision.
+ * Renamed "absTol" and "relTol" to "absoluteTolerance" and
+   "relativeTolerance" respectively.
+ * Removed support for lower- and upper-bounded tolerance trajectories
+   ("csvLower" and "csvUpper"). Defining proper semantics for it started to become
+   complex due to unit consistency requirements and mixing between CSV mappings and
+   tolerances concerns. Most importantly, we have no prototype implementations and
+   applications for such YET.
+ * Renamed <CsvData> to <efmiCsvMappings> and made it a type with respective
+   usages. Completely restructured mapping, separating it from tolerances
+   setup and referencing the mapping to use from the scenario using it.
+ * Introduced separate <efmiTolerances> type, completely restructuring
+   the definition of tolerances. Such are now separated from actual CSV
+   column mappings, are grouped in setups, each setup consisting of
+   a configuration for a certain floating-point precision, which in
+   turn defines tolerances for all variables. The tolerances setup used
+   by a scenario is now referenced from the scenario.
+ * Renamed samplePeriod attribute of <Clock> to samplingPeriod to align naming
+   with the specification text (we do not use the term sample period,
+   but sampling period).
+
+Version: 0.7.0
+Revision: eadf724fb964cdadc428a69239c822d61636fd27
+          2374f3ba2d6f4f0d7b29036ea3fe8d1ea32310cc
+Description: 
+Changed path attribute in File element, thus all manifest schema have to be changed.
+
+Version: 0.6.0
+Revision: 899540adb1fd995eefbc92ebd6c8e340e0d64b79
+    60a4abecda2c9154eb93199665c1863ae119012f
+    0ec4b18f53469f2eb4a1ad9925362a8eab362c42
+Description: 
+Michael Hussmann
+Changes decided on PlugFest 2020-11:
+- Aligned vendor annotations with FMI annotations
+Changes by Andreas Pfeiffer and Robert Reicherdt
+Decided to integrate later with other changes from PlugFest 2020-11:
+- Enforced the presence of the element CsvData
+- Enabled element TimeData to be present multiple times
+- Restricted element Tolerance to be present only twice (for 64 Bit and 32 Bit)
+
+Version: 0.5.0
+Revision: 50a4bc8b93671c6035019f240b634bf5b0bc65a0
+Description: 
+Jörg Niere
+Changes decided on October plug-fest
+
+Version: 0.4.0
+Revision: 90931bd800cd7f27d4ea77f59d753442abab190d
+Description: 
+Martin Otter
+Manifest attributes for all Manifest files defined in new file efmiManifestAttributes.xsd
+
+Version: 0.3.0
+Revision: c6106ffcccdf422dd11e699288567a879cd00885
+Description: introduced identifier type
+
+Version: 0.2.0
+Revision: 527504803fca2ea5f9ddba544c630d571306102a
+Description:
+- Changed format to semantics version number
+
+Version: 0.2
+Revision: 85fb1edb3cc9d077869f3ed434e33509bd25a14f
+Description:
+- Plug-Fest modifications.

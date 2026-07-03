@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:element name="Includes">
+		<xs:annotation>
+			<xs:documentation>Includes represent include preprocessor statements within. Linker dependencies to certain libraries are part of the linker sections of the BuildInformation. </xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="Include" minOccurs="1" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:attribute name="codeFileRefId" type="efmiIdentifierType" use="required"/>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>

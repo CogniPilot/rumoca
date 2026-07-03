@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="efmiIdentifierType.xsd"/>
+	<!--
+	Principles to design a manifest schema:
+		- camel-case naming convention for elements and attributes; Elements start with a capital letter, attributes with a lowercase letter
+		- an arbitrary number of elements should be represented as sequence of elements with explicite aggregating element
+		- complex elements used several times should be expressed as types in separate files
+		- use xs:annotations to document the schema usage
+		- use comments in the schema to document the schema itself
+		- elements that should be referenced must have an attribute 'id' of type efmiIdentifierType and the reference attribute's name follows the following template <elementname>RefId and is of type efmiIdentifierType
+	-->
+	<xs:attributeGroup name="efmiManifestAttributesBase">
+			<xs:attribute name="efmiVersion" type="xs:normalizedString" use="required" fixed="1.0.0">
+				<xs:annotation>
+					<xs:documentation>Version of the eFMI® Standard this eFMU is using
+(i.e., has to be compliant with and is developed for).</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="id" type="efmiManifestIdentifierType" use="required">
+				<xs:annotation>
+					<xs:documentation>UUID of this manifest file.</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="name" type="xs:normalizedString" use="required">
+				<xs:annotation>
+					<xs:documentation>Name of the block (e.g. name of the source block)</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="description" type="xs:string"/>
+			<xs:attribute name="version" type="xs:normalizedString">
+				<xs:annotation>
+					<xs:documentation>Version of the block (e.g. version of the source block)</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="generationDateAndTime" use="required">
+				<xs:annotation>
+					<xs:documentation>Date and time of last modification of the manifest or any contents within its container. Must be an xs:dateTime in Coordinated Universal Time (UTC), i.e, without time offset, only using arabic numerals, with hours, minutes and seconds but no smaller fractions, satisfying the pattern 'YYYY-MM-DDTHH:MM:SSZ' whereas 'Y' is the year, 'M' the month, 'D' the day, 'H' the hours, 'M' the minutes and 'S' the seconds. This format is satisfying ISO 8601-1:2019.
+</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:dateTime">
+						<xs:pattern
+							value="[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z">
+						</xs:pattern>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:attribute>
+			<xs:attribute name="generationTool" type="xs:normalizedString">
+				<xs:annotation>
+					<xs:documentation>Tool that was used to create or modify the Manifest and its files. Use "manual" if these files were created or modified manually.</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="copyright" type="xs:normalizedString">
+				<xs:annotation>
+					<xs:documentation>Information on intellectual property copyright for this Manifest and its files, such as “© MyCompany 2020“</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="license" type="xs:normalizedString">
+				<xs:annotation>
+					<xs:documentation>Information on intellectual property licensing for this Manifest and its files, such as “BSD license”, "Proprietary", or "Public Domain"</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+    </xs:attributeGroup>        
+</xs:schema>

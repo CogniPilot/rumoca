@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:element name="TargetTypes">
+		<xs:annotation>
+			<xs:documentation>Target types define which kind of data type (kind) in the eFMI specification is mapped to a certain platform type. Usually all kinds are listed although they are not used in the production code container. E.g. a kind "Bool" may be mapped to unsigned char in case of C89; and using C99, the kind shall be mapped to _Bool.
+For each coded type, there exists a unique TargetType in order to abstract from the platform types.</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="TargetType" minOccurs="1" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+						<xs:attribute name="kind" type="efmiTargetDataTypeKind" use="required"/>
+						<xs:attribute name="codedType" type="xs:normalizedString" use="required"/>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:simpleType name="efmiTargetDataTypeKind">
+		<xs:restriction base="xs:normalizedString">
+			<xs:enumeration value="efmiBool">
+				<xs:annotation>
+					<xs:documentation>
+						Represents boolean type.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiFloat32">
+				<xs:annotation>
+					<xs:documentation>
+						Represents floating point data type width 32 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiFloat64">
+				<xs:annotation>
+					<xs:documentation>
+						Represents floating point data type width 64 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiInteger8">
+				<xs:annotation>
+					<xs:documentation>
+						Represents signed integer data type without scaling and width 8 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiInteger16">
+				<xs:annotation>
+					<xs:documentation>
+    					Represents signed integer data type without scaling and width 16 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiInteger32">
+				<xs:annotation>
+					<xs:documentation>
+						Represents signed integer data type without scaling and width 32 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiInteger64">
+				<xs:annotation>
+					<xs:documentation>
+						Represents signed integer data type without scaling and width 64 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiUnsignedInteger8">
+				<xs:annotation>
+					<xs:documentation>
+						Represents unsigned integer data type without scaling and width 8 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiUnsignedInteger16">
+				<xs:annotation>
+					<xs:documentation>
+						Represents unsigned integer data type without scaling and width 16 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiUnsignedInteger32">
+				<xs:annotation>
+					<xs:documentation>
+						Represents unsigned integer data type without scaling and width 32 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiUnsignedInteger64">
+				<xs:annotation>
+					<xs:documentation>
+						Represents unsigned integer data type without scaling and width 64 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="efmiVoid">
+				<xs:annotation>
+					<xs:documentation>
+						Represents unsigned integer data type without scaling and width 64 bits.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>
