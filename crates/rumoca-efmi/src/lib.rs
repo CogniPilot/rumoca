@@ -48,8 +48,8 @@ pub const PRODUCTION_CODE_MANIFEST_XSD_VERSION: &str = "0.17.0";
 
 pub use checksum::Sha1Hex;
 pub use container::{
-    EfmuLayout, EfmuMeta, ModelRepresentationFiles, RepresentationFile, WrittenRepresentation,
-    write_efmu_container, write_efmu_zip,
+    CONTENT_XML_NAME, EfmuLayout, EfmuMeta, ModelRepresentationFiles, RepresentationFile,
+    WrittenRepresentation, manifest_root_id, write_efmu_container, write_efmu_zip,
 };
 pub use diagnostic::EfmiError;
 pub use ids::{

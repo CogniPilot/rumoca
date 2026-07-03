@@ -18,10 +18,15 @@ pub enum TargetTemplateIr {
     Ast,
 }
 
+/// Post-render packaging step selected by a target's `build` field. The
+/// build kind is the packaging mechanism — there is no CLI flag: `fmu`
+/// compiles + zips an FMU, `efmu` assembles a schema-valid eFMU container
+/// (directory + `.efmu` zip forms) from the invocation's rendered files.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetBuildKind {
     Fmu,
+    Efmu,
 }
 
 #[derive(Debug, Deserialize)]

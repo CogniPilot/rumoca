@@ -44,6 +44,8 @@ pub mod cli;
 #[cfg(feature = "runner")]
 pub(crate) mod cache_cmd;
 #[cfg(feature = "runner")]
+pub(crate) mod efmu;
+#[cfg(feature = "runner")]
 pub(crate) mod fmt_cli;
 #[cfg(feature = "runner")]
 pub(crate) mod fmu;

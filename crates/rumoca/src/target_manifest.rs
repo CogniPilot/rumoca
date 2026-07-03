@@ -108,14 +108,32 @@ pub fn render_target_files(
 
     let model_identifier = model.replace('.', "_");
     let renderer = resolve_manifest_renderer(result, &manifest, &model_identifier)?;
+    render_manifest_files(result, &renderer, &bundle, &manifest, &model_identifier)
+}
+
+/// Render every `[[files]]` entry of a manifest target in memory from one
+/// resolved renderer.
+///
+/// Shared by [`render_target_files`] and the `build = "efmu"` packaging path
+/// of [`compile_manifest_target`], so the bytes the eFMU container packages
+/// are exactly the bytes this invocation's single renderer produced (module
+/// docs on [`ManifestRenderer`]: re-rendering from a second projection would
+/// rest checksum validity on cross-run determinism).
+fn render_manifest_files(
+    result: &CompilationResult,
+    renderer: &ManifestRenderer,
+    bundle: &TargetBundle,
+    manifest: &TargetManifest,
+    model_identifier: &str,
+) -> Result<Vec<RenderedTargetFile>> {
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
         let path = renderer
-            .render(result, &file.path, &model_identifier)
+            .render(result, &file.path, model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
         let content = renderer
-            .render(result, template.as_ref(), &model_identifier)
+            .render(result, template.as_ref(), model_identifier)
             .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
@@ -195,7 +213,6 @@ fn compile_manifest_target(
     // (e.g. the GALEC projection) must not leave an output directory behind.
     let renderer = resolve_manifest_renderer(result, manifest, &model_identifier)?;
     let out_dir = output.unwrap_or_else(|| default_target_output_dir(manifest, &model_identifier));
-    std::fs::create_dir_all(&out_dir)?;
 
     eprintln!(
         "Compiling target '{}' for {}",
@@ -206,19 +223,71 @@ fn compile_manifest_target(
         eprintln!("  {description}");
     }
 
-    for file in &manifest.files {
-        write_manifest_file(result, &renderer, bundle, file, &out_dir, &model_identifier)?;
-    }
-
-    // The target.toml `build` field decides whether to package the rendered
-    // output (e.g. into an FMU); there is no CLI flag.
+    // The target.toml `build` field decides whether/how to package the
+    // rendered output (FMU zip, eFMU container); there is no CLI flag.
     match manifest.build {
+        Some(TargetBuildKind::Efmu) => {
+            // The eFMU container writer owns the on-disk layout (it demands
+            // a pristine root and places every byte itself), so the files
+            // are rendered in memory — from this invocation's single
+            // renderer — and handed over, instead of being written first.
+            for file in &manifest.files {
+                if file.mode.is_some() {
+                    bail!(
+                        "build = \"efmu\" targets do not support per-file `mode` \
+                         (file '{}'): the container writer owns the on-disk layout",
+                        file.path
+                    );
+                }
+            }
+            let files =
+                render_manifest_files(result, &renderer, bundle, manifest, &model_identifier)?;
+            std::fs::create_dir_all(&out_dir)?;
+            crate::efmu::build_efmu(&files, model, &model_identifier, &out_dir)?;
+            print_target_completion_message(manifest, &out_dir, &model_identifier)?;
+        }
         Some(TargetBuildKind::Fmu) => {
+            write_manifest_files(
+                result,
+                &renderer,
+                bundle,
+                manifest,
+                &out_dir,
+                &model_identifier,
+            )?;
             crate::fmu::build_fmu(&out_dir, &model_identifier, manifest.name.as_deref())?;
         }
-        None => print_target_completion_message(manifest, &out_dir, &model_identifier)?,
+        None => {
+            write_manifest_files(
+                result,
+                &renderer,
+                bundle,
+                manifest,
+                &out_dir,
+                &model_identifier,
+            )?;
+            print_target_completion_message(manifest, &out_dir, &model_identifier)?;
+        }
     }
 
+    Ok(())
+}
+
+/// Write every `[[files]]` entry of a manifest target under `out_dir` (the
+/// non-packaged and FMU paths; the eFMU path packages in-memory renders
+/// instead).
+fn write_manifest_files(
+    result: &CompilationResult,
+    renderer: &ManifestRenderer,
+    bundle: &TargetBundle,
+    manifest: &TargetManifest,
+    out_dir: &Path,
+    model_identifier: &str,
+) -> Result<()> {
+    std::fs::create_dir_all(out_dir)?;
+    for file in &manifest.files {
+        write_manifest_file(result, renderer, bundle, file, out_dir, model_identifier)?;
+    }
     Ok(())
 }
 
@@ -303,7 +372,10 @@ fn unsupported_tensor_feature(
 fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) -> PathBuf {
     match manifest.build {
         Some(TargetBuildKind::Fmu) => PathBuf::from(format!("{model_identifier}.fmu")),
-        None => PathBuf::from(model_identifier),
+        // The eFMU out dir holds both package forms (`<model>/` directory
+        // form + `<model>.efmu` zip; layout docs in `efmu.rs`), so it keeps
+        // the plain model name rather than a package extension.
+        Some(TargetBuildKind::Efmu) | None => PathBuf::from(model_identifier),
     }
 }
 
