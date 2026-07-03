@@ -922,6 +922,7 @@ pub(crate) fn finalize_flat_model(
         component_override_map,
     } = input;
     outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
+    materialize_referenced_expandable_connector_members(flat, overlay, tree, class_index)?;
 
     let connections_start = maybe_start_timer();
     let connections_result =
@@ -986,6 +987,7 @@ pub(crate) fn finalize_flat_model(
     functions::canonicalize_collected_function_calls(flat);
     functions::lower_record_function_params(flat)?;
     mark_record_constructor_calls(flat, tree);
+    canonicalize_varrefs_via_record_aliases(flat, ctx);
     resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
@@ -1004,6 +1006,148 @@ pub(crate) fn finalize_flat_model(
     crate::structured_refs::attach_structured_references(flat)?;
 
     Ok(())
+}
+
+fn materialize_referenced_expandable_connector_members(
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> Result<(), FlattenError> {
+    let prefixes = overlay
+        .components
+        .values()
+        .filter(|instance| instance.is_connector_type)
+        .filter(|instance| {
+            instance
+                .type_def_id
+                .and_then(|def_id| class_index.get(def_id))
+                .is_some_and(|class_def| class_def.expandable)
+        })
+        .map(|instance| {
+            let span = required_location_span(
+                &tree.source_map,
+                &instance.source_location,
+                "expandable connector member",
+            )?;
+            Ok((instance.qualified_name.to_flat_string(), span))
+        })
+        .collect::<Result<Vec<_>, FlattenError>>()?;
+    materialize_referenced_expandable_connector_members_for_prefixes(flat, &prefixes);
+    Ok(())
+}
+
+fn materialize_referenced_expandable_connector_members_for_prefixes(
+    flat: &mut flat::Model,
+    prefixes: &[(String, rumoca_core::Span)],
+) {
+    if prefixes.is_empty() {
+        return;
+    }
+
+    let mut collector = flat::VarRefCollector::new();
+    for eq in &flat.equations {
+        collector.visit_expression(&eq.residual);
+    }
+    for eq in &flat.initial_equations {
+        collector.visit_expression(&eq.residual);
+    }
+    for var in flat.variables.values() {
+        if let Some(expr) = &var.binding {
+            collector.visit_expression(expr);
+        }
+        if let Some(expr) = &var.start {
+            collector.visit_expression(expr);
+        }
+        if let Some(expr) = &var.min {
+            collector.visit_expression(expr);
+        }
+        if let Some(expr) = &var.max {
+            collector.visit_expression(expr);
+        }
+        if let Some(expr) = &var.nominal {
+            collector.visit_expression(expr);
+        }
+    }
+
+    for name in collector.into_vars() {
+        if flat.variables.contains_key(&name) {
+            continue;
+        }
+        let Some((_, span)) = prefixes
+            .iter()
+            .filter(|(prefix, _)| is_expandable_member_ref(name.as_str(), prefix))
+            .max_by_key(|(prefix, _)| prefix.len())
+        else {
+            continue;
+        };
+        let mut var = flat::Variable::empty_with_span(*span);
+        var.name = name.clone();
+        var.component_ref = Some(rumoca_core::ComponentReference::from_flat_segments(
+            name.as_str(),
+            *span,
+            None,
+        ));
+        var.type_id = rumoca_core::TypeId::UNKNOWN;
+        var.is_primitive = true;
+        var.from_expandable_connector = true;
+        flat.add_variable(name, var);
+    }
+}
+
+fn is_expandable_member_ref(name: &str, prefix: &str) -> bool {
+    name.len() > prefix.len()
+        && name.as_bytes().get(prefix.len()) == Some(&b'.')
+        && name.starts_with(prefix)
+}
+
+#[cfg(test)]
+mod expandable_connector_member_tests {
+    use super::*;
+
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn materializes_referenced_expandable_connector_members_only_under_prefix() {
+        let mut flat = flat::Model::new();
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var_ref("weaBus.TDryBul")),
+                rhs: Box::new(var_ref("otherBus.TDryBul")),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        materialize_referenced_expandable_connector_members_for_prefixes(
+            &mut flat,
+            &[("weaBus".to_string(), rumoca_core::Span::DUMMY)],
+        );
+
+        let var = flat
+            .variables
+            .get(&rumoca_core::VarName::new("weaBus.TDryBul"))
+            .expect("referenced expandable connector member is materialized");
+        assert!(var.from_expandable_connector);
+        assert!(var.is_primitive);
+        assert!(var.type_id.is_unknown());
+        assert!(!flat.variable_type_names.contains_key(&var.name));
+        assert!(
+            !flat
+                .variables
+                .contains_key(&rumoca_core::VarName::new("otherBus.TDryBul"))
+        );
+    }
 }
 
 /// MLS §9.4 / CONN-013: every subgraph of the virtual connection graph needs

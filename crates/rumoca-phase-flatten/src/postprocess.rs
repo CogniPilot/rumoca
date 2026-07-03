@@ -12,6 +12,24 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
         return;
     }
     let known_variables: HashSet<String> = flat.variables.keys().map(ToString::to_string).collect();
+    for var in flat.variables.values_mut() {
+        let owner = rumoca_core::ComponentPath::from_flat_path(var.name.as_str());
+        canonicalize_record_alias_opt_expr_in_owner(
+            &mut var.binding,
+            ctx,
+            &known_variables,
+            &owner,
+        );
+        canonicalize_record_alias_opt_expr_in_owner(&mut var.start, ctx, &known_variables, &owner);
+        canonicalize_record_alias_opt_expr_in_owner(&mut var.min, ctx, &known_variables, &owner);
+        canonicalize_record_alias_opt_expr_in_owner(&mut var.max, ctx, &known_variables, &owner);
+        canonicalize_record_alias_opt_expr_in_owner(
+            &mut var.nominal,
+            ctx,
+            &known_variables,
+            &owner,
+        );
+    }
     for equation in &mut flat.equations {
         canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
     }
@@ -43,6 +61,7 @@ fn record_alias_rewrite_name(
     name: &str,
     ctx: &Context,
     known_variables: &HashSet<String>,
+    owner: Option<&rumoca_core::ComponentPath>,
 ) -> Option<String> {
     let name_path = rumoca_core::ComponentPath::from_flat_path(name);
     ctx.record_aliases.iter().find_map(|(alias, target)| {
@@ -52,9 +71,116 @@ fn record_alias_rewrite_name(
         let suffix = name_path
             .suffix_from(alias.len())
             .expect("suffix index is in range");
-        let candidate = target.join(&suffix).to_flat_string();
-        known_variables.contains(&candidate).then_some(candidate)
+        record_alias_candidate(target, alias, &suffix, known_variables, owner)
     })
+}
+
+fn owner_projected_record_field_candidate(
+    base_name: &str,
+    field: &str,
+    owner: Option<&rumoca_core::ComponentPath>,
+    known_variables: &HashSet<String>,
+) -> Option<String> {
+    let owner = owner?;
+    let base = rumoca_core::ComponentPath::from_flat_path(base_name);
+    let owner_parts = owner.parts();
+    let (indexed_pos, subscript) =
+        owner_parts
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, part)| {
+                component_part_subscript_suffix(part)
+                    .filter(|suffix| !suffix.is_empty())
+                    .map(|suffix| (idx, suffix))
+            })?;
+    if owner_parts.len() < 2 {
+        return None;
+    }
+    let projected_leaf_pos = owner_parts.len() - 2;
+    if projected_leaf_pos <= indexed_pos {
+        return None;
+    }
+    let shared_prefix = owner.prefix(indexed_pos)?;
+    if !base.starts_with(&shared_prefix) {
+        return None;
+    }
+    let mut candidate_parts = owner_parts[..indexed_pos].to_vec();
+    candidate_parts.push(format!("{}{}", owner_parts[projected_leaf_pos], subscript));
+    if projected_leaf_pos + 1 < owner_parts.len() {
+        candidate_parts.extend(owner_parts[projected_leaf_pos + 1..].iter().cloned());
+    } else {
+        candidate_parts.push(field.to_string());
+    }
+    let candidate = rumoca_core::ComponentPath::from_parts(candidate_parts).to_flat_string();
+    if candidate == owner.as_str() {
+        return None;
+    }
+    known_variables.contains(&candidate).then_some(candidate)
+}
+
+fn record_alias_candidate(
+    target: &rumoca_core::ComponentPath,
+    alias: &rumoca_core::ComponentPath,
+    suffix: &rumoca_core::ComponentPath,
+    known_variables: &HashSet<String>,
+    owner: Option<&rumoca_core::ComponentPath>,
+) -> Option<String> {
+    let direct = target.join(suffix).to_flat_string();
+    if known_variables.contains(&direct) {
+        return Some(direct);
+    }
+    let alias_indexed_target = target_with_projected_alias_index(target, alias);
+    if let Some(indexed_target) = alias_indexed_target {
+        let indexed = indexed_target.join(suffix).to_flat_string();
+        if known_variables.contains(&indexed) {
+            return Some(indexed);
+        }
+    }
+    let owner_indexed_target = target_with_owner_projected_index(target, owner?)?;
+    let indexed = owner_indexed_target.join(suffix).to_flat_string();
+    known_variables.contains(&indexed).then_some(indexed)
+}
+
+fn target_with_owner_projected_index(
+    target: &rumoca_core::ComponentPath,
+    owner: &rumoca_core::ComponentPath,
+) -> Option<rumoca_core::ComponentPath> {
+    target_with_projected_index(target, owner.parts())
+}
+
+fn target_with_projected_alias_index(
+    target: &rumoca_core::ComponentPath,
+    alias: &rumoca_core::ComponentPath,
+) -> Option<rumoca_core::ComponentPath> {
+    target_with_projected_index(target, alias.parts())
+}
+
+fn target_with_projected_index(
+    target: &rumoca_core::ComponentPath,
+    indexed_parts: &[String],
+) -> Option<rumoca_core::ComponentPath> {
+    let target_parts = target.parts();
+    let last_target = target_parts.last()?;
+    if component_part_has_subscript(last_target) {
+        return None;
+    }
+    let subscript = indexed_parts.iter().rev().find_map(|part| {
+        component_part_subscript_suffix(part).filter(|suffix| !suffix.is_empty())
+    })?;
+    let mut projected_parts = target_parts.to_vec();
+    let last = projected_parts.last_mut()?;
+    last.push_str(subscript);
+    Some(rumoca_core::ComponentPath::from_parts(projected_parts))
+}
+
+fn component_part_has_subscript(part: &str) -> bool {
+    component_part_subscript_suffix(part).is_some()
+}
+
+fn component_part_subscript_suffix(part: &str) -> Option<&str> {
+    let start = part.find('[')?;
+    part.ends_with(']').then_some(&part[start..])
 }
 
 pub(super) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::ClassTree) {

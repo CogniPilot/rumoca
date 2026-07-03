@@ -156,9 +156,16 @@ fn record_type_contains_fields(
 fn record_constructor_field_names(flat: &flat::Model, type_name: &str) -> Option<IndexSet<String>> {
     flat.functions
         .iter()
-        .find(|(name, function)| {
+        .filter(|(name, function)| {
             function.is_constructor
                 && rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
+        })
+        .max_by_key(|(name, function)| {
+            (
+                name.as_str() == type_name,
+                function.inputs.len(),
+                name.as_str().len(),
+            )
         })
         .map(|(_, function)| {
             function
@@ -369,5 +376,71 @@ mod tests {
             panic!("expected nested constructor field access");
         };
         assert_eq!(outer_field, "inner");
+    }
+
+    #[test]
+    fn nested_constructor_resolution_prefers_specific_constructor_metadata() {
+        let mut flat = flat::Model::new();
+        flat.add_function(constructor(
+            "Pkg.Outer",
+            vec![record_param(
+                "state",
+                "Buildings.Media.Air.ThermodynamicState",
+            )],
+        ));
+        flat.add_function(constructor(
+            "Modelica.Media.Interfaces.PartialSimpleMedium.ThermodynamicState",
+            vec![
+                rumoca_core::FunctionParam::new("p", "Real", test_span()),
+                rumoca_core::FunctionParam::new("T", "Real", test_span()),
+            ],
+        ));
+        flat.add_function(constructor(
+            "Buildings.Media.Air.ThermodynamicState",
+            vec![
+                rumoca_core::FunctionParam::new("p", "Real", test_span()),
+                rumoca_core::FunctionParam::new("T", "Real", test_span()),
+                rumoca_core::FunctionParam::new("X", "Real", test_span()),
+            ],
+        ));
+        flat.add_variable(
+            rumoca_core::VarName::new("target.record.p"),
+            variable(
+                "target.record.p",
+                direct_constructor_field("Pkg.Outer", "p"),
+            ),
+        );
+        flat.add_variable(
+            rumoca_core::VarName::new("target.record.T"),
+            variable(
+                "target.record.T",
+                direct_constructor_field("Pkg.Outer", "T"),
+            ),
+        );
+        flat.add_variable(
+            rumoca_core::VarName::new("target.record.X"),
+            variable(
+                "target.record.X",
+                direct_constructor_field("Pkg.Outer", "X"),
+            ),
+        );
+
+        resolve_nested_constructor_field_access_bindings(&mut flat);
+
+        let Some(rumoca_core::Expression::FieldAccess { base, field, .. }) = flat
+            .variables
+            .get(&rumoca_core::VarName::new("target.record.X"))
+            .and_then(|var| var.binding.as_ref())
+        else {
+            panic!("expected projected field access");
+        };
+        assert_eq!(field, "X");
+        let rumoca_core::Expression::FieldAccess {
+            field: outer_field, ..
+        } = base.as_ref()
+        else {
+            panic!("expected nested constructor field access");
+        };
+        assert_eq!(outer_field, "state");
     }
 }

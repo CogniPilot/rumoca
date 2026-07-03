@@ -129,7 +129,12 @@ impl DefIdVarRefIndex {
                 .or_default()
                 .push(indexed.clone());
             if let Some(def_id) = var.component_ref.as_ref().and_then(|comp| comp.def_id) {
-                by_def_id.entry(def_id).or_default().push(indexed);
+                push_indexed_candidate(&mut by_def_id, def_id, indexed.clone());
+                if let Some(ancestry) = flat.symbol_ancestry.get(&def_id) {
+                    for ancestor_def_id in ancestry {
+                        push_indexed_candidate(&mut by_def_id, *ancestor_def_id, indexed.clone());
+                    }
+                }
             }
         }
         Self { by_def_id, by_leaf }
@@ -163,6 +168,20 @@ impl DefIdVarRefIndex {
             return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner);
         }
         None
+    }
+}
+
+fn push_indexed_candidate(
+    by_def_id: &mut HashMap<rumoca_core::DefId, Vec<IndexedVarRef>>,
+    def_id: rumoca_core::DefId,
+    indexed: IndexedVarRef,
+) {
+    let candidates = by_def_id.entry(def_id).or_default();
+    if !candidates
+        .iter()
+        .any(|candidate| candidate.name == indexed.name)
+    {
+        candidates.push(indexed);
     }
 }
 

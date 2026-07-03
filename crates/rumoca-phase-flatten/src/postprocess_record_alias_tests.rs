@@ -216,6 +216,60 @@ fn def_id_canonicalization_preserves_resolved_package_constant_refs() {
 }
 
 #[test]
+fn def_id_canonicalization_uses_symbol_ancestry_for_inherited_attribute_refs() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(27726);
+    let valve_instance_def = rumoca_core::DefId::new(93015);
+    let other_instance_def = rumoca_core::DefId::new(93016);
+    for (name, instance_def) in [
+        ("val.m_flow_nominal_pos", valve_instance_def),
+        ("other.m_flow_nominal_pos", other_instance_def),
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_with_def_id(name, instance_def)),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        model.symbol_ancestry.insert(instance_def, vec![source_def]);
+    }
+    model.add_variable(
+        rumoca_core::VarName::new("val.m_flow"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("val.m_flow"),
+            nominal: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "Buildings.Fluid.BaseClasses.PartialResistance.m_flow_nominal_pos",
+                    component_ref_with_def_id(
+                        "Buildings.Fluid.BaseClasses.PartialResistance.m_flow_nominal_pos",
+                        source_def,
+                    ),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let nominal = model
+        .variables
+        .get(&rumoca_core::VarName::new("val.m_flow"))
+        .and_then(|var| var.nominal.as_ref())
+        .expect("nominal should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = nominal else {
+        panic!("expected nominal varref");
+    };
+    assert_eq!(name.as_str(), "val.m_flow_nominal_pos");
+}
+
+#[test]
 fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
     let mut model = flat::Model::new();
     model.add_variable(
@@ -265,6 +319,178 @@ fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
         panic!("expected algorithm var ref");
     };
     assert_eq!(name.as_str(), "pipe.port_a.p");
+}
+
+#[test]
+fn record_alias_canonicalization_visits_variable_bindings_and_projects_array_record_fields() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("bank.per[1].Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.per[1].Q"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("bank.ch[1].per.Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.ch[1].per.Q"),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("bank.ch[1].per")),
+                field: "Q".to_string(),
+                span: Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("bank.ch[1].per"),
+        rumoca_core::ComponentPath::from_flat_path("bank.per"),
+    );
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("bank.ch[1].per.Q"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected field access to collapse to varref");
+    };
+    assert_eq!(name.as_str(), "bank.per[1].Q");
+}
+
+#[test]
+fn record_alias_canonicalization_uses_variable_owner_to_project_unindexed_record_binding() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("bank.per[1].Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.per[1].Q"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("bank.ch[1].per.Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.ch[1].per.Q"),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("bank.dat")),
+                field: "Q".to_string(),
+                span: Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("bank.dat"),
+        rumoca_core::ComponentPath::from_flat_path("bank.per"),
+    );
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("bank.ch[1].per.Q"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected field access to collapse to owner-indexed target");
+    };
+    assert_eq!(name.as_str(), "bank.per[1].Q");
+}
+
+#[test]
+fn record_alias_canonicalization_projects_owner_record_field_without_direct_alias() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("bank.per[1].Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.per[1].Q"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("bank.ch[1].per.Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.ch[1].per.Q"),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("bank.dat")),
+                field: "Q".to_string(),
+                span: Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("other.alias"),
+        rumoca_core::ComponentPath::from_flat_path("other.target"),
+    );
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("bank.ch[1].per.Q"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected owner-projected field access to collapse");
+    };
+    assert_eq!(name.as_str(), "bank.per[1].Q");
+}
+
+#[test]
+fn record_alias_canonicalization_projects_nested_owner_record_leaf() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("bank.per[1].Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.per[1].Q"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("bank.ch[1].unit.per.Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.ch[1].unit.per.Q"),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("bank.dat")),
+                field: "Q".to_string(),
+                span: Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("other.alias"),
+        rumoca_core::ComponentPath::from_flat_path("other.target"),
+    );
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("bank.ch[1].unit.per.Q"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected nested owner projection to collapse");
+    };
+    assert_eq!(name.as_str(), "bank.per[1].Q");
 }
 
 #[test]
