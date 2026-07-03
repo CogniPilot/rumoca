@@ -1,6 +1,6 @@
 //! GALEC / eFMI Algorithm Code export facade (SPEC_0034 GAL-010).
 //!
-//! Frontends reach the `rumoca-target-galec` projection only through this
+//! Frontends reach the `rumoca-galec-codegen` projection only through this
 //! module: it supplies the auxiliary provenance the canonical DAE does not
 //! carry — the [`ScalarTypeMap`] built from Flat-side declared types — and
 //! renders the projection's two text artifacts (`<Model>.alg` plus the
@@ -31,7 +31,7 @@
 //! Generated variables the Flat model never declared — the when-condition
 //! vector (`f_c` targets, Boolean per MLS B.1d) and `__pre__.<base>` slots
 //! (inheriting their base variable's type) — are deliberately NOT entered
-//! here: `rumoca-target-galec`'s `classify` module owns those structural
+//! here: `rumoca-galec-codegen`'s `classify` module owns those structural
 //! fallbacks, and map entries take precedence over them, so duplicating
 //! the rules in the facade would let a stale copy silently win on drift.
 //!
@@ -42,11 +42,11 @@
 use crate::codegen_target::{TargetBundle, TargetTemplateSource};
 use rumoca_core::TypeId;
 use rumoca_efmi::{NameWithoutSlashes, Sha1Hex, production_code_manifest_to_xml};
-use rumoca_galec::ast::ScalarType;
+use rumoca_ir_galec::ast::ScalarType;
 use rumoca_ir_ast::TypeTable;
 use rumoca_ir_dae::Dae;
 use rumoca_ir_flat::Model as FlatModel;
-use rumoca_target_galec::{
+use rumoca_galec_codegen::{
     AlgorithmCodePackage, EmittedCodeFile, GalecInput, GalecOptions, GalecTargetError,
     ScalarTypeMap, assemble_production_manifest, c_template_context, lower_to_algorithm_code,
     render_algorithm_code, render_manifest_document, render_manifest_xml,
@@ -116,7 +116,7 @@ pub fn render_galec_export(
 /// lives in the target manifest.
 #[derive(Debug, Clone)]
 pub struct GalecCExport {
-    /// Serialized typed `CContext` (`rumoca-target-galec`'s `emit` module):
+    /// Serialized typed `CContext` (`rumoca-galec-codegen`'s `emit` module):
     /// `model_name`, `block_name`, `struct_name`, `function_prefix`,
     /// `include_guard`, `variables`, `methods` — the complete template
     /// context, C text intelligence stays in the typed printer (D2/GAL-008).
