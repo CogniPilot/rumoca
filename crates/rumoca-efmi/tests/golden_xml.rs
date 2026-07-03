@@ -9,10 +9,10 @@ use rumoca_efmi::algorithm_code_manifest::{
     Clock, ErrorSignal, ErrorSignalStatus, IntegerVariable, RealVariable, StartValue, Variable,
     VariableCommon,
 };
-use rumoca_efmi::content::{
-    Content, ContentParts, ManifestAttributes, ModelRepresentation, ModelRepresentationKind,
+use rumoca_efmi::content::{Content, ContentParts, ModelRepresentation, ModelRepresentationKind};
+use rumoca_efmi::manifest_common::{
+    BaseUnit, File, FileChecksum, FileRole, ManifestAttributes, Unit,
 };
-use rumoca_efmi::manifest_common::{BaseUnit, File, FileChecksum, FileRole, Unit};
 use rumoca_efmi::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
     algorithm_code_manifest_to_xml, content_to_xml,
@@ -28,6 +28,10 @@ fn ident(value: &str) -> Identifier {
 
 fn text(value: &str) -> NormalizedText {
     NormalizedText::new(value).unwrap()
+}
+
+fn file_name(value: &str) -> NameWithoutSlashes {
+    NameWithoutSlashes::new(value).unwrap()
 }
 
 fn common(id: &str, name: &str, causality: BlockCausality) -> VariableCommon {
@@ -87,7 +91,7 @@ fn fixture_files() -> Vec<File> {
     vec![
         File {
             id: ident("F_ALG"),
-            name: text("RumocaTest.Pi.alg"),
+            name: file_name("RumocaTest.Pi.alg"),
             path: FilePath::root(),
             checksum: FileChecksum::Sha1(Sha1Hex::of_bytes(b"abc")),
             role: FileRole::Code,
@@ -95,7 +99,7 @@ fn fixture_files() -> Vec<File> {
         },
         File {
             id: ident("F_MANIFEST"),
-            name: text("manifest.xml"),
+            name: file_name("manifest.xml"),
             path: FilePath::root(),
             checksum: FileChecksum::NotNeeded,
             role: FileRole::Manifest,
@@ -108,7 +112,7 @@ fn fixture_attributes(uuid: &str) -> ManifestAttributes {
     ManifestAttributes {
         id: ManifestId::parse(uuid).unwrap(),
         name: text("RumocaTest.Pi"),
-        description: Some("Discrete PI test block".to_owned()),
+        description: Some(text("Discrete PI test block")),
         version: Some(text("0.1")),
         generation_date_and_time: UtcTimestamp::parse(TIMESTAMP).unwrap(),
         generation_tool: Some(text("rumoca")),
@@ -276,7 +280,7 @@ fn content_checksum_flows_from_manifest_bytes() {
 #[test]
 fn attribute_values_are_escaped() {
     let mut manifest_parts = fixture_manifest().parts().clone();
-    manifest_parts.attributes.description = Some(r#"a<b&"c'd>e"#.to_owned());
+    manifest_parts.attributes.description = Some(text(r#"a<b&"c'd>e"#));
     let manifest = AlgorithmCodeManifest::new(manifest_parts).unwrap();
     let rendered = String::from_utf8(algorithm_code_manifest_to_xml(&manifest).unwrap()).unwrap();
     assert!(

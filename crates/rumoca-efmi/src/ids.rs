@@ -157,10 +157,33 @@ const fn is_identifier_char(c: char) -> bool {
         )
 }
 
-/// Non-empty `xs:normalizedString` value: no tab, line feed, or carriage
-/// return. Stricter than the XSD (which permits the empty string) because an
-/// empty name/version/tool attribute is always a generator bug; use `None`
-/// for absent optional attributes instead.
+/// Reject characters that can never survive attribute serialization.
+///
+/// XML 1.0 forbids C0 control characters other than tab/LF/CR (and
+/// U+FFFE/U+FFFF) anywhere in a document; quick-xml escapes only `<>&'"` and
+/// would emit them raw, producing non-well-formed bytes that `xmllint`
+/// rejects. Tab/LF/CR themselves are rejected too: XML attribute-value
+/// normalization silently replaces them with spaces on re-parse, so a value
+/// containing them cannot round-trip byte-exactly (and `xs:normalizedString`
+/// forbids them outright). Returns the rejection reason, if any.
+fn invalid_attribute_char_reason(value: &str) -> Option<String> {
+    let bad = value
+        .chars()
+        .find(|&c| (c as u32) < 0x20 || c == '\u{FFFE}' || c == '\u{FFFF}')?;
+    Some(if matches!(bad, '\t' | '\n' | '\r') {
+        "must not contain tab, line feed, or carriage return".to_owned()
+    } else {
+        format!(
+            "must not contain XML-illegal character U+{:04X}",
+            bad as u32
+        )
+    })
+}
+
+/// Non-empty `xs:normalizedString` value: no tab, line feed, carriage
+/// return, or XML-illegal character. Stricter than the XSD (which permits
+/// the empty string) because an empty name/version/tool attribute is always
+/// a generator bug; use `None` for absent optional attributes instead.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NormalizedText(String);
 
@@ -174,11 +197,8 @@ impl NormalizedText {
                 reason: "must not be empty".to_owned(),
             });
         }
-        if value.contains(['\t', '\n', '\r']) {
-            return Err(EfmiError::InvalidText {
-                value,
-                reason: "must not contain tab, line feed, or carriage return".to_owned(),
-            });
+        if let Some(reason) = invalid_attribute_char_reason(&value) {
+            return Err(EfmiError::InvalidText { value, reason });
         }
         Ok(Self(value))
     }
@@ -195,8 +215,11 @@ impl fmt::Display for NormalizedText {
     }
 }
 
-/// Container or manifest file name (`efmiNameWithoutSlashesType`): non-empty,
-/// normalized, and free of `/`.
+/// Container, manifest, or in-container file name
+/// (`efmiNameWithoutSlashesType`): non-empty, normalized, and free of `/`.
+/// Backslashes are also rejected — stricter than the XSD pattern — because a
+/// `\` in a file name is ambiguous on Windows consumers (path separator vs.
+/// name character).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NameWithoutSlashes(String);
 
@@ -204,21 +227,22 @@ impl NameWithoutSlashes {
     /// Validate and wrap a slash-free name.
     pub fn new(value: impl Into<String>) -> Result<Self, EfmiError> {
         let value = value.into();
-        let invalid = |value: String, reason: &str| EfmiError::InvalidContainerName {
-            value,
-            reason: reason.to_owned(),
-        };
+        let invalid =
+            |value: String, reason: String| EfmiError::InvalidContainerName { value, reason };
         if value.is_empty() {
-            return Err(invalid(value, "must not be empty"));
+            return Err(invalid(value, "must not be empty".to_owned()));
         }
         if value.contains('/') {
-            return Err(invalid(value, "must not contain `/`"));
+            return Err(invalid(value, "must not contain `/`".to_owned()));
         }
-        if value.contains(['\t', '\n', '\r']) {
+        if value.contains('\\') {
             return Err(invalid(
                 value,
-                "must not contain tab, line feed, or carriage return",
+                "must not contain `\\` (ambiguous path separator on Windows)".to_owned(),
             ));
+        }
+        if let Some(reason) = invalid_attribute_char_reason(&value) {
+            return Err(invalid(value, reason));
         }
         Ok(Self(value))
     }
@@ -237,8 +261,9 @@ impl fmt::Display for NameWithoutSlashes {
 
 /// Directory part of an in-container file path (`efmiFilePathType`): starts
 /// with `./`, ends with `/`. Stricter than the XSD pattern in rejecting empty,
-/// `.` and `..` segments, which the pattern technically admits but which are
-/// always generator bugs.
+/// `.` and `..` segments (which the pattern technically admits but which are
+/// always generator bugs) and backslashes (ambiguous path separators on
+/// Windows consumers).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FilePath(String);
 
@@ -256,11 +281,14 @@ impl FilePath {
         if !value.ends_with('/') {
             return Err(invalid(value, "must end with `/`"));
         }
-        if value.contains(['\t', '\n', '\r']) {
+        if value.contains('\\') {
             return Err(invalid(
                 value,
-                "must not contain tab, line feed, or carriage return",
+                "must not contain `\\` (ambiguous path separator on Windows)",
             ));
+        }
+        if let Some(reason) = invalid_attribute_char_reason(&value) {
+            return Err(EfmiError::InvalidFilePath { value, reason });
         }
         let segments_ok = rest
             .split_terminator('/')
@@ -417,13 +445,30 @@ mod tests {
         }
     }
 
+    /// XML 1.0 forbids C0 controls other than tab/LF/CR (and U+FFFE/U+FFFF);
+    /// quick-xml would emit them raw, so validated models must reject them
+    /// (they otherwise serialize to bytes xmllint refuses to parse).
+    #[test]
+    fn normalized_text_rejects_xml_illegal_characters() {
+        for value in ["a\u{1}b", "bell\u{7}", "\u{0}", "a\u{FFFE}", "a\u{FFFF}b"] {
+            let err = NormalizedText::new(value).expect_err(value);
+            assert_eq!(err.code(), "EFM004", "wrong code for {value:?}");
+            assert!(
+                err.to_string().contains("XML-illegal"),
+                "reason must name the XML-illegal character, got: {err}"
+            );
+        }
+        // XML-legal beyond ASCII controls stays accepted.
+        assert!(NormalizedText::new("Grüße λ \u{7F}").is_ok());
+    }
+
     #[test]
     fn name_without_slashes_enforced() {
         assert!(NameWithoutSlashes::new("AlgorithmCode").is_ok());
         assert!(NameWithoutSlashes::new("manifest.xml").is_ok());
-        for value in ["", "a/b", "a\nb"] {
+        for value in ["", "a/b", "a\nb", "a\\b", "a\u{1}b"] {
             let err = NameWithoutSlashes::new(value).expect_err(value);
-            assert_eq!(err.code(), "EFM005");
+            assert_eq!(err.code(), "EFM005", "wrong code for {value:?}");
         }
     }
 
@@ -432,9 +477,20 @@ mod tests {
         for value in ["./", "./src/", "./a/b/"] {
             assert!(FilePath::new(value).is_ok(), "should accept {value}");
         }
-        for value in ["", ".", "src/", "./src", "/src/", ".//", "././", "./../"] {
+        for value in [
+            "",
+            ".",
+            "src/",
+            "./src",
+            "/src/",
+            ".//",
+            "././",
+            "./../",
+            "./a\\b/",
+            "./a\u{1}b/",
+        ] {
             let err = FilePath::new(value).expect_err(value);
-            assert_eq!(err.code(), "EFM006", "wrong code for {value}");
+            assert_eq!(err.code(), "EFM006", "wrong code for {value:?}");
         }
     }
 

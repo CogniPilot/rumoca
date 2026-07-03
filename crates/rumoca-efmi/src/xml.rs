@@ -25,9 +25,9 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use crate::algorithm_code_manifest::{
     AlgorithmCodeManifest, BlockMethod, BlockMethods, StartValue, Variable, VariableCommon,
 };
-use crate::content::{Content, ManifestAttributes};
+use crate::content::Content;
 use crate::diagnostic::EfmiError;
-use crate::manifest_common::{Annotation, BaseUnit, File, FileChecksum, Unit};
+use crate::manifest_common::{Annotation, BaseUnit, File, FileChecksum, ManifestAttributes, Unit};
 use crate::{ALGORITHM_CODE_MANIFEST_XSD_VERSION, CONTAINER_MANIFEST_XSD_VERSION, EFMI_VERSION};
 
 /// XML Schema instance namespace bound to the `xsi` prefix on root elements.
@@ -204,7 +204,11 @@ fn push_manifest_attributes(element: &mut BytesStart<'_>, attributes: &ManifestA
     element.push_attribute(("efmiVersion", EFMI_VERSION));
     element.push_attribute(("id", attributes.id.to_string().as_str()));
     element.push_attribute(("name", attributes.name.as_str()));
-    push_opt(element, "description", attributes.description.as_deref());
+    push_opt(
+        element,
+        "description",
+        attributes.description.as_ref().map(|v| v.as_str()),
+    );
     push_opt(
         element,
         "version",
@@ -249,7 +253,11 @@ fn write_files(xml: &mut XmlOut, files: &[File]) -> Result<(), EfmiError> {
             FileChecksum::NotNeeded => el.push_attribute(("needsChecksum", "false")),
         }
         el.push_attribute(("role", file.role.as_str()));
-        push_opt(&mut el, "description", file.description.as_deref());
+        push_opt(
+            &mut el,
+            "description",
+            file.description.as_ref().map(|v| v.as_str()),
+        );
         xml.empty(el)?;
     }
     xml.end("Files")
@@ -401,7 +409,11 @@ fn base_variable_element<'a>(
     let mut el = BytesStart::new(tag);
     el.push_attribute(("id", common.id.as_str()));
     el.push_attribute(("name", common.name.as_str()));
-    push_opt(&mut el, "description", common.description.as_deref());
+    push_opt(
+        &mut el,
+        "description",
+        common.description.as_ref().map(|v| v.as_str()),
+    );
     el.push_attribute(("blockCausality", common.block_causality.as_str()));
     el.push_attribute(("start", start.as_str()));
     el

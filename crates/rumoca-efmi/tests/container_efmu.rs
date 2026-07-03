@@ -24,10 +24,10 @@ use rumoca_efmi::algorithm_code_manifest::{
     AlgorithmCodeManifest, AlgorithmCodeManifestParts, BlockCausality, BlockMethod, BlockMethods,
     Clock, ErrorSignal, ErrorSignalStatus, RealVariable, StartValue, Variable, VariableCommon,
 };
-use rumoca_efmi::content::{
-    Content, ContentParts, ManifestAttributes, ModelRepresentation, ModelRepresentationKind,
+use rumoca_efmi::content::{Content, ContentParts, ModelRepresentation, ModelRepresentationKind};
+use rumoca_efmi::manifest_common::{
+    BaseUnit, File, FileChecksum, FileRole, ManifestAttributes, Unit,
 };
-use rumoca_efmi::manifest_common::{BaseUnit, File, FileChecksum, FileRole, Unit};
 use rumoca_efmi::{
     EfmiError, EfmuLayout, EfmuMeta, FilePath, Identifier, ManifestId, ModelRepresentationFiles,
     NameWithoutSlashes, NormalizedText, RepresentationFile, Sha1Hex, UtcTimestamp,
@@ -129,7 +129,7 @@ fn fixture_manifest() -> AlgorithmCodeManifest {
         files: vec![
             File {
                 id: ident("F_ALG"),
-                name: text("Model.alg"),
+                name: NameWithoutSlashes::new("Model.alg").unwrap(),
                 path: FilePath::root(),
                 checksum: FileChecksum::Sha1(Sha1Hex::of_bytes(ALG_TEXT.as_bytes())),
                 role: FileRole::Code,
@@ -137,7 +137,7 @@ fn fixture_manifest() -> AlgorithmCodeManifest {
             },
             File {
                 id: ident("F_MANIFEST"),
-                name: text("manifest.xml"),
+                name: NameWithoutSlashes::new("manifest.xml").unwrap(),
                 path: FilePath::root(),
                 checksum: FileChecksum::NotNeeded,
                 role: FileRole::Manifest,

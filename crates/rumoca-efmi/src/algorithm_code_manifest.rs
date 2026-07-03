@@ -17,10 +17,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::content::ManifestAttributes;
 use crate::diagnostic::EfmiError;
 use crate::ids::{IdRegistry, Identifier, NormalizedText};
-use crate::manifest_common::{Annotation, File, FileRole, Unit};
+use crate::manifest_common::{Annotation, File, FileRole, ManifestAttributes, Unit};
 
 /// `Clock` element: references the block variable defining the fixed sample
 /// period (§3.1.2). The referenced variable must be a Real `constant`; when
@@ -161,8 +160,10 @@ pub struct VariableCommon {
     pub id: Identifier,
     /// Full unique name, e.g. `a.b.c` or `previous(I.x)` (`name`, required).
     pub name: NormalizedText,
-    /// Free-text description (`description`, optional).
-    pub description: Option<String>,
+    /// Free-text description (`description`, optional; `xs:string` in the
+    /// XSD, held to normalized-attribute discipline — see
+    /// [`crate::manifest_common`] module docs).
+    pub description: Option<NormalizedText>,
     /// Block causality (`blockCausality`, required).
     pub block_causality: BlockCausality,
     /// Dimension sizes in order; empty means scalar. Each size must be a
@@ -278,8 +279,10 @@ pub struct AlgorithmCodeManifestParts {
 ///   annotation types;
 /// - no duplicate signals per block method;
 /// - `fileRefId`, `Clock/@variableRefId`, and every `unitRefId` resolve, the
-///   clock variable is a Real `constant`, and its unit's `BaseUnit` (when
-///   present) is exactly seconds (§3.1.2, D6).
+///   `fileRefId` target is the `role="Code"` GALEC program file (§3.1.1 —
+///   which also guarantees at least one code file), the clock variable is a
+///   Real `constant`, and its unit's `BaseUnit` (when present) is exactly
+///   seconds (§3.1.2, D6).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlgorithmCodeManifest(AlgorithmCodeManifestParts);
 
@@ -551,7 +554,7 @@ fn validate_signals(methods: &BlockMethods) -> Result<(), EfmiError> {
 }
 
 fn validate_references(parts: &AlgorithmCodeManifestParts) -> Result<(), EfmiError> {
-    let file_ids: BTreeSet<&str> = parts.files.iter().map(|f| f.id.as_str()).collect();
+    let files: BTreeMap<&str, &File> = parts.files.iter().map(|f| (f.id.as_str(), f)).collect();
     let units: BTreeMap<&str, &Unit> = parts.units.iter().map(|u| (u.id.as_str(), u)).collect();
     let variables: BTreeMap<&str, &Variable> = parts
         .variables
@@ -562,8 +565,18 @@ fn validate_references(parts: &AlgorithmCodeManifestParts) -> Result<(), EfmiErr
         attribute: attribute.to_owned(),
         id: id.as_str().to_owned(),
     };
-    if !file_ids.contains(parts.file_ref_id.as_str()) {
+    let Some(referenced) = files.get(parts.file_ref_id.as_str()) else {
         return Err(unresolved("Manifest/@fileRefId", &parts.file_ref_id));
+    };
+    // §3.1.1: fileRefId is the reference to the GALEC program implementing
+    // the block — the representation's code file. Resolving to any other
+    // role (the manifest itself, reference data, ...) would be a
+    // schema-valid but nonconforming Algorithm Code container.
+    if referenced.role != FileRole::Code {
+        return Err(EfmiError::FileRefRoleNotCode {
+            id: parts.file_ref_id.as_str().to_owned(),
+            role: referenced.role.as_str().to_owned(),
+        });
     }
     for variable in &parts.variables {
         if let Variable::Real(real) = variable
@@ -622,7 +635,7 @@ fn validate_clock_variable(
 mod tests {
     use super::*;
     use crate::checksum::Sha1Hex;
-    use crate::ids::{FilePath, ManifestId, UtcTimestamp};
+    use crate::ids::{FilePath, ManifestId, NameWithoutSlashes, UtcTimestamp};
     use crate::manifest_common::{BaseUnit, FileChecksum};
 
     fn attributes() -> ManifestAttributes {
@@ -667,7 +680,7 @@ mod tests {
             file_ref_id: ident("F_ALG"),
             files: vec![File {
                 id: ident("F_ALG"),
-                name: NormalizedText::new("TestBlock.alg").unwrap(),
+                name: NameWithoutSlashes::new("TestBlock.alg").unwrap(),
                 path: FilePath::root(),
                 checksum: FileChecksum::Sha1(Sha1Hex::of_bytes(b"abc")),
                 role: FileRole::Code,
@@ -795,6 +808,31 @@ mod tests {
         );
     }
 
+    /// §3.1.1: `fileRefId` must reference the GALEC program — the
+    /// representation's `role="Code"` file. Resolving to a file of any other
+    /// role (here the manifest itself) is a nonconforming container.
+    #[test]
+    fn file_ref_must_resolve_to_code_role() {
+        let mut parts = base_parts();
+        parts.files.push(File {
+            id: ident("F_MANIFEST"),
+            name: NameWithoutSlashes::new("manifest.xml").unwrap(),
+            path: FilePath::root(),
+            checksum: FileChecksum::NotNeeded,
+            role: FileRole::Manifest,
+            description: None,
+        });
+        parts.file_ref_id = ident("F_MANIFEST");
+        let err = AlgorithmCodeManifest::new(parts).unwrap_err();
+        assert_eq!(
+            err,
+            EfmiError::FileRefRoleNotCode {
+                id: "F_MANIFEST".into(),
+                role: "Manifest".into(),
+            }
+        );
+    }
+
     #[test]
     fn unresolved_file_and_unit_references_rejected() {
         let mut parts = base_parts();
@@ -916,7 +954,7 @@ mod tests {
         for (id, name) in [("F_FMU1", "a.fmu"), ("F_FMU2", "b.fmu")] {
             parts.files.push(File {
                 id: ident(id),
-                name: NormalizedText::new(name).unwrap(),
+                name: NameWithoutSlashes::new(name).unwrap(),
                 path: FilePath::root(),
                 checksum: FileChecksum::Sha1(Sha1Hex::of_bytes(name.as_bytes())),
                 role: FileRole::Fmu,

@@ -44,6 +44,8 @@
 //! | EFM034 | [`EfmiError::MultipleFmuFiles`] |
 //! | EFM035 | [`EfmiError::ManifestFileMissing`] |
 //! | EFM036 | [`EfmiError::StaleFileChecksum`] |
+//! | EFM037 | [`EfmiError::FileRefRoleNotCode`] |
+//! | EFM038 | [`EfmiError::ManifestRefIdMismatch`] |
 
 use thiserror::Error;
 
@@ -220,10 +222,11 @@ pub enum EfmiError {
     #[error("Files list has {count} role=\"FMU\" entries; at most 1 is allowed")]
     MultipleFmuFiles { count: usize },
 
-    /// A manifest lists a `needsChecksum="true"` file that is not among the
-    /// files being written into its representation container.
+    /// A manifest lists a `File` entry that is not among the files being
+    /// written into its representation container (a dangling reference,
+    /// regardless of `needsChecksum`).
     #[error(
-        "representation `{representation}` manifest lists checksummed file `{path}` \
+        "representation `{representation}` manifest lists file `{path}` \
          but no such file is being written"
     )]
     ManifestFileMissing {
@@ -243,6 +246,29 @@ pub enum EfmiError {
         path: String,
         listed: String,
         computed: String,
+    },
+
+    /// `Manifest/@fileRefId` resolves to a file whose role is not `Code`.
+    /// It must reference the GALEC program implementing the block (§3.1.1),
+    /// which is by definition the representation's `role="Code"` file.
+    #[error(
+        "Manifest/@fileRefId `{id}` references a role=\"{role}\" file; it must \
+         reference the representation's role=\"Code\" GALEC program file"
+    )]
+    FileRefRoleNotCode { id: String, role: String },
+
+    /// `__content.xml` would register a `manifestRefId` that differs from the
+    /// `id` inside the manifest bytes being written — a dangling reference in
+    /// an otherwise schema-valid eFMU (e.g. the manifest was regenerated with
+    /// a fresh id but the registration was not updated).
+    #[error(
+        "representation `{representation}` registers manifestRefId {registered} but its \
+         manifest bytes carry id {found}; update manifest_ref_id after regenerating the manifest"
+    )]
+    ManifestRefIdMismatch {
+        representation: String,
+        registered: String,
+        found: String,
     },
 }
 
@@ -286,6 +312,8 @@ impl EfmiError {
             Self::MultipleFmuFiles { .. } => "EFM034",
             Self::ManifestFileMissing { .. } => "EFM035",
             Self::StaleFileChecksum { .. } => "EFM036",
+            Self::FileRefRoleNotCode { .. } => "EFM037",
+            Self::ManifestRefIdMismatch { .. } => "EFM038",
         }
     }
 }
