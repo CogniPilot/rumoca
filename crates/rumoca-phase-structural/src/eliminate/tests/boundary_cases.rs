@@ -205,6 +205,85 @@ fn test_boundary_cascade_resolution() {
 }
 
 #[test]
+fn test_boundary_eliminates_indexed_scalar_connection_alias() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("pin[2].v"), test_dae_variable("pin[2].v"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("node.v"), test_dae_variable("node.v"));
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("pin[2].v")),
+            rhs: Box::new(var_ref("node.v")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: pin[2].v = node.v".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("node.v")),
+            rhs: Box::new(lit(0.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "ground equation".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(result.blt_error.is_none());
+    assert_eq!(result.n_eliminated, 2);
+    assert!(dae.continuous.equations.is_empty());
+    assert!(dae.variables.algebraics.is_empty());
+}
+
+#[test]
+fn test_boundary_eliminates_scalar_output_connection_alias() {
+    let mut dae = Dae::new();
+    dae.variables
+        .outputs
+        .insert(VarName::new("sensor.y"), test_dae_variable("sensor.y"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("source.y"), test_dae_variable("source.y"));
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("sensor.y")),
+            rhs: Box::new(var_ref("source.y")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: sensor.y = source.y".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(result.blt_error.is_none());
+    assert_eq!(result.n_eliminated, 1);
+    assert!(dae.continuous.equations.is_empty());
+    assert!(
+        !dae.variables
+            .outputs
+            .contains_key(&VarName::new("sensor.y"))
+    );
+    assert_eq!(result.substitutions[0].var_name.as_str(), "sensor.y");
+}
+
+#[test]
 fn test_boundary_eliminates_negated_additive_single_unknown() {
     let mut dae = Dae::new();
     dae.variables
@@ -508,19 +587,294 @@ fn test_boundary_eliminates_single_unknown_connection_after_substitution() {
     });
 
     let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
-    // y is a non-trivial output (if-expression) — preserved in the DAE.
-    // u cannot be eliminated because y also remains live in the connection
-    // equation, keeping both unknowns alive.
-    assert_eq!(result.n_eliminated, 0);
-    assert_eq!(dae.continuous.equations.len(), 2);
+    // y is a non-trivial output (if-expression), so preserve y and its source
+    // equation. The connection alias can still eliminate the scalar sink u.
+    assert_eq!(result.n_eliminated, 1);
+    assert_eq!(dae.continuous.equations.len(), 1);
     assert!(
         dae.variables.outputs.contains_key(&VarName::new("y")),
         "output y should remain (non-trivial expression)"
     );
     assert!(
-        dae.variables.algebraics.contains_key(&VarName::new("u")),
-        "u should remain (y not eliminated, connection eq still has two unknowns)"
+        !dae.variables.algebraics.contains_key(&VarName::new("u")),
+        "connection sink u should be eliminated as an alias of y"
     );
+}
+
+#[test]
+fn test_boundary_connection_alias_prefers_rhs_sink_element() {
+    let mut dae = Dae::new();
+    dae.variables.algebraics.insert(
+        VarName::new("analysatorAC.voltageLine2Line[6].product1.u[2]"),
+        test_dae_variable("analysatorAC.voltageLine2Line[6].product1.u[2]"),
+    );
+    dae.variables.algebraics.insert(
+        VarName::new("analysatorAC.voltageLine2Line[6].product2.u[1]"),
+        test_dae_variable("analysatorAC.voltageLine2Line[6].product2.u[1]"),
+    );
+
+    let connection_rhs = Expression::Binary {
+        op: sub_op(),
+        lhs: Box::new(var_ref("analysatorAC.voltageLine2Line[6].product1.u[2]")),
+        rhs: Box::new(var_ref("analysatorAC.voltageLine2Line[6].product2.u[1]")),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: connection_rhs.clone(),
+        span: Span::DUMMY,
+        origin: "connection equation: analysatorAC.voltageLine2Line[6].product1.u[2] = analysatorAC.voltageLine2Line[6].product2.u[1]".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var_ref("analysatorAC.voltageLine2Line[6].product1.u[2]")),
+            rhs: Box::new(var_ref("analysatorAC.voltageLine2Line[6].product2.u[1]")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "product input use".to_string(),
+        scalar_count: 1,
+    });
+
+    let live = vec![
+        VarName::new("analysatorAC.voltageLine2Line[6].product1.u[2]"),
+        VarName::new("analysatorAC.voltageLine2Line[6].product2.u[1]"),
+    ];
+    let direct_definitions = DirectDefinitionIndex::build(&dae);
+    let protected = IndexSet::new();
+    let (var_name, solution) = choose_solvable_unknown_for_elimination(
+        &dae,
+        0,
+        &connection_rhs,
+        &live,
+        false,
+        &protected,
+        &direct_definitions,
+    )
+    .expect("candidate selection should not fail")
+    .expect("connection alias should be solvable");
+
+    assert_eq!(
+        var_name.as_str(),
+        "analysatorAC.voltageLine2Line[6].product2.u[1]"
+    );
+    assert!(
+        matches!(
+            solution,
+            Expression::VarRef { ref name, ref subscripts, .. }
+                if name.as_str() == "analysatorAC.voltageLine2Line[6].product1.u[2]"
+                    && subscripts.is_empty()
+        ),
+        "sink input should resolve to source input, got {:?}",
+        solution
+    );
+}
+
+#[test]
+fn test_boundary_connection_policy_accepts_scalar_element_of_aggregate_var() {
+    let mut dae = Dae::new();
+    let mut product1_u = test_dae_variable("analysatorAC.voltageLine2Line[6].product1.u");
+    product1_u.dims = vec![2];
+    dae.variables.algebraics.insert(
+        VarName::new("analysatorAC.voltageLine2Line[6].product1.u"),
+        product1_u,
+    );
+    let mut product2_u = test_dae_variable("analysatorAC.voltageLine2Line[6].product2.u");
+    product2_u.dims = vec![2];
+    dae.variables.algebraics.insert(
+        VarName::new("analysatorAC.voltageLine2Line[6].product2.u"),
+        product2_u,
+    );
+
+    let connection_rhs = Expression::Binary {
+        op: sub_op(),
+        lhs: Box::new(var_ref_idx(
+            "analysatorAC.voltageLine2Line[6].product1.u",
+            2,
+        )),
+        rhs: Box::new(var_ref_idx(
+            "analysatorAC.voltageLine2Line[6].product2.u",
+            1,
+        )),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: connection_rhs.clone(),
+        span: Span::DUMMY,
+        origin: "connection equation: analysatorAC.voltageLine2Line[6].product1.u[2] = analysatorAC.voltageLine2Line[6].product2.u[1]".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var_ref_idx(
+                "analysatorAC.voltageLine2Line[6].product1.u",
+                2,
+            )),
+            rhs: Box::new(var_ref_idx(
+                "analysatorAC.voltageLine2Line[6].product2.u",
+                1,
+            )),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "product input use".to_string(),
+        scalar_count: 1,
+    });
+
+    let live = vec![
+        VarName::new("analysatorAC.voltageLine2Line[6].product1.u[2]"),
+        VarName::new("analysatorAC.voltageLine2Line[6].product2.u[1]"),
+    ];
+
+    assert!(
+        !should_skip_connection_equation(&dae, &connection_rhs, true, &live, &HashSet::new(),),
+        "scalar element aliases of aggregate variables should be eligible for connection elimination"
+    );
+}
+
+#[test]
+fn test_boundary_eliminates_internal_output_nontrivial_definition() {
+    let mut dae = Dae::new();
+    let mut y = test_dae_variable("block.y");
+    y.component_ref =
+        rumoca_core::component_reference_from_flat_name(&VarName::new("block.y"), Span::DUMMY);
+    dae.variables.outputs.insert(VarName::new("block.y"), y);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("u"), test_dae_variable("u"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("p"), test_dae_variable("p"));
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("block.y")),
+            rhs: Box::new(Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(var_ref("p")),
+                rhs: Box::new(lit(1.0)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "internal output definition".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("block.y")),
+            rhs: Box::new(var_ref("u")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: block.y = u".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(result.blt_error.is_none());
+    assert_eq!(result.n_eliminated, 2);
+    assert!(dae.continuous.equations.is_empty());
+    assert!(!dae.variables.outputs.contains_key(&VarName::new("block.y")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("u")));
+}
+
+#[test]
+fn test_boundary_eliminates_internal_output_scalar_reduction_definition() {
+    let mut dae = Dae::new();
+    let mut y = test_dae_variable("block.y");
+    y.component_ref =
+        rumoca_core::component_reference_from_flat_name(&VarName::new("block.y"), Span::DUMMY);
+    dae.variables.outputs.insert(VarName::new("block.y"), y);
+
+    let mut u = test_dae_variable("block.u");
+    u.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("block.u"), u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("sink.u"), test_dae_variable("sink.u"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("p1"), test_dae_variable("p1"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("p2"), test_dae_variable("p2"));
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("block.y")),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Product,
+                args: vec![var_ref("block.u")],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "internal reduction output definition".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("block.y")),
+            rhs: Box::new(var_ref("sink.u")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: block.y = sink.u".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("block.u[1]")),
+            rhs: Box::new(var_ref("p1")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "block.u[1] = p1".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("block.u[2]")),
+            rhs: Box::new(var_ref("p2")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "block.u[2] = p2".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(result.blt_error.is_none());
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "block.y")
+    );
+    assert!(!dae.variables.outputs.contains_key(&VarName::new("block.y")));
 }
 
 #[test]

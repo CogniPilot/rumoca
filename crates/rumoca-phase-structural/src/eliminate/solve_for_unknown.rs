@@ -53,8 +53,36 @@ pub fn try_solve_for_unknown(rhs: &Expression, unknown: &VarName) -> Option<Expr
             // -(z - expr) has the same solutions as (z - expr).
             try_solve_for_unknown(inner, unknown)
         }
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => solve_if_residual(branches, else_branch, unknown, *span),
         _ => None,
     }
+}
+
+fn solve_if_residual(
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+    unknown: &VarName,
+    span: rumoca_core::Span,
+) -> Option<Expression> {
+    let mut solved_branches = Vec::with_capacity(branches.len());
+    for (condition, branch_residual) in branches {
+        if expr_contains_var(condition, unknown) {
+            return None;
+        }
+        solved_branches.push((
+            condition.clone(),
+            try_solve_for_unknown(branch_residual, unknown)?,
+        ));
+    }
+    Some(Expression::If {
+        branches: solved_branches,
+        else_branch: Box::new(try_solve_for_unknown(else_branch, unknown)?),
+        span,
+    })
 }
 
 fn solve_unit_affine_residual(

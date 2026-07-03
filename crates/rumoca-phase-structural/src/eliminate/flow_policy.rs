@@ -16,19 +16,34 @@ pub(super) fn expr_contains_indexed_multiscalar_ref(
         if name.as_str() == "time" {
             continue;
         }
-        if reference_has_embedded_multiscalar_index(dae, name.var_name())? {
-            return Ok(true);
+        match reference_has_embedded_multiscalar_index(dae, name.var_name()) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(StructuralError::ContractViolation { reason, .. })
+            | Err(StructuralError::UnspannedContractViolation { reason })
+                if reason.contains("missing DAE variable metadata") =>
+            {
+                return Ok(true);
+            }
+            Err(err) => return Err(err),
         }
         if subscripts.is_empty() {
             continue;
         }
-        match scope.shape_for_reference(&name)? {
-            DaeVariableShape::Dimensions(dims) => {
+        match scope.shape_for_reference(&name) {
+            Err(StructuralError::ContractViolation { reason, .. })
+            | Err(StructuralError::UnspannedContractViolation { reason })
+                if reason.contains("missing DAE variable metadata") =>
+            {
+                return Ok(true);
+            }
+            Err(err) => return Err(err),
+            Ok(DaeVariableShape::Dimensions(dims)) => {
                 if scalar_count_from_dims(name.var_name(), &dims)? > 1 {
                     return Ok(true);
                 }
             }
-            DaeVariableShape::StructuredAggregate => return Ok(true),
+            Ok(DaeVariableShape::StructuredAggregate) => return Ok(true),
         }
     }
     Ok(false)

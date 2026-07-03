@@ -4,7 +4,7 @@ use rumoca_core::{Literal, OpUnary};
 
 use super::{
     Dae, Expression, OpBinary, Substitution, VarName, apply_substitutions_to_expr,
-    apply_substitutions_to_expr_with_derivatives,
+    apply_substitutions_to_expr_with_derivatives_and_dae,
 };
 use crate::StructuralError;
 
@@ -49,9 +49,10 @@ pub(super) fn apply_substitutions_to_remaining_once(
         }
         let original_lhs = eq.lhs.clone();
         let original_rhs = eq.rhs.clone();
-        let rhs = apply_substitutions_in_order_with_derivatives(
+        let rhs = apply_substitutions_in_order_with_derivatives_and_dae(
             &eq.rhs,
             substitutions,
+            &derivative_source,
             &mut derivative_replacements,
         )?;
         let Some(lhs) = eq.lhs.as_ref() else {
@@ -66,9 +67,10 @@ pub(super) fn apply_substitutions_to_remaining_once(
             subscripts: Vec::new(),
             span: eq.span,
         };
-        let substituted_lhs = apply_substitutions_in_order_with_derivatives(
+        let substituted_lhs = apply_substitutions_in_order_with_derivatives_and_dae(
             &lhs_expr,
             substitutions,
+            &derivative_source,
             &mut derivative_replacements,
         )?;
         if substituted_lhs == lhs_expr {
@@ -108,14 +110,18 @@ pub(super) fn apply_substitutions_in_order(
     Ok(simplify_arithmetic_identities(substituted))
 }
 
-fn apply_substitutions_in_order_with_derivatives(
+fn apply_substitutions_in_order_with_derivatives_and_dae(
     expr: &Expression,
     substitutions: &[Substitution],
+    dae_context: &Dae,
     derivative_replacements: &mut DerivativeReplacementCache<'_>,
 ) -> Result<Expression, StructuralError> {
-    let substituted = apply_substitutions_to_expr_with_derivatives(expr, substitutions, |sub| {
-        derivative_replacements.replacement_for(sub)
-    })?;
+    let substituted = apply_substitutions_to_expr_with_derivatives_and_dae(
+        expr,
+        substitutions,
+        Some(dae_context),
+        |sub| derivative_replacements.replacement_for(sub),
+    )?;
     Ok(simplify_arithmetic_identities(substituted))
 }
 
@@ -253,9 +259,10 @@ fn apply_substitutions_to_equation(
     substitutions: &[Substitution],
     derivative_replacements: &mut DerivativeReplacementCache<'_>,
 ) -> Result<(), StructuralError> {
-    let rhs = apply_substitutions_in_order_with_derivatives(
+    let rhs = apply_substitutions_in_order_with_derivatives_and_dae(
         &eq.rhs,
         substitutions,
+        derivative_replacements.dae,
         derivative_replacements,
     )?;
     let Some(lhs) = eq.lhs.as_ref() else {
@@ -267,9 +274,10 @@ fn apply_substitutions_to_equation(
         subscripts: Vec::new(),
         span: eq.span,
     };
-    let substituted_lhs = apply_substitutions_in_order_with_derivatives(
+    let substituted_lhs = apply_substitutions_in_order_with_derivatives_and_dae(
         &lhs_expr,
         substitutions,
+        derivative_replacements.dae,
         derivative_replacements,
     )?;
     if substituted_lhs == lhs_expr {
@@ -341,9 +349,10 @@ impl SubstitutionDaeRewriter<'_> {
     }
 
     fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, StructuralError> {
-        apply_substitutions_in_order_with_derivatives(
+        apply_substitutions_in_order_with_derivatives_and_dae(
             expr,
             self.substitutions,
+            self.derivative_replacements.dae,
             &mut self.derivative_replacements,
         )
     }

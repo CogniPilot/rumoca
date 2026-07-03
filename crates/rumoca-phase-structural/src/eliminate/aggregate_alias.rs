@@ -24,10 +24,41 @@ pub(super) fn aggregate_variable_fully_resolved(
             flat_index,
         ));
         if !resolved.contains(&scalar_name) {
-            return Ok(false);
+            return Ok(embedded_component_elements_fully_resolved(
+                name,
+                scalar_count,
+                resolved,
+            ));
         }
     }
     Ok(true)
+}
+
+fn embedded_component_elements_fully_resolved(
+    name: &VarName,
+    scalar_count: usize,
+    resolved: &HashSet<VarName>,
+) -> bool {
+    let resolved_elements = resolved
+        .iter()
+        .filter(|resolved_name| {
+            scalarized_leaf_base_name(resolved_name).is_some_and(|base| base == name.as_str())
+        })
+        .count();
+    resolved_elements >= scalar_count
+}
+
+fn scalarized_leaf_base_name(name: &VarName) -> Option<&str> {
+    let text = name.as_str();
+    let open = text.rfind('[')?;
+    if !text.ends_with(']')
+        || !text[open + 1..text.len() - 1]
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == ',')
+    {
+        return None;
+    }
+    Some(&text[..open])
 }
 
 pub(super) fn is_scalarized_element_of_aggregate(

@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use indexmap::IndexMap;
 
+use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{
     component_base_name, parse_embedded_subscripts, split_complex_field_suffix,
     var_ref_matches_unknown,
@@ -291,6 +292,18 @@ fn var_ref_mentions_unknown_for_presence(
     unknown: &VarName,
     dae: &Dae,
 ) -> Result<bool, StructuralError> {
+    if name.component_ref().is_some()
+        && !subscripts.is_empty()
+        && let Some(indices) = literal_subscript_indices(subscripts)
+    {
+        let indices = indices
+            .into_iter()
+            .map(|idx| usize::try_from(idx).ok())
+            .collect::<Option<Vec<_>>>();
+        if let Some(indices) = indices {
+            return Ok(dae::format_subscript_key(name.as_str(), &indices) == unknown.as_str());
+        }
+    }
     if var_ref_matches_unknown(name, subscripts, unknown) {
         return Ok(true);
     }

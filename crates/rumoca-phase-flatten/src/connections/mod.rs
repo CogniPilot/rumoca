@@ -704,6 +704,17 @@ fn validate_dimension_compatibility(
     var_b: &rumoca_core::VarName,
     span: Span,
 ) -> Result<(), FlattenError> {
+    validate_dimension_compatibility_with_projected_rank(flat, var_a, var_b, 0, 0, span)
+}
+
+fn validate_dimension_compatibility_with_projected_rank(
+    flat: &flat::Model,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
+    projected_rank_a: usize,
+    projected_rank_b: usize,
+    span: Span,
+) -> Result<(), FlattenError> {
     let Some(info_a) = get_validation_var_info(flat, var_a) else {
         return Ok(());
     };
@@ -713,10 +724,14 @@ fn validate_dimension_compatibility(
     let dims_a = &info_a.dims;
     let dims_b = &info_b.dims;
 
-    if dims_a != dims_b
-        && !single_element_dims_compatible(dims_a, dims_b)
-        && !composition_full_reduced_dims_compatible(var_a, dims_a, var_b, dims_b)
-    {
+    if !connection_dims_compatible(
+        var_a,
+        dims_a,
+        var_b,
+        dims_b,
+        projected_rank_a,
+        projected_rank_b,
+    ) {
         return Err(FlattenError::incompatible_connectors(
             format!("{} (dims: {:?})", var_a.as_str(), dims_a),
             format!("{} (dims: {:?})", var_b.as_str(), dims_b),
@@ -724,6 +739,164 @@ fn validate_dimension_compatibility(
         ));
     }
     Ok(())
+}
+
+fn connection_dims_compatible(
+    var_a: &rumoca_core::VarName,
+    dims_a: &[i64],
+    var_b: &rumoca_core::VarName,
+    dims_b: &[i64],
+    projected_rank_a: usize,
+    projected_rank_b: usize,
+) -> bool {
+    dims_pair_compatible(var_a, dims_a, var_b, dims_b)
+        || explicit_projected_dims(dims_a, projected_rank_a)
+            .is_some_and(|projected_a| dims_pair_compatible(var_a, &projected_a, var_b, dims_b))
+        || explicit_projected_dims(dims_b, projected_rank_b)
+            .is_some_and(|projected_b| dims_pair_compatible(var_a, dims_a, var_b, &projected_b))
+        || explicit_projected_dims(dims_a, projected_rank_a)
+            .zip(explicit_projected_dims(dims_b, projected_rank_b))
+            .is_some_and(|(projected_a, projected_b)| {
+                dims_pair_compatible(var_a, &projected_a, var_b, &projected_b)
+            })
+        || projected_embedded_index_dims(var_a.as_str(), dims_a)
+            .is_some_and(|projected_a| dims_pair_compatible(var_a, &projected_a, var_b, dims_b))
+        || projected_embedded_index_dims(var_b.as_str(), dims_b)
+            .is_some_and(|projected_b| dims_pair_compatible(var_a, dims_a, var_b, &projected_b))
+        || projected_embedded_index_dims(var_a.as_str(), dims_a)
+            .zip(projected_embedded_index_dims(var_b.as_str(), dims_b))
+            .is_some_and(|(projected_a, projected_b)| {
+                dims_pair_compatible(var_a, &projected_a, var_b, &projected_b)
+            })
+}
+
+fn dims_pair_compatible(
+    var_a: &rumoca_core::VarName,
+    dims_a: &[i64],
+    var_b: &rumoca_core::VarName,
+    dims_b: &[i64],
+) -> bool {
+    dims_a == dims_b
+        || single_element_dims_compatible(dims_a, dims_b)
+        || composition_full_reduced_dims_compatible(var_a, dims_a, var_b, dims_b)
+        || collapsed_connector_pin_member_dims_compatible(
+            var_a.as_str(),
+            dims_a,
+            var_b.as_str(),
+            dims_b,
+        )
+        || collapsed_connector_pin_to_scalar_dims_compatible(
+            var_a.as_str(),
+            dims_a,
+            var_b.as_str(),
+            dims_b,
+        )
+        || collapsed_indexed_child_missing_parent_dims_compatible(
+            var_a.as_str(),
+            dims_a,
+            var_b.as_str(),
+            dims_b,
+        )
+}
+
+fn collapsed_connector_pin_member_dims_compatible(
+    path_a: &str,
+    dims_a: &[i64],
+    path_b: &str,
+    dims_b: &[i64],
+) -> bool {
+    if !path_a.contains(".pin.") || !path_b.contains(".pin.") {
+        return false;
+    }
+    if path_leaf_without_indices(path_a) != path_leaf_without_indices(path_b) {
+        return false;
+    }
+    let ([dim_a], [dim_b]) = (dims_a, dims_b) else {
+        return false;
+    };
+    let min = (*dim_a).min(*dim_b);
+    let max = (*dim_a).max(*dim_b);
+    min > 0 && max > 0 && max % min == 0
+}
+
+fn collapsed_connector_pin_to_scalar_dims_compatible(
+    path_a: &str,
+    dims_a: &[i64],
+    path_b: &str,
+    dims_b: &[i64],
+) -> bool {
+    collapsed_connector_pin_to_scalar_pair(path_a, dims_a, path_b, dims_b)
+        || collapsed_connector_pin_to_scalar_pair(path_b, dims_b, path_a, dims_a)
+}
+
+fn collapsed_connector_pin_to_scalar_pair(
+    array_path: &str,
+    array_dims: &[i64],
+    scalar_path: &str,
+    scalar_dims: &[i64],
+) -> bool {
+    if !array_path.contains(".pin.") || !scalar_path.contains(".pin") {
+        return false;
+    }
+    if path_leaf_without_indices(array_path) != path_leaf_without_indices(scalar_path) {
+        return false;
+    }
+    matches!(array_dims, [dim] if *dim > 0) && scalar_dims.is_empty()
+}
+
+fn collapsed_indexed_child_missing_parent_dims_compatible(
+    path_a: &str,
+    dims_a: &[i64],
+    path_b: &str,
+    dims_b: &[i64],
+) -> bool {
+    collapsed_indexed_child_missing_parent_dims_pair(path_a, dims_a, dims_b)
+        || collapsed_indexed_child_missing_parent_dims_pair(path_b, dims_b, dims_a)
+}
+
+fn collapsed_indexed_child_missing_parent_dims_pair(
+    indexed_path: &str,
+    indexed_dims: &[i64],
+    parent_dims: &[i64],
+) -> bool {
+    let indexed_rank = count_embedded_index_groups(indexed_path);
+    indexed_path.contains('.')
+        && indexed_rank > 0
+        && indexed_dims.len() == indexed_rank
+        && !parent_dims.is_empty()
+        && parent_dims.iter().all(|dim| *dim > 0)
+}
+
+fn explicit_projected_dims(dims: &[i64], rank: usize) -> Option<Vec<i64>> {
+    (rank > 0).then(|| project_dims_by_rank(dims, rank))
+}
+
+fn projected_embedded_index_dims(path: &str, dims: &[i64]) -> Option<Vec<i64>> {
+    let indexed_rank = count_embedded_index_groups(path);
+    if indexed_rank == 0 {
+        return None;
+    }
+    Some(project_dims_by_rank(dims, indexed_rank))
+}
+
+fn count_embedded_index_groups(path: &str) -> usize {
+    path_segments_of(path)
+        .iter()
+        .filter_map(|segment| extract_array_index(segment))
+        .map(|indices| count_index_groups(&indices))
+        .sum()
+}
+
+fn project_dims_by_rank(dims: &[i64], rank: usize) -> Vec<i64> {
+    if rank >= dims.len() {
+        Vec::new()
+    } else {
+        dims[..dims.len() - rank].to_vec()
+    }
+}
+
+fn count_index_groups(indices: &str) -> usize {
+    indices.bytes().filter(|byte| *byte == b'[').count()
 }
 
 fn single_element_dims_compatible(dims_a: &[i64], dims_b: &[i64]) -> bool {
@@ -779,7 +952,19 @@ fn validate_expanded_connector_connection(
 
         validate_flow_consistency(ctx.flat, sub_a, &var_b_match, ctx.span)?;
         validate_type_compatibility(ctx.flat, ctx.type_roots, sub_a, &var_b_match, ctx.span)?;
-        validate_dimension_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
+        let projected_rank_a = count_index_groups(&normalized_indices_a);
+        let projected_rank_b = extract_suffix(var_b_match.as_str(), ctx.path_b)
+            .map(|(_, indices_b)| strip_explicit_path_indices(&indices_b, ctx.path_b))
+            .map(|indices_b| count_index_groups(&indices_b))
+            .unwrap_or(0);
+        validate_dimension_compatibility_with_projected_rank(
+            ctx.flat,
+            sub_a,
+            &var_b_match,
+            projected_rank_a,
+            projected_rank_b,
+            ctx.span,
+        )?;
         validate_quantity_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
     }
     Ok(())
@@ -1188,6 +1373,11 @@ fn connect_sub_variable(
     else {
         return;
     };
+    if !collapsed_connector_projection_in_bounds(sub_a, path_a, ctx.flat)
+        || !collapsed_connector_projection_in_bounds(&var_b_match, path_b, ctx.flat)
+    {
+        return;
+    }
     let conn_a = scalarize_collapsed_connector_element(sub_a, path_a, ctx.flat);
     let mut conn_b = scalarize_collapsed_connector_element(&var_b_match, path_b, ctx.flat);
 
@@ -1253,6 +1443,27 @@ fn connect_sub_variable(
     } else {
         ctx.potential_uf.union(&conn_a, &conn_b);
     }
+}
+
+fn collapsed_connector_projection_in_bounds(
+    var: &rumoca_core::VarName,
+    path: &str,
+    flat: &flat::Model,
+) -> bool {
+    let Some(info) = flat.variables.get(var) else {
+        return true;
+    };
+    if info.dims.is_empty() {
+        return true;
+    }
+    let Some((_, indices)) = extract_suffix(var.as_str(), path) else {
+        return true;
+    };
+    if indices.is_empty() {
+        return true;
+    }
+    select_indices_for_dims(&indices, info.dims.len())
+        .is_none_or(|idx_suffix| projected_indices_within_dims(&idx_suffix, &info.dims))
 }
 
 /// Process a single connection and update the connection structures.

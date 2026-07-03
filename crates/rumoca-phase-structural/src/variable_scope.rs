@@ -117,7 +117,11 @@ impl<'a> DaeVariableScope<'a> {
         else {
             return false;
         };
-        component_refs_share_base(name_ref, unknown_ref)
+        if component_ref_has_scalar_subscript(name_ref) {
+            component_refs_match_exactly(name_ref, unknown_ref)
+        } else {
+            component_refs_share_base(name_ref, unknown_ref)
+        }
     }
 
     pub(crate) fn has_descendant_reference(&self, prefix: &Reference) -> bool {
@@ -202,11 +206,15 @@ impl<'a> DaeVariableScope<'a> {
             return Ok(None);
         };
         let mut base_ref = component_ref.clone();
-        let mut scalar_indices = Vec::new();
-        for part in &mut base_ref.parts {
-            scalar_indices.extend(part.subs.iter().filter_map(scalar_subscript_index));
-            part.subs.clear();
-        }
+        let Some(leaf) = base_ref.parts.last_mut() else {
+            return Ok(None);
+        };
+        let scalar_indices = leaf
+            .subs
+            .iter()
+            .filter_map(scalar_subscript_index)
+            .collect::<Vec<_>>();
+        leaf.subs.clear();
         if scalar_indices.is_empty() {
             return Ok(None);
         }
@@ -311,6 +319,15 @@ fn component_refs_share_base(lhs: &ComponentReference, rhs: &ComponentReference)
             .iter()
             .zip(&rhs.parts)
             .all(|(lhs, rhs)| lhs.ident == rhs.ident)
+}
+
+fn component_refs_match_exactly(lhs: &ComponentReference, rhs: &ComponentReference) -> bool {
+    lhs.parts.len() == rhs.parts.len()
+        && lhs
+            .parts
+            .iter()
+            .zip(&rhs.parts)
+            .all(|(lhs, rhs)| part_matches_without_span(lhs, rhs))
 }
 
 fn component_ref_has_scalar_subscript(reference: &ComponentReference) -> bool {
@@ -543,5 +560,38 @@ mod tests {
                 span: actual
             }) if reason.contains("missing DAE variable metadata for `missing`") && actual == span
         ));
+    }
+
+    #[test]
+    fn indexed_reference_dims_preserves_parent_component_indices() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            VarName::new("analysatorAC.iH1[1].product2.u"),
+            dae::Variable {
+                name: VarName::new("analysatorAC.iH1[1].product2.u"),
+                dims: vec![2],
+                component_ref: Some(component_ref(vec![
+                    part("analysatorAC", Vec::new()),
+                    part("iH1", vec![index(1)]),
+                    part("product2", Vec::new()),
+                    part("u", Vec::new()),
+                ])),
+                ..rumoca_ir_dae::Variable::empty_with_span(test_span())
+            },
+        );
+        let reference = Reference::from_component_reference(component_ref(vec![
+            part("analysatorAC", Vec::new()),
+            part("iH1", vec![index(1)]),
+            part("product2", Vec::new()),
+            part("u", vec![index(2)]),
+        ]));
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert_eq!(
+            scope
+                .shape_for_reference(&reference)
+                .expect("indexed component element should resolve"),
+            DaeVariableShape::Dimensions(Vec::new())
+        );
     }
 }

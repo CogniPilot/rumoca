@@ -1228,7 +1228,8 @@ fn infer_user_function_call_dimensions(
     let func = ctx.functions.get(name.as_str())?;
     let output = func.outputs.first()?;
     if output.shape_expr.is_empty() {
-        return concrete_param_dims(output).or_else(|| broadcast_function_arg_dims(args, ctx));
+        return concrete_param_dims(output)
+            .or_else(|| broadcast_function_arg_dims(func, args, ctx));
     }
 
     let mut local_ints = ctx.known_ints.clone();
@@ -1300,9 +1301,17 @@ fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
 }
 
 fn broadcast_function_arg_dims(
+    func: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     ctx: &ParamEvalContext<'_>,
 ) -> Option<Vec<i64>> {
+    if func
+        .inputs
+        .iter()
+        .any(|input| !input.dims.is_empty() || !input.shape_expr.is_empty())
+    {
+        return None;
+    }
     args.iter()
         .map(function_arg_value)
         .filter_map(|arg| infer_function_arg_dims(arg, ctx))
