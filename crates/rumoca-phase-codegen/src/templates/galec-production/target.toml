@@ -57,31 +57,83 @@ reverse_ad = false
 dynamic_control_flow = false
 host_callbacks = false
 
-# All five files are passthrough templates: the text is produced by the
-# typed GALEC printer / eFMI XML serializers / typed C printer via the
-# rumoca-compile galec-production facade (GAL-009 / D3); templates never
-# author .alg, manifest, or C content. One facade call per invocation
-# renders all five texts — the Production Code manifest checksums the exact
-# Algorithm Code manifest and C file bytes of that same call, and the
-# `build = "efmu"` container writer cross-checks each manifest's File
-# checksums against the bytes rendered here (GAL-021: no placeholder
-# checksums, ever).
+# The `.alg`/`.h`/`.c` files are passthrough templates of the typed GALEC
+# printer / typed C printer (GAL-009 / D3); `ac_manifest.xml.jinja`,
+# `pc_manifest.xml.jinja`, and `__content.xml.jinja` are the real eFMI manifest
+# templates (contract §3, WI-2) that author every XML element from the
+# product-agnostic context — the typed serializers no longer emit packaging XML
+# (SPEC_0034 D3 amended). One projection per invocation feeds a single
+# packaging plan; the declarative checksum-web build step (contract §9 WI-5)
+# renders every file in topological order and threads each producer's real
+# SHA-1 into its consumers (no placeholder ever, GAL-021).
+#
+# Declared asset bundle (contract §4d): the vendored eFMI Beta-1 XSD tree plus
+# its BSD-3-Clause LICENSE (GAL-023), copied verbatim into schemas/ by the
+# generic build step. Assets sit OUTSIDE the render/hash checksum DAG — nothing
+# checksums the XSDs.
+[[assets]]
+bundle = "efmi-schemas"
+dest = "schemas/"
+
+# The `id` + `[[files.checksums]]` declarations wire the generic declarative
+# checksum web (contract §4a). Edges (`of -> as`), all leaf→manifest or AC→PC,
+# form a DAG (contract §4c): the Algorithm Code manifest embeds the `.alg`
+# SHA-1; the Production Code manifest embeds the AC-manifest SHA-1 (its
+# ManifestReference/@checksum) and both C files' SHA-1s (their File/@checksum
+# entries). The build step renders each producer first, hashes its exact bytes,
+# and threads the digest downstream (no placeholder ever). The `content` node
+# (`__content.xml` → `ac_manifest`, `pc_manifest`) closes the web: each
+# registered representation's `@checksum` is the SHA-1 of its rendered manifest.
 [[files]]
+id = "alg"
 path = "AlgorithmCode/{{ model_name }}.alg"
 template = "model.alg.jinja"
 
 [[files]]
+id = "ac_manifest"
 path = "AlgorithmCode/manifest.xml"
 template = "ac_manifest.xml.jinja"
+  # File/@checksum edge: the AC manifest embeds the SHA-1 of the `.alg` bytes.
+  [[files.checksums]]
+  of = "alg"
+  as = "alg_sha1"
 
 [[files]]
+id = "c_header"
 path = "ProductionCode/{{ model_name }}.h"
 template = "model.h.jinja"
 
 [[files]]
+id = "c_source"
 path = "ProductionCode/{{ model_name }}.c"
 template = "model.c.jinja"
 
 [[files]]
+id = "pc_manifest"
 path = "ProductionCode/manifest.xml"
 template = "pc_manifest.xml.jinja"
+  # ManifestReference/@checksum edge (AC → PC): the PC manifest embeds the
+  # SHA-1 of the Algorithm Code manifest bytes.
+  [[files.checksums]]
+  of = "ac_manifest"
+  as = "ac_manifest_sha1"
+  # File/@checksum edges (code → PC): the PC manifest embeds each C file SHA-1.
+  [[files.checksums]]
+  of = "c_header"
+  as = "c_header_sha1"
+  [[files.checksums]]
+  of = "c_source"
+  as = "c_source_sha1"
+
+[[files]]
+id = "content"
+path = "__content.xml"
+template = "__content.xml.jinja"
+  # ModelRepresentation/@checksum edges: __content.xml embeds the SHA-1 of each
+  # rendered representation manifest (Algorithm Code + Production Code bytes).
+  [[files.checksums]]
+  of = "ac_manifest"
+  as = "ac_manifest_sha1"
+  [[files.checksums]]
+  of = "pc_manifest"
+  as = "pc_manifest_sha1"

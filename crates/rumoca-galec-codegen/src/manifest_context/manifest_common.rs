@@ -18,9 +18,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::checksum::Sha1Hex;
-use crate::diagnostic::EfmiError;
-use crate::ids::{
+use crate::manifest_context::checksum::Sha1Hex;
+use crate::manifest_context::diagnostic::EfmiError;
+use crate::manifest_context::ids::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, UtcTimestamp,
 };
 

@@ -2,18 +2,16 @@
 //!
 //! - [`render_algorithm_code`] prints the `.alg` text via the
 //!   `rumoca-ir-galec` printer (GAL-009);
-//! - [`render_manifest_document`] assembles and serializes a complete
-//!   Algorithm Code manifest via the typed `rumoca-efmi` models (D3),
-//!   returning the typed manifest *and* its XML from one
-//!   assemble-serialize pass ([`render_manifest_xml`] is its thin
-//!   XML-only wrapper). The projection owns the manifest *fragment*;
-//!   packaging-time facts are filled with real values generated at render
-//!   time — a fresh manifest UUID, the current strict-UTC timestamp, and
-//!   the actual SHA-1 of the rendered `.alg` bytes (GAL-021: no
-//!   placeholder checksums, ever). The eFMU container emission layer
-//!   (Phase 5b, `rumoca-compile` driving `rumoca-efmi`) supersedes this
-//!   facade for full-container output where one id/timestamp must be
-//!   shared across manifests;
+//! - [`assemble_manifest_with_identity`] assembles a
+//!   complete typed Algorithm Code manifest ([`crate::manifest_context`] models,
+//!   D3 amended) from the lowered package plus the real SHA-1 of the
+//!   rendered `.alg` bytes (GAL-021: no placeholder checksums, ever). The
+//!   projection owns the manifest *fragment*; the container build step in
+//!   the `rumoca` crate mints one id/timestamp per invocation and threads
+//!   it through [`assemble_manifest_with_identity`] so a single identity is
+//!   shared across manifests. The manifest carries **no XML text** — the
+//!   product-agnostic [`crate::manifest_context::views`] serialize it and the
+//!   minijinja templates own every element/attribute (SPEC_0034 D3 amended);
 //! - [`c_template_context`] serializes the typed context the
 //!   `embedded-c-galec` minijinja templates consume (GAL-008/GAL-024):
 //!   C-mangled struct/function naming, per-variable C types + field names,
@@ -21,13 +19,13 @@
 
 use serde::Serialize;
 
-use rumoca_efmi::algorithm_code_manifest::{
+use crate::manifest_context::algorithm_code_manifest::{
     AlgorithmCodeManifest, AlgorithmCodeManifestParts, BlockMethod, BlockMethods, Clock,
     ErrorSignalStatus, Variable as ManifestVariable,
 };
-use rumoca_efmi::manifest_common::{File, FileChecksum, FileRole, ManifestAttributes};
-use rumoca_efmi::production_code_manifest::TargetTypeKind;
-use rumoca_efmi::{
+use crate::manifest_context::manifest_common::{File, FileChecksum, FileRole, ManifestAttributes};
+use crate::manifest_context::production_code_manifest::TargetTypeKind;
+use crate::manifest_context::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
 use rumoca_ir_galec::ast::{Block, Name, ScalarType, Statement};
@@ -82,68 +80,85 @@ pub(crate) fn render_block(block: &Block) -> Result<String, GalecTargetError> {
     })
 }
 
-/// Render the package's Algorithm Code manifest as a coherent pair: the
-/// typed manifest model and its serialized XML (module docs). The block is
-/// re-validated before printing, exactly as in [`render_algorithm_code`]
-/// (the `.alg` checksum must never be computed over un-validated text).
-///
-/// The manifest is serialized exactly **once**, and both halves of the
-/// pair come from that single assemble-serialize pass: consumers that
-/// checksum the returned XML bytes (the Production Code
-/// `ManifestReference`, the `__content.xml` entry) read the matching
-/// packaging facts — the manifest UUID, the method/variable ids — from the
-/// typed half instead of re-parsing or re-serializing. A second
-/// serialization would mint a fresh UUID and timestamp and break the
-/// checksum web (GAL-021).
+/// Shared, minted-once packaging identity of one manifest (contract §2b /
+/// §4d): the brace-wrapped UUID, the strict-UTC timestamp, and the tool
+/// string. The switch-dispatch build step (`rumoca` crate, contract §9
+/// WI-5) mints these once per invocation and threads the *same* identity
+/// into the Algorithm Code manifest, the Production Code manifest, and
+/// `__content.xml`, so the cross-manifest `manifestRefId` links agree by
+/// construction (never a template mint, never a re-parse).
+#[derive(Debug, Clone)]
+pub struct ManifestIdentity {
+    /// Brace-wrapped manifest UUID.
+    pub id: ManifestId,
+    /// Strict-UTC generation timestamp.
+    pub generated_at: UtcTimestamp,
+    /// Generation-tool string (e.g. `"rumoca X.Y.Z"`).
+    pub generation_tool: Option<NormalizedText>,
+}
+
+impl ManifestIdentity {
+    /// Mint a fresh identity: a new UUID, the current UTC time, and this
+    /// crate's `rumoca X.Y.Z` tool string (the documented per-build
+    /// nondeterminism of a generated container).
+    ///
+    /// # Errors
+    ///
+    /// `ET018` if the constant tool string fails `NormalizedText` validation
+    /// (impossible for a well-formed `CARGO_PKG_VERSION`).
+    pub fn generated() -> Result<Self, GalecTargetError> {
+        Ok(Self {
+            id: ManifestId::generate(),
+            generated_at: UtcTimestamp::now_utc(),
+            generation_tool: Some(NormalizedText::new(format!(
+                "rumoca {}",
+                env!("CARGO_PKG_VERSION")
+            ))?),
+        })
+    }
+}
+
+/// Assemble the full typed manifest from the projection-owned fragment
+/// plus render-time packaging facts (also the GAL-004 post-validation
+/// path for the manifest side), minting a fresh identity and hashing the
+/// `.alg` bytes. Thin wrapper over [`assemble_manifest_with_identity`].
+pub(crate) fn assemble_manifest(
+    package: &AlgorithmCodePackage,
+    alg_bytes: &[u8],
+) -> Result<AlgorithmCodeManifest, GalecTargetError> {
+    assemble_manifest_with_identity(
+        package,
+        Sha1Hex::of_bytes(alg_bytes),
+        &ManifestIdentity::generated()?,
+    )
+}
+
+/// Assemble the full typed Algorithm Code manifest with a caller-supplied
+/// identity and a caller-computed `.alg` SHA-1 (contract §4c: the digest is
+/// of the exact rendered `.alg` bytes; no placeholder). The switch-dispatch
+/// build step passes the shared [`ManifestIdentity`] so the manifest's UUID
+/// matches the `__content.xml` `manifestRefId` and the Production Code
+/// `ManifestReference/@manifestRefId`.
 ///
 /// # Errors
 ///
 /// `ET016` when the typed manifest model rejects the assembled parts,
 /// `ET018` for validator/printer failures.
-pub fn render_manifest_document(
+pub fn assemble_manifest_with_identity(
     package: &AlgorithmCodePackage,
-) -> Result<(AlgorithmCodeManifest, String), GalecTargetError> {
-    let alg_text = validated_alg_text(&package.block)?;
-    let manifest = assemble_manifest(package, alg_text.as_bytes())?;
-    let bytes = rumoca_efmi::algorithm_code_manifest_to_xml(&manifest)?;
-    let xml = String::from_utf8(bytes).map_err(|error| GalecTargetError::LoweringInternal {
-        detail: format!("manifest XML is not valid UTF-8: {error}"),
-    })?;
-    Ok((manifest, xml))
-}
-
-/// Render the package's Algorithm Code manifest as XML — the XML half of
-/// [`render_manifest_document`], for consumers that need no typed
-/// packaging facts.
-///
-/// # Errors
-///
-/// Exactly those of [`render_manifest_document`].
-pub fn render_manifest_xml(package: &AlgorithmCodePackage) -> Result<String, GalecTargetError> {
-    let (_manifest, xml) = render_manifest_document(package)?;
-    Ok(xml)
-}
-
-/// Assemble the full typed manifest from the projection-owned fragment
-/// plus render-time packaging facts (also the GAL-004 post-validation
-/// path for the manifest side).
-pub(crate) fn assemble_manifest(
-    package: &AlgorithmCodePackage,
-    alg_bytes: &[u8],
+    alg_checksum: Sha1Hex,
+    identity: &ManifestIdentity,
 ) -> Result<AlgorithmCodeManifest, GalecTargetError> {
     let fragment = &package.manifest;
     let file_id = Identifier::new("F_ALG")?;
     let parts = AlgorithmCodeManifestParts {
         attributes: ManifestAttributes {
-            id: ManifestId::generate(),
+            id: identity.id,
             name: NormalizedText::new(block_display_name(&package.block.name))?,
             description: None,
             version: None,
-            generation_date_and_time: UtcTimestamp::now_utc(),
-            generation_tool: Some(NormalizedText::new(format!(
-                "rumoca {}",
-                env!("CARGO_PKG_VERSION")
-            ))?),
+            generation_date_and_time: identity.generated_at,
+            generation_tool: identity.generation_tool.clone(),
             copyright: None,
             license: None,
         },
@@ -152,7 +167,7 @@ pub(crate) fn assemble_manifest(
             id: file_id,
             name: NameWithoutSlashes::new(package.alg_file_name.clone())?,
             path: FilePath::root(),
-            checksum: FileChecksum::Sha1(Sha1Hex::of_bytes(alg_bytes)),
+            checksum: FileChecksum::Sha1(alg_checksum),
             role: FileRole::Code,
             description: None,
         }],
@@ -400,12 +415,16 @@ fn statements(
 fn print_expression(
     expression: &rumoca_ir_galec::ast::Expression,
 ) -> Result<String, GalecTargetError> {
-    rumoca_ir_galec::print_expression(expression).map_err(|error| GalecTargetError::LoweringInternal {
-        detail: format!("GALEC printer rejected an expression: {error}"),
+    rumoca_ir_galec::print_expression(expression).map_err(|error| {
+        GalecTargetError::LoweringInternal {
+            detail: format!("GALEC printer rejected an expression: {error}"),
+        }
     })
 }
 
-fn print_reference(reference: &rumoca_ir_galec::ast::Reference) -> Result<String, GalecTargetError> {
+fn print_reference(
+    reference: &rumoca_ir_galec::ast::Reference,
+) -> Result<String, GalecTargetError> {
     print_expression(&rumoca_ir_galec::ast::Expression::Ref(reference.clone()))
 }
 

@@ -17,14 +17,17 @@ use std::collections::HashMap;
 use rumoca_core::{
     BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Reference, Span, Subscript, VarName,
 };
-use rumoca_efmi::algorithm_code_manifest::{BlockCausality, StartValue, Variable as MVar};
-use rumoca_ir_galec::ast::ScalarType;
-use rumoca_ir_dae as dae;
 use rumoca_galec_codegen::input::ScalarTypeMap;
-use rumoca_galec_codegen::{
-    GalecInput, GalecOptions, c_template_context, lower_to_algorithm_code, render_algorithm_code,
-    render_manifest_xml,
+use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::{
+    BlockCausality, StartValue, Variable as MVar,
 };
+use rumoca_galec_codegen::{
+    AcManifestCtx, AlgorithmCodePackage, GalecInput, GalecOptions, ManifestIdentity, Sha1Hex,
+    assemble_manifest_with_identity, c_template_context, lower_to_algorithm_code,
+    render_algorithm_code,
+};
+use rumoca_ir_dae as dae;
+use rumoca_ir_galec::ast::ScalarType;
 
 // ---------------------------------------------------------------------
 // Expression builders
@@ -685,17 +688,35 @@ fn lowered_block_passes_the_galec_validator() {
     rumoca_ir_galec::validate(&package.block).expect("emitted block must validate");
 }
 
+/// Assemble the typed AC manifest for `package` (with a freshly minted
+/// identity and the real `.alg` SHA-1) and serialize the product-agnostic
+/// [`AcManifestCtx`] the manifest template consumes — the serializers are gone
+/// (SPEC_0034 D3 amended), so assertions target the serializable context.
+fn ac_manifest_ctx(package: &AlgorithmCodePackage) -> serde_json::Value {
+    let alg = render_algorithm_code(package).expect("alg renders");
+    let identity = ManifestIdentity::generated().expect("identity mints");
+    let manifest =
+        assemble_manifest_with_identity(package, Sha1Hex::of_bytes(alg.as_bytes()), &identity)
+            .expect("manifest assembles");
+    serde_json::to_value(AcManifestCtx::from_manifest(&manifest)).expect("ctx serializes")
+}
+
 #[test]
-fn manifest_xml_renders_and_carries_the_clock_wiring() {
+fn manifest_context_carries_the_clock_wiring() {
     let package = lower_pid();
-    let xml = render_manifest_xml(&package).expect("manifest renders");
-    assert!(xml.contains("samplePeriod"), "{xml}");
+    let ctx = ac_manifest_ctx(&package);
     assert!(
-        xml.contains(&format!(
-            "variableRefId=\"{}\"",
-            package.manifest.clock_variable_ref_id.as_str()
-        )),
-        "{xml}"
+        ctx["variables"]
+            .as_array()
+            .expect("variables array")
+            .iter()
+            .any(|variable| variable["name"] == "samplePeriod"),
+        "{ctx}"
+    );
+    assert_eq!(
+        ctx["clock"]["variable_ref_id"],
+        package.manifest.clock_variable_ref_id.as_str(),
+        "{ctx}"
     );
 }
 

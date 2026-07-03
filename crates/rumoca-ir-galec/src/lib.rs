@@ -5,7 +5,7 @@
 //! This crate is a pure language module (SPEC_0034 GAL-010): it has no
 //! Rumoca IR, eFMI packaging, phase, or CLI dependencies. The projection
 //! from canonical DAE lives in `rumoca-galec-codegen`; container packaging
-//! lives in `rumoca-efmi`.
+//! lives in `rumoca-galec-codegen`'s `manifest_context`.
 //!
 //! Module map:
 //!

@@ -10,10 +10,12 @@ repository.workspace = true
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-galec = { workspace = true }
-rumoca-efmi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha1 = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

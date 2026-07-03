@@ -46,22 +46,20 @@
 //! Post-validation (GAL-004 idiom): the assembled manifest is checked by
 //! [`ProductionCodeManifest::new`] and then cross-validated against the
 //! Algorithm Code manifest
-//! ([`rumoca_efmi::production_code_manifest::validate_against_algorithm_code`])
+//! ([`crate::manifest_context::production_code_manifest::validate_against_algorithm_code`])
 //! before it is returned, so an unmappable package fails here, in the owning
 //! phase — never at container-write time.
 
-use rumoca_efmi::algorithm_code_manifest::AlgorithmCodeManifest;
-use rumoca_efmi::manifest_common::{File, FileChecksum, FileRole, ManifestAttributes};
-use rumoca_efmi::production_code_manifest::{
+use crate::manifest_context::algorithm_code_manifest::AlgorithmCodeManifest;
+use crate::manifest_context::manifest_common::{File, FileChecksum, FileRole, ManifestAttributes};
+use crate::manifest_context::production_code_manifest::{
     CodeContainer, CodeFile, CodeFileType, CodeType, Component, DataReference, FloatPrecision,
     ForeignReference, FormalParameter, Function, FunctionReference, LogicalData, ManifestReference,
     ParameterCore, ProductionCodeManifest, ProductionCodeManifestParts, SupportedLanguage,
     SupportedPlatform, TargetType, TargetTypeKind, Typedef, TypedefBody,
     validate_against_algorithm_code,
 };
-use rumoca_efmi::{
-    FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
-};
+use crate::manifest_context::{FilePath, Identifier, NameWithoutSlashes, NormalizedText, Sha1Hex};
 use rumoca_ir_galec::ast::ScalarType;
 
 use crate::diagnostic::GalecTargetError;
@@ -133,7 +131,7 @@ pub struct EmittedCodeFile {
 /// Assemble the typed Production Code manifest describing the generated C
 /// files of `package` (module docs), cross-validated against `ac_manifest` —
 /// the typed half of the same
-/// [`crate::render_manifest_document`] pass whose XML bytes
+/// typed manifest assembled from one pass whose bytes
 /// `ac_manifest_sha1` was computed over.
 ///
 /// # Errors
@@ -151,6 +149,33 @@ pub fn assemble_production_manifest(
     c_header: &EmittedCodeFile,
     c_source: &EmittedCodeFile,
 ) -> Result<ProductionCodeManifest, GalecTargetError> {
+    assemble_production_manifest_with_identity(
+        package,
+        ac_manifest,
+        ac_manifest_sha1,
+        c_header,
+        c_source,
+        &crate::emit::ManifestIdentity::generated()?,
+    )
+}
+
+/// Assemble the typed Production Code manifest with a caller-supplied
+/// [`crate::emit::ManifestIdentity`] (contract §4d: the switch-dispatch
+/// build step mints one identity per manifest and threads it here so the PC
+/// UUID matches its `__content.xml` `manifestRefId`). Otherwise identical to
+/// [`assemble_production_manifest`].
+///
+/// # Errors
+///
+/// Exactly those of [`assemble_production_manifest`].
+pub fn assemble_production_manifest_with_identity(
+    package: &AlgorithmCodePackage,
+    ac_manifest: &AlgorithmCodeManifest,
+    ac_manifest_sha1: Sha1Hex,
+    c_header: &EmittedCodeFile,
+    c_source: &EmittedCodeFile,
+    identity: &crate::emit::ManifestIdentity,
+) -> Result<ProductionCodeManifest, GalecTargetError> {
     // GAL-004 pre-assembly validation, exactly as on the other rendering
     // facades: the manifest must describe validated, C-exportable output.
     crate::emit::validate_block(&package.block)?;
@@ -163,7 +188,7 @@ pub fn assemble_production_manifest(
     let (functions, function_references) = method_functions(&function_prefix, ac_manifest)?;
 
     let parts = ProductionCodeManifestParts {
-        attributes: production_attributes(package)?,
+        attributes: production_attributes(package, identity)?,
         manifest_reference: ManifestReference {
             id: Identifier::new(MANIFEST_REFERENCE_ID)?,
             // Typed UUID from the typed model — never re-parsed from bytes.
@@ -294,21 +319,19 @@ fn method_functions(
     Ok((functions, function_references))
 }
 
-/// Top-level manifest attributes: fresh UUID, strict-UTC timestamp, tool
-/// string — packaging-time facts matching the Algorithm Code assembly.
+/// Top-level manifest attributes from the caller-supplied packaging
+/// identity (contract §4d) plus the projection-owned block name.
 fn production_attributes(
     package: &AlgorithmCodePackage,
+    identity: &crate::emit::ManifestIdentity,
 ) -> Result<ManifestAttributes, GalecTargetError> {
     Ok(ManifestAttributes {
-        id: ManifestId::generate(),
+        id: identity.id,
         name: NormalizedText::new(crate::emit::block_display_name(&package.block.name))?,
         description: None,
         version: None,
-        generation_date_and_time: UtcTimestamp::now_utc(),
-        generation_tool: Some(NormalizedText::new(format!(
-            "rumoca {}",
-            env!("CARGO_PKG_VERSION")
-        ))?),
+        generation_date_and_time: identity.generated_at,
+        generation_tool: identity.generation_tool.clone(),
         copyright: None,
         license: None,
     })
@@ -443,7 +466,7 @@ fn code_file_entry(id: &str, file: &EmittedCodeFile) -> Result<File, GalecTarget
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_efmi::algorithm_code_manifest::{
+    use crate::manifest_context::algorithm_code_manifest::{
         BlockCausality, BooleanVariable, IntegerVariable, RealVariable, StartValue,
         Variable as ManifestVariable, VariableCommon,
     };
@@ -579,7 +602,7 @@ mod tests {
     }
 
     /// Assemble the typed AC manifest of a package (the same pub(crate)
-    /// assembly path `render_manifest_document` uses).
+    /// assembly path `assemble_manifest` uses).
     fn ac_of(package: &AlgorithmCodePackage) -> AlgorithmCodeManifest {
         crate::emit::assemble_manifest(package, b"rendered .alg bytes")
             .expect("AC manifest assembles")

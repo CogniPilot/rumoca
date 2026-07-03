@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_efmi::algorithm_code_manifest::{StartValue, Variable as ManifestVariable};
+use crate::manifest_context::algorithm_code_manifest::{StartValue, Variable as ManifestVariable};
 use rumoca_ir_galec::ast::{
     self as gast, Dimension, InterfaceKind, InterfaceVariable, ProtectedEntity, ProtectedKind,
     RefPart, Reference, ScalarType, Statement, VariableDeclaration,

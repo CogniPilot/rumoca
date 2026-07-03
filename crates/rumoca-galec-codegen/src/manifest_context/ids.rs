@@ -15,7 +15,7 @@ use time::macros::format_description;
 use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
-use crate::diagnostic::EfmiError;
+use crate::manifest_context::diagnostic::EfmiError;
 
 /// Brace-wrapped manifest UUID (`efmiManifestIdentifierType`).
 ///

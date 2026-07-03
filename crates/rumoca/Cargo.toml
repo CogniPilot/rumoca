@@ -40,11 +40,6 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 # builds) thus get only the batch simulation surface.
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
-# eFMU container packaging for `build = "efmu"` targets (the runner-gated
-# `efmu` module). Already in the unconditional dependency graph via
-# rumoca-compile -> rumoca-galec-codegen, so this adds no transitive weight
-# for library consumers.
-rumoca-efmi = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
@@ -148,6 +143,10 @@ rayon = { workspace = true }
 ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
+# GALEC target CI (tests only): the eFMI id/checksum primitives
+# (`Sha1Hex`/`ManifestId`/`UtcTimestamp`) for recomputing the SHA-1 web and
+# checking id/timestamp discipline over the exact on-disk container bytes.
+rumoca-galec-codegen = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
@@ -159,8 +158,10 @@ rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-# GALEC target CI: manifest.xml well-formedness checks (xmllint XSD
-# validation and checksums come through the regular rumoca-efmi dependency).
+# GALEC target CI (tests only): recompute the SHA-1 checksum web and check
+# manifest.xml well-formedness / attribute order over the exact on-disk bytes.
+# xmllint XSD validation runs the external `xmllint`; the SHA-1 primitive comes
+# through the `rumoca-compile` facade (rumoca-galec-codegen).
 quick-xml = { workspace = true }
 
 [lints]

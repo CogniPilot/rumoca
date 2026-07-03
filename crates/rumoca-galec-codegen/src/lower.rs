@@ -38,8 +38,8 @@
 //! with the validator.
 
 use rumoca_core::component_path_trailing_index;
-use rumoca_ir_galec::ast::{self as gast, Block, Statement};
 use rumoca_ir_dae::Equation;
+use rumoca_ir_galec::ast::{self as gast, Block, Statement};
 
 use crate::admissibility::check_admissibility;
 use crate::classify::{Classification, classify_variables};

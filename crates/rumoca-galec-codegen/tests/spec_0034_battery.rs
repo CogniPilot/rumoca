@@ -1,7 +1,8 @@
 //! SPEC_0034 Phase-3 non-negotiable test battery, exercised end-to-end
 //! through the public projection API (`lower_to_algorithm_code`,
-//! `render_algorithm_code`, `render_manifest_document`,
-//! `render_manifest_xml`):
+//! `render_algorithm_code`, `assemble_manifest_with_identity` + the
+//! serializable `AcManifestCtx` view — the typed serializers are gone,
+//! SPEC_0034 D3 amended):
 //!
 //! - GAL-025 scope rejections (continuous states, external functions,
 //!   runtime events, dynamic/sample-expression clocks, multi-clock and
@@ -26,18 +27,22 @@ use std::collections::{HashMap, HashSet};
 use rumoca_core::{
     BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Reference, Span, Subscript, VarName,
 };
-use rumoca_efmi::Sha1Hex;
-use rumoca_efmi::algorithm_code_manifest::{BlockCausality, StartValue, Variable as MVar};
-use rumoca_ir_galec::ast::{self as gast, ScalarType};
-use rumoca_ir_galec::builtins::{find_builtin, is_appendix_c_reserved};
-use rumoca_ir_dae as dae;
 use rumoca_galec_codegen::input::ScalarTypeMap;
 use rumoca_galec_codegen::lower::emittable_builtin_targets;
 use rumoca_galec_codegen::mangle::manifest_name;
-use rumoca_galec_codegen::{
-    AlgorithmCodePackage, GalecInput, GalecOptions, GalecTargetError, lower_to_algorithm_code,
-    render_algorithm_code, render_manifest_document, render_manifest_xml,
+use rumoca_galec_codegen::manifest_context::Sha1Hex;
+use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::{
+    BlockCausality, StartValue, Variable as MVar,
 };
+use rumoca_galec_codegen::manifest_context::manifest_common::FileChecksum;
+use rumoca_galec_codegen::{
+    AcManifestCtx, AlgorithmCodePackage, GalecInput, GalecOptions, GalecTargetError,
+    ManifestIdentity, assemble_manifest_with_identity, lower_to_algorithm_code,
+    render_algorithm_code,
+};
+use rumoca_ir_dae as dae;
+use rumoca_ir_galec::ast::{self as gast, ScalarType};
+use rumoca_ir_galec::builtins::{find_builtin, is_appendix_c_reserved};
 
 // ---------------------------------------------------------------------
 // Expression builders
@@ -700,32 +705,40 @@ fn mutated_package_cannot_render_unvalidated_galec() {
         });
     let error = render_algorithm_code(&package).expect_err("facade must re-validate the block");
     assert_eq!(error.code(), "ET018");
-    let error =
-        render_manifest_xml(&package).expect_err("manifest facade must re-validate the block");
-    assert_eq!(error.code(), "ET018");
 }
 
-/// [`render_manifest_document`] returns a coherent pair from one
-/// assemble-serialize pass: the XML embeds the typed manifest's freshly
-/// minted UUID and the SHA-1 of the rendered `.alg` bytes, so downstream
-/// consumers (the Production Code `ManifestReference`) can checksum the
-/// returned string while reading packaging facts from typed data — never
-/// re-parsing the XML or re-serializing the model (GAL-021).
+/// The typed AC manifest is assembled from one identity + the SHA-1 of the
+/// rendered `.alg` bytes: the minted UUID and the `.alg` checksum live in the
+/// typed model (the templates own the XML — SPEC_0034 D3 amended), so
+/// downstream consumers (the Production Code `ManifestReference`, the
+/// `__content.xml` entry) read packaging facts from typed data — never
+/// re-parsing XML or re-serializing the model (GAL-021).
 #[test]
-fn manifest_document_pair_comes_from_one_serialization_pass() {
+fn ac_manifest_carries_the_minted_uuid_and_alg_checksum() {
     let package = lower(&model_with_body(var("u")), &base_types());
-    let (manifest, xml) = render_manifest_document(&package).expect("manifest renders");
-    let uuid = manifest.parts().attributes.id.to_string();
-    assert!(
-        xml.contains(&uuid),
-        "XML must embed the typed manifest's UUID `{uuid}`:\n{xml}"
-    );
     let alg = render_algorithm_code(&package).expect("renders");
     let alg_sha1 = Sha1Hex::of_bytes(alg.as_bytes());
-    assert!(
-        xml.contains(alg_sha1.as_str()),
-        "XML must embed the `.alg` checksum `{alg_sha1}` (checksum over the \
-         exact rendered `.alg` bytes):\n{xml}"
+    let identity = ManifestIdentity::generated().expect("identity mints");
+    let manifest =
+        assemble_manifest_with_identity(&package, alg_sha1.clone(), &identity).expect("assembles");
+    assert_eq!(
+        manifest.parts().attributes.id,
+        identity.id,
+        "manifest carries the minted identity UUID"
+    );
+    let checksum = manifest
+        .parts()
+        .files
+        .iter()
+        .find_map(|file| match &file.checksum {
+            FileChecksum::Sha1(sha1) => Some(sha1),
+            FileChecksum::NotNeeded => None,
+        })
+        .expect("the .alg File entry carries a checksum");
+    assert_eq!(
+        checksum.as_str(),
+        alg_sha1.as_str(),
+        "the .alg File/@checksum is the SHA-1 of the exact rendered .alg bytes"
     );
 }
 
@@ -871,7 +884,23 @@ mod block_interface {
             vec!["algorithm"],
             "empty Recalibrate must still be emitted:\n{alg}"
         );
-        let xml = render_manifest_xml(&package).expect("manifest renders");
-        assert!(xml.contains("Recalibrate"), "{xml}");
+        let ctx = ac_manifest_ctx(&package);
+        assert!(
+            ctx.to_string().contains("Recalibrate"),
+            "empty Recalibrate must still appear in the manifest context:\n{ctx}"
+        );
     }
+}
+
+/// Assemble the typed AC manifest for `package` (fresh identity + real `.alg`
+/// SHA-1) and serialize the product-agnostic [`AcManifestCtx`] the manifest
+/// template consumes — the typed serializers are gone (SPEC_0034 D3 amended),
+/// so assertions target the serializable context.
+fn ac_manifest_ctx(package: &AlgorithmCodePackage) -> serde_json::Value {
+    let alg = render_algorithm_code(package).expect("alg renders");
+    let identity = ManifestIdentity::generated().expect("identity mints");
+    let manifest =
+        assemble_manifest_with_identity(package, Sha1Hex::of_bytes(alg.as_bytes()), &identity)
+            .expect("manifest assembles");
+    serde_json::to_value(AcManifestCtx::from_manifest(&manifest)).expect("ctx serializes")
 }

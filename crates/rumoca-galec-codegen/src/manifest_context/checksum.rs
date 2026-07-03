@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 
 use sha1::{Digest, Sha1};
 
-use crate::diagnostic::EfmiError;
+use crate::manifest_context::diagnostic::EfmiError;
 
 /// A SHA-1 digest rendered as exactly 40 lowercase hex characters.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

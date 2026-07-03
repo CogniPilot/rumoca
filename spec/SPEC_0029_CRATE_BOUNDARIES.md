@@ -242,9 +242,9 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Transformation Scope |
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
-| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI, and FMU packaging text |
+| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
 | GALEC `.alg` text (recorded exception) | `rumoca-ir-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
-| eFMI packaging XML (`__content.xml`, manifests) | `rumoca-efmi` | Packaging metadata, not target-language text (SPEC_0034 D3) |
+| eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
 | Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
@@ -261,15 +261,15 @@ integration, packaging, runtime compilation, or stable APIs over compiled
 artifacts. Text-only targets stay in codegen. Non-codegen phase crates MUST NOT
 depend on target encoder/JIT libraries such as `wasm-encoder`, Cranelift,
 Inkwell, LLVM ORC bindings, CUDA Driver APIs, or NVRTC; backend bytecode,
-native/JIT execution, runtime compilation, and device launch policy belong in
-`rumoca-exec-*` or another backend-facing layer above the IR-lowering phase.
+native/JIT execution, and device launch policy belong in `rumoca-exec-*`, above
+the IR-lowering phase.
 
 Target-language and target-format policy belongs in manifests/templates, not
 Rust control flow. Rust MAY provide generic manifest parsing, template
 rendering, safe path handling, schema validation, and language-neutral feature
 probes over IR data. Rust MUST NOT hard-code target-language capabilities, file
 layouts, emitted language names, or backend feature tables for textual targets
-such as C, Rust, CUDA C, MLIR, FMI, or future custom targets. A textual/codegen
+(C, Rust, CUDA C, MLIR, FMI/eFMI, or future custom targets). A textual/codegen
 target should be addable with `target.toml` plus Jinja templates; required
 capability declarations or unsupported-feature contracts must live in that
 manifest schema and be enforced by generic validation. Unsupported manifest
@@ -279,10 +279,10 @@ gaps without knowing the target language.
 
 JIT targets follow the same layering rule as execution adapters, not textual
 template targets. Cranelift, LLVM ORC/Inkwell, CUDA NVRTC/Driver, and browser
-WebAssembly module compilation are allowed only in backend-facing execution
-crates or host bindings. They consume Solve IR or generated artifacts through a
-stable execution ABI and share the prepared-interpreter equivalence tests used
-by concrete solver backends.
+WebAssembly compilation are allowed only in backend-facing execution crates or
+host bindings. They consume Solve IR or generated artifacts through a stable
+execution ABI and share the prepared-interpreter equivalence tests of concrete
+solver backends.
 
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection

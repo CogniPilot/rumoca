@@ -35,10 +35,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_ir_galec::ast::{Name, ScalarType};
 use rumoca_ir_dae::{
     Dae, DaeVariablePartition, Variable, VariableCausality, VariableOrigin, component_base_name,
 };
+use rumoca_ir_galec::ast::{Name, ScalarType};
 
 use crate::admissibility::for_each_variable;
 use crate::diagnostic::GalecTargetError;
@@ -60,8 +60,10 @@ pub enum VariableClass {
 impl VariableClass {
     /// The manifest `blockCausality` this class maps to.
     #[must_use]
-    pub const fn block_causality(self) -> rumoca_efmi::algorithm_code_manifest::BlockCausality {
-        use rumoca_efmi::algorithm_code_manifest::BlockCausality;
+    pub const fn block_causality(
+        self,
+    ) -> crate::manifest_context::algorithm_code_manifest::BlockCausality {
+        use crate::manifest_context::algorithm_code_manifest::BlockCausality;
         match self {
             Self::Input => BlockCausality::Input,
             Self::Output => BlockCausality::Output,

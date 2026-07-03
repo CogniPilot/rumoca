@@ -174,7 +174,7 @@ pub enum GalecTargetError {
     #[error("manifest construction failed: {source} [ET016]")]
     Manifest {
         #[from]
-        source: rumoca_efmi::EfmiError,
+        source: crate::manifest_context::EfmiError,
     },
 
     /// GAL-007: a DAE construct outside the currently lowerable subset.

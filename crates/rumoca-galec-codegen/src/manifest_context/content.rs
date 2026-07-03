@@ -8,10 +8,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::checksum::Sha1Hex;
-use crate::diagnostic::EfmiError;
-use crate::ids::{ManifestId, NameWithoutSlashes};
-use crate::manifest_common::ManifestAttributes;
+use crate::manifest_context::checksum::Sha1Hex;
+use crate::manifest_context::diagnostic::EfmiError;
+use crate::manifest_context::ids::{ManifestId, NameWithoutSlashes};
+use crate::manifest_context::manifest_common::ManifestAttributes;
 
 /// `ModelRepresentation` entry: one registered container.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,7 +129,7 @@ fn validate_representations(parts: &ContentParts) -> Result<(), EfmiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{NormalizedText, UtcTimestamp};
+    use crate::manifest_context::ids::{NormalizedText, UtcTimestamp};
 
     fn attributes() -> ManifestAttributes {
         ManifestAttributes {

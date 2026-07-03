@@ -2,10 +2,10 @@
 //! (SPEC_0034 GAL-021/GAL-024 conformant track, contract rows E1-E8).
 //!
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
-//! generic capability gate → GALEC projection facade (one projection pass
-//! rendering all five texts) → typed printer / eFMI XML serializers / typed
-//! C printer → passthrough templates → `build = "efmu"` two-representation
-//! container packaging. The target claims the "eFMI Production Code export"
+//! generic capability gate → GALEC projection facade → a product-agnostic
+//! context validated in Rust → jinja templates (the eFMI manifests + C) plus
+//! the typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
+//! two-representation container packaging. The target claims the "eFMI Production Code export"
 //! rung of the SPEC_0034 conformance ladder, so these tests machine-check
 //! that rung:
 //!
@@ -51,8 +51,9 @@ mod container_xml_support;
 use cc_support::cc;
 use cli_support::{run_compile_target, strip_ansi, write_fixture};
 use container_xml_support::{
-    attribute_values, mask_attribute, mask_uuids, relative_file_paths, sole_attribute_value,
-    vendored_schemas_dir,
+    assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
+    relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
+    vendored_schemas_dir, without_block, without_line,
 };
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
@@ -139,6 +140,54 @@ impl BuiltContainer {
     fn c_source(&self) -> PathBuf {
         self.root.join("ProductionCode").join(format!("{MODEL}.c"))
     }
+}
+
+/// Negative schema cases (contract §7): the vendored Production Code XSD must
+/// REJECT a corrupted manifest — the proof a template regression cannot slip
+/// past the positive xmllint pass. Ported from the dissolved `rumoca-efmi`
+/// crate, now corrupting the TEMPLATE-rendered manifest.
+#[test]
+fn corrupted_production_code_manifest_is_rejected_by_the_xsd() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let container = build_container(dir.path(), &out_dir);
+    let manifest = fs::read_to_string(container.pc_manifest()).expect("read PC manifest");
+    let xsd = vendored_schemas_dir().join("ProductionCode/efmiProductionCodeManifest.xsd");
+
+    validate_against_xsd(&container.pc_manifest(), &xsd)
+        .expect("pristine rendered PC manifest must be schema-valid");
+
+    // Bad language enumeration value.
+    assert_xsd_rejects(
+        "bad language enum",
+        &surgically(&manifest, "language=\"C\"", "language=\"Rust\""),
+        &xsd,
+    );
+    // Malformed ManifestReference UUID: braces required by the id type.
+    assert_xsd_rejects(
+        "unbraced ManifestReference UUID",
+        &surgically(&manifest, "manifestRefId=\"{", "manifestRefId=\""),
+        &xsd,
+    );
+    // Missing required Target element.
+    assert_xsd_rejects(
+        "missing Target",
+        &without_line(&manifest, "<Target>Generic</Target>"),
+        &xsd,
+    );
+    // Missing required LogicalData block.
+    assert_xsd_rejects(
+        "missing LogicalData",
+        &without_block(&manifest, "<LogicalData>", "</LogicalData>"),
+        &xsd,
+    );
+    // Wrong child order: Target moved after CodeFiles (violates the
+    // CodeContainer xs:sequence, which places Target before CodeFiles).
+    assert_xsd_rejects(
+        "Target after CodeFiles",
+        &move_line_after(&manifest, "<Target>Generic</Target>", "</CodeFiles>"),
+        &xsd,
+    );
 }
 
 /// Compile the discrete fixture into `out_dir` and return the container
@@ -352,17 +401,17 @@ fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() 
     // Hard requirement: a missing xmllint surfaces as
     // EfmiError::XmllintUnavailable and fails these expects — the test
     // never skips schema validation (GAL-012/GAL-021).
-    rumoca_efmi::validate_against_xsd(
+    validate_against_xsd(
         &container.content_xml(),
         &vendored_schemas_dir().join("efmiContainerManifest.xsd"),
     )
     .expect("__content.xml must validate against the vendored container XSD");
-    rumoca_efmi::validate_against_xsd(
+    validate_against_xsd(
         &container.ac_manifest(),
         &vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
     )
     .expect("AlgorithmCode/manifest.xml must validate against the vendored AC XSD");
-    rumoca_efmi::validate_against_xsd(
+    validate_against_xsd(
         &container.pc_manifest(),
         &vendored_schemas_dir().join("ProductionCode/efmiProductionCodeManifest.xsd"),
     )
@@ -412,7 +461,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         );
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_efmi::Sha1Hex::of_bytes(manifest_bytes).as_str()),
+            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(manifest_bytes).as_str()),
             "__content.xml {name} checksum must be the SHA-1 of the written manifest.xml"
         );
         assert_eq!(
@@ -426,7 +475,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let alg_bytes = fs::read(container.alg_file()).expect("read .alg bytes");
     assert_eq!(
         sole_attribute_value(&container.ac_manifest(), "checksum"),
-        rumoca_efmi::Sha1Hex::of_bytes(&alg_bytes).as_str(),
+        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).as_str(),
         "AC manifest File checksum must be the SHA-1 of the written .alg"
     );
 
@@ -445,7 +494,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         let code_bytes = fs::read(&path).expect("read code file bytes");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_efmi::Sha1Hex::of_bytes(&code_bytes).as_str()),
+            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&code_bytes).as_str()),
             "PC manifest File checksum for {name} must be the SHA-1 of the written bytes"
         );
     }
@@ -456,7 +505,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let reference = sole_element_attributes(&container.pc_manifest(), "ManifestReference");
     assert_eq!(
         reference.get("checksum").map(String::as_str),
-        Some(rumoca_efmi::Sha1Hex::of_bytes(&ac_manifest_bytes).as_str()),
+        Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&ac_manifest_bytes).as_str()),
         "PC ManifestReference checksum must be the SHA-1 of the written AC manifest"
     );
     assert_eq!(
@@ -594,7 +643,7 @@ fn container_ids_unique_and_generation_metadata_strict() {
 
     for path in [container.ac_manifest(), container.pc_manifest()] {
         let id = root_id(&path);
-        rumoca_efmi::ManifestId::parse(&id).unwrap_or_else(|error| {
+        rumoca_galec_codegen::ManifestId::parse(&id).unwrap_or_else(|error| {
             panic!(
                 "manifest root id `{id}` in {} must be a brace-wrapped UUID: {error}",
                 path.display()
@@ -604,7 +653,7 @@ fn container_ids_unique_and_generation_metadata_strict() {
 
     for path in &documents {
         let timestamp = sole_attribute_value(path, "generationDateAndTime");
-        rumoca_efmi::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
+        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
             panic!(
                 "generationDateAndTime `{timestamp}` in {} must match the strict \
                  UTC pattern: {error}",
@@ -774,7 +823,7 @@ fn rerunning_same_command_replaces_previous_container() {
         let manifest_bytes = fs::read(&manifest_path).expect("read replaced manifest");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_efmi::Sha1Hex::of_bytes(&manifest_bytes).as_str()),
+            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).as_str()),
             "the replaced container's {name} checksum must recompute from its own bytes"
         );
     }

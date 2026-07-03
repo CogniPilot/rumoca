@@ -14,14 +14,14 @@
 //!    commits at the end of DoStep per T2);
 //! 4. post-validation (GAL-004): `rumoca_ir_galec::validate` over the block,
 //!    and a full typed-manifest assembly
-//!    (`rumoca_efmi::algorithm_code_manifest::AlgorithmCodeManifest::new`
+//!    (`crate::manifest_context::algorithm_code_manifest::AlgorithmCodeManifest::new`
 //!    with a render-time UUID/timestamp/checksum) so the manifest fragment
 //!    is proven assemblable before the package is returned.
 //!
 //! The fields are public so the eFMU emission layer can read them, and the
 //! rendering facades re-run the GALEC validator on the block
 //! ([`crate::emit::render_algorithm_code`] /
-//! [`crate::emit::render_manifest_xml`]): a package assembled or mutated
+//! `render_algorithm_code`): a package assembled or mutated
 //! outside the lowering entry point cannot print un-validated GALEC.
 //!
 //! The package never aliases or mutates the input DAE; it owns its data.
@@ -30,10 +30,10 @@
 //! `AlgorithmCodeManifestParts`: `ManifestAttributes` (UUID, strict-UTC
 //! generation timestamp, tool string) and `Files` checksums are
 //! packaging-time facts owned by the eFMU emission layer (`rumoca-compile`
-//! driving `rumoca-efmi`), not by the projection.
+//! driving the packaging build step), not by the projection.
 
-use rumoca_efmi::Identifier;
-use rumoca_efmi::algorithm_code_manifest::{ErrorSignal, Variable as ManifestVariable};
+use crate::manifest_context::Identifier;
+use crate::manifest_context::algorithm_code_manifest::{ErrorSignal, Variable as ManifestVariable};
 
 /// The projection-owned parts of the Algorithm Code manifest.
 #[derive(Debug, Clone)]

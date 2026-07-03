@@ -172,7 +172,7 @@ pub struct InterfaceVariable {
     /// (GAL-020). Row-major for arrays. Not part of `.alg` concrete syntax
     /// and not read by this crate's validator; the start-mirrors-Startup
     /// cross-check (GAL-017/GAL-020) is owned by the projection and
-    /// manifest layers (`rumoca-galec-codegen` / `rumoca-efmi`).
+    /// manifest layers (`rumoca-galec-codegen`).
     pub start: Option<Expression>,
 }
 
