@@ -139,6 +139,11 @@ rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
+# GALEC target CI: manifest.xml well-formedness (quick-xml) and xmllint XSD
+# validation via the rumoca-efmi helper (dependency direction is fine: the CLI
+# already depends on rumoca-efmi transitively through rumoca-target-galec).
+quick-xml = { workspace = true }
+rumoca-efmi = { workspace = true }
 
 [lints]
 workspace = true

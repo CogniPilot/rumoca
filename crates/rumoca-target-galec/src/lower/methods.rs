@@ -349,6 +349,15 @@ pub(crate) fn coerce_to(
         return widen_to_real(typed, "assignment value", None);
     }
     if target == ScalarType::Integer && typed.ty == ScalarType::Real {
+        // The canonical DAE normalizes numeric literals to Real, so an
+        // Integer variable's value arrives from the real pipeline as e.g.
+        // `Real(10.0)` while Flat-side provenance types the variable
+        // Integer. Retyping an exactly-integral Real *literal* is an exact
+        // compile-time value conversion — not the rejected runtime
+        // `integer()` rewrite, which stays an escape-set problem.
+        if let Some(value) = integral_real_literal(&typed.expr) {
+            return Ok(gast::Expression::Integer(value));
+        }
         return Err(GalecTargetError::UnsupportedFeature {
             feature: "real-to-integer-conversion".to_owned(),
             detail: format!(
@@ -366,6 +375,20 @@ pub(crate) fn coerce_to(
         found: typed.ty.keyword(),
         span: None,
     })
+}
+
+/// The exact `i64` value of an exactly-integral, exactly-representable
+/// Real literal (finite, zero fraction, |value| ≤ 2^53); `None` for
+/// anything else — the caller keeps its type-mismatch diagnostic, values
+/// are never rounded (SPEC_0008).
+fn integral_real_literal(expr: &gast::Expression) -> Option<i64> {
+    /// Largest f64 magnitude whose integers are all exactly representable.
+    const EXACT_INTEGER_BOUND: f64 = 9_007_199_254_740_992.0; // 2^53
+    let gast::Expression::Real(value) = expr else {
+        return None;
+    };
+    (value.is_finite() && value.fract() == 0.0 && value.abs() <= EXACT_INTEGER_BOUND)
+        .then_some(*value as i64)
 }
 
 /// `self.<galec name>` assignment target of a classified variable.
@@ -498,7 +521,11 @@ mod tests {
     //! helpers must FAIL on a breach (ET018), never fabricate a wrong-shape
     //! Startup literal (SPEC_0008: no silent defaults).
 
-    use super::{broadcast_literal, gast, nest_row_major};
+    use super::{
+        ScalarType, broadcast_literal, coerce_to, gast, integral_real_literal, nest_row_major,
+    };
+    use crate::diagnostic::GalecTargetError;
+    use crate::lower::expr::Typed;
 
     fn reals(count: usize) -> Vec<gast::Expression> {
         (0..count)
@@ -536,5 +563,71 @@ mod tests {
         assert!(broadcast_literal(&[0], &value).is_err());
         let broadcast = broadcast_literal(&[3], &value).expect("valid dims");
         assert!(matches!(broadcast, gast::Expression::Array(items) if items.len() == 3));
+    }
+
+    /// Exact-or-`None` contract of the Real→Integer literal retyping
+    /// (SPEC_0008: values are never rounded). 2^53 is the largest f64
+    /// magnitude below which every integer is exactly representable.
+    #[test]
+    fn integral_real_literal_accepts_exactly_representable_integers_only() {
+        const TWO_POW_53: i64 = 9_007_199_254_740_992;
+        let real = |value: f64| gast::Expression::Real(value);
+
+        assert_eq!(integral_real_literal(&real(0.0)), Some(0));
+        assert_eq!(integral_real_literal(&real(-3.0)), Some(-3));
+        assert_eq!(
+            integral_real_literal(&real(TWO_POW_53 as f64)),
+            Some(TWO_POW_53),
+            "the 2^53 boundary itself is exactly representable"
+        );
+        assert_eq!(
+            integral_real_literal(&real(-(TWO_POW_53 as f64))),
+            Some(-TWO_POW_53)
+        );
+
+        // Non-integral, non-finite, or beyond exact representability: None.
+        assert_eq!(integral_real_literal(&real(0.5)), None);
+        assert_eq!(integral_real_literal(&real(f64::NAN)), None);
+        assert_eq!(integral_real_literal(&real(f64::INFINITY)), None);
+        assert_eq!(integral_real_literal(&real(f64::NEG_INFINITY)), None);
+        // 2^53 + 2 is representable but past the exactness bound.
+        assert_eq!(integral_real_literal(&real((TWO_POW_53 + 2) as f64)), None);
+        // Only Real literals qualify — never composite expressions.
+        assert_eq!(integral_real_literal(&gast::Expression::Integer(1)), None);
+    }
+
+    /// The guard branch behind the literal retyping: a Real value that is
+    /// NOT an exactly-integral literal keeps the stable
+    /// `unsupported-feature` diagnostic instead of being converted.
+    #[test]
+    fn coerce_to_integer_rejects_non_integral_real_with_diagnostic() {
+        let typed = |expr| Typed {
+            expr,
+            ty: ScalarType::Real,
+        };
+
+        let error = coerce_to(typed(gast::Expression::Real(0.5)), ScalarType::Integer, "n")
+            .expect_err("non-integral Real must not convert");
+        assert!(
+            matches!(
+                &error,
+                GalecTargetError::UnsupportedFeature { feature, .. }
+                    if feature == "real-to-integer-conversion"
+            ),
+            "expected the real-to-integer-conversion diagnostic, got: {error}"
+        );
+
+        // A non-literal Real expression is never folded, even if it would
+        // evaluate to an integer at runtime.
+        let reference = super::state_ref(gast::Name::ident("x"), Vec::new());
+        assert!(matches!(
+            coerce_to(typed(reference), ScalarType::Integer, "n"),
+            Err(GalecTargetError::UnsupportedFeature { .. })
+        ));
+
+        // The exact-integral literal path still converts.
+        let converted = coerce_to(typed(gast::Expression::Real(4.0)), ScalarType::Integer, "n")
+            .expect("exactly-integral Real literal retypes");
+        assert_eq!(converted, gast::Expression::Integer(4));
     }
 }

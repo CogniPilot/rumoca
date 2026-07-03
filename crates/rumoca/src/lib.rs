@@ -60,3 +60,7 @@ pub(crate) mod targets_cmd;
 
 pub use compiler::{CompilationResult, Compiler, DaeCompilationResult, TemplateIr};
 pub use error::CompilerError;
+// In-memory twin of `compile --target`; public so template-target CI renders
+// through the exact CLI path (capability gates + name-dispatched renderers).
+#[cfg(feature = "runner")]
+pub use target_manifest::render_target_files;
