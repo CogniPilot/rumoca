@@ -92,7 +92,7 @@ container is non-conformant (§2.2).
 |-------|-----------------------------|--------|
 | "GALEC-derived text export" | `.alg` + `manifest.xml` render; honest self-description only | Earned (`galec`; `embedded-c-galec` is the honest non-eFMI track) |
 | "eFMI Algorithm Code export" | Schema-valid eFMU: `__content.xml` + `schemas/` + Algorithm Code container; correct SHA-1s, UUID/ids, strict UTC timestamps | Earned (`galec`) |
-| "GALEC language conformance" | Above + round-trip parse of emitted `.alg` (or external compliance-checker gate) | Unclaimed (parser deferred, Phase 6) |
+| "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: print∘parse∘print idempotence | Earned (`galec`; `crates/rumoca-galec` `tests/roundtrip.rs` under `--features parse`) |
 | "eFMI Production Code export" | Schema-valid eFMU co-emitting Algorithm Code **and** Production Code representations (§2.2 co-emission mandatory); PC `manifest.xml` xmllint-valid; LogicalData maps every AC variable and all three BlockMethods exactly once; PC `ManifestReference@checksum` = SHA-1 of the AC manifest bytes and `@manifestRefId` = the AC root UUID; whole SHA-1 web (`__content.xml` ↔ both manifests ↔ code files) recomputed from written bytes, no placeholder checksums | Earned (`galec-production`) |
 
 ### Variable Classification (GAL-020, normative)

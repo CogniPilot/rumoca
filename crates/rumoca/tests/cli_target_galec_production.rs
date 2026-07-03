@@ -895,8 +895,8 @@ fn export_claims_the_production_code_rung_and_names_the_conformance_surface() {
         "completion message must claim the rung, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("Not yet claimed: GALEC language conformance"),
-        "completion message must name the unclaimed rung, got:\n{stderr}"
+        stderr.contains("round-trip parses (\"GALEC language conformance\")"),
+        "completion message must state the earned language-conformance claim, got:\n{stderr}"
     );
 }
 

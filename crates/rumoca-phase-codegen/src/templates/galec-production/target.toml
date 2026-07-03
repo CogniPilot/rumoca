@@ -11,8 +11,8 @@ name = "galec-production"
 # per eFMI ch. 2.2 — a PC-only container is non-conformant. Every SHA-1 in
 # the checksum web (__content.xml <-> both manifests <-> code files <-> PC
 # ManifestReference <-> AC manifest bytes) is computed from the exact
-# written bytes. "GALEC language conformance" (round-trip parse) remains
-# unclaimed.
+# written bytes. The co-emitted GALEC also meets "GALEC language
+# conformance": it round-trip parses (rumoca-galec tests/roundtrip.rs).
 description = "eFMI Production Code export: eFMU container with generated C99 + LogicalData mapping manifest (ProductionCode/) and co-emitted Algorithm Code representation (AlgorithmCode/), directory and .efmu zip forms"
 execution_mode = "packaged"
 # deployment_class is the deployment FAMILY axis of `rumoca targets` (like
@@ -33,7 +33,7 @@ completion_message = """eFMI Production Code eFMU written to: {{ out_dir }}
 Conformance: "eFMI Production Code export" (SPEC_0034 GAL-021/GAL-024) — schema-valid
 eFMU with Algorithm Code + Production Code representations, all SHA-1 checksums
 computed from the written bytes, LogicalData mapping every block variable and
-method. Not yet claimed: GALEC language conformance (round-trip parse)."""
+method; the co-emitted GALEC also round-trip parses ("GALEC language conformance")."""
 
 # Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
 # the galec target: both consume the same DAE → GALEC projection, so
