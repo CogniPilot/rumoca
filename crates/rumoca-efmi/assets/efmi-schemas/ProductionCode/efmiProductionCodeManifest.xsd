@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiManifestAttributes.xsd"/>
+	<xs:include schemaLocation="../efmiAnnotation.xsd"/>
+	<xs:include schemaLocation="../efmiManifestReferences.xsd"/>
+	<xs:include schemaLocation="../efmiModelRepresentationKind.xsd"/>
+	<xs:include schemaLocation="../efmiFiles.xsd"/>
+	<xs:include schemaLocation="../efmiCompilerOptions.xsd"/>
+	<xs:include schemaLocation="../efmiLinkerOptions.xsd"/>
+	<xs:include schemaLocation="efmiSupportedLanguages.xsd"/>
+	<xs:include schemaLocation="efmiSupportedPlatforms.xsd"/>
+	<xs:include schemaLocation="../efmiFloatingPointPrecision.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="efmiTargetTypes.xsd"/>
+	<xs:include schemaLocation="efmiCodeFiles.xsd"/>
+	<xs:include schemaLocation="efmiTechnicalLookUps.xsd"/>
+	<xs:include schemaLocation="efmiLogicalData.xsd"/>
+	
+	<xs:element name="Manifest">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element ref="ManifestReferences" minOccurs="1" maxOccurs="1">
+					<xs:annotation>
+						<xs:documentation>Reference to Algorithm Code manifest.</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+				<xs:element ref="Files" minOccurs="1" maxOccurs="1"/>
+				<xs:element name="CodeContainer" minOccurs="1" maxOccurs="1">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element name="Target" type="xs:normalizedString" default="Generic" minOccurs="1" maxOccurs="1">
+								<xs:annotation>
+									<xs:documentation>Unique identifier, if the production code uses target-specific code parts, e.g. assembler op codes; otherwise the identifier is 'Generic', which is set as default.</xs:documentation>
+								</xs:annotation>
+							</xs:element>
+							<xs:element ref="CompilerOptions" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="LinkerOptions" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="TargetTypes" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="CodeFiles" minOccurs="1" maxOccurs="1"/>
+							<xs:element ref="TechnicalInformationLookUps" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="LogicalData" minOccurs="1" maxOccurs="1"/>
+						</xs:sequence>
+						<xs:attribute name="language" type="efmiSupportedLanguages" use="required"/>
+						<xs:attribute name="standard" type="xs:normalizedString" use="required"/>
+						<xs:attribute name="platform" type="efmiSupportedPlatforms" use="required"/>
+						<xs:attribute name="floatPrecision" type="efmiFloatingPointPrecision" use="required"/>
+						<xs:attribute name="description" type="xs:string" use="optional"/>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Annotations" type="efmiAnnotation" minOccurs="0" maxOccurs="1"/>
+			</xs:sequence>
+			<xs:attribute name="xsdVersion" type="xs:normalizedString" use="required" fixed="0.17.0"/>
+			<xs:attribute name="kind" type="ModelRepresentationKind" use="required" fixed="ProductionCode"/>
+			<xs:attributeGroup ref="efmiManifestAttributesBase"/>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>

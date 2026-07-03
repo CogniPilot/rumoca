@@ -3340,6 +3340,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-efmi"
+version = "0.9.9"
+
+[[package]]
 name = "rumoca-eval-ast"
 version = "0.9.9"
 dependencies = [
@@ -3426,6 +3430,10 @@ dependencies = [
  "wasm-encoder",
  "wasmparser",
 ]
+
+[[package]]
+name = "rumoca-galec"
+version = "0.9.9"
 
 [[package]]
 name = "rumoca-input"
@@ -3710,6 +3718,10 @@ dependencies = [
  "thiserror 2.0.17",
  "tracing",
 ]
+
+[[package]]
+name = "rumoca-target-galec"
+version = "0.9.9"
 
 [[package]]
 name = "rumoca-test-msl"

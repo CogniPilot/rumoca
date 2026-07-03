@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:simpleType name="efmiSupportedLanguages">
+		<xs:restriction base="xs:normalizedString">
+			<xs:enumeration value="C">
+				<xs:annotation>
+					<xs:documentation>
+						C code programming language.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="C++">
+				<xs:annotation>
+					<xs:documentation>
+						C++ code programming language.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

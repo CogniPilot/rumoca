@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiAnnotation.xsd"/>
+	<xs:include schemaLocation="../efmiUnits.xsd"/>
+	<xs:include schemaLocation="../efmiModelRepresentationKind.xsd"/>
+	<xs:include schemaLocation="../efmiFiles.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="../efmiManifestAttributes.xsd"/>
+	<xs:include schemaLocation="efmiVariable.xsd"/>
+	
+	<xs:element name="Manifest">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element ref="Files" minOccurs="1" maxOccurs="1"/>
+				<xs:element name="Clock" minOccurs="1" maxOccurs="1">
+					<xs:annotation>
+						<xs:documentation>Sample period of block.</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required">
+							<xs:annotation>
+								<xs:documentation>Id of sample period.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+						<xs:attribute name="variableRefId" type="efmiIdentifierType" use="required">
+							<xs:annotation>
+								<xs:documentation>Reference to the constant that defines the sample period.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="BlockMethods" minOccurs="1" maxOccurs="1">
+					<xs:annotation>
+						<xs:documentation>Methods to execute Algorithm Code. </xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:sequence minOccurs="3" maxOccurs="3">
+							<xs:element name="BlockMethod">
+								<xs:annotation>
+									<xs:documentation>Defining id and signals
+for every block method. 
+Each kind must exist
+exactly once.</xs:documentation>
+								</xs:annotation>
+								<xs:complexType>
+									<xs:sequence minOccurs="0" maxOccurs="1">
+										<xs:element name="Signals">
+											<xs:annotation>
+												<xs:documentation>Define all exposed error signals
+by this BlockMethod</xs:documentation>
+											</xs:annotation>
+											<xs:complexType>
+												<xs:sequence minOccurs="1" maxOccurs="unbounded">
+													<xs:element name="Signal">
+														<xs:complexType>
+															<xs:attribute name="value" use="required">
+																<xs:simpleType>
+																	<xs:restriction base="xs:normalizedString">
+																		<xs:enumeration value="INVALID_ARGUMENT"/>
+																		<xs:enumeration value="OVERFLOW"/>
+																		<xs:enumeration value="NAN"/>
+																		<xs:enumeration value="SOLVE_LINEAR_EQUATIONS_FAILED"/>
+																		<xs:enumeration value="NO_SOLUTION_FOUND"/>
+																		<xs:enumeration value="UNSPECIFIED_ERROR"/>
+																	</xs:restriction>
+																</xs:simpleType>
+															</xs:attribute>
+														</xs:complexType>
+													</xs:element>
+												</xs:sequence>
+											</xs:complexType>
+										</xs:element>
+									</xs:sequence>
+									<xs:attribute name="id" type="efmiIdentifierType" use="required">
+										<xs:annotation>
+											<xs:documentation>id of BlockMethod</xs:documentation>
+										</xs:annotation>
+									</xs:attribute>
+									<xs:attribute name="kind" use="required">
+										<xs:annotation>
+											<xs:documentation>Kind and name of BlockMethod</xs:documentation>
+										</xs:annotation>
+										<xs:simpleType>
+											<xs:restriction base="xs:normalizedString">
+												<xs:enumeration value="Startup"/>
+												<xs:enumeration value="Recalibrate"/>
+												<xs:enumeration value="DoStep"/>
+											</xs:restriction>
+										</xs:simpleType>
+									</xs:attribute>
+								</xs:complexType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="ErrorSignalStatus" minOccurs="1" maxOccurs="1">
+					<xs:annotation>
+						<xs:documentation>Unique anchor that is used by derived model representations — like production code referring to this manifest — to mark error signal variables.</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required">
+							<xs:annotation>
+								<xs:documentation>Id of error signal anchor.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Units" type="efmiUnits" minOccurs="1" maxOccurs="1"/>
+				<xs:element name="Variables" minOccurs="1" maxOccurs="1">
+					<xs:annotation>
+						<xs:documentation>Ordered list of variables
+(first element 
+ has index = 1).</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:group ref="efmiVariable" maxOccurs="unbounded" minOccurs="0"/>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Annotations" type="efmiAnnotation" minOccurs="0" maxOccurs="1"/>
+			</xs:sequence>
+			<xs:attribute name="xsdVersion" type="xs:normalizedString" use="required" fixed="0.14.0"/>
+			<xs:attribute name="kind" type="ModelRepresentationKind" use="required" fixed="AlgorithmCode"/>
+			<xs:attributeGroup ref="efmiManifestAttributesBase"/>
+			<xs:attribute name="fileRefId" type="efmiIdentifierType" use="required">
+				<xs:annotation>
+					<xs:documentation>Reference to the GALEC program implementing the block described by this manifest. The referenced file can contain a single line feed (ISO/IEC 10646:2017 code point 10), in which case no GALEC implementation is provided by this Algorithm Code container (i.e., this container cannot be used for production code generation, but can still be referenced by Production Code manifests for enabling reference tests and complement their manifest).</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>
