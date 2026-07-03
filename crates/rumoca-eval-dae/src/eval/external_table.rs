@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::sync::Mutex;
 
 use rumoca_core as core;
@@ -70,8 +70,8 @@ fn register_external_table_in_registry(
             } else {
                 candidate + 1
             };
-            if !reg.tables.contains_key(&candidate) {
-                reg.tables.insert(candidate, spec);
+            if let Entry::Vacant(entry) = reg.tables.entry(candidate) {
+                entry.insert(spec);
                 return candidate;
             }
         }
