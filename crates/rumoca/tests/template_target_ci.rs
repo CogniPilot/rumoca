@@ -4,10 +4,11 @@
 //! Each target's `[[files]]` render through [`rumoca::render_target_files`] —
 //! the in-memory twin of `compile --target` — so CI exercises the exact CLI
 //! path: capability validation plus the name-dispatched renderers
-//! (`wgsl-solve`, `galec`) that the generic DAE-JSON template context cannot
-//! reach. Targets that declare `continuous_states = false` (currently `galec`)
-//! render against a dedicated fixed-sample discrete fixture; every other
-//! target keeps the continuous fixture. No target is skipped.
+//! (`wgsl-solve`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
+//! template context cannot reach. Targets that declare
+//! `continuous_states = false` (the GALEC-derived targets) render against a
+//! dedicated fixed-sample discrete fixture; every other target keeps the
+//! continuous fixture. No target is skipped.
 
 use std::collections::BTreeSet;
 use std::fs;

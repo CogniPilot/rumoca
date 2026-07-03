@@ -217,6 +217,28 @@ pub enum GalecTargetError {
         span: Option<Span>,
     },
 
+    /// GAL-024/GAL-015: two distinct GALEC names mangle to the same C
+    /// identifier; the embedded C export refuses to rename either apart
+    /// (SPEC_0008: no silent defaults).
+    #[error(
+        "GALEC names `{first}` and `{second}` both mangle to the C \
+         identifier `{c_name}`; the embedded C export never renames \
+         silently — rename one variable in the model [ET022]"
+    )]
+    CNameCollision {
+        first: String,
+        second: String,
+        c_name: String,
+    },
+
+    /// GAL-007: the embedded C export met a GALEC construct outside the
+    /// shape the current lowering emits; rejected loudly, never dropped.
+    #[error("the embedded C export does not support {construct}: {detail} [ET023]")]
+    CExportUnsupported {
+        construct: &'static str,
+        detail: String,
+    },
+
     /// GAL-025: initial equations are a projection-scope rejection. Startup
     /// is built from manifest `start` values (plus the dependent-parameter
     /// recomputation) only, so admitting a non-empty initialization
@@ -259,6 +281,8 @@ impl GalecTargetError {
             Self::UnknownVariableReference { .. } => "ET019",
             Self::LoweringTypeMismatch { .. } => "ET020",
             Self::InitialEquations { .. } => "ET021",
+            Self::CNameCollision { .. } => "ET022",
+            Self::CExportUnsupported { .. } => "ET023",
         }
     }
 
@@ -286,7 +310,9 @@ impl GalecTargetError {
             | Self::StartDependencyCycle { .. }
             | Self::Manifest { .. }
             | Self::LoweringInternal { .. }
-            | Self::InitialEquations { .. } => None,
+            | Self::InitialEquations { .. }
+            | Self::CNameCollision { .. }
+            | Self::CExportUnsupported { .. } => None,
         }
     }
 }
