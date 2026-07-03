@@ -19,8 +19,9 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, VarLayout};
 use std::sync::Arc;
 
-use function_projection::{
-    function_call_projected_scalars_with_owner, function_projected_residuals_with_owner,
+use function_projection::function_projected_residuals_with_owner;
+pub(in crate::lower) use function_projection::{
+    function_call_projected_scalars_with_owner, project_array_like_scalars_with_owner,
 };
 
 #[derive(Debug, Clone)]

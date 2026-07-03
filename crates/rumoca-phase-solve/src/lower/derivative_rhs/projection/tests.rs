@@ -309,6 +309,52 @@ fn project_expression_scalars_rejects_der_without_argument() {
 }
 
 #[test]
+fn project_expression_scalars_passes_through_stream_operator() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_29.mo",
+        ),
+        3,
+        18,
+    );
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("inStream").into(),
+        args: vec![rumoca_core::Expression::Array {
+            elements: vec![
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span,
+                },
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(2.0),
+                    span,
+                },
+            ],
+            is_matrix: false,
+            span,
+        }],
+        is_constructor: false,
+        span,
+    };
+
+    let scalars = project_expression_scalars(&expr, &[2], &dae::Dae::new(), &IndexMap::new(), span)
+        .expect("stream passthrough should project its argument")
+        .expect("stream passthrough argument should have projected scalars");
+    let values = scalars
+        .iter()
+        .map(|expr| match expr {
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            } => *value,
+            other => panic!("expected scalar literal, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(values, vec![1.0, 2.0]);
+}
+
+#[test]
 fn project_expression_scalars_rejects_fill_without_value_argument() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(

@@ -80,6 +80,20 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 None => Ok(None),
             },
             rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sum,
+                ..
+            } => Ok(Some(Vec::new())),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Cat,
+                args,
+                ..
+            } => self.cat_expr_dims(args, scope, depth, span),
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => self.if_expr_dims(branches, else_branch, scope, depth, span),
+            rumoca_core::Expression::BuiltinCall {
                 function: rumoca_core::BuiltinFunction::Transpose,
                 args,
                 ..
@@ -99,6 +113,15 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     span,
                 )?))
             }
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor: false,
+                ..
+            } if is_stream_passthrough_intrinsic(name.as_str()) => match args.first() {
+                Some(arg) => self.expr_dims_with_owner(arg, scope, depth, span),
+                None => Ok(None),
+            },
             rumoca_core::Expression::FunctionCall {
                 name,
                 is_constructor: false,
@@ -208,6 +231,46 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         self.projected_declared_function_output_dims(name.as_str(), span)
     }
 
+    fn cat_expr_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let Some(dim_expr) = args.first() else {
+            return Ok(None);
+        };
+        let Some(dim_value) = self.compile_time_scalar_in_scope(dim_expr, scope)? else {
+            return Ok(None);
+        };
+        if (dim_value - 1.0).abs() > f64::EPSILON {
+            return Ok(None);
+        }
+        let mut output_dims: Option<Vec<i64>> = None;
+        for operand in &args[1..] {
+            let Some(operand_dims) = self.expr_dims_with_owner(operand, scope, depth + 1, span)?
+            else {
+                return Ok(None);
+            };
+            if operand_dims.is_empty() {
+                return Ok(None);
+            }
+            match &mut output_dims {
+                None => output_dims = Some(operand_dims),
+                Some(dims) => {
+                    if dims.len() != operand_dims.len() || dims[1..] != operand_dims[1..] {
+                        return Ok(None);
+                    }
+                    dims[0] = dims[0].checked_add(operand_dims[0]).ok_or_else(|| {
+                        LowerError::contract_violation("cat(1, ...) dimension overflows i64", span)
+                    })?;
+                }
+            }
+        }
+        Ok(output_dims)
+    }
+
     fn projected_declared_function_output_dims(
         &self,
         requested: &str,
@@ -298,7 +361,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
     ) -> Result<Option<&'expr rumoca_core::Expression>, LowerError> {
         for (condition, branch) in branches {
             let condition = self.substitute(condition, scope)?;
-            let Some(value) = self.compile_time_scalar(&condition) else {
+            let Some(value) = self.compile_time_scalar_in_scope(&condition, scope)? else {
                 return Ok(None);
             };
             if value != 0.0 {
@@ -309,30 +372,104 @@ impl<'a> FunctionProjectionAnalysis<'a> {
     }
 
     pub(super) fn compile_time_scalar(&self, expr: &rumoca_core::Expression) -> Option<f64> {
+        self.compile_time_scalar_in_scope(expr, &FunctionProjectionScope::default())
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn compile_time_scalar_in_scope(
+        &self,
+        expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+    ) -> Result<Option<f64>, LowerError> {
         match expr {
-            rumoca_core::Expression::Literal { value, .. } => literal_to_f64(value),
+            rumoca_core::Expression::Literal { value, .. } => Ok(literal_to_f64(value)),
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } => {
-                let key = compile_time_var_key(name, subscripts)?;
-                self.structural_bindings.get(key.as_str()).copied()
+                let Some(key) = compile_time_var_key(name, subscripts) else {
+                    return Ok(None);
+                };
+                Ok(self.structural_bindings.get(key.as_str()).copied())
             }
             rumoca_core::Expression::Unary { op, rhs, .. } => {
-                let value = self.compile_time_scalar(rhs)?;
-                match op {
+                let Some(value) = self.compile_time_scalar_in_scope(rhs, scope)? else {
+                    return Ok(None);
+                };
+                Ok(match op {
                     rumoca_core::OpUnary::Plus
                     | rumoca_core::OpUnary::DotPlus
-                    | rumoca_core::OpUnary::Empty => Some(value),
-                    rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Some(-value),
-                    rumoca_core::OpUnary::Not => Some(f64::from(value == 0.0)),
+                    | rumoca_core::OpUnary::Empty => value,
+                    rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => -value,
+                    rumoca_core::OpUnary::Not => f64::from(value == 0.0),
                 }
+                .into())
             }
             rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-                let lhs = self.compile_time_scalar(lhs)?;
-                let rhs = self.compile_time_scalar(rhs)?;
-                compile_time_binary(op, lhs, rhs)
+                let Some(lhs) = self.compile_time_scalar_in_scope(lhs, scope)? else {
+                    return Ok(None);
+                };
+                let Some(rhs) = self.compile_time_scalar_in_scope(rhs, scope)? else {
+                    return Ok(None);
+                };
+                Ok(compile_time_binary(op, lhs, rhs))
             }
-            _ => None,
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Size,
+                args,
+                span,
+            } => self.compile_time_size(args, scope, *span),
+            _ => Ok(None),
         }
+    }
+
+    fn compile_time_size(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<f64>, LowerError> {
+        let [array_expr, dim_expr] = args else {
+            return Ok(None);
+        };
+        let Some(dim_value) = self.compile_time_scalar_in_scope(dim_expr, scope)? else {
+            return Ok(None);
+        };
+        let dim_index = if dim_value.fract().abs() < f64::EPSILON && dim_value >= 1.0 {
+            dim_value as usize
+        } else {
+            return Ok(None);
+        };
+        let Some(dims) = self.expr_dims_with_owner(array_expr, scope, 0, span)? else {
+            return Ok(None);
+        };
+        Ok(dims.get(dim_index - 1).map(|dim| *dim as f64))
+    }
+
+    fn if_expr_dims(
+        &self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        if let Some(selected) = self.compile_time_if_selection(branches, else_branch, scope)? {
+            return self.expr_dims_with_owner(selected, scope, depth + 1, span);
+        }
+        let Some(else_dims) = self.expr_dims_with_owner(else_branch, scope, depth + 1, span)?
+        else {
+            return Ok(None);
+        };
+        for (_, branch) in branches {
+            let Some(branch_dims) = self.expr_dims_with_owner(branch, scope, depth + 1, span)?
+            else {
+                return Ok(None);
+            };
+            if branch_dims != else_dims {
+                return Ok(None);
+            }
+        }
+        Ok(Some(else_dims))
     }
 }

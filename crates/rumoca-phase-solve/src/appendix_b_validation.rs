@@ -1090,7 +1090,9 @@ fn solve_validation_error(reason: String, span: Option<Span>) -> LowerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::{Expression, Function, FunctionParam, Literal, OpBinary, Span, VarName};
+    use rumoca_core::{
+        Expression, ExternalFunction, Function, FunctionParam, Literal, OpBinary, Span, VarName,
+    };
 
     fn fixture_span() -> Span {
         Span::from_offsets(
@@ -1175,5 +1177,71 @@ mod tests {
                 && reason.contains("function has no executable body"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn solve_input_validation_allows_supported_energyplus_external_call() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut initialize = Function::new(
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+            span,
+        );
+        initialize.external = Some(ExternalFunction::default());
+        initialize.add_input(FunctionParam::new("isSynchronized", "Real", span));
+        initialize
+            .outputs
+            .push(FunctionParam::new("nObj", "Integer", span));
+        dae.symbols.functions.insert(
+            VarName::new("Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"),
+            initialize,
+        );
+        dae.initialization.equations.push(dae::Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(real(1.0, span)),
+                rhs: Box::new(Expression::FunctionCall {
+                    name: VarName::new(
+                        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+                    )
+                    .into(),
+                    args: vec![real(1.0, span)],
+                    is_constructor: false,
+                    span,
+                }),
+                span,
+            },
+            span,
+            "energyplus initialize residual",
+        ));
+
+        validate_solve_input_appendix_b_invariants(&dae)
+            .expect("supported EnergyPlus external runtime calls lower to Solve ExternalCall");
+    }
+
+    #[test]
+    fn solve_input_validation_rejects_unknown_external_call() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut external = Function::new("Pkg.external", span);
+        external.external = Some(ExternalFunction::default());
+        external.outputs.push(FunctionParam::new("y", "Real", span));
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.external"), external);
+        dae.initialization.equations.push(dae::Equation::residual(
+            Expression::FunctionCall {
+                name: VarName::new("Pkg.external").into(),
+                args: vec![],
+                is_constructor: false,
+                span,
+            },
+            span,
+            "unknown external residual",
+        ));
+
+        let err = validate_solve_input_appendix_b_invariants(&dae)
+            .expect_err("unknown external functions must remain fail-closed");
+        assert!(err.reason().contains("external function is not supported"));
     }
 }

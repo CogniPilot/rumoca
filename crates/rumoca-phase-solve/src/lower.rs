@@ -420,6 +420,23 @@ enum ValueMode {
     Pre,
 }
 
+fn projected_field_value_may_be_array_like(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::Array { .. } => true,
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(_, value)| projected_field_value_may_be_array_like(value))
+                || projected_field_value_may_be_array_like(else_branch)
+        }
+        _ => false,
+    }
+}
+
 impl<'a> LowerBuilder<'a> {
     fn new(
         layout: &'a VarLayout,
@@ -601,6 +618,17 @@ impl<'a> LowerBuilder<'a> {
         result
     }
 
+    fn with_local_const_bindings<T>(
+        &mut self,
+        const_scope: &IndexMap<String, f64>,
+        f: impl FnOnce(&mut Self) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        let saved_bindings = std::mem::replace(&mut self.local_const_bindings, const_scope.clone());
+        let result = f(self);
+        self.local_const_bindings = saved_bindings;
+        result
+    }
+
     pub(in crate::lower) fn lower_array_like_values_with_source_context(
         &mut self,
         expr: &rumoca_core::Expression,
@@ -651,6 +679,9 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(ComponentReferenceKey::generated(name.as_str()));
         }
+        if self.is_local_generated_reference(name.as_str()) {
+            return Ok(ComponentReferenceKey::generated(name.as_str()));
+        }
         if name.is_generated() || name.component_ref().is_some() || self.dae_variables.is_none() {
             return scope_key_from_reference(name, span);
         }
@@ -662,6 +693,17 @@ impl<'a> LowerBuilder<'a> {
             if let Some(generated) = self.test_fixture_generated_scope_key(name, span) {
                 return Ok(generated);
             }
+            eprintln!(
+                "diagnostic: missing_dae_source_ref name={} component_ref={:?} span={:?} context={:?} local_dims={} local_indexed={} local_consts={} known_empty={}",
+                name.as_str(),
+                name.component_ref(),
+                span,
+                self.active_source_context_span(),
+                self.local_binding_dims.contains_key(name.as_str()),
+                self.local_indexed_bindings.contains_key(name.as_str()),
+                self.local_const_bindings.contains_key(name.as_str()),
+                self.known_empty_local_arrays.contains(name.as_str())
+            );
             return Err(LowerError::contract_violation(
                 format!(
                     "Solve lowering synthesized source reference `{}` that is not a DAE variable",
@@ -699,6 +741,13 @@ impl<'a> LowerBuilder<'a> {
                 })
             }
         }
+    }
+
+    fn is_local_generated_reference(&self, name: &str) -> bool {
+        self.local_binding_dims.contains_key(name)
+            || self.local_indexed_bindings.contains_key(name)
+            || self.local_const_bindings.contains_key(name)
+            || self.known_empty_local_arrays.contains(name)
     }
 
     fn lower_expr(
@@ -1551,6 +1600,16 @@ impl<'a> LowerBuilder<'a> {
             return Ok(reg);
         }
 
+        if let Some(reg) = self.lower_projected_function_field_access(
+            base,
+            field,
+            field_access_span,
+            scope,
+            call_depth,
+        )? {
+            return Ok(reg);
+        }
+
         if let rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -1607,6 +1666,12 @@ impl<'a> LowerBuilder<'a> {
             });
         }
 
+        if let Some(reg) =
+            self.lower_first_record_array_member_field(base, field, field_access_span, scope)?
+        {
+            return Ok(reg);
+        }
+
         if let Some(values) = self.lower_structural_field_values(base, field, scope, call_depth)? {
             if let Some(first) = values.into_iter().next() {
                 return Ok(first);
@@ -1626,6 +1691,121 @@ impl<'a> LowerBuilder<'a> {
             .binding(&key)
             .ok_or(LowerError::MissingBinding { name: key })?;
         self.emit_slot_load(slot, required_expression_span(base, "field slot load")?)
+    }
+
+    fn lower_first_record_array_member_field(
+        &mut self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        field_access_span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Ok(base_key) = binding_base_key(base) else {
+            return Ok(None);
+        };
+        let key = format!(
+            "{}.{field}",
+            format_subscript_binding_key(base_key.as_str(), &[1])
+        );
+        if let Some(reg) = scope.get(&generated_scope_key(&key)).copied() {
+            return Ok(Some(reg));
+        }
+        let span = required_expression_span(base, "record-array member field slot load").or_else(
+            |_| {
+                (!field_access_span.is_dummy())
+                    .then_some(field_access_span)
+                    .ok_or_else(|| LowerError::UnspannedContractViolation {
+                        reason: "record-array member field slot load requires source span"
+                            .to_string(),
+                    })
+            },
+        )?;
+        if let Some(slot) = self.pre_mode_slot_for_key(&key) {
+            return self.emit_slot_load(slot, span).map(Some);
+        }
+        if let Some(mut values) = self.lower_direct_assignment_values_for_key(&key, scope, 0)?
+            && let Some(value) = values.pop()
+        {
+            return Ok(Some(value));
+        }
+        if let Some(slot) = self.layout.binding(&key) {
+            return self.emit_slot_load(slot, span).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn lower_projected_function_field_access(
+        &mut self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        field_access_span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        if !matches!(base, rumoca_core::Expression::FunctionCall { .. }) {
+            return Ok(None);
+        }
+        let mut dae_model = dae::Dae::default();
+        dae_model.symbols.functions = self.functions.clone();
+        if let Some(variables) = self.dae_variables {
+            dae_model.variables = variables.clone();
+        }
+        let expr = rumoca_core::Expression::FieldAccess {
+            base: Box::new(base.clone()),
+            field: field.to_string(),
+            span: field_access_span,
+        };
+        if let rumoca_core::Expression::FunctionCall { name, .. } = base
+            && name.as_str().contains("setState_phX")
+        {
+            eprintln!(
+                "diagnostic: projected_function_field_access start name={} field={} span={:?}",
+                name.as_str(),
+                field,
+                field_access_span
+            );
+        }
+        let Some(mut values) = derivative_rhs::function_call_projected_scalars_with_owner(
+            &expr,
+            &dae_model,
+            self.structural_bindings.as_ref(),
+            field_access_span,
+        )?
+        else {
+            if let rumoca_core::Expression::FunctionCall { name, .. } = base
+                && name.as_str().contains("setState_phX")
+            {
+                eprintln!(
+                    "diagnostic: projected_function_field_access none name={} field={}",
+                    name.as_str(),
+                    field
+                );
+            }
+            return Ok(None);
+        };
+        if let rumoca_core::Expression::FunctionCall { name, .. } = base
+            && name.as_str().contains("setState_phX")
+        {
+            eprintln!(
+                "diagnostic: projected_function_field_access values name={} field={} values={:?}",
+                name.as_str(),
+                field,
+                values
+            );
+        }
+        if values.len() != 1 {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "function field `{field}` projection selected {} scalar values where one was required",
+                    values.len()
+                ),
+            });
+        }
+        let value = values.remove(0);
+        if projected_field_value_may_be_array_like(&value) {
+            return Ok(None);
+        }
+        self.lower_expr(&value, scope, call_depth + 1).map(Some)
     }
 
     fn lower_function_output_name_field_access(
@@ -1667,21 +1847,21 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        let rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } = base
+        let Some((base, subscripts, field_path)) = Self::indexed_field_access_target(base, field)
         else {
             return Ok(None);
         };
         let base_key = binding_base_key(base)?;
-        let field_key = format!("{base_key}.{field}");
-
-        if let Some(indices) = static_subscript_indices_with_owner(
+        let field_key = format!("{base_key}.{field_path}");
+        if let Some(indices) = self.compile_time_subscript_indices(
             subscripts,
             required_expression_span(base, "indexed field access")?,
         )? && !indices.is_empty()
         {
-            let key = format_subscript_binding_key(&field_key, &indices);
+            let key = format!(
+                "{}.{field_path}",
+                format_subscript_binding_key(base_key.as_str(), &indices)
+            );
             if let Some(reg) = scope.get(&generated_scope_key(&key)).copied() {
                 return Ok(Some(reg));
             }
@@ -1709,6 +1889,9 @@ impl<'a> LowerBuilder<'a> {
             }
         }
 
+        if field_path != field {
+            return Ok(None);
+        }
         let source_field_key = component_reference_key_for_field_base(base, field)?;
         let source_field_span = base.span();
         let field_key_generated = ComponentReferenceKey::generated(&field_key);
@@ -1728,6 +1911,31 @@ impl<'a> LowerBuilder<'a> {
             DynamicSubscriptSemantics::Index,
         )
         .map(Some)
+    }
+
+    fn indexed_field_access_target<'expr>(
+        base: &'expr rumoca_core::Expression,
+        field: &str,
+    ) -> Option<(
+        &'expr rumoca_core::Expression,
+        &'expr [rumoca_core::Subscript],
+        String,
+    )> {
+        match base {
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => Some((base, subscripts, field.to_string())),
+            rumoca_core::Expression::FieldAccess {
+                base,
+                field: inner_field,
+                ..
+            } => {
+                let (indexed_base, subscripts, inner_path) =
+                    Self::indexed_field_access_target(base, inner_field)?;
+                Some((indexed_base, subscripts, format!("{inner_path}.{field}")))
+            }
+            _ => None,
+        }
     }
 
     fn lower_if_field_access(

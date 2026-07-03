@@ -3,7 +3,7 @@
 // behavior families into focused test modules with shared fixtures.
 
 use super::{
-    Scope, expression_rows::lower_expression_rows_with_mode, lower_derivative_rhs,
+    LowerBuilder, Scope, expression_rows::lower_expression_rows_with_mode, lower_derivative_rhs,
     lower_derivative_rhs_scalar_programs, lower_discrete_rhs, lower_expression,
     lower_expression_rows_from_expressions_with_runtime_metadata,
     lower_initial_expression_rows_from_expressions, lower_initial_residual, lower_residual,
@@ -14,8 +14,10 @@ use crate::lower_solve_problem;
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, ComputeNode, LinearOp, Reg, ScalarSlot, UnaryOp, VarLayout,
+    BinaryOp, CompareOp, ComputeNode, ExternalFunctionKind, LinearOp, Reg, ScalarSlot, UnaryOp,
+    VarLayout,
 };
+use std::sync::Arc;
 
 mod array_operator_tests;
 mod discrete_expression_tests;
@@ -64,6 +66,61 @@ fn lower_builder_try_pack_registers_rejects_overflow() {
         super::LowerError::UnspannedContractViolation { .. }
     ));
     assert!(err.reason().contains("Solve register allocation overflow"));
+}
+
+#[test]
+fn lower_expression_emits_energyplus_initialize_external_call() {
+    let span = lower_test_span();
+    let mut functions = IndexMap::new();
+    let mut initialize = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+        span,
+    );
+    initialize.external = Some(rumoca_core::ExternalFunction::default());
+    initialize.add_input(rumoca_core::FunctionParam::new(
+        "isSynchronized",
+        "Real",
+        span,
+    ));
+    initialize
+        .outputs
+        .push(rumoca_core::FunctionParam::new("nObj", "Integer", span));
+    functions.insert(
+        rumoca_core::VarName::new("Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"),
+        initialize,
+    );
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(
+            "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+        )
+        .into(),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("__rumoca_named_arg__.isSynchronized").into(),
+            args: vec![rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            }],
+            is_constructor: true,
+            span,
+        }],
+        is_constructor: false,
+        span,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("supported EnergyPlus external initialize should lower");
+    assert!(matches!(
+        lowered.ops.as_slice(),
+        [
+            LinearOp::Const { .. },
+            LinearOp::ExternalCall {
+                function: ExternalFunctionKind::BuildingsEnergyPlusInitialize,
+                arg_count: 1,
+                output_index: 0,
+                ..
+            }
+        ]
+    ));
 }
 
 #[test]
@@ -764,6 +821,511 @@ fn source_ref(name: &str) -> rumoca_core::Reference {
     rumoca_core::Reference::from_component_reference(source_component_ref_from_name(name))
 }
 
+#[test]
+fn compile_time_subscript_indices_use_structural_bindings() {
+    let span = lower_test_span();
+    let mut structural_bindings = IndexMap::new();
+    structural_bindings.insert("nEle".to_string(), 4.0);
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let builder = LowerBuilder::new(&layout, &functions)
+        .with_structural_bindings(Arc::new(structural_bindings));
+    let subscripts = vec![rumoca_core::Subscript::generated_expr(
+        Box::new(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("nEle"),
+            subscripts: Vec::new(),
+            span,
+        }),
+        span,
+    )];
+
+    let indices = builder
+        .compile_time_subscript_indices(&subscripts, span)
+        .expect("structural subscript folding should not fail")
+        .expect("structural parameter subscript should fold");
+
+    assert_eq!(indices, vec![4]);
+}
+
+#[test]
+fn indexed_field_access_uses_structural_subscript_bindings() {
+    let span = lower_test_span();
+    let key = "ele[4].T";
+    let layout = VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
+        IndexMap::from([(key.to_string(), rumoca_ir_solve::scalar_slot_y(0))]),
+        IndexMap::new(),
+        IndexMap::new(),
+        IndexMap::new(),
+        1,
+        0,
+    )
+    .expect("indexed field fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut structural_bindings = IndexMap::new();
+    structural_bindings.insert("nEle".to_string(), 4.0);
+    let mut builder = LowerBuilder::new(&layout, &functions)
+        .with_structural_bindings(Arc::new(structural_bindings));
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::Index {
+            base: Box::new(source_var("ele")),
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("nEle"),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                span,
+            )],
+            span,
+        }),
+        field: "T".to_string(),
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("structural indexed field access should lower");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[289.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 289.0).abs() < 1e-12);
+}
+
+#[test]
+fn nested_indexed_field_access_uses_structural_subscript_bindings() {
+    let span = lower_test_span();
+    let key = "ele[4].vol2.T";
+    let layout = VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
+        IndexMap::from([(key.to_string(), rumoca_ir_solve::scalar_slot_y(0))]),
+        IndexMap::new(),
+        IndexMap::new(),
+        IndexMap::new(),
+        1,
+        0,
+    )
+    .expect("nested indexed field fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut structural_bindings = IndexMap::new();
+    structural_bindings.insert("nEle".to_string(), 4.0);
+    let mut builder = LowerBuilder::new(&layout, &functions)
+        .with_structural_bindings(Arc::new(structural_bindings));
+    let indexed_ele = rumoca_core::Expression::Index {
+        base: Box::new(source_var("ele")),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("nEle"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            span,
+        )],
+        span,
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(indexed_ele),
+            field: "vol2".to_string(),
+            span,
+        }),
+        field: "T".to_string(),
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("nested structural indexed field access should lower");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[291.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 291.0).abs() < 1e-12);
+}
+
+#[test]
+fn array_comprehension_index_lowers_as_compile_time_subscript() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
+        IndexMap::from([
+            (
+                "ele[1].vol2.mWat_flow".to_string(),
+                rumoca_ir_solve::scalar_slot_y(0),
+            ),
+            (
+                "ele[2].vol2.mWat_flow".to_string(),
+                rumoca_ir_solve::scalar_slot_y(1),
+            ),
+            (
+                "ele[3].vol2.mWat_flow".to_string(),
+                rumoca_ir_solve::scalar_slot_y(2),
+            ),
+            (
+                "ele[4].vol2.mWat_flow".to_string(),
+                rumoca_ir_solve::scalar_slot_y(3),
+            ),
+        ]),
+        IndexMap::new(),
+        IndexMap::new(),
+        IndexMap::new(),
+        4,
+        0,
+    )
+    .expect("comprehension fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let indexed_ele = rumoca_core::Expression::Index {
+        base: Box::new(source_var("ele")),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(
+            Box::new(var("i")),
+            span,
+        )],
+        span,
+    };
+    let member_expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(indexed_ele),
+            field: "vol2".to_string(),
+            span,
+        }),
+        field: "mWat_flow".to_string(),
+        span,
+    };
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Sum,
+        args: vec![rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(member_expr),
+            indices: vec![rumoca_core::ComprehensionIndex {
+                name: "i".to_string(),
+                range: rumoca_core::Expression::Range {
+                    start: Box::new(int_lit(1)),
+                    step: None,
+                    end: Box::new(int_lit(4)),
+                    span,
+                },
+            }],
+            filter: None,
+            span,
+        }],
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("array comprehension index should lower as compile-time subscript");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[1.0, 2.0, 3.0, 4.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 10.0).abs() < 1e-12);
+}
+
+#[test]
+fn scalar_field_access_reads_first_record_array_member_field() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
+        IndexMap::from([(
+            "zon[1].ports[1].p".to_string(),
+            rumoca_ir_solve::scalar_slot_y(0),
+        )]),
+        IndexMap::new(),
+        IndexMap::new(),
+        IndexMap::new(),
+        1,
+        0,
+    )
+    .expect("record-array member fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(var("zon[1]")),
+            field: "ports".to_string(),
+            span,
+        }),
+        field: "p".to_string(),
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("scalar field access should read first record-array member");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[101325.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 101325.0).abs() < 1e-12);
+}
+
+#[test]
+fn scalar_field_access_reads_indexed_source_record_array_member_without_def_id() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes_spans_and_indexed_bindings(
+        IndexMap::from([(
+            "zon[1].ports[1].p".to_string(),
+            rumoca_ir_solve::scalar_slot_y(0),
+        )]),
+        IndexMap::new(),
+        IndexMap::new(),
+        IndexMap::new(),
+        1,
+        0,
+    )
+    .expect("indexed source record-array fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(unresolved_source_var("zon[1]")),
+            field: "ports".to_string(),
+            span,
+        }),
+        field: "p".to_string(),
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("scalar field access should use scalarized layout before requiring def identity");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[101325.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 101325.0).abs() < 1e-12);
+}
+
+#[test]
+fn size_infers_indexed_source_field_shape_without_def_id() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::from([(
+            "zon[1].ports".to_string(),
+            rumoca_ir_solve::scalar_slot_y(0),
+        )]),
+        IndexMap::from([("zon[1].ports".to_string(), vec![5])]),
+        5,
+        0,
+    )
+    .expect("indexed source field shape fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = size_expr(
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(unresolved_source_var("zon[1]")),
+            field: "ports".to_string(),
+            span,
+        },
+        1,
+    );
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("size() should infer display-keyed field shape before requiring def identity");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 5.0).abs() < 1e-12);
+}
+
+#[test]
+fn size_of_unresolved_indexed_source_ref_does_not_require_def_id() {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = size_expr(unresolved_source_var("zon[1]"), 1);
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("size() fallback should not require missing source def identity");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn size_of_stream_passthrough_uses_argument_shape() {
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::from([("x".to_string(), rumoca_ir_solve::scalar_slot_y(0))]),
+        IndexMap::from([("x".to_string(), vec![3])]),
+        3,
+        0,
+    )
+    .expect("stream passthrough size fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = size_expr(stream_passthrough_expr("inStream", var("x")), 1);
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("size() should use stream passthrough argument shape");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 3.0).abs() < 1e-12);
+}
+
+#[test]
+fn index_over_stream_passthrough_uses_argument_bindings() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::from([("x".to_string(), rumoca_ir_solve::scalar_slot_y(0))]),
+        IndexMap::from([("x".to_string(), vec![3])]),
+        3,
+        0,
+    )
+    .expect("stream passthrough index fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::Index {
+        base: Box::new(stream_passthrough_expr("inStream", var("x"))),
+        subscripts: vec![rumoca_core::Subscript::generated_index(2, span)],
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("index should use stream passthrough argument binding");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[10.0, 20.0, 30.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 20.0).abs() < 1e-12);
+}
+
+#[test]
+fn zero_length_function_input_accepts_unknown_rank_empty_actual() {
+    let span = lower_test_span();
+    let mut function = rumoca_core::Function::new("Pkg.zeroLength", span);
+    function.inputs.push(function_param_with_dims("X", &[0]));
+    function.outputs.push(function_param("y"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: real_lit(1.0),
+        span,
+    });
+    let mut functions = IndexMap::new();
+    functions.insert(function.name.clone(), function);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("Pkg.zeroLength").into(),
+        args: vec![stream_passthrough_expr("inStream", var("missingXi"))],
+        is_constructor: false,
+        span,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("zero-length formal should bind unknown-rank empty actual as an empty array");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn stream_passthrough_zero_shape_lowers_to_empty_array_values() {
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::new(),
+        IndexMap::from([("x".to_string(), vec![0])]),
+        0,
+        0,
+    )
+    .expect("zero-size stream argument fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let values = builder
+        .lower_array_like_values(
+            &stream_passthrough_expr("inStream", var("x")),
+            &Scope::new(),
+            0,
+        )
+        .expect("zero-size stream passthrough should lower to empty values");
+
+    assert!(values.is_empty());
+}
+
+#[test]
+fn multiply_zero_shape_stream_passthrough_lowers_to_empty_array_values() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::new(),
+        IndexMap::from([("x".to_string(), vec![0])]),
+        0,
+        0,
+    )
+    .expect("zero-size stream multiplication fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        lhs: Box::new(stream_passthrough_expr("inStream", var("x"))),
+        rhs: Box::new(real_lit(2.0)),
+        span,
+    };
+    let values = builder
+        .lower_array_like_values(&expr, &Scope::new(), 0)
+        .expect("zero-size stream multiplication should lower to empty values");
+
+    assert!(values.is_empty());
+}
+
+#[test]
+fn elementwise_zero_shape_stream_passthrough_lowers_to_empty_array_values() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::new(),
+        IndexMap::from([("x".to_string(), vec![0])]),
+        0,
+        0,
+    )
+    .expect("zero-size stream elementwise fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(stream_passthrough_expr("inStream", var("x"))),
+        rhs: Box::new(real_lit(2.0)),
+        span,
+    };
+    let values = builder
+        .lower_array_like_values(&expr, &Scope::new(), 0)
+        .expect("zero-size stream elementwise operation should lower to empty values");
+
+    assert!(values.is_empty());
+}
+
+#[test]
+fn scalar_left_elementwise_zero_shape_stream_passthrough_lowers_to_empty_array_values() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::new(),
+        IndexMap::from([("x".to_string(), vec![0])]),
+        0,
+        0,
+    )
+    .expect("zero-size stream elementwise fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(real_lit(2.0)),
+        rhs: Box::new(stream_passthrough_expr("inStream", var("x"))),
+        span,
+    };
+    let values = builder
+        .lower_array_like_values(&expr, &Scope::new(), 0)
+        .expect("scalar plus zero-size stream elementwise operation should lower to empty values");
+
+    assert!(values.is_empty());
+}
+
+#[test]
+fn divide_zero_shape_stream_passthrough_lowers_to_empty_array_values() {
+    let span = lower_test_span();
+    let layout = VarLayout::from_parts_with_shapes(
+        IndexMap::new(),
+        IndexMap::from([("x".to_string(), vec![0]), ("y".to_string(), vec![0])]),
+        0,
+        0,
+    )
+    .expect("zero-size stream division fixture layout should satisfy shape contract");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Div,
+        lhs: Box::new(stream_passthrough_expr("inStream", var("x"))),
+        rhs: Box::new(stream_passthrough_expr("inStream", var("y"))),
+        span,
+    };
+    let values = builder
+        .lower_array_like_values(&expr, &Scope::new(), 0)
+        .expect("zero-size stream division should lower to empty values");
+
+    assert!(values.is_empty());
+}
+
 fn source_fixture_def_id(name: &str) -> rumoca_core::DefId {
     let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
         hash.wrapping_mul(16_777_619) ^ u32::from(byte)
@@ -1152,6 +1714,19 @@ fn source_var(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn unresolved_source_var(name: &str) -> rumoca_core::Expression {
+    let mut component_ref = test_component_ref_from_name(name);
+    component_ref.span = lower_test_span();
+    for part in &mut component_ref.parts {
+        part.span = lower_test_span();
+    }
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(component_ref),
+        subscripts: vec![],
+        span: lower_test_span(),
+    }
+}
+
 fn var_index(name: &str, index: i64) -> rumoca_core::Expression {
     let span = lower_test_span();
     rumoca_core::Expression::VarRef {
@@ -1210,6 +1785,15 @@ fn der(expr: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
         args: vec![expr],
+        span: lower_test_span(),
+    }
+}
+
+fn stream_passthrough_expr(name: &str, arg: rumoca_core::Expression) -> rumoca_core::Expression {
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(name).into(),
+        args: vec![arg],
+        is_constructor: false,
         span: lower_test_span(),
     }
 }

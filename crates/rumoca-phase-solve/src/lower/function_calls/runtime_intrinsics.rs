@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_ir_solve::RandomGenerator;
+use rumoca_ir_solve::{ExternalFunctionKind, RandomGenerator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::lower) enum ExternalTableIntrinsicKind {
@@ -25,6 +25,26 @@ pub(in crate::lower) fn external_table_intrinsic_kind(
         | "getTable1DValueNoDer2"
         | "getTable1DValue" => Some(ExternalTableIntrinsicKind::Lookup),
         "getNextTimeEvent" => Some(ExternalTableIntrinsicKind::NextEvent),
+        _ => None,
+    }
+}
+
+pub(in crate::lower) fn buildings_energyplus_external_kind(
+    call_name: &str,
+) -> Option<ExternalFunctionKind> {
+    match call_name {
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusInitialize)
+        }
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusGetParameters)
+        }
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusExchange)
+        }
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject" => {
+            Some(ExternalFunctionKind::BuildingsEnergyPlusSpawnExternalObject)
+        }
         _ => None,
     }
 }

@@ -39,7 +39,9 @@ impl<'a> LowerBuilder<'a> {
             } => self.infer_builtin_call_dims(function, args, scope, *span)?,
             rumoca_core::Expression::FunctionCall {
                 name, args, span, ..
-            } if is_synchronous_array_like_intrinsic(name.as_str()) => {
+            } if is_synchronous_array_like_intrinsic(name.as_str())
+                || is_stream_passthrough_intrinsic(name.as_str()) =>
+            {
                 self.infer_expr_dims(required_arg(args, name.as_str(), *span)?, scope)?
             }
             rumoca_core::Expression::FunctionCall { name, span, .. } => {
@@ -265,14 +267,14 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
-        let name_path = self.scope_key_from_reference(name, span)?;
         let name_text = name.as_str();
         if let Some(dims) = self.local_binding_dims.get(name_text)
             && dims.iter().all(|dim| *dim >= 0)
         {
             return concrete_i64_dims(dims, name_text, "local binding dimensions", span);
         }
-        if let Some(values) = scoped_indexed_binding_values(scope, &name_path, span)? {
+        let generated_key = ComponentReferenceKey::generated(name_text);
+        if let Some(values) = scoped_indexed_binding_values(scope, &generated_key, span)? {
             return Ok(vector_dims(values.len()));
         }
         if let Some(values) = self.local_indexed_binding_values(name_text) {
@@ -281,7 +283,20 @@ impl<'a> LowerBuilder<'a> {
         if let Some(shape) = self.layout.shape(name_text) {
             return copy_shape_dims(shape, "layout binding shape rank", span);
         }
-        if let Some(key) = indexed_key_for_reference(&self.indexed_bindings, name, span)? {
+        let name_path = match name.component_ref() {
+            Some(component_ref) if component_ref.def_id.is_none() => None,
+            _ => Some(self.scope_key_from_reference(name, span)?),
+        };
+        if let Some(name_path) = name_path.as_ref()
+            && let Some(values) = scoped_indexed_binding_values(scope, name_path, span)?
+        {
+            return Ok(vector_dims(values.len()));
+        }
+        let indexed_key = match name.component_ref() {
+            Some(component_ref) if component_ref.def_id.is_none() => None,
+            _ => indexed_key_for_reference(&self.indexed_bindings, name, span)?,
+        };
+        if let Some(key) = indexed_key {
             let Some(meta) = self.indexed_meta_for_key(&key) else {
                 return Err(LowerError::contract_violation(
                     format!(
@@ -355,6 +370,9 @@ impl<'a> LowerBuilder<'a> {
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         if resolve_intrinsic_builtin(name.as_str()).is_some() {
+            return Ok(Vec::new());
+        }
+        if is_stream_passthrough_intrinsic(name.as_str()) {
             return Ok(Vec::new());
         }
         if let Some(projection) = self.lookup_function_output_projection(name, span)? {
@@ -772,6 +790,17 @@ impl<'a> LowerBuilder<'a> {
         span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Vec<usize>, LowerError> {
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = base
+            && is_stream_passthrough_intrinsic(name.as_str())
+            && let Some(arg) = args.first()
+        {
+            return self.infer_index_expr_dims(arg, subscripts, span, scope);
+        }
         let owner_span = Self::non_dummy_span(span).or_else(|| base.span());
         if let Ok(base_name) = dynamic_binding_base_key(base)
             && let Some(dims) =

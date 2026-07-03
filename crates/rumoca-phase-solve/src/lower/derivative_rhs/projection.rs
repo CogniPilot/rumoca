@@ -4,7 +4,9 @@
 
 use crate::lower::{
     function_calls::external_table_intrinsic_kind,
-    helpers::{format_i64_dims, format_usize_dims, positive_i64_index},
+    helpers::{
+        format_i64_dims, format_usize_dims, is_stream_passthrough_intrinsic, positive_i64_index,
+    },
     unsupported_at,
 };
 use crate::projection_suffix::parse_output_projection_suffix;
@@ -781,6 +783,14 @@ fn project_function_call_scalar(
     ctx: &ProjectionContext<'_>,
 ) -> Result<Option<rumoca_core::Expression>, LowerError> {
     let span = projection_expr_or_owner_span(expr, ctx.owner_span)?;
+    if let rumoca_core::Expression::FunctionCall { name, args, .. } = expr
+        && is_stream_passthrough_intrinsic(name.as_str())
+    {
+        let Some(arg) = args.first() else {
+            return Ok(None);
+        };
+        return project_operand_scalar_ctx(arg, ctx, span);
+    }
     let values = function_call_projected_scalars_with_owner(
         expr,
         ctx.dae_model,
@@ -1473,6 +1483,9 @@ fn required_declared_function_output_dims(
         return Ok(dims);
     }
     if external_table_intrinsic_kind(requested).is_some() {
+        return Ok(Vec::new());
+    }
+    if is_stream_passthrough_intrinsic(requested) {
         return Ok(Vec::new());
     }
     Err(LowerError::MissingFunction {

@@ -43,13 +43,14 @@ use dimension_helpers::{
     reserve_projection_capacity, scalar_count_for_dims, single_field_path, sum_expressions,
     valid_product_dim,
 };
+pub(super) use entrypoints::function_projected_residuals_with_owner;
 use entrypoints::{
     checked_generated_subscript_from_usize, checked_projection_offset, checked_usize_dims_to_i64,
     checked_usize_to_i64, function_outputs_dims, project_scalar_outputs,
     project_target_scalar_outputs, required_merged_projection_dims, variable_dims_i64,
 };
-pub(super) use entrypoints::{
-    function_call_projected_scalars_with_owner, function_projected_residuals_with_owner,
+pub(in crate::lower) use entrypoints::{
+    function_call_projected_scalars_with_owner, project_array_like_scalars_with_owner,
 };
 use inline_budget::{
     CachedProjectionOutcome, CallOutputsCacheEntry, exceeds_projection_node_budget,
@@ -61,6 +62,7 @@ use selected_output::selected_function_output_call;
 use target_projection::{project_reference_field_path_and_indices, projected_target_binding_key};
 
 use super::super::helpers::{format_i64_dims, is_record_constructor_signature};
+use super::super::is_stream_passthrough_intrinsic;
 use super::{
     dae_variable_ref_expr, is_add, is_div, is_mul, is_sub, split_subtraction, sub_with_span,
     variable_by_name,
@@ -275,6 +277,16 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         depth: usize,
         owner_span: rumoca_core::Span,
     ) -> Result<Option<Vec<ProjectedFunctionOutput>>, LowerError> {
+        self.function_call_outputs_with_projection_scope(expr, depth, owner_span, None)
+    }
+
+    fn function_call_outputs_with_projection_scope(
+        &self,
+        expr: &rumoca_core::Expression,
+        depth: usize,
+        owner_span: rumoca_core::Span,
+        caller_scope: Option<&FunctionProjectionScope>,
+    ) -> Result<Option<Vec<ProjectedFunctionOutput>>, LowerError> {
         if depth > super::super::MAX_FUNCTION_INLINE_DEPTH {
             return Ok(None);
         }
@@ -296,20 +308,31 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         if !function.pure || function.external.is_some() {
             return Ok(None);
         }
+        if caller_scope.is_some() {
+            let call_span = inherited_projection_source_span(expr.span(), owner_span);
+            return self.uncached_function_call_outputs(
+                function,
+                args,
+                depth,
+                call_span,
+                caller_scope,
+            );
+        }
         if let Some(outcome) = self.cached_call_outputs(expr, depth) {
             return outcome.into_result();
         }
         let call_span = inherited_projection_source_span(expr.span(), owner_span);
-        let outcome = match self.uncached_function_call_outputs(function, args, depth, call_span) {
-            Ok(outputs) => CachedProjectionOutcome::Outputs(outputs),
-            Err(err) => match err.projection_budget_exceeded_parts() {
-                Some((function, span)) => CachedProjectionOutcome::BudgetExceeded {
-                    function: function.to_string(),
-                    span,
+        let outcome =
+            match self.uncached_function_call_outputs(function, args, depth, call_span, None) {
+                Ok(outputs) => CachedProjectionOutcome::Outputs(outputs),
+                Err(err) => match err.projection_budget_exceeded_parts() {
+                    Some((function, span)) => CachedProjectionOutcome::BudgetExceeded {
+                        function: function.to_string(),
+                        span,
+                    },
+                    None => return Err(err),
                 },
-                None => return Err(err),
-            },
-        };
+            };
         self.record_call_outputs_outcome(expr, depth, outcome.clone());
         outcome.into_result()
     }
@@ -320,9 +343,17 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         args: &[rumoca_core::Expression],
         depth: usize,
         owner_span: rumoca_core::Span,
+        caller_scope: Option<&FunctionProjectionScope>,
     ) -> Result<Option<Vec<ProjectedFunctionOutput>>, LowerError> {
         let function_span = inherited_projection_span(function.span, owner_span);
-        let Some(mut scope) = self.bind_inputs(function, args, depth + 1, function_span)? else {
+        let Some(mut scope) = self.bind_inputs_with_projection_scope(
+            function,
+            args,
+            depth + 1,
+            function_span,
+            caller_scope,
+        )?
+        else {
             return Ok(None);
         };
         if scope
@@ -355,6 +386,23 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         } else {
             Some(projected)
         };
+        if function
+            .name
+            .as_str()
+            .contains("Buildings.Media.Air.density")
+        {
+            eprintln!(
+                "diagnostic: projection_density inputs={:?} scope_full_keys={:?} scope_scalar_keys={:?} outputs={:?}",
+                function
+                    .inputs
+                    .iter()
+                    .map(|input| input.name.as_str())
+                    .collect::<Vec<_>>(),
+                scope.full.keys().cloned().collect::<Vec<_>>(),
+                scope.scalars.keys().cloned().collect::<Vec<_>>(),
+                outputs
+            );
+        }
         if let Some(outputs) = &outputs
             && outputs
                 .iter()
@@ -365,12 +413,24 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(outputs)
     }
 
+    #[cfg(test)]
     fn bind_inputs(
         &self,
         function: &rumoca_core::Function,
         args: &[rumoca_core::Expression],
         depth: usize,
         owner_span: rumoca_core::Span,
+    ) -> Result<Option<FunctionProjectionScope>, LowerError> {
+        self.bind_inputs_with_projection_scope(function, args, depth, owner_span, None)
+    }
+
+    fn bind_inputs_with_projection_scope(
+        &self,
+        function: &rumoca_core::Function,
+        args: &[rumoca_core::Expression],
+        depth: usize,
+        owner_span: rumoca_core::Span,
+        caller_scope: Option<&FunctionProjectionScope>,
     ) -> Result<Option<FunctionProjectionScope>, LowerError> {
         let (named, positional) =
             super::super::function_calls::split_named_and_positional_call_args(
@@ -380,36 +440,96 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         let named_spans = named_argument_spans(args, owner_span)?;
         let mut scope = FunctionProjectionScope::default();
         let mut positional_idx = 0usize;
-        for input in &function.inputs {
+        let used_inputs = super::super::function_calls::referenced_function_input_names(function);
+        for (input_idx, input) in function.inputs.iter().enumerate() {
             let input_span = inherited_projection_span(input.span, owner_span);
+            if !used_inputs.contains(&input.name)
+                && let Some((prefix, field)) = split_flattened_projection_input_name(&input.name)
+            {
+                let flattened_group_has_used_sibling = function.inputs.iter().any(|candidate| {
+                    flattened_projection_input_has_prefix(&candidate.name, prefix)
+                        && used_inputs.contains(&candidate.name)
+                });
+                if flattened_group_has_used_sibling && !named.contains_key(input.name.as_str()) {
+                    let later_flattened_sibling_is_used =
+                        function.inputs.iter().skip(input_idx + 1).any(|next| {
+                            flattened_projection_input_has_prefix(&next.name, prefix)
+                                && used_inputs.contains(&next.name)
+                        });
+                    if !later_flattened_sibling_is_used
+                        || positional.get(positional_idx).is_some_and(|arg| {
+                            super::super::function_calls::is_flattened_record_field_actual(
+                                arg, field,
+                            )
+                        })
+                    {
+                        positional_idx += usize::from(positional_idx < positional.len());
+                    }
+                    continue;
+                }
+            }
+            let mut consume_flattened_positional = false;
+            let mut project_flattened_positional_field = false;
             let actual = if let Some(actual) = named.get(input.name.as_str()).copied() {
                 Some((
-                    actual,
+                    actual.clone(),
                     inherited_projection_span(
                         named_actual_span(&named_spans, input, actual),
                         input_span,
                     ),
                 ))
+            } else if let Some((prefix, field)) = split_flattened_projection_input_name(&input.name)
+                && let Some(actual) = positional.get(positional_idx).copied()
+                && (flattened_projection_group_has_prefix(&function.inputs, prefix)
+                    || self.flattened_projection_actual_has_field(actual, field, &scope)
+                    || caller_scope.is_some_and(|caller_scope| {
+                        self.flattened_projection_actual_has_field(actual, field, caller_scope)
+                    }))
+            {
+                project_flattened_positional_field = true;
+                consume_flattened_positional = !function
+                    .inputs
+                    .iter()
+                    .skip(input_idx + 1)
+                    .any(|next| flattened_projection_input_has_prefix(&next.name, prefix));
+                let actual = self
+                    .flattened_projection_actual_field_value(actual, field, caller_scope)
+                    .unwrap_or_else(|| rumoca_core::Expression::FieldAccess {
+                        base: Box::new(actual.clone()),
+                        field: field.to_string(),
+                        span: actual.span().unwrap_or(input_span),
+                    });
+                let actual_span = actual.span().unwrap_or(input_span);
+                Some((actual, actual_span))
             } else {
                 super::super::function_calls::next_positional_function_input_arg(
                     input,
                     &positional,
                     &mut positional_idx,
                 )
-                .map(|actual| (actual, actual.span().unwrap_or(input_span)))
+                .map(|actual| (actual.clone(), actual.span().unwrap_or(input_span)))
             };
             let Some((actual, actual_span)) = actual.or_else(|| {
                 input
                     .default
                     .as_ref()
-                    .map(|actual| (actual, actual.span().unwrap_or(input_span)))
+                    .map(|actual| (actual.clone(), actual.span().unwrap_or(input_span)))
             }) else {
                 return Ok(None);
             };
-            let actual = actual.clone();
+            if consume_flattened_positional {
+                positional_idx += 1;
+            }
             let actual = self.substitute(&actual, &scope)?;
-            scope.full.insert(input.name.clone(), actual.clone());
             let actual_dims = self.expr_dims_with_owner(&actual, &scope, depth + 1, actual_span)?;
+            let actual = if project_flattened_positional_field {
+                self.project_value_scalars(&actual, &[], &scope, depth + 1, actual_span)?
+                    .and_then(|values| values.into_iter().next())
+                    .unwrap_or(actual)
+            } else {
+                actual
+            };
+            scope.full.insert(input.name.clone(), actual.clone());
             let dims = formal_actual_projection_dims(
                 input,
                 actual_dims,
@@ -463,6 +583,92 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             scope.scalars.insert(param.name.clone(), scalars);
         }
         Ok(())
+    }
+
+    fn flattened_projection_actual_has_field(
+        &self,
+        expr: &rumoca_core::Expression,
+        field: &str,
+        scope: &FunctionProjectionScope,
+    ) -> bool {
+        match expr {
+            rumoca_core::Expression::FunctionCall {
+                name,
+                is_constructor,
+                ..
+            } => {
+                self.is_record_constructor_call(name, *is_constructor)
+                    || self
+                        .dae_model
+                        .symbols
+                        .functions
+                        .get(name.var_name())
+                        .is_some_and(|function| {
+                            matches!(
+                                function.outputs.as_slice(),
+                                [output]
+                                    if output.type_class == Some(rumoca_core::ClassType::Record)
+                            )
+                        })
+            }
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => {
+                let field_key = format!("{}.{field}", name.as_str());
+                let flattened_key = format!("{}_{field}", name.as_str());
+                scope.full.contains_key(&field_key)
+                    || scope.scalars.contains_key(&field_key)
+                    || scope.dims.contains_key(&field_key)
+                    || scope.full.contains_key(&flattened_key)
+                    || scope.scalars.contains_key(&flattened_key)
+                    || scope.dims.contains_key(&flattened_key)
+            }
+            _ => false,
+        }
+    }
+
+    fn flattened_projection_actual_field_value(
+        &self,
+        expr: &rumoca_core::Expression,
+        field: &str,
+        caller_scope: Option<&FunctionProjectionScope>,
+    ) -> Option<rumoca_core::Expression> {
+        let caller_scope = caller_scope?;
+        let rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = expr
+        else {
+            return None;
+        };
+        if !subscripts.is_empty() {
+            return None;
+        }
+        let field_key = format!("{}.{field}", name.as_str());
+        let flattened_key = format!("{}_{field}", name.as_str());
+        self.projected_scope_value_for_key(caller_scope, &field_key, *span)
+            .or_else(|| self.projected_scope_value_for_key(caller_scope, &flattened_key, *span))
+    }
+
+    fn projected_scope_value_for_key(
+        &self,
+        scope: &FunctionProjectionScope,
+        key: &str,
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        if let Some(value) = scope.full.get(key) {
+            return Some(value.clone().with_span(span));
+        }
+        let values = scope.scalars.get(key)?;
+        match values.as_slice() {
+            [value] => Some(value.clone().with_span(span)),
+            _ => Some(rumoca_core::Expression::Array {
+                elements: values.clone(),
+                is_matrix: false,
+                span,
+            }),
+        }
     }
 
     fn insert_input_scalar_projection(
@@ -736,6 +942,27 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             );
         }
         let value = self.substitute(value, scope)?;
+        if matches!(
+            value,
+            rumoca_core::Expression::FunctionCall {
+                is_constructor: false,
+                ..
+            }
+        ) && let Some(outputs) = self.function_call_outputs_with_projection_scope(
+            &value,
+            depth + 1,
+            value.span().unwrap_or_else(|| {
+                scope
+                    .full
+                    .values()
+                    .find_map(rumoca_core::Expression::span)
+                    .unwrap_or(rumoca_core::Span::DUMMY)
+            }),
+            Some(scope),
+        )? && let [output] = outputs.as_slice()
+        {
+            return Ok(output.expr.clone());
+        }
         let rumoca_core::Expression::VarRef {
             name,
             subscripts,
@@ -868,7 +1095,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
     ) -> Result<Option<&'stmt [rumoca_core::Statement]>, LowerError> {
         for block in cond_blocks {
             let condition = self.substitute(&block.cond, scope)?;
-            let Some(value) = self.compile_time_scalar(&condition) else {
+            let Some(value) = self.compile_time_scalar_in_scope(&condition, scope)? else {
                 return Ok(None);
             };
             if value != 0.0 {
@@ -1023,6 +1250,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         output_span: rumoca_core::Span,
     ) -> Result<Vec<ProjectedFunctionOutput>, LowerError> {
         if output.dims.is_empty() {
+            let expr = self.substitute(expr, scope)?;
             let mut projected = projection_vec_with_capacity(
                 1,
                 "scalar function output projection count",
@@ -1127,7 +1355,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             };
             let actual = actual.clone();
             let actual = self.substitute(&actual, scope)?;
-            let Some(scalars) = self.optional_constructor_input_scalars(
+            let Some((dims, scalars)) = self.optional_constructor_input_scalars(
                 &actual,
                 input,
                 scope,
@@ -1146,11 +1374,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             for (idx, expr) in scalars.into_iter().enumerate() {
                 outputs.push(ProjectedFunctionOutput {
                     field_path: single_field_path(&input.name, input_span)?,
-                    selector_indices: required_flat_index_to_subscripts(
-                        &input.dims,
-                        idx,
-                        input_span,
-                    )?,
+                    selector_indices: required_flat_index_to_subscripts(&dims, idx, input_span)?,
                     expr,
                 });
             }
@@ -1165,7 +1389,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         scope: &FunctionProjectionScope,
         depth: usize,
         actual_span: rumoca_core::Span,
-    ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
+    ) -> Result<Option<(Vec<i64>, Vec<rumoca_core::Expression>)>, LowerError> {
         let span = projection_arg_or_context_span(actual, actual_span)?;
         let Some(dims) = constructor_input_projection_dims(
             input,
@@ -1179,7 +1403,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             .project_value_scalars(actual, &dims, scope, depth, span)
             .map_err(|err| err.with_fallback_span(span))?
         {
-            Some(scalars) => Ok(Some(scalars)),
+            Some(scalars) => Ok(Some((dims, scalars))),
             None if actual.contains_der() => Err(unsupported_at(
                 "record constructor derivative input could not be projected",
                 span,
@@ -1211,6 +1435,14 @@ impl<'a> FunctionProjectionAnalysis<'a> {
     ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
         let span = inherited_projection_source_span(expr.span(), owner_span);
         let count = scalar_count_for_dims(dims, "projected value dimensions", span)?;
+        if let rumoca_core::Expression::FunctionCall { name, args, .. } = expr
+            && is_stream_passthrough_intrinsic(name.as_str())
+        {
+            let Some(arg) = args.first() else {
+                return Ok(None);
+            };
+            return self.project_value_scalars(arg, dims, scope, depth + 1, span);
+        }
         if let Some(values) =
             self.project_function_call_scalars_once(expr, count, scope, depth, span)?
         {
@@ -1240,8 +1472,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         else {
             return Ok(None);
         };
-        let Some(outputs) =
-            self.function_call_outputs_with_owner(&substituted, depth + 1, owner_span)?
+        let Some(outputs) = self.function_call_outputs_with_projection_scope(
+            &substituted,
+            depth + 1,
+            owner_span,
+            Some(scope),
+        )?
         else {
             return Ok(None);
         };
@@ -1269,6 +1505,39 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         owner_span: rumoca_core::Span,
     ) -> Result<Option<rumoca_core::Expression>, LowerError> {
         let owner_span = inherited_projection_source_span(expr.span(), owner_span);
+        if let rumoca_core::Expression::FieldAccess { base, field, span } = expr {
+            let span = inherited_projection_span(*span, owner_span);
+            if let rumoca_core::Expression::FunctionCall { .. } = base.as_ref() {
+                let mut call = self.substitute(base, scope)?;
+                if call.span().is_none() {
+                    call = call.with_span(span);
+                }
+                if let Some(outputs) = self.function_call_outputs_with_projection_scope(
+                    &call,
+                    depth + 1,
+                    span,
+                    Some(scope),
+                )? {
+                    for output in outputs {
+                        if let Some(expr) =
+                            self.project_output_field_value(output, field, scope, span)?
+                        {
+                            return Ok(Some(expr.with_span(span)));
+                        }
+                    }
+                }
+            }
+            if let rumoca_core::Expression::FunctionCall { args, .. } = base.as_ref() {
+                for arg in args {
+                    if let Some((name, value)) =
+                        super::super::function_calls::decode_named_function_arg(arg)
+                        && name == field
+                    {
+                        return Ok(Some(self.substitute(value, scope)?.with_span(span)));
+                    }
+                }
+            }
+        }
         if dims.is_empty() {
             return Ok(Some(self.substitute(expr, scope)?));
         }
@@ -1349,10 +1618,33 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             } if args.len() == 1 => {
                 self.project_transpose_value(&args[0], dims, flat_index, scope, depth, owner_span)
             }
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Cat,
+                args,
+                span,
+            } => {
+                let span = inherited_projection_span(*span, owner_span);
+                self.project_cat_value(args, dims, flat_index, scope, depth, span)
+            }
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor: false,
+                span,
+            } if is_stream_passthrough_intrinsic(name.as_str()) => {
+                let span = inherited_projection_span(*span, owner_span);
+                match args.first() {
+                    Some(arg) => self.project_value(arg, dims, flat_index, scope, depth + 1, span),
+                    None => Ok(None),
+                }
+            }
             rumoca_core::Expression::FunctionCall {
                 is_constructor: false,
                 ..
             } => self.project_function_call_value(expr, flat_index, scope, depth, owner_span),
+            rumoca_core::Expression::FieldAccess { .. } => {
+                self.project_indexed_value(expr, dims, flat_index, scope, owner_span)
+            }
             rumoca_core::Expression::Binary { op, lhs, rhs, span }
                 if is_mul(op) || is_add(op) || is_sub(op) || is_div(op) =>
             {
@@ -1368,6 +1660,53 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             other => self.project_indexed_value(other, dims, flat_index, scope, owner_span),
         }
+    }
+
+    fn project_cat_value(
+        &self,
+        args: &[rumoca_core::Expression],
+        dims: &[i64],
+        flat_index: usize,
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let Some(dim_expr) = args.first() else {
+            return Ok(None);
+        };
+        let Some(dim_value) = self.compile_time_scalar_in_scope(dim_expr, scope)? else {
+            return Ok(None);
+        };
+        if (dim_value - 1.0).abs() > f64::EPSILON {
+            return Ok(None);
+        }
+        let mut offset = 0usize;
+        for operand in &args[1..] {
+            let Some(operand_dims) = self.expr_dims_with_owner(operand, scope, depth + 1, span)?
+            else {
+                return Ok(None);
+            };
+            if operand_dims.is_empty() || operand_dims.len() != dims.len() {
+                return Ok(None);
+            }
+            if operand_dims.len() > 1 && operand_dims[1..] != dims[1..] {
+                return Ok(None);
+            }
+            let operand_count =
+                scalar_count_for_dims(&operand_dims, "cat operand scalar count", span)?;
+            if flat_index < offset + operand_count {
+                return self.project_value(
+                    operand,
+                    &operand_dims,
+                    flat_index - offset,
+                    scope,
+                    depth + 1,
+                    span,
+                );
+            }
+            offset += operand_count;
+        }
+        Ok(None)
     }
 
     fn project_derivative_value(
@@ -1561,6 +1900,106 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(self
             .function_call_outputs_with_owner(&call, depth + 1, owner_span)?
             .and_then(|outputs| outputs.get(flat_index).map(|output| output.expr.clone())))
+    }
+
+    fn project_output_field_value(
+        &self,
+        output: ProjectedFunctionOutput,
+        field: &str,
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let Some((head, tail)) = output.field_path.split_first() else {
+            return self.project_record_field_value(&output.expr, field, scope, span);
+        };
+        if head != field {
+            return Ok(None);
+        }
+        if tail.is_empty() {
+            return Ok(Some(self.substitute(&output.expr, scope)?));
+        }
+        Ok(None)
+    }
+
+    fn project_record_field_value(
+        &self,
+        value: &rumoca_core::Expression,
+        field: &str,
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        match value {
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                if let Some(selected) =
+                    self.compile_time_if_selection(branches, else_branch, scope)?
+                {
+                    return self.project_record_field_value(selected, field, scope, span);
+                }
+                let mut projected_branches = projection_vec_with_capacity(
+                    branches.len(),
+                    "projected record field if branch count",
+                    span,
+                )?;
+                for (condition, branch) in branches {
+                    let Some(projected_branch) =
+                        self.project_record_field_value(branch, field, scope, span)?
+                    else {
+                        return Ok(None);
+                    };
+                    projected_branches.push((self.substitute(condition, scope)?, projected_branch));
+                }
+                let Some(projected_else) =
+                    self.project_record_field_value(else_branch, field, scope, span)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(rumoca_core::Expression::If {
+                    branches: projected_branches,
+                    else_branch: Box::new(projected_else),
+                    span,
+                }))
+            }
+            rumoca_core::Expression::FunctionCall { name, args, .. } => {
+                for arg in args {
+                    if let Some((name, actual)) =
+                        super::super::function_calls::decode_named_function_arg(arg)
+                        && name == field
+                    {
+                        return Ok(Some(self.substitute(actual, scope)?));
+                    }
+                }
+                let Some(constructor) = self.dae_model.symbols.functions.get(name.var_name())
+                else {
+                    return Ok(None);
+                };
+                if !is_record_constructor_signature(name.as_str(), constructor)
+                    && !constructor.is_constructor
+                {
+                    return Ok(None);
+                }
+                let (_named, positional) =
+                    super::super::function_calls::split_named_and_positional_call_args(
+                        name.as_str(),
+                        args,
+                    )?;
+                let Some(index) = constructor
+                    .inputs
+                    .iter()
+                    .position(|input| input.name == field)
+                else {
+                    return Ok(None);
+                };
+                if let Some(actual) = positional.get(index) {
+                    return Ok(Some(self.substitute(actual, scope)?));
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
     }
 
     fn project_indexed_value(
@@ -1826,4 +2265,25 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
         Ok(Some(sum_expressions(terms, ctx.span)))
     }
+}
+
+fn split_flattened_projection_input_name(name: &str) -> Option<(&str, &str)> {
+    let (prefix, field) = name.split_once('_')?;
+    (!prefix.is_empty() && !field.is_empty()).then_some((prefix, field))
+}
+
+fn flattened_projection_input_has_prefix(name: &str, prefix: &str) -> bool {
+    split_flattened_projection_input_name(name).is_some_and(|(candidate, _)| candidate == prefix)
+}
+
+fn flattened_projection_group_has_prefix(
+    inputs: &[rumoca_core::FunctionParam],
+    prefix: &str,
+) -> bool {
+    inputs
+        .iter()
+        .filter(|input| flattened_projection_input_has_prefix(&input.name, prefix))
+        .take(2)
+        .count()
+        >= 2
 }

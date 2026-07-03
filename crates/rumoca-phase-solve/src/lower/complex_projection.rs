@@ -210,8 +210,16 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
 
-        if let Some(index) = constructor_positional_field_index(field)
-            && let Some(expr) = args.get(index)
+        let (named_args, positional_args) =
+            super::function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
+        if let Some(arg_expr) = named_args.get(field).copied() {
+            return self
+                .lower_expr(arg_expr, caller_scope, call_depth + 1)
+                .map(Some);
+        }
+        if named_args.is_empty()
+            && let Some(index) = constructor_positional_field_index(field)
+            && let Some(expr) = positional_args.get(index).copied()
         {
             return self.lower_expr(expr, caller_scope, call_depth).map(Some);
         }
@@ -222,8 +230,12 @@ impl<'a> LowerBuilder<'a> {
 
         let mut local_scope = Scope::new();
         let mut input_regs = IndexMap::<String, Reg>::new();
-        for (idx, input) in constructor.inputs.iter().enumerate() {
-            let reg = if let Some(arg_expr) = args.get(idx) {
+        let mut positional_idx = 0usize;
+        for input in &constructor.inputs {
+            let reg = if let Some(arg_expr) = named_args.get(input.name.as_str()).copied() {
+                self.lower_expr(arg_expr, caller_scope, call_depth + 1)?
+            } else if let Some(arg_expr) = positional_args.get(positional_idx).copied() {
+                positional_idx += 1;
                 self.lower_expr(arg_expr, caller_scope, call_depth + 1)?
             } else if let Some(default_expr) = input.default.as_ref() {
                 self.lower_expr(default_expr, &local_scope, call_depth + 1)?

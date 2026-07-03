@@ -639,7 +639,29 @@ pub(super) fn broadcast_pairs(
     }
     let dims = broadcast_dims(lhs, rhs)?;
     let span = operand_pair_shape_span(lhs, rhs)?;
-    let count = checked_shape_size_or_scalar(&dims, "array broadcast value count", span)?;
+    let count = if dims.is_empty() {
+        checked_shape_size_or_scalar(&dims, "array broadcast scalar value count", span)?
+    } else {
+        checked_shape_size(&dims, "array broadcast value count", span)?
+    };
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if lhs.values.is_empty() || rhs.values.is_empty() {
+        if operand_allows_empty_values(lhs, span)? || operand_allows_empty_values(rhs, span)? {
+            return Ok(Vec::new());
+        }
+        return Err(LowerError::contract_violation(
+            format!(
+                "array broadcast operand values are missing for non-empty shape (lhs_shape={}, lhs_values={}, rhs_shape={}, rhs_values={})",
+                format_usize_dims(&lhs.dims),
+                lhs.values.len(),
+                format_usize_dims(&rhs.dims),
+                rhs.values.len()
+            ),
+            span,
+        ));
+    }
     let mut pairs = array_vec_with_capacity(count, "array broadcast pair count", span)?;
     for idx in 0..count {
         let lhs = if lhs.is_scalar() {
@@ -655,6 +677,19 @@ pub(super) fn broadcast_pairs(
         pairs.push((lhs, rhs));
     }
     Ok(pairs)
+}
+
+pub(super) fn operand_allows_empty_values(
+    operand: &ArrayOperand,
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
+    if !operand.values.is_empty() {
+        return Ok(false);
+    }
+    if operand.dims.is_empty() {
+        return Ok(true);
+    }
+    Ok(checked_shape_size(&operand.dims, "array broadcast empty operand shape", span)? == 0)
 }
 
 fn trailing_vector_broadcast_pairs(
@@ -1204,6 +1239,28 @@ mod tests {
             "array operands have incompatible shapes [2, 3] and [4, 5]"
         );
         Ok(())
+    }
+
+    #[test]
+    fn broadcast_pairs_treats_erased_empty_operand_as_zero_rows() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(
+                "phase_solve_lower_array_values_helpers_source_20.mo",
+            ),
+            1,
+            2,
+        );
+        let lhs = ArrayOperand::scalar_with_span(1, span);
+        let rhs = ArrayOperand {
+            values: Vec::new(),
+            dims: Vec::new(),
+            shape_span: span,
+        };
+
+        let pairs = broadcast_pairs(&lhs, &rhs)
+            .expect("erased empty array operand should produce zero broadcast rows");
+
+        assert!(pairs.is_empty());
     }
 
     #[test]

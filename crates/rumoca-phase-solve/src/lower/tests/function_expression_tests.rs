@@ -1040,6 +1040,244 @@ fn lower_expression_projects_record_field_from_function_result() {
 }
 
 #[test]
+fn lower_expression_projects_named_record_field_from_function_result() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
+
+    let mut state_ctor = rumoca_core::Function::new("My.State", lower_test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.inputs.push(function_param("p"));
+    state_ctor.inputs.push(function_param("T"));
+    state_ctor.outputs.push(record_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", lower_test_span());
+    make_state.inputs.push(function_param("p"));
+    make_state.inputs.push(function_param("T"));
+    make_state.outputs.push(record_param("state", "My.State"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.State",
+            )),
+            args: vec![
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                    args: vec![var("p")],
+                    is_constructor: true,
+                    span,
+                },
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.T").into(),
+                    args: vec![var("T")],
+                    is_constructor: true,
+                    span,
+                },
+            ],
+            is_constructor: true,
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.makeState",
+            )),
+            args: vec![
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                    args: vec![var("p")],
+                    is_constructor: true,
+                    span,
+                },
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.T").into(),
+                    args: vec![var("temp")],
+                    is_constructor: true,
+                    span,
+                },
+            ],
+            is_constructor: false,
+            span,
+        }),
+        field: "p".to_string(),
+        span,
+    };
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("named record-valued function field projection should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "p", 101325.0);
+    set_y_value(&layout, &mut y, "temp", 360.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 101325.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_binds_flattened_named_record_field_actual() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
+
+    let mut state_ctor = rumoca_core::Function::new("My.State", lower_test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.inputs.push(function_param("p"));
+    state_ctor.inputs.push(function_param("T"));
+    state_ctor.outputs.push(record_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", lower_test_span());
+    make_state.inputs.push(function_param("p"));
+    make_state.inputs.push(function_param("T"));
+    make_state.outputs.push(record_param("state", "My.State"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::If {
+            branches: vec![(
+                rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Eq,
+                    lhs: Box::new(var("p")),
+                    rhs: Box::new(var("p")),
+                    span,
+                },
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::Reference::from_component_reference(
+                        test_component_ref_from_name("My.State"),
+                    ),
+                    args: vec![
+                        rumoca_core::Expression::FunctionCall {
+                            name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                            args: vec![var("p")],
+                            is_constructor: true,
+                            span,
+                        },
+                        rumoca_core::Expression::FunctionCall {
+                            name: rumoca_core::VarName::new("__rumoca_named_arg__.T").into(),
+                            args: vec![rumoca_core::Expression::Binary {
+                                op: rumoca_core::OpBinary::Add,
+                                lhs: Box::new(var("p")),
+                                rhs: Box::new(var("T")),
+                                span,
+                            }],
+                            is_constructor: true,
+                            span,
+                        },
+                    ],
+                    is_constructor: true,
+                    span,
+                },
+            )],
+            else_branch: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name("My.State"),
+                ),
+                args: vec![var("p"), var("T")],
+                is_constructor: true,
+                span,
+            }),
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let mut density = rumoca_core::Function::new("My.density", lower_test_span());
+    density.inputs.push(function_param("state_p"));
+    density.inputs.push(function_param("state_T"));
+    density.outputs.push(function_param("d"));
+    density.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("d"),
+        value: var("state_p"),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(density.name.clone(), density);
+
+    let state_p = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.makeState",
+            )),
+            args: vec![
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                    args: vec![var("p")],
+                    is_constructor: true,
+                    span,
+                },
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.T").into(),
+                    args: vec![var("temp")],
+                    is_constructor: true,
+                    span,
+                },
+            ],
+            is_constructor: false,
+            span,
+        }),
+        field: "p".to_string(),
+        span,
+    };
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.density",
+        )),
+        args: vec![state_p],
+        is_constructor: false,
+        span,
+    };
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("flattened named record field actual should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "p", 101325.0);
+    set_y_value(&layout, &mut y, "temp", 360.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 101325.0).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_projects_single_output_function_by_output_name() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -1756,6 +1994,55 @@ fn lower_expression_rebinds_flattened_record_input_components() {
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
 
     assert!((read_reg(&regs, lowered.result) - 4.0).abs() < 1e-12);
+}
+
+#[test]
+fn lower_expression_binds_zero_dim_flattened_record_array_field_from_actual_shape() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+
+    let mut cp = rumoca_core::Function::new("My.cp", span);
+    cp.inputs.push(function_param("state_p"));
+    cp.inputs.push(function_param("state_T"));
+    cp.inputs.push(
+        function_param_with_dims("state_X", &[0]).with_shape_expr(vec![
+            rumoca_core::Subscript::generated_expr(Box::new(var("nX")), span),
+        ]),
+    );
+    cp.outputs.push(function_param("y"));
+    cp.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: var_index("state_X", 1),
+        span,
+    });
+    dae_model.symbols.functions.insert(cp.name.clone(), cp);
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("s.p"), source_scalar_var("s.p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("s.T"), source_scalar_var("s.T"));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("s.X"),
+        source_array_var("s.X", &[2]),
+    );
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.cp",
+        )),
+        args: vec![source_var("s.p"), source_var("s.T"), source_var("s.X")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("zero-dim flattened record array field should bind from actual shape");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[101325.0, 300.0, 0.42, 0.58], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 0.42).abs() < 1e-12);
 }
 
 #[test]

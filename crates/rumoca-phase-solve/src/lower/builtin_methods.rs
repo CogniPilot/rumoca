@@ -296,6 +296,20 @@ impl<'a> LowerBuilder<'a> {
                 span,
             ));
         };
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args: passthrough_args,
+            is_constructor: false,
+            ..
+        } = base_expr
+            && is_stream_passthrough_intrinsic(name.as_str())
+            && let Some(arg) = passthrough_args.first()
+        {
+            let mut forwarded_args = Vec::with_capacity(args.len());
+            forwarded_args.push(arg.clone());
+            forwarded_args.extend(args.iter().skip(1).cloned());
+            return self.lower_size_builtin(&forwarded_args, span, scope, call_depth);
+        }
         let base_span = expression_or_call_span(base_expr, span, "size() base argument")?;
         let inferred_dims = self.infer_expr_dims(base_expr, scope)?;
         if !inferred_dims.is_empty() && inferred_dims.iter().all(|dim| *dim > 0) {
@@ -305,13 +319,21 @@ impl<'a> LowerBuilder<'a> {
         let base_key =
             dynamic_binding_base_key(base_expr).map_err(|err| err.with_fallback_span(base_span))?;
 
-        let source_key = component_reference_key_for_expr(base_expr)?;
         let generated_key = ComponentReferenceKey::generated(&base_key);
+        let generated_entries = self.indexed_bindings.get(&generated_key);
+        let source_key =
+            if generated_entries.is_some() || expr_component_reference_missing_def_id(base_expr) {
+                None
+            } else {
+                component_reference_key_for_expr(base_expr)?
+            };
         let dims = infer_indexed_dims(
-            source_key
-                .as_ref()
-                .and_then(|key| self.indexed_bindings.get(key))
-                .or_else(|| self.indexed_bindings.get(&generated_key))
+            generated_entries
+                .or_else(|| {
+                    source_key
+                        .as_ref()
+                        .and_then(|key| self.indexed_bindings.get(key))
+                })
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
         );
@@ -320,5 +342,18 @@ impl<'a> LowerBuilder<'a> {
         }
 
         self.lower_size_from_dims(&dims, args, base_span, scope, call_depth)
+    }
+}
+
+fn expr_component_reference_missing_def_id(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef { name, .. } => name
+            .component_ref()
+            .is_some_and(|component_ref| component_ref.def_id.is_none()),
+        rumoca_core::Expression::Index { base, .. }
+        | rumoca_core::Expression::FieldAccess { base, .. } => {
+            expr_component_reference_missing_def_id(base)
+        }
+        _ => false,
     }
 }

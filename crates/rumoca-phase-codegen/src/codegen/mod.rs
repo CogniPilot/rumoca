@@ -512,12 +512,9 @@ fn reject_external_functions_for_simulation_template(
     if !template_emits_simulation_function_bodies(template) {
         return Ok(());
     }
-    if let Some((name, _)) = dae_model
-        .symbols
-        .functions
-        .iter()
-        .find(|(_, function)| function.external.is_some())
-    {
+    if let Some((name, _)) = dae_model.symbols.functions.iter().find(|(name, function)| {
+        function.external.is_some() && !is_supported_solve_external_function_name(name.as_str())
+    }) {
         return Err(CodegenError::external_function_not_callable(name.as_str()));
     }
     Ok(())
@@ -536,14 +533,25 @@ fn reject_external_functions_in_json_for_simulation_template(
     else {
         return Ok(());
     };
-    if let Some((name, _)) = functions.iter().find(|(_, function)| {
+    if let Some((name, _)) = functions.iter().find(|(name, function)| {
         function
             .get("external")
             .is_some_and(|external| !external.is_null())
+            && !is_supported_solve_external_function_name(name)
     }) {
         return Err(CodegenError::external_function_not_callable(name.as_str()));
     }
     Ok(())
+}
+
+fn is_supported_solve_external_function_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+    )
 }
 
 fn template_emits_simulation_function_bodies(template: &str) -> bool {

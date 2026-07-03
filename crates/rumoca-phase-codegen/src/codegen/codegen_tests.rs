@@ -272,6 +272,34 @@ fn test_simulation_template_rejects_external_function_with_stable_diagnostic() {
 }
 
 #[test]
+fn test_simulation_template_allows_supported_energyplus_external_function() {
+    let mut dae = dae::Dae::new();
+    let mut function = rumoca_core::Function::new(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize",
+        fixture_span(),
+    );
+    function.add_output(rumoca_core::FunctionParam::new(
+        "nObj",
+        "Integer",
+        fixture_span(),
+    ));
+    function.external = Some(rumoca_core::ExternalFunction::default());
+    dae.symbols.functions.insert(
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize".into(),
+        function,
+    );
+
+    let rendered = render_template_with_name(
+        &dae,
+        "FMI 3.0 API {% for name, func in dae.functions | items %}{% if func.external %}{{ name }}{% endif %}{% endfor %}",
+        "M",
+    )
+    .expect("supported EnergyPlus external runtime function should pass template guard");
+
+    assert!(rendered.contains("Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"));
+}
+
+#[test]
 fn test_simulation_template_file_rejects_external_function_with_stable_diagnostic() {
     let mut dae = dae::Dae::new();
     let mut function = rumoca_core::Function::new("ExternalFileUser", fixture_span());

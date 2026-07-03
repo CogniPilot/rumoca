@@ -211,6 +211,11 @@ pub(super) fn formal_actual_projection_dims(
         if formal.dims.is_empty() && formal_accepts_structured_actual(formal) {
             return Ok(Some(actual_dims));
         }
+        if formal.dims.is_empty()
+            && scalar_count_for_dims(&actual_dims, "scalar formal actual dimensions", span)? == 1
+        {
+            return Ok(Some(actual_dims));
+        }
         return Err(dimension_mismatch_error(
             &context,
             &formal.dims,
@@ -401,6 +406,34 @@ pub(super) struct FunctionScopeSubstituter<'a> {
 
 impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::FieldAccess {
+            base, field, span, ..
+        } = expr
+            && let rumoca_core::Expression::FieldAccess {
+                field: inner_field, ..
+            } = base.as_ref()
+            && inner_field == field
+        {
+            return self.rewrite_expression(base).with_span(*span);
+        }
+        if let rumoca_core::Expression::FieldAccess {
+            base, field, span, ..
+        } = expr
+            && let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = base.as_ref()
+            && subscripts.is_empty()
+        {
+            let flattened_key = format!("{}_{}", name.as_str(), field);
+            if let Some(replacement) = self.scope.full.get(flattened_key.as_str()) {
+                return self.rewrite_expression(replacement).with_span(*span);
+            }
+            if name.as_str().ends_with(&format!("_{field}"))
+                && let Some(replacement) = self.scope.full.get(name.as_str())
+            {
+                return self.rewrite_expression(replacement).with_span(*span);
+            }
+        }
         let rumoca_core::Expression::VarRef {
             name,
             subscripts,
@@ -412,8 +445,24 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
         if !subscripts.is_empty() {
             return self.walk_expression(expr);
         }
-        if let Some(expr) = self.scope.full.get(name.as_str()) {
-            return expr.clone().with_span(*span);
+        if let Some(replacement) = self.scope.full.get(name.as_str()) {
+            if let rumoca_core::Expression::VarRef {
+                name: replacement_name,
+                subscripts: replacement_subscripts,
+                ..
+            } = replacement
+                && replacement_name == name
+                && replacement_subscripts.is_empty()
+            {
+                return replacement.clone().with_span(*span);
+            }
+            return self.rewrite_expression(replacement).with_span(*span);
+        }
+        let flattened_name = name.as_str().replace('.', "_");
+        if flattened_name != name.as_str()
+            && let Some(replacement) = self.scope.full.get(flattened_name.as_str())
+        {
+            return self.rewrite_expression(replacement).with_span(*span);
         }
         if let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str())
             && let Some(values) = self.scope.scalars.get(scalar.base)
@@ -472,6 +521,9 @@ pub(super) fn required_flat_index_to_subscripts(
     flat_index: usize,
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
+    if dims.is_empty() && flat_index == 0 {
+        return Ok(Vec::new());
+    }
     dae::flat_index_to_subscripts(dims, flat_index).ok_or_else(|| {
         LowerError::contract_violation(
             format!(
