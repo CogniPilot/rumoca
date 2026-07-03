@@ -76,7 +76,7 @@ fn render_human_targets(
         "\nLegend:\n  \
          ir       compiler stage the target consumes (ast < flat < dae < solve)\n  \
          mode     code-gen style (symbolic / compiled / source-transform / packaged)\n  \
-         deploy   deployment class (cpu / symbolic / fmu / browser / modelica)\n  \
+         deploy   deployment class (cpu / symbolic / fmu / efmi / browser / modelica)\n  \
          level    readiness 0=experimental .. 2=validated (? = unrated)\n  \
          (per-feature columns) scalar/matmul/linsolve/elem/stencil/sparse/dyn-ctrl/events/fwd-ad/rev-ad\n           \
          feature support: native | scalar (scalarized) | no | unknown"

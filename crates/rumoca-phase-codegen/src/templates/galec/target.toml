@@ -1,0 +1,53 @@
+version = 1
+ir = "dae"
+name = "galec"
+# Conformance ladder (SPEC_0034 GAL-021): this target is the rung-1
+# "GALEC-derived text export" — the phrase "eFMI Algorithm Code export" is
+# reserved for the schema-valid eFMU container rung (Phase 5b) and must not
+# appear in self-description until that rung is machine-checked. The
+# manifest.xml genuinely is in the eFMI Beta-1 Algorithm Code manifest
+# format (XSD-validated in CI), which is what the description may say.
+description = "GALEC-derived text export: Model.alg + Algorithm Code manifest.xml (eFMI Beta-1 format) for fixed-sample discrete models; not yet a packaged eFMU container"
+execution_mode = "source-transform"
+# deployment_class is the deployment FAMILY axis of `rumoca targets` (like
+# "gpu" spanning cuda-c readiness levels), not a conformance claim; the
+# honest rung-1 claim lives in description/completion_message per GAL-021.
+deployment_class = "efmi"
+readiness_level = 1
+completion_message = """GALEC Algorithm Code files written to: {{ out_dir }}
+  {{ model_name }}.alg   GALEC block source (typed printer output)
+  manifest.xml           eFMI Algorithm Code manifest (typed XML serializer output)
+This is a GALEC-derived text export, not yet a packaged eFMU container."""
+
+# Generic DAE capability gates (SPEC_0034 GAL-006). These run before any
+# rendering; the GALEC projection re-checks admissibility on the untouched
+# DAE afterwards (GAL-004, additive) and owns the projection-scope wording
+# (GAL-025). Clocked when-edge updates are the target's core, so `events`
+# and `clocks` stay true; runtime event *iteration* is not provided.
+[capabilities]
+continuous_states = false
+residual_equations = false
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+# Both files are passthrough templates: the text is produced by the typed
+# GALEC printer / eFMI XML serializer via the rumoca-compile galec facade
+# (GAL-009 / D3); templates never author .alg or manifest content.
+[[files]]
+path = "{{ model_name }}.alg"
+template = "model.alg.jinja"
+
+[[files]]
+path = "manifest.xml"
+template = "manifest.xml.jinja"

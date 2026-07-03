@@ -77,7 +77,12 @@ fn resolve_manifest_target(
 /// targets) so the structured output is byte-compatible with what the CLI would
 /// write — only the destination differs. Packaging steps (e.g. FMU build) are
 /// skipped: the caller gets the raw rendered sources.
-pub(crate) fn render_target_files(
+///
+/// Public (re-exported at the crate root) so template-target CI exercises the
+/// exact render path the CLI uses — including capability validation and the
+/// name-dispatched renderers (`wgsl-solve`, `galec`) that the generic
+/// DAE-JSON template context cannot reach.
+pub fn render_target_files(
     result: &CompilationResult,
     model: &str,
     target: &str,
@@ -102,14 +107,16 @@ pub(crate) fn render_target_files(
     validate_target_requirements(result, &manifest)?;
 
     let model_identifier = model.replace('.', "_");
+    let renderer = resolve_manifest_renderer(result, &manifest, &model_identifier)?;
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        let path = render_manifest_template(result, &manifest, &file.path, &model_identifier)
+        let path = renderer
+            .render(result, &file.path, &model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
-        let content =
-            render_manifest_template(result, &manifest, template.as_ref(), &model_identifier)
-                .with_context(|| format!("Render target template '{}'", file.template))?;
+        let content = renderer
+            .render(result, template.as_ref(), &model_identifier)
+            .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
             content,
@@ -184,6 +191,9 @@ fn compile_manifest_target(
     validate_target_requirements(result, manifest)?;
 
     let model_identifier = model.replace('.', "_");
+    // Resolved before any filesystem effect: a renderer-level rejection
+    // (e.g. the GALEC projection) must not leave an output directory behind.
+    let renderer = resolve_manifest_renderer(result, manifest, &model_identifier)?;
     let out_dir = output.unwrap_or_else(|| default_target_output_dir(manifest, &model_identifier));
     std::fs::create_dir_all(&out_dir)?;
 
@@ -197,7 +207,7 @@ fn compile_manifest_target(
     }
 
     for file in &manifest.files {
-        write_manifest_file(result, bundle, manifest, file, &out_dir, &model_identifier)?;
+        write_manifest_file(result, &renderer, bundle, file, &out_dir, &model_identifier)?;
     }
 
     // The target.toml `build` field decides whether to package the rendered
@@ -299,22 +309,23 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 
 fn write_manifest_file(
     result: &CompilationResult,
+    renderer: &ManifestRenderer,
     bundle: &TargetBundle,
-    manifest: &TargetManifest,
     file: &TargetFile,
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let rendered_rel_path =
-        render_manifest_template(result, manifest, &file.path, model_identifier)
-            .with_context(|| format!("Render target output path '{}'", file.path))?;
+    let rendered_rel_path = renderer
+        .render(result, &file.path, model_identifier)
+        .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = render_manifest_template(result, manifest, template.as_ref(), model_identifier)
+    let rendered = renderer
+        .render(result, template.as_ref(), model_identifier)
         .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
@@ -322,24 +333,93 @@ fn write_manifest_file(
     Ok(())
 }
 
-fn render_manifest_template(
+/// Per-invocation renderer for a manifest target's file templates.
+///
+/// Resolved exactly once per target invocation, before the per-file loop,
+/// so every rendered artifact of one compile — file paths and file
+/// contents alike — comes from the same underlying computation. This is
+/// load-bearing for `galec`: the manifest.xml's `<File checksum="...">` is
+/// the SHA-1 of the `.alg` text of its own projection run, so the written
+/// `.alg` and `manifest.xml` MUST be fed from a single [`GalecExport`].
+/// Re-projecting per template would rest eFMU checksum validity (SPEC_0034
+/// GAL-021: wrong checksum ⇒ invalid eFMU) on incidental cross-invocation
+/// determinism of the lowering/printing pipeline — and re-run the whole
+/// projection four times per compile.
+enum ManifestRenderer {
+    /// Generic path: the IR-keyed JSON template context.
+    Ir(TemplateIr),
+    /// `wgsl-solve` renders Solve kernels without the DAE JSON context.
+    WgslSolve,
+    /// `galec` passes one typed export through passthrough templates
+    /// (SPEC_0034 GAL-009/D3).
+    Galec(rumoca_compile::galec::GalecExport),
+}
+
+/// Resolve the renderer for one target invocation (module docs on
+/// [`ManifestRenderer`]): the name-dispatched special cases first, the
+/// generic IR-keyed context otherwise. The GALEC projection runs here —
+/// once — so a rejection surfaces before any file or directory is created.
+fn resolve_manifest_renderer(
     result: &CompilationResult,
     manifest: &TargetManifest,
+    model_identifier: &str,
+) -> Result<ManifestRenderer> {
+    if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
+        return Ok(ManifestRenderer::WgslSolve);
+    }
+    if manifest.ir == TargetTemplateIr::Dae && manifest.name.as_deref() == Some("galec") {
+        let export =
+            rumoca_compile::galec::render_galec_export(&result.dae, &result.flat, model_identifier)
+                .context("GALEC export for target 'galec'")?;
+        return Ok(ManifestRenderer::Galec(export));
+    }
+    Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
+}
+
+impl ManifestRenderer {
+    /// Render one template string (a `[[files]]` path or content template)
+    /// against this invocation's resolved context.
+    fn render(
+        &self,
+        result: &CompilationResult,
+        template: &str,
+        model_identifier: &str,
+    ) -> Result<String> {
+        match self {
+            Self::Ir(ir) => result
+                .render_template_str_with_name_and_ir(template, model_identifier, *ir)
+                .map_err(Into::into),
+            Self::WgslSolve => result
+                .render_solve_template_str_without_dae(template, model_identifier)
+                .map_err(Into::into),
+            Self::Galec(export) => render_galec_template(export, template, model_identifier),
+        }
+    }
+}
+
+/// Render a `galec` target template (file path or passthrough content)
+/// from the invocation's single [`GalecExport`].
+///
+/// The `.alg` and `manifest.xml` text is produced by the typed GALEC
+/// printer / eFMI XML serializer behind the `rumoca-compile` galec facade
+/// (SPEC_0034 GAL-009/GAL-010/D3); the templates only pass
+/// `galec_alg_source` / `galec_manifest_xml` through.
+fn render_galec_template(
+    export: &rumoca_compile::galec::GalecExport,
     template: &str,
     model_identifier: &str,
 ) -> Result<String> {
-    if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
-        return result
-            .render_solve_template_str_without_dae(template, model_identifier)
-            .map_err(Into::into);
-    }
-    result
-        .render_template_str_with_name_and_ir(
-            template,
-            model_identifier,
-            template_ir_to_cli(manifest.ir),
-        )
-        .map_err(Into::into)
+    let mut env = minijinja::Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.render_str(
+        template,
+        minijinja::context! {
+            model_name => model_identifier,
+            galec_alg_source => &export.alg_text,
+            galec_manifest_xml => &export.manifest_xml,
+        },
+    )
+    .context("Render galec target template")
 }
 
 fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {

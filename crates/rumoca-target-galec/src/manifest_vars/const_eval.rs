@@ -58,10 +58,28 @@ impl ConstValue {
     }
 
     /// Coerce to a 32-bit Integer (the manifest's Integer value space).
+    ///
+    /// Exactly-integral Real values are accepted: the canonical DAE
+    /// normalizes numeric literals to Real, so an `Integer count(start =
+    /// 0)` declaration arrives from the real pipeline as `Real(0.0)` while
+    /// Flat-side provenance still types the variable `Integer`. The value
+    /// conversion is exact or it fails — non-integral, non-finite, or
+    /// out-of-range values keep the type-mismatch diagnostic (never
+    /// rounded, SPEC_0008).
     pub fn as_i32(&self) -> Result<i32, &'static str> {
         match self {
             Self::Integer(value) => i32::try_from(*value).map_err(|_| "32-bit Integer"),
-            Self::Real(_) | Self::Boolean(_) => Err("Integer"),
+            Self::Real(value) => {
+                if !value.is_finite() || value.fract() != 0.0 {
+                    return Err("Integer");
+                }
+                if *value < f64::from(i32::MIN) || *value > f64::from(i32::MAX) {
+                    return Err("32-bit Integer");
+                }
+                // Exact: finite, zero fraction, within i32 range.
+                Ok(*value as i32)
+            }
+            Self::Boolean(_) => Err("Integer"),
         }
     }
 
@@ -357,4 +375,68 @@ fn real_only(
         })
     };
     Ok(ConstValue::Real(real_op(operand(lhs)?, operand(rhs)?)))
+}
+
+#[cfg(test)]
+mod tests {
+    //! `as_i32` is exact-or-fail (SPEC_0008: never rounded, no silent
+    //! defaults): exactly-integral Reals in the manifest's 32-bit Integer
+    //! value space convert, everything else keeps the expected-type
+    //! payload for the type-mismatch diagnostic.
+
+    use super::ConstValue;
+
+    #[test]
+    fn as_i32_integer_values_are_range_checked() {
+        assert_eq!(ConstValue::Integer(0).as_i32(), Ok(0));
+        assert_eq!(
+            ConstValue::Integer(i64::from(i32::MAX)).as_i32(),
+            Ok(i32::MAX)
+        );
+        assert_eq!(
+            ConstValue::Integer(i64::from(i32::MIN)).as_i32(),
+            Ok(i32::MIN)
+        );
+        assert_eq!(
+            ConstValue::Integer(i64::from(i32::MAX) + 1).as_i32(),
+            Err("32-bit Integer")
+        );
+        assert_eq!(
+            ConstValue::Integer(i64::from(i32::MIN) - 1).as_i32(),
+            Err("32-bit Integer")
+        );
+    }
+
+    #[test]
+    fn as_i32_real_values_convert_exactly_or_fail() {
+        // Exactly-integral, in-range: the pipeline's Real-normalized
+        // Integer literals (e.g. `Integer count(start = 0)` → `0.0`).
+        assert_eq!(ConstValue::Real(0.0).as_i32(), Ok(0));
+        assert_eq!(ConstValue::Real(-7.0).as_i32(), Ok(-7));
+        assert_eq!(ConstValue::Real(2_147_483_647.0).as_i32(), Ok(i32::MAX));
+        assert_eq!(ConstValue::Real(-2_147_483_648.0).as_i32(), Ok(i32::MIN));
+
+        // Non-integral / non-finite: type mismatch, never rounded.
+        assert_eq!(ConstValue::Real(0.5).as_i32(), Err("Integer"));
+        assert_eq!(ConstValue::Real(-2.75).as_i32(), Err("Integer"));
+        assert_eq!(ConstValue::Real(f64::NAN).as_i32(), Err("Integer"));
+        assert_eq!(ConstValue::Real(f64::INFINITY).as_i32(), Err("Integer"));
+        assert_eq!(ConstValue::Real(f64::NEG_INFINITY).as_i32(), Err("Integer"));
+
+        // Integral but outside the manifest's 32-bit value space.
+        assert_eq!(
+            ConstValue::Real(2_147_483_648.0).as_i32(),
+            Err("32-bit Integer")
+        );
+        assert_eq!(
+            ConstValue::Real(-2_147_483_649.0).as_i32(),
+            Err("32-bit Integer")
+        );
+    }
+
+    #[test]
+    fn as_i32_boolean_values_fail() {
+        assert_eq!(ConstValue::Boolean(true).as_i32(), Err("Integer"));
+        assert_eq!(ConstValue::Boolean(false).as_i32(), Err("Integer"));
+    }
 }
