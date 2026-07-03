@@ -175,11 +175,22 @@ fn wrapped<'c>(content: &'c str, keyword: &str) -> Option<&'c str> {
     rest.strip_suffix(')')
 }
 
+/// Separator between the segments of a scalarized reference (GAL-015).
+const SCALARIZED_SEGMENT_SEPARATOR: char = '.';
+
+/// The single boundary parser for the GAL-015 dot-separated scalarized-
+/// reference convention inside quoted identifiers. The content is GALEC's
+/// own language surface (already-flattened text), not Modelica IR structure,
+/// so segmenting it here is legitimate — but only through this helper.
+fn scalarized_segments(content: &str) -> std::str::Split<'_, char> {
+    content.split(SCALARIZED_SEGMENT_SEPARATOR)
+}
+
 fn check_scalarized(content: &str) -> Option<&'static str> {
     if content.is_empty() {
         return Some("empty scalarized reference");
     }
-    for segment in content.split('.') {
+    for segment in scalarized_segments(content) {
         let (name_part, dims) = match segment.find('[') {
             Some(open) => {
                 let closed = segment

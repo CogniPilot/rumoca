@@ -72,7 +72,7 @@ fn resolve_manifest_target(
 /// Render a code-gen `target` against a compiled model and return the rendered
 /// files in memory (path + content) instead of writing them to disk.
 ///
-/// This mirrors [`compile_target`]'s rendering (capability validation, per-file
+/// This mirrors `compile_target`'s rendering (capability validation, per-file
 /// path/template rendering, the same `--phase` semantics for raw `.jinja`
 /// targets) so the structured output is byte-compatible with what the CLI would
 /// write — only the destination differs. Packaging steps (e.g. FMU build) are

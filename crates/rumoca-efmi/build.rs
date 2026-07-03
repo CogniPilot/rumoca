@@ -18,32 +18,45 @@ use std::path::{Path, PathBuf};
 /// emitted `schemas/` directories.
 const EXCLUDED_ROOT_FILES: &[&str] = &["README.md"];
 
-fn main() {
+fn main() -> Result<(), String> {
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
     let assets_dir = manifest_dir.join("assets").join("efmi-schemas");
     println!("cargo:rerun-if-changed={}", assets_dir.display());
 
     let mut relative_paths = Vec::new();
-    collect_files(&assets_dir, &assets_dir, &mut relative_paths);
+    collect_files(&assets_dir, &assets_dir, &mut relative_paths)?;
     relative_paths.sort();
 
     let generated = render_manifest(&assets_dir, &relative_paths);
     let out_path =
         PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set")).join("schema_assets.rs");
-    fs::write(&out_path, generated).expect("write generated schema asset manifest");
+    fs::write(&out_path, generated).map_err(|error| {
+        format!(
+            "write generated schema asset manifest {}: {error}",
+            out_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 /// Recursively collect files under `dir` as `/`-separated paths relative to
-/// `root`, skipping the excluded root-level repository files.
-fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
+/// `root`, skipping the excluded root-level repository files. I/O failures
+/// are reported with the offending directory path so the build error points
+/// at the vendored asset tree.
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
     let entries = fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read vendored asset dir {}: {error}", dir.display()));
+        .map_err(|error| format!("read vendored asset dir {}: {error}", dir.display()))?;
     for entry in entries {
-        let entry = entry.expect("read vendored asset dir entry");
+        let entry = entry.map_err(|error| {
+            format!(
+                "read vendored asset dir entry in {}: {error}",
+                dir.display()
+            )
+        })?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files(root, &path, out);
+            collect_files(root, &path, out)?;
             continue;
         }
         let relative = path
@@ -58,6 +71,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
         }
         out.push(relative);
     }
+    Ok(())
 }
 
 /// Render the `SCHEMA_ASSETS` static; the `SchemaAsset` type is defined by
