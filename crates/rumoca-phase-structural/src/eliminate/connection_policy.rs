@@ -22,6 +22,15 @@ pub(super) fn should_skip_connection_equation(
     if touches_runtime_discrete_path {
         return true;
     }
+    if live.len() == 1
+        && can_eliminate_scalar_connection_alias_var(
+            dae,
+            &live[0],
+            runtime_defined_discrete_targets,
+        )
+    {
+        return false;
+    }
     if !connection_alias_refs_are_continuous_scalar_algebraics(
         dae,
         eq_rhs,

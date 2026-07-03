@@ -33,6 +33,7 @@ type AliasSafetyCache = IndexMap<(String, Option<usize>), bool>;
 #[derive(Clone)]
 struct IndexedDefiningExpr {
     equation_index: usize,
+    flat_index: Option<usize>,
     expr: Expression,
 }
 
@@ -40,8 +41,9 @@ mod connection_alias;
 use connection_alias::connection_component_fixed_defining_expr;
 mod symbolic;
 use symbolic::{
-    build_der_value_map, expand_der_in_expr_full, symbolic_time_derivative, truncate_debug,
-    try_extract_der_value,
+    array_expr_from_flat_values, build_der_value_map, expand_der_in_expr_full,
+    flat_index_from_indices, project_flat_index_with_span, static_subscript_indices,
+    symbolic_time_derivative, truncate_debug, try_extract_der_value,
 };
 mod row_shape;
 use row_shape::{dae_variable_size, required_dae_variable_size, residual_scalar_width};
@@ -105,6 +107,14 @@ fn sub_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     }
 }
 
+fn neg_expr(rhs: Expression, span: Span) -> Expression {
+    Expression::Unary {
+        op: OpUnary::Minus,
+        rhs: Box::new(rhs),
+        span,
+    }
+}
+
 fn div_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op: OpBinary::Div,
@@ -140,40 +150,56 @@ fn split_linear_target(
     context_span: Span,
 ) -> Option<(i32, Expression)> {
     let span = expr.span().unwrap_or(context_span);
-    if expr_refers_to_var(expr, target) {
+    if matches!(
+        expr,
+        Expression::VarRef { name, .. } if name.var_name() == target
+    ) {
         return Some((1, zero_expr(span)));
     }
 
-    let Expression::Binary { op, lhs, rhs, .. } = expr else {
-        return None;
-    };
-    match op {
-        OpBinary::Add | OpBinary::AddElem => {
-            if let Some((coef, rem)) = split_linear_target(lhs, target, span)
-                && !expr_contains_var(rhs, target)
-            {
-                return Some((coef, add_expr(rem, *rhs.clone(), span)));
-            }
-            if let Some((coef, rem)) = split_linear_target(rhs, target, span)
-                && !expr_contains_var(lhs, target)
-            {
-                return Some((coef, add_expr(*lhs.clone(), rem, span)));
-            }
-            None
+    match expr {
+        Expression::Unary {
+            op: OpUnary::Minus | OpUnary::DotMinus,
+            rhs,
+            ..
+        } => {
+            let (coef, remainder) = split_linear_target(rhs, target, span)?;
+            Some((-coef, neg_expr(remainder, span)))
         }
-        OpBinary::Sub | OpBinary::SubElem => {
-            if let Some((coef, rem)) = split_linear_target(lhs, target, span)
-                && !expr_contains_var(rhs, target)
-            {
-                return Some((coef, sub_expr(rem, *rhs.clone(), span)));
+        Expression::Unary {
+            op: OpUnary::Plus | OpUnary::DotPlus,
+            rhs,
+            ..
+        } => split_linear_target(rhs, target, span),
+        Expression::Binary { op, lhs, rhs, .. } => match op {
+            OpBinary::Add | OpBinary::AddElem => {
+                if let Some((coef, rem)) = split_linear_target(lhs, target, span)
+                    && !expr_contains_var(rhs, target)
+                {
+                    return Some((coef, add_expr(rem, *rhs.clone(), span)));
+                }
+                if let Some((coef, rem)) = split_linear_target(rhs, target, span)
+                    && !expr_contains_var(lhs, target)
+                {
+                    return Some((coef, add_expr(*lhs.clone(), rem, span)));
+                }
+                None
             }
-            if let Some((coef, rem)) = split_linear_target(rhs, target, span)
-                && !expr_contains_var(lhs, target)
-            {
-                return Some((-coef, sub_expr(*lhs.clone(), rem, span)));
+            OpBinary::Sub | OpBinary::SubElem => {
+                if let Some((coef, rem)) = split_linear_target(lhs, target, span)
+                    && !expr_contains_var(rhs, target)
+                {
+                    return Some((coef, sub_expr(rem, *rhs.clone(), span)));
+                }
+                if let Some((coef, rem)) = split_linear_target(rhs, target, span)
+                    && !expr_contains_var(lhs, target)
+                {
+                    return Some((-coef, sub_expr(*lhs.clone(), rem, span)));
+                }
+                None
             }
-            None
-        }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -232,6 +258,98 @@ fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression
     None
 }
 
+fn additive_terms(expr: &Expression, sign: i32, out: &mut Vec<(i32, Expression)>) {
+    match expr {
+        Expression::Binary {
+            op: OpBinary::Add | OpBinary::AddElem,
+            lhs,
+            rhs,
+            ..
+        } => {
+            additive_terms(lhs, sign, out);
+            additive_terms(rhs, sign, out);
+        }
+        Expression::Binary {
+            op: OpBinary::Sub | OpBinary::SubElem,
+            lhs,
+            rhs,
+            ..
+        } => {
+            additive_terms(lhs, sign, out);
+            additive_terms(rhs, -sign, out);
+        }
+        Expression::Unary {
+            op: OpUnary::Minus | OpUnary::DotMinus,
+            rhs,
+            ..
+        } => additive_terms(rhs, -sign, out),
+        Expression::Unary {
+            op: OpUnary::Plus | OpUnary::DotPlus,
+            rhs,
+            ..
+        } => additive_terms(rhs, sign, out),
+        _ => out.push((sign, expr.clone())),
+    }
+}
+
+fn signed_term_expr(coef: i32, expr: Expression, span: Span) -> Option<Expression> {
+    match coef {
+        1 => Some(expr),
+        -1 => Some(neg_expr(expr, span)),
+        _ => None,
+    }
+}
+
+fn sum_signed_terms(terms: Vec<(i32, Expression)>, span: Span) -> Option<Expression> {
+    let mut iter = terms
+        .into_iter()
+        .map(|(coef, expr)| signed_term_expr(coef, expr, span));
+    let first = iter.next()??;
+    iter.try_fold(first, |acc, item| Some(add_expr(acc, item?, span)))
+}
+
+fn zero_sum_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression> {
+    let span = eq.rhs.span().unwrap_or(eq.span);
+    let mut terms = Vec::new();
+    additive_terms(&eq.rhs, 1, &mut terms);
+    if terms.len() < 2 {
+        return None;
+    }
+
+    let mut target_idx = None;
+    for (idx, (coef, term)) in terms.iter().enumerate() {
+        if !matches!(coef, 1 | -1) {
+            return None;
+        }
+        let is_target = matches!(
+            term,
+            Expression::VarRef { name, subscripts, .. }
+                if name.var_name() == alg_name && subscripts.is_empty()
+        );
+        if is_target {
+            if target_idx.replace(idx).is_some() {
+                return None;
+            }
+        } else if expr_contains_var(term, alg_name) {
+            return None;
+        }
+    }
+
+    let target_idx = target_idx?;
+    let target_coef = terms[target_idx].0;
+    let rest = terms
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, term)| (idx != target_idx).then_some(term))
+        .collect::<Vec<_>>();
+    let rest_expr = sum_signed_terms(rest, span)?;
+    match target_coef {
+        1 => Some(neg_expr(rest_expr, span)),
+        -1 => Some(rest_expr),
+        _ => None,
+    }
+}
+
 fn find_defining_expr_candidates(dae: &Dae, alg_name: &VarName) -> Vec<Expression> {
     let candidates = collect_residual_defining_expr_index(dae);
     defining_expr_candidates(&candidates, alg_name)
@@ -243,6 +361,7 @@ fn push_indexed_defining_expr(
     index: &mut DefiningExprIndex,
     name: &VarName,
     equation_index: usize,
+    flat_index: Option<usize>,
     expr: Expression,
 ) {
     index
@@ -250,8 +369,91 @@ fn push_indexed_defining_expr(
         .or_default()
         .push(IndexedDefiningExpr {
             equation_index,
+            flat_index,
             expr,
         });
+}
+
+fn indexed_defining_expr_for_unknown(
+    eq: &Equation,
+    unknown_name: &VarName,
+    dims: &[i64],
+) -> Option<(usize, Expression)> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.rhs
+    else {
+        return None;
+    };
+    if let Some(flat_index) = indexed_ref_flat_index_for_name(lhs, unknown_name, dims) {
+        return Some((flat_index, *rhs.clone()));
+    }
+    indexed_ref_flat_index_for_name(rhs, unknown_name, dims)
+        .map(|flat_index| (flat_index, *lhs.clone()))
+}
+
+fn indexed_zero_sum_defining_expr(
+    eq: &Equation,
+    name: &VarName,
+    dims: &[i64],
+) -> Option<(usize, Expression)> {
+    let span = eq.rhs.span().unwrap_or(eq.span);
+    let mut terms = Vec::new();
+    additive_terms(&eq.rhs, 1, &mut terms);
+    if terms.len() < 2 {
+        return None;
+    }
+
+    let mut target = None;
+    for (idx, (coef, term)) in terms.iter().enumerate() {
+        if !matches!(coef, 1 | -1) {
+            return None;
+        }
+        if let Some(flat_index) = indexed_ref_flat_index_for_name(term, name, dims) {
+            if target.replace((idx, *coef, flat_index)).is_some() {
+                return None;
+            }
+        } else if expr_contains_var(term, name) {
+            return None;
+        }
+    }
+
+    let (target_idx, target_coef, flat_index) = target?;
+    let rest = terms
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, term)| (idx != target_idx).then_some(term))
+        .collect::<Vec<_>>();
+    let rest_expr = sum_signed_terms(rest, span)?;
+    let expr = match target_coef {
+        1 => neg_expr(rest_expr, span),
+        -1 => rest_expr,
+        _ => return None,
+    };
+    Some((flat_index, expr))
+}
+
+fn indexed_ref_flat_index_for_name(
+    expr: &Expression,
+    name: &VarName,
+    dims: &[i64],
+) -> Option<usize> {
+    let Expression::VarRef {
+        name: ref_name,
+        subscripts,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if ref_name.var_name() != name || subscripts.is_empty() {
+        return None;
+    }
+    let indices = static_subscript_indices(subscripts)?;
+    flat_index_from_indices(dims, &indices)
 }
 
 fn collect_rhs_var_refs(expr: &Expression) -> IndexSet<VarName> {
@@ -264,8 +466,25 @@ fn collect_residual_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
     let mut index = DefiningExprIndex::new();
     for (equation_index, eq) in dae.continuous.equations.iter().enumerate() {
         for ref_name in collect_rhs_var_refs(&eq.rhs) {
-            if let Some(expr) = extract_defining_expr(eq, &ref_name) {
-                push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
+            if let Some(variable) = continuous_variable(dae, &ref_name)
+                && !variable.dims.is_empty()
+                && let Some((flat_index, expr)) =
+                    indexed_defining_expr_for_unknown(eq, &ref_name, &variable.dims)
+                        .or_else(|| indexed_zero_sum_defining_expr(eq, &ref_name, &variable.dims))
+            {
+                push_indexed_defining_expr(
+                    &mut index,
+                    &ref_name,
+                    equation_index,
+                    Some(flat_index),
+                    expr,
+                );
+                continue;
+            }
+            if let Some(expr) = extract_defining_expr(eq, &ref_name)
+                .or_else(|| zero_sum_defining_expr(eq, &ref_name))
+            {
+                push_indexed_defining_expr(&mut index, &ref_name, equation_index, None, expr);
             }
         }
     }
@@ -279,7 +498,7 @@ fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
         if let Some(name) = &lhs_name
             && !expression_contains_any_der_call(&eq.rhs)
         {
-            push_indexed_defining_expr(&mut index, name, equation_index, eq.rhs.clone());
+            push_indexed_defining_expr(&mut index, name, equation_index, None, eq.rhs.clone());
         }
 
         for ref_name in collect_rhs_var_refs(&eq.rhs) {
@@ -287,7 +506,7 @@ fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
                 continue;
             }
             if let Some(expr) = equation_defining_expr_for_unknown(eq, &ref_name) {
-                push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
+                push_indexed_defining_expr(&mut index, &ref_name, equation_index, None, expr);
             }
         }
     }
@@ -302,6 +521,39 @@ fn defining_expr_candidates<'a>(
         .get(name.as_str())
         .into_iter()
         .flat_map(|candidates| candidates.iter().map(|candidate| &candidate.expr))
+}
+
+fn aggregate_defining_expr_candidate(
+    index: &DefiningExprIndex,
+    name: &VarName,
+    dims: &[i64],
+) -> Option<Expression> {
+    let size = dims.iter().try_fold(1usize, |acc, dim| {
+        (*dim > 0).then(|| acc.checked_mul(*dim as usize)).flatten()
+    })?;
+    if size <= 1 {
+        return None;
+    }
+    let candidates = index.get(name.as_str())?;
+    if candidates.len() < size {
+        return None;
+    }
+    if candidates
+        .iter()
+        .take(size)
+        .all(|candidate| candidate.flat_index.is_some())
+    {
+        let mut values = vec![None; size];
+        for candidate in candidates {
+            let flat_index = candidate.flat_index?;
+            if flat_index >= size || values[flat_index].is_some() {
+                return None;
+            }
+            values[flat_index] = Some(candidate.expr.clone());
+        }
+        return array_expr_from_flat_values(values.into_iter().collect::<Option<Vec<_>>>()?, dims);
+    }
+    None
 }
 
 fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable> {
@@ -328,6 +580,19 @@ fn insert_symbolic_derivative_fallback(
         }
     }
     Ok(())
+}
+
+fn derivative_candidate_is_usable(dae: &Dae, name: &VarName, derivative: &Expression) -> bool {
+    if expr_contains_der_of(derivative, name) {
+        return false;
+    }
+    let state_name_set = dae
+        .variables
+        .states
+        .keys()
+        .map(|state_name| state_name.as_str().to_string())
+        .collect::<HashSet<_>>();
+    !expr_contains_der_of_non_state(derivative, &state_name_set)
 }
 
 fn resolve_derivatives_for_expr(
@@ -366,11 +631,26 @@ fn resolve_derivative_for_var(
         return insert_symbolic_derivative_fallback(dae, map, name);
     }
 
+    if let Some(variable) = continuous_variable(dae, name)
+        && let Some(defining_expr) =
+            aggregate_defining_expr_candidate(defining_expr_index, name, &variable.dims)
+    {
+        resolve_derivatives_for_expr(dae, defining_expr_index, map, &defining_expr, visiting)?;
+        let derivative = symbolic_time_derivative(&defining_expr, dae, map);
+        if let Some(derivative) = derivative
+            && derivative_candidate_is_usable(dae, name, &derivative)
+        {
+            map.insert(name.as_str().to_string(), derivative);
+            visiting.remove(name.as_str());
+            return Ok(());
+        }
+    }
+
     for defining_expr in defining_expr_candidates(defining_expr_index, name) {
         resolve_derivatives_for_expr(dae, defining_expr_index, map, defining_expr, visiting)?;
         let derivative = symbolic_time_derivative(defining_expr, dae, map);
         if let Some(derivative) = derivative
-            && !expr_contains_der_of(&derivative, name)
+            && derivative_candidate_is_usable(dae, name, &derivative)
         {
             map.insert(name.as_str().to_string(), derivative);
             visiting.remove(name.as_str());
@@ -437,8 +717,19 @@ pub fn compute_full_derivative_map(dae: &Dae) -> HashMap<String, Expression> {
             if der_map.contains_key(alg_name.as_str()) {
                 continue; // Already resolved
             }
-            let derivative = defining_expr_candidates(&defining_expr_index, alg_name)
-                .find_map(|expr| symbolic_time_derivative(expr, dae, &der_map));
+            let derivative = continuous_variable(dae, alg_name)
+                .and_then(|variable| {
+                    aggregate_defining_expr_candidate(
+                        &defining_expr_index,
+                        alg_name,
+                        &variable.dims,
+                    )
+                })
+                .and_then(|expr| symbolic_time_derivative(&expr, dae, &der_map))
+                .or_else(|| {
+                    defining_expr_candidates(&defining_expr_index, alg_name)
+                        .find_map(|expr| symbolic_time_derivative(expr, dae, &der_map))
+                });
             if let Some(d) = derivative {
                 new_entries.push((alg_name.as_str().to_string(), d));
             }
@@ -496,64 +787,6 @@ pub fn expand_compound_derivatives(dae: &mut Dae) {
 /// When `der(x)` appears in an equation but `x` is classified as algebraic,
 /// the evaluator returns 0 for `der(x)` (derivatives are only populated for
 /// states). This helper finds such variables so they can be promoted to states.
-pub fn collect_der_of_algebraics(expr: &Expression, dae: &Dae, out: &mut Vec<VarName>) {
-    DerOfAlgebraicCollector { dae, out }.visit_expression(expr);
-}
-
-struct DerOfAlgebraicCollector<'a> {
-    dae: &'a Dae,
-    out: &'a mut Vec<VarName>,
-}
-
-impl ExpressionVisitor for DerOfAlgebraicCollector<'_> {
-    fn visit_expression(&mut self, expr: &Expression) {
-        if let Expression::BuiltinCall {
-            function: BuiltinFunction::Der,
-            args,
-            ..
-        } = expr
-            && let Some(arg) = args.first()
-        {
-            let matches = self
-                .dae
-                .variables
-                .algebraics
-                .keys()
-                .filter(|alg_name| expr_refers_to_var(arg, alg_name))
-                .cloned();
-            self.out.extend(matches);
-        }
-        self.walk_expression(expr);
-    }
-}
-
-/// Promote algebraic variables whose derivatives appear in equations to states.
-///
-/// When `der(x)` appears in an equation but `x` is an algebraic variable,
-/// the evaluator looks up `"der(x)"` in the environment and finds nothing,
-/// returning 0.0. This makes equations like `v_rel = der(s_rel)` evaluate
-/// to `v_rel = 0`, zeroing all velocity/damping terms.
-///
-/// After promotion, `reorder_equations_for_solver` will find the equation
-/// containing `der(promoted_var)` and place it as an ODE row. The BDF solver
-/// then correctly computes the derivative.
-pub fn promote_der_algebraics_to_states(dae: &mut Dae) {
-    let mut to_promote: Vec<VarName> = Vec::new();
-    for eq in &dae.continuous.equations {
-        collect_der_of_algebraics(&eq.rhs, dae, &mut to_promote);
-    }
-
-    // Deduplicate using a set (VarName doesn't impl Ord)
-    let mut seen = HashSet::new();
-    to_promote.retain(|n| seen.insert(n.as_str().to_string()));
-
-    for name in &to_promote {
-        if let Some(var) = dae.variables.algebraics.shift_remove(name) {
-            dae.variables.states.insert(name.clone(), var);
-        }
-    }
-}
-
 /// Check if an equation is a derivative alias: `0 = alias_var - der(state)` or
 /// `0 = der(state) - alias_var`. Returns the alias variable name if so.
 pub fn try_extract_derivative_alias(eq: &Equation, state_name: &VarName) -> Option<VarName> {
@@ -808,8 +1041,19 @@ pub fn build_relaxed_derivative_map(
             .keys()
             .chain(dae.variables.outputs.keys())
         {
-            let derivative = defining_expr_candidates(&defining_expr_index, alg_name)
-                .find_map(|expr| symbolic_time_derivative(expr, dae, &map));
+            let derivative = continuous_variable(dae, alg_name)
+                .and_then(|variable| {
+                    aggregate_defining_expr_candidate(
+                        &defining_expr_index,
+                        alg_name,
+                        &variable.dims,
+                    )
+                })
+                .and_then(|expr| symbolic_time_derivative(&expr, dae, &map))
+                .or_else(|| {
+                    defining_expr_candidates(&defining_expr_index, alg_name)
+                        .find_map(|expr| symbolic_time_derivative(expr, dae, &map))
+                });
             let Some(derivative) = derivative else {
                 continue;
             };
@@ -935,6 +1179,66 @@ fn expr_contains_unsliced_vector_ref(expr: &Expression, dae: &Dae) -> bool {
     let mut checker = UnslicedVectorRefChecker { dae, found: false };
     checker.visit_expression(expr);
     checker.found
+}
+
+fn expression_shape_matches_variable(expr: &Expression, variable: &Variable, dae: &Dae) -> bool {
+    expression_dims_for_direct_demotion(expr, dae).is_some_and(|dims| dims == variable.dims)
+}
+
+fn expression_dims_for_direct_demotion(expr: &Expression, dae: &Dae) -> Option<Vec<i64>> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            continuous_variable(dae, name.var_name()).map(|var| var.dims.clone())
+        }
+        Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } if !*is_matrix => Some(vec![elements.len() as i64]),
+        Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } if *is_matrix => {
+            let cols = match elements.first()? {
+                Expression::Array { elements, .. } => elements.len(),
+                _ => return None,
+            };
+            Some(vec![elements.len() as i64, cols as i64])
+        }
+        Expression::Binary { op, lhs, rhs, .. }
+            if matches!(
+                op,
+                OpBinary::Add
+                    | OpBinary::Sub
+                    | OpBinary::Mul
+                    | OpBinary::Div
+                    | OpBinary::AddElem
+                    | OpBinary::SubElem
+                    | OpBinary::MulElem
+                    | OpBinary::DivElem
+            ) =>
+        {
+            let lhs_dims = expression_dims_for_direct_demotion(lhs, dae)?;
+            let rhs_dims = expression_dims_for_direct_demotion(rhs, dae)?;
+            (lhs_dims == rhs_dims).then_some(lhs_dims)
+        }
+        Expression::Unary { rhs, .. } => expression_dims_for_direct_demotion(rhs, dae),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Transpose,
+            args,
+            ..
+        } if args.len() == 1 => {
+            let mut dims = expression_dims_for_direct_demotion(&args[0], dae)?;
+            if dims.len() == 2 {
+                dims.swap(0, 1);
+            }
+            Some(dims)
+        }
+        _ => None,
+    }
 }
 
 struct UnslicedVectorRefChecker<'a> {
@@ -1068,7 +1372,7 @@ fn rewrite_component_member_derivatives_in_equations(
     replacement: &Expression,
 ) {
     for eq in equations {
-        eq.rhs = substitute_der_of_state(&eq.rhs, member_name, replacement);
+        eq.rhs = substitute_der_of_state(&eq.rhs, member_name, &[], replacement);
     }
 }
 
@@ -1078,7 +1382,7 @@ fn rewrite_component_member_derivatives_in_exprs(
     replacement: &Expression,
 ) {
     for expr in exprs {
-        *expr = substitute_der_of_state(expr, member_name, replacement);
+        *expr = substitute_der_of_state(expr, member_name, &[], replacement);
     }
 }
 
@@ -1477,23 +1781,36 @@ fn extract_state_direct_assignment_equation(
     solved
 }
 
-fn der_call_targets_state(expr: &Expression, state_name: &VarName) -> bool {
-    matches!(
-        expr,
-        Expression::BuiltinCall { function, args, .. }
-            if *function == BuiltinFunction::Der
-                && args.len() == 1
-                && expr_refers_to_var(&args[0], state_name)
-    )
+fn der_call_state_arg<'a>(
+    expr: &'a Expression,
+    state_name: &VarName,
+) -> Option<(&'a [Subscript], Span)> {
+    let Expression::BuiltinCall { function, args, .. } = expr else {
+        return None;
+    };
+    if *function != BuiltinFunction::Der || args.len() != 1 {
+        return None;
+    }
+    let Expression::VarRef {
+        name: _,
+        subscripts,
+        span,
+    } = &args[0]
+    else {
+        return None;
+    };
+    expr_refers_to_var(&args[0], state_name).then_some((subscripts.as_slice(), *span))
 }
 
 fn substitute_der_of_state(
     expr: &Expression,
     state_name: &VarName,
+    state_dims: &[i64],
     replacement: &Expression,
 ) -> Expression {
     DerSubstitutionRewriter {
         state_name,
+        state_dims,
         replacement,
     }
     .rewrite_expression(expr)
@@ -1534,12 +1851,25 @@ fn mask_state_der_calls(expr: &Expression, state_name_set: &HashSet<String>) -> 
 
 struct DerSubstitutionRewriter<'a> {
     state_name: &'a VarName,
+    state_dims: &'a [i64],
     replacement: &'a Expression,
 }
 
 impl ExpressionRewriter for DerSubstitutionRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-        if der_call_targets_state(expr, self.state_name) {
+        if let Some((subscripts, span)) = der_call_state_arg(expr, self.state_name) {
+            if !subscripts.is_empty()
+                && let Some(indices) = static_subscript_indices(subscripts)
+                && let Some(flat_index) = flat_index_from_indices(self.state_dims, &indices)
+                && let Some(projected) = project_flat_index_with_span(
+                    self.replacement,
+                    self.state_dims,
+                    flat_index,
+                    Some(span),
+                )
+            {
+                return projected;
+            }
             self.replacement.clone()
         } else {
             self.walk_expression(expr)
@@ -1550,6 +1880,7 @@ impl ExpressionRewriter for DerSubstitutionRewriter<'_> {
 #[derive(Clone)]
 struct DirectStateDemotionPlan {
     state_name: VarName,
+    state_dims: Vec<i64>,
     der_expr: Expression,
 }
 
@@ -1785,6 +2116,7 @@ fn constrained_dummy_derivative_plan(
     }
     Some(DirectStateDemotionPlan {
         state_name: state_name.clone(),
+        state_dims: Vec::new(),
         der_expr,
     })
 }

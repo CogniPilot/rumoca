@@ -1,4 +1,5 @@
 use super::*;
+use crate::dae_prepare::direct_demotion::aggregate_scalar_direct_defining_expr;
 use indexmap::IndexSet;
 use rumoca_core::Span;
 
@@ -143,6 +144,22 @@ fn array(elements: Vec<Expression>) -> Expression {
         elements,
         is_matrix: false,
         span: Span::DUMMY,
+    }
+}
+
+fn matrix(rows: Vec<Vec<Expression>>) -> Expression {
+    Expression::Array {
+        elements: rows.into_iter().map(array).collect(),
+        is_matrix: true,
+        span: test_span(),
+    }
+}
+
+fn builtin(function: BuiltinFunction, args: Vec<Expression>) -> Expression {
+    Expression::BuiltinCall {
+        function,
+        args,
+        span: test_span(),
     }
 }
 
@@ -565,6 +582,88 @@ fn test_demote_direct_assigned_states_allows_fixed_state_with_extra_value_ref() 
     assert_eq!(demoted, 1);
     assert!(!dae.variables.states.contains_key(&VarName::new("w")));
     assert!(dae.variables.algebraics.contains_key(&VarName::new("w")));
+}
+
+#[test]
+fn test_demote_direct_assigned_states_allows_direct_dynamic_extra_value_ref() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("u"), test_variable("u"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("z"), test_variable("z"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var("u"), var("time"))));
+    dae.continuous.equations.push(eq(sub(var("x"), var("u"))));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(sub(der("x"), var("z"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x")))
+    );
+}
+
+#[test]
+fn test_demote_direct_assigned_states_allows_aggregate_state_dependent_alias_closure() {
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), x);
+    let mut y = test_variable("y");
+    y.dims = vec![2];
+    dae.variables.states.insert(VarName::new("y"), y);
+    let mut u = test_variable("u");
+    u.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("u"), u);
+    for name in ["vx1", "vx2", "vy1", "vy2"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+
+    dae.continuous.equations.push(eq(sub(var("u"), var("y"))));
+    dae.continuous.equations.push(eq(sub(var("x"), var("u"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 1), var("vx1"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 2), var("vx2"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("y", 1), var("vy1"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("y", 2), var("vy2"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.states.contains_key(&VarName::new("y")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x")))
+    );
 }
 
 #[test]
@@ -1169,6 +1268,799 @@ fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
             "indexed derivative row omega[{idx}] should be retained"
         );
     }
+}
+
+#[test]
+fn test_demote_direct_assigned_states_projects_array_derivative_replacement() {
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), x);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("u1"), test_variable("u1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("u2"), test_variable("u2"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("v1"), test_variable("v1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("v2"), test_variable("v2"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var("u1"), var("time"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("u2"), mul(var("time"), var("time")))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("x"), array(vec![var("u1"), var("u2")]))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 1), var("v1"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 2), var("v2"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x"))),
+        "all indexed der(x[i]) uses should be substituted"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| matches!(&eq.rhs,
+                Expression::Binary { op: OpBinary::Sub, lhs, rhs, .. }
+                    if matches!(lhs.as_ref(), Expression::Literal { value: Literal::Real(v), .. } if (*v - 1.0).abs() < f64::EPSILON)
+                        && expr_refers_to_var(rhs, &VarName::new("v1"))
+            )),
+        "der(x[1]) should project to d(u1)/dt"
+    );
+}
+
+#[test]
+fn test_demote_scalarized_array_state_resolves_indexed_algebraic_derivatives() {
+    let span = test_span();
+    let spanned_mul = |lhs: Expression, rhs: Expression| Expression::Binary {
+        op: OpBinary::Mul,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    };
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), x);
+    let mut y = test_variable("y");
+    y.dims = vec![2];
+    dae.variables.states.insert(VarName::new("y"), y);
+    let mut u = test_variable("u");
+    u.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("u"), u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vy1"), test_variable("vy1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vy2"), test_variable("vy2"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vx1"), test_variable("vx1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vx2"), test_variable("vx2"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx("u", 1), var_idx_with_span("y", 1, span))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx("u", 2), var_idx_with_span("y", 2, span))));
+    dae.continuous.equations.push(eq(sub(
+        var_idx("x", 1),
+        spanned_mul(real(2.0), var_idx_with_span("u", 1, span)),
+    )));
+    dae.continuous.equations.push(eq(sub(
+        var_idx("x", 2),
+        spanned_mul(real(3.0), var_idx_with_span("u", 2, span)),
+    )));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("y", 1), var_with_span("vy1", span))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("y", 2), var_with_span("vy2", span))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 1), var("vx1"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 2), var("vx2"))));
+
+    let x_defining_expr = aggregate_scalar_direct_defining_expr(&dae, &VarName::new("x"), &[2])
+        .expect("scalarized x definitions should rebuild an aggregate expression");
+    let base_der_map = build_der_value_map(&dae);
+    let y_derivative = base_der_map
+        .get("y")
+        .expect("array derivative map should contain y");
+    assert!(
+        !format!("{y_derivative:?}").contains("Der"),
+        "array derivative map should contain concrete derivative rows: {y_derivative:?}"
+    );
+    let der_map =
+        build_relaxed_derivative_map_for_exprs(&dae, std::slice::from_ref(&x_defining_expr))
+            .expect("relaxed derivative map should build");
+    assert!(
+        symbolic_time_derivative(&x_defining_expr, &dae, &der_map).is_some(),
+        "aggregate x definition should differentiate through indexed algebraic u"
+    );
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.states.contains_key(&VarName::new("y")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x"))),
+        "scalarized der(x[i]) rows should be substituted"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_var(&eq.rhs, &VarName::new("vy1"))),
+        "der(x[1]) should resolve through der(u[1]) to y's derivative row"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_var(&eq.rhs, &VarName::new("vy2"))),
+        "der(x[2]) should resolve through der(u[2]) to y's derivative row"
+    );
+}
+
+#[test]
+fn test_demote_scalarized_array_state_resolves_unary_connector_alias_derivatives() {
+    let span = test_span();
+    let zeros2 = || Expression::BuiltinCall {
+        function: BuiltinFunction::Zeros,
+        args: vec![int(2)],
+        span,
+    };
+    let connector_alias_row =
+        |source: Expression, target: Expression| sub(add(source, neg(target)), zeros2());
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), x);
+    let mut y = test_variable("y");
+    y.dims = vec![2];
+    dae.variables.states.insert(VarName::new("y"), y);
+    let mut u = test_variable("u");
+    u.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("u"), u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vy1"), test_variable("vy1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vy2"), test_variable("vy2"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vx1"), test_variable("vx1"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vx2"), test_variable("vx2"));
+
+    dae.continuous.equations.push(eq(connector_alias_row(
+        var_idx_with_span("y", 1, span),
+        var_idx_with_span("u", 1, span),
+    )));
+    dae.continuous.equations.push(eq(connector_alias_row(
+        var_idx_with_span("y", 2, span),
+        var_idx_with_span("u", 2, span),
+    )));
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx("x", 1), var_idx_with_span("u", 1, span))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var_idx("x", 2), var_idx_with_span("u", 2, span))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("y", 1), var("vy1"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("y", 2), var("vy2"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 1), var("vx1"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 2), var("vx2"))));
+
+    let x_defining_expr = aggregate_scalar_direct_defining_expr(&dae, &VarName::new("x"), &[2])
+        .expect("scalarized x definitions should rebuild an aggregate expression");
+    let der_map =
+        build_relaxed_derivative_map_for_exprs(&dae, std::slice::from_ref(&x_defining_expr))
+            .expect("relaxed derivative map should build");
+    let derivative = symbolic_time_derivative(&x_defining_expr, &dae, &der_map)
+        .expect("aggregate x definition should differentiate through unary connector alias u");
+    assert!(
+        !expr_contains_der_of_non_state(
+            &derivative,
+            &std::collections::HashSet::from(["x".to_string(), "y".to_string()])
+        ),
+        "derivative should not fall back to der(non-state): {derivative:?}"
+    );
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x"))),
+        "scalarized der(x[i]) rows should be substituted through connector alias rows"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_var(&eq.rhs, &VarName::new("vy1")))
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| expr_contains_var(&eq.rhs, &VarName::new("vy2")))
+    );
+}
+
+#[test]
+fn test_symbolic_derivative_expands_matrix_vector_rotation_chain() {
+    let mut dae = Dae::new();
+    let mut phi = test_variable("phi");
+    phi.dims = vec![];
+    dae.variables.states.insert(VarName::new("phi"), phi);
+    let mut i = test_variable("i");
+    i.dims = vec![2];
+    dae.variables.states.insert(VarName::new("i"), i);
+    let mut psi = test_variable("psi");
+    psi.dims = vec![2];
+    dae.variables.states.insert(VarName::new("psi"), psi);
+
+    let mut gamma = test_variable("gamma");
+    gamma.dims = vec![];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("gamma"), gamma);
+    let mut r = test_variable("R");
+    r.dims = vec![2, 2];
+    dae.variables.algebraics.insert(VarName::new("R"), r);
+    let mut q = test_variable("q");
+    q.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("q"), q);
+    for name in ["omega", "di1", "di2", "vpsi1", "vpsi2"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var("gamma"), var("phi"))));
+    dae.continuous.equations.push(eq(sub(
+        var("R"),
+        matrix(vec![
+            vec![
+                builtin(BuiltinFunction::Cos, vec![var("gamma")]),
+                neg(builtin(BuiltinFunction::Sin, vec![var("gamma")])),
+            ],
+            vec![
+                builtin(BuiltinFunction::Sin, vec![var("gamma")]),
+                builtin(BuiltinFunction::Cos, vec![var("gamma")]),
+            ],
+        ]),
+    )));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("q"), mul(var("R"), var("i")))));
+    let psi_expr = mul(
+        builtin(BuiltinFunction::Transpose, vec![var("R")]),
+        var("q"),
+    );
+    dae.continuous
+        .equations
+        .push(eq(sub(var("psi"), psi_expr.clone())));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("phi"), var_with_span("omega", test_span()))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("i", 1), var_with_span("di1", test_span()))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("i", 2), var_with_span("di2", test_span()))));
+    dae.continuous.equations.push(eq(sub(
+        der_idx("psi", 1),
+        var_with_span("vpsi1", test_span()),
+    )));
+    dae.continuous.equations.push(eq(sub(
+        der_idx("psi", 2),
+        var_with_span("vpsi2", test_span()),
+    )));
+
+    let base_der_map = build_der_value_map(&dae);
+    assert!(
+        base_der_map
+            .get("i")
+            .is_some_and(|expr| !format!("{expr:?}").contains("Der")),
+        "array state derivative rows should be concrete: {:?}",
+        base_der_map.get("i")
+    );
+    let der_map = build_relaxed_derivative_map_for_exprs(&dae, std::slice::from_ref(&psi_expr))
+        .expect("relaxed derivative map should build for rotation chain");
+    let derivative = symbolic_time_derivative(&psi_expr, &dae, &der_map)
+        .expect("matrix-vector rotation chain should differentiate");
+
+    assert!(
+        !expr_contains_der_of_non_state(
+            &derivative,
+            &std::collections::HashSet::from([
+                "phi".to_string(),
+                "i".to_string(),
+                "psi".to_string(),
+            ])
+        ),
+        "rotation-chain derivative should not fall back to der(non-state): {derivative:?}"
+    );
+    assert!(
+        expr_contains_var(&derivative, &VarName::new("omega")),
+        "trig chain rule should carry gamma's state derivative"
+    );
+    assert!(
+        expr_contains_var(&derivative, &VarName::new("di1"))
+            && expr_contains_var(&derivative, &VarName::new("di2")),
+        "matrix-vector derivative should carry vector state derivative rows: {derivative:?}"
+    );
+}
+
+#[test]
+fn test_array_derivative_map_projects_aggregate_linear_ode_rows() {
+    let mut dae = Dae::new();
+    let mut i = test_variable("i");
+    i.dims = vec![2];
+    dae.variables.states.insert(VarName::new("i"), i);
+    let mut v = test_variable("v");
+    v.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("v"), v);
+    let mut r = test_variable("r");
+    r.dims = vec![];
+    dae.variables.parameters.insert(VarName::new("r"), r);
+    let mut l = test_variable("l");
+    l.dims = vec![];
+    dae.variables.parameters.insert(VarName::new("l"), l);
+
+    let mut ode = eq(sub(
+        var_with_span("v", test_span()),
+        add(
+            mul(
+                var_with_span("r", test_span()),
+                var_with_span("i", test_span()),
+            ),
+            mul(var_with_span("l", test_span()), der("i")),
+        ),
+    ));
+    ode.scalar_count = 2;
+    dae.continuous.equations.push(ode);
+
+    let der_map = build_der_value_map(&dae);
+    let derivative = der_map
+        .get("i")
+        .expect("aggregate vector ODE should produce array derivative");
+
+    assert!(
+        !format!("{derivative:?}").contains("Der"),
+        "aggregate vector ODE should solve concrete derivative rows: {derivative:?}"
+    );
+    assert!(
+        expr_contains_var(derivative, &VarName::new("v")),
+        "projected derivative should retain the vector voltage term"
+    );
+}
+
+#[test]
+fn test_array_derivative_map_projects_dotted_aggregate_linear_ode_rows() {
+    let mut dae = Dae::new();
+    let state_name = "m.spacePhasor_r.i_";
+    let mut current = test_variable(state_name);
+    current.dims = vec![2];
+    dae.variables
+        .states
+        .insert(VarName::new(state_name), current);
+    let mut voltage = test_variable("m.spacePhasor_r.v_");
+    voltage.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("m.spacePhasor_r.v_"), voltage);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("m.R_actual"), test_variable("m.R_actual"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("m.Lsigma"), test_variable("m.Lsigma"));
+
+    let span = test_span();
+    let mut ode = spanned_eq(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(var_with_span("m.spacePhasor_r.v_", span)),
+            rhs: Box::new(add(
+                mul(
+                    var_with_span("m.R_actual", span),
+                    var_with_span(state_name, span),
+                ),
+                mul(var_with_span("m.Lsigma", span), der(state_name)),
+            )),
+            span,
+        },
+        "equation from m",
+        span,
+    );
+    ode.scalar_count = 2;
+    dae.continuous.equations.push(ode);
+
+    let der_map = build_der_value_map(&dae);
+    let derivative = der_map
+        .get(state_name)
+        .expect("dotted aggregate vector ODE should produce array derivative");
+
+    assert!(
+        !format!("{derivative:?}").contains("Der"),
+        "dotted aggregate vector ODE should solve concrete derivative rows: {derivative:?}"
+    );
+    assert!(
+        expr_contains_var(derivative, &VarName::new("m.spacePhasor_r.v_")),
+        "projected derivative should retain the dotted vector voltage term"
+    );
+}
+
+#[test]
+fn test_relaxed_derivative_map_resolves_zero_sum_vector_alias() {
+    let mut dae = Dae::new();
+    let mut state = test_variable("machine.rotor.i");
+    state.dims = vec![2];
+    dae.variables
+        .states
+        .insert(VarName::new("machine.rotor.i"), state);
+    let mut alias = test_variable("airgap.rotor.i");
+    alias.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("airgap.rotor.i"), alias);
+    let mut voltage = test_variable("machine.rotor.v");
+    voltage.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("machine.rotor.v"), voltage);
+    dae.variables.parameters.insert(
+        VarName::new("machine.rotor.L"),
+        test_variable("machine.rotor.L"),
+    );
+
+    let span = test_span();
+    let mut flow_sum = spanned_eq(
+        add(
+            var_with_span("airgap.rotor.i", span),
+            var_with_span("machine.rotor.i", span),
+        ),
+        "flow sum equation: airgap.rotor.i + machine.rotor.i = 0",
+        span,
+    );
+    flow_sum.scalar_count = 2;
+    dae.continuous.equations.push(flow_sum);
+    let mut ode = spanned_eq(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(var_with_span("machine.rotor.v", span)),
+            rhs: Box::new(mul(
+                var_with_span("machine.rotor.L", span),
+                der("machine.rotor.i"),
+            )),
+            span,
+        },
+        "equation from machine.rotor",
+        span,
+    );
+    ode.scalar_count = 2;
+    dae.continuous.equations.push(ode);
+
+    let seed = var_with_span("airgap.rotor.i", span);
+    let der_map = build_relaxed_derivative_map_for_exprs(&dae, &[seed])
+        .expect("zero-sum alias derivative map should build");
+    let derivative = der_map
+        .get("airgap.rotor.i")
+        .expect("zero-sum vector alias should have derivative");
+
+    assert!(
+        !expr_contains_der_of_non_state(
+            derivative,
+            &std::collections::HashSet::from(["machine.rotor.i".to_string()])
+        ),
+        "zero-sum alias derivative should resolve through the state ODE: {derivative:?}"
+    );
+    assert!(
+        expr_contains_var(derivative, &VarName::new("machine.rotor.v")),
+        "alias derivative should retain the source ODE voltage term"
+    );
+}
+
+#[test]
+fn test_relaxed_derivative_map_skips_unresolved_vector_alias_candidates() {
+    let mut dae = Dae::new();
+    let mut state = test_variable("machine.stator.i");
+    state.dims = vec![2];
+    dae.variables
+        .states
+        .insert(VarName::new("machine.stator.i"), state);
+    for name in [
+        "airgap.i_ss",
+        "airgap.spacePhasor_s.i_",
+        "airgap.i_sr",
+        "machine.stator.v",
+    ] {
+        let mut variable = test_variable(name);
+        variable.dims = vec![2];
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+    }
+    dae.variables.parameters.insert(
+        VarName::new("machine.stator.L"),
+        test_variable("machine.stator.L"),
+    );
+    let mut rotation = test_variable("airgap.RotationMatrix");
+    rotation.dims = vec![2, 2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("airgap.RotationMatrix"), rotation);
+
+    let span = test_span();
+    let mut unresolved_candidate = spanned_eq(
+        sub(
+            var_with_span("airgap.i_ss", span),
+            mul(
+                var_with_span("airgap.RotationMatrix", span),
+                var_with_span("airgap.i_sr", span),
+            ),
+        ),
+        "equation from airgap unresolved candidate",
+        span,
+    );
+    unresolved_candidate.scalar_count = 2;
+    dae.continuous.equations.push(unresolved_candidate);
+    let mut resolvable_candidate = spanned_eq(
+        sub(
+            var_with_span("airgap.i_ss", span),
+            var_with_span("airgap.spacePhasor_s.i_", span),
+        ),
+        "equation from airgap resolvable candidate",
+        span,
+    );
+    resolvable_candidate.scalar_count = 2;
+    dae.continuous.equations.push(resolvable_candidate);
+    let mut flow_sum = spanned_eq(
+        add(
+            var_with_span("airgap.spacePhasor_s.i_", span),
+            var_with_span("machine.stator.i", span),
+        ),
+        "flow sum equation: airgap.spacePhasor_s.i_ + machine.stator.i = 0",
+        span,
+    );
+    flow_sum.scalar_count = 2;
+    dae.continuous.equations.push(flow_sum);
+    let mut ode = spanned_eq(
+        sub(
+            var_with_span("machine.stator.v", span),
+            mul(
+                var_with_span("machine.stator.L", span),
+                der("machine.stator.i"),
+            ),
+        ),
+        "equation from machine.stator",
+        span,
+    );
+    ode.scalar_count = 2;
+    dae.continuous.equations.push(ode);
+
+    let seed = var_with_span("airgap.i_ss", span);
+    let der_map = build_relaxed_derivative_map_for_exprs(&dae, &[seed])
+        .expect("relaxed derivative map should build");
+    let derivative = der_map
+        .get("airgap.i_ss")
+        .expect("resolvable vector alias candidate should have derivative");
+
+    assert!(
+        !expr_contains_der_of_non_state(
+            derivative,
+            &std::collections::HashSet::from(["machine.stator.i".to_string()])
+        ),
+        "derivative map should skip candidates with unresolved algebraic derivatives: {derivative:?}"
+    );
+    assert!(
+        expr_contains_var(derivative, &VarName::new("machine.stator.v")),
+        "chosen derivative should resolve through the state ODE: {derivative:?}"
+    );
+}
+
+#[test]
+fn test_direct_demotion_resolves_vector_flux_through_later_alias_candidate() {
+    let mut dae = Dae::new();
+    for name in ["psi", "machine.stator.i"] {
+        let mut variable = test_variable(name);
+        variable.dims = vec![2];
+        dae.variables.states.insert(VarName::new(name), variable);
+    }
+    for name in [
+        "i_ms",
+        "i_ss",
+        "i_rs",
+        "spacePhasor_s.i_",
+        "i_sr",
+        "spacePhasor_s.v_",
+        "machine.stator.v",
+    ] {
+        let mut variable = test_variable(name);
+        variable.dims = vec![2];
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+    }
+    for name in ["L", "machine.stator.L"] {
+        dae.variables
+            .parameters
+            .insert(VarName::new(name), test_variable(name));
+    }
+    let mut rotation = test_variable("RotationMatrix");
+    rotation.dims = vec![2, 2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("RotationMatrix"), rotation);
+
+    let span = test_span();
+    for mut equation in [
+        spanned_eq(
+            sub(
+                var_idx_with_span("psi", 1, span),
+                mul(var_with_span("L", span), var_idx_with_span("i_ms", 1, span)),
+            ),
+            "equation from airgap flux[1]",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_idx_with_span("psi", 2, span),
+                mul(var_with_span("L", span), var_idx_with_span("i_ms", 2, span)),
+            ),
+            "equation from airgap flux[2]",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_with_span("i_ms", span),
+                add(var_with_span("i_ss", span), var_with_span("i_rs", span)),
+            ),
+            "equation from airgap current sum",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_with_span("i_ss", span),
+                mul(
+                    var_with_span("RotationMatrix", span),
+                    var_with_span("i_sr", span),
+                ),
+            ),
+            "equation from airgap unresolved candidate",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_with_span("i_ss", span),
+                var_with_span("spacePhasor_s.i_", span),
+            ),
+            "equation from airgap resolvable candidate",
+            span,
+        ),
+        spanned_eq(
+            add(
+                var_with_span("spacePhasor_s.i_", span),
+                var_with_span("machine.stator.i", span),
+            ),
+            "flow sum equation: spacePhasor_s.i_ + machine.stator.i = 0",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_with_span("i_rs", span),
+                builtin(BuiltinFunction::Zeros, vec![int(2)]),
+            ),
+            "equation from rotor current simplification",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_with_span("machine.stator.v", span),
+                mul(
+                    var_with_span("machine.stator.L", span),
+                    der("machine.stator.i"),
+                ),
+            ),
+            "equation from machine.stator",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_idx_with_span("spacePhasor_s.v_", 1, span),
+                der_idx("psi", 1),
+            ),
+            "equation from airgap voltage[1]",
+            span,
+        ),
+        spanned_eq(
+            sub(
+                var_idx_with_span("spacePhasor_s.v_", 2, span),
+                der_idx("psi", 2),
+            ),
+            "equation from airgap voltage[2]",
+            span,
+        ),
+    ] {
+        if equation.origin.ends_with("[1]") || equation.origin.ends_with("[2]") {
+            equation.scalar_count = 1;
+        } else {
+            equation.scalar_count = 2;
+        }
+        dae.continuous.equations.push(equation);
+    }
+
+    let psi_expr = aggregate_scalar_direct_defining_expr(&dae, &VarName::new("psi"), &[2]).unwrap();
+    eprintln!("DEBUG TEST psi_expr={psi_expr:?}");
+    let der_map = build_relaxed_derivative_map_for_exprs(&dae, std::slice::from_ref(&psi_expr))
+        .expect("derivative map should build");
+    eprintln!("DEBUG TEST der_map={der_map:?}");
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("psi")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("psi")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("psi"))),
+        "demotion should rewrite all psi derivative references"
+    );
 }
 
 #[test]

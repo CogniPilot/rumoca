@@ -804,7 +804,7 @@ pub fn substitute_standalone_state_derivatives_in_non_ode_rows(dae: &mut Dae) ->
             if !expr_contains_der_of(&eq.rhs, state_name) {
                 continue;
             }
-            eq.rhs = substitute_der_of_state(&eq.rhs, state_name, replacement);
+            eq.rhs = substitute_der_of_state(&eq.rhs, state_name, &[], replacement);
             rewritten = true;
         }
         rewritten_rows += usize::from(rewritten);

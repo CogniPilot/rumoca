@@ -313,12 +313,6 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
             )?;
             continue;
         }
-        if is_flow_equation_origin(&dae.continuous.equations[eq_idx].origin)
-            && expr_contains_indexed_multiscalar_ref(&eq_rhs, dae)?
-        {
-            continue;
-        }
-
         let Some((var_name, solution)) = choose_solvable_unknown_for_elimination(
             dae,
             eq_idx,
@@ -677,9 +671,7 @@ fn choose_solvable_unknown_for_elimination(
         if dae.variables.states.contains_key(candidate) {
             continue;
         }
-        if is_scalarized_element_of_aggregate(dae, candidate)? {
-            continue;
-        }
+        let candidate_is_scalarized_element = is_scalarized_element_of_aggregate(dae, candidate)?;
         if is_runtime_protected_unknown(candidate, runtime_protected_unknowns) {
             continue;
         }
@@ -701,6 +693,13 @@ fn choose_solvable_unknown_for_elimination(
             continue;
         }
         let direct_assignment_solution = has_direct_assignment_form(rhs, candidate);
+        let origin = &dae.continuous.equations[eq_idx].origin;
+        let scalar_connector_alias_solution = (is_flow_equation_origin(origin)
+            || origin.starts_with("connection equation:"))
+            && is_trivial_alias(&solution);
+        if candidate_is_scalarized_element && !scalar_connector_alias_solution {
+            continue;
+        }
         // Output variables exist for external callers — only eliminate them
         // when the solution is a trivial alias (a single variable reference or
         // its negation), since keeping non-trivial outputs enlarges the DAE and
@@ -720,7 +719,7 @@ fn choose_solvable_unknown_for_elimination(
         {
             continue;
         }
-        if live.len() > 1 && !direct_assignment_solution {
+        if live.len() > 1 && !direct_assignment_solution && !scalar_connector_alias_solution {
             continue;
         }
         return Ok(Some((candidate.clone(), solution)));

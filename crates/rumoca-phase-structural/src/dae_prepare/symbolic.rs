@@ -163,13 +163,91 @@ fn build_array_der_value(dae: &Dae, state_name: &VarName, dims: &[i64]) -> Optio
             .continuous
             .equations
             .iter()
-            .find_map(|eq| try_extract_der_value(&eq.rhs, &scalar_name))?;
+            .find_map(|eq| try_extract_der_value(&eq.rhs, &scalar_name))
+            .filter(|value| {
+                !expr_contains_der_of(value, &scalar_name)
+                    && !expr_contains_der_of(value, state_name)
+            })
+            .or_else(|| {
+                dae.continuous.equations.iter().find_map(|eq| {
+                    try_extract_indexed_der_value(&eq.rhs, state_name, dims, flat_index)
+                })
+            })
+            .filter(|value| !expr_contains_der_of(value, state_name))
+            .or_else(|| {
+                dae.continuous.equations.iter().find_map(|eq| {
+                    if eq.scalar_count <= 1 || !expr_contains_der_of(&eq.rhs, state_name) {
+                        return None;
+                    }
+                    let projected =
+                        project_flat_index_with_dae(&eq.rhs, dims, flat_index, dae, Some(eq.span));
+                    let projected = projected?;
+                    try_extract_der_value(&projected, state_name)
+                })
+            })?;
         values.push(value);
     }
     array_expr_from_flat_values(values, dims)
 }
 
-fn array_expr_from_flat_values(values: Vec<Expression>, dims: &[i64]) -> Option<Expression> {
+fn try_extract_indexed_der_value(
+    rhs: &Expression,
+    state_name: &VarName,
+    dims: &[i64],
+    flat_index: usize,
+) -> Option<Expression> {
+    if let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs: row_rhs,
+        ..
+    } = rhs
+    {
+        if is_der_of_indexed_state(row_rhs, state_name, dims, flat_index)
+            && !expr_contains_der_of(lhs, state_name)
+        {
+            return Some(*lhs.clone());
+        }
+        if is_der_of_indexed_state(lhs, state_name, dims, flat_index)
+            && !expr_contains_der_of(row_rhs, state_name)
+        {
+            return Some(*row_rhs.clone());
+        }
+    }
+    None
+}
+
+fn is_der_of_indexed_state(
+    expr: &Expression,
+    state_name: &VarName,
+    dims: &[i64],
+    expected_flat_index: usize,
+) -> bool {
+    let Expression::BuiltinCall {
+        function: BuiltinFunction::Der,
+        args,
+        ..
+    } = expr
+    else {
+        return false;
+    };
+    let Some(Expression::VarRef {
+        name, subscripts, ..
+    }) = args.first()
+    else {
+        return false;
+    };
+    if name.var_name() != state_name {
+        return false;
+    }
+    static_subscript_indices(subscripts).and_then(|indices| flat_index_from_indices(dims, &indices))
+        == Some(expected_flat_index)
+}
+
+pub(super) fn array_expr_from_flat_values(
+    values: Vec<Expression>,
+    dims: &[i64],
+) -> Option<Expression> {
     match dims {
         [n] if *n >= 0 && *n as usize == values.len() => Some(Expression::Array {
             span: expression_sequence_span(&values)?,
@@ -250,7 +328,6 @@ impl<'a> SymbolicDerivativeContext<'a> {
             return Some(real_literal(0.0, span));
         }
         if !subscripts.is_empty()
-            && !self.dae.variables.states.contains_key(name)
             && let Some(derivative) = self.der_map.get(name.as_str())
             && let Some(dims) = variable_dims_for_name(self.dae, name)
             && let Some(indices) = static_subscript_indices(subscripts)
@@ -302,6 +379,9 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 span,
             )),
             OpBinary::Mul | OpBinary::MulElem => {
+                if let Some(expanded) = expand_matrix_vector_product(lhs, rhs, self.dae, span) {
+                    return self.differentiate(&expanded, active_functions);
+                }
                 if let Some(dot) = self.differentiate_vector_dot(lhs, rhs, span, active_functions) {
                     return Some(dot);
                 }
@@ -511,6 +591,58 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 self.der_order.set(self.der_order.get() - 1);
                 result
             }
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Zeros | BuiltinFunction::Ones,
+                span,
+                ..
+            } => Some(real_literal(0.0, *span)),
+            Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } => self.differentiate_builtin_call(function, args, *span, active_functions),
+            _ => None,
+        }
+    }
+
+    fn differentiate_builtin_call(
+        &self,
+        function: &BuiltinFunction,
+        args: &[Expression],
+        span: Span,
+        active_functions: &mut Vec<VarName>,
+    ) -> Option<Expression> {
+        let arg = args.first()?;
+        match function {
+            BuiltinFunction::Sin if args.len() == 1 => Some(make_binary(
+                OpBinary::Mul,
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Cos,
+                    args: vec![arg.clone()],
+                    span,
+                },
+                self.differentiate(arg, active_functions)?,
+                span,
+            )),
+            BuiltinFunction::Cos if args.len() == 1 => Some(make_unary(
+                OpUnary::Minus,
+                make_binary(
+                    OpBinary::Mul,
+                    Expression::BuiltinCall {
+                        function: BuiltinFunction::Sin,
+                        args: vec![arg.clone()],
+                        span,
+                    },
+                    self.differentiate(arg, active_functions)?,
+                    span,
+                ),
+                span,
+            )),
+            BuiltinFunction::Transpose if args.len() == 1 => Some(Expression::BuiltinCall {
+                function: BuiltinFunction::Transpose,
+                args: vec![self.differentiate(arg, active_functions)?],
+                span,
+            }),
             _ => None,
         }
     }
@@ -680,6 +812,14 @@ fn expression_dims(expr: &Expression, dae: &Dae) -> Option<Vec<i64>> {
             args,
             ..
         } => args.first().and_then(|arg| expression_dims(arg, dae)),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Transpose,
+            args,
+            ..
+        } if args.len() == 1 => {
+            let dims = expression_dims(&args[0], dae)?;
+            (dims.len() == 2).then(|| vec![dims[1], dims[0]])
+        }
         _ => None,
     }
 }
@@ -712,12 +852,172 @@ fn project_flat_index(expr: &Expression, dims: &[i64], flat_index: usize) -> Opt
     project_flat_index_with_span(expr, dims, flat_index, None)
 }
 
+fn project_flat_index_with_dae(
+    expr: &Expression,
+    dims: &[i64],
+    flat_index: usize,
+    dae: &Dae,
+    fallback_span: Option<Span>,
+) -> Option<Expression> {
+    match expr {
+        Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } if subscripts.is_empty() => {
+            let var_dims = variable_dims_for_name(dae, name.var_name()).unwrap_or_default();
+            if var_dims.is_empty() {
+                return Some(expr.clone());
+            }
+            let indices = dae::flat_index_to_subscripts(&var_dims, flat_index)?;
+            let projection_span = projection_span(expr, fallback_span)?;
+            Some(Expression::VarRef {
+                name: name.clone(),
+                subscripts: generated_index_subscripts(
+                    indices,
+                    projection_span,
+                    "DAE-projected aggregate derivative row",
+                )?,
+                span: if span.is_dummy() {
+                    projection_span
+                } else {
+                    *span
+                },
+            })
+        }
+        Expression::VarRef { subscripts, .. } if !subscripts.is_empty() => Some(expr.clone()),
+        Expression::Literal { .. } => Some(expr.clone()),
+        Expression::Array { elements, .. } => {
+            flatten_array_elements(elements).get(flat_index).cloned()
+        }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+            ..
+        } if args.len() == 1 => {
+            let span = projection_span_with_children(expr, fallback_span)?;
+            Some(Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![project_flat_index_with_dae(
+                    &args[0],
+                    dims,
+                    flat_index,
+                    dae,
+                    Some(span),
+                )?],
+                span,
+            })
+        }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Transpose,
+            args,
+            ..
+        } if args.len() == 1 && dims.len() == 2 => {
+            let indices = dae::flat_index_to_subscripts(dims, flat_index)?;
+            let inner_dims = vec![dims[1], dims[0]];
+            let transposed_flat_index = flat_index_from_indices(
+                &inner_dims,
+                &[
+                    i64::try_from(indices[1]).ok()?,
+                    i64::try_from(indices[0]).ok()?,
+                ],
+            )?;
+            project_flat_index_with_dae(
+                &args[0],
+                &inner_dims,
+                transposed_flat_index,
+                dae,
+                fallback_span,
+            )
+        }
+        Expression::Binary { op, lhs, rhs, span }
+            if matches!(op, OpBinary::Mul | OpBinary::MulElem) =>
+        {
+            if let Some(expanded) = expand_matrix_vector_product(lhs, rhs, dae, *span) {
+                return project_flat_index_with_dae(
+                    &expanded,
+                    dims,
+                    flat_index,
+                    dae,
+                    fallback_span,
+                );
+            }
+            let span = projection_span_with_children(expr, fallback_span)?;
+            Some(Expression::Binary {
+                op: op.clone(),
+                lhs: Box::new(project_flat_index_with_dae(
+                    lhs,
+                    dims,
+                    flat_index,
+                    dae,
+                    Some(span),
+                )?),
+                rhs: Box::new(project_flat_index_with_dae(
+                    rhs,
+                    dims,
+                    flat_index,
+                    dae,
+                    Some(span),
+                )?),
+                span,
+            })
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let span = projection_span_with_children(expr, fallback_span)?;
+            Some(Expression::Binary {
+                op: op.clone(),
+                lhs: Box::new(project_flat_index_with_dae(
+                    lhs,
+                    dims,
+                    flat_index,
+                    dae,
+                    Some(span),
+                )?),
+                rhs: Box::new(project_flat_index_with_dae(
+                    rhs,
+                    dims,
+                    flat_index,
+                    dae,
+                    Some(span),
+                )?),
+                span,
+            })
+        }
+        Expression::Unary { op, rhs, .. } => {
+            let span = projection_span_with_children(expr, fallback_span)?;
+            Some(Expression::Unary {
+                op: op.clone(),
+                rhs: Box::new(project_flat_index_with_dae(
+                    rhs,
+                    dims,
+                    flat_index,
+                    dae,
+                    Some(span),
+                )?),
+                span,
+            })
+        }
+        _ => project_flat_index_with_span(expr, dims, flat_index, fallback_span),
+    }
+}
+
 fn projection_span(expr: &Expression, fallback_span: Option<Span>) -> Option<Span> {
     expr.span()
         .or_else(|| fallback_span.filter(|span| !span.is_dummy()))
 }
 
-fn project_flat_index_with_span(
+fn projection_span_with_children(expr: &Expression, fallback_span: Option<Span>) -> Option<Span> {
+    projection_span(expr, fallback_span).or_else(|| match expr {
+        Expression::Binary { lhs, rhs, .. } => lhs.span().or_else(|| rhs.span()),
+        Expression::Unary { rhs, .. } => rhs.span(),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            args.iter().find_map(Expression::span)
+        }
+        _ => None,
+    })
+}
+
+pub(super) fn project_flat_index_with_span(
     expr: &Expression,
     dims: &[i64],
     flat_index: usize,
@@ -745,6 +1045,8 @@ fn project_flat_index_with_span(
                 },
             })
         }
+        Expression::VarRef { subscripts, .. } if !subscripts.is_empty() => Some(expr.clone()),
+        Expression::Literal { .. } => Some(expr.clone()),
         Expression::Array { elements, .. } => {
             flatten_array_elements(elements).get(flat_index).cloned()
         }
@@ -764,6 +1066,27 @@ fn project_flat_index_with_span(
                 )?],
                 span,
             })
+        }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Transpose,
+            args,
+            ..
+        } if args.len() == 1 && dims.len() == 2 => {
+            let indices = dae::flat_index_to_subscripts(dims, flat_index)?;
+            let inner_dims = vec![dims[1], dims[0]];
+            let transposed_flat_index = flat_index_from_indices(
+                &inner_dims,
+                &[
+                    i64::try_from(indices[1]).ok()?,
+                    i64::try_from(indices[0]).ok()?,
+                ],
+            )?;
+            project_flat_index_with_span(
+                &args[0],
+                &inner_dims,
+                transposed_flat_index,
+                fallback_span,
+            )
         }
         Expression::Binary { op, lhs, rhs, .. } => {
             let span = projection_span(expr, fallback_span)?;
@@ -813,6 +1136,39 @@ fn project_flat_index_with_span(
     }
 }
 
+fn expand_matrix_vector_product(
+    lhs: &Expression,
+    rhs: &Expression,
+    dae: &Dae,
+    span: Span,
+) -> Option<Expression> {
+    let lhs_dims = expression_dims(lhs, dae)?;
+    let rhs_dims = expression_dims(rhs, dae)?;
+    if lhs_dims.len() != 2 || rhs_dims.len() != 1 || lhs_dims[1] != rhs_dims[0] {
+        return None;
+    }
+    let rows = usize::try_from(lhs_dims[0]).ok()?;
+    let cols = usize::try_from(lhs_dims[1]).ok()?;
+    let elements = (0..rows)
+        .map(|row| {
+            let terms = (0..cols)
+                .map(|col| {
+                    let lhs_flat = row.checked_mul(cols)?.checked_add(col)?;
+                    let lhs_ij = project_flat_index(lhs, &lhs_dims, lhs_flat)?;
+                    let rhs_j = project_flat_index(rhs, &rhs_dims, col)?;
+                    Some(make_binary(OpBinary::Mul, lhs_ij, rhs_j, span))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(sum_terms(terms, span))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Expression::Array {
+        elements,
+        is_matrix: false,
+        span,
+    })
+}
+
 fn generated_index_subscripts(
     indices: Vec<usize>,
     span: Span,
@@ -830,7 +1186,7 @@ fn generated_index_subscripts(
         .collect()
 }
 
-fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
+pub(super) fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
     subscripts
         .iter()
         .map(|subscript| match subscript {
@@ -851,7 +1207,7 @@ fn static_subscript_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
         .collect()
 }
 
-fn flat_index_from_indices(dims: &[i64], indices: &[i64]) -> Option<usize> {
+pub(super) fn flat_index_from_indices(dims: &[i64], indices: &[i64]) -> Option<usize> {
     if dims.len() != indices.len() || dims.is_empty() {
         return None;
     }

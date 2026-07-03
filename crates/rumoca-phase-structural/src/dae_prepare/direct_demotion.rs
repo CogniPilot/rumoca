@@ -199,7 +199,8 @@ fn apply_direct_demotion_plans(
 
 pub(super) fn apply_direct_demotion_plan(dae: &mut Dae, plan: &DirectStateDemotionPlan) -> usize {
     for eq in &mut dae.continuous.equations {
-        eq.rhs = substitute_der_of_state(&eq.rhs, &plan.state_name, &plan.der_expr);
+        eq.rhs =
+            substitute_der_of_state(&eq.rhs, &plan.state_name, &plan.state_dims, &plan.der_expr);
     }
     if let Some(var) = dae.variables.states.shift_remove(&plan.state_name) {
         dae.variables
@@ -249,32 +250,37 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_der_in_defining_expr += 1;
         return None;
     }
+    let state = round.dae.variables.states.get(&state_name)?;
     // `der(state)` links are substituted symbolically on demotion (gated by
     // `state_ders_in_expr_independently_defined` above and validated again in
     // `choose_derivative_replacement`), so mask them before scanning for value
     // dependencies on states or unsafe alias closures.
     let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
-    if defining_expr_references_unsafe_non_state_alias_closure(
-        &round.non_state_defining_exprs,
-        &alias_scan_expr,
-        &round.state_name_set,
-        &round.non_state_unknown_names,
-        eq_index,
-        alias_safety_cache,
-    ) {
+    let has_direct_state_side = equation_has_direct_state_side(eq, &state_name);
+    let can_use_aggregate_direct_alias =
+        has_direct_state_side && !is_connection_equation_origin(&eq.origin) && state.size() > 1;
+    if !can_use_aggregate_direct_alias
+        && defining_expr_references_unsafe_non_state_alias_closure(
+            &round.non_state_defining_exprs,
+            &alias_scan_expr,
+            &round.state_name_set,
+            &round.non_state_unknown_names,
+            eq_index,
+            alias_safety_cache,
+        )
+    {
         counters.n_skip_unsafe_non_state_alias += 1;
         return None;
     }
-    if round
-        .dae
-        .variables
-        .states
-        .get(&state_name)
-        .is_some_and(|state| state.size() > 1)
-        || expr_contains_unsliced_vector_ref(&defining_expr, round.dae)
+    let is_shape_matched_array_assignment =
+        state.size() > 1 && expression_shape_matches_variable(&defining_expr, state, round.dae);
+    if (state.size() > 1 || expr_contains_unsliced_vector_ref(&defining_expr, round.dae))
+        && !is_shape_matched_array_assignment
     {
         // MLS §10.1: array state shape is semantic IR. This path substitutes
-        // whole `der(state)` calls, so unsliced compound states stay intact.
+        // whole `der(state)` calls only when the defining expression has the
+        // same aggregate shape; scalar/shape-ambiguous array aliases stay
+        // intact.
         counters.n_skip_unsliced_vector_ref += 1;
         return None;
     }
@@ -288,6 +294,7 @@ fn direct_demotion_plan_for_equation(
         })
         .count();
     if state_non_der_ref_rows > 1
+        && !has_direct_state_side
         && !expr_refs_only_parameters_constants_or_time(round.dae, &defining_expr)
     {
         counters.n_skip_extra_state_refs += 1;
@@ -318,8 +325,24 @@ fn direct_demotion_plan_for_equation(
     }
     Some(DirectStateDemotionPlan {
         state_name,
+        state_dims: state.dims.clone(),
         der_expr,
     })
+}
+
+fn equation_has_direct_state_side(eq: &Equation, state_name: &VarName) -> bool {
+    if eq
+        .lhs
+        .as_ref()
+        .is_some_and(|lhs| lhs.var_name() == state_name)
+    {
+        return true;
+    }
+    let Expression::Binary { op, lhs, rhs, .. } = &eq.rhs else {
+        return false;
+    };
+    matches!(op, OpBinary::Sub)
+        && (expr_refers_to_var(lhs, state_name) || expr_refers_to_var(rhs, state_name))
 }
 
 /// `der(z)` links inside a defining expression are demotable only when `z`'s
@@ -374,10 +397,151 @@ fn collect_direct_demotion_plans(
             .entry(plan.state_name.as_str().to_string())
             .or_insert(plan);
     }
+    collect_aggregate_scalar_direct_demotion_plans(&round, &mut substitutions, &mut counters);
     structural_timing_done("direct_demotion.scan_equations", timer);
 
     log_direct_demotion_scan_summary(trace, round.state_count(), &substitutions, &counters);
     Ok(substitutions)
+}
+
+fn collect_aggregate_scalar_direct_demotion_plans(
+    round: &DirectDemotionRound<'_>,
+    substitutions: &mut HashMap<String, DirectStateDemotionPlan>,
+    counters: &mut DirectDemotionCounters,
+) {
+    let mut candidates = Vec::new();
+    for state_name in &round.state_names {
+        if substitutions.contains_key(state_name.as_str()) {
+            continue;
+        }
+        let Some(state) = round.dae.variables.states.get(state_name) else {
+            continue;
+        };
+        if state.size() <= 1 || round.when_assigned_states.contains(state_name.as_str()) {
+            continue;
+        }
+        let Some(defining_expr) =
+            aggregate_scalar_direct_defining_expr(round.dae, state_name, &state.dims)
+        else {
+            if state_name.as_str() == "aimc.airGap.psi_ms" {
+                eprintln!("DEBUG psi_ms aggregate no defining expr");
+            }
+            continue;
+        };
+        if state_name.as_str() == "aimc.airGap.psi_ms" {
+            eprintln!("DEBUG psi_ms aggregate candidate {defining_expr:?}");
+        }
+        candidates.push((state_name.clone(), state.dims.clone(), defining_expr));
+    }
+
+    let candidate_names = candidates
+        .iter()
+        .map(|(name, _, _)| name.as_str().to_string())
+        .collect::<HashSet<_>>();
+    for (state_name, state_dims, defining_expr) in candidates {
+        if expr_references_any_state_name(&defining_expr, &candidate_names) {
+            continue;
+        }
+        let Some(der_expr) = choose_derivative_replacement(
+            &defining_expr,
+            &round.state_name_set,
+            round.dae,
+            &round.der_map,
+            counters,
+        ) else {
+            if state_name.as_str() == "aimc.airGap.psi_ms" {
+                eprintln!(
+                    "DEBUG psi_ms aggregate no der i_ms={:?} i_ss={:?} space_s={:?} lssigma={:?}",
+                    round.der_map.get("aimc.airGap.i_ms"),
+                    round.der_map.get("aimc.airGap.i_ss"),
+                    round.der_map.get("aimc.airGap.spacePhasor_s.i_"),
+                    round.der_map.get("aimc.lssigma.i_")
+                );
+            }
+            continue;
+        };
+        if expr_contains_der_of(&der_expr, &state_name)
+            || expr_contains_der_of_non_state(&der_expr, &round.state_name_set)
+        {
+            if state_name.as_str() == "aimc.airGap.psi_ms" {
+                eprintln!("DEBUG psi_ms aggregate bad der {der_expr:?}");
+            }
+            continue;
+        }
+        if state_name.as_str() == "aimc.airGap.psi_ms" {
+            eprintln!("DEBUG psi_ms aggregate accept {der_expr:?}");
+        }
+        substitutions
+            .entry(state_name.as_str().to_string())
+            .or_insert(DirectStateDemotionPlan {
+                state_name,
+                state_dims,
+                der_expr,
+            });
+    }
+}
+
+pub(super) fn aggregate_scalar_direct_defining_expr(
+    dae: &Dae,
+    state_name: &VarName,
+    dims: &[i64],
+) -> Option<Expression> {
+    let size = dims.iter().try_fold(1usize, |acc, dim| {
+        (*dim > 0).then(|| acc.checked_mul(*dim as usize)).flatten()
+    })?;
+    let mut values = vec![None; size];
+    for eq in &dae.continuous.equations {
+        let Some((flat_index, expr)) = indexed_state_direct_assignment(eq, state_name, dims) else {
+            continue;
+        };
+        if values[flat_index].is_some() {
+            return None;
+        }
+        values[flat_index] = Some(expr);
+    }
+    let values = values.into_iter().collect::<Option<Vec<_>>>()?;
+    array_expr_from_flat_values(values, dims)
+}
+
+fn indexed_state_direct_assignment(
+    eq: &Equation,
+    state_name: &VarName,
+    dims: &[i64],
+) -> Option<(usize, Expression)> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.rhs
+    else {
+        return None;
+    };
+    if let Some(flat_index) = indexed_ref_flat_index(lhs, state_name, dims) {
+        return Some((flat_index, *rhs.clone()));
+    }
+    indexed_ref_flat_index(rhs, state_name, dims).map(|flat_index| (flat_index, *lhs.clone()))
+}
+
+fn indexed_ref_flat_index(expr: &Expression, state_name: &VarName, dims: &[i64]) -> Option<usize> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if name.var_name() != state_name || subscripts.is_empty() {
+        return None;
+    }
+    let indices = static_subscript_indices(subscripts)?;
+    flat_index_from_indices(dims, &indices)
+}
+
+fn expr_references_any_state_name(expr: &Expression, state_names: &HashSet<String>) -> bool {
+    let mut refs = HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.into_iter()
+        .any(|name| state_names.contains(name.as_str()))
 }
 
 /// Demote states that are explicitly defined by direct assignment equations
