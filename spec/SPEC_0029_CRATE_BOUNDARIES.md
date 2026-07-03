@@ -242,7 +242,9 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Transformation Scope |
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
-| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI, and packaging text |
+| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI, and FMU packaging text |
+| GALEC `.alg` text (recorded exception) | `rumoca-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
+| eFMI packaging XML (`__content.xml`, manifests) | `rumoca-efmi` | Packaging metadata, not target-language text (SPEC_0034 D3) |
 | Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
@@ -253,8 +255,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |
 | Protocol codecs (FlatBuffers, etc.) | `rumoca-codec-*` | No simulation, no controller, no HTTP, no scene |
 
-Execution adapter crates are not compiler phases. Textual C/Rust/CUDA
-C/MLIR/FMI artifacts are rendered by `rumoca-phase-codegen`; `rumoca-exec-*`
+Execution adapter crates are not compiler phases. `rumoca-exec-*`
 crates wrap tool invocation, ABI adaptation, loading, GPU/accelerator
 integration, packaging, runtime compilation, or stable APIs over compiled
 artifacts. Text-only targets stay in codegen. Non-codegen phase crates MUST NOT
@@ -299,10 +300,6 @@ Tier 4 — Orchestration: rumoca-compile, tool-fmt, tool-lint
 Tier 3 — Phases & evaluation: rumoca-phase-*, rumoca-eval-*
 Tier 2 — IR data: rumoca-ir-*
 Tier 1 — Foundation: rumoca-core
-
-Tier 6 (Binary/Bindings) → Tier 5 (Integration) → Tier 4 (Orchestration) →
-Tier 3 (Phases/Evaluation) → Tier 2 (IR data) → Tier 1 (Foundation).
-Dependencies flow strictly downward.
 ```
 
 Input boundary:
