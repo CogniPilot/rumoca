@@ -4394,7 +4394,7 @@ dependencies = [
 name = "rumoca-opt"
 version = "0.9.9"
 dependencies = [
- "indexmap",
+ "indexmap 2.13.0",
  "rumoca",
  "rumoca-eval-solve",
  "rumoca-ir-dae",
@@ -4442,7 +4442,7 @@ name = "rumoca-phase-flatten"
 version = "0.9.9"
 dependencies = [
  "flate2",
- "indexmap",
+ "indexmap 2.13.0",
  "miette",
  "rumoca-core",
  "rumoca-eval-ast",
