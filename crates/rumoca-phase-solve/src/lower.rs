@@ -654,6 +654,11 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(ComponentReferenceKey::generated(name.as_str()));
         }
+        if self.scalarized_field_binding_available(name.as_str(), "re")
+            || self.scalarized_field_binding_available(name.as_str(), "im")
+        {
+            return Ok(ComponentReferenceKey::generated(name.as_str()));
+        }
         if name.is_generated() || name.component_ref().is_some() || self.dae_variables.is_none() {
             return scope_key_from_reference(name, span);
         }
@@ -839,8 +844,24 @@ impl<'a> LowerBuilder<'a> {
             return self.emit_slot_load(slot, span);
         }
 
+        if subscripts.is_empty()
+            && let Some(slot) = self.layout.binding(name.as_str())
+        {
+            return self.emit_slot_load(slot, span);
+        }
+
         if let Some(slot) = self.non_variable_layout_slot(name, subscripts) {
             return self.emit_slot_load(slot, span);
+        }
+
+        if subscripts.is_empty() {
+            let real_field_key = format!("{}.re", name.as_str());
+            if self.scalarized_field_binding_available(name.as_str(), "re")
+                && let Some(reg) =
+                    self.lower_var_ref_binding_key(&real_field_key, span, scope, call_depth)?
+            {
+                return Ok(reg);
+            }
         }
 
         let name_key = self.scope_key_from_reference(name, span)?;
@@ -1429,6 +1450,13 @@ impl<'a> LowerBuilder<'a> {
                     ),
                 }
             })?;
+            if self
+                .local_indexed_bindings
+                .contains_key(&target.display_key)
+                && !self.indexed_bindings.contains_key(source_key)
+            {
+                return Ok((target.display_key.clone(), Vec::new()));
+            }
             let entries = self.indexed_bindings.get(source_key).cloned().ok_or_else(|| {
                 LowerError::contract_violation(
                     format!(
@@ -1554,6 +1582,19 @@ impl<'a> LowerBuilder<'a> {
             }
         }
 
+        if let rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem,
+            lhs,
+            rhs,
+            ..
+        } = base
+            && matches!(field, "re" | "im")
+            && let Some(reg) =
+                self.lower_complex_vector_dot_field(lhs, rhs, field, field_access_span, scope)?
+        {
+            return Ok(reg);
+        }
+
         if matches!(field, "re" | "im")
             && let Some(reg) =
                 self.lower_complex_operator_field_access(base, field, scope, call_depth)?
@@ -1578,12 +1619,58 @@ impl<'a> LowerBuilder<'a> {
         }
 
         if let rumoca_core::Expression::Index {
+            base: indexed_base,
+            subscripts,
+            span,
+        } = base
+            && let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = indexed_base.as_ref()
+            && matches!(op, rumoca_core::OpBinary::Add | rumoca_core::OpBinary::Sub)
+        {
+            let lhs = field_access_expr_with_owner(
+                &rumoca_core::Expression::Index {
+                    base: lhs.clone(),
+                    subscripts: subscripts.clone(),
+                    span: *span,
+                },
+                field,
+                field_access_span,
+            );
+            let rhs = field_access_expr_with_owner(
+                &rumoca_core::Expression::Index {
+                    base: rhs.clone(),
+                    subscripts: subscripts.clone(),
+                    span: *span,
+                },
+                field,
+                field_access_span,
+            );
+            let lhs_reg = self.lower_expr(&lhs, scope, call_depth)?;
+            let rhs_reg = self.lower_expr(&rhs, scope, call_depth)?;
+            return self.lower_binary(op.clone(), lhs_reg, rhs_reg, field_access_span);
+        }
+
+        if let rumoca_core::Expression::Index {
             base, subscripts, ..
         } = base
             && let Some(reg) =
                 self.lower_structural_index_expr(base, subscripts, scope, call_depth, Some(field))?
         {
             return Ok(reg);
+        }
+
+        if let rumoca_core::Expression::FieldAccess {
+            base: nested_base,
+            field: nested_field,
+            ..
+        } = base
+            && matches!(nested_base.as_ref(), rumoca_core::Expression::Index { .. })
+        {
+            let nested_path = format!("{nested_field}.{field}");
+            if let Some(reg) =
+                self.lower_indexed_field_access(nested_base, &nested_path, scope, call_depth)?
+            {
+                return Ok(reg);
+            }
         }
 
         if let Some(reg) = self.lower_indexed_field_access(base, field, scope, call_depth)? {
@@ -1686,17 +1773,28 @@ impl<'a> LowerBuilder<'a> {
         };
         let base_key = binding_base_key(base)?;
         let field_key = format!("{base_key}.{field}");
-
-        if let Some(indices) = static_subscript_indices_with_owner(
+        if let Some(indices) = self.compile_time_subscript_indices(
             subscripts,
             required_expression_span(base, "indexed field access")?,
         )? && !indices.is_empty()
         {
             let key = format_subscript_binding_key(&field_key, &indices);
-            if let Some(reg) = scope.get(&generated_scope_key(&key)).copied() {
+            let record_element_field_key = format!(
+                "{}.{}",
+                format_subscript_binding_key(&base_key, &indices),
+                field
+            );
+            if let Some(reg) = scope
+                .get(&generated_scope_key(&record_element_field_key))
+                .or_else(|| scope.get(&generated_scope_key(&key)))
+                .copied()
+            {
                 return Ok(Some(reg));
             }
-            if let Some(slot) = self.pre_mode_slot_for_key(&key) {
+            if let Some(slot) = self
+                .pre_mode_slot_for_key(&record_element_field_key)
+                .or_else(|| self.pre_mode_slot_for_key(&key))
+            {
                 return self
                     .emit_slot_load(
                         slot,
@@ -1704,13 +1802,24 @@ impl<'a> LowerBuilder<'a> {
                     )
                     .map(Some);
             }
-            if let Some(values) =
-                self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?
+            let values = match self.lower_direct_assignment_values_for_key(
+                &record_element_field_key,
+                scope,
+                call_depth,
+            )? {
+                Some(values) => Some(values),
+                None => self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?,
+            };
+            if let Some(values) = values
                 && let Some(value) = values.first().copied()
             {
                 return Ok(Some(value));
             }
-            if let Some(slot) = self.layout.binding(&key) {
+            if let Some(slot) = self
+                .layout
+                .binding(&record_element_field_key)
+                .or_else(|| self.layout.binding(&key))
+            {
                 return self
                     .emit_slot_load(
                         slot,
@@ -1739,6 +1848,78 @@ impl<'a> LowerBuilder<'a> {
             DynamicSubscriptSemantics::Index,
         )
         .map(Some)
+    }
+
+    fn lower_complex_vector_dot_field(
+        &mut self,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(lhs_re) = self.lower_complex_field_array_values(lhs, "re", span, scope)? else {
+            return Ok(None);
+        };
+        let Some(lhs_im) = self.lower_complex_field_array_values(lhs, "im", span, scope)? else {
+            return Ok(None);
+        };
+        let Some(rhs_re) = self.lower_complex_field_array_values(rhs, "re", span, scope)? else {
+            return Ok(None);
+        };
+        let Some(rhs_im) = self.lower_complex_field_array_values(rhs, "im", span, scope)? else {
+            return Ok(None);
+        };
+        let len = [lhs_re.len(), lhs_im.len(), rhs_re.len(), rhs_im.len()]
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+        if len == 0
+            || ![lhs_re.len(), lhs_im.len(), rhs_re.len(), rhs_im.len()]
+                .into_iter()
+                .all(|size| size == 1 || size == len)
+        {
+            return Ok(None);
+        }
+        let mut acc = self.emit_const_at(0.0, span)?;
+        for idx in 0..len {
+            let ar = lhs_re[if lhs_re.len() == 1 { 0 } else { idx }];
+            let ai = lhs_im[if lhs_im.len() == 1 { 0 } else { idx }];
+            let br = rhs_re[if rhs_re.len() == 1 { 0 } else { idx }];
+            let bi = rhs_im[if rhs_im.len() == 1 { 0 } else { idx }];
+            let term = if field == "re" {
+                let arbr = self.emit_binary_at(BinaryOp::Mul, ar, br, span)?;
+                let aibi = self.emit_binary_at(BinaryOp::Mul, ai, bi, span)?;
+                self.emit_binary_at(BinaryOp::Sub, arbr, aibi, span)?
+            } else {
+                let arbi = self.emit_binary_at(BinaryOp::Mul, ar, bi, span)?;
+                let aibr = self.emit_binary_at(BinaryOp::Mul, ai, br, span)?;
+                self.emit_binary_at(BinaryOp::Add, arbi, aibr, span)?
+            };
+            acc = self.emit_binary_at(BinaryOp::Add, acc, term, span)?;
+        }
+        Ok(Some(acc))
+    }
+
+    fn lower_complex_field_array_values(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        if let rumoca_core::Expression::VarRef { name, .. } = expr {
+            let key = format!("{}.{}", name.as_str(), field);
+            if let Some(values) = self.lower_record_field_array_values(&key, span)? {
+                return Ok(Some(values));
+            }
+        }
+        let projected = field_access_expr_with_owner(expr, field, span);
+        match self.lower_array_like_values(&projected, scope, 0) {
+            Ok(values) if !values.is_empty() => Ok(Some(values)),
+            Ok(_) => Ok(None),
+            Err(_) => Ok(None),
+        }
     }
 
     fn lower_if_field_access(

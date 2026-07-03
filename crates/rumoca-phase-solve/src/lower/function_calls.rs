@@ -35,6 +35,19 @@ impl<'a> LowerBuilder<'a> {
             // solve-IR expressions instead of inlining their function bodies,
             // so local helper arrays in the library function remain local and
             // cannot leak into the runtime variable layout.
+            "Modelica.ComplexMath.real" => {
+                let arg = args
+                    .first()
+                    .ok_or_else(|| missing_intrinsic_argument(name.as_str(), "argument 1", span))?;
+                self.lower_expr(arg, scope, call_depth).map(Some)
+            }
+            "Modelica.ComplexMath.imag" => {
+                let arg = args
+                    .get(1)
+                    .or_else(|| args.first())
+                    .ok_or_else(|| missing_intrinsic_argument(name.as_str(), "argument 1", span))?;
+                self.lower_expr(arg, scope, call_depth).map(Some)
+            }
             "Modelica.Math.Distributions.Uniform.quantile" => self
                 .lower_uniform_quantile(args, span, scope, call_depth)
                 .map(Some),

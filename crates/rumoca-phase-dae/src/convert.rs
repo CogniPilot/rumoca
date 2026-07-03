@@ -29,6 +29,7 @@ pub fn attach_dae_reference_metadata(dae: &mut dae::Dae) -> Result<(), ToDaeErro
     let mut rewriter = DaeMetadataReferenceRewriter {
         scope,
         local_names: Vec::new(),
+        active_component_scope: None,
         error: None,
     };
     rewriter.rewrite_equations(&mut dae.continuous.equations);
@@ -778,6 +779,7 @@ struct DaeReferenceMetadata {
 
 struct DaeReferenceScope {
     variables: IndexMap<rumoca_core::VarName, DaeReferenceMetadata>,
+    variables_by_def_id: IndexMap<rumoca_core::DefId, (rumoca_core::VarName, DaeReferenceMetadata)>,
     aggregate_prefixes: IndexMap<rumoca_core::VarName, DaeReferenceMetadata>,
     enum_literal_ordinals: IndexMap<String, i64>,
 }
@@ -785,6 +787,7 @@ struct DaeReferenceScope {
 impl DaeReferenceScope {
     fn new(dae: &dae::Dae) -> Self {
         let mut variables = IndexMap::new();
+        let mut variables_by_def_id = IndexMap::new();
         let mut aggregate_prefixes = IndexMap::new();
         Self::insert_partition(&mut variables, &dae.variables.states);
         Self::insert_partition(&mut variables, &dae.variables.algebraics);
@@ -794,11 +797,23 @@ impl DaeReferenceScope {
         Self::insert_partition(&mut variables, &dae.variables.constants);
         Self::insert_partition(&mut variables, &dae.variables.discrete_reals);
         Self::insert_partition(&mut variables, &dae.variables.discrete_valued);
+        for (name, metadata) in &variables {
+            if let Some(def_id) = metadata
+                .component_ref
+                .as_ref()
+                .and_then(|component_ref| component_ref.def_id)
+            {
+                variables_by_def_id
+                    .entry(def_id)
+                    .or_insert_with(|| (name.clone(), metadata.clone()));
+            }
+        }
         for metadata in variables.values() {
             Self::insert_aggregate_prefixes(&mut aggregate_prefixes, metadata);
         }
         Self {
             variables,
+            variables_by_def_id,
             aggregate_prefixes,
             enum_literal_ordinals: dae.symbols.enum_literal_ordinals.clone(),
         }
@@ -846,9 +861,31 @@ impl DaeReferenceScope {
                 .entry(key)
                 .or_insert_with(|| DaeReferenceMetadata {
                     component_ref: Some(prefix),
-                    origin: metadata.origin,
+                    origin: dae::VariableOrigin::Generated,
                     source_span: metadata.source_span,
                 });
+            if prefix_parts
+                .last()
+                .is_some_and(|part| !part.subs.is_empty())
+            {
+                let mut array_prefix = rumoca_core::ComponentReference {
+                    local: component_ref.local,
+                    span: component_ref.span,
+                    parts: prefix_parts.to_vec(),
+                    def_id: None,
+                };
+                if let Some(part) = array_prefix.parts.last_mut() {
+                    part.subs.clear();
+                }
+                let key = array_prefix.to_var_name();
+                aggregate_prefixes
+                    .entry(key)
+                    .or_insert_with(|| DaeReferenceMetadata {
+                        component_ref: Some(array_prefix),
+                        origin: dae::VariableOrigin::Generated,
+                        source_span: metadata.source_span,
+                    });
+            }
         }
     }
 
@@ -872,6 +909,11 @@ impl DaeReferenceScope {
         if let Some(metadata) = self.aggregate_prefixes.get(name.var_name()) {
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
+        if let Some(def_id) = name.target_def_id()
+            && let Some((target, metadata)) = self.variables_by_def_id.get(&def_id)
+        {
+            return self.reference_from_metadata(target, target.as_str(), metadata, span);
+        }
         // Element reference to an aggregate variable (`sum.u[2]` while the
         // declared variable is `sum.u`): derive the base structurally from
         // the parts (last part without its subscripts) and enrich def-ids
@@ -889,6 +931,24 @@ impl DaeReferenceScope {
             name: name.as_str().to_string(),
             span: rumoca_core::span_to_source_span(span),
         })
+    }
+
+    fn reference_for_component_local(
+        &self,
+        component_scope: &str,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Option<Result<rumoca_core::Reference, ToDaeError>> {
+        if name.is_generated()
+            || name.as_str() == "time"
+            || name.as_str().contains('.')
+            || self.enum_literal_ordinals.contains_key(name.as_str())
+        {
+            return None;
+        }
+        let key = rumoca_core::VarName::new(format!("{component_scope}.{}", name.as_str()));
+        let metadata = self.variables.get(&key)?;
+        Some(self.reference_from_metadata(&key, key.as_str(), metadata, span))
     }
 
     /// Enrich an element reference whose base is a declared aggregate
@@ -945,7 +1005,15 @@ impl DaeReferenceScope {
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::Reference, ToDaeError> {
         match metadata.origin {
-            dae::VariableOrigin::Generated => Ok(rumoca_core::Reference::generated(rendered)),
+            dae::VariableOrigin::Generated => {
+                if let Some(component_ref) = metadata.component_ref.clone() {
+                    return Ok(rumoca_core::Reference::with_component_reference(
+                        rendered,
+                        component_ref,
+                    ));
+                }
+                Ok(rumoca_core::Reference::generated(rendered))
+            }
             dae::VariableOrigin::Source => {
                 let component_ref =
                     metadata.component_ref.clone().ok_or_else(|| {
@@ -1010,6 +1078,7 @@ impl DaeReferenceScope {
 struct DaeMetadataReferenceRewriter {
     scope: DaeReferenceScope,
     local_names: Vec<IndexSet<String>>,
+    active_component_scope: Option<String>,
     error: Option<ToDaeError>,
 }
 
@@ -1023,11 +1092,15 @@ impl DaeMetadataReferenceRewriter {
 
     fn rewrite_equations(&mut self, equations: &mut [dae::Equation]) {
         for equation in equations {
+            let previous_scope = self.active_component_scope.clone();
+            self.active_component_scope = equation_origin_component_scope(&equation.origin);
             if let Err(error) = self.rewrite_equation_lhs(equation) {
                 self.error = Some(error);
+                self.active_component_scope = previous_scope;
                 return;
             }
             equation.rhs = self.rewrite_expression(&equation.rhs);
+            self.active_component_scope = previous_scope;
             if self.error.is_some() {
                 return;
             }
@@ -1141,6 +1214,27 @@ impl ExpressionRewriter for DaeMetadataReferenceRewriter {
                 span,
             };
         }
+        if let Some(reference) = self
+            .active_component_scope
+            .as_deref()
+            .and_then(|scope| self.scope.reference_for_component_local(scope, name, span))
+        {
+            return match reference {
+                Ok(reference) => rumoca_core::Expression::VarRef {
+                    name: reference,
+                    subscripts: self.rewrite_subscripts(subscripts),
+                    span,
+                },
+                Err(error) => {
+                    self.error = Some(error);
+                    rumoca_core::Expression::VarRef {
+                        name: name.clone(),
+                        subscripts: self.rewrite_subscripts(subscripts),
+                        span,
+                    }
+                }
+            };
+        }
         match self.scope.reference_for(name, span) {
             Ok(reference) => rumoca_core::Expression::VarRef {
                 name: reference,
@@ -1177,6 +1271,13 @@ impl ExpressionRewriter for DaeMetadataReferenceRewriter {
             span,
         }
     }
+}
+
+fn equation_origin_component_scope(origin: &str) -> Option<String> {
+    origin
+        .strip_prefix("equation from ")
+        .filter(|scope| !scope.is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn remap_flat_structured_equations(

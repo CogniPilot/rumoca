@@ -1381,7 +1381,15 @@ fn substitute_scalar_var_ref(
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
-    if env.live_vars.contains(key) || reference_root_is_local(name, env.locals) {
+    if env.live_vars.contains(key) {
+        if name.has_structure()
+            && let Some(v) = resolve_constant_value_expr_for_ref(name, env.ctx)
+        {
+            return Ok(Some(substitute_resolved_constant_expr(key, v, span, env)?));
+        }
+        return Ok(None);
+    }
+    if reference_root_is_local(name, env.locals) {
         return Ok(None);
     }
     if inline_index_base_is_live_or_local(key, env.live_vars, env.locals) {

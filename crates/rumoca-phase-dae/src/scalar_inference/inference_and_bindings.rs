@@ -636,12 +636,21 @@ impl ExpressionRewriter for StartRefRewriter<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Expression {
-        let resolved_name = if let Some(resolved) =
+        let resolved_name = if name.has_structure() {
+            if !self.known_var_names.contains(name.as_str())
+                && let Some(resolved) = crate::path_utils::resolve_known_path_suffix(
+                    name.as_str(),
+                    self.known_var_names,
+                )
+            {
+                VarName::new(resolved).into()
+            } else {
+                name.clone()
+            }
+        } else if let Some(resolved) =
             crate::path_utils::resolve_known_path_suffix(name.as_str(), self.known_var_names)
         {
             VarName::new(resolved).into()
-        } else if name.has_structure() {
-            name.clone()
         } else {
             resolve_missing_start_ref(name.var_name(), self.known_var_names).into()
         };

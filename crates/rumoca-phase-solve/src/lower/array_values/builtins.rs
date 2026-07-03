@@ -760,13 +760,67 @@ impl<'a> LowerBuilder<'a> {
         }
         let value_expr = &args[0];
         let count = self.fill_element_count(&args[1..], call_span)?;
+        if matches!(
+            value_expr,
+            rumoca_core::Expression::FunctionCall {
+                is_constructor: true,
+                ..
+            }
+        ) && self.requires_complex_projection(value_expr, scope)?
+        {
+            let span = value_expr.span().unwrap_or(call_span);
+            let (re, im) = self.lower_complex_operand_parts(value_expr, span, scope, call_depth)?;
+            let mut values = reg_vec_with_capacity(
+                count.saturating_mul(2),
+                "complex fill value count",
+                value_expr.span(),
+            )?;
+            values.resize(count, re);
+            values.resize(count.saturating_mul(2), im);
+            return Ok(values);
+        }
         let mut values = reg_vec_with_capacity(count, "fill value count", value_expr.span())?;
         let value = self.lower_expr(value_expr, scope, call_depth)?;
         values.resize(count, value);
         Ok(values)
     }
 
-    fn fill_element_count(
+    pub(in crate::lower) fn lower_fill_field_array_like_values(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        field: &str,
+        scope: &Scope,
+        call_depth: usize,
+        call_span: rumoca_core::Span,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        if args.len() < 2 {
+            return Err(array_builtin_contract_error(
+                format!("fill() requires at least 2 arguments, got {}", args.len()),
+                args.first()
+                    .and_then(rumoca_core::Expression::span)
+                    .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
+            ));
+        }
+        let value_expr = &args[0];
+        let count = self.fill_element_count(&args[1..], call_span)?;
+        let span = value_expr.span().unwrap_or(call_span);
+        let projected = field_access_expr_with_owner(value_expr, field, span);
+        let values = self.lower_array_like_values(&projected, scope, call_depth)?;
+        if values.is_empty() {
+            return Ok(None);
+        }
+        let total = values.len().checked_mul(count).ok_or_else(|| {
+            LowerError::contract_violation("fill field projection value count overflows", span)
+        })?;
+        let mut projected_values =
+            reg_vec_with_capacity(total, "fill field projection value count", Some(span))?;
+        for _ in 0..count {
+            projected_values.extend(values.iter().copied());
+        }
+        Ok(Some(projected_values))
+    }
+
+    pub(in crate::lower) fn fill_element_count(
         &self,
         dims: &[rumoca_core::Expression],
         call_span: rumoca_core::Span,

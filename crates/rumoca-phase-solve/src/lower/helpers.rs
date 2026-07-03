@@ -254,16 +254,19 @@ pub(super) fn indexed_key_for_reference(
     {
         return Ok(contained(key));
     }
-    let key = ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
-        LowerError::contract_violation(
+    match ComponentReferenceKey::from_component_reference(component_ref) {
+        Ok(key) => Ok(contained(key)),
+        Err(err) if err.kind == rumoca_ir_solve::ComponentReferenceKeyErrorKind::MissingDefId => {
+            Ok(None)
+        }
+        Err(err) => Err(LowerError::contract_violation(
             format!(
                 "indexed solve-layout lookup for `{}` has non-static component reference: {err}",
                 reference.as_str(),
             ),
             err.span,
-        )
-    })?;
-    Ok(contained(key))
+        )),
+    }
 }
 
 pub(super) fn parse_indexed_binding_key(key: &str) -> Option<(String, Vec<usize>)> {

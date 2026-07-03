@@ -503,6 +503,16 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(values);
         }
+        if let rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            span,
+        } = base
+            && let Some(values) =
+                self.lower_fill_field_array_like_values(args, field, scope, call_depth, *span)?
+        {
+            return Ok(values);
+        }
         if let Some(values) =
             self.lower_constructor_field_array_like_values(base, field, scope, call_depth)?
         {
@@ -511,6 +521,33 @@ impl<'a> LowerBuilder<'a> {
         if let Some(values) =
             self.lower_record_array_slice_field_values(base, field, owner_span, scope, call_depth)?
         {
+            return Ok(values);
+        }
+        if let rumoca_core::Expression::Binary { op, lhs, rhs, span } = base
+            && matches!(op, rumoca_core::OpBinary::Add | rumoca_core::OpBinary::Sub)
+        {
+            let lhs_field = field_access_expr_with_owner(lhs, field, *span);
+            let rhs_field = field_access_expr_with_owner(rhs, field, *span);
+            let lhs_values = self.lower_array_like_values(&lhs_field, scope, call_depth)?;
+            let rhs_values = self.lower_array_like_values(&rhs_field, scope, call_depth)?;
+            if lhs_values.len() != rhs_values.len() {
+                return Err(LowerError::contract_violation(
+                    format!(
+                        "binary field projection `{field}` has mismatched array widths {} and {}",
+                        lhs_values.len(),
+                        rhs_values.len()
+                    ),
+                    *span,
+                ));
+            }
+            let mut values = array_vec_with_capacity(
+                lhs_values.len(),
+                "binary field projection value count",
+                *span,
+            )?;
+            for (lhs, rhs) in lhs_values.into_iter().zip(rhs_values) {
+                values.push(self.lower_binary(op.clone(), lhs, rhs, *span)?);
+            }
             return Ok(values);
         }
         if let Ok(key) = field_access_binding_key(base, field) {
@@ -525,6 +562,9 @@ impl<'a> LowerBuilder<'a> {
                 return Ok(values);
             }
             if let Some(values) = self.lower_indexed_binding_values_at(key.as_str(), span)? {
+                return Ok(values);
+            }
+            if let Some(values) = self.lower_record_field_array_values(key.as_str(), span)? {
                 return Ok(values);
             }
             if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {

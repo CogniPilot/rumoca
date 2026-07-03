@@ -1228,7 +1228,8 @@ fn infer_user_function_call_dimensions(
     let func = ctx.functions.get(name.as_str())?;
     let output = func.outputs.first()?;
     if output.shape_expr.is_empty() {
-        return concrete_param_dims(output).or_else(|| broadcast_function_arg_dims(args, ctx));
+        return concrete_param_dims(output)
+            .or_else(|| broadcast_scalar_function_arg_dims(func, args, ctx));
     }
 
     let mut local_ints = ctx.known_ints.clone();
@@ -1299,15 +1300,42 @@ fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
     Some(param.dims.clone())
 }
 
-fn broadcast_function_arg_dims(
+fn broadcast_scalar_function_arg_dims(
+    func: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     ctx: &ParamEvalContext<'_>,
 ) -> Option<Vec<i64>> {
-    args.iter()
-        .map(function_arg_value)
-        .filter_map(|arg| infer_function_arg_dims(arg, ctx))
+    function_args_with_params(func, args)
+        .filter_map(|(param, arg)| {
+            param_is_scalar(param)
+                .then(|| infer_function_arg_dims(function_arg_value(arg), ctx))
+                .flatten()
+        })
         .max_by_key(Vec::len)
         .filter(|dims| !dims.is_empty())
+}
+
+fn function_args_with_params<'a>(
+    func: &'a rumoca_core::Function,
+    args: &'a [rumoca_core::Expression],
+) -> impl Iterator<Item = (&'a rumoca_core::FunctionParam, &'a rumoca_core::Expression)> + 'a {
+    let mut positional = 0usize;
+    args.iter().filter_map(move |arg| {
+        if let Some((name, _)) = named_call_arg(arg) {
+            return func
+                .inputs
+                .iter()
+                .find(|param| param.name == name)
+                .map(|param| (param, arg));
+        }
+        let param = func.inputs.get(positional)?;
+        positional += 1;
+        Some((param, arg))
+    })
+}
+
+fn param_is_scalar(param: &rumoca_core::FunctionParam) -> bool {
+    param.dims.is_empty() && param.shape_expr.is_empty()
 }
 
 fn function_arg_value(arg: &rumoca_core::Expression) -> &rumoca_core::Expression {

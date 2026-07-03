@@ -104,9 +104,11 @@ fn scan_boundary_equation(
             &mut zero_unknown_ctx,
         );
     }
-    if is_flow_equation_origin(&equation.origin)
-        && expr_contains_indexed_multiscalar_ref(&eq_rhs, ctx.dae)?
-    {
+    let indexed_flow_equation = is_flow_equation_origin(&equation.origin)
+        && expr_contains_indexed_multiscalar_ref(&eq_rhs, ctx.dae)?;
+    let can_eliminate_pairwise_flow_alias = equation.origin.starts_with("flow sum equation:")
+        && can_eliminate_pairwise_flow_alias(ctx.dae, &eq_rhs, &live);
+    if indexed_flow_equation && !can_eliminate_pairwise_flow_alias {
         return Ok(());
     }
     if let Some((var_name, solution)) = choose_solvable_unknown_for_elimination(
@@ -117,8 +119,19 @@ fn scan_boundary_equation(
         has_state_derivative,
         ctx.runtime_protected_unknowns,
         ctx.direct_definitions,
+        can_eliminate_pairwise_flow_alias,
     )? {
         state.push_solution(ctx.dae, eq_idx, var_name, solution)?;
     }
     Ok(())
+}
+
+fn can_eliminate_pairwise_flow_alias(dae: &Dae, eq_rhs: &Expression, live: &[VarName]) -> bool {
+    live.len() <= 2
+        && live.iter().any(|candidate| {
+            try_solve_for_unknown_in_dae(dae, eq_rhs, candidate).is_some_and(|solution| {
+                !expr_contains_unknown_in_dae(dae, &solution, candidate)
+                    && is_trivial_alias_in_dae(dae, &solution)
+            })
+        })
 }

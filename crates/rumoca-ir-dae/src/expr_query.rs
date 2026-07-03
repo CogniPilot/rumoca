@@ -206,6 +206,12 @@ struct ContainsVarChecker<'a> {
 impl ExpressionVisitor for ContainsVarChecker<'_> {
     fn visit_expression(&mut self, expr: &Expression) {
         if !self.found {
+            if let Some(exact_name) = expr_exact_name(expr)
+                && exact_name == self.var.as_str()
+            {
+                self.found = true;
+                return;
+            }
             self.walk_expression(expr);
         }
     }

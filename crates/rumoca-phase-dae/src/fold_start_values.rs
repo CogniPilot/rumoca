@@ -84,7 +84,7 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeEr
                 name, subscripts, ..
             } = start
                 && subscripts.is_empty()
-                && name.as_str() == var.name.as_str()
+                && is_self_start_reference(name, var)
             {
                 var.start = None;
                 return;
@@ -211,6 +211,29 @@ fn start_references_parameter(
     refs.iter().any(|name| param_names.contains(name.as_str()))
 }
 
+fn is_self_start_reference(name: &rumoca_core::Reference, var: &Variable) -> bool {
+    match (name.component_ref(), var.component_ref.as_ref()) {
+        (Some(name_ref), Some(var_ref)) => component_refs_same_target(name_ref, var_ref),
+        (Some(_), None) => false,
+        _ => name.as_str() == var.name.as_str(),
+    }
+}
+
+fn component_refs_same_target(
+    lhs: &rumoca_core::ComponentReference,
+    rhs: &rumoca_core::ComponentReference,
+) -> bool {
+    if let (Some(lhs_def), Some(rhs_def)) = (lhs.def_id, rhs.def_id) {
+        return lhs_def == rhs_def;
+    }
+    lhs.parts.len() == rhs.parts.len()
+        && lhs
+            .parts
+            .iter()
+            .zip(&rhs.parts)
+            .all(|(lhs, rhs)| lhs.ident == rhs.ident && lhs.subs == rhs.subs)
+}
+
 struct StartBindingCollector<'a> {
     bindings: &'a mut Vec<(VarName, Expression)>,
 }
@@ -261,11 +284,36 @@ fn eval_start_const_expr(
         if !subscripts.is_empty() {
             return None;
         }
-        env.get(name.as_str()).cloned().or_else(|| {
-            rumoca_ir_dae::component_base_name(name.as_str())
-                .and_then(|base| env.get(&base).cloned())
-        })
+        for key in reference_lookup_names(name) {
+            if let Some(value) = env.get(key.as_str()).cloned().or_else(|| {
+                rumoca_ir_dae::component_base_name(key.as_str())
+                    .and_then(|base| env.get(&base).cloned())
+            }) {
+                return Some(value);
+            }
+        }
+        None
     })
+}
+
+fn reference_lookup_names(name: &rumoca_core::Reference) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(component_ref) = name.component_ref() {
+        names.push(component_ref_flat_name(component_ref));
+    }
+    names.push(name.as_str().to_string());
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn component_ref_flat_name(component_ref: &rumoca_core::ComponentReference) -> String {
+    component_ref
+        .parts
+        .iter()
+        .map(|part| part.ident.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +581,21 @@ mod tests {
         }
     }
 
+    fn structured_var_ref(rendered: &str, target: &str, def_id: u32) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                rendered,
+                rumoca_core::ComponentReference::from_flat_segments(
+                    target,
+                    test_span(1, 2),
+                    Some(rumoca_core::DefId::new(def_id)),
+                ),
+            ),
+            subscripts: vec![],
+            span: test_span(1, 2),
+        }
+    }
+
     fn real(value: f64) -> Expression {
         Expression::Literal {
             value: Literal::Real(value),
@@ -564,6 +627,16 @@ mod tests {
         var
     }
 
+    fn source_constant(name: &str, def_id: u32, start: Expression) -> Variable {
+        let mut var = parameter(name, start);
+        var.component_ref = Some(rumoca_core::ComponentReference::from_flat_segments(
+            name,
+            test_span(1, 2),
+            Some(rumoca_core::DefId::new(def_id)),
+        ));
+        var
+    }
+
     #[test]
     fn var_base_name_strips_only_trailing_subscripts() {
         assert_eq!(var_base_name("e[1]"), "e");
@@ -572,6 +645,36 @@ mod tests {
         assert_eq!(var_base_name("record[1].field"), "record[1].field");
         assert_eq!(var_base_name("record[1].field[2]"), "record[1].field");
         assert_eq!(var_base_name("record[index.re]"), "record[index.re]");
+    }
+
+    #[test]
+    fn fold_start_values_keeps_structured_alias_with_rewritten_display_name() {
+        let mut dae = Dae::new();
+        dae.variables.constants.insert(
+            VarName::new("sineVoltage.pi"),
+            source_constant(
+                "sineVoltage.pi",
+                39973,
+                structured_var_ref("sineVoltage.pi", "Modelica.Constants.pi", 86),
+            ),
+        );
+        dae.variables.constants.insert(
+            VarName::new("Modelica.Constants.pi"),
+            source_constant("Modelica.Constants.pi", 86, real(std::f64::consts::PI)),
+        );
+
+        fold_start_values_to_literals(&mut dae).expect("constant alias starts should be valid");
+
+        let Some(Expression::VarRef { name, .. }) =
+            &dae.variables.constants[&VarName::new("sineVoltage.pi")].start
+        else {
+            panic!("structured alias start must not be treated as a self-reference");
+        };
+        assert_eq!(name.as_str(), "sineVoltage.pi");
+        assert_eq!(
+            name.component_ref().map(component_ref_flat_name).as_deref(),
+            Some("Modelica.Constants.pi")
+        );
     }
 
     #[test]

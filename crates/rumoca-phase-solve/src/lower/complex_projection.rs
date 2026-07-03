@@ -8,7 +8,9 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<(Reg, Reg), LowerError> {
-        if self.requires_complex_projection(expr, scope)? {
+        if self.scalarized_complex_fields_available(expr)
+            || self.requires_complex_projection(expr, scope)?
+        {
             let re = self.lower_field_access(expr, "re", owner_span, scope, call_depth)?;
             let im = self.lower_field_access(expr, "im", owner_span, scope, call_depth)?;
             return Ok((re, im));
@@ -32,6 +34,13 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => {
+                if self.component_reference_field_available(name, "re")
+                    || self.component_reference_field_available(name, "im")
+                    || self.scalarized_field_binding_available(name.as_str(), "re")
+                    || self.scalarized_field_binding_available(name.as_str(), "im")
+                {
+                    return Ok(true);
+                }
                 let span = complex_projection_reference_span(expr, name)?;
                 let key = self.scope_key_from_reference(name, span)?;
                 Ok(self.component_field_available(&key, name, "re")
@@ -122,6 +131,45 @@ impl<'a> LowerBuilder<'a> {
         generated_name.is_some_and(|name| self.layout.binding(name).is_some())
             || generated_name.is_some_and(|name| self.direct_assignments.contains_key(name))
             || self.indexed_bindings.contains_key(&field_key)
+    }
+
+    pub(in crate::lower) fn scalarized_field_binding_available(
+        &self,
+        base_key: &str,
+        field: &str,
+    ) -> bool {
+        let field_key = format!("{base_key}.{field}");
+        self.layout.binding(&field_key).is_some()
+            || self
+                .dae_variables
+                .and_then(|variables| {
+                    dae_variable(variables, &rumoca_core::VarName::new(&field_key))
+                })
+                .is_some()
+            || self.direct_assignments.contains_key(&field_key)
+            || self.local_indexed_bindings.contains_key(field_key.as_str())
+            || self
+                .indexed_bindings
+                .contains_key(&ComponentReferenceKey::generated(&field_key))
+    }
+
+    pub(in crate::lower) fn scalarized_complex_fields_available(
+        &self,
+        expr: &rumoca_core::Expression,
+    ) -> bool {
+        if let rumoca_core::Expression::Index { base, .. } = expr
+            && let Ok(base_key) = binding_base_key(base)
+        {
+            return self.scalarized_field_binding_available(&base_key, "re")
+                || self.scalarized_field_binding_available(&base_key, "im")
+                || !self.indexed_record_field_keys(&base_key, "re").is_empty()
+                || !self.indexed_record_field_keys(&base_key, "im").is_empty();
+        }
+        let Ok(base_key) = binding_base_key(expr) else {
+            return false;
+        };
+        self.scalarized_field_binding_available(&base_key, "re")
+            || self.scalarized_field_binding_available(&base_key, "im")
     }
 
     fn component_reference_field_available(

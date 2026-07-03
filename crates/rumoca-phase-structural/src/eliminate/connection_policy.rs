@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use super::{
-    Dae, Expression, OpBinary, VarName, full_var_ref, runtime_partition_or_event_refs_var,
-    unknown_is_fixed,
+    Dae, Expression, OpBinary, VarName, exact_reference_expr_name_in_dae,
+    runtime_partition_or_event_refs_var, unknown_is_fixed,
 };
 
 pub(super) fn should_skip_connection_equation(
@@ -52,13 +52,13 @@ fn connection_alias_refs_are_continuous_scalar_algebraics(
     else {
         return false;
     };
-    let Some(lhs_ref) = full_var_ref(lhs) else {
+    let Some(lhs_name) = exact_reference_expr_name_in_dae(dae, lhs) else {
         return false;
     };
-    let Some(rhs_ref) = full_var_ref(rhs) else {
+    let Some(rhs_name) = exact_reference_expr_name_in_dae(dae, rhs) else {
         return false;
     };
-    [lhs_ref.var_name(), rhs_ref.var_name()].iter().all(|name| {
+    [&lhs_name, &rhs_name].iter().all(|name| {
         can_eliminate_scalar_connection_alias_var(dae, name, runtime_defined_discrete_targets)
             || connection_alias_ref_is_structurally_known(dae, name)
     })
@@ -79,13 +79,13 @@ fn can_eliminate_continuous_connection_alias(
     else {
         return false;
     };
-    let Some(lhs_ref) = full_var_ref(lhs) else {
+    let Some(lhs_name) = exact_reference_expr_name_in_dae(dae, lhs) else {
         return false;
     };
-    let Some(rhs_ref) = full_var_ref(rhs) else {
+    let Some(rhs_name) = exact_reference_expr_name_in_dae(dae, rhs) else {
         return false;
     };
-    let refs = [lhs_ref.var_name(), rhs_ref.var_name()];
+    let refs = [&lhs_name, &rhs_name];
     let has_eliminable_live = refs.iter().any(|name| {
         live.iter().any(|live_name| live_name == *name)
             && can_eliminate_scalar_connection_alias_var(
@@ -96,7 +96,7 @@ fn can_eliminate_continuous_connection_alias(
     });
     has_eliminable_live
         && refs.iter().all(|name| {
-            live.iter().any(|live_name| live_name == *name)
+            can_eliminate_scalar_connection_alias_var(dae, name, runtime_defined_discrete_targets)
                 || connection_alias_ref_is_structurally_known(dae, name)
         })
 }
@@ -106,8 +106,7 @@ fn can_eliminate_scalar_connection_alias_var(
     var_name: &VarName,
     runtime_defined_discrete_targets: &HashSet<String>,
 ) -> bool {
-    !var_name.as_str().contains('[')
-        && !unknown_is_fixed(dae, var_name)
+    !unknown_is_fixed(dae, var_name)
         && dae.variables.algebraics.contains_key(var_name)
         && !runtime_defined_discrete_targets.contains(var_name.as_str())
         && !runtime_partition_or_event_refs_var(dae, var_name)
@@ -138,11 +137,12 @@ fn connection_alias_ref_is_structurally_known_inner(
     dae.continuous
         .equations
         .iter()
-        .filter_map(|eq| direct_definition_expr_for_var(&eq.rhs, var_name))
+        .filter_map(|eq| direct_definition_expr_for_var(dae, &eq.rhs, var_name))
         .any(|expr| connection_alias_expr_is_structurally_known(dae, expr, visiting))
 }
 
 fn direct_definition_expr_for_var<'a>(
+    dae: &Dae,
     expr: &'a Expression,
     var_name: &VarName,
 ) -> Option<&'a Expression> {
@@ -155,8 +155,8 @@ fn direct_definition_expr_for_var<'a>(
     else {
         return None;
     };
-    let lhs_name = full_var_ref(lhs).map(|reference| reference.var_name());
-    let rhs_name = full_var_ref(rhs).map(|reference| reference.var_name());
+    let lhs_name = exact_reference_expr_name_in_dae(dae, lhs);
+    let rhs_name = exact_reference_expr_name_in_dae(dae, rhs);
     if lhs_name.as_ref() == Some(&var_name) {
         Some(rhs)
     } else if rhs_name.as_ref() == Some(&var_name) {

@@ -190,7 +190,14 @@ pub(in crate::lower) fn random_generator_state_len(generator: RandomGenerator) -
 }
 
 pub(in crate::lower) fn is_complex_param(param: &rumoca_core::FunctionParam) -> bool {
-    rumoca_core::qualified_type_name_matches(&param.type_name, "Complex")
+    if rumoca_core::qualified_type_name_matches(&param.type_name, "Complex") {
+        return true;
+    }
+    param
+        .type_name
+        .rsplit('.')
+        .next()
+        .is_some_and(|leaf| leaf.starts_with("Complex"))
 }
 
 pub(in crate::lower) fn parse_complex_sum_projection_field(call_name: &str) -> Option<&str> {

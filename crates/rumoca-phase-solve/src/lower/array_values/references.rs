@@ -29,6 +29,14 @@ impl<'a> LowerBuilder<'a> {
         if let Some(values) = self.lower_record_field_array_values(key, span)? {
             return Ok(values);
         }
+        if let Some(mut re_values) =
+            self.lower_record_field_array_values(format!("{key}.re").as_str(), span)?
+            && let Some(im_values) =
+                self.lower_record_field_array_values(format!("{key}.im").as_str(), span)?
+        {
+            re_values.extend(im_values);
+            return Ok(re_values);
+        }
 
         let key_path = self.scope_key_from_reference(name, span)?;
         if let Some(reg) = scope.get(&key_path).copied()
@@ -92,7 +100,7 @@ impl<'a> LowerBuilder<'a> {
                 .contains_key(super::size_binding_key(key, 1).as_str())
     }
 
-    fn lower_record_field_array_values(
+    pub(in crate::lower) fn lower_record_field_array_values(
         &mut self,
         key: &str,
         span: rumoca_core::Span,

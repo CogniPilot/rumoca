@@ -804,6 +804,13 @@ impl Context {
         if !binding_from_modification {
             return None;
         }
+        if let Some(target) = unqualified_varref_name(binding)
+            && let Some(source_scope) = modifier_source_scope(name)
+            && let Some(value) =
+                rumoca_core::EvalLookup::lookup_integer(self, target, source_scope.as_str())
+        {
+            return Some(value);
+        }
         if let Some(value) = self.lookup_modifier_binding_target_integer(binding) {
             return Some(value);
         }

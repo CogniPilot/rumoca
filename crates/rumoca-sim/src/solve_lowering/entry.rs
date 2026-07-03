@@ -188,3 +188,17 @@ pub fn structurally_lowered_dae_for_simulation_artifact(
 ) -> Result<dae::Dae, rumoca_phase_solve::SolveModelLowerError> {
     structurally_lower_dae_for_simulation(dae_model, opts).map(|lowered| lowered.dae)
 }
+
+pub fn structurally_prepared_dae_for_simulation_artifact(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<dae::Dae, rumoca_phase_solve::SolveModelLowerError> {
+    super::structural_lowering::prepare_structural_dae_for_simulation_artifact(dae_model, opts)
+}
+
+pub fn boundary_reduced_dae_for_simulation_artifact(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<dae::Dae, rumoca_phase_solve::SolveModelLowerError> {
+    super::structural_lowering::boundary_reduced_dae_for_simulation_artifact(dae_model, opts)
+}

@@ -57,6 +57,7 @@ use runtime_protection::{
 };
 use scalar_shape::expression_is_scalar_after_subscripts;
 pub use solve_for_unknown::try_solve_for_unknown;
+use solve_for_unknown::{expr_contains_unknown_in_dae, try_solve_for_unknown_in_dae};
 use substitution_application::{
     apply_substitutions_in_order, apply_substitutions_to_dae_partitions,
     apply_substitutions_to_remaining_once, equation_analysis_expr,
@@ -657,6 +658,7 @@ fn choose_solvable_unknown_for_elimination(
     has_state_derivative: bool,
     runtime_protected_unknowns: &IndexSet<String>,
     direct_definitions: &DirectDefinitionIndex,
+    allow_multi_live_trivial_alias: bool,
 ) -> Result<Option<(VarName, Expression)>, StructuralError> {
     let mut candidates: Vec<&VarName> = live.iter().collect();
     candidates.sort_by(|a, b| {
@@ -697,18 +699,18 @@ fn choose_solvable_unknown_for_elimination(
         // solver so substitution residues like `x - (y - 0)` (which the simple
         // pattern can't see through) still resolve. The additive solver is gated
         // by `live` to avoid accidentally solving a multi-unknown equation.
-        let Some(solution) = try_solve_for_unknown(rhs, candidate) else {
+        let Some(solution) = try_solve_for_unknown_in_dae(dae, rhs, candidate) else {
             continue;
         };
-        if expr_contains_var(&solution, candidate) {
+        if expr_contains_unknown_in_dae(dae, &solution, candidate) {
             continue;
         }
-        let direct_assignment_solution = has_direct_assignment_form(rhs, candidate);
+        let direct_assignment_solution = has_direct_assignment_form(dae, rhs, candidate);
         // Output variables exist for external callers — only eliminate them
         // when the solution is a trivial alias (a single variable reference or
         // its negation), since keeping non-trivial outputs enlarges the DAE and
         // can hurt solver performance.
-        if is_output && !is_trivial_alias(&solution) {
+        if is_output && !is_trivial_alias_in_dae(dae, &solution) {
             continue;
         }
         if !direct_assignment_solution && !is_symbolically_stable_solution(&solution) {
@@ -718,12 +720,15 @@ fn choose_solvable_unknown_for_elimination(
             continue;
         }
         if expr_contains_indexed_multiscalar_ref(&solution, dae)?
-            && !(is_trivial_alias(&solution)
+            && !(is_trivial_alias_in_dae(dae, &solution)
                 && expression_is_scalar_after_subscripts(&solution, dae)?)
         {
             continue;
         }
-        if live.len() > 1 && !direct_assignment_solution {
+        if live.len() > 1
+            && !direct_assignment_solution
+            && !(allow_multi_live_trivial_alias && is_trivial_alias_in_dae(dae, &solution))
+        {
             continue;
         }
         return Ok(Some((candidate.clone(), solution)));
@@ -792,10 +797,10 @@ fn choose_solvable_non_unknown_alias_for_elimination(
             None => continue,
         }
 
-        let Some(solution) = try_solve_for_unknown(rhs, &candidate) else {
+        let Some(solution) = try_solve_for_unknown_in_dae(dae, rhs, &candidate) else {
             continue;
         };
-        if expr_contains_var(&solution, &candidate) {
+        if expr_contains_unknown_in_dae(dae, &solution, &candidate) {
             continue;
         }
         if expr_contains_unsliced_multiscalar_ref(&solution, dae)? {
@@ -840,24 +845,27 @@ fn unknown_is_fixed(dae: &Dae, name: &VarName) -> bool {
         .unwrap_or(false)
 }
 
-fn has_direct_assignment_form(rhs: &Expression, candidate: &VarName) -> bool {
+fn has_direct_assignment_form(dae: &Dae, rhs: &Expression, candidate: &VarName) -> bool {
     match rhs {
         Expression::Binary {
             op: OpBinary::Sub,
             lhs,
             rhs,
             ..
-        } => is_assignment_target(lhs, candidate) || is_assignment_target(rhs, candidate),
+        } => is_assignment_target(dae, lhs, candidate) || is_assignment_target(dae, rhs, candidate),
         Expression::Unary {
             op: OpUnary::Minus,
             rhs,
             ..
-        } => has_direct_assignment_form(rhs, candidate),
+        } => has_direct_assignment_form(dae, rhs, candidate),
         _ => false,
     }
 }
 
-fn is_assignment_target(expr: &Expression, candidate: &VarName) -> bool {
+fn is_assignment_target(dae: &Dae, expr: &Expression, candidate: &VarName) -> bool {
+    if exact_reference_expr_name_in_dae(dae, expr).as_ref() == Some(candidate) {
+        return true;
+    }
     match expr {
         Expression::VarRef {
             name, subscripts, ..
@@ -869,6 +877,9 @@ fn is_assignment_target(expr: &Expression, candidate: &VarName) -> bool {
 /// Returns true if the expression is a single variable reference or its
 /// negation — i.e., a trivial alias like `x` or `-x`.
 fn is_trivial_alias(expr: &Expression) -> bool {
+    if exact_reference_expr_name(expr).is_some() {
+        return true;
+    }
     match expr {
         Expression::VarRef { .. } => true,
         Expression::Unary {
@@ -882,6 +893,25 @@ fn is_trivial_alias(expr: &Expression) -> bool {
             ..
         } => args.len() == 1 && matches!(&args[0], Expression::VarRef { .. }),
         _ => false,
+    }
+}
+
+fn is_trivial_alias_in_dae(dae: &Dae, expr: &Expression) -> bool {
+    if exact_reference_expr_name_in_dae(dae, expr).is_some() {
+        return true;
+    }
+    match expr {
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => is_trivial_alias_in_dae(dae, rhs),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+            ..
+        } => args.len() == 1 && exact_reference_expr_name_in_dae(dae, &args[0]).is_some(),
+        _ => is_trivial_alias(expr),
     }
 }
 
@@ -951,6 +981,188 @@ pub(super) fn collect_var_ref_nodes(
     }
 
     Collector { out }.visit_expression(expr);
+}
+
+pub(super) fn collect_exact_reference_expr_names_in_dae(
+    dae: &Dae,
+    expr: &Expression,
+    out: &mut Vec<VarName>,
+) {
+    match expr {
+        Expression::VarRef { .. } => {
+            if let Some(name) = exact_reference_expr_name_in_dae(dae, expr) {
+                out.push(name);
+            }
+        }
+        Expression::Index { base, .. } | Expression::FieldAccess { base, .. } => {
+            if let Some(name) = exact_reference_expr_name_in_dae(dae, expr) {
+                out.push(name);
+            } else {
+                collect_exact_reference_expr_names_in_dae(dae, base, out);
+            }
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            collect_exact_reference_expr_names_in_dae(dae, lhs, out);
+            collect_exact_reference_expr_names_in_dae(dae, rhs, out);
+        }
+        Expression::Unary { rhs, .. } => collect_exact_reference_expr_names_in_dae(dae, rhs, out),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_exact_reference_expr_names_in_dae(dae, arg, out);
+            }
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                collect_exact_reference_expr_names_in_dae(dae, condition, out);
+                collect_exact_reference_expr_names_in_dae(dae, value, out);
+            }
+            collect_exact_reference_expr_names_in_dae(dae, else_branch, out);
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            for element in elements {
+                collect_exact_reference_expr_names_in_dae(dae, element, out);
+            }
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_exact_reference_expr_names_in_dae(dae, start, out);
+            if let Some(step) = step {
+                collect_exact_reference_expr_names_in_dae(dae, step, out);
+            }
+            collect_exact_reference_expr_names_in_dae(dae, end, out);
+        }
+        Expression::ArrayComprehension { expr, filter, .. } => {
+            collect_exact_reference_expr_names_in_dae(dae, expr, out);
+            if let Some(filter) = filter {
+                collect_exact_reference_expr_names_in_dae(dae, filter, out);
+            }
+        }
+        Expression::Literal { .. } | Expression::Empty { .. } => {}
+    }
+}
+
+pub(super) fn exact_reference_expr_name(expr: &Expression) -> Option<VarName> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => exact_name_with_subscripts(name.var_name().as_str(), subscripts).map(VarName::new),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base_name = exact_reference_expr_name(base)?;
+            exact_name_with_subscripts(base_name.as_str(), subscripts).map(VarName::new)
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let base_name = exact_reference_expr_name(base)?;
+            Some(VarName::new(format!("{}.{field}", base_name.as_str())))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn exact_reference_expr_name_in_dae(dae: &Dae, expr: &Expression) -> Option<VarName> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => exact_name_with_subscripts_in_dae(dae, name.var_name().as_str(), subscripts)
+            .map(VarName::new),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base_name = exact_reference_expr_name_in_dae(dae, base)?;
+            exact_name_with_subscripts_in_dae(dae, base_name.as_str(), subscripts).map(VarName::new)
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let base_name = exact_reference_expr_name_in_dae(dae, base)?;
+            Some(VarName::new(format!("{}.{field}", base_name.as_str())))
+        }
+        _ => None,
+    }
+}
+
+fn exact_name_with_subscripts(base: &str, subscripts: &[rumoca_core::Subscript]) -> Option<String> {
+    if subscripts.is_empty() {
+        return Some(base.to_string());
+    }
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        indices.push(exact_subscript_index(subscript)?.to_string());
+    }
+    Some(format!("{base}[{}]", indices.join(",")))
+}
+
+fn exact_name_with_subscripts_in_dae(
+    dae: &Dae,
+    base: &str,
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<String> {
+    if subscripts.is_empty() {
+        return Some(base.to_string());
+    }
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        indices.push(exact_subscript_index_in_dae(dae, subscript)?.to_string());
+    }
+    Some(format!("{base}[{}]", indices.join(",")))
+}
+
+fn exact_subscript_index(subscript: &rumoca_core::Subscript) -> Option<i64> {
+    match subscript {
+        rumoca_core::Subscript::Index { value, .. } => Some(*value),
+        rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
+            Expression::Literal {
+                value: rumoca_core::Literal::Integer(value),
+                ..
+            } => Some(*value),
+            Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            } if value.is_finite() && value.fract() == 0.0 => Some(*value as i64),
+            _ => None,
+        },
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+fn exact_subscript_index_in_dae(dae: &Dae, subscript: &rumoca_core::Subscript) -> Option<i64> {
+    match subscript {
+        rumoca_core::Subscript::Index { value, .. } => Some(*value),
+        rumoca_core::Subscript::Expr { expr, .. } => exact_index_expr_in_dae(dae, expr),
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+fn exact_index_expr_in_dae(dae: &Dae, expr: &Expression) -> Option<i64> {
+    match expr {
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if value.is_finite() && value.fract() == 0.0 => Some(*value as i64),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => fixed_integer_parameter_start(dae, name.var_name()),
+        _ => None,
+    }
+}
+
+fn fixed_integer_parameter_start(dae: &Dae, name: &VarName) -> Option<i64> {
+    let var = dae
+        .variables
+        .parameters
+        .get(name)
+        .filter(|var| !var.is_tunable)
+        .or_else(|| dae.variables.constants.get(name))?;
+    let start = var.start.as_ref()?;
+    exact_index_expr_in_dae(dae, start)
 }
 
 fn dae_var_size(dae: &Dae, name: &VarName) -> Result<usize, StructuralError> {
@@ -1161,7 +1373,7 @@ fn scalar_blt_solution(
     let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
         return Ok(None);
     };
-    if is_output && !is_trivial_alias(&solution) {
+    if is_output && !is_trivial_alias_in_dae(dae, &solution) {
         return Ok(None);
     }
     Ok(Some((eq_idx, var_name, solution)))
@@ -1230,7 +1442,7 @@ fn stable_solution_for_unknown(
     rhs: &Expression,
     var_name: &VarName,
 ) -> Result<Option<Expression>, StructuralError> {
-    let Some(solution) = try_solve_for_unknown(rhs, var_name) else {
+    let Some(solution) = try_solve_for_unknown_in_dae(dae, rhs, var_name) else {
         return Ok(None);
     };
     if expr_contains_var(&solution, var_name)
@@ -1818,6 +2030,12 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
     type Error = StructuralError;
 
     fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error> {
+        if exact_reference_expr_name(expr).as_ref() == Some(&self.substitution.var_name) {
+            return Ok(replacement_with_owner_span(
+                self.replacement,
+                expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            ));
+        }
         match expr {
             Expression::BuiltinCall {
                 function: BuiltinFunction::Der,

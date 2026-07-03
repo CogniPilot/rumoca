@@ -1197,6 +1197,12 @@ impl<'a> LowerBuilder<'a> {
             };
             let expected = checked_shape_size(&dims, "array expression shape", span)?;
             if expected != values.len() {
+                if self.expr_has_scalarized_complex_width(expr)
+                    || (expected > 0 && values.len() > expected && values.len() % expected == 0)
+                {
+                    let width = values.len();
+                    return ArrayOperand::with_shape_span(values, vector_dims(width), span);
+                }
                 let shape = format_usize_dims(&dims);
                 return Err(unsupported_at(
                     format!(
@@ -1222,6 +1228,26 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::Expression::FunctionCall { name, .. } => self
                 .lookup_function(name)
                 .is_some_and(|function| function.outputs.len() > 1),
+            _ => false,
+        }
+    }
+
+    fn expr_has_scalarized_complex_width(&self, expr: &rumoca_core::Expression) -> bool {
+        if self.scalarized_complex_fields_available(expr) {
+            return true;
+        }
+        match expr {
+            rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+                self.expr_has_scalarized_complex_width(lhs)
+                    || self.expr_has_scalarized_complex_width(rhs)
+            }
+            rumoca_core::Expression::Unary { rhs, .. } => {
+                self.expr_has_scalarized_complex_width(rhs)
+            }
+            rumoca_core::Expression::FieldAccess { base, .. }
+            | rumoca_core::Expression::Index { base, .. } => {
+                self.expr_has_scalarized_complex_width(base)
+            }
             _ => false,
         }
     }

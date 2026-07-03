@@ -191,6 +191,23 @@ fn prepare_structural_daes(
     })
 }
 
+pub(super) fn prepare_structural_dae_for_simulation_artifact(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<dae::Dae, rumoca_phase_solve::SolveModelLowerError> {
+    prepare_structural_daes(dae_model, opts).map(|prepared| prepared.lowered)
+}
+
+pub(super) fn boundary_reduced_dae_for_simulation_artifact(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<dae::Dae, rumoca_phase_solve::SolveModelLowerError> {
+    let mut lowered = prepare_structural_daes(dae_model, opts)?.lowered;
+    rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    Ok(lowered)
+}
+
 fn apply_simulation_elimination(
     lowered: &mut dae::Dae,
     substitutions: &[rumoca_phase_structural::eliminate::Substitution],

@@ -182,7 +182,7 @@ pub(super) fn component_reference_key_for_expr(
     let Some(component_ref) = component_reference_for_expr(expr)? else {
         return Ok(None);
     };
-    component_reference_key(component_ref).map(Some)
+    optional_component_reference_key(component_ref)
 }
 
 pub(super) fn component_reference_key_for_field_base(
@@ -192,7 +192,7 @@ pub(super) fn component_reference_key_for_field_base(
     let Some(component_ref) = component_reference_for_field_base(base, field)? else {
         return Ok(None);
     };
-    component_reference_key(component_ref).map(Some)
+    optional_component_reference_key(component_ref)
 }
 
 pub(super) fn component_reference_for_field_base(
@@ -270,10 +270,31 @@ pub(super) fn component_reference_key(
             return Ok(key);
         }
     }
+    component_reference_key_strict(component_ref)
+}
+
+pub(super) fn component_reference_key_strict(
+    component_ref: rumoca_core::ComponentReference,
+) -> Result<ComponentReferenceKey, LowerError> {
     ComponentReferenceKey::from_component_reference(&component_ref).map_err(|err| {
         LowerError::contract_violation(
             format!("indexed solve-layout lookup has non-static component reference: {err}"),
             err.span,
         )
     })
+}
+
+pub(super) fn optional_component_reference_key(
+    component_ref: rumoca_core::ComponentReference,
+) -> Result<Option<ComponentReferenceKey>, LowerError> {
+    match ComponentReferenceKey::from_component_reference(&component_ref) {
+        Ok(key) => Ok(Some(key)),
+        Err(err) if err.kind == rumoca_ir_solve::ComponentReferenceKeyErrorKind::MissingDefId => {
+            Ok(None)
+        }
+        Err(err) => Err(LowerError::contract_violation(
+            format!("indexed solve-layout lookup has non-static component reference: {err}"),
+            err.span,
+        )),
+    }
 }

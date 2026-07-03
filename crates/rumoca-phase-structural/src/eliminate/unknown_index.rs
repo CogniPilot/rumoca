@@ -15,7 +15,10 @@ use rumoca_ir_dae::{
     var_ref_matches_unknown,
 };
 
-use super::{Dae, Expression, Reference, VarName, collect_var_ref_nodes};
+use super::{
+    Dae, Expression, Reference, VarName, collect_exact_reference_expr_names_in_dae,
+    collect_var_ref_nodes,
+};
 use crate::StructuralError;
 use crate::variable_scope::DaeVariableScope;
 
@@ -186,16 +189,25 @@ impl<'a> BoundaryUnknownIndex<'a> {
     ) -> Result<Vec<usize>, StructuralError> {
         let mut var_refs = Vec::new();
         collect_var_ref_nodes(expr, &mut var_refs);
+        let mut exact_names = Vec::new();
+        collect_exact_reference_expr_names_in_dae(self.dae, expr, &mut exact_names);
         let mut candidates = Vec::new();
         for (name, subscripts) in &var_refs {
             self.append_candidate_positions(name, subscripts, &mut candidates);
+        }
+        for exact_name in &exact_names {
+            if let Some(&position) = self.by_name.get(exact_name.as_str()) {
+                candidates.push(position);
+            }
         }
         candidates.sort_unstable();
         candidates.dedup();
         let mut live = Vec::new();
         for position in candidates {
             let unknown = &self.all_unknowns[position];
-            if !resolved.contains(unknown) && refs_contain_unknown(&var_refs, unknown, self.dae)? {
+            if !resolved.contains(unknown)
+                && refs_contain_unknown(&var_refs, &exact_names, unknown, self.dae)?
+            {
                 live.push(position);
             }
         }
@@ -270,15 +282,32 @@ pub(super) fn find_live_scalar_unknowns(
 
 fn refs_contain_unknown(
     refs: &[(Reference, Vec<rumoca_core::Subscript>)],
+    exact_names: &[VarName],
     unknown: &VarName,
     dae: &Dae,
 ) -> Result<bool, StructuralError> {
+    if exact_names.iter().any(|name| name == unknown) {
+        return Ok(true);
+    }
+    for (name, subscripts) in refs {
+        if var_ref_matches_unknown(name, subscripts.as_slice(), unknown) {
+            return Ok(true);
+        }
+    }
+    if exact_scalar_unknown_exists(dae, unknown)? {
+        return Ok(false);
+    }
     for (name, subscripts) in refs {
         if var_ref_mentions_unknown_for_presence(name, subscripts.as_slice(), unknown, dae)? {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+fn exact_scalar_unknown_exists(dae: &Dae, unknown: &VarName) -> Result<bool, StructuralError> {
+    let scope = DaeVariableScope::new(dae);
+    Ok(scope.exact(unknown).is_some() && scope.size(unknown)? == 1)
 }
 
 fn unknown_scalar_size(dae: &Dae, unknown: &VarName) -> Result<usize, StructuralError> {

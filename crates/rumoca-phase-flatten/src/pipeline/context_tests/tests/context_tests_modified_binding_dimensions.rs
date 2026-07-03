@@ -134,6 +134,27 @@ fn modified_binding_dimensions_replace_stale_declared_shape() {
 }
 
 #[test]
+fn modified_integer_unqualified_rhs_prefers_modifier_source_scope_over_target_def() {
+    let mut ctx = Context::new();
+    let target_def = DefId::new(43);
+    ctx.target_def_names
+        .insert(target_def, "sensor.block.m".to_string());
+    ctx.parameter_values.insert("sensor.m".to_string(), 3);
+    ctx.parameter_values.insert("sensor.block.m".to_string(), 6);
+
+    let params = vec![(
+        "sensor.block.m".to_string(),
+        var_ref_with_target_def("m", target_def),
+    )];
+
+    assert!(
+        ctx.eval_modified_integer_params(&params),
+        "modifier-origin unqualified RHS must be resolved where the modifier was written"
+    );
+    assert_eq!(ctx.get_integer_param("sensor.block.m"), Some(3));
+}
+
+#[test]
 fn modified_binding_dimensions_do_not_follow_unrelated_local_m() {
     let mut ctx = Context::new();
     let tree = source_backed_tree();

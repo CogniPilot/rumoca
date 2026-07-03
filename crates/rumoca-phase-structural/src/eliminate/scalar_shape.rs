@@ -4,10 +4,17 @@ use rumoca_ir_dae as dae;
 use crate::StructuralError;
 use crate::variable_scope::{DaeVariableScope, scalar_count_from_dims};
 
+use super::exact_reference_expr_name_in_dae;
+
 pub(super) fn expression_is_scalar_after_subscripts(
     expr: &Expression,
     dae: &dae::Dae,
 ) -> Result<bool, StructuralError> {
+    if let Some(exact_name) = exact_reference_expr_name_in_dae(dae, expr)
+        && let Some(var) = DaeVariableScope::new(dae).exact(&exact_name)
+    {
+        return Ok(scalar_count_from_dims(&exact_name, &var.dims)? == 1);
+    }
     match expr {
         Expression::Literal { .. } | Expression::Empty { .. } => Ok(true),
         Expression::VarRef {

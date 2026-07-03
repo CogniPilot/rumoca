@@ -1,4 +1,7 @@
-use super::{Dae, Expression, StructuralError, VarName, collect_var_ref_nodes};
+use super::{
+    Dae, Expression, StructuralError, VarName, collect_var_ref_nodes,
+    exact_reference_expr_name_in_dae,
+};
 use crate::variable_scope::{DaeVariableScope, DaeVariableShape, scalar_count_from_dims};
 
 pub(super) fn is_flow_equation_origin(origin: &str) -> bool {
@@ -9,11 +12,20 @@ pub(super) fn expr_contains_indexed_multiscalar_ref(
     expr: &Expression,
     dae: &Dae,
 ) -> Result<bool, StructuralError> {
+    let scope = DaeVariableScope::new(dae);
+    if let Some(exact_name) = exact_reference_expr_name_in_dae(dae, expr)
+        && let Some(var) = scope.exact(&exact_name)
+        && scalar_count_from_dims(&exact_name, &var.dims)? == 1
+    {
+        return Ok(false);
+    }
     let mut refs = Vec::new();
     collect_var_ref_nodes(expr, &mut refs);
-    let scope = DaeVariableScope::new(dae);
     for (name, subscripts) in refs {
         if name.as_str() == "time" {
+            continue;
+        }
+        if !reference_touches_continuous_unknown(dae, name.var_name()) {
             continue;
         }
         if reference_has_embedded_multiscalar_index(dae, name.var_name())? {
@@ -32,6 +44,20 @@ pub(super) fn expr_contains_indexed_multiscalar_ref(
         }
     }
     Ok(false)
+}
+
+fn reference_touches_continuous_unknown(dae: &Dae, name: &VarName) -> bool {
+    continuous_unknown_exists(dae, name)
+        || strip_embedded_subscripts(name.as_str())
+            .is_some_and(|base| continuous_unknown_exists(dae, &VarName::new(base)))
+        || rumoca_ir_dae::split_complex_field_suffix(name.as_str())
+            .is_some_and(|(base, _)| continuous_unknown_exists(dae, &VarName::new(base)))
+}
+
+fn continuous_unknown_exists(dae: &Dae, name: &VarName) -> bool {
+    dae.variables.states.contains_key(name)
+        || dae.variables.algebraics.contains_key(name)
+        || dae.variables.outputs.contains_key(name)
 }
 
 fn reference_has_embedded_multiscalar_index(

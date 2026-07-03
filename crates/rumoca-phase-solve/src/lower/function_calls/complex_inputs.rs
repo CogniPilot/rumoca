@@ -61,7 +61,19 @@ impl<'a> LowerBuilder<'a> {
                     span,
                 )?;
             }
-            self.bind_local_array_shape(&input.name, &binding_dims, expected, span)?;
+            self.set_known_local_array_dims(&input.name, binding_dims.clone(), expected, span)?;
+            self.set_known_local_array_dims(
+                &format!("{}.re", input.name),
+                binding_dims.clone(),
+                expected,
+                span,
+            )?;
+            self.set_known_local_array_dims(
+                &format!("{}.im", input.name),
+                binding_dims.clone(),
+                expected,
+                span,
+            )?;
             return Ok(());
         }
 
@@ -102,7 +114,19 @@ impl<'a> LowerBuilder<'a> {
             expected,
             span,
         )?;
-        self.bind_local_array_shape(&input.name, &binding_dims, expected, span)?;
+        self.set_known_local_array_dims(&input.name, binding_dims.clone(), expected, span)?;
+        self.set_known_local_array_dims(
+            &format!("{}.re", input.name),
+            binding_dims.clone(),
+            expected,
+            span,
+        )?;
+        self.set_known_local_array_dims(
+            &format!("{}.im", input.name),
+            binding_dims.clone(),
+            expected,
+            span,
+        )?;
         Ok(())
     }
 
@@ -150,6 +174,8 @@ impl<'a> LowerBuilder<'a> {
         if let Some(im) = im_values.first().copied() {
             scope.insert(generated_scope_key(format!("{base_name}.im")), im);
         }
+        self.bind_assignment_values_at(scope, &format!("{base_name}.re"), re_values, span)?;
+        self.bind_assignment_values_at(scope, &format!("{base_name}.im"), im_values, span)?;
         self.bind_assignment_values_at(scope, &format!("{base_name}[:].re"), re_values, span)?;
         self.bind_assignment_values_at(scope, &format!("{base_name}[:].im"), im_values, span)?;
         self.bind_assignment_values_at(scope, &format!("{base_name}[:].re.re"), re_values, span)?;

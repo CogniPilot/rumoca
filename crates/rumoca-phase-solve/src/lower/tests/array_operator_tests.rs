@@ -49,6 +49,14 @@ fn field_access(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expr
     }
 }
 
+fn generated_var_with_span(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::generated(name),
+        subscripts: vec![],
+        span: lower_test_span(),
+    }
+}
+
 #[test]
 fn lower_expression_lowers_vector_vector_multiply_as_scalar_product() {
     let mut dae_model = dae::Dae::default();
@@ -80,6 +88,97 @@ fn lower_expression_lowers_vector_vector_multiply_as_scalar_product() {
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
 
     assert_eq!(read_reg(&regs, lowered.result), 65.0);
+}
+
+#[test]
+fn lower_expression_projects_complex_vector_dot_from_scalarized_record_fields() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["powerSensor.sum.k[1].re", "powerSensor.sum.k[1].im"] {
+        dae_model
+            .variables
+            .parameters
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    for name in [
+        "powerSensor.sum.uInternal[1].re",
+        "powerSensor.sum.uInternal[1].im",
+        "powerSensor.sum.uInternal[2].re",
+        "powerSensor.sum.uInternal[2].im",
+    ] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = field_access(
+        mul(var("powerSensor.sum.k"), var("powerSensor.sum.uInternal")),
+        "re",
+    );
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("Complex vector product field projection should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "powerSensor.sum.k[1].re", 2.0);
+    set_p_value(&layout, &mut p, "powerSensor.sum.k[1].im", 3.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[1].re", 7.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[1].im", 11.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[2].re", 13.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[2].im", 17.0);
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), -44.0);
+}
+
+#[test]
+fn lower_expression_projects_complex_vector_dot_with_fill_constructor_operand() {
+    let mut dae_model = dae::Dae::default();
+    for name in [
+        "powerSensor.sum.uInternal[1].re",
+        "powerSensor.sum.uInternal[1].im",
+        "powerSensor.sum.uInternal[2].re",
+        "powerSensor.sum.uInternal[2].im",
+    ] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let fill_complex = builtin(
+        rumoca_core::BuiltinFunction::Fill,
+        vec![
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("Complex").into(),
+                args: vec![real_lit(1.0), real_lit(0.0)],
+                is_constructor: true,
+                span: lower_test_span(),
+            },
+            int_lit(1),
+        ],
+    );
+    let expr = field_access(
+        mul(
+            fill_complex,
+            generated_var_with_span("powerSensor.sum.uInternal"),
+        ),
+        "re",
+    );
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("Complex fill-vector product field projection should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![0.0; layout.p_scalars()];
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[1].re", 7.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[1].im", 11.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[2].re", 13.0);
+    set_y_value(&layout, &mut y, "powerSensor.sum.uInternal[2].im", 17.0);
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 20.0);
 }
 
 #[test]

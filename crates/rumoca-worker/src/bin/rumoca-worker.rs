@@ -17,8 +17,10 @@ use rumoca_compile::compile::{
 };
 use rumoca_sim::{
     BuildSimulationTimings, PreparedSimulation, SimError, SimOptions, SimResult, SimSolverMode,
+    boundary_reduced_dae_for_simulation_artifact,
     build_simulation_with_stage_timing_and_solve_model, check_prepared_initialization,
     run_prepared_simulation, structurally_lowered_dae_for_simulation_artifact,
+    structurally_prepared_dae_for_simulation_artifact,
 };
 use rumoca_worker::{
     MODEL_WORKER_PARTIAL_RESULT_FILE, MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE,
@@ -963,9 +965,16 @@ fn initial_structural_dae_artifact_error(
     if !request.emit_json && !request.emit_modelica {
         return None;
     }
+    let mut error = match structurally_prepared_dae_for_simulation_artifact(dae, opts) {
+        Ok(prepared_dae) => write_prepared_structural_dae_artifacts(request, &prepared_dae),
+        Err(error) => Some(error.to_string()),
+    };
+    error = error.or(match boundary_reduced_dae_for_simulation_artifact(dae, opts) {
+        Ok(reduced_dae) => write_boundary_reduced_dae_artifacts(request, &reduced_dae),
+        Err(error) => Some(error.to_string()),
+    });
     match structurally_lowered_dae_for_simulation_artifact(dae, opts) {
         Ok(structural_dae) => {
-            let mut error = None;
             if request.emit_modelica {
                 error = error.or(write_modelica_dae_artifact(
                     request,
@@ -986,6 +995,46 @@ fn initial_structural_dae_artifact_error(
         }
         Err(error) => Some(error.to_string()),
     }
+}
+
+fn write_boundary_reduced_dae_artifacts(
+    request: &ModelWorkerRequest,
+    reduced_dae: &rumoca_compile::compile::Dae,
+) -> Option<String> {
+    let mut error = None;
+    if request.emit_modelica {
+        error = error.or(
+            write_modelica_dae_artifact(request, "ir-boundary-reduced-dae.mo", reduced_dae).err(),
+        );
+    }
+    if request.emit_json {
+        error = error
+            .or(write_artifact_json(request, "ir-boundary-reduced-dae.json", reduced_dae).err());
+    }
+    error
+}
+
+fn write_prepared_structural_dae_artifacts(
+    request: &ModelWorkerRequest,
+    prepared_dae: &rumoca_compile::compile::Dae,
+) -> Option<String> {
+    let mut error = None;
+    if request.emit_modelica {
+        error = error.or(
+            write_modelica_dae_artifact(
+                request,
+                "ir-prepared-structural-dae.mo",
+                prepared_dae,
+            )
+            .err(),
+        );
+    }
+    if request.emit_json {
+        error = error.or(
+            write_artifact_json(request, "ir-prepared-structural-dae.json", prepared_dae).err(),
+        );
+    }
+    error
 }
 
 fn observe_simulation_build_stage(

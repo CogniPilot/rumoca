@@ -29,8 +29,10 @@ pub use rumoca_phase_structural::{BlockReport, StructuralReport, TearingReport};
 
 pub use diagnostics::SimulationDiagnosticError;
 pub use entry::{
-    lower_dae_for_gpu_preparation, lower_dae_for_simulation,
+    boundary_reduced_dae_for_simulation_artifact, lower_dae_for_gpu_preparation,
+    lower_dae_for_simulation,
     structurally_lowered_dae_for_simulation_artifact,
+    structurally_prepared_dae_for_simulation_artifact,
 };
 pub use probe::{
     EvalAtProbe, JacobianProbe, ObjectiveGradientProbe, ParameterJacobianProbe,

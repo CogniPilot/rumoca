@@ -513,6 +513,15 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(value);
         }
+        if let Some(value) = self.eval_compile_time_var_ref_by_def_id(name, const_scope) {
+            return Ok(value);
+        }
+        if !name.as_str().contains('.')
+            && subscripts.is_empty()
+            && let Some(value) = self.eval_unique_compile_time_suffix(name.as_str(), const_scope)
+        {
+            return Ok(value);
+        }
         match self.layout.binding(key.as_str()) {
             Some(ScalarSlot::Constant(value)) => Ok(value),
             Some(_) | None => Err(unsupported_at(
@@ -520,6 +529,76 @@ impl<'a> LowerBuilder<'a> {
                 span,
             )),
         }
+    }
+
+    fn eval_compile_time_var_ref_by_def_id(
+        &self,
+        name: &rumoca_core::Reference,
+        const_scope: &IndexMap<String, f64>,
+    ) -> Option<f64> {
+        let def_id = name.target_def_id()?;
+        let variables = self.dae_variables?;
+        let variable = variables
+            .parameters
+            .values()
+            .chain(variables.constants.values())
+            .chain(variables.discrete_valued.values())
+            .chain(variables.discrete_reals.values())
+            .find(|variable| {
+                variable
+                    .component_ref
+                    .as_ref()
+                    .and_then(|component_ref| component_ref.def_id)
+                    == Some(def_id)
+            })?;
+        let start = variable.start.as_ref()?;
+        if start_metadata_refers_to_key(start, variable.name.as_str()) {
+            return None;
+        }
+        self.eval_compile_time_expr(start, const_scope).ok()
+    }
+
+    fn eval_unique_compile_time_suffix(
+        &self,
+        name: &str,
+        const_scope: &IndexMap<String, f64>,
+    ) -> Option<f64> {
+        let suffix = format!(".{name}");
+        let mut matched = None;
+        if let Some(value) = self.structural_bindings.get(name).copied() {
+            matched = Some(value);
+        }
+        for (key, value) in self
+            .structural_bindings
+            .iter()
+            .filter(|(key, _)| key.ends_with(&suffix))
+        {
+            let _ = key;
+            let value = *value;
+            if let Some(previous) = matched
+                && (previous - value).abs() > 1.0e-9
+            {
+                return None;
+            }
+            matched = Some(value);
+        }
+        if let Some(starts) = self.variable_starts {
+            for (key, start) in starts.iter().filter(|(key, _)| key.ends_with(&suffix)) {
+                if start_metadata_refers_to_key(start, key.as_str()) {
+                    continue;
+                }
+                let Ok(value) = self.eval_compile_time_expr(start, const_scope) else {
+                    continue;
+                };
+                if let Some(previous) = matched
+                    && (previous - value).abs() > 1.0e-9
+                {
+                    return None;
+                }
+                matched = Some(value);
+            }
+        }
+        matched
     }
 
     pub(super) fn eval_compile_time_unary(

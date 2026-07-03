@@ -210,13 +210,22 @@ fn map_constant_bindings(
     dae_model: &dae::Dae,
     mut maps: LayoutBindingMaps<'_>,
 ) -> Result<(), LowerError> {
-    for (name, var) in &dae_model.variables.constants {
-        insert_constant_bindings(
-            maps.reborrow(),
-            name.as_str(),
-            var,
-            &dae_model.symbols.enum_literal_ordinals,
-        )?;
+    for _ in 0..dae_model.variables.constants.len().max(1) {
+        let before = maps.bindings.len();
+        for (name, var) in &dae_model.variables.constants {
+            if maps.bindings.contains_key(name.as_str()) {
+                continue;
+            }
+            insert_constant_bindings(
+                maps.reborrow(),
+                name.as_str(),
+                var,
+                &dae_model.symbols.enum_literal_ordinals,
+            )?;
+        }
+        if maps.bindings.len() == before {
+            break;
+        }
     }
     Ok(())
 }
@@ -309,7 +318,9 @@ fn insert_constant_bindings(
     let Some(start) = var.start.as_ref() else {
         return Ok(());
     };
-    let Some(raw_values) = eval_const_values(start, enum_literal_ordinals) else {
+    let Some(raw_values) =
+        eval_const_values_with_bindings(start, enum_literal_ordinals, &*maps.bindings)
+    else {
         return Ok(());
     };
 
@@ -609,6 +620,22 @@ fn literal_to_f64(literal: &rumoca_core::Literal) -> Option<f64> {
     }
 }
 
+fn positive_i64_to_usize(value: i64) -> Option<usize> {
+    if value > 0 {
+        usize::try_from(value).ok()
+    } else {
+        None
+    }
+}
+
+fn positive_usize_from_f64(value: f64) -> Option<usize> {
+    if value.is_finite() && value >= 1.0 && value.fract().abs() <= f64::EPSILON {
+        usize::try_from(value as u64).ok()
+    } else {
+        None
+    }
+}
+
 fn insert_enum_literal_binding_aliases(
     bindings: &mut IndexMap<String, ScalarSlot>,
     name: &str,
@@ -630,20 +657,30 @@ fn insert_enum_literal_binding_key(
         .or_insert(ScalarSlot::Constant(value));
 }
 
-fn eval_const_scalar(
+#[cfg(test)]
+fn eval_const_values(
     expr: &rumoca_core::Expression,
     enum_literal_ordinals: &IndexMap<String, i64>,
+) -> Option<Vec<f64>> {
+    eval_const_values_with_bindings(expr, enum_literal_ordinals, &IndexMap::new())
+}
+
+fn eval_const_scalar_with_bindings(
+    expr: &rumoca_core::Expression,
+    enum_literal_ordinals: &IndexMap<String, i64>,
+    bindings: &IndexMap<String, ScalarSlot>,
 ) -> Option<f64> {
-    let values = eval_const_values(expr, enum_literal_ordinals)?;
+    let values = eval_const_values_with_bindings(expr, enum_literal_ordinals, bindings)?;
     if values.len() == 1 {
         return values.first().copied();
     }
     None
 }
 
-fn eval_const_values(
+fn eval_const_values_with_bindings(
     expr: &rumoca_core::Expression,
     enum_literal_ordinals: &IndexMap<String, i64>,
+    bindings: &IndexMap<String, ScalarSlot>,
 ) -> Option<Vec<f64>> {
     match expr {
         rumoca_core::Expression::Literal { value: literal, .. } => {
@@ -653,15 +690,19 @@ fn eval_const_values(
         // translation-time constants with 1-based ordinal numeric semantics.
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => {
-            lookup_enum_literal_ordinal(name.as_str(), enum_literal_ordinals)
-                .map(|ordinal| vec![ordinal as f64])
+        } => {
+            let key = const_var_key(name, subscripts, bindings)?;
+            if let Some(ordinal) = lookup_enum_literal_ordinal(key.as_str(), enum_literal_ordinals)
+            {
+                return Some(vec![ordinal as f64]);
+            }
+            constant_slot_value(bindings.get(key.as_str())?).map(|value| vec![value])
         }
         rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-            eval_const_builtin(*function, args, enum_literal_ordinals)
+            eval_const_builtin(*function, args, enum_literal_ordinals, bindings)
         }
         rumoca_core::Expression::Unary { op, rhs, .. } => {
-            let values = eval_const_values(rhs, enum_literal_ordinals)?;
+            let values = eval_const_values_with_bindings(rhs, enum_literal_ordinals, bindings)?;
             match op {
                 rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(values),
                 rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
@@ -671,8 +712,8 @@ fn eval_const_values(
             }
         }
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = eval_const_scalar(lhs, enum_literal_ordinals)?;
-            let rhs = eval_const_scalar(rhs, enum_literal_ordinals)?;
+            let lhs = eval_const_scalar_with_bindings(lhs, enum_literal_ordinals, bindings)?;
+            let rhs = eval_const_scalar_with_bindings(rhs, enum_literal_ordinals, bindings)?;
             let value = match op {
                 rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs + rhs,
                 rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs - rhs,
@@ -687,17 +728,21 @@ fn eval_const_values(
         | rumoca_core::Expression::Tuple { elements, .. } => {
             let mut values = Vec::new();
             for element in elements {
-                values.extend(eval_const_values(element, enum_literal_ordinals)?);
+                values.extend(eval_const_values_with_bindings(
+                    element,
+                    enum_literal_ordinals,
+                    bindings,
+                )?);
             }
             Some(values)
         }
         rumoca_core::Expression::Range {
             start, step, end, ..
         } => {
-            let start = eval_const_scalar(start, enum_literal_ordinals)?;
-            let end = eval_const_scalar(end, enum_literal_ordinals)?;
+            let start = eval_const_scalar_with_bindings(start, enum_literal_ordinals, bindings)?;
+            let end = eval_const_scalar_with_bindings(end, enum_literal_ordinals, bindings)?;
             let step = if let Some(step_expr) = step {
-                eval_const_scalar(step_expr, enum_literal_ordinals)?
+                eval_const_scalar_with_bindings(step_expr, enum_literal_ordinals, bindings)?
             } else if end >= start {
                 1.0
             } else {
@@ -736,21 +781,23 @@ fn eval_const_builtin(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
     enum_literal_ordinals: &IndexMap<String, i64>,
+    bindings: &IndexMap<String, ScalarSlot>,
 ) -> Option<Vec<f64>> {
     use rumoca_core::BuiltinFunction as Builtin;
 
     let unary = |f: fn(f64) -> f64| {
-        let value = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
+        let value =
+            eval_const_scalar_with_bindings(args.first()?, enum_literal_ordinals, bindings)?;
         Some(vec![f(value)])
     };
     let binary = |f: fn(f64, f64) -> f64| {
-        let lhs = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
-        let rhs = eval_const_scalar(args.get(1)?, enum_literal_ordinals)?;
+        let lhs = eval_const_scalar_with_bindings(args.first()?, enum_literal_ordinals, bindings)?;
+        let rhs = eval_const_scalar_with_bindings(args.get(1)?, enum_literal_ordinals, bindings)?;
         Some(vec![f(lhs, rhs)])
     };
     let binary_builtin = |function| {
-        let lhs = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
-        let rhs = eval_const_scalar(args.get(1)?, enum_literal_ordinals)?;
+        let lhs = eval_const_scalar_with_bindings(args.first()?, enum_literal_ordinals, bindings)?;
+        let rhs = eval_const_scalar_with_bindings(args.get(1)?, enum_literal_ordinals, bindings)?;
         rumoca_core::apply_scalar_binary_math(function, lhs, rhs).map(|value| vec![value])
     };
 
@@ -779,11 +826,69 @@ fn eval_const_builtin(
         Builtin::Div => binary_builtin(Builtin::Div),
         Builtin::Mod => binary_builtin(Builtin::Mod),
         Builtin::Rem => binary_builtin(Builtin::Rem),
-        Builtin::NoEvent => eval_const_values(args.first()?, enum_literal_ordinals),
-        Builtin::Smooth => eval_const_values(args.get(1)?, enum_literal_ordinals),
-        Builtin::Homotopy => eval_const_values(args.first()?, enum_literal_ordinals),
+        Builtin::NoEvent => {
+            eval_const_values_with_bindings(args.first()?, enum_literal_ordinals, bindings)
+        }
+        Builtin::Smooth => {
+            eval_const_values_with_bindings(args.get(1)?, enum_literal_ordinals, bindings)
+        }
+        Builtin::Homotopy => {
+            eval_const_values_with_bindings(args.first()?, enum_literal_ordinals, bindings)
+        }
         _ => None,
     }
+}
+
+fn constant_slot_value(slot: &ScalarSlot) -> Option<f64> {
+    match slot {
+        ScalarSlot::Constant(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn const_var_key(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    bindings: &IndexMap<String, ScalarSlot>,
+) -> Option<String> {
+    let name = constant_reference_lookup_name(name, bindings);
+    if subscripts.is_empty() {
+        return Some(name);
+    }
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let index = match subscript {
+            rumoca_core::Subscript::Index { value, .. } => positive_i64_to_usize(*value)?,
+            rumoca_core::Subscript::Expr { expr, .. } => positive_usize_from_f64(
+                eval_const_scalar_with_bindings(expr, &IndexMap::new(), bindings)?,
+            )?,
+            rumoca_core::Subscript::Colon { .. } => return None,
+        };
+        indices.push(index);
+    }
+    Some(dae::format_subscript_key(name.as_str(), &indices))
+}
+
+fn constant_reference_lookup_name(
+    name: &rumoca_core::Reference,
+    bindings: &IndexMap<String, ScalarSlot>,
+) -> String {
+    if let Some(component_ref) = name.component_ref() {
+        let structured = component_ref_flat_name(component_ref);
+        if bindings.contains_key(structured.as_str()) || structured != name.as_str() {
+            return structured;
+        }
+    }
+    name.as_str().to_string()
+}
+
+fn component_ref_flat_name(component_ref: &rumoca_core::ComponentReference) -> String {
+    component_ref
+        .parts
+        .iter()
+        .map(|part| part.ident.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn lookup_enum_literal_ordinal(raw: &str, ordinals: &IndexMap<String, i64>) -> Option<i64> {
@@ -873,6 +978,28 @@ mod tests {
         }
     }
 
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::generated(name),
+            subscripts: Vec::new(),
+            span: test_span(),
+        }
+    }
+
+    fn constant_variable(
+        name: &str,
+        start: rumoca_core::Expression,
+    ) -> (rumoca_core::VarName, dae::Variable) {
+        (
+            rumoca_core::VarName::new(name),
+            dae::Variable {
+                name: rumoca_core::VarName::new(name),
+                start: Some(start),
+                ..rumoca_ir_dae::Variable::empty_with_span(test_span())
+            },
+        )
+    }
+
     #[test]
     fn const_builtin_div_mod_and_rem_follow_modelica_rounding() {
         let ordinals = IndexMap::new();
@@ -887,6 +1014,27 @@ mod tests {
         assert_eq!(
             eval_const_values(&builtin(rumoca_core::BuiltinFunction::Rem), &ordinals),
             Some(vec![-1.5])
+        );
+    }
+
+    #[test]
+    fn build_var_layout_resolves_constant_alias_chains() {
+        let mut dae_model = dae::Dae::default();
+        let (alias_name, alias_var) =
+            constant_variable("sineVoltage.pi", var_ref("Modelica.Constants.pi"));
+        let (source_name, source_var) =
+            constant_variable("Modelica.Constants.pi", real(std::f64::consts::PI));
+        dae_model.variables.constants.insert(alias_name, alias_var);
+        dae_model
+            .variables
+            .constants
+            .insert(source_name, source_var);
+
+        let layout = build_var_layout(&dae_model).expect("constant alias layout should build");
+
+        assert_eq!(
+            layout.binding("sineVoltage.pi"),
+            Some(ScalarSlot::Constant(std::f64::consts::PI))
         );
     }
 

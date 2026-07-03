@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_core::ExpressionVisitor;
+use rumoca_core::{ExpressionVisitor, Literal};
 use rumoca_ir_dae as dae;
 
 use crate::types::{EquationRef, UnknownId};
@@ -50,6 +50,7 @@ impl Incidence {
 pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
     let (_unknown_map, unknown_names, unknown_spans) = build_unknown_map(dae);
     let (der_resolver, variable_resolver) = build_unknown_resolvers(&unknown_names);
+    let constants = ConstantEvalContext::from_dae(dae);
 
     let mut equation_refs = Vec::new();
     let mut equations = Vec::new();
@@ -63,7 +64,7 @@ pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
 
     let mut eq_unknowns: Vec<HashSet<usize>> = equations
         .iter()
-        .map(|eq| collect_equation_unknowns(eq, &der_resolver, &variable_resolver))
+        .map(|eq| collect_equation_unknowns(eq, &der_resolver, &variable_resolver, &constants))
         .collect();
 
     apply_regular_family_corner_incidence(dae, &mut eq_unknowns);
@@ -385,6 +386,7 @@ fn collect_equation_unknowns(
     eq: &dae::Equation,
     der_resolver: &ScalarUnknownResolver,
     variable_resolver: &ScalarUnknownResolver,
+    constants: &ConstantEvalContext,
 ) -> HashSet<usize> {
     let mut result = HashSet::new();
 
@@ -404,7 +406,7 @@ fn collect_equation_unknowns(
     }
 
     collect_equation_lhs_unknown(eq.lhs.as_ref(), variable_resolver, &mut result);
-    collect_expression_unknowns(&eq.rhs, variable_resolver, &mut result);
+    collect_expression_unknowns_with_constants(&eq.rhs, variable_resolver, &mut result, constants);
     if !result.is_empty()
         && let Some(target) = direct_residual_definition_target(&eq.rhs)
         && equation_contains_derivative(&eq.rhs)
@@ -606,6 +608,12 @@ impl ScalarUnknownResolver {
         if let Some(base) = dae::component_base_name(name) {
             base_all.entry(base).or_default().push(idx);
         }
+        if let Some(base) = record_field_parent_name(name) {
+            base_all.entry(base.clone()).or_default().push(idx);
+            if let Some(unsubscripted_base) = dae::component_base_name(&base) {
+                base_all.entry(unsubscripted_base).or_default().push(idx);
+            }
+        }
     }
 
     fn resolve_name(&self, name: &str) -> Option<usize> {
@@ -616,7 +624,13 @@ impl ScalarUnknownResolver {
 
     pub(crate) fn resolve_name_all(&self, name: &str) -> Vec<usize> {
         if let Some(idx) = self.resolve_name(name) {
-            return vec![idx];
+            let mut resolved = vec![idx];
+            if let Some(expanded) = self.base_all.get(name) {
+                resolved.extend(expanded.iter().copied());
+                resolved.sort_unstable();
+                resolved.dedup();
+            }
+            return resolved;
         }
         dae::component_base_name(name)
             .and_then(|base| self.base_all.get(&base).cloned())
@@ -636,6 +650,21 @@ impl ScalarUnknownResolver {
         }
         self.resolve_name_all(name.as_str())
     }
+}
+
+fn record_field_parent_name(name: &str) -> Option<String> {
+    let mut bracket_depth = 0usize;
+    for (idx, ch) in name.char_indices().rev() {
+        match ch {
+            ']' => bracket_depth = bracket_depth.saturating_add(1),
+            '[' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if bracket_depth == 0 => {
+                return (idx > 0).then(|| name[..idx].to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn subscript_index_value(sub: &rumoca_core::Subscript) -> Option<usize> {
@@ -680,13 +709,18 @@ pub(crate) fn collect_expression_unknowns(
     resolver: &ScalarUnknownResolver,
     cols: &mut HashSet<usize>,
 ) {
-    let mut collector = ExpressionUnknownCollector { resolver, cols };
+    let mut collector = ExpressionUnknownCollector {
+        resolver,
+        cols,
+        constants: None,
+    };
     collector.visit_expression(expr);
 }
 
 struct ExpressionUnknownCollector<'a> {
     resolver: &'a ScalarUnknownResolver,
     cols: &'a mut HashSet<usize>,
+    constants: Option<&'a ConstantEvalContext>,
 }
 
 impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
@@ -747,7 +781,7 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
             }
             return;
         }
-        self.visit_expression(base);
+        self.visit_projected_field_expression(base, field);
     }
 
     fn visit_builtin_call(
@@ -762,6 +796,300 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
             self.visit_expression(arg);
         }
     }
+}
+
+impl ExpressionUnknownCollector<'_> {
+    fn visit_projected_field_expression(&mut self, expr: &rumoca_core::Expression, field: &str) {
+        if let Some((name, subscripts)) = indexed_field_access_var_ref_key(expr, field) {
+            let reference = rumoca_core::Reference::new(&name);
+            for idx in self.resolver.resolve_var_ref_all(&reference, &subscripts) {
+                self.cols.insert(idx);
+            }
+            for subscript in &subscripts {
+                self.visit_subscript(subscript);
+            }
+            return;
+        }
+
+        match expr {
+            rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+                self.visit_projected_field_expression(lhs, field);
+                self.visit_projected_field_expression(rhs, field);
+            }
+            rumoca_core::Expression::Unary { rhs, .. } => {
+                self.visit_projected_field_expression(rhs, field);
+            }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let mut has_unresolved_condition = false;
+                for (condition, value) in branches {
+                    if let Some(constants) = self.constants
+                        && let Some(value_is_active) = constants.eval_bool(condition)
+                    {
+                        if value_is_active {
+                            self.visit_projected_field_expression(value, field);
+                            return;
+                        }
+                        continue;
+                    }
+                    has_unresolved_condition = true;
+                    self.visit_expression(condition);
+                    self.visit_projected_field_expression(value, field);
+                }
+                if has_unresolved_condition || branches.is_empty() {
+                    self.visit_projected_field_expression(else_branch, field);
+                }
+            }
+            rumoca_core::Expression::Array { elements, .. }
+            | rumoca_core::Expression::Tuple { elements, .. } => {
+                for element in elements {
+                    self.visit_projected_field_expression(element, field);
+                }
+            }
+            rumoca_core::Expression::FunctionCall { name, args, .. }
+                if name.last_segment() == "Complex" =>
+            {
+                if let Some(projected) = complex_constructor_field_arg(args, field) {
+                    self.visit_expression(projected);
+                } else {
+                    for arg in args {
+                        self.visit_expression(arg);
+                    }
+                }
+            }
+            rumoca_core::Expression::BuiltinCall { args, .. }
+            | rumoca_core::Expression::FunctionCall { args, .. } => {
+                for arg in args {
+                    self.visit_expression(arg);
+                }
+            }
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => {
+                self.visit_projected_field_expression(base, field);
+                for subscript in subscripts {
+                    self.visit_subscript(subscript);
+                }
+            }
+            rumoca_core::Expression::Range {
+                start, step, end, ..
+            } => {
+                self.visit_expression(start);
+                if let Some(step) = step {
+                    self.visit_expression(step);
+                }
+                self.visit_expression(end);
+            }
+            rumoca_core::Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                ..
+            } => {
+                for index in indices {
+                    self.visit_expression(&index.range);
+                }
+                self.visit_projected_field_expression(expr, field);
+                if let Some(filter) = filter {
+                    self.visit_expression(filter);
+                }
+            }
+            _ => self.visit_expression(expr),
+        }
+    }
+}
+
+fn collect_expression_unknowns_with_constants(
+    expr: &rumoca_core::Expression,
+    resolver: &ScalarUnknownResolver,
+    cols: &mut HashSet<usize>,
+    constants: &ConstantEvalContext,
+) {
+    let mut collector = ExpressionUnknownCollector {
+        resolver,
+        cols,
+        constants: Some(constants),
+    };
+    collector.visit_expression(expr);
+}
+
+fn complex_constructor_field_arg<'a>(
+    args: &'a [rumoca_core::Expression],
+    field: &str,
+) -> Option<&'a rumoca_core::Expression> {
+    match field {
+        "re" => args.first(),
+        "im" => args.get(1),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct ConstantEvalContext {
+    scalars: HashMap<String, f64>,
+    booleans: HashMap<String, bool>,
+}
+
+impl ConstantEvalContext {
+    fn from_dae(dae: &dae::Dae) -> Self {
+        let mut ctx = Self::default();
+        for (name, variable) in dae
+            .variables
+            .parameters
+            .iter()
+            .chain(dae.variables.constants.iter())
+        {
+            ctx.insert_variable(name, variable);
+        }
+        ctx
+    }
+
+    fn insert_variable(&mut self, name: &rumoca_core::VarName, variable: &dae::Variable) {
+        let Some(start) = &variable.start else {
+            return;
+        };
+        let keys = self.variable_keys(name, variable);
+        if let Some(value) = literal_scalar(start) {
+            for key in keys {
+                self.scalars.insert(key, value);
+            }
+            return;
+        }
+        if let Some(value) = literal_boolean(start) {
+            for key in keys {
+                self.booleans.insert(key, value);
+            }
+        }
+    }
+
+    fn variable_keys(
+        &self,
+        name: &rumoca_core::VarName,
+        variable: &dae::Variable,
+    ) -> Vec<String> {
+        let mut keys = vec![name.as_str().to_string()];
+        if let Some(component_ref) = &variable.component_ref {
+            keys.push(component_ref_flat_name(component_ref));
+        }
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    fn eval_bool(&self, expr: &rumoca_core::Expression) -> Option<bool> {
+        match expr {
+            rumoca_core::Expression::Literal {
+                value: Literal::Boolean(value),
+                ..
+            } => Some(*value),
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => self.booleans.get(name.as_str()).copied(),
+            rumoca_core::Expression::Unary {
+                op: rumoca_core::OpUnary::Not,
+                rhs,
+                ..
+            } => self.eval_bool(rhs).map(|value| !value),
+            rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+                self.eval_bool_binary(op.clone(), lhs, rhs)
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_bool_binary(
+        &self,
+        op: rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) -> Option<bool> {
+        match op {
+            rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq => {
+                let equal = if let (Some(lhs), Some(rhs)) =
+                    (self.eval_scalar(lhs), self.eval_scalar(rhs))
+                {
+                    scalar_almost_eq(lhs, rhs)
+                } else {
+                    self.eval_bool(lhs)? == self.eval_bool(rhs)?
+                };
+                Some(if matches!(op, rumoca_core::OpBinary::Eq) {
+                    equal
+                } else {
+                    !equal
+                })
+            }
+            rumoca_core::OpBinary::Lt => Some(self.eval_scalar(lhs)? < self.eval_scalar(rhs)?),
+            rumoca_core::OpBinary::Le => Some(self.eval_scalar(lhs)? <= self.eval_scalar(rhs)?),
+            rumoca_core::OpBinary::Gt => Some(self.eval_scalar(lhs)? > self.eval_scalar(rhs)?),
+            rumoca_core::OpBinary::Ge => Some(self.eval_scalar(lhs)? >= self.eval_scalar(rhs)?),
+            rumoca_core::OpBinary::And => Some(self.eval_bool(lhs)? && self.eval_bool(rhs)?),
+            rumoca_core::OpBinary::Or => Some(self.eval_bool(lhs)? || self.eval_bool(rhs)?),
+            _ => None,
+        }
+    }
+
+    fn eval_scalar(&self, expr: &rumoca_core::Expression) -> Option<f64> {
+        match expr {
+            rumoca_core::Expression::Literal { .. } => literal_scalar(expr),
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => self.lookup_scalar(name),
+            rumoca_core::Expression::Unary {
+                op: rumoca_core::OpUnary::Minus,
+                rhs,
+                ..
+            } => self.eval_scalar(rhs).map(|value| -value),
+            rumoca_core::Expression::Unary {
+                op: rumoca_core::OpUnary::Plus,
+                rhs,
+                ..
+            } => self.eval_scalar(rhs),
+            _ => None,
+        }
+    }
+
+    fn lookup_scalar(&self, name: &rumoca_core::Reference) -> Option<f64> {
+        self.scalars.get(name.as_str()).copied().or_else(|| {
+            name.component_ref()
+                .and_then(|component_ref| self.scalars.get(&component_ref_flat_name(component_ref)))
+                .copied()
+        })
+    }
+}
+
+fn component_ref_flat_name(component_ref: &rumoca_core::ComponentReference) -> String {
+    component_ref.to_var_name().as_str().to_string()
+}
+
+fn literal_scalar(expr: &rumoca_core::Expression) -> Option<f64> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: Literal::Integer(value),
+            ..
+        } => Some(*value as f64),
+        rumoca_core::Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } => Some(*value),
+        _ => None,
+    }
+}
+
+fn literal_boolean(expr: &rumoca_core::Expression) -> Option<bool> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Some(*value),
+        _ => None,
+    }
+}
+
+fn scalar_almost_eq(lhs: f64, rhs: f64) -> bool {
+    (lhs - rhs).abs() <= 1.0e-12 * (1.0 + lhs.abs().max(rhs.abs()))
 }
 
 fn indexed_field_access_var_ref_key(
@@ -800,11 +1128,12 @@ fn indexed_field_access_var_ref_key(
 /// This is intended to be called after equation reordering for solver use.
 pub fn build_solver_sparsity_triplets(dae: &dae::Dae) -> Vec<(usize, usize)> {
     let resolver = ScalarUnknownResolver::from_dae(dae);
+    let constants = ConstantEvalContext::from_dae(dae);
     let mut triplets = Vec::new();
 
     for (row, eq) in dae.continuous.equations.iter().enumerate() {
         let mut cols = HashSet::new();
-        collect_expression_unknowns(&eq.rhs, &resolver, &mut cols);
+        collect_expression_unknowns_with_constants(&eq.rhs, &resolver, &mut cols, &constants);
         let mut cols_sorted: Vec<usize> = cols.into_iter().collect();
         cols_sorted.sort_unstable();
         triplets.extend(cols_sorted.into_iter().map(|col| (row, col)));
@@ -884,6 +1213,49 @@ mod tests {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(v),
             span,
+        }
+    }
+
+    fn int_lit(v: i64) -> rumoca_core::Expression {
+        let span = test_span();
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(v),
+            span,
+        }
+    }
+
+    fn bin(
+        op: rumoca_core::OpBinary,
+        lhs: rumoca_core::Expression,
+        rhs: rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        let span = test_span();
+        rumoca_core::Expression::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        }
+    }
+
+    fn complex(re: rumoca_core::Expression, im: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Complex"),
+            args: vec![re, im],
+            is_constructor: true,
+            span: test_span(),
+        }
+    }
+
+    fn component_ref(name: &str) -> rumoca_core::ComponentReference {
+        rumoca_core::ComponentReference::from_flat_segments(name, test_span(), None)
+    }
+
+    fn structured_var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::from_component_reference(component_ref(name)),
+            subscripts: vec![],
+            span: test_span(),
         }
     }
 
@@ -1045,6 +1417,108 @@ mod tests {
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert_eq!(triplets, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn field_projection_over_binary_collects_projected_scalar_fields() {
+        let resolver = ScalarUnknownResolver::from_entries([
+            ("a".to_string(), 0),
+            ("a.re".to_string(), 1),
+            ("a.im".to_string(), 2),
+            ("b".to_string(), 3),
+            ("b.re".to_string(), 4),
+            ("b.im".to_string(), 5),
+        ]);
+        let expr = field(sub(var("a"), var("b")), "re");
+
+        let mut cols = HashSet::new();
+        collect_expression_unknowns(&expr, &resolver, &mut cols);
+
+        assert_eq!(cols, set(&[1, 4]));
+    }
+
+    #[test]
+    fn incidence_projects_constant_selected_complex_if_branch() {
+        let mut dae = dae::Dae::new();
+        for name in ["a", "b", "c", "d"] {
+            dae.variables.algebraics.insert(
+                rumoca_core::VarName::new(name),
+                dae::Variable::new(rumoca_core::VarName::new(name), test_span()),
+            );
+        }
+        let mut k = dae::Variable::new(rumoca_core::VarName::new("k"), test_span());
+        k.start = Some(lit(3.0));
+        dae.variables
+            .parameters
+            .insert(rumoca_core::VarName::new("k"), k);
+
+        dae.continuous.equations.push(eq(field(
+            rumoca_core::Expression::If {
+                branches: vec![(
+                    bin(rumoca_core::OpBinary::Eq, int_lit(3), var("k")),
+                    complex(var("a"), var("b")),
+                )],
+                else_branch: Box::new(complex(var("c"), var("d"))),
+                span: test_span(),
+            },
+            "im",
+        )));
+
+        let triplets = build_solver_sparsity_triplets(&dae);
+        assert_eq!(triplets, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn incidence_preserves_indexed_component_ref_constant_keys() {
+        let mut dae = dae::Dae::new();
+        for name in ["a1", "a2", "b1", "b2"] {
+            dae.variables.algebraics.insert(
+                rumoca_core::VarName::new(name),
+                dae::Variable::new(rumoca_core::VarName::new(name), test_span()),
+            );
+        }
+        for (index, value) in [(1, 1.0), (2, 2.0)] {
+            let flat_name = format!("plugToPin[{index}].k");
+            let mut k = dae::Variable::new(
+                rumoca_core::VarName::new(format!("internal_k_{index}")),
+                test_span(),
+            );
+            k.component_ref = Some(component_ref(&flat_name));
+            k.start = Some(lit(value));
+            dae.variables
+                .parameters
+                .insert(rumoca_core::VarName::new(format!("internal_k_{index}")), k);
+        }
+
+        dae.continuous.equations.push(eq(field(
+            rumoca_core::Expression::If {
+                branches: vec![(
+                    bin(
+                        rumoca_core::OpBinary::Eq,
+                        int_lit(2),
+                        structured_var("plugToPin[2].k"),
+                    ),
+                    complex(var("a1"), var("a2")),
+                )],
+                else_branch: Box::new(complex(var("b1"), var("b2"))),
+                span: test_span(),
+            },
+            "im",
+        )));
+
+        let triplets = build_solver_sparsity_triplets(&dae);
+        assert_eq!(triplets, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn aggregate_refs_include_expanded_scalar_descendants() {
+        let resolver = ScalarUnknownResolver::from_entries([
+            ("z".to_string(), 0),
+            ("z.re".to_string(), 1),
+            ("z.im".to_string(), 2),
+        ]);
+
+        assert_eq!(resolver.resolve_name_all("z"), vec![0, 1, 2]);
     }
 
     fn set(values: &[usize]) -> HashSet<usize> {

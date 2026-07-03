@@ -843,13 +843,9 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // Re-apply parameter lookup from materialized flat variables after
     // class/package constant injection so record rebindings override injected
     // declaration defaults (MLS §7.2.3/§7.2.4, §8.3.3 structural ranges).
-    ctx.build_parameter_lookup(flat, tree);
-    ctx.reconcile_modified_binding_dimensions(flat);
+    stabilize_symbolic_component_dimensions(ctx, flat, overlay, tree)?;
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
-    if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
-        ctx.build_parameter_lookup(flat, tree);
-        ctx.reconcile_modified_binding_dimensions(flat);
-    }
+    stabilize_symbolic_component_dimensions(ctx, flat, overlay, tree)?;
     ctx.refresh_enum_parameter_lookup(flat);
     pre_evaluate_structural_equations(ctx, overlay, tree)?;
 
@@ -903,6 +899,23 @@ pub(crate) fn process_class_instances_for_flatten(
             tree,
             class_index,
         )?;
+    }
+    Ok(())
+}
+
+fn stabilize_symbolic_component_dimensions(
+    ctx: &mut Context,
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    tree: &ast::ClassTree,
+) -> Result<(), FlattenError> {
+    let max_passes = overlay.components.len().max(1) + 1;
+    for _ in 0..max_passes {
+        ctx.build_parameter_lookup(flat, tree);
+        ctx.reconcile_modified_binding_dimensions(flat);
+        if !ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -965,12 +978,7 @@ pub(crate) fn finalize_flat_model(
     collapse_index_refs_to_known_varrefs(flat);
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     substitute_known_constants_in_flat(flat, ctx)?;
-    ctx.build_parameter_lookup(flat, tree);
-    ctx.reconcile_modified_binding_dimensions(flat);
-    if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
-        ctx.build_parameter_lookup(flat, tree);
-        ctx.reconcile_modified_binding_dimensions(flat);
-    }
+    stabilize_symbolic_component_dimensions(ctx, flat, overlay, tree)?;
     recover_indexed_lhs_dimensions(flat);
     mark_record_constructor_calls(flat, tree);
     let collected_new_functions = collect_rewritten_functions_to_fixed_point(
