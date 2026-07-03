@@ -2,15 +2,18 @@
 //!
 //! - [`render_algorithm_code`] prints the `.alg` text via the
 //!   `rumoca-galec` printer (GAL-009);
-//! - [`render_manifest_xml`] assembles and serializes a complete Algorithm
-//!   Code manifest via the typed `rumoca-efmi` models (D3). The projection
-//!   owns the manifest *fragment*; packaging-time facts are filled with
-//!   real values generated at render time — a fresh manifest UUID, the
-//!   current strict-UTC timestamp, and the actual SHA-1 of the rendered
-//!   `.alg` bytes (GAL-021: no placeholder checksums, ever). The eFMU
-//!   container emission layer (Phase 5b, `rumoca-compile` driving
-//!   `rumoca-efmi`) supersedes this facade for full-container output where
-//!   one id/timestamp must be shared across manifests;
+//! - [`render_manifest_document`] assembles and serializes a complete
+//!   Algorithm Code manifest via the typed `rumoca-efmi` models (D3),
+//!   returning the typed manifest *and* its XML from one
+//!   assemble-serialize pass ([`render_manifest_xml`] is its thin
+//!   XML-only wrapper). The projection owns the manifest *fragment*;
+//!   packaging-time facts are filled with real values generated at render
+//!   time — a fresh manifest UUID, the current strict-UTC timestamp, and
+//!   the actual SHA-1 of the rendered `.alg` bytes (GAL-021: no
+//!   placeholder checksums, ever). The eFMU container emission layer
+//!   (Phase 5b, `rumoca-compile` driving `rumoca-efmi`) supersedes this
+//!   facade for full-container output where one id/timestamp must be
+//!   shared across manifests;
 //! - [`c_template_context`] serializes the typed context the
 //!   `embedded-c-galec` minijinja templates consume (GAL-008/GAL-024):
 //!   C-mangled struct/function naming, per-variable C types + field names,
@@ -23,6 +26,7 @@ use rumoca_efmi::algorithm_code_manifest::{
     ErrorSignalStatus, Variable as ManifestVariable,
 };
 use rumoca_efmi::manifest_common::{File, FileChecksum, FileRole, ManifestAttributes};
+use rumoca_efmi::production_code_manifest::TargetTypeKind;
 use rumoca_efmi::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
@@ -53,8 +57,9 @@ fn validated_alg_text(block: &Block) -> Result<String, GalecTargetError> {
 }
 
 /// GAL-004 pre-render validation shared by every rendering facade
-/// (`.alg`, manifest XML, and the C template context).
-fn validate_block(block: &Block) -> Result<(), GalecTargetError> {
+/// (`.alg`, manifest XML, the C template context, and the Production Code
+/// manifest builder in [`crate::production_manifest`]).
+pub(crate) fn validate_block(block: &Block) -> Result<(), GalecTargetError> {
     if let Err(diagnostics) = rumoca_galec::validate(block) {
         let rendered: Vec<String> = diagnostics
             .iter()
@@ -77,22 +82,46 @@ pub(crate) fn render_block(block: &Block) -> Result<String, GalecTargetError> {
     })
 }
 
-/// Render the package's Algorithm Code manifest as XML (module docs). The
-/// block is re-validated before printing, exactly as in
-/// [`render_algorithm_code`] (the `.alg` checksum must never be computed
-/// over un-validated text).
+/// Render the package's Algorithm Code manifest as a coherent pair: the
+/// typed manifest model and its serialized XML (module docs). The block is
+/// re-validated before printing, exactly as in [`render_algorithm_code`]
+/// (the `.alg` checksum must never be computed over un-validated text).
+///
+/// The manifest is serialized exactly **once**, and both halves of the
+/// pair come from that single assemble-serialize pass: consumers that
+/// checksum the returned XML bytes (the Production Code
+/// `ManifestReference`, the `__content.xml` entry) read the matching
+/// packaging facts — the manifest UUID, the method/variable ids — from the
+/// typed half instead of re-parsing or re-serializing. A second
+/// serialization would mint a fresh UUID and timestamp and break the
+/// checksum web (GAL-021).
 ///
 /// # Errors
 ///
 /// `ET016` when the typed manifest model rejects the assembled parts,
 /// `ET018` for validator/printer failures.
-pub fn render_manifest_xml(package: &AlgorithmCodePackage) -> Result<String, GalecTargetError> {
+pub fn render_manifest_document(
+    package: &AlgorithmCodePackage,
+) -> Result<(AlgorithmCodeManifest, String), GalecTargetError> {
     let alg_text = validated_alg_text(&package.block)?;
     let manifest = assemble_manifest(package, alg_text.as_bytes())?;
     let bytes = rumoca_efmi::algorithm_code_manifest_to_xml(&manifest)?;
-    String::from_utf8(bytes).map_err(|error| GalecTargetError::LoweringInternal {
+    let xml = String::from_utf8(bytes).map_err(|error| GalecTargetError::LoweringInternal {
         detail: format!("manifest XML is not valid UTF-8: {error}"),
-    })
+    })?;
+    Ok((manifest, xml))
+}
+
+/// Render the package's Algorithm Code manifest as XML — the XML half of
+/// [`render_manifest_document`], for consumers that need no typed
+/// packaging facts.
+///
+/// # Errors
+///
+/// Exactly those of [`render_manifest_document`].
+pub fn render_manifest_xml(package: &AlgorithmCodePackage) -> Result<String, GalecTargetError> {
+    let (_manifest, xml) = render_manifest_document(package)?;
+    Ok(xml)
 }
 
 /// Assemble the full typed manifest from the projection-owned fragment
@@ -155,7 +184,7 @@ pub(crate) fn assemble_manifest(
     AlgorithmCodeManifest::new(parts).map_err(GalecTargetError::from)
 }
 
-fn block_display_name(name: &Name) -> String {
+pub(crate) fn block_display_name(name: &Name) -> String {
     crate::mangle::manifest_name(name).to_owned()
 }
 
@@ -285,8 +314,10 @@ pub fn c_template_context(
 /// Reject block shapes the current lowering never produces before any C is
 /// printed (GAL-007: loud `ET023`, never a silent drop). Kept in lockstep
 /// with [`crate::lower`]: it emits no compartments, user functions, error
-/// signals, method locals, or method `signals` clauses.
-fn ensure_c_exportable(block: &Block) -> Result<(), GalecTargetError> {
+/// signals, method locals, or method `signals` clauses. Shared with the
+/// Production Code manifest builder ([`crate::production_manifest`]), whose
+/// three-void-functions-plus-`self` description assumes exactly this shape.
+pub(crate) fn ensure_c_exportable(block: &Block) -> Result<(), GalecTargetError> {
     let unsupported = |construct: &'static str| GalecTargetError::CExportUnsupported {
         construct,
         detail: "the current DAE lowering (crate::lower) never emits this construct".to_owned(),
@@ -312,18 +343,30 @@ fn ensure_c_exportable(block: &Block) -> Result<(), GalecTargetError> {
 }
 
 fn c_scalar_type(variable: &ManifestVariable) -> &'static str {
+    c_scalar_binding(manifest_scalar_type(variable)).1
+}
+
+/// The GALEC scalar type of a manifest variable (the manifest variable kinds
+/// are exactly the GALEC scalar types — eFMI has no String variables).
+pub(crate) fn manifest_scalar_type(variable: &ManifestVariable) -> ScalarType {
     match variable {
-        ManifestVariable::Real(_) => scalar_c_type(ScalarType::Real),
-        ManifestVariable::Integer(_) => scalar_c_type(ScalarType::Integer),
-        ManifestVariable::Boolean(_) => scalar_c_type(ScalarType::Boolean),
+        ManifestVariable::Real(_) => ScalarType::Real,
+        ManifestVariable::Integer(_) => ScalarType::Integer,
+        ManifestVariable::Boolean(_) => ScalarType::Boolean,
     }
 }
 
-fn scalar_c_type(scalar: ScalarType) -> &'static str {
+/// The single GALEC-scalar → C binding of the embedded C export: the eFMI
+/// target-type kind and the C type token. Shared by the C template context
+/// (struct field types) and the Production Code manifest builder
+/// ([`crate::production_manifest`]: `TargetType@kind`/`@codedType` and the
+/// alias `Typedef@name`), so the manifest describes the generated C in
+/// lockstep by construction, not by comment.
+pub(crate) fn c_scalar_binding(scalar: ScalarType) -> (TargetTypeKind, &'static str) {
     match scalar {
-        ScalarType::Real => "double",
-        ScalarType::Integer => "int32_t",
-        ScalarType::Boolean => "bool",
+        ScalarType::Real => (TargetTypeKind::EfmiFloat64, "double"),
+        ScalarType::Integer => (TargetTypeKind::EfmiInteger32, "int32_t"),
+        ScalarType::Boolean => (TargetTypeKind::EfmiBool, "bool"),
     }
 }
 

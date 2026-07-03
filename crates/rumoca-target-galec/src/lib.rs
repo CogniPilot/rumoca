@@ -38,12 +38,18 @@
 //!   commits (T2), Startup/Recalibrate construction (GAL-017), manifest
 //!   Clock wiring (GAL-016/D6), and GAL-004 post-validation;
 //! - [`emit`] — rendering facades: [`render_algorithm_code`] (`.alg` text),
-//!   [`render_manifest_xml`] (typed manifest → XML), and
-//!   [`c_template_context`] (typed-then-serialized minijinja context of
-//!   the `embedded-c-galec` target, GAL-024);
+//!   [`render_manifest_document`] (typed manifest + its XML from one
+//!   serialization pass; [`render_manifest_xml`] is the XML-only wrapper),
+//!   and [`c_template_context`] (typed-then-serialized minijinja context
+//!   of the `embedded-c-galec` target, GAL-024);
 //! - [`c_mangle`] / [`c_print`] — the embedded-C side of the projection:
 //!   collision-checked GALEC-name → C-identifier mangling and the GALEC
 //!   AST → C99 printer feeding [`c_template_context`];
+//! - [`production_manifest`] — [`assemble_production_manifest`]: the typed
+//!   eFMI Production Code manifest describing the generated C files
+//!   (`TargetTypes`/`CodeFiles`/`LogicalData` mapping every Algorithm Code
+//!   variable and block method), assembled from typed inputs only and
+//!   cross-validated against the Algorithm Code manifest before returning;
 //! - [`package`] — the [`AlgorithmCodePackage`] output contract
 //!   (constructed only by lowering, post-validated per GAL-004);
 //! - [`diagnostic`] — SPEC_0008-shaped [`GalecTargetError`] with stable
@@ -61,14 +67,18 @@ pub mod lower;
 pub mod mangle;
 pub mod manifest_vars;
 pub mod package;
+pub mod production_manifest;
 
 pub use admissibility::{AdmittedClock, check_admissibility};
 pub use c_mangle::{CNameTable, c_identifier};
 pub use c_print::CPrinter;
 pub use classify::{Classification, ClassifiedVariable, VariableClass, classify_variables};
 pub use diagnostic::GalecTargetError;
-pub use emit::{c_template_context, render_algorithm_code, render_manifest_xml};
+pub use emit::{
+    c_template_context, render_algorithm_code, render_manifest_document, render_manifest_xml,
+};
 pub use input::{GalecInput, GalecOptions, GalecProfile, ScalarTypeMap};
 pub use lower::lower_to_algorithm_code;
 pub use manifest_vars::{ManifestVariables, build_manifest_variables};
 pub use package::{AlgorithmCodePackage, ManifestFragment};
+pub use production_manifest::{EmittedCodeFile, assemble_production_manifest};

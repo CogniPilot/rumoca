@@ -1,6 +1,7 @@
 //! SPEC_0034 Phase-3 non-negotiable test battery, exercised end-to-end
 //! through the public projection API (`lower_to_algorithm_code`,
-//! `render_algorithm_code`, `render_manifest_xml`):
+//! `render_algorithm_code`, `render_manifest_document`,
+//! `render_manifest_xml`):
 //!
 //! - GAL-025 scope rejections (continuous states, external functions,
 //!   runtime events, dynamic/sample-expression clocks, multi-clock and
@@ -25,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use rumoca_core::{
     BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Reference, Span, Subscript, VarName,
 };
+use rumoca_efmi::Sha1Hex;
 use rumoca_efmi::algorithm_code_manifest::{BlockCausality, StartValue, Variable as MVar};
 use rumoca_galec::ast::{self as gast, ScalarType};
 use rumoca_galec::builtins::{find_builtin, is_appendix_c_reserved};
@@ -34,7 +36,7 @@ use rumoca_target_galec::lower::emittable_builtin_targets;
 use rumoca_target_galec::mangle::manifest_name;
 use rumoca_target_galec::{
     AlgorithmCodePackage, GalecInput, GalecOptions, GalecTargetError, lower_to_algorithm_code,
-    render_algorithm_code, render_manifest_xml,
+    render_algorithm_code, render_manifest_document, render_manifest_xml,
 };
 
 // ---------------------------------------------------------------------
@@ -701,6 +703,30 @@ fn mutated_package_cannot_render_unvalidated_galec() {
     let error =
         render_manifest_xml(&package).expect_err("manifest facade must re-validate the block");
     assert_eq!(error.code(), "ET018");
+}
+
+/// [`render_manifest_document`] returns a coherent pair from one
+/// assemble-serialize pass: the XML embeds the typed manifest's freshly
+/// minted UUID and the SHA-1 of the rendered `.alg` bytes, so downstream
+/// consumers (the Production Code `ManifestReference`) can checksum the
+/// returned string while reading packaging facts from typed data — never
+/// re-parsing the XML or re-serializing the model (GAL-021).
+#[test]
+fn manifest_document_pair_comes_from_one_serialization_pass() {
+    let package = lower(&model_with_body(var("u")), &base_types());
+    let (manifest, xml) = render_manifest_document(&package).expect("manifest renders");
+    let uuid = manifest.parts().attributes.id.to_string();
+    assert!(
+        xml.contains(&uuid),
+        "XML must embed the typed manifest's UUID `{uuid}`:\n{xml}"
+    );
+    let alg = render_algorithm_code(&package).expect("renders");
+    let alg_sha1 = Sha1Hex::of_bytes(alg.as_bytes());
+    assert!(
+        xml.contains(alg_sha1.as_str()),
+        "XML must embed the `.alg` checksum `{alg_sha1}` (checksum over the \
+         exact rendered `.alg` bytes):\n{xml}"
+    );
 }
 
 // ---------------------------------------------------------------------

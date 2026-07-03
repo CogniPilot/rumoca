@@ -46,6 +46,11 @@
 //! | EFM036 | [`EfmiError::StaleFileChecksum`] |
 //! | EFM037 | [`EfmiError::FileRefRoleNotCode`] |
 //! | EFM038 | [`EfmiError::ManifestRefIdMismatch`] |
+//! | EFM039 | [`EfmiError::UnresolvedForeignReference`] |
+//! | EFM040 | [`EfmiError::UnmappedAlgorithmCodeEntity`] |
+//! | EFM041 | [`EfmiError::DuplicateForeignMapping`] |
+//! | EFM042 | [`EfmiError::ManifestReferenceUuidMismatch`] |
+//! | EFM043 | [`EfmiError::EmptyCodeFiles`] |
 
 use thiserror::Error;
 
@@ -248,12 +253,14 @@ pub enum EfmiError {
         computed: String,
     },
 
-    /// `Manifest/@fileRefId` resolves to a file whose role is not `Code`.
-    /// It must reference the GALEC program implementing the block (§3.1.1),
-    /// which is by definition the representation's `role="Code"` file.
+    /// A code-file reference resolves to a `File` whose role is not `Code`:
+    /// the Algorithm Code `Manifest/@fileRefId` must reference the GALEC
+    /// program implementing the block (§3.1.1), and each Production Code
+    /// `CodeFile`'s `FileReference/@fileRefId` must reference a generated
+    /// code file — both are by definition `role="Code"` files.
     #[error(
-        "Manifest/@fileRefId `{id}` references a role=\"{role}\" file; it must \
-         reference the representation's role=\"Code\" GALEC program file"
+        "fileRefId `{id}` references a role=\"{role}\" file; it must \
+         reference one of the representation's role=\"Code\" code files"
     )]
     FileRefRoleNotCode { id: String, role: String },
 
@@ -270,6 +277,48 @@ pub enum EfmiError {
         registered: String,
         found: String,
     },
+
+    /// A Production Code `LogicalData` foreign reference names an id that
+    /// does not exist in the referenced Algorithm Code manifest (variable,
+    /// `ErrorSignalStatus`, or block-method id, per reference kind).
+    #[error(
+        "unresolved foreign reference: {attribute} refers to id `{id}`, which is \
+         not present in the referenced Algorithm Code manifest"
+    )]
+    UnresolvedForeignReference { attribute: String, id: String },
+
+    /// An Algorithm Code entity that must be mapped by the Production Code
+    /// `LogicalData` (every variable, all three block methods) has no
+    /// mapping. This exactly-once obligation is rumoca's own conformance
+    /// invariant (the XSD allows zero references).
+    #[error(
+        "Algorithm Code {entity} `{id}` has no LogicalData mapping in the \
+         Production Code manifest"
+    )]
+    UnmappedAlgorithmCodeEntity { entity: String, id: String },
+
+    /// One `LogicalData` maps the same foreign id more than once (across
+    /// data and function references combined); each Algorithm Code entity is
+    /// mapped at most once.
+    #[error(
+        "LogicalData maps foreign id `{foreign_ref_id}` more than once; each \
+         Algorithm Code entity is mapped at most once"
+    )]
+    DuplicateForeignMapping { foreign_ref_id: String },
+
+    /// The Production Code `ManifestReference/@manifestRefId` UUID differs
+    /// from the `id` of the Algorithm Code manifest it claims to reference —
+    /// the container would be stale/dangling by construction.
+    #[error(
+        "Production Code ManifestReference references Algorithm Code manifest \
+         {referenced} but the Algorithm Code manifest id is {actual}"
+    )]
+    ManifestReferenceUuidMismatch { referenced: String, actual: String },
+
+    /// A `CodeContainer` declares no code files; the XSD requires at least
+    /// one `CodeFile` (`ProductionCode/efmiCodeFiles.xsd`, 1..unbounded).
+    #[error("CodeContainer has no CodeFiles; at least one CodeFile is required")]
+    EmptyCodeFiles,
 }
 
 impl EfmiError {
@@ -314,6 +363,11 @@ impl EfmiError {
             Self::StaleFileChecksum { .. } => "EFM036",
             Self::FileRefRoleNotCode { .. } => "EFM037",
             Self::ManifestRefIdMismatch { .. } => "EFM038",
+            Self::UnresolvedForeignReference { .. } => "EFM039",
+            Self::UnmappedAlgorithmCodeEntity { .. } => "EFM040",
+            Self::DuplicateForeignMapping { .. } => "EFM041",
+            Self::ManifestReferenceUuidMismatch { .. } => "EFM042",
+            Self::EmptyCodeFiles => "EFM043",
         }
     }
 }

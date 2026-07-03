@@ -16,7 +16,10 @@
 //! characters would make the emitted bytes non-well-formed). An absent
 //! description is `None`, never an empty string.
 
+use std::collections::BTreeSet;
+
 use crate::checksum::Sha1Hex;
+use crate::diagnostic::EfmiError;
 use crate::ids::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, UtcTimestamp,
 };
@@ -199,4 +202,33 @@ pub struct Annotation {
     /// Reverse-domain tool name (`type`, required), unique within its list.
     /// `org.modelica` and `org.efmi-standard` domains are reserved.
     pub annotation_type: NormalizedText,
+}
+
+/// Shared well-formedness of a `Files` list. eFMI ch. 2.3.6: the optional
+/// FMU of a representation is "exactly one file"; the XSD cannot express
+/// this cardinality, so the typed models are the enforcement point.
+pub(crate) fn validate_files(files: &[File]) -> Result<(), EfmiError> {
+    let fmu_count = files.iter().filter(|f| f.role == FileRole::Fmu).count();
+    if fmu_count > 1 {
+        return Err(EfmiError::MultipleFmuFiles { count: fmu_count });
+    }
+    Ok(())
+}
+
+/// Shared well-formedness of one `Annotations` list: `type` values must be
+/// unique within the list (`efmiAnnotation.xsd`).
+pub(crate) fn validate_annotations(
+    owner: &str,
+    annotations: &[Annotation],
+) -> Result<(), EfmiError> {
+    let mut types: BTreeSet<&str> = BTreeSet::new();
+    for annotation in annotations {
+        if !types.insert(annotation.annotation_type.as_str()) {
+            return Err(EfmiError::DuplicateAnnotationType {
+                annotation_type: annotation.annotation_type.as_str().to_owned(),
+                owner: owner.to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
