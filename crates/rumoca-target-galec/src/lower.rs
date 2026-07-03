@@ -37,6 +37,7 @@
 //! for slice 2, at which point the relational stance is revisited together
 //! with the validator.
 
+use rumoca_core::component_path_trailing_index;
 use rumoca_galec::ast::{self as gast, Block, Statement};
 use rumoca_ir_dae::Equation;
 
@@ -216,7 +217,7 @@ fn resolve_target<'c, 'a>(
     if let Some(classified) = classification.find(target_name) {
         return Ok((classified, Vec::new()));
     }
-    if let Some((base, index)) = conditions::split_indexed_name(target_name)
+    if let Some((base, index)) = component_path_trailing_index(target_name)
         && let Some(classified) = classification.find(&base)
     {
         let index = i64::try_from(index).map_err(|_| GalecTargetError::LoweringInternal {

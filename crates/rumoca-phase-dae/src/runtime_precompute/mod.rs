@@ -283,7 +283,9 @@ fn collect_referenced_condition_indices(
 ) -> std::collections::HashSet<usize> {
     let mut collector = ConditionMemoryUseCollector {
         condition_name,
-        pre_condition_name: format!("__pre__.{condition_name}"),
+        pre_condition_name: rumoca_core::pre_slot_name(condition_name)
+            .as_str()
+            .to_owned(),
         referenced: std::collections::HashSet::new(),
     };
     for expr in dae_model
@@ -351,7 +353,9 @@ fn rewrite_condition_memory_references(
 
     let mut rewriter = ConditionMemoryReindexer {
         condition_name,
-        pre_condition_name: format!("__pre__.{condition_name}"),
+        pre_condition_name: rumoca_core::pre_slot_name(condition_name)
+            .as_str()
+            .to_owned(),
         replacements,
         error: None,
     };
@@ -429,7 +433,9 @@ fn replacement_expr(
     match replacement {
         ConditionMemoryReplacement::Memory(index) => condition_memory_ref(
             if is_pre {
-                format!("__pre__.{condition_name}")
+                rumoca_core::pre_slot_name(condition_name)
+                    .as_str()
+                    .to_owned()
             } else {
                 condition_name.to_string()
             },
@@ -483,10 +489,10 @@ fn generated_index_subscript(
     })
 }
 
-// `pre_condition_name` is `format!("__pre__.{condition_name}")`, precomputed by
-// the caller. It is hoisted out because this is called once per visited
-// var-ref; allocating it here turned a model walk into per-var-ref string
-// formatting (a measurable hot spot on large array models).
+// `pre_condition_name` is `rumoca_core::pre_slot_name(condition_name)` rendered
+// to a `String`, precomputed by the caller. It is hoisted out because this is
+// called once per visited var-ref; allocating it here turned a model walk into
+// per-var-ref string formatting (a measurable hot spot on large array models).
 fn condition_memory_index(
     name: &str,
     subscripts: &[rumoca_core::Subscript],

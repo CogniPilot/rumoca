@@ -722,7 +722,10 @@ impl<'a> LowerBuilder<'a> {
         call_span: rumoca_core::Span,
     ) -> Result<Vec<Reg>, LowerError> {
         Err(unsupported_at(
-            "pre() must be lowered to __pre__ parameters before Solve-IR lowering",
+            format!(
+                "pre() must be lowered to {} parameters before Solve-IR lowering",
+                rumoca_core::PRE_SLOT_NAMESPACE
+            ),
             array_builtin_args_span(_args, call_span),
         ))
     }

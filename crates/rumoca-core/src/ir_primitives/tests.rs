@@ -1,8 +1,9 @@
 use super::{
     BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
     Function, FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, Literal,
-    OpBinary, Reference, SourceId, Span, Subscript, VarName, component_path_base_name,
-    expressions_semantically_equal, parse_scalar_name, scoped_component_path_candidates,
+    OpBinary, PRE_SLOT_NAMESPACE, Reference, SourceId, Span, Subscript, VarName,
+    component_path_base_name, component_path_trailing_index, expressions_semantically_equal,
+    is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name, scoped_component_path_candidates,
     split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
 };
 use std::collections::HashMap;
@@ -510,4 +511,82 @@ fn component_path_base_name_strips_balanced_subscripts_only() {
     assert_eq!(component_path_base_name("a[1"), None);
     assert_eq!(component_path_base_name("a]"), None);
     assert_eq!(component_path_base_name("[1].a"), None);
+}
+
+#[test]
+fn component_path_trailing_index_accepts_single_trailing_literal_index() {
+    assert_eq!(
+        component_path_trailing_index("c[3]"),
+        Some(("c".to_string(), 3))
+    );
+    assert_eq!(
+        component_path_trailing_index("a.b[2]"),
+        Some(("a.b".to_string(), 2))
+    );
+    assert_eq!(
+        component_path_trailing_index("__pre__.c[1]"),
+        Some(("__pre__.c".to_string(), 1))
+    );
+    assert_eq!(
+        component_path_trailing_index("Modelica.X.'1'[4]"),
+        Some(("Modelica.X.'1'".to_string(), 4))
+    );
+}
+
+#[test]
+fn component_path_trailing_index_rejects_non_positive_and_non_numeric_indices() {
+    assert_eq!(component_path_trailing_index("c[0]"), None);
+    assert_eq!(component_path_trailing_index("c[-1]"), None);
+    assert_eq!(component_path_trailing_index("c[i]"), None);
+}
+
+#[test]
+fn component_path_trailing_index_rejects_mid_path_indices() {
+    assert_eq!(component_path_trailing_index("x[2].y"), None);
+    assert_eq!(component_path_trailing_index("x[2].y[3]"), None);
+    assert_eq!(
+        component_path_trailing_index("bus[data.medium].pin[1]"),
+        None
+    );
+}
+
+#[test]
+fn component_path_trailing_index_rejects_multi_index_and_missing_subscript() {
+    assert_eq!(component_path_trailing_index("c[1,2]"), None);
+    assert_eq!(component_path_trailing_index("c[1][2]"), None);
+    assert_eq!(component_path_trailing_index("c"), None);
+    assert_eq!(component_path_trailing_index("a..b[2]"), None);
+    assert_eq!(component_path_trailing_index(".a[2]"), None);
+    assert_eq!(component_path_trailing_index("[1]"), None);
+}
+
+#[test]
+fn pre_slot_name_round_trips_through_pre_slot_base() {
+    for base in ["x", "sampled.u", "Modelica.X.'1'", "c[3]"] {
+        let slot = pre_slot_name(base);
+        assert_eq!(pre_slot_base(slot.as_str()), Some(base), "{base}");
+        assert!(is_pre_slot(slot.as_str()), "{base}");
+    }
+}
+
+#[test]
+fn pre_slot_name_pins_rendered_convention() {
+    assert_eq!(PRE_SLOT_NAMESPACE, "__pre__");
+    assert_eq!(pre_slot_name("x").as_str(), "__pre__.x");
+    assert_eq!(pre_slot_name("sampled.u").as_str(), "__pre__.sampled.u");
+}
+
+#[test]
+fn pre_slot_base_strips_exactly_one_namespace_level() {
+    let nested = pre_slot_name("__pre__.x");
+    assert_eq!(nested.as_str(), "__pre__.__pre__.x");
+    assert_eq!(pre_slot_base(nested.as_str()), Some("__pre__.x"));
+}
+
+#[test]
+fn pre_slot_detection_rejects_non_pre_names() {
+    for name in ["x", "pre.x", "__pre__", "__pre__x", "prefix.__pre__.x", ""] {
+        assert_eq!(pre_slot_base(name), None, "{name}");
+        assert!(!is_pre_slot(name), "{name}");
+    }
 }

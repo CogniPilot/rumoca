@@ -31,16 +31,17 @@
 
 use std::collections::HashSet;
 
-use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Span, Subscript};
+use rumoca_core::{
+    BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Span, Subscript,
+    component_path_trailing_index, is_pre_slot, pre_slot_base,
+};
 use rumoca_galec::ast::{
     self as gast, BinaryOp, FunctionCall, IfExpression, Name, RefPart, Reference, ScalarType,
 };
 
-use crate::classify::{Classification, PRE_SLOT_PREFIX};
+use crate::classify::Classification;
 use crate::diagnostic::GalecTargetError;
-use crate::lower::conditions::{
-    ConditionTable, condition_ref_index, pre_condition_ref_index, split_indexed_name,
-};
+use crate::lower::conditions::{ConditionTable, condition_ref_index, pre_condition_ref_index};
 
 /// A lowered expression together with its GALEC scalar (element) type.
 pub(crate) struct Typed {
@@ -190,7 +191,7 @@ impl<'a> ExprLowerer<'a> {
             }
             if pre_condition_ref_index(&as_expr, condition_base).is_some()
                 || name == condition_base
-                || name.strip_prefix(PRE_SLOT_PREFIX) == Some(condition_base)
+                || pre_slot_base(name) == Some(condition_base.as_str())
             {
                 return Err(unsupported(
                     "condition-memory-outside-guard".to_owned(),
@@ -202,7 +203,7 @@ impl<'a> ExprLowerer<'a> {
                 ));
             }
         }
-        if name.starts_with(PRE_SLOT_PREFIX) {
+        if is_pre_slot(name) {
             return self.lower_pre_ref(name, subscripts, span);
         }
         self.lower_state_ref(name, subscripts, span)
@@ -221,7 +222,7 @@ impl<'a> ExprLowerer<'a> {
         let (classified, mut galec_subscripts) = match self.classification.find(slot_name) {
             Some(classified) => (classified, Vec::new()),
             None => {
-                let Some((base, index)) = split_indexed_name(slot_name) else {
+                let Some((base, index)) = component_path_trailing_index(slot_name) else {
                     return Err(GalecTargetError::UnknownVariableReference {
                         name: slot_name.to_owned(),
                         span: optional(span),
@@ -270,7 +271,7 @@ impl<'a> ExprLowerer<'a> {
         let (classified, mut galec_subscripts) = match self.classification.find(name) {
             Some(classified) => (classified, Vec::new()),
             None => {
-                let Some((base, index)) = split_indexed_name(name) else {
+                let Some((base, index)) = component_path_trailing_index(name) else {
                     return Err(GalecTargetError::UnknownVariableReference {
                         name: name.to_owned(),
                         span: optional(span),

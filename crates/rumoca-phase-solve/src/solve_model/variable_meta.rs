@@ -360,9 +360,7 @@ fn event_dependency_ref_names(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
 ) -> Vec<String> {
-    let base = name
-        .as_str()
-        .strip_prefix("__pre__.")
+    let base = rumoca_core::pre_slot_base(name.as_str())
         .unwrap_or_else(|| name.as_str())
         .to_string();
     let mut names = vec![base.clone()];
