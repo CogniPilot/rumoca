@@ -901,6 +901,67 @@ mod tests {
         );
     }
 
+    fn insert_external_time_table_record_fields(
+        dae_model: &mut dae::Dae,
+        prefix: &str,
+        table: rumoca_core::Expression,
+        table_dims: &[i64],
+    ) {
+        let field_specs = [
+            ("tableName", string("NoName"), false, &[][..]),
+            ("fileName", string("NoName"), false, &[][..]),
+            ("table", table, true, table_dims),
+            ("startTime", real(0.0), true, &[][..]),
+            ("columns", array(vec![integer(2)]), false, &[1][..]),
+            (
+                "smoothness",
+                var_ref("Modelica.Blocks.Types.Smoothness.ConstantSegments"),
+                false,
+                &[][..],
+            ),
+            (
+                "extrapolation",
+                var_ref("Modelica.Blocks.Types.Extrapolation.HoldLastPoint"),
+                true,
+                &[][..],
+            ),
+            ("shiftTime", real(0.0), true, &[][..]),
+            (
+                "timeEvents",
+                var_ref("Modelica.Blocks.Types.TimeEvents.Always"),
+                false,
+                &[][..],
+            ),
+            ("verboseRead", boolean(false), false, &[][..]),
+            ("delimiter", string(","), false, &[][..]),
+            ("nHeaderLines", integer(0), false, &[][..]),
+        ];
+        for (field, start, is_tunable, dims) in field_specs {
+            insert_parameter_start(
+                dae_model,
+                &format!("{prefix}.{field}"),
+                start,
+                is_tunable,
+                dims,
+            );
+        }
+    }
+
+    fn insert_time_table_enum_ordinals(dae_model: &mut dae::Dae) {
+        dae_model.symbols.enum_literal_ordinals.insert(
+            "Modelica.Blocks.Types.Smoothness.ConstantSegments".to_string(),
+            3,
+        );
+        dae_model.symbols.enum_literal_ordinals.insert(
+            "Modelica.Blocks.Types.Extrapolation.HoldLastPoint".to_string(),
+            1,
+        );
+        dae_model
+            .symbols
+            .enum_literal_ordinals
+            .insert("Modelica.Blocks.Types.TimeEvents.Always".to_string(), 1);
+    }
+
     #[test]
     fn structural_bindings_evaluate_external_table_constructor_starts() {
         let mut dae_model = dae::Dae::default();
@@ -992,109 +1053,20 @@ mod tests {
     #[test]
     fn structural_bindings_derive_external_time_table_handle_from_record_fields() {
         let mut dae_model = dae::Dae::default();
-        insert_parameter_start(
+        insert_external_time_table_record_fields(
             &mut dae_model,
-            "block.table.tableName",
-            string("NoName"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.fileName",
-            string("NoName"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.table",
+            "block.table",
             array(vec![
                 array(vec![real(2.0), real(0.0)]),
                 array(vec![real(4.0), real(1.0)]),
             ]),
-            true,
             &[2, 2],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.startTime",
-            real(0.0),
-            true,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.columns",
-            array(vec![integer(2)]),
-            false,
-            &[1],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.smoothness",
-            var_ref("Modelica.Blocks.Types.Smoothness.ConstantSegments"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.extrapolation",
-            var_ref("Modelica.Blocks.Types.Extrapolation.HoldLastPoint"),
-            true,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.shiftTime",
-            real(0.0),
-            true,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.timeEvents",
-            var_ref("Modelica.Blocks.Types.TimeEvents.Always"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.verboseRead",
-            boolean(false),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.delimiter",
-            string(","),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "block.table.nHeaderLines",
-            integer(0),
-            false,
-            &[],
         );
         dae_model
             .metadata
             .nonnumeric_variable_names
             .push("block.table.tableID".to_string());
-        dae_model.symbols.enum_literal_ordinals.insert(
-            "Modelica.Blocks.Types.Smoothness.ConstantSegments".to_string(),
-            3,
-        );
-        dae_model.symbols.enum_literal_ordinals.insert(
-            "Modelica.Blocks.Types.Extrapolation.HoldLastPoint".to_string(),
-            1,
-        );
-        dae_model
-            .symbols
-            .enum_literal_ordinals
-            .insert("Modelica.Blocks.Types.TimeEvents.Always".to_string(), 1);
+        insert_time_table_enum_ordinals(&mut dae_model);
 
         let bindings = structural_bindings(&dae_model)
             .expect("record fields should derive external time table handle");
@@ -1142,20 +1114,6 @@ mod tests {
             false,
             &[],
         );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.tableName",
-            string("NoName"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.fileName",
-            string("NoName"),
-            false,
-            &[],
-        );
         let toggle_values = comprehension(
             "i",
             range(integer(1), var_ref("booleanTable.n")),
@@ -1179,92 +1137,17 @@ mod tests {
             else_branch: Box::new(matrix(vec![array(vec![real(0.0), real(0.0)])])),
             span: compile_time_test_span(),
         };
-        insert_parameter_start(
+        insert_external_time_table_record_fields(
             &mut dae_model,
-            "booleanTable.combiTimeTable.table",
+            "booleanTable.combiTimeTable",
             table_matrix,
-            true,
             &[0, 2],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.startTime",
-            real(0.0),
-            true,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.columns",
-            array(vec![integer(2)]),
-            false,
-            &[1],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.smoothness",
-            var_ref("Modelica.Blocks.Types.Smoothness.ConstantSegments"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.extrapolation",
-            var_ref("Modelica.Blocks.Types.Extrapolation.HoldLastPoint"),
-            true,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.shiftTime",
-            real(0.0),
-            true,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.timeEvents",
-            var_ref("Modelica.Blocks.Types.TimeEvents.Always"),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.verboseRead",
-            boolean(false),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.delimiter",
-            string(","),
-            false,
-            &[],
-        );
-        insert_parameter_start(
-            &mut dae_model,
-            "booleanTable.combiTimeTable.nHeaderLines",
-            integer(0),
-            false,
-            &[],
         );
         dae_model
             .metadata
             .nonnumeric_variable_names
             .push("booleanTable.combiTimeTable.tableID".to_string());
-        dae_model.symbols.enum_literal_ordinals.insert(
-            "Modelica.Blocks.Types.Smoothness.ConstantSegments".to_string(),
-            3,
-        );
-        dae_model.symbols.enum_literal_ordinals.insert(
-            "Modelica.Blocks.Types.Extrapolation.HoldLastPoint".to_string(),
-            1,
-        );
-        dae_model
-            .symbols
-            .enum_literal_ordinals
-            .insert("Modelica.Blocks.Types.TimeEvents.Always".to_string(), 1);
+        insert_time_table_enum_ordinals(&mut dae_model);
 
         let mut env = compile_time_eval_env(&dae_model);
         let mut bindings = enum_literal_bindings(&dae_model.symbols.enum_literal_ordinals);
