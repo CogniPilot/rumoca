@@ -150,7 +150,7 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
     name: &str,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<T>>, EvalError> {
-    if let Some(dims) = env.dims.get(name) {
+    let declared_zero_count = if let Some(dims) = env.dims.get(name) {
         let scalar_count = dims.iter().map(|&d| d.max(0) as usize).product::<usize>();
         if scalar_count > 1 {
             if let Some(values) = collect_dense_indexed_values_generic(name, scalar_count, env) {
@@ -172,10 +172,10 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
         {
             return Ok(Some(values));
         }
-        if scalar_count == 0 {
-            return Ok(Some(Vec::new()));
-        }
-    }
+        scalar_count == 0
+    } else {
+        false
+    };
 
     if let Some(dims) = env.dims.get(name)
         && !dims.is_empty()
@@ -194,6 +194,10 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
         if values.len() > 1 {
             return Ok(Some(values));
         }
+    }
+
+    if declared_zero_count {
+        return Ok(Some(Vec::new()));
     }
 
     Ok(collect_indexed_array_values_generic(name, env)

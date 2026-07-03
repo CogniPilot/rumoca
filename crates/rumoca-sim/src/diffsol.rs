@@ -165,6 +165,16 @@ impl SimStepper {
             &opts,
             true,
         )?;
+        Self::from_solve_model(solve_model, opts)
+    }
+
+    /// Build directly from an already-lowered, override-applied solve model, so
+    /// callers that lowered once (e.g. the auto-stepper dispatch that first
+    /// probes for a pure-discrete model) do not lower the model a second time.
+    pub(crate) fn from_solve_model(
+        solve_model: solve::SolveModel,
+        opts: rumoca_solver::SimOptions,
+    ) -> Result<Self, SimulationDiagnosticError> {
         let inner = rumoca_solver_diffsol::stepper::SimStepper::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

@@ -486,6 +486,53 @@ fn test_compile_to_json_valid_model() {
     );
 }
 
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_interactive_stepper_runs_pure_discrete_model_with_guarded_dynamic_subscript() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model DiscreteController
+      input Real u;
+      parameter Real table[2] = {2.0, 4.0};
+      discrete output Real y(start = 0.0);
+      discrete Integer k(start = 1);
+    protected
+      discrete Real prev(start = 0.0);
+    algorithm
+      if pre(k) == 1 then
+        prev := 0.0;
+      else
+        prev := table[pre(k) - 1];
+      end if;
+      y := u + prev;
+      k := if pre(k) >= 2 then 1 else pre(k) + 1;
+    end DiscreteController;
+    "#;
+
+    let mut session = Session::default();
+    session.update_document("input.mo", source);
+    let result = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("DiscreteController")
+        .expect("pure discrete model should compile");
+    let mut stepper = rumoca_sim::SimStepper::new_with_diagnostics(
+        &result.dae,
+        rumoca_sim::SimOptions::default(),
+    )
+    .expect("pure discrete stepper should build");
+    stepper.set_input("u", 1.5).expect("set input u");
+    stepper.step(0.02).expect("first discrete tick");
+    assert_eq!(stepper.time(), 0.02);
+    assert_eq!(stepper.get("y").expect("read y"), Some(1.5));
+
+    stepper.set_input("u", 2.0).expect("set input u");
+    stepper.step(0.02).expect("second discrete tick");
+    assert_eq!(stepper.get("y").expect("read y"), Some(4.0));
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
 #[test]
 fn test_compile_to_json_matches_compile_wrapper_output() {
     let _guard = session_test_guard();

@@ -52,6 +52,17 @@ mode = "realtime"  # Optional runner pacing:
                    #   "realtime"            — zero-order-hold inputs and sleep to wall-clock dt.
                    #   "lockstep"            — wait for each external packet before stepping.
                    # Defaults to "lockstep" with external coupling and "realtime" standalone.
+steps_per_packet = 1
+                   # Lockstep only: advance this many dt steps after each packet.
+                   # Use e.g. 4 for a 25 Hz controller with a 100 Hz plant dt.
+
+# Optional multirate lockstep scheduler. When present, this supersedes
+# steps_per_packet: the runner streams [send] at send_rate_hz and waits for one
+# [receive] packet at each receive_rate_hz barrier before advancing further.
+# [lockstep]
+# send_rate_hz = 240
+# receive_rate_hz = 50
+# max_step_dt = 0.002
 
 # ── Transports ────────────────────────────────────────────────────────────
 # HTTP + WebSocket always needed for the viewer.
@@ -67,6 +78,17 @@ scene = "my_scene.js"  # relative to this scenario
 # [transport.udp]
 # listen = "0.0.0.0:4244"
 # send   = "127.0.0.1:4242"
+#
+# [transport.zenoh]
+# mode = "peer"
+# endpoint = "tcp/192.168.10.50:7447" # optional router/peer to connect to
+#
+# [publish]
+# sim_input = "synapse/sim_input"
+# motor_output = "synapse/motor_output"
+#
+# [subscribe]
+# motor_output = "synapse/motor_output"
 
 # [external_interface]
 # command = "/path/to/external-process"

@@ -434,12 +434,14 @@ fn validate_external_table_constructor<T: SimFloat>(
     )?;
 
     let columns_idx = if is_time_table { 4 } else { 3 };
-    if let Some(columns) = external_table_constructor_arg(args, "columns", columns_idx) {
+    if let Some(columns) = external_table_constructor_arg(args, "columns", columns_idx)
+        && let Some(data_col_count) = table_matrix.first().map(Vec::len)
+    {
         if matches!(columns, rumoca_core::Expression::Empty { .. }) {
             return Ok(());
         }
         validate_array_argument(columns, env)?;
-        validate_external_table_columns_arg(columns, env, table_matrix[0].len())?;
+        validate_external_table_columns_arg(columns, env, data_col_count)?;
     }
     let smoothness_idx = if is_time_table { 5 } else { 4 };
     if let Some(smoothness) = external_table_constructor_arg(args, "smoothness", smoothness_idx) {
@@ -748,9 +750,7 @@ fn validate_external_table_columns_arg<T: SimFloat>(
 
 fn validate_external_table_matrix(table_matrix: &[Vec<f64>]) -> Result<(), EvalError> {
     let Some(first_row) = table_matrix.first() else {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "external table data",
-        });
+        return Ok(());
     };
     let data_col_count = first_row.len();
     if data_col_count < 2 {
@@ -1184,6 +1184,11 @@ pub(super) fn eval_index_from_env_path<T: SimFloat>(
         return env.vars.get(base_path).copied();
     }
 
+    let subscript_key = dae::format_subscript_key(base_path, indices);
+    if let Some(value) = env.vars.get(&subscript_key).copied() {
+        return Some(value);
+    }
+
     let dims = env.dims.get(base_path)?;
     if dims.len() != indices.len() {
         return None;
@@ -1193,11 +1198,6 @@ pub(super) fn eval_index_from_env_path<T: SimFloat>(
         .map(|dim| usize::try_from(*dim).ok())
         .collect::<Option<Vec<_>>>()?;
     let flat_index = flat_index_from_dims(&dims, indices)?;
-
-    let subscript_key = dae::format_subscript_key(base_path, indices);
-    if let Some(value) = env.vars.get(&subscript_key).copied() {
-        return Some(value);
-    }
 
     let flat_key = dae::format_subscript_key(base_path, &[flat_index + 1]);
     if flat_key != subscript_key

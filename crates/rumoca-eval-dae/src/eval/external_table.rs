@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::sync::Mutex;
 
 use rumoca_core as core;
@@ -17,7 +17,6 @@ pub(super) struct ExternalTableSpec {
 
 #[derive(Debug, Default)]
 pub(super) struct ExternalTableRegistry {
-    next_id: u64,
     by_hash: HashMap<u64, u64>,
     tables: HashMap<u64, ExternalTableSpec>,
 }
@@ -46,6 +45,12 @@ fn stable_u64_from_hash(hash: blake3::Hash) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+fn stable_table_id_from_hash(hash: u64) -> u64 {
+    const MAX_EXACT_F64_INTEGER: u64 = (1u64 << 53) - 1;
+    let id = hash & MAX_EXACT_F64_INTEGER;
+    if id == 0 { 1 } else { id }
+}
+
 fn register_external_table_in_registry(
     registry: &Mutex<ExternalTableRegistry>,
     spec: ExternalTableSpec,
@@ -54,13 +59,24 @@ fn register_external_table_in_registry(
     let mut reg = registry
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(existing_id) = reg.by_hash.get(&hash).copied()
-        && reg.tables.get(&existing_id) == Some(&spec)
-    {
-        return existing_id;
+    if let Some(existing_id) = reg.by_hash.get(&hash).copied() {
+        if reg.tables.get(&existing_id) == Some(&spec) {
+            return existing_id;
+        }
+        let mut candidate = existing_id;
+        loop {
+            candidate = if candidate >= ((1u64 << 53) - 1) {
+                1
+            } else {
+                candidate + 1
+            };
+            if let Entry::Vacant(entry) = reg.tables.entry(candidate) {
+                entry.insert(spec);
+                return candidate;
+            }
+        }
     }
-    reg.next_id = reg.next_id.saturating_add(1);
-    let id = reg.next_id;
+    let id = stable_table_id_from_hash(hash);
     reg.by_hash.insert(hash, id);
     reg.tables.insert(id, spec);
     id
@@ -121,6 +137,21 @@ pub(super) fn external_table_data_for_values_in(
             tables.push(external_table_data(id, spec));
         }
     }
+    tables
+}
+
+pub(super) fn all_external_table_data_in(
+    registry: &Mutex<ExternalTableRegistry>,
+) -> Vec<core::ExternalTableData> {
+    let Ok(reg) = registry.lock() else {
+        return Vec::new();
+    };
+    let mut tables = reg
+        .tables
+        .iter()
+        .map(|(id, spec)| external_table_data(*id, spec))
+        .collect::<Vec<_>>();
+    tables.sort_by_key(|table| table.id);
     tables
 }
 

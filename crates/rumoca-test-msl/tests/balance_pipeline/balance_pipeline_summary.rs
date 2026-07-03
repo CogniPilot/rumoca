@@ -35,16 +35,26 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
                 _ => {}
             }
         }
-        if let Some(ref status) = result.ic_status {
-            counters.ic_attempted += 1;
-            match status.as_str() {
-                "ic_ok" => counters.ic_ok += 1,
-                "ic_solver_fail" => counters.ic_solver_fail += 1,
-                _ => {}
-            }
-        }
+        process_initial_condition_status(result, &mut counters);
     }
     counters
+}
+
+fn process_initial_condition_status(result: &MslModelResult, counters: &mut ResultCounters) {
+    if let Some(ref status) = result.ic_status {
+        counters.ic_attempted += 1;
+        match status.as_str() {
+            "ic_ok" => counters.ic_ok += 1,
+            "ic_solver_fail" => counters.ic_solver_fail += 1,
+            _ => {}
+        }
+        return;
+    }
+
+    if result.sim_status.as_deref() == Some("sim_ok") {
+        counters.ic_attempted += 1;
+        counters.ic_ok += 1;
+    }
 }
 
 pub(super) fn finalize_msl_summary_from_results(
@@ -302,5 +312,25 @@ VmHWM:\t  524288 kB
                 .and_then(|counts| counts.get("random")),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn summarize_msl_results_counts_sim_ok_as_initial_condition_success() {
+        let mut result = phase_error_result(
+            "Modelica.Test.DiscreteController".to_string(),
+            "Success",
+            None,
+            None,
+        );
+        result.sim_status = Some("sim_ok".to_string());
+        result.ic_status = None;
+
+        let counters = summarize_msl_results(&[result]);
+
+        assert_eq!(counters.sim_attempted, 1);
+        assert_eq!(counters.sim_ok, 1);
+        assert_eq!(counters.ic_attempted, 1);
+        assert_eq!(counters.ic_ok, 1);
+        assert_eq!(counters.ic_solver_fail, 0);
     }
 }

@@ -3,28 +3,100 @@ use rumoca_ir_solve::RandomGenerator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::lower) enum ExternalTableIntrinsicKind {
-    Bounds { upper: bool },
-    Lookup,
-    NextEvent,
+    Bounds {
+        table: ExternalTableRecordKind,
+        upper: bool,
+    },
+    Lookup {
+        table: ExternalTableRecordKind,
+    },
+    NextEvent {
+        table: ExternalTableRecordKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::lower) enum ExternalTableRecordKind {
+    CombiTimeTable,
+    CombiTable1D,
+}
+
+impl ExternalTableRecordKind {
+    pub(in crate::lower) fn constructor_name(self) -> &'static str {
+        match self {
+            Self::CombiTimeTable => "Modelica.Blocks.Types.ExternalCombiTimeTable",
+            Self::CombiTable1D => "Modelica.Blocks.Types.ExternalCombiTable1D",
+        }
+    }
+
+    pub(in crate::lower) fn flattened_field_count(self) -> usize {
+        self.flattened_field_names().len()
+    }
+
+    pub(in crate::lower) fn flattened_field_names(self) -> &'static [&'static str] {
+        match self {
+            Self::CombiTimeTable => &[
+                "tableName",
+                "fileName",
+                "table",
+                "startTime",
+                "columns",
+                "smoothness",
+                "extrapolation",
+                "shiftTime",
+                "timeEvents",
+                "verboseRead",
+                "delimiter",
+                "nHeaderLines",
+            ],
+            Self::CombiTable1D => &[
+                "tableName",
+                "fileName",
+                "table",
+                "columns",
+                "smoothness",
+                "extrapolation",
+                "verboseRead",
+                "delimiter",
+                "nHeaderLines",
+            ],
+        }
+    }
 }
 
 pub(in crate::lower) fn external_table_intrinsic_kind(
     call_name: &str,
 ) -> Option<ExternalTableIntrinsicKind> {
     match intrinsic_short_name(call_name) {
-        "getTimeTableTmin" | "getTable1DAbscissaUmin" => {
-            Some(ExternalTableIntrinsicKind::Bounds { upper: false })
+        "getTimeTableTmin" => Some(ExternalTableIntrinsicKind::Bounds {
+            table: ExternalTableRecordKind::CombiTimeTable,
+            upper: false,
+        }),
+        "getTable1DAbscissaUmin" => Some(ExternalTableIntrinsicKind::Bounds {
+            table: ExternalTableRecordKind::CombiTable1D,
+            upper: false,
+        }),
+        "getTimeTableTmax" => Some(ExternalTableIntrinsicKind::Bounds {
+            table: ExternalTableRecordKind::CombiTimeTable,
+            upper: true,
+        }),
+        "getTable1DAbscissaUmax" => Some(ExternalTableIntrinsicKind::Bounds {
+            table: ExternalTableRecordKind::CombiTable1D,
+            upper: true,
+        }),
+        "getTimeTableValueNoDer" | "getTimeTableValueNoDer2" | "getTimeTableValue" => {
+            Some(ExternalTableIntrinsicKind::Lookup {
+                table: ExternalTableRecordKind::CombiTimeTable,
+            })
         }
-        "getTimeTableTmax" | "getTable1DAbscissaUmax" => {
-            Some(ExternalTableIntrinsicKind::Bounds { upper: true })
+        "getTable1DValueNoDer" | "getTable1DValueNoDer2" | "getTable1DValue" => {
+            Some(ExternalTableIntrinsicKind::Lookup {
+                table: ExternalTableRecordKind::CombiTable1D,
+            })
         }
-        "getTimeTableValueNoDer"
-        | "getTimeTableValueNoDer2"
-        | "getTimeTableValue"
-        | "getTable1DValueNoDer"
-        | "getTable1DValueNoDer2"
-        | "getTable1DValue" => Some(ExternalTableIntrinsicKind::Lookup),
-        "getNextTimeEvent" => Some(ExternalTableIntrinsicKind::NextEvent),
+        "getNextTimeEvent" => Some(ExternalTableIntrinsicKind::NextEvent {
+            table: ExternalTableRecordKind::CombiTimeTable,
+        }),
         _ => None,
     }
 }

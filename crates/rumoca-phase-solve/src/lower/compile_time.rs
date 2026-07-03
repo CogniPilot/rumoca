@@ -1,17 +1,59 @@
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
+use std::sync::Arc;
 
 use super::{LowerError, helpers::variable_size, size_binding_key};
 
 pub(super) fn structural_bindings(
     dae_model: &dae::Dae,
 ) -> Result<IndexMap<String, f64>, LowerError> {
+    structural_bindings_with_eval_env(dae_model).map(|(bindings, _)| bindings)
+}
+
+pub(super) fn external_table_data(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_core::ExternalTableData>, LowerError> {
+    let (_, eval_env) = structural_bindings_with_eval_env(dae_model)?;
+    Ok(rumoca_eval_dae::all_external_table_data_in_env(&eval_env))
+}
+
+fn structural_bindings_with_eval_env(
+    dae_model: &dae::Dae,
+) -> Result<(IndexMap<String, f64>, rumoca_eval_dae::VarEnv<f64>), LowerError> {
+    let mut eval_env = compile_time_eval_env(dae_model);
     let mut bindings = enum_literal_bindings(&dae_model.symbols.enum_literal_ordinals);
     let shapes = variable_shapes(dae_model);
     insert_shape_bindings(&mut bindings, &shapes);
-    insert_constant_variables(&mut bindings, dae_model, &shapes)?;
-    insert_structural_parameters(&mut bindings, dae_model, &shapes)?;
-    Ok(bindings)
+    insert_constant_variables(&mut bindings, dae_model, &shapes, &mut eval_env)?;
+    seed_compile_time_start_values(dae_model, &mut eval_env);
+    insert_structural_parameters(&mut bindings, dae_model, &shapes, &mut eval_env)?;
+    insert_external_table_handle_bindings(&mut bindings, dae_model, &shapes, &mut eval_env)?;
+    Ok((bindings, eval_env))
+}
+
+fn compile_time_eval_env(dae_model: &dae::Dae) -> rumoca_eval_dae::VarEnv<f64> {
+    let mut env = rumoca_eval_dae::VarEnv::new();
+    env.runtime = Arc::new(rumoca_eval_dae::EvalRuntimeState::new());
+    env.functions = Arc::new(rumoca_eval_dae::collect_user_functions(dae_model));
+    env.dims = Arc::new(rumoca_eval_dae::collect_var_dims(dae_model));
+    env.start_exprs = Arc::new(rumoca_eval_dae::collect_var_starts(dae_model));
+    env.nonnumeric_names = Arc::new(
+        dae_model
+            .metadata
+            .nonnumeric_variable_names
+            .iter()
+            .cloned()
+            .collect(),
+    );
+    env.clock_intervals = Arc::new(dae_model.clocks.intervals.clone());
+    env.enum_literal_ordinals = Arc::new(dae_model.symbols.enum_literal_ordinals.clone());
+    for &(name, value) in rumoca_eval_dae::MODELICA_CONSTANTS {
+        env.set(name, value);
+    }
+    for &(name, value) in rumoca_eval_dae::MODELICA_COMPLEX_CONSTANTS {
+        env.set(name, value);
+    }
+    env
 }
 
 fn enum_literal_bindings(ordinals: &IndexMap<String, i64>) -> IndexMap<String, f64> {
@@ -59,9 +101,10 @@ fn insert_constant_variables(
     bindings: &mut IndexMap<String, f64>,
     dae_model: &dae::Dae,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Result<(), LowerError> {
     for (name, var) in &dae_model.variables.constants {
-        insert_variable_start_bindings(bindings, shapes, name.as_str(), var)?;
+        insert_variable_start_bindings(bindings, shapes, eval_env, name.as_str(), var)?;
     }
     Ok(())
 }
@@ -70,12 +113,13 @@ fn insert_structural_parameters(
     bindings: &mut IndexMap<String, f64>,
     dae_model: &dae::Dae,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Result<(), LowerError> {
     for _ in 0..dae_model.variables.parameters.len().max(1) {
         let before = bindings.len();
         for (name, var) in &dae_model.variables.parameters {
             if !var.is_tunable {
-                insert_variable_start_bindings(bindings, shapes, name.as_str(), var)?;
+                insert_variable_start_bindings(bindings, shapes, eval_env, name.as_str(), var)?;
             }
         }
         if bindings.len() == before {
@@ -85,20 +129,272 @@ fn insert_structural_parameters(
     Ok(())
 }
 
+fn insert_external_table_handle_bindings(
+    bindings: &mut IndexMap<String, f64>,
+    dae_model: &dae::Dae,
+    shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
+) -> Result<(), LowerError> {
+    seed_compile_time_start_values(dae_model, eval_env);
+    for table_id_name in &dae_model.metadata.nonnumeric_variable_names {
+        if !table_id_name.ends_with(".tableID") || bindings.contains_key(table_id_name.as_str()) {
+            continue;
+        }
+        let Some(prefix) = table_id_name.strip_suffix(".tableID") else {
+            continue;
+        };
+        let constructor = external_table_record_constructor(prefix, &dae_model.variables)
+            .or_else(|| {
+                external_table_constructor_for_prefix(prefix, dae_model.variables.constants.iter())
+                    .cloned()
+            })
+            .or_else(|| {
+                external_table_constructor_for_prefix(prefix, dae_model.variables.parameters.iter())
+                    .cloned()
+            });
+        let Some(constructor) = constructor else {
+            continue;
+        };
+        let Some(values) = eval_values(&constructor, bindings, shapes, eval_env) else {
+            continue;
+        };
+        let Some(table_id) = values.first().copied() else {
+            continue;
+        };
+        bindings.insert(table_id_name.clone(), table_id);
+        eval_env.set(table_id_name, table_id);
+    }
+    Ok(())
+}
+
+fn seed_compile_time_start_values(
+    dae_model: &dae::Dae,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
+) {
+    for _ in 0..dae_model.variables.parameters.len().max(1).clamp(1, 8) {
+        let before = eval_env.vars.len();
+        for (name, var) in dae_model
+            .variables
+            .constants
+            .iter()
+            .chain(dae_model.variables.parameters.iter())
+        {
+            seed_compile_time_start_value(name.as_str(), var, eval_env);
+        }
+        if eval_env.vars.len() == before {
+            break;
+        }
+    }
+}
+
+fn seed_compile_time_start_value(
+    name: &str,
+    var: &dae::Variable,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
+) {
+    let Some(start) = var.start.as_ref() else {
+        return;
+    };
+    if rumoca_eval_dae::start_expr_is_nonnumeric(start, eval_env) {
+        return;
+    }
+    if !var.dims.is_empty() {
+        let values = if var.size() == 0 && var.dims.len() >= 2 {
+            rumoca_eval_dae::eval_matrix_values::<f64>(start, eval_env)
+                .ok()
+                .flatten()
+                .map(|matrix| matrix.into_iter().flatten().collect())
+                .or_else(|| rumoca_eval_dae::eval_array_values::<f64>(start, eval_env).ok())
+        } else {
+            rumoca_eval_dae::eval_array_values::<f64>(start, eval_env).ok()
+        };
+        if let Some(values) = values {
+            rumoca_eval_dae::set_array_entries(eval_env, name, &var.dims, &values);
+        }
+        return;
+    }
+    if let Ok(value) = rumoca_eval_dae::eval_expr::<f64>(start, eval_env) {
+        eval_env.set(name, value);
+    }
+}
+
+fn external_table_record_constructor(
+    prefix: &str,
+    variables: &dae::DaeVariables,
+) -> Option<rumoca_core::Expression> {
+    external_table_record_constructor_from_fields(
+        "Modelica.Blocks.Types.ExternalCombiTimeTable",
+        prefix,
+        variables,
+        &[
+            "tableName",
+            "fileName",
+            "table",
+            "startTime",
+            "columns",
+            "smoothness",
+            "extrapolation",
+            "shiftTime",
+            "timeEvents",
+            "verboseRead",
+            "delimiter",
+            "nHeaderLines",
+        ],
+    )
+    .or_else(|| {
+        external_table_record_constructor_from_fields(
+            "Modelica.Blocks.Types.ExternalCombiTable1D",
+            prefix,
+            variables,
+            &[
+                "tableName",
+                "fileName",
+                "table",
+                "columns",
+                "smoothness",
+                "extrapolation",
+                "verboseRead",
+                "delimiter",
+                "nHeaderLines",
+            ],
+        )
+    })
+}
+
+fn external_table_record_constructor_from_fields(
+    constructor_name: &str,
+    prefix: &str,
+    variables: &dae::DaeVariables,
+    fields: &[&str],
+) -> Option<rumoca_core::Expression> {
+    let args = fields
+        .iter()
+        .map(|field| external_table_record_field_ref(prefix, field, variables))
+        .collect::<Option<Vec<_>>>()?;
+    let span = args.first().and_then(rumoca_core::Expression::span)?;
+    Some(rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new(constructor_name),
+        args,
+        is_constructor: true,
+        span,
+    })
+}
+
+fn external_table_record_field_ref(
+    prefix: &str,
+    field: &str,
+    variables: &dae::DaeVariables,
+) -> Option<rumoca_core::Expression> {
+    let name = format!("{prefix}.{field}");
+    let var_name = rumoca_core::VarName::new(name.as_str());
+    let span = variables
+        .parameters
+        .get(&var_name)
+        .or_else(|| variables.constants.get(&var_name))
+        .map(|var| var.source_span)?;
+    Some(rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(name.as_str()),
+        subscripts: Vec::new(),
+        span,
+    })
+}
+
+fn external_table_constructor_for_prefix<'a>(
+    prefix: &str,
+    variables: impl Iterator<Item = (&'a rumoca_core::VarName, &'a dae::Variable)>,
+) -> Option<&'a rumoca_core::Expression> {
+    let prefix = format!("{prefix}.");
+    variables
+        .filter(|(name, var)| !var.is_tunable && name.as_str().starts_with(prefix.as_str()))
+        .filter_map(|(_, var)| var.start.as_ref())
+        .find_map(find_external_table_constructor)
+}
+
+fn find_external_table_constructor(
+    expr: &rumoca_core::Expression,
+) -> Option<&rumoca_core::Expression> {
+    match expr {
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            if is_external_table_constructor(name) {
+                return Some(expr);
+            }
+            args.iter().find_map(find_external_table_constructor)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => find_external_table_constructor(rhs),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            find_external_table_constructor(lhs).or_else(|| find_external_table_constructor(rhs))
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            args.iter().find_map(find_external_table_constructor)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => branches
+            .iter()
+            .find_map(|(condition, value)| {
+                find_external_table_constructor(condition)
+                    .or_else(|| find_external_table_constructor(value))
+            })
+            .or_else(|| find_external_table_constructor(else_branch)),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => find_external_table_constructor(base).or_else(|| {
+            subscripts.iter().find_map(|subscript| match subscript {
+                rumoca_core::Subscript::Expr { expr, .. } => find_external_table_constructor(expr),
+                rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => None,
+            })
+        }),
+        rumoca_core::Expression::FieldAccess { base, .. } => find_external_table_constructor(base),
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => find_external_table_constructor(start)
+            .or_else(|| step.as_deref().and_then(find_external_table_constructor))
+            .or_else(|| find_external_table_constructor(end)),
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => find_external_table_constructor(expr)
+            .or_else(|| {
+                indices
+                    .iter()
+                    .find_map(|index| find_external_table_constructor(&index.range))
+            })
+            .or_else(|| filter.as_deref().and_then(find_external_table_constructor)),
+        rumoca_core::Expression::Literal { .. }
+        | rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Empty { .. } => None,
+    }
+}
+
+fn is_external_table_constructor(name: &rumoca_core::Reference) -> bool {
+    matches!(
+        name.last_segment(),
+        "ExternalCombiTimeTable" | "ExternalCombiTable1D"
+    )
+}
+
 fn insert_variable_start_bindings(
     bindings: &mut IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
     name: &str,
     var: &dae::Variable,
 ) -> Result<(), LowerError> {
     let Some(start) = var.start.as_ref() else {
         return Ok(());
     };
-    let Some(raw_values) = eval_values(start, bindings, shapes) else {
+    let Some(raw_values) = eval_values(start, bindings, shapes, eval_env) else {
         return Ok(());
     };
     let values = expand_values_to_size(raw_values, variable_size(var)?, name, var.source_span)?;
     insert_scalarized_bindings(bindings, name, &var.dims, &values);
+    sync_bindings_to_eval_env(eval_env, bindings);
     Ok(())
 }
 
@@ -121,6 +417,7 @@ fn eval_values(
     expr: &rumoca_core::Expression,
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
     match expr {
         rumoca_core::Expression::Literal { value: literal, .. } => {
@@ -129,28 +426,72 @@ fn eval_values(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => {
-            let key = var_key(name, subscripts, bindings)?;
+            let key = var_key(name, subscripts, bindings, eval_env)?;
             bindings.get(key.as_str()).copied().map(|value| vec![value])
         }
-        rumoca_core::Expression::Unary { op, rhs, .. } => eval_unary(op, rhs, bindings, shapes),
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            eval_unary(op, rhs, bindings, shapes, eval_env)
+        }
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            eval_binary(op, lhs, rhs, bindings, shapes)
+            eval_binary(op, lhs, rhs, bindings, shapes, eval_env)
         }
         rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-            eval_builtin(*function, args, bindings, shapes)
+            eval_builtin(*function, args, bindings, shapes, eval_env)
+        }
+        rumoca_core::Expression::FunctionCall { name, .. } if is_external_table_function(name) => {
+            eval_external_table_function(expr, bindings, eval_env)
         }
         rumoca_core::Expression::Array { elements, .. }
         | rumoca_core::Expression::Tuple { elements, .. } => {
             let mut values = Vec::new();
             for element in elements {
-                values.extend(eval_values(element, bindings, shapes)?);
+                values.extend(eval_values(element, bindings, shapes, eval_env)?);
             }
             Some(values)
         }
         rumoca_core::Expression::Range {
             start, step, end, ..
-        } => eval_range(start, step.as_deref(), end, bindings, shapes),
+        } => eval_range(start, step.as_deref(), end, bindings, shapes, eval_env),
         _ => None,
+    }
+}
+
+fn is_external_table_function(name: &rumoca_core::Reference) -> bool {
+    matches!(
+        name.last_segment(),
+        "ExternalCombiTimeTable"
+            | "ExternalCombiTable1D"
+            | "getTimeTableTmin"
+            | "getTimeTableTmax"
+            | "getTimeTableValueNoDer"
+            | "getTimeTableValueNoDer2"
+            | "getTimeTableValue"
+            | "getNextTimeEvent"
+            | "getTable1DAbscissaUmin"
+            | "getTable1DAbscissaUmax"
+            | "getTable1DValueNoDer"
+            | "getTable1DValueNoDer2"
+            | "getTable1DValue"
+    )
+}
+
+fn eval_external_table_function(
+    expr: &rumoca_core::Expression,
+    bindings: &IndexMap<String, f64>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
+) -> Option<Vec<f64>> {
+    sync_bindings_to_eval_env(eval_env, bindings);
+    rumoca_eval_dae::eval_expr::<f64>(expr, eval_env)
+        .ok()
+        .map(|value| vec![value])
+}
+
+fn sync_bindings_to_eval_env(
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
+    bindings: &IndexMap<String, f64>,
+) {
+    for (name, value) in bindings {
+        eval_env.set(name, *value);
     }
 }
 
@@ -158,8 +499,9 @@ fn eval_scalar(
     expr: &rumoca_core::Expression,
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<f64> {
-    let values = eval_values(expr, bindings, shapes)?;
+    let values = eval_values(expr, bindings, shapes, eval_env)?;
     (values.len() == 1).then_some(values[0])
 }
 
@@ -168,8 +510,9 @@ fn eval_unary(
     rhs: &rumoca_core::Expression,
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
-    let values = eval_values(rhs, bindings, shapes)?;
+    let values = eval_values(rhs, bindings, shapes, eval_env)?;
     match op {
         rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(values),
         rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
@@ -185,9 +528,10 @@ fn eval_binary(
     rhs: &rumoca_core::Expression,
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
-    let lhs = eval_scalar(lhs, bindings, shapes)?;
-    let rhs = eval_scalar(rhs, bindings, shapes)?;
+    let lhs = eval_scalar(lhs, bindings, shapes, eval_env)?;
+    let rhs = eval_scalar(rhs, bindings, shapes, eval_env)?;
     let value = match op {
         rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs + rhs,
         rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs - rhs,
@@ -205,11 +549,12 @@ fn eval_range(
     end: &rumoca_core::Expression,
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
-    let start = eval_scalar(start, bindings, shapes)?;
-    let end = eval_scalar(end, bindings, shapes)?;
+    let start = eval_scalar(start, bindings, shapes, eval_env)?;
+    let end = eval_scalar(end, bindings, shapes, eval_env)?;
     let step = step
-        .map(|expr| eval_scalar(expr, bindings, shapes))
+        .map(|expr| eval_scalar(expr, bindings, shapes, eval_env))
         .unwrap_or_else(|| Some(if end >= start { 1.0 } else { -1.0 }))?;
     if !start.is_finite() || !end.is_finite() || !step.is_finite() || step.abs() <= f64::EPSILON {
         return None;
@@ -235,21 +580,24 @@ fn eval_builtin(
     args: &[rumoca_core::Expression],
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
     use rumoca_core::BuiltinFunction as Builtin;
     match function {
         // MLS §10.3.1: size(A, i) is a structural property of the array type.
-        Builtin::Size => eval_size(args, bindings, shapes),
-        Builtin::Min => eval_min_max(args, bindings, shapes, f64::min),
-        Builtin::Max => eval_min_max(args, bindings, shapes, f64::max),
-        Builtin::NoEvent => eval_values(args.first()?, bindings, shapes),
-        Builtin::Smooth => eval_values(args.get(1)?, bindings, shapes),
-        Builtin::Homotopy => eval_values(args.first()?, bindings, shapes),
-        Builtin::Abs => unary_builtin(args, bindings, shapes, f64::abs),
-        Builtin::Sign => unary_builtin(args, bindings, shapes, f64::signum),
-        Builtin::Sqrt => unary_builtin(args, bindings, shapes, f64::sqrt),
-        Builtin::Floor | Builtin::Integer => unary_builtin(args, bindings, shapes, f64::floor),
-        Builtin::Ceil => unary_builtin(args, bindings, shapes, f64::ceil),
+        Builtin::Size => eval_size(args, bindings, shapes, eval_env),
+        Builtin::Min => eval_min_max(args, bindings, shapes, eval_env, f64::min),
+        Builtin::Max => eval_min_max(args, bindings, shapes, eval_env, f64::max),
+        Builtin::NoEvent => eval_values(args.first()?, bindings, shapes, eval_env),
+        Builtin::Smooth => eval_values(args.get(1)?, bindings, shapes, eval_env),
+        Builtin::Homotopy => eval_values(args.first()?, bindings, shapes, eval_env),
+        Builtin::Abs => unary_builtin(args, bindings, shapes, eval_env, f64::abs),
+        Builtin::Sign => unary_builtin(args, bindings, shapes, eval_env, f64::signum),
+        Builtin::Sqrt => unary_builtin(args, bindings, shapes, eval_env, f64::sqrt),
+        Builtin::Floor | Builtin::Integer => {
+            unary_builtin(args, bindings, shapes, eval_env, f64::floor)
+        }
+        Builtin::Ceil => unary_builtin(args, bindings, shapes, eval_env, f64::ceil),
         _ => None,
     }
 }
@@ -258,13 +606,14 @@ fn eval_size(
     args: &[rumoca_core::Expression],
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = args.first()?
     else {
         return Some(vec![
-            eval_values(args.first()?, bindings, shapes)?.len() as f64
+            eval_values(args.first()?, bindings, shapes, eval_env)?.len() as f64,
         ]);
     };
     if !subscripts.is_empty() {
@@ -274,7 +623,7 @@ fn eval_size(
     let Some(dim_expr) = args.get(1) else {
         return Some(dims.iter().map(|dim| *dim as f64).collect());
     };
-    let dim = positive_usize_from_f64(eval_scalar(dim_expr, bindings, shapes)?)?;
+    let dim = positive_usize_from_f64(eval_scalar(dim_expr, bindings, shapes, eval_env)?)?;
     dims.get(dim.checked_sub(1)?)
         .map(|value| vec![*value as f64])
 }
@@ -283,11 +632,12 @@ fn eval_min_max(
     args: &[rumoca_core::Expression],
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
     op: fn(f64, f64) -> f64,
 ) -> Option<Vec<f64>> {
     let mut values = Vec::new();
     for arg in args {
-        values.extend(eval_values(arg, bindings, shapes)?);
+        values.extend(eval_values(arg, bindings, shapes, eval_env)?);
     }
     let first = *values.first()?;
     Some(vec![values.into_iter().fold(first, op)])
@@ -297,15 +647,22 @@ fn unary_builtin(
     args: &[rumoca_core::Expression],
     bindings: &IndexMap<String, f64>,
     shapes: &IndexMap<String, Vec<i64>>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
     op: fn(f64) -> f64,
 ) -> Option<Vec<f64>> {
-    Some(vec![op(eval_scalar(args.first()?, bindings, shapes)?)])
+    Some(vec![op(eval_scalar(
+        args.first()?,
+        bindings,
+        shapes,
+        eval_env,
+    )?)])
 }
 
 fn var_key(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     bindings: &IndexMap<String, f64>,
+    eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<String> {
     let name = name.as_str();
     if subscripts.is_empty() {
@@ -316,7 +673,7 @@ fn var_key(
         let index = match subscript {
             rumoca_core::Subscript::Index { value: index, .. } => positive_i64_to_usize(*index)?,
             rumoca_core::Subscript::Expr { expr, .. } => {
-                positive_usize_from_f64(eval_scalar(expr, bindings, &IndexMap::new())?)?
+                positive_usize_from_f64(eval_scalar(expr, bindings, &IndexMap::new(), eval_env)?)?
             }
             rumoca_core::Subscript::Colon { .. } => return None,
         };
@@ -418,12 +775,403 @@ mod tests {
         }
     }
 
+    fn integer(value: i64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn string(value: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value.to_string()),
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn boolean(value: bool) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(value),
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn array(elements: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: false,
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn matrix(elements: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: true,
+            span: compile_time_test_span(),
+        }
+    }
+
     fn var_ref(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
             span: compile_time_test_span(),
         }
+    }
+
+    fn indexed_var(name: &str, index: usize) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: vec![rumoca_core::Subscript::generated_index(
+                index as i64,
+                compile_time_test_span(),
+            )],
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn binary(
+        op: rumoca_core::OpBinary,
+        lhs: rumoca_core::Expression,
+        rhs: rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn builtin_call(
+        function: rumoca_core::BuiltinFunction,
+        args: Vec<rumoca_core::Expression>,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::BuiltinCall {
+            function,
+            args,
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn range(
+        start: rumoca_core::Expression,
+        end: rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::Range {
+            start: Box::new(start),
+            step: None,
+            end: Box::new(end),
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn comprehension(
+        index: &str,
+        values: rumoca_core::Expression,
+        expr: rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(expr),
+            indices: vec![rumoca_core::ComprehensionIndex {
+                name: index.to_string(),
+                range: values,
+            }],
+            filter: None,
+            span: compile_time_test_span(),
+        }
+    }
+
+    fn insert_parameter_start(
+        dae_model: &mut dae::Dae,
+        name: &str,
+        start: rumoca_core::Expression,
+        is_tunable: bool,
+        dims: &[i64],
+    ) {
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable {
+                name: rumoca_core::VarName::new(name),
+                dims: dims.to_vec(),
+                start: Some(start),
+                is_tunable,
+                ..dae::Variable::empty_with_span(compile_time_test_span())
+            },
+        );
+    }
+
+    fn insert_external_time_table_record_fields(
+        dae_model: &mut dae::Dae,
+        prefix: &str,
+        table: rumoca_core::Expression,
+        table_dims: &[i64],
+    ) {
+        let field_specs = [
+            ("tableName", string("NoName"), false, &[][..]),
+            ("fileName", string("NoName"), false, &[][..]),
+            ("table", table, true, table_dims),
+            ("startTime", real(0.0), true, &[][..]),
+            ("columns", array(vec![integer(2)]), false, &[1][..]),
+            (
+                "smoothness",
+                var_ref("Modelica.Blocks.Types.Smoothness.ConstantSegments"),
+                false,
+                &[][..],
+            ),
+            (
+                "extrapolation",
+                var_ref("Modelica.Blocks.Types.Extrapolation.HoldLastPoint"),
+                true,
+                &[][..],
+            ),
+            ("shiftTime", real(0.0), true, &[][..]),
+            (
+                "timeEvents",
+                var_ref("Modelica.Blocks.Types.TimeEvents.Always"),
+                false,
+                &[][..],
+            ),
+            ("verboseRead", boolean(false), false, &[][..]),
+            ("delimiter", string(","), false, &[][..]),
+            ("nHeaderLines", integer(0), false, &[][..]),
+        ];
+        for (field, start, is_tunable, dims) in field_specs {
+            insert_parameter_start(
+                dae_model,
+                &format!("{prefix}.{field}"),
+                start,
+                is_tunable,
+                dims,
+            );
+        }
+    }
+
+    fn insert_time_table_enum_ordinals(dae_model: &mut dae::Dae) {
+        dae_model.symbols.enum_literal_ordinals.insert(
+            "Modelica.Blocks.Types.Smoothness.ConstantSegments".to_string(),
+            3,
+        );
+        dae_model.symbols.enum_literal_ordinals.insert(
+            "Modelica.Blocks.Types.Extrapolation.HoldLastPoint".to_string(),
+            1,
+        );
+        dae_model
+            .symbols
+            .enum_literal_ordinals
+            .insert("Modelica.Blocks.Types.TimeEvents.Always".to_string(), 1);
+    }
+
+    #[test]
+    fn structural_bindings_evaluate_external_table_constructor_starts() {
+        let mut dae_model = dae::Dae::default();
+        let table_expr = array(vec![
+            array(vec![real(0.0), real(1.0)]),
+            array(vec![real(1.0), real(2.0)]),
+        ]);
+        let constructor = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("ExternalCombiTimeTable"),
+            args: vec![
+                string("NoName"),
+                string("NoName"),
+                table_expr,
+                real(0.0),
+                array(vec![integer(2)]),
+            ],
+            is_constructor: false,
+            span: compile_time_test_span(),
+        };
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("tableID"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("tableID"),
+                start: Some(constructor),
+                is_tunable: false,
+                ..dae::Variable::empty_with_span(compile_time_test_span())
+            },
+        );
+
+        let bindings = structural_bindings(&dae_model)
+            .expect("external table constructors should produce structural table ids");
+
+        assert!(
+            bindings.get("tableID").is_some_and(|value| *value > 0.0),
+            "expected numeric table id binding, got {bindings:?}"
+        );
+    }
+
+    #[test]
+    fn structural_bindings_derive_metadata_external_table_handle_from_parameter_start() {
+        let mut dae_model = dae::Dae::default();
+        let table_expr = array(vec![
+            array(vec![real(0.0), real(1.0)]),
+            array(vec![real(1.0), real(2.0)]),
+        ]);
+        let constructor = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("ExternalCombiTimeTable"),
+            args: vec![
+                string("NoName"),
+                string("NoName"),
+                table_expr,
+                real(0.0),
+                array(vec![integer(2)]),
+            ],
+            is_constructor: false,
+            span: compile_time_test_span(),
+        };
+        let table_min = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("getTimeTableTmin"),
+            args: vec![constructor],
+            is_constructor: false,
+            span: compile_time_test_span(),
+        };
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("block.table.t_minScaled"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("block.table.t_minScaled"),
+                start: Some(table_min),
+                is_tunable: false,
+                ..dae::Variable::empty_with_span(compile_time_test_span())
+            },
+        );
+        dae_model
+            .metadata
+            .nonnumeric_variable_names
+            .push("block.table.tableID".to_string());
+
+        let bindings = structural_bindings(&dae_model)
+            .expect("external table metadata handles should be derived from table users");
+
+        assert!(
+            bindings
+                .get("block.table.tableID")
+                .is_some_and(|value| *value > 0.0),
+            "expected metadata table id binding, got {bindings:?}"
+        );
+    }
+
+    #[test]
+    fn structural_bindings_derive_external_time_table_handle_from_record_fields() {
+        let mut dae_model = dae::Dae::default();
+        insert_external_time_table_record_fields(
+            &mut dae_model,
+            "block.table",
+            array(vec![
+                array(vec![real(2.0), real(0.0)]),
+                array(vec![real(4.0), real(1.0)]),
+            ]),
+            &[2, 2],
+        );
+        dae_model
+            .metadata
+            .nonnumeric_variable_names
+            .push("block.table.tableID".to_string());
+        insert_time_table_enum_ordinals(&mut dae_model);
+
+        let bindings = structural_bindings(&dae_model)
+            .expect("record fields should derive external time table handle");
+
+        assert!(
+            bindings
+                .get("block.table.tableID")
+                .is_some_and(|value| *value > 0.0),
+            "expected record-field table id binding, got {bindings:?}"
+        );
+    }
+
+    #[test]
+    fn structural_bindings_materialize_boolean_table_dynamic_matrix() {
+        let mut dae_model = dae::Dae::default();
+        insert_parameter_start(
+            &mut dae_model,
+            "booleanTable.table",
+            array(vec![
+                real(2.0),
+                real(4.0),
+                real(6.0),
+                real(6.5),
+                real(7.0),
+                real(9.0),
+                real(11.0),
+            ]),
+            true,
+            &[0],
+        );
+        insert_parameter_start(
+            &mut dae_model,
+            "booleanTable.n",
+            builtin_call(
+                rumoca_core::BuiltinFunction::Size,
+                vec![var_ref("booleanTable.table"), integer(1)],
+            ),
+            false,
+            &[],
+        );
+        insert_parameter_start(
+            &mut dae_model,
+            "booleanTable.startValue",
+            boolean(false),
+            false,
+            &[],
+        );
+        let toggle_values = comprehension(
+            "i",
+            range(integer(1), var_ref("booleanTable.n")),
+            builtin_call(
+                rumoca_core::BuiltinFunction::Mod,
+                vec![var_ref("i"), real(2.0)],
+            ),
+        );
+        let table_matrix = rumoca_core::Expression::If {
+            branches: vec![(
+                binary(
+                    rumoca_core::OpBinary::Gt,
+                    var_ref("booleanTable.n"),
+                    real(0.0),
+                ),
+                matrix(vec![
+                    array(vec![indexed_var("booleanTable.table", 1), real(0.0)]),
+                    array(vec![var_ref("booleanTable.table"), toggle_values]),
+                ]),
+            )],
+            else_branch: Box::new(matrix(vec![array(vec![real(0.0), real(0.0)])])),
+            span: compile_time_test_span(),
+        };
+        insert_external_time_table_record_fields(
+            &mut dae_model,
+            "booleanTable.combiTimeTable",
+            table_matrix,
+            &[0, 2],
+        );
+        dae_model
+            .metadata
+            .nonnumeric_variable_names
+            .push("booleanTable.combiTimeTable.tableID".to_string());
+        insert_time_table_enum_ordinals(&mut dae_model);
+
+        let mut env = compile_time_eval_env(&dae_model);
+        let mut bindings = enum_literal_bindings(&dae_model.symbols.enum_literal_ordinals);
+        let shapes = variable_shapes(&dae_model);
+        insert_shape_bindings(&mut bindings, &shapes);
+        insert_constant_variables(&mut bindings, &dae_model, &shapes, &mut env)
+            .expect("constants should seed");
+        seed_compile_time_start_values(&dae_model, &mut env);
+        insert_structural_parameters(&mut bindings, &dae_model, &shapes, &mut env)
+            .expect("structural parameters should seed");
+        insert_external_table_handle_bindings(&mut bindings, &dae_model, &shapes, &mut env)
+            .expect("external table handle should seed");
+
+        let table_id = *bindings
+            .get("booleanTable.combiTimeTable.tableID")
+            .expect("tableID binding");
+        let table_data = rumoca_eval_dae::all_external_table_data_in_env(&env);
+        assert_eq!(table_data.len(), 1, "expected one external table");
+        assert_eq!(table_data[0].id as f64, table_id);
+        assert!(
+            table_data[0].data.len() > 1,
+            "BooleanTable handle must not register an empty table: {table_data:?}"
+        );
     }
 
     #[test]
@@ -521,8 +1269,12 @@ mod tests {
     fn eval_size_declines_unrepresentable_dimension_index() {
         let args = vec![var_ref("x"), real(usize::MAX as f64)];
         let shapes = IndexMap::from([("x".to_string(), vec![2, 3])]);
+        let mut eval_env = rumoca_eval_dae::VarEnv::new();
 
-        assert_eq!(eval_size(&args, &IndexMap::new(), &shapes), None);
+        assert_eq!(
+            eval_size(&args, &IndexMap::new(), &shapes, &mut eval_env),
+            None
+        );
     }
 
     #[test]
@@ -531,12 +1283,14 @@ mod tests {
             Box::new(real(usize::MAX as f64)),
             compile_time_test_span(),
         );
+        let mut eval_env = rumoca_eval_dae::VarEnv::new();
 
         assert_eq!(
             var_key(
                 &rumoca_core::Reference::new("x"),
                 &[subscript],
-                &IndexMap::new()
+                &IndexMap::new(),
+                &mut eval_env
             ),
             None
         );

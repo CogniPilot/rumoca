@@ -312,13 +312,6 @@ impl<'a> LowerBuilder<'a> {
         if let Some(shape) = self.layout.shape(name_text) {
             return copy_shape_dims(shape, "layout binding shape rank", span);
         }
-        let field_keys = self.indexed_record_field_keys(name_text, "re");
-        if !field_keys.is_empty() {
-            let dims = infer_dims_from_index_sets(field_keys.keys().cloned());
-            if !dims.is_empty() {
-                return Ok(dims);
-            }
-        }
         if let Some(key) = indexed_key_for_reference(&self.indexed_bindings, name, span)? {
             let Some(meta) = self.indexed_meta_for_key(&key) else {
                 return Err(LowerError::contract_violation(
@@ -896,16 +889,14 @@ impl<'a> LowerBuilder<'a> {
                     )?)
                 }
                 rumoca_core::Subscript::Expr { expr, .. }
-                    if !matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
+                    if !matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+                        && self.expr_can_eval_compile_time(expr, const_scope) =>
                 {
-                    match self.eval_compile_time_positive_index(
+                    indices.push(self.eval_compile_time_positive_index(
                         expr,
                         const_scope,
                         "array subscript",
-                    ) {
-                        Ok(index) => indices.push(index),
-                        Err(_) => return Ok(None),
-                    }
+                    )?);
                 }
                 rumoca_core::Subscript::Expr { .. } | rumoca_core::Subscript::Colon { .. } => {
                     return Ok(None);
@@ -919,6 +910,91 @@ impl<'a> LowerBuilder<'a> {
             }
         }
         Ok(Some(indices))
+    }
+
+    fn expr_can_eval_compile_time(
+        &self,
+        expr: &rumoca_core::Expression,
+        const_scope: &IndexMap<String, f64>,
+    ) -> bool {
+        match expr {
+            rumoca_core::Expression::Literal { value: _, .. } => true,
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span,
+                ..
+            } => {
+                // MLS §3.7.5/§8.6: `pre(x)` lowers to the synthetic `__pre__.x`
+                // parameter that *holds the previous-event value* of a discrete
+                // (or state) variable. Folding it would pin a runtime array
+                // subscript such as `wp[pre(k), 1]` to its start index, so a
+                // `__pre__.` reference must take the runtime dynamic-selection
+                // path instead of compile-time subscript folding.
+                if name.as_str().starts_with("__pre__.") {
+                    return false;
+                }
+                if subscripts.is_empty() && const_scope.contains_key(name.as_str()) {
+                    return true;
+                }
+                if self
+                    .dae_variables
+                    .is_some_and(|variables| !var_ref_is_translation_constant(variables, name))
+                {
+                    return false;
+                }
+                compile_time_var_key(name, subscripts, const_scope, *span)
+                    .ok()
+                    .is_some_and(|key| {
+                        self.structural_bindings.contains_key(key.as_str())
+                            || matches!(
+                                self.layout.binding(key.as_str()),
+                                Some(ScalarSlot::Constant(_))
+                            )
+                    })
+            }
+            rumoca_core::Expression::Unary { rhs, .. } => {
+                self.expr_can_eval_compile_time(rhs, const_scope)
+            }
+            rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+                self.expr_can_eval_compile_time(lhs, const_scope)
+                    && self.expr_can_eval_compile_time(rhs, const_scope)
+            }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches.iter().all(|(cond, value)| {
+                    self.expr_can_eval_compile_time(cond, const_scope)
+                        && self.expr_can_eval_compile_time(value, const_scope)
+                }) && self.expr_can_eval_compile_time(else_branch, const_scope)
+            }
+            rumoca_core::Expression::BuiltinCall { function, args, .. } => match function {
+                rumoca_core::BuiltinFunction::Size => args
+                    .get(1)
+                    .is_none_or(|dim| self.expr_can_eval_compile_time(dim, const_scope)),
+                rumoca_core::BuiltinFunction::Abs
+                | rumoca_core::BuiltinFunction::Sign
+                | rumoca_core::BuiltinFunction::Sqrt
+                | rumoca_core::BuiltinFunction::Floor
+                | rumoca_core::BuiltinFunction::Integer
+                | rumoca_core::BuiltinFunction::Ceil
+                | rumoca_core::BuiltinFunction::Min
+                | rumoca_core::BuiltinFunction::Max => args
+                    .iter()
+                    .all(|arg| self.expr_can_eval_compile_time(arg, const_scope)),
+                _ => false,
+            },
+            rumoca_core::Expression::FunctionCall { .. }
+            | rumoca_core::Expression::ArrayComprehension { .. }
+            | rumoca_core::Expression::Tuple { .. }
+            | rumoca_core::Expression::FieldAccess { .. }
+            | rumoca_core::Expression::Index { .. }
+            | rumoca_core::Expression::Range { .. }
+            | rumoca_core::Expression::Array { .. }
+            | rumoca_core::Expression::Empty { .. } => false,
+        }
     }
 
     pub(super) fn eval_compile_time_range_values(
@@ -1038,6 +1114,20 @@ impl<'a> LowerBuilder<'a> {
             _ => Vec::new(),
         })
     }
+}
+
+fn var_ref_is_translation_constant(
+    variables: &dae::DaeVariables,
+    name: &rumoca_core::Reference,
+) -> bool {
+    let var_name = name.var_name();
+    if variables.constants.contains_key(var_name) {
+        return true;
+    }
+    if let Some(parameter) = variables.parameters.get(var_name) {
+        return !parameter.is_tunable;
+    }
+    false
 }
 
 fn required_arg<'a>(

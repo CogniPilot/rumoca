@@ -207,6 +207,12 @@ static int {{ model_name }}_event_pass({{ model_name }}_t *m) {
    intra-tick dependency between condition rows and the equations that read
    them (mirrors the reference event iteration). #}
 static void {{ model_name }}_discrete_updates({{ model_name }}_t *m) {
+    /* Bound on fixed-point passes. `event_pass` returns 0 once a pass changes
+       nothing, which is the normal exit; the cap only guards against a model
+       whose discrete rows never settle (e.g. an ill-posed algebraic loop). It is
+       sized well above the longest real dependency chain so a converging model
+       always breaks out first; if the cap is ever hit the last computed state is
+       used as-is rather than looping forever. */
     for (int __it = 0; __it < 100; __it++) {
         if (!{{ model_name }}_event_pass(m)) {
             break;
