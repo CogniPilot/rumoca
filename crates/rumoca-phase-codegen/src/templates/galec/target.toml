@@ -1,23 +1,31 @@
 version = 1
 ir = "dae"
 name = "galec"
-# Conformance ladder (SPEC_0034 GAL-021): this target is the rung-1
-# "GALEC-derived text export" — the phrase "eFMI Algorithm Code export" is
-# reserved for the schema-valid eFMU container rung (Phase 5b) and must not
-# appear in self-description until that rung is machine-checked. The
-# manifest.xml genuinely is in the eFMI Beta-1 Algorithm Code manifest
-# format (XSD-validated in CI), which is what the description may say.
-description = "GALEC-derived text export: Model.alg + Algorithm Code manifest.xml (eFMI Beta-1 format) for fixed-sample discrete models; not yet a packaged eFMU container"
-execution_mode = "source-transform"
+# Conformance ladder (SPEC_0034 GAL-021): this target earns rung 2, the
+# "eFMI Algorithm Code export" claim — a schema-valid eFMU container
+# (__content.xml + schemas/ + one Algorithm Code representation, SHA-1
+# checksums recomputed from the exact written bytes, fresh brace-wrapped
+# UUIDs, strict UTC timestamps), machine-checked in CI by full-container
+# XSD validation and checksum recomputation (crates/rumoca/tests/
+# cli_target_galec.rs). "GALEC language conformance" (round-trip parse) and
+# "eFMI Production Code export" remain unclaimed.
+description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with Model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
+execution_mode = "packaged"
 # deployment_class is the deployment FAMILY axis of `rumoca targets` (like
 # "gpu" spanning cuda-c readiness levels), not a conformance claim; the
-# honest rung-1 claim lives in description/completion_message per GAL-021.
+# honest rung claim lives in description/completion_message per GAL-021.
 deployment_class = "efmi"
-readiness_level = 1
-completion_message = """GALEC Algorithm Code files written to: {{ out_dir }}
-  {{ model_name }}.alg   GALEC block source (typed printer output)
-  manifest.xml           eFMI Algorithm Code manifest (typed XML serializer output)
-This is a GALEC-derived text export, not yet a packaged eFMU container."""
+readiness_level = 2
+# `build = "efmu"` packages this invocation's rendered files into the two
+# eFMU package forms (directory + .efmu zip) — the build-kind pattern is the
+# packaging mechanism, exactly like fmi3's `build = "fmu"`; no CLI flag.
+build = "efmu"
+completion_message = """eFMI Algorithm Code eFMU written to: {{ out_dir }}
+  {{ model_name }}/       eFMU container, directory form (__content.xml + schemas/ + AlgorithmCode/)
+  {{ model_name }}.efmu   eFMU container, zip form (same content, __content.xml at zip root)
+Conformance: "eFMI Algorithm Code export" (SPEC_0034 GAL-021 rung 2) — schema-valid
+eFMU with SHA-1 checksums computed from the written bytes. Not yet claimed:
+GALEC language conformance (round-trip parse) and eFMI Production Code export."""
 
 # Generic DAE capability gates (SPEC_0034 GAL-006). These run before any
 # rendering; the GALEC projection re-checks admissibility on the untouched
@@ -43,7 +51,12 @@ host_callbacks = false
 
 # Both files are passthrough templates: the text is produced by the typed
 # GALEC printer / eFMI XML serializer via the rumoca-compile galec facade
-# (GAL-009 / D3); templates never author .alg or manifest content.
+# (GAL-009 / D3); templates never author .alg or manifest content. The
+# rendered files are packaged by `build = "efmu"` into the Algorithm Code
+# representation container: manifest.xml is the representation manifest
+# (root-level by contract with the efmu build step), the .alg file sits
+# beside it, and the container writer cross-checks the manifest's File
+# checksums against these exact bytes (GAL-021).
 [[files]]
 path = "{{ model_name }}.alg"
 template = "model.alg.jinja"

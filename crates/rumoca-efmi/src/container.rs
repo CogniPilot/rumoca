@@ -37,7 +37,7 @@ use quick_xml::events::{BytesStart, Event};
 use crate::checksum::Sha1Hex;
 use crate::content::{Content, ContentParts, ModelRepresentation, ModelRepresentationKind};
 use crate::diagnostic::EfmiError;
-use crate::ids::{FilePath, ManifestId, NameWithoutSlashes};
+use crate::ids::{FilePath, ManifestId, NameWithoutSlashes, NormalizedText, UtcTimestamp};
 use crate::manifest_common::ManifestAttributes;
 use crate::xml::content_to_xml;
 
@@ -51,9 +51,13 @@ struct SchemaAsset {
 
 include!(concat!(env!("OUT_DIR"), "/schema_assets.rs"));
 
-/// The two names reserved at the eFMU root by the standard (ch. 2): every
-/// other root entry is a tool-named representation container directory.
-const CONTENT_XML_NAME: &str = "__content.xml";
+/// Name of the container content description reserved at the eFMU root by
+/// the standard (ch. 2): `__content.xml`. Every root entry other than this
+/// and [`SCHEMAS_DIR_NAME`] is a tool-named representation container
+/// directory. Public so packaging drivers can recognize an existing eFMU
+/// root (e.g. to replace their own previous build product before calling
+/// [`write_efmu_container`], which itself never overwrites).
+pub const CONTENT_XML_NAME: &str = "__content.xml";
 /// Reserved root directory holding the eFMI schema copies.
 const SCHEMAS_DIR_NAME: &str = "schemas";
 
@@ -106,6 +110,28 @@ pub struct ModelRepresentationFiles {
 pub struct EfmuMeta {
     /// Shared manifest attribute group of `__content.xml`.
     pub attributes: ManifestAttributes,
+}
+
+impl EfmuMeta {
+    /// Metadata for a freshly generated eFMU: a fresh manifest UUID, the
+    /// current wall-clock UTC time, and the generating tool's name/version
+    /// (e.g. `"rumoca 0.9.9"`). The id and timestamp are minted here — the
+    /// documented per-build nondeterminism of a generated container — while
+    /// serialization itself stays a pure function of the returned value.
+    pub fn generated(name: &str, generation_tool: &str) -> Result<Self, EfmiError> {
+        Ok(Self {
+            attributes: ManifestAttributes {
+                id: ManifestId::generate(),
+                name: NormalizedText::new(name)?,
+                description: None,
+                version: None,
+                generation_date_and_time: UtcTimestamp::now_utc(),
+                generation_tool: Some(NormalizedText::new(generation_tool)?),
+                copyright: None,
+                license: None,
+            },
+        })
+    }
 }
 
 /// Where one representation landed on disk.
@@ -304,9 +330,33 @@ struct ManifestFileEntry {
 /// - every `File/@checksum` must equal the SHA-1 of the bytes being written
 ///   at that path (eFMI ch. 2.3.5: a wrong checksum makes the eFMU invalid).
 fn verify_manifest_consistency(representation: &ModelRepresentationFiles) -> Result<(), EfmiError> {
-    let parsed = parse_manifest_bytes(representation)?;
+    let parsed =
+        parse_manifest_bytes(&representation.manifest_bytes, representation.name.as_str())?;
     verify_manifest_ref_id(representation, parsed.root_id.as_deref())?;
     verify_manifest_file_entries(representation, parsed.files)
+}
+
+/// Extract the manifest's own UUID — the root element's `id` attribute — from
+/// serialized manifest bytes.
+///
+/// This is how a packaging driver obtains the `manifest_ref_id` to register
+/// in `__content.xml` for manifest bytes it did not serialize itself (e.g. a
+/// manifest rendered earlier in the same build): parsing the id back out of
+/// the exact bytes being packaged, instead of re-serializing, keeps the
+/// registered `manifestRefId`, the recorded SHA-1, and the written file all
+/// derived from one byte sequence (GAL-021). Bytes that are not well-formed
+/// XML or whose root element carries no valid brace-wrapped UUID `id` are
+/// rejected — such a manifest can never be part of a valid eFMU.
+pub fn manifest_root_id(manifest_bytes: &[u8]) -> Result<ManifestId, EfmiError> {
+    const ITEM: &str = "manifest bytes";
+    let parsed = parse_manifest_bytes(manifest_bytes, ITEM)?;
+    let Some(id) = parsed.root_id else {
+        return Err(EfmiError::InvalidContainerLayout {
+            item: ITEM.to_owned(),
+            reason: "manifest root element has no `id` attribute".to_owned(),
+        });
+    };
+    ManifestId::parse(&id)
 }
 
 /// The `id` inside the manifest bytes must be the registered
@@ -400,17 +450,16 @@ struct ParsedManifest {
 }
 
 /// Parse the root `id` and the `File` entries out of the caller-supplied
-/// manifest bytes. Manifest bytes that are not well-formed XML (or whose
-/// `File` entries lack the required attributes) can never be part of a valid
-/// eFMU and are rejected before anything is written.
-fn parse_manifest_bytes(
-    representation: &ModelRepresentationFiles,
-) -> Result<ParsedManifest, EfmiError> {
+/// manifest bytes (`item` labels the source in errors). Manifest bytes that
+/// are not well-formed XML (or whose `File` entries lack the required
+/// attributes) can never be part of a valid eFMU and are rejected before
+/// anything is written.
+fn parse_manifest_bytes(manifest_bytes: &[u8], item: &str) -> Result<ParsedManifest, EfmiError> {
     let malformed = |reason: String| EfmiError::InvalidContainerLayout {
-        item: representation.name.as_str().to_owned(),
+        item: item.to_owned(),
         reason,
     };
-    let mut reader = Reader::from_reader(representation.manifest_bytes.as_slice());
+    let mut reader = Reader::from_reader(manifest_bytes);
     let mut parsed = ParsedManifest {
         root_id: None,
         files: Vec::new(),
@@ -677,16 +726,48 @@ fn relative_entry_name(root: &Path, path: &Path) -> Result<String, EfmiError> {
     Ok(segments.join("/"))
 }
 
+/// Write the archive to a staging path beside `zip_path` and rename it into
+/// place on success. `fs::File::create` truncates immediately, so writing
+/// straight to the final path would leave a corrupt `.efmu` behind — and
+/// destroy a previous run's valid archive — if reading a source file or
+/// writing an entry fails partway; the staging file is removed on error
+/// instead (mirroring the directory form's `cleanup_failed_write`).
 fn write_zip_entries(
     efmu_root: &Path,
     zip_path: &Path,
+    relative_paths: &[String],
+) -> Result<(), EfmiError> {
+    let mut staging_name = zip_path
+        .file_name()
+        .expect("zip path ends in `.efmu`, so it has a file name")
+        .to_os_string();
+    staging_name.push(".part");
+    let staging_path = zip_path.with_file_name(staging_name);
+    write_zip_archive(efmu_root, zip_path, &staging_path, relative_paths).inspect_err(|_| {
+        let _ = fs::remove_file(&staging_path);
+    })?;
+    // Renaming over an existing file replaces it on Unix but fails on
+    // Windows, so a previous archive is removed first — only now that the
+    // staged replacement is complete.
+    if zip_path.exists() {
+        fs::remove_file(zip_path).map_err(|e| io_error(zip_path, &e))?;
+    }
+    fs::rename(&staging_path, zip_path).map_err(|e| io_error(zip_path, &e))
+}
+
+/// Write every entry into the staged archive at `staging_path`; zip-level
+/// errors name the final `zip_path` (the artifact being produced).
+fn write_zip_archive(
+    efmu_root: &Path,
+    zip_path: &Path,
+    staging_path: &Path,
     relative_paths: &[String],
 ) -> Result<(), EfmiError> {
     let zip_error = |message: String| EfmiError::Zip {
         path: zip_path.display().to_string(),
         message,
     };
-    let file = fs::File::create(zip_path).map_err(|e| io_error(zip_path, &e))?;
+    let file = fs::File::create(staging_path).map_err(|e| io_error(staging_path, &e))?;
     let mut zip = zip::ZipWriter::new(file);
     // Fixed timestamp + permissions: the archive is a pure function of the
     // directory contents, so repeated packaging is byte-reproducible.
@@ -778,6 +859,46 @@ mod tests {
             manifest_bytes: format!("<Manifest id=\"{REP_UUID}\"/>").into_bytes(),
             files: vec![],
         }
+    }
+
+    /// [`manifest_root_id`] recovers the exact registered UUID from manifest
+    /// bytes and rejects bytes that could never be schema-valid.
+    #[test]
+    fn manifest_root_id_extracts_registered_uuid() {
+        let rep = representation("AlgorithmCode");
+        let id = manifest_root_id(&rep.manifest_bytes).expect("root id must parse");
+        assert_eq!(id, ManifestId::parse(REP_UUID).unwrap());
+
+        // Missing root id: never schema-valid.
+        let err = manifest_root_id(b"<Manifest/>").unwrap_err();
+        assert_eq!(err.code(), "EFM026");
+        // Malformed UUID: rejected by the ManifestId parser.
+        let err = manifest_root_id(b"<Manifest id=\"not-a-uuid\"/>").unwrap_err();
+        assert_eq!(err.code(), "EFM001");
+        // Not XML at all.
+        let err = manifest_root_id(b"plain text").unwrap_err();
+        assert_eq!(err.code(), "EFM026");
+    }
+
+    /// [`EfmuMeta::generated`] mints a fresh id/timestamp and carries the
+    /// tool string; invalid tool text fails loudly instead of defaulting.
+    #[test]
+    fn efmu_meta_generated_mints_valid_identity() {
+        let meta = EfmuMeta::generated("TestBlock", "rumoca 0.0.0-test").unwrap();
+        // Round-trip through the strict parsers: both values are valid.
+        ManifestId::parse(&meta.attributes.id.to_string()).unwrap();
+        UtcTimestamp::parse(&meta.attributes.generation_date_and_time.to_string()).unwrap();
+        assert_eq!(meta.attributes.name.as_str(), "TestBlock");
+        assert_eq!(
+            meta.attributes.generation_tool.as_ref().unwrap().as_str(),
+            "rumoca 0.0.0-test"
+        );
+        // Two mints differ (fresh UUID per container).
+        let other = EfmuMeta::generated("TestBlock", "rumoca 0.0.0-test").unwrap();
+        assert_ne!(meta.attributes.id, other.attributes.id);
+
+        let err = EfmuMeta::generated("TestBlock", "bad\ntool").unwrap_err();
+        assert_eq!(err.code(), "EFM004");
     }
 
     #[test]
@@ -1023,6 +1144,63 @@ mod tests {
         // A retry with a consistent representation now succeeds.
         write_efmu_container(&[representation("AlgorithmCode")], &meta(), &root)
             .expect("retry after cleanup must succeed");
+    }
+
+    /// A zip-write failure partway through must not leave a truncated
+    /// archive at the final path — nor clobber a previous valid one — and
+    /// must remove its staging file (the zip-form analogue of
+    /// [`cleanup_failed_write`]).
+    #[test]
+    fn failed_zip_write_preserves_previous_archive_and_cleans_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("efmu");
+        write_efmu_container(&[representation("AlgorithmCode")], &meta(), &root).unwrap();
+        let zip_path = dir.path().join("out.efmu");
+        write_efmu_zip(&root, &zip_path).expect("first zip must succeed");
+        let previous = fs::read(&zip_path).unwrap();
+
+        // Force a mid-write failure: an entry list naming a file that does
+        // not exist under the root (each source is read lazily per entry).
+        let err = write_zip_entries(
+            &root,
+            &zip_path,
+            &["__content.xml".to_owned(), "missing-file".to_owned()],
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "EFM029", "expected an I/O error, got {err:?}");
+        assert_eq!(
+            fs::read(&zip_path).unwrap(),
+            previous,
+            "previous archive must survive a failed re-zip"
+        );
+        let leftovers: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".part"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging file must be removed on failure: {leftovers:?}"
+        );
+    }
+
+    /// Re-zipping over an existing `.efmu` replaces it (the staged archive
+    /// is renamed into place), so repeated packaging of the same directory
+    /// form is byte-stable.
+    #[test]
+    fn zip_rewrite_replaces_existing_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("efmu");
+        write_efmu_container(&[representation("AlgorithmCode")], &meta(), &root).unwrap();
+        let zip_path = dir.path().join("out.efmu");
+        write_efmu_zip(&root, &zip_path).expect("first zip must succeed");
+        let first = fs::read(&zip_path).unwrap();
+        write_efmu_zip(&root, &zip_path).expect("re-zip must replace the archive");
+        assert_eq!(
+            fs::read(&zip_path).unwrap(),
+            first,
+            "repeated packaging must be byte-reproducible"
+        );
     }
 
     #[test]
