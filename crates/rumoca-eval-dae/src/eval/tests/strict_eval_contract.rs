@@ -322,9 +322,30 @@ fn eval_expr_rejects_colon_index_in_scalar_index() {
 }
 
 #[test]
-fn eval_expr_rejects_missing_indexed_env_binding() {
+fn eval_expr_rejects_sparse_declared_indexed_env_binding() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([("A".to_string(), vec![2])]));
+    env.set("A[1]", 10.0);
+
+    let indexed = rumoca_core::Expression::Index {
+        base: Box::new(var("A")),
+        subscripts: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_expr::<f64>(&indexed, &env),
+        Err(EvalError::ShapeMismatch {
+            context: "declared array dimensions",
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
+fn eval_expr_rejects_missing_indexed_env_binding() {
+    let mut env = VarEnv::<f64>::new();
     env.set("A[1]", 10.0);
 
     let indexed = rumoca_core::Expression::Index {
