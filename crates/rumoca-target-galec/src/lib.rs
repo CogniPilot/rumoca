@@ -39,8 +39,11 @@
 //!   Clock wiring (GAL-016/D6), and GAL-004 post-validation;
 //! - [`emit`] — rendering facades: [`render_algorithm_code`] (`.alg` text),
 //!   [`render_manifest_xml`] (typed manifest → XML), and
-//!   [`c_template_context`] (typed-then-serialized minijinja context,
-//!   unstable until slice 5c);
+//!   [`c_template_context`] (typed-then-serialized minijinja context of
+//!   the `embedded-c-galec` target, GAL-024);
+//! - [`c_mangle`] / [`c_print`] — the embedded-C side of the projection:
+//!   collision-checked GALEC-name → C-identifier mangling and the GALEC
+//!   AST → C99 printer feeding [`c_template_context`];
 //! - [`package`] — the [`AlgorithmCodePackage`] output contract
 //!   (constructed only by lowering, post-validated per GAL-004);
 //! - [`diagnostic`] — SPEC_0008-shaped [`GalecTargetError`] with stable
@@ -48,6 +51,8 @@
 //!   rejections use the GAL-025 wording.
 
 pub mod admissibility;
+pub mod c_mangle;
+pub mod c_print;
 pub mod classify;
 pub mod diagnostic;
 pub mod emit;
@@ -58,6 +63,8 @@ pub mod manifest_vars;
 pub mod package;
 
 pub use admissibility::{AdmittedClock, check_admissibility};
+pub use c_mangle::{CNameTable, c_identifier};
+pub use c_print::CPrinter;
 pub use classify::{Classification, ClassifiedVariable, VariableClass, classify_variables};
 pub use diagnostic::GalecTargetError;
 pub use emit::{c_template_context, render_algorithm_code, render_manifest_xml};

@@ -80,8 +80,8 @@ fn resolve_manifest_target(
 ///
 /// Public (re-exported at the crate root) so template-target CI exercises the
 /// exact render path the CLI uses — including capability validation and the
-/// name-dispatched renderers (`wgsl-solve`, `galec`) that the generic
-/// DAE-JSON template context cannot reach.
+/// name-dispatched renderers (`wgsl-solve`, `galec`, `embedded-c-galec`) that
+/// the generic DAE-JSON template context cannot reach.
 pub fn render_target_files(
     result: &CompilationResult,
     model: &str,
@@ -425,6 +425,10 @@ enum ManifestRenderer {
     /// `galec` passes one typed export through passthrough templates
     /// (SPEC_0034 GAL-009/D3).
     Galec(rumoca_compile::galec::GalecExport),
+    /// `embedded-c-galec` renders thin C templates over one typed
+    /// projection context (SPEC_0034 GAL-024/D2) — never the generic DAE
+    /// JSON context.
+    GalecC(rumoca_compile::galec::GalecCExport),
 }
 
 /// Resolve the renderer for one target invocation (module docs on
@@ -444,6 +448,16 @@ fn resolve_manifest_renderer(
             rumoca_compile::galec::render_galec_export(&result.dae, &result.flat, model_identifier)
                 .context("GALEC export for target 'galec'")?;
         return Ok(ManifestRenderer::Galec(export));
+    }
+    if manifest.ir == TargetTemplateIr::Dae && manifest.name.as_deref() == Some("embedded-c-galec")
+    {
+        let export = rumoca_compile::galec::render_galec_c_export(
+            &result.dae,
+            &result.flat,
+            model_identifier,
+        )
+        .context("GALEC C export for target 'embedded-c-galec'")?;
+        return Ok(ManifestRenderer::GalecC(export));
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -465,6 +479,7 @@ impl ManifestRenderer {
                 .render_solve_template_str_without_dae(template, model_identifier)
                 .map_err(Into::into),
             Self::Galec(export) => render_galec_template(export, template, model_identifier),
+            Self::GalecC(export) => render_galec_c_template(export, template),
         }
     }
 }
@@ -492,6 +507,24 @@ fn render_galec_template(
         },
     )
     .context("Render galec target template")
+}
+
+/// Render an `embedded-c-galec` target template (file path or C file) from
+/// the invocation's single [`rumoca_compile::galec::GalecCExport`].
+///
+/// The context is the projection's serialized typed `CContext`
+/// (`model_name`, `block_name`, `struct_name`, `function_prefix`,
+/// `include_guard`, `variables`, `methods`): all C expression/statement
+/// text comes pre-printed by the typed Rust printer, the templates only
+/// lay out the files (SPEC_0034 D2/GAL-008 split).
+fn render_galec_c_template(
+    export: &rumoca_compile::galec::GalecCExport,
+    template: &str,
+) -> Result<String> {
+    let mut env = minijinja::Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.render_str(template, minijinja::Value::from_serialize(&export.context))
+        .context("Render embedded-c-galec target template")
 }
 
 fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {

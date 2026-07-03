@@ -37,8 +37,8 @@ use rumoca_ir_ast::TypeTable;
 use rumoca_ir_dae::Dae;
 use rumoca_ir_flat::Model as FlatModel;
 use rumoca_target_galec::{
-    GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap, lower_to_algorithm_code,
-    render_algorithm_code, render_manifest_xml,
+    GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap, c_template_context,
+    lower_to_algorithm_code, render_algorithm_code, render_manifest_xml,
 };
 
 /// Rendered GALEC-derived text export: the `.alg` block printed by the
@@ -93,6 +93,43 @@ pub fn render_galec_export(
     Ok(GalecExport {
         alg_text: render_algorithm_code(&package)?,
         manifest_xml: render_manifest_xml(&package)?,
+    })
+}
+
+/// GALEC-derived embedded C export (the `embedded-c-galec` target,
+/// SPEC_0034 GAL-024): the serialized typed template context the target's
+/// minijinja templates consume. Explicitly NOT an eFMI Production Code
+/// container — no manifest mapping is emitted; the honest self-description
+/// lives in the target manifest.
+#[derive(Debug, Clone)]
+pub struct GalecCExport {
+    /// Serialized typed `CContext` (`rumoca-target-galec`'s `emit` module):
+    /// `model_name`, `block_name`, `struct_name`, `function_prefix`,
+    /// `include_guard`, `variables`, `methods` — the complete template
+    /// context, C text intelligence stays in the typed printer (D2/GAL-008).
+    pub context: serde_json::Value,
+}
+
+/// Render the embedded C export context for a compiled model: the same
+/// projection as [`render_galec_export`], serialized through
+/// `c_template_context` instead of the `.alg`/manifest printers.
+///
+/// # Errors
+///
+/// [`GalecExportError::Projection`] with all collected projection
+/// diagnostics, or [`GalecExportError::Render`] for validator/mangler/
+/// C-printer failures on the validated package (`ET018`/`ET022`/`ET023`).
+pub fn render_galec_c_export(
+    dae: &Dae,
+    flat: &FlatModel,
+    model_name: &str,
+) -> Result<GalecCExport, GalecExportError> {
+    let scalar_types = build_scalar_type_map(flat);
+    let input = GalecInput::new(dae, model_name).with_scalar_types(&scalar_types);
+    let package = lower_to_algorithm_code(&input, &GalecOptions::default())
+        .map_err(GalecExportError::Projection)?;
+    Ok(GalecCExport {
+        context: c_template_context(&package, model_name)?,
     })
 }
 
@@ -281,6 +318,22 @@ end GalecFacadeDemo;
             export.manifest_xml.contains("Manifest"),
             "manifest root element expected:\n{}",
             export.manifest_xml
+        );
+    }
+
+    #[test]
+    fn render_galec_c_export_produces_the_template_context() {
+        let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
+        let export = render_galec_c_export(&result.dae, &result.flat, "GalecFacadeDemo")
+            .expect("discrete fixture should project to the C context");
+        let context = &export.context;
+        assert_eq!(context["model_name"], "GalecFacadeDemo");
+        assert_eq!(context["struct_name"], "GalecFacadeDemoState");
+        assert!(
+            context["methods"]["do_step"]
+                .as_array()
+                .is_some_and(|statements| !statements.is_empty()),
+            "DoStep must carry C statements: {context}"
         );
     }
 

@@ -158,7 +158,8 @@ pub mod codegen {
 /// reach the `rumoca-target-galec` projection only through this module).
 pub mod galec {
     pub use crate::galec_api::{
-        GalecExport, GalecExportError, build_scalar_type_map, render_galec_export,
+        GalecCExport, GalecExport, GalecExportError, build_scalar_type_map, render_galec_c_export,
+        render_galec_export,
     };
     pub use rumoca_galec::ast::ScalarType;
     pub use rumoca_target_galec::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};

@@ -700,22 +700,47 @@ fn manifest_xml_renders_and_carries_the_clock_wiring() {
 }
 
 #[test]
-fn c_template_context_serializes_the_minimal_shape() {
+fn c_template_context_serializes_the_c_export_shape() {
     let package = lower_pid();
-    let context = c_template_context(&package).expect("context serializes");
+    let context = c_template_context(&package, "EfmiDiscretePid").expect("context serializes");
+    assert_eq!(context["model_name"], "EfmiDiscretePid");
     assert_eq!(context["block_name"], "EfmiDiscretePid");
+    assert_eq!(context["struct_name"], "EfmiDiscretePidState");
+    assert_eq!(context["function_prefix"], "EfmiDiscretePid");
+    assert_eq!(context["include_guard"], "EFMIDISCRETEPID_GALEC_C_H");
     assert!(
         context["variables"]
             .as_array()
             .expect("variables array")
             .iter()
-            .any(|variable| variable["name"] == "vMotor" && variable["c_type"] == "double")
+            .any(|variable| variable["name"] == "vMotor"
+                && variable["c_type"] == "double"
+                && variable["c_name"] == "vMotor")
     );
+    let do_step = context["methods"]["do_step"]
+        .as_array()
+        .expect("do_step statements");
+    assert!(!do_step.is_empty());
+    for statement in do_step {
+        assert_eq!(statement["kind"], "assignment");
+        let lines = statement["c_lines"].as_array().expect("c_lines array");
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.as_str().is_some_and(|text| text.ends_with(';'))),
+            "every C line is a terminated statement: {statement}"
+        );
+    }
+    // The end-of-DoStep pre-commit surfaces with the mangled C field name.
     assert!(
-        !context["methods"]["do_step"]
-            .as_array()
-            .expect("do_step statements")
-            .is_empty()
+        do_step.iter().any(|statement| {
+            statement["c_lines"]
+                .as_array()
+                .expect("c_lines array")
+                .iter()
+                .any(|line| line.as_str().is_some_and(|text| text.contains("previous_")))
+        }),
+        "expected a 'previous(x)' commit in C form: {do_step:#?}"
     );
 }
 
