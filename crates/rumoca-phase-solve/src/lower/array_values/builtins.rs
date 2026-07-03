@@ -226,7 +226,9 @@ impl<'a> LowerBuilder<'a> {
                 let arg = required_array_builtin_arg(args, function, 1, call_span)?;
                 self.lower_array_like_values(arg, scope, call_depth)
             }
-            function if let Some(op) = unary_array_builtin_op(&function) => {
+            function if unary_array_builtin_op(&function).is_some() => {
+                let op = unary_array_builtin_op(&function)
+                    .expect("guarded unary array builtin should have an op");
                 let arg = required_array_builtin_arg(args, function, 0, call_span)?;
                 let span = expression_or_call_span(arg, call_span);
                 let values = self.lower_array_like_values(arg, scope, call_depth)?;
