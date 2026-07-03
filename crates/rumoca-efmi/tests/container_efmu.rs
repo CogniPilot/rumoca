@@ -28,11 +28,17 @@ use rumoca_efmi::content::{Content, ContentParts, ModelRepresentation, ModelRepr
 use rumoca_efmi::manifest_common::{
     BaseUnit, File, FileChecksum, FileRole, ManifestAttributes, Unit,
 };
+use rumoca_efmi::production_code_manifest::{
+    CodeContainer, CodeFile, CodeFileType, CodeType, Component, DataReference, FloatPrecision,
+    ForeignReference, FormalParameter, Function, FunctionReference, LogicalData, ManifestReference,
+    ParameterCore, ProductionCodeManifest, ProductionCodeManifestParts, SupportedLanguage,
+    SupportedPlatform, TargetType, TargetTypeKind, Typedef, TypedefBody,
+};
 use rumoca_efmi::{
     EfmiError, EfmuLayout, EfmuMeta, FilePath, Identifier, ManifestId, ModelRepresentationFiles,
     NameWithoutSlashes, NormalizedText, RepresentationFile, Sha1Hex, UtcTimestamp,
-    algorithm_code_manifest_to_xml, content_to_xml, validate_against_xsd, write_efmu_container,
-    write_efmu_zip,
+    algorithm_code_manifest_to_xml, content_to_xml, production_code_manifest_to_xml,
+    validate_against_xsd, write_efmu_container, write_efmu_zip,
 };
 
 /// Tiny synthetic code file, authored for this test — not derived from any
@@ -44,8 +50,14 @@ const ALG_TEXT: &str = "/* Synthetic GALEC-style placeholder authored for rumoca
 
 const MANIFEST_UUID: &str = "{5b0c2a7e-11d4-4c5f-9a6d-3e2b804cf917}";
 const CONTENT_UUID: &str = "{9c41d6b2-70aa-4f28-8d35-6f1e5a20c483}";
+const PC_MANIFEST_UUID: &str = "{6e2f9c4a-83b5-4d17-a90c-4fd82b7e6a51}";
 const TIMESTAMP: &str = "2026-07-02T12:00:00Z";
 const CONTAINER_NAME: &str = "AlgorithmCode";
+
+/// Tiny synthetic C files, authored for this test — not derived from any
+/// eFMI Standard example.
+const PC_HEADER_TEXT: &str = "/* Synthetic C header authored for rumoca tests. */\n";
+const PC_SOURCE_TEXT: &str = "/* Synthetic C source authored for rumoca tests. */\n";
 
 fn ident(value: &str) -> Identifier {
     Identifier::new(value).unwrap()
@@ -539,6 +551,302 @@ fn negative_schema_cases_are_rejected() {
         ),
         &content_xsd,
     );
+}
+
+// ---- Production Code manifest schema tests (authored from the
+// ProductionCode XSDs, GAL-023) ------------------------------------------
+
+fn pc_alias_typedef(id: &str, name: &str, target_type_id: &str) -> Typedef {
+    Typedef {
+        id: ident(id),
+        name: text(name),
+        body: TypedefBody::Alias {
+            target_type_ref_id: ident(target_type_id),
+            type_def_ref_id: None,
+        },
+    }
+}
+
+fn pc_void_self_function(id: &str, name: &str, rp_id: &str, fp_id: &str) -> Function {
+    Function {
+        id: ident(id),
+        name: text(name),
+        return_parameter: ParameterCore {
+            id: ident(rp_id),
+            type_def_ref_id: ident("TD_VOID"),
+            constant: false,
+            pointer: false,
+            const_pointer: false,
+            dimensions: vec![],
+        },
+        formal_parameters: vec![FormalParameter {
+            name: text("self"),
+            core: ParameterCore {
+                id: ident(fp_id),
+                type_def_ref_id: ident("TD_STATE"),
+                constant: false,
+                pointer: true,
+                const_pointer: false,
+                dimensions: vec![],
+            },
+        }],
+    }
+}
+
+fn pc_code_file_entry(id: &str, name: &str, content: &str) -> File {
+    File {
+        id: ident(id),
+        name: NameWithoutSlashes::new(name).unwrap(),
+        path: FilePath::root(),
+        checksum: FileChecksum::Sha1(Sha1Hex::of_bytes(content.as_bytes())),
+        role: FileRole::Code,
+        description: None,
+    }
+}
+
+fn pc_function_reference(foreign_id: &str, function_id: &str) -> FunctionReference {
+    FunctionReference {
+        foreign: ForeignReference {
+            manifest_reference_ref_id: ident("MR_AC"),
+            foreign_ref_id: ident(foreign_id),
+        },
+        function_ref_id: ident(function_id),
+    }
+}
+
+fn pc_header_code_file() -> CodeFile {
+    CodeFile {
+        id: ident("CF_H"),
+        file_type: CodeFileType::ProductionCode,
+        code_type: CodeType::HeaderFile,
+        file_ref_id: ident("F_H"),
+        file_ref_kind: None,
+        includes: vec![],
+        typedefs: vec![
+            pc_alias_typedef("TD_F64", "double", "TT_F64"),
+            pc_alias_typedef("TD_VOID", "void", "TT_VOID"),
+            Typedef {
+                id: ident("TD_STATE"),
+                name: text("Model_state"),
+                body: TypedefBody::Components(vec![
+                    Component {
+                        id: ident("CO_X"),
+                        name: text("x"),
+                        type_def_ref_id: ident("TD_F64"),
+                        dimensions: vec![],
+                        pointer: false,
+                    },
+                    // An array field so the 0-based `<Dimension>` path (D1) is
+                    // xmllint-validated, not only golden-byte-compared.
+                    Component {
+                        id: ident("CO_BUF"),
+                        name: text("buf"),
+                        type_def_ref_id: ident("TD_F64"),
+                        dimensions: vec![3],
+                        pointer: false,
+                    },
+                ]),
+            },
+        ],
+        functions: vec![],
+    }
+}
+
+fn pc_source_code_file() -> CodeFile {
+    CodeFile {
+        id: ident("CF_C"),
+        file_type: CodeFileType::ProductionCode,
+        code_type: CodeType::SourceFile,
+        file_ref_id: ident("F_C"),
+        file_ref_kind: None,
+        includes: vec![ident("CF_H")],
+        typedefs: vec![],
+        functions: vec![
+            pc_void_self_function(
+                "FN_STARTUP",
+                "Model_startup",
+                "RP_STARTUP",
+                "FP_STARTUP_SELF",
+            ),
+            pc_void_self_function(
+                "FN_RECALIBRATE",
+                "Model_recalibrate",
+                "RP_RECALIBRATE",
+                "FP_RECALIBRATE_SELF",
+            ),
+            pc_void_self_function("FN_DOSTEP", "Model_dostep", "RP_DOSTEP", "FP_DOSTEP_SELF"),
+        ],
+    }
+}
+
+fn pc_code_container() -> CodeContainer {
+    CodeContainer {
+        language: SupportedLanguage::C,
+        standard: text("C99"),
+        platform: SupportedPlatform::Legacy,
+        float_precision: FloatPrecision::Bits64,
+        description: None,
+        target: text("Generic"),
+        target_types: vec![
+            TargetType {
+                id: ident("TT_F64"),
+                kind: TargetTypeKind::EfmiFloat64,
+                coded_type: text("double"),
+            },
+            TargetType {
+                id: ident("TT_VOID"),
+                kind: TargetTypeKind::EfmiVoid,
+                coded_type: text("void"),
+            },
+        ],
+        code_files: vec![pc_header_code_file(), pc_source_code_file()],
+        logical_data: LogicalData {
+            data_references: vec![
+                DataReference {
+                    foreign: ForeignReference {
+                        manifest_reference_ref_id: ident("MR_AC"),
+                        foreign_ref_id: ident("V_U"),
+                    },
+                    formal_parameter_ref_id: ident("FP_DOSTEP_SELF"),
+                    component_identifier: Some(text("x")),
+                },
+                DataReference {
+                    foreign: ForeignReference {
+                        manifest_reference_ref_id: ident("MR_AC"),
+                        foreign_ref_id: ident("V_BUF"),
+                    },
+                    formal_parameter_ref_id: ident("FP_DOSTEP_SELF"),
+                    component_identifier: Some(text("buf")),
+                },
+            ],
+            function_references: vec![
+                pc_function_reference("BM_STARTUP", "FN_STARTUP"),
+                pc_function_reference("BM_RECALIBRATE", "FN_RECALIBRATE"),
+                pc_function_reference("BM_DOSTEP", "FN_DOSTEP"),
+            ],
+        },
+    }
+}
+
+/// Minimal Production Code manifest referencing this file's Algorithm Code
+/// fixture: the `ManifestReference` checksum is the SHA-1 of the exact
+/// rendered [`fixture_manifest`] bytes (never a placeholder).
+fn pc_fixture_manifest() -> ProductionCodeManifest {
+    let ac_manifest_bytes = algorithm_code_manifest_to_xml(&fixture_manifest()).unwrap();
+    ProductionCodeManifest::new(ProductionCodeManifestParts {
+        attributes: attributes(PC_MANIFEST_UUID),
+        manifest_reference: ManifestReference {
+            id: ident("MR_AC"),
+            manifest_ref_id: ManifestId::parse(MANIFEST_UUID).unwrap(),
+            checksum: Sha1Hex::of_bytes(&ac_manifest_bytes),
+        },
+        files: vec![
+            pc_code_file_entry("F_H", "Model.h", PC_HEADER_TEXT),
+            pc_code_file_entry("F_C", "Model.c", PC_SOURCE_TEXT),
+        ],
+        code_container: pc_code_container(),
+        annotations: vec![],
+    })
+    .expect("fixture production code manifest must validate")
+}
+
+/// (f) Emitted Production Code manifest is schema-valid against the vendored
+/// XSD tree, checked by a real `xmllint` run (a missing `xmllint` FAILS —
+/// [`validate_against_xsd`] never skips).
+#[test]
+fn emitted_production_code_manifest_validates_against_vendored_xsd() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_bytes = production_code_manifest_to_xml(&pc_fixture_manifest()).unwrap();
+    let manifest_path = dir.path().join("manifest.xml");
+    fs::write(&manifest_path, &manifest_bytes).unwrap();
+    validate_against_xsd(
+        &manifest_path,
+        &vendored_schema("ProductionCode/efmiProductionCodeManifest.xsd"),
+    )
+    .expect("emitted production code manifest must be schema-valid");
+}
+
+/// Split `xml` into (document without the block, the block itself), where
+/// the block spans from `open` through `close`, both inclusive. Panics if
+/// either marker is missing (so a stale marker cannot silently produce a
+/// passing test).
+fn split_block(xml: &str, open: &str, close: &str) -> (String, String) {
+    let start = xml
+        .find(open)
+        .unwrap_or_else(|| panic!("block open `{open}` not found"));
+    let end = xml[start..]
+        .find(close)
+        .map(|offset| start + offset + close.len())
+        .unwrap_or_else(|| panic!("block close `{close}` not found"));
+    (
+        format!("{}{}", &xml[..start], &xml[end..]),
+        xml[start..end].to_owned(),
+    )
+}
+
+/// (g) Negative Production Code schema cases: each document is wrong in
+/// exactly one way and `xmllint` must reject it.
+#[test]
+fn negative_production_code_schema_cases_are_rejected() {
+    let xsd = vendored_schema("ProductionCode/efmiProductionCodeManifest.xsd");
+    let manifest =
+        String::from_utf8(production_code_manifest_to_xml(&pc_fixture_manifest()).unwrap())
+            .unwrap();
+
+    // Missing required LogicalData element.
+    let (missing_logical_data, _) =
+        split_block(&manifest, "    <LogicalData>\n", "    </LogicalData>\n");
+    assert_rejected("missing LogicalData", &missing_logical_data, &xsd);
+
+    // Wrong child order: CodeFiles moved after LogicalData (violates the
+    // CodeContainer xs:sequence).
+    let (without_code_files, code_files_block) =
+        split_block(&manifest, "    <CodeFiles>\n", "    </CodeFiles>\n");
+    let moved = surgically(
+        &without_code_files,
+        "    </LogicalData>\n",
+        &format!("    </LogicalData>\n{code_files_block}"),
+    );
+    assert_rejected("CodeFiles after LogicalData", &moved, &xsd);
+
+    // Bad language enumeration value.
+    assert_rejected(
+        "bad language enum",
+        &surgically(&manifest, "language=\"C\"", "language=\"Rust\""),
+        &xsd,
+    );
+
+    // Malformed ManifestReference UUID: braces are required by
+    // efmiManifestIdentifierType.
+    assert_rejected(
+        "unbraced ManifestReference UUID",
+        &surgically(
+            &manifest,
+            &format!("manifestRefId=\"{MANIFEST_UUID}\""),
+            &format!(
+                "manifestRefId=\"{}\"",
+                MANIFEST_UUID.trim_matches(['{', '}'])
+            ),
+        ),
+        &xsd,
+    );
+
+    // Missing required Target element.
+    assert_rejected(
+        "missing Target",
+        &surgically(&manifest, "    <Target>Generic</Target>\n", ""),
+        &xsd,
+    );
+
+    // Empty Typedefs wrapper: the inner Typedef is minOccurs=1.
+    let (without_typedefs, _) =
+        split_block(&manifest, "        <Typedefs>\n", "        </Typedefs>\n");
+    let empty_typedefs = surgically(
+        &without_typedefs,
+        "        <FileReference fileRefId=\"F_H\"/>\n",
+        "        <FileReference fileRefId=\"F_H\"/>\n        <Typedefs/>\n",
+    );
+    assert_rejected("empty Typedefs wrapper", &empty_typedefs, &xsd);
 }
 
 /// (e) API-contract regression (GAL-021): editing a representation file

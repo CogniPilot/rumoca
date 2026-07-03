@@ -125,6 +125,13 @@ name = "cli_target_galec"
 path = "tests/cli_target_galec.rs"
 required-features = ["runner"]
 
+# Same runner-gated `efmu` packaging surface as cli_target_galec, for the
+# two-representation (AlgorithmCode + ProductionCode) container.
+[[test]]
+name = "cli_target_galec_production"
+path = "tests/cli_target_galec_production.rs"
+required-features = ["runner"]
+
 [dev-dependencies]
 crossterm = "0.28"
 indexmap = { workspace = true }

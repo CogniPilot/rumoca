@@ -19,7 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostic::EfmiError;
 use crate::ids::{IdRegistry, Identifier, NormalizedText};
-use crate::manifest_common::{Annotation, File, FileRole, ManifestAttributes, Unit};
+use crate::manifest_common::{
+    Annotation, File, FileRole, ManifestAttributes, Unit, validate_annotations, validate_files,
+};
 
 /// `Clock` element: references the block variable defining the fixed sample
 /// period (§3.1.2). The referenced variable must be a Real `constant`; when
@@ -326,17 +328,6 @@ fn validate_unique_ids(parts: &AlgorithmCodeManifestParts) -> Result<(), EfmiErr
     Ok(())
 }
 
-/// eFMI ch. 2.3.6: the optional FMU of a representation is "exactly one
-/// file"; the XSD cannot express this cardinality, so the typed model is the
-/// enforcement point.
-fn validate_files(files: &[File]) -> Result<(), EfmiError> {
-    let fmu_count = files.iter().filter(|f| f.role == FileRole::Fmu).count();
-    if fmu_count > 1 {
-        return Err(EfmiError::MultipleFmuFiles { count: fmu_count });
-    }
-    Ok(())
-}
-
 fn validate_variables(variables: &[Variable]) -> Result<(), EfmiError> {
     if variables.is_empty() {
         return Err(EfmiError::EmptyVariables);
@@ -515,19 +506,6 @@ fn validate_base_unit_finite(unit: &Unit) -> Result<(), EfmiError> {
             return Err(EfmiError::NonFiniteUnitAttribute {
                 unit: unit.name.as_str().to_owned(),
                 attribute: attribute.to_owned(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_annotations(owner: &str, annotations: &[Annotation]) -> Result<(), EfmiError> {
-    let mut types: BTreeSet<&str> = BTreeSet::new();
-    for annotation in annotations {
-        if !types.insert(annotation.annotation_type.as_str()) {
-            return Err(EfmiError::DuplicateAnnotationType {
-                annotation_type: annotation.annotation_type.as_str().to_owned(),
-                owner: owner.to_owned(),
             });
         }
     }

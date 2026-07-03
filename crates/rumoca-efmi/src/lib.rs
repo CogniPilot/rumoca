@@ -1,11 +1,13 @@
 //! eFMI packaging module (eFMI Standard 1.0.0 Beta 1, ch. 2 and §3.1).
 //!
 //! Typed models of `__content.xml` ([`content`]), the schema parts shared by
-//! all manifest kinds ([`manifest_common`]), and the Algorithm Code manifest
-//! ([`algorithm_code_manifest`]); deterministic XML serialization ([`xml`]),
-//! SHA-1 checksums over exact raw bytes ([`checksum`]), and
-//! UUID/timestamp/id discipline ([`ids`]). Errors are one typed enum with
-//! stable codes ([`diagnostic`]).
+//! all manifest kinds ([`manifest_common`]), the Algorithm Code manifest
+//! ([`algorithm_code_manifest`]), and the Production Code manifest
+//! ([`production_code_manifest`], including the cross-manifest validator
+//! [`production_code_manifest::validate_against_algorithm_code`]);
+//! deterministic XML serialization ([`xml`]), SHA-1 checksums over exact raw
+//! bytes ([`checksum`]), and UUID/timestamp/id discipline ([`ids`]). Errors
+//! are one typed enum with stable codes ([`diagnostic`]).
 //!
 //! This crate is representation-agnostic packaging: it has no Rumoca IR or
 //! GALEC dependencies (GAL-010). The vendored Beta-1 XSDs under
@@ -26,6 +28,7 @@ pub mod content;
 pub mod diagnostic;
 pub mod ids;
 pub mod manifest_common;
+pub mod production_code_manifest;
 pub mod xml;
 
 /// Fixed `efmiVersion` attribute value of eFMI Standard 1.0.0 (GAL-022).
@@ -42,8 +45,7 @@ pub const CONTAINER_MANIFEST_XSD_VERSION: &str = "0.11.0";
 pub const ALGORITHM_CODE_MANIFEST_XSD_VERSION: &str = "0.14.0";
 
 /// Fixed `xsdVersion` of `ProductionCode/efmiProductionCodeManifest.xsd` in
-/// Beta-1 (GAL-022); reserved for the Production Code rung of the
-/// conformance ladder.
+/// Beta-1 (GAL-022); emitted on every [`production_code_manifest`] root.
 pub const PRODUCTION_CODE_MANIFEST_XSD_VERSION: &str = "0.17.0";
 
 pub use checksum::Sha1Hex;
@@ -55,4 +57,7 @@ pub use diagnostic::EfmiError;
 pub use ids::{
     FilePath, IdRegistry, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, UtcTimestamp,
 };
-pub use xml::{algorithm_code_manifest_to_xml, content_to_xml, validate_against_xsd};
+pub use xml::{
+    algorithm_code_manifest_to_xml, content_to_xml, production_code_manifest_to_xml,
+    validate_against_xsd,
+};

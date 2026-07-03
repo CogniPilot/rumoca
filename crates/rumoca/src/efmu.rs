@@ -2,12 +2,24 @@
 //!
 //! Drives [`rumoca_efmi::write_efmu_container`] with the ALREADY-RENDERED
 //! bytes of the current target invocation — the same single projection run
-//! that produced `manifest.xml` and the `.alg` file. Nothing is re-projected
-//! or re-serialized here: the manifest's `manifestRefId` is parsed back out
-//! of the exact bytes being packaged and the SHA-1 recorded in
-//! `__content.xml` is computed from them at write time, so the recorded
-//! checksums are always digests of the files actually written (GAL-021: no
-//! placeholder checksums, ever).
+//! that produced each representation's `manifest.xml` and code files.
+//! Nothing is re-projected or re-serialized here: every manifest's
+//! `manifestRefId` is parsed back out of the exact bytes being packaged and
+//! the SHA-1s recorded in `__content.xml` are computed from them at write
+//! time, so the recorded checksums are always digests of the files actually
+//! written (GAL-021: no placeholder checksums, ever).
+//!
+//! # Representation grouping (contract with the target's `[[files]]` paths)
+//!
+//! Rendered paths whose top-level directory segment is a recognized
+//! representation container name (`AlgorithmCode/…`, `ProductionCode/…`)
+//! are grouped into one model representation per container: the group's
+//! root-level `manifest.xml` is its manifest, everything else a
+//! representation file at its remaining relative path. A flat layout (no
+//! recognized container prefix on any path) keeps its original meaning —
+//! a single Algorithm Code representation whose manifest is the root-level
+//! `manifest.xml` (the `galec` target). Mixing the two layouts is ambiguous
+//! and refused.
 //!
 //! # Output layout (UX decision, mirroring `build = "fmu"`)
 //!
@@ -27,6 +39,10 @@
 //!     AlgorithmCode/    the one Algorithm Code representation
 //!       manifest.xml
 //!       <model>.alg
+//!     ProductionCode/   Production Code representation (galec-production)
+//!       manifest.xml
+//!       <model>.h
+//!       <model>.c
 //!   <model>.efmu        eFMU zip form (package format 2), same content
 //! ```
 //!
@@ -57,11 +73,29 @@ const MANIFEST_FILE_NAME: &str = "manifest.xml";
 /// kind is registered separately in `__content.xml`).
 const ALGORITHM_CODE_CONTAINER: &str = "AlgorithmCode";
 
+/// Tool-chosen name of the Production Code representation container
+/// directory (SPEC_0034 GAL-024 conformant track).
+const PRODUCTION_CODE_CONTAINER: &str = "ProductionCode";
+
+/// Container-directory names this driver recognizes as top-level path
+/// segments of rendered files, with the representation kind each one
+/// registers in `__content.xml` (module docs on representation grouping).
+const CONTAINER_KINDS: &[(&str, ModelRepresentationKind)] = &[
+    (
+        ALGORITHM_CODE_CONTAINER,
+        ModelRepresentationKind::AlgorithmCode,
+    ),
+    (
+        PRODUCTION_CODE_CONTAINER,
+        ModelRepresentationKind::ProductionCode,
+    ),
+];
+
 /// Assemble both eFMU package forms from this invocation's rendered files.
 ///
-/// `files` must contain a root-level `manifest.xml`; every other rendered
-/// file becomes a representation file of the single Algorithm Code
-/// container, at its rendered relative path.
+/// `files` are sorted into model representations by their top-level
+/// container-directory segment (module docs on representation grouping);
+/// each representation must contain a `manifest.xml` at its container root.
 ///
 /// `model` is the source model name as given on the command line (dotted
 /// for hierarchical models, e.g. `Pkg.Model`) and becomes the eFMU's
@@ -77,13 +111,13 @@ pub(crate) fn build_efmu(
     model_identifier: &str,
     out_dir: &Path,
 ) -> Result<()> {
-    let representation = algorithm_code_representation(files)?;
+    let representations = model_representations(files)?;
     let meta = EfmuMeta::generated(model, concat!("rumoca ", env!("CARGO_PKG_VERSION")))
         .context("Build eFMU container metadata")?;
 
     let container_root = out_dir.join(model_identifier);
     clear_previous_container(&container_root)?;
-    let layout = write_efmu_container(&[representation], &meta, &container_root)
+    let layout = write_efmu_container(&representations, &meta, &container_root)
         .context("Write eFMU container (directory form)")?;
     eprintln!("  wrote {}", layout.content_xml.display());
     for written in &layout.representations {
@@ -134,35 +168,92 @@ fn clear_previous_container(container_root: &Path) -> Result<()> {
     );
 }
 
-/// Sort this invocation's rendered files into the one Algorithm Code
-/// representation: the root-level `manifest.xml` is the manifest (its own
-/// root `id` becomes the registered `manifestRefId`); everything else is a
-/// representation file at its rendered relative path.
-fn algorithm_code_representation(files: &[RenderedTargetFile]) -> Result<ModelRepresentationFiles> {
+/// Sort this invocation's rendered files into model representations
+/// (module docs on representation grouping): every path is keyed by its
+/// recognized top-level container-directory segment; a layout with no
+/// recognized prefix anywhere keeps today's meaning — one Algorithm Code
+/// representation rooted at the rendered paths themselves. Cardinality
+/// rules (exactly one Algorithm Code representation per eFMU) stay owned
+/// by `rumoca_efmi::Content`.
+fn model_representations(files: &[RenderedTargetFile]) -> Result<Vec<ModelRepresentationFiles>> {
+    let mut flat: Vec<(&str, &RenderedTargetFile)> = Vec::new();
+    let mut grouped: Vec<Vec<(&str, &RenderedTargetFile)>> =
+        vec![Vec::new(); CONTAINER_KINDS.len()];
+    for file in files {
+        match split_container_prefix(&file.path) {
+            Some((group, remainder)) => grouped[group].push((remainder, file)),
+            None => flat.push((file.path.as_str(), file)),
+        }
+    }
+    if grouped.iter().all(Vec::is_empty) {
+        let representation = container_representation(
+            ALGORITHM_CODE_CONTAINER,
+            ModelRepresentationKind::AlgorithmCode,
+            &flat,
+        )?;
+        return Ok(vec![representation]);
+    }
+    if let Some((path, _)) = flat.first() {
+        bail!(
+            "build = \"efmu\" targets must not mix representation-container paths \
+             (`AlgorithmCode/...`, `ProductionCode/...`) with unprefixed paths: \
+             rendered file '{path}' carries no recognized container directory"
+        );
+    }
+    CONTAINER_KINDS
+        .iter()
+        .zip(&grouped)
+        .filter(|(_, group)| !group.is_empty())
+        .map(|(&(container, kind), group)| container_representation(container, kind, group))
+        .collect()
+}
+
+/// Split a rendered path into its recognized container group index and the
+/// path remainder relative to that container; `None` for unprefixed paths.
+fn split_container_prefix(path: &str) -> Option<(usize, &str)> {
+    let (first_segment, remainder) = path.split_once('/')?;
+    let group = CONTAINER_KINDS
+        .iter()
+        .position(|&(container, _)| container == first_segment)?;
+    Some((group, remainder))
+}
+
+/// Build one model representation from `(path relative to the container,
+/// rendered file)` pairs: the container-root `manifest.xml` is the manifest
+/// (its own root `id` becomes the registered `manifestRefId`); everything
+/// else is a representation file at its relative path.
+fn container_representation(
+    container: &'static str,
+    kind: ModelRepresentationKind,
+    files: &[(&str, &RenderedTargetFile)],
+) -> Result<ModelRepresentationFiles> {
     let mut manifest_bytes: Option<Vec<u8>> = None;
     let mut representation_files = Vec::new();
-    for file in files {
-        if file.path == MANIFEST_FILE_NAME {
+    for (relative_path, file) in files {
+        if *relative_path == MANIFEST_FILE_NAME {
             if manifest_bytes.is_some() {
-                bail!("build = \"efmu\" targets must render exactly one root-level manifest.xml");
+                bail!(
+                    "build = \"efmu\" targets must render exactly one manifest.xml \
+                     at the {container} representation root"
+                );
             }
             manifest_bytes = Some(file.content.clone().into_bytes());
             continue;
         }
-        representation_files.push(representation_file(file)?);
+        representation_files.push(representation_file(relative_path, file)?);
     }
     let Some(manifest_bytes) = manifest_bytes else {
         bail!(
-            "build = \"efmu\" targets must render a root-level manifest.xml \
-             (the model representation manifest); none was produced"
+            "build = \"efmu\" targets must render a manifest.xml at the {container} \
+             representation root (the model representation manifest); none was produced"
         );
     };
-    let manifest_ref_id = manifest_root_id(&manifest_bytes)
-        .context("Read the manifest's own id from the rendered manifest.xml")?;
+    let manifest_ref_id = manifest_root_id(&manifest_bytes).with_context(|| {
+        format!("Read the manifest's own id from the rendered {container} manifest.xml")
+    })?;
     Ok(ModelRepresentationFiles {
-        name: NameWithoutSlashes::new(ALGORITHM_CODE_CONTAINER)
-            .expect("constant container name is slash-free"),
-        kind: ModelRepresentationKind::AlgorithmCode,
+        name: NameWithoutSlashes::new(container).expect("constant container name is slash-free"),
+        kind,
         manifest_name: NameWithoutSlashes::new(MANIFEST_FILE_NAME)
             .expect("constant manifest name is slash-free"),
         manifest_ref_id,
@@ -171,17 +262,20 @@ fn algorithm_code_representation(files: &[RenderedTargetFile]) -> Result<ModelRe
     })
 }
 
-/// Split one rendered file's relative path into the eFMI `(path, name)`
-/// pair and take its exact rendered bytes.
-fn representation_file(file: &RenderedTargetFile) -> Result<RepresentationFile> {
-    let (directory, name) = match file.path.rsplit_once('/') {
+/// Split one container-relative path into the eFMI `(path, name)` pair and
+/// take the rendered file's exact bytes.
+fn representation_file(
+    relative_path: &str,
+    file: &RenderedTargetFile,
+) -> Result<RepresentationFile> {
+    let (directory, name) = match relative_path.rsplit_once('/') {
         Some((directory, name)) => (
             FilePath::new(format!("./{directory}/")).with_context(|| {
                 format!("Container directory for rendered file '{}'", file.path)
             })?,
             name,
         ),
-        None => (FilePath::root(), file.path.as_str()),
+        None => (FilePath::root(), relative_path),
     };
     Ok(RepresentationFile {
         directory,
@@ -189,4 +283,136 @@ fn representation_file(file: &RenderedTargetFile) -> Result<RepresentationFile> 
             .with_context(|| format!("Container file name for rendered file '{}'", file.path))?,
         bytes: file.content.clone().into_bytes(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal well-formed manifest bytes carrying a root `id` the
+    /// grouping can register as `manifestRefId`.
+    fn manifest_xml(uuid: &str) -> String {
+        format!("<Manifest id=\"{{{uuid}}}\"></Manifest>")
+    }
+
+    fn rendered(path: &str, content: &str) -> RenderedTargetFile {
+        RenderedTargetFile {
+            path: path.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    const AC_UUID: &str = "2f1a03de-9f14-4a3d-8b1e-73c60d0a1c11";
+    const PC_UUID: &str = "7b9c2a41-5d0e-4f6a-9c3d-1e8f0a2b4c5d";
+
+    /// The flat layout (no container prefix) keeps meaning a single
+    /// Algorithm Code representation — the existing `galec` contract.
+    #[test]
+    fn flat_layout_stays_a_single_algorithm_code_representation() {
+        let files = [
+            rendered("Model.alg", "block Model"),
+            rendered("manifest.xml", &manifest_xml(AC_UUID)),
+        ];
+        let representations =
+            model_representations(&files).expect("flat layout should group as one AC container");
+        assert_eq!(representations.len(), 1);
+        let representation = &representations[0];
+        assert_eq!(representation.name.as_str(), ALGORITHM_CODE_CONTAINER);
+        assert_eq!(representation.kind, ModelRepresentationKind::AlgorithmCode);
+        assert_eq!(representation.files.len(), 1);
+        assert_eq!(representation.files[0].name.as_str(), "Model.alg");
+    }
+
+    /// Container-prefixed paths group into one representation per
+    /// container directory, each with its own root manifest, and the
+    /// kind is mapped from the directory constant.
+    #[test]
+    fn container_prefixed_paths_group_into_one_representation_per_container() {
+        let files = [
+            rendered("AlgorithmCode/Model.alg", "block Model"),
+            rendered("AlgorithmCode/manifest.xml", &manifest_xml(AC_UUID)),
+            rendered("ProductionCode/Model.h", "/* header */"),
+            rendered("ProductionCode/Model.c", "/* source */"),
+            rendered("ProductionCode/manifest.xml", &manifest_xml(PC_UUID)),
+        ];
+        let representations = model_representations(&files)
+            .expect("two-container layout should group into two representations");
+        assert_eq!(representations.len(), 2);
+
+        let algorithm_code = &representations[0];
+        assert_eq!(algorithm_code.name.as_str(), ALGORITHM_CODE_CONTAINER);
+        assert_eq!(algorithm_code.kind, ModelRepresentationKind::AlgorithmCode);
+        assert_eq!(
+            algorithm_code.manifest_ref_id.to_string(),
+            format!("{{{AC_UUID}}}")
+        );
+        assert_eq!(algorithm_code.files.len(), 1);
+        assert_eq!(algorithm_code.files[0].name.as_str(), "Model.alg");
+
+        let production_code = &representations[1];
+        assert_eq!(production_code.name.as_str(), PRODUCTION_CODE_CONTAINER);
+        assert_eq!(
+            production_code.kind,
+            ModelRepresentationKind::ProductionCode
+        );
+        assert_eq!(
+            production_code.manifest_ref_id.to_string(),
+            format!("{{{PC_UUID}}}")
+        );
+        let names: Vec<&str> = production_code
+            .files
+            .iter()
+            .map(|file| file.name.as_str())
+            .collect();
+        assert_eq!(names, ["Model.h", "Model.c"]);
+    }
+
+    /// Mixing prefixed and unprefixed paths is ambiguous and refused
+    /// (SPEC_0008 fail-early), naming the offending file.
+    #[test]
+    fn mixed_flat_and_container_paths_are_refused() {
+        let files = [
+            rendered("AlgorithmCode/manifest.xml", &manifest_xml(AC_UUID)),
+            rendered("manifest.xml", &manifest_xml(PC_UUID)),
+        ];
+        let error =
+            model_representations(&files).expect_err("mixed layout must be refused as ambiguous");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("must not mix") && message.contains("'manifest.xml'"),
+            "expected the mixed-layout diagnostic naming the file, got: {message}"
+        );
+    }
+
+    /// Every grouped container must carry its own root manifest.xml.
+    #[test]
+    fn container_without_root_manifest_is_refused() {
+        let files = [
+            rendered("AlgorithmCode/Model.alg", "block Model"),
+            rendered("AlgorithmCode/manifest.xml", &manifest_xml(AC_UUID)),
+            rendered("ProductionCode/Model.c", "/* source */"),
+        ];
+        let error =
+            model_representations(&files).expect_err("a manifest-less container must be refused");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("manifest.xml at the ProductionCode representation root"),
+            "expected the missing-manifest diagnostic to name the container, got: {message}"
+        );
+    }
+
+    /// A second manifest.xml at the same container root is refused.
+    #[test]
+    fn duplicate_container_root_manifest_is_refused() {
+        let files = [
+            rendered("manifest.xml", &manifest_xml(AC_UUID)),
+            rendered("manifest.xml", &manifest_xml(PC_UUID)),
+        ];
+        let error = model_representations(&files).expect_err("two root manifests must be refused");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("exactly one manifest.xml"),
+            "expected the duplicate-manifest diagnostic, got: {message}"
+        );
+    }
 }

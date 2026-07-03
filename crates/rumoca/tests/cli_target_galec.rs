@@ -25,6 +25,17 @@ use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
+#[path = "galec_cli_support/cli.rs"]
+mod cli_support;
+#[path = "galec_cli_support/container_xml.rs"]
+mod container_xml_support;
+
+use cli_support::{run_compile_target, strip_ansi, write_fixture};
+use container_xml_support::{
+    attribute_values, mask_attribute, mask_uuids, relative_file_paths, sole_attribute_value,
+    vendored_schemas_dir,
+};
+
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the galec target exists for.
 const DISCRETE_FIXTURE: &str = "\
@@ -51,22 +62,8 @@ equation
 end GalecCliContinuous;
 ";
 
-fn write_fixture(dir: &Path, model: &str, source: &str) -> PathBuf {
-    let file = dir.join(format!("{model}.mo"));
-    fs::write(&file, source).expect("write fixture");
-    file
-}
-
 fn run_compile_target_galec(file: &Path, out_dir: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rumoca"))
-        .arg("compile")
-        .arg(file)
-        .arg("--target")
-        .arg("galec")
-        .arg("-o")
-        .arg(out_dir)
-        .output()
-        .expect("run rumoca compile --target galec")
+    run_compile_target(file, "galec", out_dir)
 }
 
 /// One packaged eFMU produced by a real CLI run.
@@ -107,103 +104,6 @@ fn build_container(work_dir: &Path, out_dir: &Path) -> BuiltContainer {
         root: out_dir.join(MODEL),
         efmu_zip: out_dir.join(format!("{MODEL}.efmu")),
     }
-}
-
-/// The vendored eFMI Beta-1 schema tree (GAL-023).
-fn vendored_schemas_dir() -> PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rumoca-efmi/assets/efmi-schemas");
-    assert!(
-        dir.is_dir(),
-        "vendored schema tree missing at {}",
-        dir.display()
-    );
-    dir
-}
-
-/// Relative `/`-separated paths of every file under `root`.
-fn relative_file_paths(root: &Path) -> BTreeSet<String> {
-    walkdir::WalkDir::new(root)
-        .into_iter()
-        .map(|entry| entry.expect("walk directory tree"))
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| {
-            entry
-                .path()
-                .strip_prefix(root)
-                .expect("walked path is under root")
-                .components()
-                .map(|c| c.as_os_str().to_str().expect("UTF-8 path").to_owned())
-                .collect::<Vec<_>>()
-                .join("/")
-        })
-        .collect()
-}
-
-/// All values of attribute `name` anywhere in an XML document, in document
-/// order (quick-xml over the exact on-disk bytes).
-fn attribute_values(xml_path: &Path, name: &str) -> Vec<String> {
-    let bytes = fs::read(xml_path).expect("read XML file");
-    let mut reader = quick_xml::Reader::from_reader(bytes.as_slice());
-    let mut values = Vec::new();
-    let mut buf = Vec::new();
-    loop {
-        use quick_xml::events::Event;
-        match reader.read_event_into(&mut buf).expect("well-formed XML") {
-            Event::Eof => break,
-            Event::Start(element) | Event::Empty(element) => {
-                values.extend(named_attribute_values(&element, name));
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-    values
-}
-
-/// Values of every attribute called `name` on one element.
-fn named_attribute_values(element: &quick_xml::events::BytesStart<'_>, name: &str) -> Vec<String> {
-    element
-        .attributes()
-        .map(|attribute| attribute.expect("well-formed attribute"))
-        .filter(|attribute| attribute.key.as_ref() == name.as_bytes())
-        .map(|attribute| {
-            attribute
-                .unescape_value()
-                .expect("unescapable attribute")
-                .into_owned()
-        })
-        .collect()
-}
-
-/// The single value of attribute `name` in the document.
-fn sole_attribute_value(xml_path: &Path, name: &str) -> String {
-    let values = attribute_values(xml_path, name);
-    assert_eq!(
-        values.len(),
-        1,
-        "expected exactly one `{name}` attribute in {}, found {values:?}",
-        xml_path.display()
-    );
-    values.into_iter().next().expect("length checked")
-}
-
-/// Drop ANSI SGR escapes so assertions see the plain diagnostic text
-/// (miette colorizes stderr even when piped).
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-        for escaped in chars.by_ref() {
-            if escaped.is_ascii_alphabetic() {
-                break;
-            }
-        }
-    }
-    out
 }
 
 /// GAL-021 rung check, part 1: the on-disk layout is a complete eFMU
@@ -382,51 +282,6 @@ fn efmu_zip_matches_directory_form() {
             "zip entry `{relative}` must be byte-identical to the directory form"
         );
     }
-}
-
-/// Replace every brace-wrapped UUID with `{UUID}` — the documented
-/// per-build nondeterminism of the container metadata.
-fn mask_uuids(text: &str) -> String {
-    /// Length of the hyphenated hex form between the braces.
-    const INNER: usize = 36;
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find('{') {
-        let candidate = &rest.as_bytes()[at..];
-        let is_uuid = candidate.len() > INNER + 1
-            && candidate[INNER + 1] == b'}'
-            && candidate[1..=INNER]
-                .iter()
-                .all(|b| b.is_ascii_hexdigit() || *b == b'-');
-        out.push_str(&rest[..at]);
-        if is_uuid {
-            out.push_str("{UUID}");
-            rest = &rest[at + INNER + 2..];
-        } else {
-            out.push('{');
-            rest = &rest[at + 1..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Replace the value of `attribute="…"` occurrences with a fixed marker.
-fn mask_attribute(text: &str, attribute: &str) -> String {
-    let needle = format!("{attribute}=\"");
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(&needle) {
-        let value_start = at + needle.len();
-        let value_len = rest[value_start..]
-            .find('"')
-            .expect("attribute value must be quote-terminated");
-        out.push_str(&rest[..value_start]);
-        out.push_str("MASKED");
-        rest = &rest[value_start + value_len..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Determinism boundary (pins against accidental re-projection): two runs

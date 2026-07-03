@@ -80,8 +80,9 @@ fn resolve_manifest_target(
 ///
 /// Public (re-exported at the crate root) so template-target CI exercises the
 /// exact render path the CLI uses — including capability validation and the
-/// name-dispatched renderers (`wgsl-solve`, `galec`, `embedded-c-galec`) that
-/// the generic DAE-JSON template context cannot reach.
+/// name-dispatched renderers (`wgsl-solve`, `galec`, `embedded-c-galec`,
+/// `galec-production`) that the generic DAE-JSON template context cannot
+/// reach.
 pub fn render_target_files(
     result: &CompilationResult,
     model: &str,
@@ -429,6 +430,14 @@ enum ManifestRenderer {
     /// projection context (SPEC_0034 GAL-024/D2) — never the generic DAE
     /// JSON context.
     GalecC(rumoca_compile::galec::GalecCExport),
+    /// `galec-production` passes the five texts of one typed
+    /// two-representation container export through passthrough templates
+    /// (SPEC_0034 GAL-024 conformant track). The single-export invariant is
+    /// doubly load-bearing here: the Production Code manifest checksums the
+    /// exact Algorithm Code manifest and C file bytes of its own facade
+    /// call, and the container writer re-verifies those digests against the
+    /// passthrough-rendered bytes at write time.
+    GalecProduction(rumoca_compile::galec::GalecProductionExport),
 }
 
 /// Resolve the renderer for one target invocation (module docs on
@@ -459,6 +468,16 @@ fn resolve_manifest_renderer(
         .context("GALEC C export for target 'embedded-c-galec'")?;
         return Ok(ManifestRenderer::GalecC(export));
     }
+    if manifest.ir == TargetTemplateIr::Dae && manifest.name.as_deref() == Some("galec-production")
+    {
+        let export = rumoca_compile::galec::render_galec_production_export(
+            &result.dae,
+            &result.flat,
+            model_identifier,
+        )
+        .context("eFMI Production Code export for target 'galec-production'")?;
+        return Ok(ManifestRenderer::GalecProduction(export));
+    }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
 
@@ -480,6 +499,9 @@ impl ManifestRenderer {
                 .map_err(Into::into),
             Self::Galec(export) => render_galec_template(export, template, model_identifier),
             Self::GalecC(export) => render_galec_c_template(export, template),
+            Self::GalecProduction(export) => {
+                render_galec_production_template(export, template, model_identifier)
+            }
         }
     }
 }
@@ -509,6 +531,81 @@ fn render_galec_template(
     .context("Render galec target template")
 }
 
+/// Render a `galec-production` target template (file path or passthrough
+/// content) from the invocation's single
+/// [`rumoca_compile::galec::GalecProductionExport`].
+///
+/// All five container texts — `.alg`, both manifests, and the C files —
+/// are produced by the typed printers/serializers behind the facade
+/// (SPEC_0034 GAL-009/GAL-010/D3; the C files render inside the facade so
+/// their SHA-1s enter the Production Code manifest before it is
+/// serialized); the templates only pass the keys through. `model_name` is
+/// the same string the facade received, so the `[[files]]` paths
+/// (`ProductionCode/{{ model_name }}.h`/`.c`) name exactly the files the
+/// Production Code manifest checksums (the write-time EFM036 cross-check).
+fn render_galec_production_template(
+    export: &rumoca_compile::galec::GalecProductionExport,
+    template: &str,
+    model_identifier: &str,
+) -> Result<String> {
+    let mut env = minijinja::Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.render_str(
+        template,
+        minijinja::context! {
+            model_name => model_identifier,
+            galec_alg_source => &export.alg_text,
+            galec_manifest_xml => &export.ac_manifest_xml,
+            galec_pc_manifest_xml => &export.pc_manifest_xml,
+            galec_c_header => &export.c_header,
+            galec_c_source => &export.c_source,
+        },
+    )
+    .context("Render galec-production target template")
+}
+
+/// Conformance/honesty header the shared GALEC C-layout templates
+/// interpolate (SPEC_0034 GAL-024 two-track rule / D10).
+///
+/// `model.h.jinja`/`model.c.jinja` are shared by every target rendering
+/// the GALEC C projection, so the claim text is target IDENTITY, not
+/// projection data: each render path supplies its own value under the
+/// strict-undefined `conformance_header` context key instead of the
+/// templates baking one target's claim in. The eFMI Production Code target
+/// (`galec-production`) supplies its PC-representation claim the same way
+/// at its render site inside the compile facade (`galec_api.rs`, where the
+/// C files must render so their SHA-1s enter the Production Code manifest).
+struct CConformanceHeader {
+    /// Full conformance statement for the header file, pre-wrapped: each
+    /// entry becomes one ` * <line>` C comment line, so entries must stay
+    /// comment-safe (no newlines, no `*/` — pinned by unit test).
+    lines: &'static [&'static str],
+    /// One-line short claim (also comment-safe) spliced into the source
+    /// file's header comment ahead of the template-owned, target-agnostic
+    /// layout-mechanics text.
+    summary: &'static str,
+}
+
+impl CConformanceHeader {
+    fn context_value(&self) -> minijinja::Value {
+        minijinja::context! {
+            lines => self.lines,
+            summary => self.summary,
+        }
+    }
+}
+
+/// The `embedded-c-galec` claim: the non-eFMI track of GAL-024 must
+/// self-describe as NOT an eFMI Production Code container (pinned by the
+/// CLI honesty test `export_self_describes_as_not_an_efmi_production_code_container`).
+const EMBEDDED_C_GALEC_CONFORMANCE_HEADER: CConformanceHeader = CConformanceHeader {
+    lines: &[
+        "NOT an eFMI Production Code container: no eFMU manifest mapping exists",
+        "for this artifact. Generated by rumoca --target embedded-c-galec.",
+    ],
+    summary: "NOT an eFMI Production Code container.",
+};
+
 /// Render an `embedded-c-galec` target template (file path or C file) from
 /// the invocation's single [`rumoca_compile::galec::GalecCExport`].
 ///
@@ -516,15 +613,23 @@ fn render_galec_template(
 /// (`model_name`, `block_name`, `struct_name`, `function_prefix`,
 /// `include_guard`, `variables`, `methods`): all C expression/statement
 /// text comes pre-printed by the typed Rust printer, the templates only
-/// lay out the files (SPEC_0034 D2/GAL-008 split).
+/// lay out the files (SPEC_0034 D2/GAL-008 split). The renderer adds the
+/// one key that is target identity rather than projection data: this
+/// target's [`CConformanceHeader`].
 fn render_galec_c_template(
     export: &rumoca_compile::galec::GalecCExport,
     template: &str,
 ) -> Result<String> {
     let mut env = minijinja::Environment::new();
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-    env.render_str(template, minijinja::Value::from_serialize(&export.context))
-        .context("Render embedded-c-galec target template")
+    env.render_str(
+        template,
+        minijinja::context! {
+            conformance_header => EMBEDDED_C_GALEC_CONFORMANCE_HEADER.context_value(),
+            ..minijinja::Value::from_serialize(&export.context)
+        },
+    )
+    .context("Render embedded-c-galec target template")
 }
 
 fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {
@@ -754,5 +859,27 @@ scalar_fallback = false
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// The shared GALEC C templates interpolate the conformance header
+    /// inside C block comments (one ` * <line>` per `lines` entry, the
+    /// `summary` spliced into an existing comment line): every entry must
+    /// stay a single comment-safe line or the emitted sources would break
+    /// under `cc -Wall -Werror`. The claim text itself is pinned end-to-end
+    /// by the CLI honesty test
+    /// (`export_self_describes_as_not_an_efmi_production_code_container`).
+    #[test]
+    fn embedded_c_galec_conformance_header_is_c_comment_safe() {
+        let header = &EMBEDDED_C_GALEC_CONFORMANCE_HEADER;
+        assert!(
+            !header.lines.is_empty(),
+            "the GAL-024 honesty statement must not be empty"
+        );
+        for text in header.lines.iter().chain(std::iter::once(&header.summary)) {
+            assert!(
+                !text.contains('\n') && !text.contains("*/"),
+                "conformance-header text must be a single C comment line: {text:?}"
+            );
+        }
     }
 }

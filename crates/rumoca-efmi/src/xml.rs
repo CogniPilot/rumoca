@@ -1,5 +1,6 @@
-//! Deterministic XML serialization of `__content.xml` and the Algorithm Code
-//! manifest via quick-xml's event writer (D3: typed emission, no templates).
+//! Deterministic XML serialization of `__content.xml`, the Algorithm Code
+//! manifest, and the Production Code manifest via quick-xml's event writer
+//! (D3: typed emission, no templates).
 //!
 //! Guarantees:
 //!
@@ -20,15 +21,23 @@ use std::path::Path;
 use std::process::Command;
 
 use quick_xml::Writer;
-use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 
 use crate::algorithm_code_manifest::{
     AlgorithmCodeManifest, BlockMethod, BlockMethods, StartValue, Variable, VariableCommon,
 };
 use crate::content::Content;
 use crate::diagnostic::EfmiError;
+use crate::ids::Identifier;
 use crate::manifest_common::{Annotation, BaseUnit, File, FileChecksum, ManifestAttributes, Unit};
-use crate::{ALGORITHM_CODE_MANIFEST_XSD_VERSION, CONTAINER_MANIFEST_XSD_VERSION, EFMI_VERSION};
+use crate::production_code_manifest::{
+    CodeContainer, CodeFile, Component, ForeignReference, FormalParameter, Function, LogicalData,
+    ManifestReference, ParameterCore, ProductionCodeManifest, TargetType, Typedef, TypedefBody,
+};
+use crate::{
+    ALGORITHM_CODE_MANIFEST_XSD_VERSION, CONTAINER_MANIFEST_XSD_VERSION, EFMI_VERSION,
+    PRODUCTION_CODE_MANIFEST_XSD_VERSION,
+};
 
 /// XML Schema instance namespace bound to the `xsi` prefix on root elements.
 const XSI_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
@@ -42,6 +51,12 @@ pub const CONTENT_SCHEMA_LOCATION: &str = "schemas/efmiContainerManifest.xsd";
 /// container name is slash-free by `efmiNameWithoutSlashesType`).
 pub const ALGORITHM_CODE_SCHEMA_LOCATION: &str =
     "../schemas/AlgorithmCode/efmiAlgorithmCodeManifest.xsd";
+
+/// Schema location hint for a Production Code manifest, which always sits at
+/// the root of its container directory, one level below the eFMU root (the
+/// container name is slash-free by `efmiNameWithoutSlashesType`).
+pub const PRODUCTION_CODE_SCHEMA_LOCATION: &str =
+    "../schemas/ProductionCode/efmiProductionCodeManifest.xsd";
 
 /// Serialize a validated [`Content`] model to `__content.xml` bytes.
 pub fn content_to_xml(content: &Content) -> Result<Vec<u8>, EfmiError> {
@@ -103,6 +118,51 @@ pub fn algorithm_code_manifest_to_xml(
     xml.empty(status)?;
     write_units(&mut xml, &parts.units)?;
     write_variables(&mut xml, &parts.variables)?;
+    write_annotations(&mut xml, &parts.annotations)?;
+
+    xml.end("Manifest")?;
+    Ok(xml.finish())
+}
+
+/// Serialize a validated [`ProductionCodeManifest`] model to manifest bytes.
+///
+/// Serializer-owned structural rules (validated facts come from
+/// [`ProductionCodeManifest::new`]; everything below is emission shape):
+///
+/// - optional list wrappers (`Includes`, `Typedefs`, `Functions`,
+///   `TargetTypes`, `Dimensions`, `FormalParameters`) are emitted only when
+///   non-empty (their inner elements are `minOccurs="1"`);
+/// - the `DataReferences`/`FunctionReferences` wrappers are ALWAYS emitted
+///   (1..1 with optional children — the inverse rule);
+/// - `Dimension/@number` and `FormalParameter/@number` are derived from Vec
+///   position, 0-based (decision D1; the Algorithm Code schema documents
+///   1-based, so the Algorithm Code serializer differs deliberately);
+/// - the single `ManifestReference` carries `origin="true"` unconditionally
+///   (with exactly one reference it must be the origin);
+/// - XSD-defaulted boolean attributes (`const`, `pointer`, `constPointer`,
+///   `Component/@pointer`) are emitted only when non-default (`true`).
+///
+/// Callers hash the returned bytes exactly once and never re-serialize
+/// (checksum stability, GAL-021).
+pub fn production_code_manifest_to_xml(
+    manifest: &ProductionCodeManifest,
+) -> Result<Vec<u8>, EfmiError> {
+    let parts = manifest.parts();
+    let mut xml = XmlOut::new()?;
+    let mut root = BytesStart::new("Manifest");
+    root.push_attribute(("xmlns:xsi", XSI_NAMESPACE));
+    root.push_attribute((
+        "xsi:noNamespaceSchemaLocation",
+        PRODUCTION_CODE_SCHEMA_LOCATION,
+    ));
+    root.push_attribute(("xsdVersion", PRODUCTION_CODE_MANIFEST_XSD_VERSION));
+    root.push_attribute(("kind", "ProductionCode"));
+    push_manifest_attributes(&mut root, &parts.attributes);
+    xml.start(root)?;
+
+    write_manifest_references(&mut xml, &parts.manifest_reference)?;
+    write_files(&mut xml, &parts.files)?;
+    write_code_container(&mut xml, &parts.code_container)?;
     write_annotations(&mut xml, &parts.annotations)?;
 
     xml.end("Manifest")?;
@@ -177,6 +237,15 @@ impl XmlOut {
         self.writer
             .write_event(Event::End(BytesEnd::new(name)))
             .map_err(xml_err)
+    }
+
+    /// Write `<name>text</name>` on one line, with escaped text content.
+    fn text_element(&mut self, name: &str, text: &str) -> Result<(), EfmiError> {
+        self.start(BytesStart::new(name))?;
+        self.writer
+            .write_event(Event::Text(BytesText::new(text)))
+            .map_err(xml_err)?;
+        self.end(name)
     }
 
     fn finish(self) -> Vec<u8> {
@@ -444,6 +513,322 @@ fn write_annotations(xml: &mut XmlOut, annotations: &[Annotation]) -> Result<(),
         xml.empty(el)?;
     }
     xml.end("Annotations")
+}
+
+// ---- Production Code manifest writers ---------------------------------
+
+/// The single `ManifestReferences/ManifestReference`. With exactly one
+/// reference it is necessarily the origin (the XSD requires exactly one
+/// `origin="true"`), so the attribute is a serializer constant.
+fn write_manifest_references(
+    xml: &mut XmlOut,
+    reference: &ManifestReference,
+) -> Result<(), EfmiError> {
+    xml.start(BytesStart::new("ManifestReferences"))?;
+    let mut el = BytesStart::new("ManifestReference");
+    el.push_attribute(("id", reference.id.as_str()));
+    el.push_attribute((
+        "manifestRefId",
+        reference.manifest_ref_id.to_string().as_str(),
+    ));
+    el.push_attribute(("checksum", reference.checksum.as_str()));
+    el.push_attribute(("origin", "true"));
+    xml.empty(el)?;
+    xml.end("ManifestReferences")
+}
+
+fn write_code_container(xml: &mut XmlOut, container: &CodeContainer) -> Result<(), EfmiError> {
+    let mut el = BytesStart::new("CodeContainer");
+    el.push_attribute(("language", container.language.as_str()));
+    el.push_attribute(("standard", container.standard.as_str()));
+    el.push_attribute(("platform", container.platform.as_str()));
+    el.push_attribute(("floatPrecision", container.float_precision.as_str()));
+    push_opt(
+        &mut el,
+        "description",
+        container.description.as_ref().map(|v| v.as_str()),
+    );
+    xml.start(el)?;
+    // Required element; always emitted explicitly (the XSD default "Generic"
+    // would only fill an empty element).
+    xml.text_element("Target", container.target.as_str())?;
+    write_target_types(xml, &container.target_types)?;
+    write_code_files(xml, &container.code_files)?;
+    write_logical_data(xml, &container.logical_data)?;
+    xml.end("CodeContainer")
+}
+
+/// Optional wrapper (0..1, inner 1..unbounded): emitted only when non-empty.
+fn write_target_types(xml: &mut XmlOut, target_types: &[TargetType]) -> Result<(), EfmiError> {
+    if target_types.is_empty() {
+        return Ok(());
+    }
+    xml.start(BytesStart::new("TargetTypes"))?;
+    for target_type in target_types {
+        let mut el = BytesStart::new("TargetType");
+        el.push_attribute(("id", target_type.id.as_str()));
+        el.push_attribute(("kind", target_type.kind.as_str()));
+        el.push_attribute(("codedType", target_type.coded_type.as_str()));
+        xml.empty(el)?;
+    }
+    xml.end("TargetTypes")
+}
+
+/// Required wrapper (1..1, inner 1..unbounded; emptiness is rejected at
+/// model construction, EFM043).
+fn write_code_files(xml: &mut XmlOut, code_files: &[CodeFile]) -> Result<(), EfmiError> {
+    xml.start(BytesStart::new("CodeFiles"))?;
+    for code_file in code_files {
+        write_code_file(xml, code_file)?;
+    }
+    xml.end("CodeFiles")
+}
+
+fn write_code_file(xml: &mut XmlOut, code_file: &CodeFile) -> Result<(), EfmiError> {
+    let mut el = BytesStart::new("CodeFile");
+    el.push_attribute(("id", code_file.id.as_str()));
+    el.push_attribute(("fileType", code_file.file_type.as_str()));
+    el.push_attribute(("codeType", code_file.code_type.as_str()));
+    xml.start(el)?;
+    let mut file_reference = BytesStart::new("FileReference");
+    file_reference.push_attribute(("fileRefId", code_file.file_ref_id.as_str()));
+    push_opt(
+        &mut file_reference,
+        "kind",
+        code_file.file_ref_kind.as_ref().map(|v| v.as_str()),
+    );
+    xml.empty(file_reference)?;
+    write_includes(xml, &code_file.includes)?;
+    write_typedefs(xml, &code_file.typedefs)?;
+    write_functions(xml, &code_file.functions)?;
+    xml.end("CodeFile")
+}
+
+/// Optional wrapper: emitted only when non-empty.
+fn write_includes(xml: &mut XmlOut, includes: &[Identifier]) -> Result<(), EfmiError> {
+    if includes.is_empty() {
+        return Ok(());
+    }
+    xml.start(BytesStart::new("Includes"))?;
+    for include in includes {
+        let mut el = BytesStart::new("Include");
+        el.push_attribute(("codeFileRefId", include.as_str()));
+        xml.empty(el)?;
+    }
+    xml.end("Includes")
+}
+
+/// Optional wrapper: emitted only when non-empty.
+fn write_typedefs(xml: &mut XmlOut, typedefs: &[Typedef]) -> Result<(), EfmiError> {
+    if typedefs.is_empty() {
+        return Ok(());
+    }
+    xml.start(BytesStart::new("Typedefs"))?;
+    for typedef in typedefs {
+        let mut el = BytesStart::new("Typedef");
+        el.push_attribute(("id", typedef.id.as_str()));
+        el.push_attribute(("name", typedef.name.as_str()));
+        xml.start(el)?;
+        write_typedef_body(xml, &typedef.body)?;
+        xml.end("Typedef")?;
+    }
+    xml.end("Typedefs")
+}
+
+fn write_typedef_body(xml: &mut XmlOut, body: &TypedefBody) -> Result<(), EfmiError> {
+    match body {
+        TypedefBody::Alias {
+            target_type_ref_id,
+            type_def_ref_id,
+        } => {
+            let mut el = BytesStart::new("Alias");
+            el.push_attribute(("targetTypeRefId", target_type_ref_id.as_str()));
+            push_opt(
+                &mut el,
+                "typeDefRefId",
+                type_def_ref_id.as_ref().map(|i| i.as_str()),
+            );
+            xml.empty(el)
+        }
+        TypedefBody::Components(components) => {
+            xml.start(BytesStart::new("Components"))?;
+            for component in components {
+                write_component(xml, component)?;
+            }
+            xml.end("Components")
+        }
+    }
+}
+
+fn write_component(xml: &mut XmlOut, component: &Component) -> Result<(), EfmiError> {
+    let mut el = BytesStart::new("Component");
+    el.push_attribute(("id", component.id.as_str()));
+    el.push_attribute(("name", component.name.as_str()));
+    el.push_attribute(("typeDefRefId", component.type_def_ref_id.as_str()));
+    if component.pointer {
+        el.push_attribute(("pointer", "true"));
+    }
+    if component.dimensions.is_empty() {
+        return xml.empty(el);
+    }
+    xml.start(el)?;
+    write_dimensions_zero_based(xml, &component.dimensions)?;
+    xml.end("Component")
+}
+
+/// Optional wrapper: emitted only when non-empty.
+fn write_functions(xml: &mut XmlOut, functions: &[Function]) -> Result<(), EfmiError> {
+    if functions.is_empty() {
+        return Ok(());
+    }
+    xml.start(BytesStart::new("Functions"))?;
+    for function in functions {
+        let mut el = BytesStart::new("Function");
+        el.push_attribute(("id", function.id.as_str()));
+        el.push_attribute(("name", function.name.as_str()));
+        xml.start(el)?;
+        let mut return_parameter = BytesStart::new("ReturnParameter");
+        push_parameter_core(&mut return_parameter, &function.return_parameter);
+        write_parameter_body(
+            xml,
+            "ReturnParameter",
+            return_parameter,
+            &function.return_parameter.dimensions,
+        )?;
+        write_formal_parameters(xml, &function.formal_parameters)?;
+        xml.end("Function")?;
+    }
+    xml.end("Functions")
+}
+
+/// Optional wrapper: emitted only when non-empty. `FormalParameter/@number`
+/// is derived from Vec position, 0-based (decision D1).
+fn write_formal_parameters(
+    xml: &mut XmlOut,
+    parameters: &[FormalParameter],
+) -> Result<(), EfmiError> {
+    if parameters.is_empty() {
+        return Ok(());
+    }
+    xml.start(BytesStart::new("FormalParameters"))?;
+    for (number, parameter) in parameters.iter().enumerate() {
+        let mut el = BytesStart::new("FormalParameter");
+        el.push_attribute(("name", parameter.name.as_str()));
+        el.push_attribute(("number", number.to_string().as_str()));
+        push_parameter_core(&mut el, &parameter.core);
+        write_parameter_body(xml, "FormalParameter", el, &parameter.core.dimensions)?;
+    }
+    xml.end("FormalParameters")
+}
+
+/// The `FunctionParameterAttributes` group in XSD declaration order.
+/// XSD-defaulted booleans are emitted only when non-default (`true`).
+fn push_parameter_core(el: &mut BytesStart<'_>, core: &ParameterCore) {
+    el.push_attribute(("id", core.id.as_str()));
+    el.push_attribute(("typeDefRefId", core.type_def_ref_id.as_str()));
+    if core.constant {
+        el.push_attribute(("const", "true"));
+    }
+    if core.pointer {
+        el.push_attribute(("pointer", "true"));
+    }
+    if core.const_pointer {
+        el.push_attribute(("constPointer", "true"));
+    }
+}
+
+/// Close a parameter element: self-closing when scalar, otherwise with its
+/// `Dimensions` child.
+fn write_parameter_body(
+    xml: &mut XmlOut,
+    tag: &str,
+    el: BytesStart<'_>,
+    dimensions: &[u64],
+) -> Result<(), EfmiError> {
+    if dimensions.is_empty() {
+        return xml.empty(el);
+    }
+    xml.start(el)?;
+    write_dimensions_zero_based(xml, dimensions)?;
+    xml.end(tag)
+}
+
+/// Production Code `Dimension/@number` is derived from Vec position,
+/// 0-based (decision D1). The Algorithm Code schema explicitly documents
+/// 1-based numbering, so [`write_dimensions`] differs deliberately — two
+/// schemas, two conventions.
+fn write_dimensions_zero_based(xml: &mut XmlOut, dimensions: &[u64]) -> Result<(), EfmiError> {
+    if dimensions.is_empty() {
+        return Ok(());
+    }
+    xml.start(BytesStart::new("Dimensions"))?;
+    for (number, size) in dimensions.iter().enumerate() {
+        let mut el = BytesStart::new("Dimension");
+        el.push_attribute(("number", number.to_string().as_str()));
+        el.push_attribute(("size", size.to_string().as_str()));
+        xml.empty(el)?;
+    }
+    xml.end("Dimensions")
+}
+
+/// `LogicalData` with its two ALWAYS-emitted wrappers (1..1 in the XSD with
+/// optional children — the inverse of the absent-when-empty list rule).
+fn write_logical_data(xml: &mut XmlOut, logical_data: &LogicalData) -> Result<(), EfmiError> {
+    xml.start(BytesStart::new("LogicalData"))?;
+    if logical_data.data_references.is_empty() {
+        xml.empty(BytesStart::new("DataReferences"))?;
+    } else {
+        xml.start(BytesStart::new("DataReferences"))?;
+        for reference in &logical_data.data_references {
+            xml.start(BytesStart::new("DataReference"))?;
+            xml.empty(foreign_reference_element(
+                "ForeignVariableReference",
+                &reference.foreign,
+            ))?;
+            let mut formal_parameter = BytesStart::new("FormalParameter");
+            formal_parameter.push_attribute((
+                "formalParameterRefId",
+                reference.formal_parameter_ref_id.as_str(),
+            ));
+            push_opt(
+                &mut formal_parameter,
+                "componentIdentifier",
+                reference.component_identifier.as_ref().map(|v| v.as_str()),
+            );
+            xml.empty(formal_parameter)?;
+            xml.end("DataReference")?;
+        }
+        xml.end("DataReferences")?;
+    }
+    if logical_data.function_references.is_empty() {
+        xml.empty(BytesStart::new("FunctionReferences"))?;
+    } else {
+        xml.start(BytesStart::new("FunctionReferences"))?;
+        for reference in &logical_data.function_references {
+            xml.start(BytesStart::new("FunctionReference"))?;
+            xml.empty(foreign_reference_element(
+                "ForeignFunctionReference",
+                &reference.foreign,
+            ))?;
+            let mut global_function = BytesStart::new("GlobalFunction");
+            global_function.push_attribute(("functionRefId", reference.function_ref_id.as_str()));
+            xml.empty(global_function)?;
+            xml.end("FunctionReference")?;
+        }
+        xml.end("FunctionReferences")?;
+    }
+    xml.end("LogicalData")
+}
+
+/// A `ForeignReference`-typed element, attributes in XSD declaration order.
+fn foreign_reference_element<'a>(tag: &'a str, foreign: &ForeignReference) -> BytesStart<'a> {
+    let mut el = BytesStart::new(tag);
+    el.push_attribute((
+        "manifestReferenceRefId",
+        foreign.manifest_reference_ref_id.as_str(),
+    ));
+    el.push_attribute(("foreignRefId", foreign.foreign_ref_id.as_str()));
+    el
 }
 
 /// Render a finite Real with an explicit decimal point (`2` → `2.0`), using

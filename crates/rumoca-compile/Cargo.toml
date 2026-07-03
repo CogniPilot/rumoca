@@ -31,9 +31,11 @@ rumoca-phase-structural = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-galec = { workspace = true }
 rumoca-target-galec = { workspace = true }
+rumoca-efmi = { workspace = true }
 rumoca-core = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
+minijinja = { workspace = true }
 rayon = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }

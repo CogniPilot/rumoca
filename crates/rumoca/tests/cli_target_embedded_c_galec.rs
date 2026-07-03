@@ -17,10 +17,18 @@
 //! the CLI completion message.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use tempfile::tempdir;
+
+#[path = "galec_cli_support/cc.rs"]
+mod cc_support;
+#[path = "galec_cli_support/cli.rs"]
+mod cli_support;
+
+use cc_support::cc;
+use cli_support::{run_compile_target, strip_ansi, write_fixture};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the GALEC projection
@@ -68,29 +76,15 @@ int main(void) {
 }
 ";
 
-fn write_fixture(dir: &Path, model: &str, source: &str) -> PathBuf {
-    let file = dir.join(format!("{model}.mo"));
-    fs::write(&file, source).expect("write fixture");
-    file
-}
-
-fn run_compile_target(file: &Path, out_dir: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rumoca"))
-        .arg("compile")
-        .arg(file)
-        .arg("--target")
-        .arg("embedded-c-galec")
-        .arg("-o")
-        .arg(out_dir)
-        .output()
-        .expect("run rumoca compile --target embedded-c-galec")
+fn run_compile_embedded_c_galec(file: &Path, out_dir: &Path) -> Output {
+    run_compile_target(file, "embedded-c-galec", out_dir)
 }
 
 /// Compile the discrete fixture into `out_dir`, failing loudly on any CLI
 /// error, and return the CLI stderr for message assertions.
 fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
     let file = write_fixture(work_dir, MODEL, DISCRETE_FIXTURE);
-    let output = run_compile_target(&file, out_dir);
+    let output = run_compile_embedded_c_galec(&file, out_dir);
     assert!(
         output.status.success(),
         "`compile --target embedded-c-galec` failed (status {:?}).\nstdout:\n{}\nstderr:\n{}",
@@ -99,37 +93,6 @@ fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-/// A missing C compiler is a hard failure (GAL-012: the compile check is
-/// mandatory and never silently skipped), exactly like the galec suite's
-/// xmllint requirement.
-fn cc() -> Command {
-    let probe = Command::new("cc").arg("--version").output();
-    assert!(
-        probe.is_ok_and(|output| output.status.success()),
-        "`cc` must be installed: the embedded-c-galec compile check is a hard \
-         CI dependency and never skips (SPEC_0034 GAL-012/GAL-024)"
-    );
-    Command::new("cc")
-}
-
-/// Drop ANSI SGR escapes so assertions see the plain diagnostic text.
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-        for escaped in chars.by_ref() {
-            if escaped.is_ascii_alphabetic() {
-                break;
-            }
-        }
-    }
-    out
 }
 
 /// The emitted sources compile under `-Wall -Werror`, link against libm
@@ -207,7 +170,7 @@ fn continuous_model_is_rejected_by_the_capability_gate() {
     let file = write_fixture(dir.path(), "EmbeddedGalecContinuous", CONTINUOUS_FIXTURE);
     let out_dir = dir.path().join("out");
 
-    let output = run_compile_target(&file, &out_dir);
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
     assert!(
         !output.status.success(),
         "`compile --target embedded-c-galec` must fail for a continuous model.\nstdout:\n{}",
