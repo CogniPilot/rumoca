@@ -177,14 +177,17 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     let files = render_target_files(&fixture.compiled, fixture.model_name, "galec", None)
         .expect("galec target should render the discrete smoke fixture");
 
-    let alg = find_rendered_file(&files, &format!("{DISCRETE_SMOKE_MODEL}.alg"));
+    // The galec target renders the eFMU AlgorithmCode/ container layout plus
+    // the root `__content.xml` registry through the declarative checksum web
+    // (contract §9 WI-5).
+    let alg = find_rendered_file(&files, &format!("AlgorithmCode/{DISCRETE_SMOKE_MODEL}.alg"));
     assert!(
         alg.content.contains("method DoStep"),
         "galec .alg output must contain the DoStep method:\n{}",
         alg.content
     );
 
-    let manifest = find_rendered_file(&files, "manifest.xml");
+    let manifest = find_rendered_file(&files, "AlgorithmCode/manifest.xml");
     assert!(
         !manifest.content.trim().is_empty(),
         "galec manifest.xml must not be empty"
@@ -193,6 +196,18 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     assert_eq!(
         root, "Manifest",
         "Algorithm Code manifest root element must be <Manifest>"
+    );
+
+    // The web-injected representation checksum flows into `__content.xml`: it
+    // is the SHA-1 of the exact rendered manifest bytes (GAL-021, no placeholder).
+    let content = find_rendered_file(&files, "__content.xml");
+    let manifest_sha1 = rumoca_galec_codegen::Sha1Hex::of_bytes(manifest.content.as_bytes());
+    assert!(
+        content
+            .content
+            .contains(&format!("checksum=\"{}\"", manifest_sha1.as_str())),
+        "__content.xml must carry the SHA-1 of the rendered manifest.xml:\n{}",
+        content.content
     );
 }
 

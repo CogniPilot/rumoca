@@ -9,13 +9,13 @@
 use std::collections::HashMap;
 
 use rumoca_core::{Expression, Literal, OpBinary, OpUnary, Reference, Span, VarName};
-use rumoca_ir_galec::ast::{Name, ScalarType};
-use rumoca_ir_dae as dae;
 use rumoca_galec_codegen::input::ScalarTypeMap;
 use rumoca_galec_codegen::{
     GalecInput, GalecTargetError, VariableClass, build_manifest_variables, check_admissibility,
     classify_variables,
 };
+use rumoca_ir_dae as dae;
+use rumoca_ir_galec::ast::{Name, ScalarType};
 
 // ---------------------------------------------------------------------
 // Shared builders
@@ -531,8 +531,8 @@ mod classification {
 
 mod mangling {
     use super::*;
-    use rumoca_ir_galec::builtins::is_reserved_name;
     use rumoca_galec_codegen::mangle::{galec_variable_name, manifest_name, pre_state_name};
+    use rumoca_ir_galec::builtins::is_reserved_name;
 
     /// Name corpus mixing legal identifiers, keywords, builtins, Appendix C
     /// reserved names, predefined signals, `__` prefixes, and hierarchical
@@ -651,7 +651,9 @@ mod mangling {
 
 mod manifest_variables {
     use super::*;
-    use rumoca_efmi::algorithm_code_manifest::{BlockCausality, StartValue, Variable as MVar};
+    use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::{
+        BlockCausality, StartValue, Variable as MVar,
+    };
     use rumoca_galec_codegen::manifest_vars::const_eval::{ConstEnv, ConstValue, EvalFailure};
 
     #[test]

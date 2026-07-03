@@ -14,11 +14,11 @@
 //! A non-zero clock phase cannot be represented by the Beta-1 `<Clock>`
 //! element and is rejected as unsupported.
 
-use rumoca_core::Expression;
-use rumoca_efmi::Identifier;
-use rumoca_efmi::algorithm_code_manifest::{
+use crate::manifest_context::Identifier;
+use crate::manifest_context::algorithm_code_manifest::{
     BlockCausality, RealVariable, StartValue, Variable as ManifestVariable, VariableCommon,
 };
+use rumoca_core::Expression;
 use rumoca_ir_galec::ast::{self as gast, Name};
 
 use crate::admissibility::AdmittedClock;
@@ -123,8 +123,8 @@ fn synthesize_period_constant(
         .push(ManifestVariable::Real(RealVariable {
             common: VariableCommon {
                 id: id.clone(),
-                name: rumoca_efmi::NormalizedText::new(name.clone())?,
-                description: Some(rumoca_efmi::NormalizedText::new(
+                name: crate::manifest_context::NormalizedText::new(name.clone())?,
+                description: Some(crate::manifest_context::NormalizedText::new(
                     "sample period of the block clock (seconds), synthesized by the \
                      Rumoca GALEC projection",
                 )?),

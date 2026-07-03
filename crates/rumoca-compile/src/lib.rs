@@ -143,13 +143,14 @@ pub mod codegen {
     };
     pub mod targets {
         pub use crate::codegen_target::{
-            BuiltinTargetDescriptor, RenderedTargetFile, TargetBuildKind, TargetBundle,
-            TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile,
-            TargetManifest, TargetTemplateIr, TargetTemplateSource, TensorCapabilities,
-            TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
-            builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
-            parse_target_manifest, render_dae_target_files, safe_target_join,
-            target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
+            AssetBundle, BuiltinTargetDescriptor, ChecksumNeed, RenderedTargetFile,
+            TargetBuildKind, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
+            TargetFeatureSupport, TargetFile, TargetManifest, TargetTemplateIr,
+            TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability,
+            builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir,
+            ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files,
+            safe_target_join, target_ir_is_dae_renderable, target_manifest_ir,
+            validate_dae_target_capabilities,
         };
     }
 }
@@ -158,11 +159,22 @@ pub mod codegen {
 /// reach the `rumoca-galec-codegen` projection only through this module).
 pub mod galec {
     pub use crate::galec_api::{
-        GalecCExport, GalecExport, GalecExportError, GalecProductionExport, build_scalar_type_map,
-        render_galec_c_export, render_galec_export, render_galec_production_export,
+        GalecCExport, GalecExportError, GalecPackagingPlan, build_scalar_type_map,
+        plan_galec_export, plan_galec_production_export, render_galec_c_export,
     };
-    pub use rumoca_ir_galec::ast::ScalarType;
     pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
+    pub use rumoca_ir_galec::ast::ScalarType;
+
+    /// Curated downward re-export of the eFMI packaging primitives the
+    /// `rumoca` crate's generic container/checksum build step needs
+    /// (SPEC_0029 §8): the SHA-1 primitive and the path/name newtypes live in
+    /// `rumoca-galec-codegen` (Tier 3, below the build step), and the build
+    /// step imports them here rather than taking a direct dependency on the
+    /// projection crate — keeping `rumoca`'s only compiler-facing edge
+    /// `rumoca-compile`.
+    pub use rumoca_galec_codegen::{
+        EfmiError, FilePath, NameWithoutSlashes, Sha1Hex, xml_escape, xs_double,
+    };
 }
 
 /// Read-only DAE analysis helpers exposed through the compile facade.

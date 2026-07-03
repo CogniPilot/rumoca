@@ -10,16 +10,16 @@
 //! - `Dimension` `number` attributes are derived from position (always
 //!   consecutive from 1);
 //! - the `needsChecksum`/`checksum` coupling ("checksum iff needed") is one
-//!   enum, [`FileChecksum`](crate::manifest_common::FileChecksum).
+//!   enum, [`FileChecksum`](crate::manifest_context::manifest_common::FileChecksum).
 //!
 //! Everything else is validated eagerly by [`AlgorithmCodeManifest::new`]
 //! (SPEC_0008: fail early, no silent defaults).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::diagnostic::EfmiError;
-use crate::ids::{IdRegistry, Identifier, NormalizedText};
-use crate::manifest_common::{
+use crate::manifest_context::diagnostic::EfmiError;
+use crate::manifest_context::ids::{IdRegistry, Identifier, NormalizedText};
+use crate::manifest_context::manifest_common::{
     Annotation, File, FileRole, ManifestAttributes, Unit, validate_annotations, validate_files,
 };
 
@@ -164,7 +164,7 @@ pub struct VariableCommon {
     pub name: NormalizedText,
     /// Free-text description (`description`, optional; `xs:string` in the
     /// XSD, held to normalized-attribute discipline — see
-    /// [`crate::manifest_common`] module docs).
+    /// [`crate::manifest_context::manifest_common`] module docs).
     pub description: Option<NormalizedText>,
     /// Block causality (`blockCausality`, required).
     pub block_causality: BlockCausality,
@@ -612,9 +612,9 @@ fn validate_clock_variable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checksum::Sha1Hex;
-    use crate::ids::{FilePath, ManifestId, NameWithoutSlashes, UtcTimestamp};
-    use crate::manifest_common::{BaseUnit, FileChecksum};
+    use crate::manifest_context::checksum::Sha1Hex;
+    use crate::manifest_context::ids::{FilePath, ManifestId, NameWithoutSlashes, UtcTimestamp};
+    use crate::manifest_context::manifest_common::{BaseUnit, FileChecksum};
 
     fn attributes() -> ManifestAttributes {
         ManifestAttributes {

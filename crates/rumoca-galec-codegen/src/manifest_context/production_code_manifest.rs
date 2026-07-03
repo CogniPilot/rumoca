@@ -1,7 +1,7 @@
 //! Typed model of the Production Code manifest
 //! (`ProductionCode/efmiProductionCodeManifest.xsd`, 0.17.0).
 //!
-//! Mirrors the [`crate::algorithm_code_manifest`] idiom: a public
+//! Mirrors the [`crate::manifest_context::algorithm_code_manifest`] idiom: a public
 //! [`ProductionCodeManifestParts`] struct in XSD child order plus a newtype
 //! wrapper whose [`ProductionCodeManifest::new`] validates eagerly
 //! (SPEC_0008: fail early, no silent defaults). The XSDs under
@@ -45,11 +45,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::algorithm_code_manifest::AlgorithmCodeManifest;
-use crate::checksum::Sha1Hex;
-use crate::diagnostic::EfmiError;
-use crate::ids::{IdRegistry, Identifier, ManifestId, NormalizedText};
-use crate::manifest_common::{
+use crate::manifest_context::algorithm_code_manifest::AlgorithmCodeManifest;
+use crate::manifest_context::checksum::Sha1Hex;
+use crate::manifest_context::diagnostic::EfmiError;
+use crate::manifest_context::ids::{IdRegistry, Identifier, ManifestId, NormalizedText};
+use crate::manifest_context::manifest_common::{
     Annotation, File, FileRole, ManifestAttributes, validate_annotations, validate_files,
 };
 
@@ -431,7 +431,7 @@ pub struct CodeContainer {
     /// `floatPrecision` (required).
     pub float_precision: FloatPrecision,
     /// `description` (optional; `xs:string` in the XSD, held to
-    /// normalized-attribute discipline — see [`crate::manifest_common`]
+    /// normalized-attribute discipline — see [`crate::manifest_context::manifest_common`]
     /// module docs).
     pub description: Option<NormalizedText>,
     /// `Target` (required element): `Generic` unless the code carries
@@ -872,12 +872,12 @@ fn map_foreign_once<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algorithm_code_manifest::{
+    use crate::manifest_context::algorithm_code_manifest::{
         AlgorithmCodeManifestParts, BlockCausality, BlockMethod, BlockMethods, Clock,
         ErrorSignalStatus, RealVariable, StartValue, Variable, VariableCommon,
     };
-    use crate::ids::{FilePath, NameWithoutSlashes, UtcTimestamp};
-    use crate::manifest_common::FileChecksum;
+    use crate::manifest_context::ids::{FilePath, NameWithoutSlashes, UtcTimestamp};
+    use crate::manifest_context::manifest_common::FileChecksum;
 
     /// UUID of the Algorithm Code manifest both fixtures agree on.
     const AC_UUID: &str = "{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}";

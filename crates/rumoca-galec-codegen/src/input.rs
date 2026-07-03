@@ -27,8 +27,8 @@
 use std::collections::HashMap;
 
 use rumoca_core::VarName;
-use rumoca_ir_galec::ast::ScalarType;
 use rumoca_ir_dae::Dae;
+use rumoca_ir_galec::ast::ScalarType;
 
 /// Declared scalar types of DAE variables, keyed by DAE variable name.
 ///
@@ -52,7 +52,7 @@ impl GalecProfile {
     #[must_use]
     pub const fn profile_string(self) -> &'static str {
         match self {
-            Self::Efmi1_0_0Beta1 => rumoca_efmi::EFMI_PROFILE,
+            Self::Efmi1_0_0Beta1 => crate::manifest_context::EFMI_PROFILE,
         }
     }
 }

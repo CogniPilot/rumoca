@@ -32,7 +32,6 @@
 //! | EFM022 | [`EfmiError::NonFiniteReal`] |
 //! | EFM023 | [`EfmiError::AlgorithmCodeCardinality`] |
 //! | EFM024 | [`EfmiError::UnknownActiveFmu`] |
-//! | EFM025 | [`EfmiError::XmlWrite`] |
 //! | EFM026 | [`EfmiError::InvalidContainerLayout`] |
 //! | EFM027 | [`EfmiError::DuplicateContainerFile`] |
 //! | EFM028 | [`EfmiError::OutputDirNotEmpty`] |
@@ -169,10 +168,6 @@ pub enum EfmiError {
     /// `activeFmu` names a representation that is not registered.
     #[error("activeFmu `{name}` does not match any registered model representation name")]
     UnknownActiveFmu { name: String },
-
-    /// The XML event writer failed (I/O layer).
-    #[error("XML serialization failed: {message}")]
-    XmlWrite { message: String },
 
     /// A container layout rule is violated (reserved/unsafe names, wrong
     /// `.efmu` extension, missing `__content.xml`, ...).
@@ -349,7 +344,6 @@ impl EfmiError {
             Self::NonFiniteReal { .. } => "EFM022",
             Self::AlgorithmCodeCardinality { .. } => "EFM023",
             Self::UnknownActiveFmu { .. } => "EFM024",
-            Self::XmlWrite { .. } => "EFM025",
             Self::InvalidContainerLayout { .. } => "EFM026",
             Self::DuplicateContainerFile { .. } => "EFM027",
             Self::OutputDirNotEmpty { .. } => "EFM028",
@@ -387,12 +381,6 @@ mod tests {
             "EFM001"
         );
         assert_eq!(EfmiError::EmptyVariables.code(), "EFM014");
-        assert_eq!(
-            EfmiError::XmlWrite {
-                message: "m".into()
-            }
-            .code(),
-            "EFM025"
-        );
+        assert_eq!(EfmiError::EmptyCodeFiles.code(), "EFM043");
     }
 }

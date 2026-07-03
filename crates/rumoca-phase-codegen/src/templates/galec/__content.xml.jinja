@@ -1,0 +1,26 @@
+{#-
+  eFMI container registry `__content.xml` (efmiContainerManifest.xsd, 0.11.0).
+
+  New template (contract §3, WI-2): the registry was minted in Rust before;
+  now the projection-provided representation list is looped here and only the
+  per-representation `@checksum` is web-injected (contract §4d). Autoescape is
+  OFF + strict-undefined: every text value passes through `xml_escape`.
+
+  One empty `<ModelRepresentation name kind manifest checksum manifestRefId/>`
+  per representation, in emission order; rumoca never emits `activeFmu`
+  (guarded here for completeness). Fixed efmiVersion/xsdVersion/schema
+  location are template literals, not context.
+
+  Consumes: ctx.content (attributes + representations, each carrying the
+  web-injected checksum).
+-#}
+{%- set content = ctx.content -%}
+{%- macro attr(name, value) -%}
+{{ " " }}{{ name }}="{{ value | xml_escape }}"
+{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<Content xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="schemas/efmiContainerManifest.xsd" xsdVersion="0.11.0"{% if content.active_fmu is not none %}{{ attr("activeFmu", content.active_fmu) }}{% endif %} efmiVersion="1.0.0"{{ attr("id", content.attributes.id) }}{{ attr("name", content.attributes.name) }}{% if content.attributes.description is not none %}{{ attr("description", content.attributes.description) }}{% endif %}{% if content.attributes.version is not none %}{{ attr("version", content.attributes.version) }}{% endif %}{{ attr("generationDateAndTime", content.attributes.generation_date_and_time) }}{% if content.attributes.generation_tool is not none %}{{ attr("generationTool", content.attributes.generation_tool) }}{% endif %}{% if content.attributes.copyright is not none %}{{ attr("copyright", content.attributes.copyright) }}{% endif %}{% if content.attributes.license is not none %}{{ attr("license", content.attributes.license) }}{% endif %}>
+{%- for r in content.representations %}
+  <ModelRepresentation{{ attr("name", r.name) }}{{ attr("kind", r.kind) }}{{ attr("manifest", r.manifest) }}{{ attr("checksum", r.checksum) }}{{ attr("manifestRefId", r.manifest_ref_id) }}/>
+{%- endfor %}
+</Content>

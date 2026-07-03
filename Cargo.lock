@@ -3210,8 +3210,8 @@ dependencies = [
  "rayon",
  "rumoca-compile",
  "rumoca-core",
- "rumoca-efmi",
  "rumoca-eval-solve",
+ "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -3327,7 +3327,6 @@ dependencies = [
  "minijinja",
  "rayon",
  "rumoca-core",
- "rumoca-efmi",
  "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
@@ -3369,19 +3368,6 @@ dependencies = [
  "indexmap",
  "miette",
  "serde",
-]
-
-[[package]]
-name = "rumoca-efmi"
-version = "0.9.9"
-dependencies = [
- "quick-xml",
- "sha1",
- "tempfile",
- "thiserror 2.0.17",
- "time",
- "uuid",
- "zip",
 ]
 
 [[package]]
@@ -3477,12 +3463,14 @@ name = "rumoca-galec-codegen"
 version = "0.9.9"
 dependencies = [
  "rumoca-core",
- "rumoca-efmi",
  "rumoca-ir-dae",
  "rumoca-ir-galec",
  "serde",
  "serde_json",
+ "sha1",
  "thiserror 2.0.17",
+ "time",
+ "uuid",
 ]
 
 [[package]]

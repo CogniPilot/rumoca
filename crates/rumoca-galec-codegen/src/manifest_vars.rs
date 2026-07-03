@@ -20,11 +20,11 @@
 
 use std::collections::HashMap;
 
-use rumoca_efmi::algorithm_code_manifest::{
+use crate::manifest_context::algorithm_code_manifest::{
     BooleanVariable, IntegerVariable, RealVariable, StartValue, Variable as ManifestVariable,
     VariableCommon,
 };
-use rumoca_efmi::{Identifier, NormalizedText};
+use crate::manifest_context::{Identifier, NormalizedText};
 use rumoca_ir_galec::ast::ScalarType;
 
 use crate::classify::{Classification, ClassifiedVariable};

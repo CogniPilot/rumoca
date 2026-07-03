@@ -3,20 +3,20 @@
 //! Frontends reach the `rumoca-galec-codegen` projection only through this
 //! module: it supplies the auxiliary provenance the canonical DAE does not
 //! carry — the [`ScalarTypeMap`] built from Flat-side declared types — and
-//! renders the projection's two text artifacts (`<Model>.alg` plus the
-//! Algorithm Code `manifest.xml`).
+//! drives the projection into the CLI's declarative eFMU packaging step.
 //!
-//! This is the "GALEC-derived text export" rung of the SPEC_0034
-//! conformance ladder (GAL-021): rendered files with honest
-//! self-description, not yet a packaged eFMU container.
+//! The container products are produced through [`GalecPackagingPlan`]: the
+//! `rumoca` crate's generic checksum/container build step renders each
+//! `target.toml` `[[files]]` in topological order, and for the manifest
+//! templates it asks the plan for a product-agnostic context
+//! ([`GalecPackagingPlan::template_ctx`]) — the typed models are assembled
+//! and validated here (SPEC_0008 fail-early) but never serialized to XML;
+//! the minijinja templates own all XML text (SPEC_0034 D3 amended). Every
+//! SHA-1 in the checksum web is computed from the exact rendered producer
+//! bytes (GAL-021: no placeholder checksums, ever).
 //!
-//! [`render_galec_production_export`] climbs to the "eFMI Production Code
-//! export" rung (GAL-024 conformant track): the SAME single projection
-//! rendered as the full two-representation container payload — the
-//! Algorithm Code texts above plus generated C99 and the Production Code
-//! manifest whose `LogicalData` maps every block variable and method to
-//! the C entities, with every SHA-1 in the checksum web computed from the
-//! exact rendered bytes.
+//! [`render_galec_c_export`] serves the non-eFMI `embedded-c-galec` target
+//! (GAL-024): the serialized typed C-layout context, no manifest mapping.
 //!
 //! # Scalar-type provenance rules
 //!
@@ -39,29 +39,27 @@
 //! `TypeId::UNKNOWN` — stays absent from the map. Absence is loud, never a
 //! default: the projection rejects untypeable variables with `ET011`.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+
 use crate::codegen_target::{TargetBundle, TargetTemplateSource};
 use rumoca_core::TypeId;
-use rumoca_efmi::{NameWithoutSlashes, Sha1Hex, production_code_manifest_to_xml};
-use rumoca_ir_galec::ast::ScalarType;
+use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::AlgorithmCodeManifest;
+use rumoca_galec_codegen::manifest_context::content::{
+    Content, ContentParts, ModelRepresentation, ModelRepresentationKind,
+};
+use rumoca_galec_codegen::manifest_context::manifest_common::ManifestAttributes;
+use rumoca_galec_codegen::{
+    AcManifestCtx, AlgorithmCodePackage, ContentCtx, EmittedCodeFile, GalecInput, GalecOptions,
+    GalecTargetError, ManifestId, ManifestIdentity, NameWithoutSlashes, NormalizedText,
+    PcManifestCtx, ScalarTypeMap, Sha1Hex, UtcTimestamp, assemble_manifest_with_identity,
+    assemble_production_manifest_with_identity, c_template_context, lower_to_algorithm_code,
+    render_algorithm_code,
+};
 use rumoca_ir_ast::TypeTable;
 use rumoca_ir_dae::Dae;
 use rumoca_ir_flat::Model as FlatModel;
-use rumoca_galec_codegen::{
-    AlgorithmCodePackage, EmittedCodeFile, GalecInput, GalecOptions, GalecTargetError,
-    ScalarTypeMap, assemble_production_manifest, c_template_context, lower_to_algorithm_code,
-    render_algorithm_code, render_manifest_document, render_manifest_xml,
-};
-
-/// Rendered GALEC-derived text export: the `.alg` block printed by the
-/// typed GALEC printer and the Algorithm Code manifest emitted by the
-/// typed XML serializer (GAL-009 / D3 — never template-authored text).
-#[derive(Debug, Clone)]
-pub struct GalecExport {
-    /// GALEC block source (`<Model>.alg`).
-    pub alg_text: String,
-    /// eFMI Algorithm Code `manifest.xml` document.
-    pub manifest_xml: String,
-}
+use rumoca_ir_galec::ast::ScalarType;
 
 /// SPEC_0008-shaped failure of the export facade.
 #[derive(Debug, thiserror::Error)]
@@ -88,27 +86,6 @@ fn render_diagnostics(diagnostics: &[GalecTargetError]) -> String {
         .join("\n")
 }
 
-/// Render the GALEC text export for a compiled model: build Flat-side
-/// scalar-type provenance, project the untouched DAE, and print/serialize
-/// both artifacts.
-///
-/// # Errors
-///
-/// [`GalecExportError::Projection`] with all collected projection
-/// diagnostics, or [`GalecExportError::Render`] for validator/printer/
-/// serializer failures on the validated package.
-pub fn render_galec_export(
-    dae: &Dae,
-    flat: &FlatModel,
-    model_name: &str,
-) -> Result<GalecExport, GalecExportError> {
-    let package = lower_package(dae, flat, model_name)?;
-    Ok(GalecExport {
-        alg_text: render_algorithm_code(&package)?,
-        manifest_xml: render_manifest_xml(&package)?,
-    })
-}
-
 /// GALEC-derived embedded C export (the `embedded-c-galec` target,
 /// SPEC_0034 GAL-024): the serialized typed template context the target's
 /// minijinja templates consume. Explicitly NOT an eFMI Production Code
@@ -124,8 +101,8 @@ pub struct GalecCExport {
 }
 
 /// Render the embedded C export context for a compiled model: the same
-/// projection as [`render_galec_export`], serialized through
-/// `c_template_context` instead of the `.alg`/manifest printers.
+/// projection every export shares, serialized through `c_template_context`
+/// instead of the `.alg`/manifest printers.
 ///
 /// # Errors
 ///
@@ -143,97 +120,364 @@ pub fn render_galec_c_export(
     })
 }
 
-/// Rendered eFMI Production Code export (the `galec-production` target,
-/// SPEC_0034 GAL-024 conformant track): the complete text payload of a
-/// two-representation eFMU container. Co-emission of the Algorithm Code
-/// representation is mandatory per eFMI §2.2 — a PC-only container is
-/// non-conformant — so the AC texts are the same artifacts
-/// [`render_galec_export`] produces, from the same single projection.
-#[derive(Debug, Clone)]
-pub struct GalecProductionExport {
-    /// `AlgorithmCode/<Model>.alg` — GALEC block source.
-    pub alg_text: String,
-    /// `AlgorithmCode/manifest.xml` — Algorithm Code manifest document.
-    pub ac_manifest_xml: String,
-    /// `ProductionCode/<Model>.h` — generated C99 block-state header.
-    pub c_header: String,
-    /// `ProductionCode/<Model>.c` — generated C99 method definitions.
-    pub c_source: String,
-    /// `ProductionCode/manifest.xml` — Production Code manifest whose
-    /// `ManifestReference` checksums the exact `ac_manifest_xml` bytes and
-    /// whose `LogicalData` maps every block variable and method.
-    pub pc_manifest_xml: String,
+// ===========================================================================
+// Switch-dispatch packaging plan (contract §9 WI-5)
+// ===========================================================================
+
+/// A per-invocation eFMU packaging plan for the switch-dispatch build step
+/// (contract §9 WI-5): ONE projection, ONE minted packaging identity
+/// (shared UUIDs/timestamp/tool so the cross-manifest `manifestRefId` links
+/// agree), and the pre-rendered `.alg`/C texts the passthrough templates
+/// interpolate.
+///
+/// The manifest **contexts** are built on demand by the declarative build
+/// step (`rumoca::render_and_package`) in topological order: each producer's
+/// real SHA-1 (of the exact rendered bytes) is threaded in under the
+/// `target.toml`-declared `[[files.checksums]]` `as` key, and the plan slots
+/// it into the typed model it assembles for that file — so no placeholder
+/// checksum is ever representable (GAL-021), and the typed data-integrity
+/// validators still run (on the assembled model, before the template
+/// renders). The typed models exist only to (a) run those validators and
+/// (b) feed the product-agnostic [`AcManifestCtx`]/[`PcManifestCtx`]/
+/// [`ContentCtx`] views the templates consume; they are never serialized to
+/// XML (the templates own all XML text — SPEC_0034 D3 amended).
+pub struct GalecPackagingPlan {
+    package: AlgorithmCodePackage,
+    /// GALEC block source (`.alg`), pre-rendered; the `.alg` passthrough
+    /// template interpolates it and the build step hashes its bytes.
+    alg_text: String,
+    /// Generated C99 header (empty for the AC-only plan).
+    c_header: String,
+    /// Generated C99 source (empty for the AC-only plan).
+    c_source: String,
+    /// Model identifier (dots→underscores); names the `.h`/`.c` files the PC
+    /// manifest `Files` entries reference.
+    model_identifier: String,
+    /// `Content/@name`: the source model name as given on the command line
+    /// (dotted for hierarchical models), per eFMI ch. 2.3.1.
+    content_name: String,
+    /// Shared strict-UTC timestamp (minted once).
+    generated_at: UtcTimestamp,
+    /// Shared generation-tool string (minted once).
+    generation_tool: Option<NormalizedText>,
+    /// AC manifest UUID (shared with `__content.xml`'s AC `manifestRefId`).
+    ac_manifest_id: ManifestId,
+    /// PC manifest UUID (present iff [`PackageKind::AlgorithmCodeAndProduction`]).
+    pc_manifest_id: Option<ManifestId>,
+    /// `__content.xml` UUID.
+    content_id: ManifestId,
+    /// The typed AC manifest, assembled while rendering the AC manifest and
+    /// consumed while assembling the PC manifest (cross-validation +
+    /// `ManifestReference/@manifestRefId`). Topological order guarantees it
+    /// is populated before the PC context is built.
+    ac_manifest: RefCell<Option<AlgorithmCodeManifest>>,
 }
 
-/// Render the eFMI Production Code export for a compiled model: ONE
-/// projection (single-renderer invariant), every checksum computed over
-/// final bytes, the PC manifest assembled and serialized exactly once.
+impl GalecPackagingPlan {
+    /// The pre-rendered `.alg` block source (passthrough template input).
+    #[must_use]
+    pub fn alg_text(&self) -> &str {
+        &self.alg_text
+    }
+
+    /// The pre-rendered C99 header (empty for the AC-only plan).
+    #[must_use]
+    pub fn c_header(&self) -> &str {
+        &self.c_header
+    }
+
+    /// The pre-rendered C99 source (empty for the AC-only plan).
+    #[must_use]
+    pub fn c_source(&self) -> &str {
+        &self.c_source
+    }
+
+    fn ac_identity(&self) -> ManifestIdentity {
+        ManifestIdentity {
+            id: self.ac_manifest_id,
+            generated_at: self.generated_at,
+            generation_tool: self.generation_tool.clone(),
+        }
+    }
+
+    fn pc_identity(&self) -> Result<ManifestIdentity, GalecExportError> {
+        let id = self
+            .pc_manifest_id
+            .ok_or_else(|| GalecExportError::CTemplate {
+                detail:
+                    "internal: Production Code manifest requested from an Algorithm-Code-only plan"
+                        .to_owned(),
+            })?;
+        Ok(ManifestIdentity {
+            id,
+            generated_at: self.generated_at,
+            generation_tool: self.generation_tool.clone(),
+        })
+    }
+
+    /// Build the render context (the `ctx` root the manifest templates read)
+    /// for `template`, slotting the build-step-injected checksums (keyed by
+    /// their `target.toml` `as` name) into the typed model it assembles.
+    /// Non-manifest templates (`.alg`/`.h`/`.c` passthroughs and `[[files]]`
+    /// path templates) get a null `ctx` — they interpolate only the top-level
+    /// `model_name`/`galec_*` keys the render site supplies.
+    ///
+    /// # Errors
+    ///
+    /// [`GalecExportError::Render`] when a required checksum is missing or
+    /// malformed, or the assembled typed model fails a data-integrity
+    /// validator (the fail-early guarantee, before any XML is emitted).
+    pub fn template_ctx(
+        &self,
+        template: &str,
+        checksums: &BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, GalecExportError> {
+        match template {
+            "__content.xml.jinja" => self.content_context(
+                self.checksum(checksums, "ac_manifest_sha1")?,
+                checksums.get("pc_manifest_sha1").map(String::as_str),
+            ),
+            "pc_manifest.xml.jinja" => self.pc_context(
+                self.checksum(checksums, "ac_manifest_sha1")?,
+                self.checksum(checksums, "c_header_sha1")?,
+                self.checksum(checksums, "c_source_sha1")?,
+            ),
+            "ac_manifest.xml.jinja" | "manifest.xml.jinja" => {
+                self.ac_context(self.checksum(checksums, "alg_sha1")?)
+            }
+            _ => Ok(serde_json::Value::Null),
+        }
+    }
+
+    fn checksum<'a>(
+        &self,
+        checksums: &'a BTreeMap<String, String>,
+        key: &str,
+    ) -> Result<&'a str, GalecExportError> {
+        checksums
+            .get(key)
+            .map(String::as_str)
+            .ok_or_else(|| GalecExportError::CTemplate {
+                detail: format!(
+                    "internal: build step did not inject checksum '{key}' \
+                     (missing [[files.checksums]] edge?)"
+                ),
+            })
+    }
+
+    /// Assemble the typed AC manifest with the rendered `.alg` SHA-1, cache
+    /// it for the PC step, and serialize the `{ ac, units }` template context.
+    fn ac_context(&self, alg_sha1: &str) -> Result<serde_json::Value, GalecExportError> {
+        let checksum = parse_sha1(alg_sha1)?;
+        let manifest =
+            assemble_manifest_with_identity(&self.package, checksum, &self.ac_identity())?;
+        let value = serde_json::json!({
+            "ac": to_ctx_value(&AcManifestCtx::from_manifest(&manifest))?,
+            "units": to_ctx_value(&AcManifestCtx::units(&manifest))?,
+        });
+        *self.ac_manifest.borrow_mut() = Some(manifest);
+        Ok(value)
+    }
+
+    /// Assemble the typed PC manifest from the cached AC manifest and the
+    /// rendered AC-manifest / C-file SHA-1s, and serialize the `{ pc }`
+    /// template context.
+    fn pc_context(
+        &self,
+        ac_manifest_sha1: &str,
+        c_header_sha1: &str,
+        c_source_sha1: &str,
+    ) -> Result<serde_json::Value, GalecExportError> {
+        let cached = self.ac_manifest.borrow();
+        let ac_manifest = cached.as_ref().ok_or_else(|| GalecExportError::CTemplate {
+            detail: "internal: Algorithm Code manifest must be rendered before the Production \
+                     Code manifest (checksum-web topological order)"
+                .to_owned(),
+        })?;
+        let header =
+            emitted_code_file_from_sha1(format!("{}.h", self.model_identifier), c_header_sha1)?;
+        let source =
+            emitted_code_file_from_sha1(format!("{}.c", self.model_identifier), c_source_sha1)?;
+        let manifest = assemble_production_manifest_with_identity(
+            &self.package,
+            ac_manifest,
+            parse_sha1(ac_manifest_sha1)?,
+            &header,
+            &source,
+            &self.pc_identity()?,
+        )?;
+        Ok(serde_json::json!({
+            "pc": to_ctx_value(&PcManifestCtx::from_manifest(&manifest))?,
+        }))
+    }
+
+    /// Build the validated `__content.xml` registry and serialize the
+    /// `{ content }` template context (one representation per rendered
+    /// manifest, each carrying the web-injected SHA-1 of its exact bytes).
+    fn content_context(
+        &self,
+        ac_manifest_sha1: &str,
+        pc_manifest_sha1: Option<&str>,
+    ) -> Result<serde_json::Value, GalecExportError> {
+        let mut representations = vec![ModelRepresentation {
+            name: representation_name("AlgorithmCode")?,
+            kind: ModelRepresentationKind::AlgorithmCode,
+            manifest: representation_name("manifest.xml")?,
+            checksum: parse_sha1(ac_manifest_sha1)?,
+            manifest_ref_id: self.ac_manifest_id,
+        }];
+        if let Some(pc_sha1) = pc_manifest_sha1 {
+            let pc_id = self
+                .pc_manifest_id
+                .ok_or_else(|| GalecExportError::CTemplate {
+                    detail:
+                        "internal: a Production Code representation checksum was injected into an \
+                         Algorithm-Code-only plan"
+                            .to_owned(),
+                })?;
+            representations.push(ModelRepresentation {
+                name: representation_name("ProductionCode")?,
+                kind: ModelRepresentationKind::ProductionCode,
+                manifest: representation_name("manifest.xml")?,
+                checksum: parse_sha1(pc_sha1)?,
+                manifest_ref_id: pc_id,
+            });
+        }
+        let content = Content::new(ContentParts {
+            attributes: ManifestAttributes {
+                id: self.content_id,
+                name: NormalizedText::new(self.content_name.clone()).map_err(as_render_error)?,
+                description: None,
+                version: None,
+                generation_date_and_time: self.generated_at,
+                generation_tool: self.generation_tool.clone(),
+                copyright: None,
+                license: None,
+            },
+            active_fmu: None,
+            model_representations: representations,
+        })
+        .map_err(as_render_error)?;
+        Ok(serde_json::json!({
+            "content": to_ctx_value(&ContentCtx::from_content(&content))?,
+        }))
+    }
+}
+
+/// Build the switch-dispatch packaging plan for the `galec` target (AC-only
+/// eFMU): one projection, minted packaging identity, the pre-rendered `.alg`.
 ///
-/// Assembly order (contract §3.3): project once; print the `.alg` text;
-/// render the AC manifest as a typed-document/XML pair; render the C
-/// header/source through the shared `embedded-c-galec` layout templates
-/// with this target's Production Code conformance header (D10); SHA-1 the
-/// AC manifest and C bytes; assemble the PC manifest; serialize it.
-///
-/// The C files are rendered here — not later by the CLI template pass —
-/// because their SHA-1s go into the PC manifest before it is serialized;
-/// the container writer cross-checks the identical passthrough-rendered
-/// bytes at write time (EFM036).
+/// `model_identifier` is the file-system-safe model name (dots→underscores)
+/// used for the projection and the `.alg` file name; `content_name` is the
+/// source model name as given on the command line (dotted allowed), becoming
+/// `Content/@name`.
 ///
 /// # Errors
 ///
 /// [`GalecExportError::Projection`] with all collected projection
-/// diagnostics, [`GalecExportError::Render`] for validator/printer/
-/// serializer/manifest failures on the validated package, or
-/// [`GalecExportError::CTemplate`] when the shared C-layout templates
-/// cannot be resolved or rendered.
-pub fn render_galec_production_export(
+/// diagnostics, or [`GalecExportError::Render`] for printer/identity
+/// failures.
+pub fn plan_galec_export(
     dae: &Dae,
     flat: &FlatModel,
-    model_name: &str,
-) -> Result<GalecProductionExport, GalecExportError> {
-    // (1) ONE projection: every artifact below derives from this package.
-    let package = lower_package(dae, flat, model_name)?;
-
-    // (2) GALEC block source.
+    model_identifier: &str,
+    content_name: &str,
+) -> Result<GalecPackagingPlan, GalecExportError> {
+    let package = lower_package(dae, flat, model_identifier)?;
     let alg_text = render_algorithm_code(&package)?;
+    let identity = ManifestIdentity::generated()?;
+    Ok(GalecPackagingPlan {
+        package,
+        alg_text,
+        c_header: String::new(),
+        c_source: String::new(),
+        model_identifier: model_identifier.to_owned(),
+        content_name: content_name.to_owned(),
+        generated_at: identity.generated_at,
+        generation_tool: identity.generation_tool,
+        ac_manifest_id: ManifestId::generate(),
+        pc_manifest_id: None,
+        content_id: ManifestId::generate(),
+        ac_manifest: RefCell::new(None),
+    })
+}
 
-    // (3) Typed AC manifest + XML from ONE assemble+serialize pass: the PC
-    // `ManifestReference` checksums these exact bytes and reads the AC
-    // UUID from the typed half (never re-parsed, never re-serialized).
-    let (ac_manifest, ac_manifest_xml) = render_manifest_document(&package)?;
-
-    // (4) C header/source through the shared C-layout templates with the
-    // Production Code conformance header.
-    let c_context = c_template_context(&package, model_name)?;
+/// Build the switch-dispatch packaging plan for the `galec-production`
+/// target (AC + PC eFMU): one projection, minted packaging identity, the
+/// pre-rendered `.alg` and the generated C99 header/source (with the
+/// Production Code conformance header, D10).
+///
+/// # Errors
+///
+/// [`GalecExportError::Projection`] with all collected projection
+/// diagnostics, [`GalecExportError::Render`] for printer/identity failures,
+/// or [`GalecExportError::CTemplate`] when the shared C-layout templates
+/// cannot be resolved or rendered.
+pub fn plan_galec_production_export(
+    dae: &Dae,
+    flat: &FlatModel,
+    model_identifier: &str,
+    content_name: &str,
+) -> Result<GalecPackagingPlan, GalecExportError> {
+    let package = lower_package(dae, flat, model_identifier)?;
+    let alg_text = render_algorithm_code(&package)?;
+    let c_context = c_template_context(&package, model_identifier)?;
     let bundle = embedded_c_layout_bundle()?;
     let c_header = render_c_layout_template(&bundle, HEADER_TEMPLATE, &c_context)?;
     let c_source = render_c_layout_template(&bundle, SOURCE_TEMPLATE, &c_context)?;
-
-    // (5) SHA-1 over the final bytes, assemble the PC manifest (which
-    // cross-validates against the typed AC manifest), serialize ONCE.
-    let header_file = emitted_code_file(format!("{model_name}.h"), &c_header)?;
-    let source_file = emitted_code_file(format!("{model_name}.c"), &c_source)?;
-    let pc_manifest = assemble_production_manifest(
-        &package,
-        &ac_manifest,
-        Sha1Hex::of_bytes(ac_manifest_xml.as_bytes()),
-        &header_file,
-        &source_file,
-    )?;
-    let pc_bytes = production_code_manifest_to_xml(&pc_manifest).map_err(GalecTargetError::from)?;
-    let pc_manifest_xml =
-        String::from_utf8(pc_bytes).map_err(|error| GalecTargetError::LoweringInternal {
-            detail: format!("Production Code manifest XML is not valid UTF-8: {error}"),
-        })?;
-
-    Ok(GalecProductionExport {
+    let identity = ManifestIdentity::generated()?;
+    Ok(GalecPackagingPlan {
+        package,
         alg_text,
-        ac_manifest_xml,
         c_header,
         c_source,
-        pc_manifest_xml,
+        model_identifier: model_identifier.to_owned(),
+        content_name: content_name.to_owned(),
+        generated_at: identity.generated_at,
+        generation_tool: identity.generation_tool,
+        ac_manifest_id: ManifestId::generate(),
+        pc_manifest_id: Some(ManifestId::generate()),
+        content_id: ManifestId::generate(),
+        ac_manifest: RefCell::new(None),
     })
+}
+
+/// Parse a build-step-injected SHA-1 hex digest, mapping a malformed value to
+/// a render error (it can only be malformed on an internal build-step bug —
+/// `Sha1Hex::of_bytes` always emits a valid digest).
+fn parse_sha1(hex: &str) -> Result<Sha1Hex, GalecExportError> {
+    Sha1Hex::parse(hex).map_err(|error| GalecExportError::CTemplate {
+        detail: format!("internal: build step injected a malformed SHA-1 '{hex}': {error}"),
+    })
+}
+
+/// Wrap one rendered C file for the manifest builder from its name and the
+/// build-step-injected SHA-1 of its exact bytes (GAL-021 — the digest is of
+/// the real rendered bytes, threaded here by the checksum web).
+fn emitted_code_file_from_sha1(
+    name: String,
+    sha1: &str,
+) -> Result<EmittedCodeFile, GalecExportError> {
+    Ok(EmittedCodeFile {
+        name: NameWithoutSlashes::new(name).map_err(as_render_error)?,
+        sha1: parse_sha1(sha1)?,
+    })
+}
+
+fn representation_name(name: &str) -> Result<NameWithoutSlashes, GalecExportError> {
+    NameWithoutSlashes::new(name).map_err(as_render_error)
+}
+
+/// Serialize a product-agnostic context view to a `serde_json::Value` for the
+/// manifest templates; a serialization failure is an internal bug.
+fn to_ctx_value<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, GalecExportError> {
+    serde_json::to_value(value).map_err(|error| GalecExportError::CTemplate {
+        detail: format!("internal: manifest context serialization failed: {error}"),
+    })
+}
+
+fn as_render_error(error: impl Into<GalecTargetError>) -> GalecExportError {
+    GalecExportError::Render(error.into())
 }
 
 /// Project a compiled model to the validated Algorithm Code package — the
@@ -299,6 +543,7 @@ fn render_c_layout_template(
         })?;
     let mut env = minijinja::Environment::new();
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    register_manifest_filters(&mut env);
     env.render_str(
         &source,
         minijinja::context! {
@@ -314,15 +559,16 @@ fn render_c_layout_template(
     })
 }
 
-/// Wrap one rendered C file for the manifest builder: name plus SHA-1 of
-/// the exact final bytes (GAL-021 — hashed here, after rendering, never
-/// re-rendered downstream).
-fn emitted_code_file(name: String, rendered: &str) -> Result<EmittedCodeFile, GalecExportError> {
-    let name = NameWithoutSlashes::new(name).map_err(GalecTargetError::from)?;
-    Ok(EmittedCodeFile {
-        name,
-        sha1: Sha1Hex::of_bytes(rendered.as_bytes()),
-    })
+/// Register the eFMI manifest render filters (contract §3b) on a bare
+/// minijinja environment: `xml_escape` (autoescape is OFF, so every text
+/// value is escaped explicitly) and `xs_double` (raw `f64` → valid `xs:double`
+/// lexical). Reuses the filter functions re-exported by `rumoca-galec-codegen` so the
+/// guarantee is defined once and shared by every manifest render env.
+pub(crate) fn register_manifest_filters(env: &mut minijinja::Environment<'_>) {
+    env.add_filter("xml_escape", |text: String| {
+        rumoca_galec_codegen::xml_escape(&text)
+    });
+    env.add_filter("xs_double", rumoca_galec_codegen::xs_double);
 }
 
 /// Build the [`ScalarTypeMap`] for a compiled model from Flat-side declared
@@ -472,7 +718,13 @@ end GalecFacadeDemo;
             );
         }
 
-        render_galec_export(&result.dae, &result.flat, "GalecFacadeDemo").expect(
+        plan_galec_export(
+            &result.dae,
+            &result.flat,
+            "GalecFacadeDemo",
+            "GalecFacadeDemo",
+        )
+        .expect(
             "projection's structural fallbacks must type generated condition/pre-slot variables",
         );
     }
@@ -485,31 +737,37 @@ end GalecFacadeDemo;
     }
 
     #[test]
-    fn render_galec_export_produces_alg_and_manifest() {
+    fn plan_galec_export_pre_renders_the_alg_block() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let export = render_galec_export(&result.dae, &result.flat, "GalecFacadeDemo")
-            .expect("discrete fixture should project to GALEC");
+        let plan = plan_galec_export(
+            &result.dae,
+            &result.flat,
+            "GalecFacadeDemo",
+            "GalecFacadeDemo",
+        )
+        .expect("discrete fixture should project to GALEC");
 
         assert!(
-            export.alg_text.contains("GalecFacadeDemo"),
+            plan.alg_text().contains("GalecFacadeDemo"),
             "alg text should name the block:\n{}",
-            export.alg_text
+            plan.alg_text()
         );
         assert!(
-            export.alg_text.contains("DoStep"),
+            plan.alg_text().contains("DoStep"),
             "alg text should contain the DoStep method:\n{}",
-            export.alg_text
+            plan.alg_text()
         );
-        assert!(
-            export.manifest_xml.starts_with("<?xml"),
-            "manifest should be an XML document:\n{}",
-            export.manifest_xml
+        // The AC manifest context assembles (validators pass) once the build
+        // step injects the `.alg` SHA-1 under its declared `as` key; the XML
+        // text itself is the template's job (SPEC_0034 D3 amended), exercised
+        // black-box by the CLI tests.
+        let mut checksums = BTreeMap::new();
+        checksums.insert(
+            "alg_sha1".to_string(),
+            Sha1Hex::of_bytes(b"alg").as_str().to_string(),
         );
-        assert!(
-            export.manifest_xml.contains("Manifest"),
-            "manifest root element expected:\n{}",
-            export.manifest_xml
-        );
+        plan.template_ctx("ac_manifest.xml.jinja", &checksums)
+            .expect("AC manifest context assembles from the injected checksum");
     }
 
     #[test]
@@ -529,72 +787,53 @@ end GalecFacadeDemo;
     }
 
     #[test]
-    fn render_galec_production_export_emits_the_five_container_texts() {
+    fn plan_galec_production_export_pre_renders_alg_and_c() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let export = render_galec_production_export(&result.dae, &result.flat, "GalecFacadeDemo")
-            .expect("discrete fixture should render the production export");
+        let plan = plan_galec_production_export(
+            &result.dae,
+            &result.flat,
+            "GalecFacadeDemo",
+            "GalecFacadeDemo",
+        )
+        .expect("discrete fixture should plan the production export");
 
         for (name, text) in [
-            ("alg_text", &export.alg_text),
-            ("ac_manifest_xml", &export.ac_manifest_xml),
-            ("c_header", &export.c_header),
-            ("c_source", &export.c_source),
-            ("pc_manifest_xml", &export.pc_manifest_xml),
+            ("alg_text", plan.alg_text()),
+            ("c_header", plan.c_header()),
+            ("c_source", plan.c_source()),
         ] {
             assert!(!text.is_empty(), "{name} must be non-empty");
         }
-        assert!(
-            export.pc_manifest_xml.starts_with("<?xml"),
-            "PC manifest should be an XML document:\n{}",
-            export.pc_manifest_xml
-        );
     }
 
-    /// The checksum web (contract §4): the PC `ManifestReference` pins the
-    /// EXACT rendered AC manifest bytes — the facade must hash the same
-    /// string it returns, with no re-serialization in between.
-    #[test]
-    fn production_manifest_reference_checksums_the_exact_ac_manifest_bytes() {
-        let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let export = render_galec_production_export(&result.dae, &result.flat, "GalecFacadeDemo")
-            .expect("discrete fixture should render the production export");
-
-        let expected = rumoca_efmi::Sha1Hex::of_bytes(export.ac_manifest_xml.as_bytes());
-        let reference = export
-            .pc_manifest_xml
-            .lines()
-            .find(|line| line.contains("<ManifestReference "))
-            .expect("PC manifest must carry the AC ManifestReference");
-        assert!(
-            reference.contains(&format!(r#"checksum="{}""#, expected.as_str())),
-            "PC ManifestReference must checksum the exact AC manifest bytes \
-             (expected {expected}):\n{reference}"
-        );
-    }
-
-    /// D10 honesty swap: inside the conformant container the C files claim
-    /// the Production Code representation and point at the manifest as the
-    /// conformance surface — the shared templates' `embedded-c-galec`
-    /// NOT-a-PC text must not leak in.
+    /// D10 honesty swap: inside the conformant container the pre-rendered C
+    /// files claim the Production Code representation and point at the
+    /// manifest as the conformance surface — the shared templates'
+    /// `embedded-c-galec` NOT-a-PC text must not leak in.
     #[test]
     fn production_c_files_carry_the_production_code_conformance_header() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let export = render_galec_production_export(&result.dae, &result.flat, "GalecFacadeDemo")
-            .expect("discrete fixture should render the production export");
+        let plan = plan_galec_production_export(
+            &result.dae,
+            &result.flat,
+            "GalecFacadeDemo",
+            "GalecFacadeDemo",
+        )
+        .expect("discrete fixture should plan the production export");
 
         for line in PRODUCTION_CONFORMANCE_LINES {
             assert!(
-                export.c_header.contains(line),
+                plan.c_header().contains(line),
                 "C header must carry the PC conformance line '{line}':\n{}",
-                export.c_header
+                plan.c_header()
             );
         }
         assert!(
-            export.c_source.contains(PRODUCTION_CONFORMANCE_SUMMARY),
+            plan.c_source().contains(PRODUCTION_CONFORMANCE_SUMMARY),
             "C source must carry the PC conformance summary:\n{}",
-            export.c_source
+            plan.c_source()
         );
-        for text in [&export.c_header, &export.c_source] {
+        for text in [plan.c_header(), plan.c_source()] {
             assert!(
                 !text.contains("NOT an eFMI Production Code container"),
                 "embedded-c-galec's NOT-a-PC claim must not leak into the \
@@ -621,7 +860,7 @@ end GalecFacadeDemo;
     }
 
     #[test]
-    fn render_galec_export_rejects_continuous_models_loudly() {
+    fn plan_galec_export_rejects_continuous_models_loudly() {
         let result = compile(
             r#"
 model ContinuousDemo
@@ -633,8 +872,18 @@ end ContinuousDemo;
 "#,
             "ContinuousDemo",
         );
-        let error = render_galec_export(&result.dae, &result.flat, "ContinuousDemo")
-            .expect_err("continuous dynamics must be rejected");
+        // `GalecPackagingPlan` is intentionally not `Debug` (it holds the
+        // interior-mutable typed manifest cache), so match rather than
+        // `expect_err`.
+        let error = match plan_galec_export(
+            &result.dae,
+            &result.flat,
+            "ContinuousDemo",
+            "ContinuousDemo",
+        ) {
+            Ok(_) => panic!("continuous dynamics must be rejected"),
+            Err(error) => error,
+        };
         let GalecExportError::Projection(diagnostics) = &error else {
             panic!("expected projection rejection, got: {error}");
         };

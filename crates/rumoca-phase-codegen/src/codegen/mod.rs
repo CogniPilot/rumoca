@@ -1200,6 +1200,11 @@ fn create_environment() -> Environment<'static> {
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
+    // eFMI manifest render env (contract §3b): autoescape is OFF, so every
+    // text value is escaped explicitly and every raw f64 is rendered as a
+    // valid xs:double lexical.
+    env.add_filter("xml_escape", xml_escape_filter);
+    env.add_filter("xs_double", xs_double_filter);
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.
@@ -1359,6 +1364,49 @@ fn sanitize_filter(value: Value) -> String {
 fn last_segment_filter(value: Value) -> String {
     let s = value.to_string().replace('"', "");
     rumoca_core::top_level_last_segment(&s).to_string()
+}
+
+/// XML-escape a text value: the five predefined entities `& < > " '`.
+///
+/// The eFMI manifest templates render under an autoescape-OFF, strict
+/// environment (contract §3b), so every interpolated text value is piped
+/// through this filter: `{{ name | xml_escape }}`. Control-char rejection is
+/// NOT this filter's job — that stays a validator on the context.
+pub(crate) fn xml_escape_str(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn xml_escape_filter(value: String) -> String {
+    xml_escape_str(&value)
+}
+
+/// Render a finite `f64` as a valid `xs:double` lexical form (explicit
+/// decimal point, never exponent notation): `2` -> `2.0`, `1e300` stays a
+/// plain decimal. Mirrors `rumoca_galec_codegen::xs_double` (a tier below cannot be
+/// imported here, so the guarantee is duplicated deliberately — contract §6);
+/// used by the eFMI templates for raw `BaseUnit` factor/offset.
+pub(crate) fn xs_double_str(value: f64) -> String {
+    let rendered = format!("{value}");
+    if rendered.contains('.') {
+        rendered
+    } else {
+        format!("{rendered}.0")
+    }
+}
+
+fn xs_double_filter(value: f64) -> String {
+    xs_double_str(value)
 }
 
 /// Filter to compute the product of all elements in a sequence.
@@ -1941,6 +1989,8 @@ mod codegen_tests;
 mod dae_modelica_tests;
 #[cfg(test)]
 mod fmi_template_tests;
+#[cfg(test)]
+mod galec_manifest_template_tests;
 #[cfg(test)]
 mod solve_sparse_output_tests;
 #[cfg(test)]

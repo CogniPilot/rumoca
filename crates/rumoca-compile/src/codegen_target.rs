@@ -45,6 +45,12 @@ pub struct TargetManifest {
     pub capabilities: Option<TargetCapabilities>,
     #[serde(default)]
     pub files: Vec<TargetFile>,
+    /// Declared asset bundles the packaging build step copies verbatim into
+    /// the product (contract §4d): e.g. the vendored eFMI XSD tree. Assets
+    /// are NOT graph nodes — nothing checksums them, so they sit outside the
+    /// render/hash DAG. A product needing no bundled assets declares none.
+    #[serde(default)]
+    pub assets: Vec<AssetBundle>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +108,48 @@ pub struct TargetFile {
     pub path: String,
     pub template: String,
     pub mode: Option<String>,
+    /// Stable logical identity of this rendered file within the target
+    /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
+    /// need one; the identity is keyed off `id`, never the templated `path`,
+    /// so it is stable across path interpolation (`{{ model_name }}`).
+    pub id: Option<String>,
+    /// Checksum edges this file consumes: for each entry, the SHA-1 of the
+    /// producer file `of` is exposed to this file's templates under the
+    /// context key `as` (contract §4a). The declaration is co-located with
+    /// the template that interpolates the key, so under strict-undefined
+    /// minijinja a template referencing `{{ <as> }}` without a matching
+    /// entry fails loudly at render — declaration and use cannot drift.
+    #[serde(default)]
+    pub checksums: Vec<ChecksumNeed>,
+}
+
+/// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
+/// under my context key `as`" (contract §4a). Modeled as the directed edge
+/// `of -> this` ("`of` rendered + hashed before this file") by the packaging
+/// topo sort; a manifest can never checksum itself (no self edge) so the
+/// edge set is a DAG by construction (contract §4c).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChecksumNeed {
+    /// The producer file's `id` whose exact rendered bytes are hashed.
+    pub of: String,
+    /// The context key this file's templates read the producer's SHA-1 from.
+    /// `as` is a Rust keyword, so the field is renamed for the struct.
+    #[serde(rename = "as")]
+    pub as_key: String,
+}
+
+/// A declared asset bundle: copy the named embedded/vendored `bundle` into
+/// the product under `dest` (contract §4d). The bundle payload is declared
+/// here; the copy mechanism is coded once, generically, in the build step.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetBundle {
+    /// Logical name of the embedded/vendored bundle (e.g. `efmi-schemas`).
+    pub bundle: String,
+    /// Destination directory (product-root-relative) the bundle is copied
+    /// into, e.g. `schemas/`.
+    pub dest: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -524,6 +572,75 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
         if let Some(mode) = file.mode.as_deref() {
             u32::from_str_radix(mode.trim_start_matches("0o"), 8)
                 .with_context(|| format!("Parse target file mode '{mode}'"))?;
+        }
+    }
+    validate_checksum_web(&manifest.files)?;
+    validate_asset_bundles(&manifest.assets)?;
+    Ok(())
+}
+
+/// Fail-early structural checks on the declared checksum web (contract §4a/
+/// §4c), before any rendering: file `id`s are unique, every `[[files.checksums]]`
+/// `of` resolves to a declared `id`, no file checksums itself (the no-self-hash
+/// invariant that keeps the edge set a DAG), and every `as` key is non-empty.
+/// Cycle detection is the packaging topo sort's job (it renders nothing on a
+/// cycle); this rejects the malformed declarations that can be seen without
+/// ordering.
+fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
+    let mut ids = std::collections::BTreeSet::new();
+    for file in files {
+        if let Some(id) = &file.id {
+            if id.trim().is_empty() {
+                bail!("[[files]] id must not be empty (path '{}')", file.path);
+            }
+            if !ids.insert(id.as_str()) {
+                bail!("duplicate [[files]] id '{id}' (ids must be unique per target)");
+            }
+        }
+    }
+    for file in files {
+        for need in &file.checksums {
+            if need.as_key.trim().is_empty() {
+                bail!(
+                    "[[files.checksums]] `as` must not be empty (file '{}', of = '{}')",
+                    file.path,
+                    need.of
+                );
+            }
+            if !ids.contains(need.of.as_str()) {
+                bail!(
+                    "[[files.checksums]] of = '{}' on file '{}' names no [[files]] id \
+                     (declare `id = \"{}\"` on the producer file)",
+                    need.of,
+                    file.path,
+                    need.of
+                );
+            }
+            if file.id.as_deref() == Some(need.of.as_str()) {
+                bail!(
+                    "[[files.checksums]] of = '{}' on file '{}' checksums itself; a file \
+                     can never embed its own hash (contract §4c no-self-hash invariant)",
+                    need.of,
+                    file.path
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fail-early checks on declared `[[assets]]` bundles: bundle name and dest
+/// must be non-empty (the copy mechanism resolves the bundle payload by name).
+fn validate_asset_bundles(assets: &[AssetBundle]) -> Result<()> {
+    for asset in assets {
+        if asset.bundle.trim().is_empty() {
+            bail!("[[assets]] bundle name must not be empty");
+        }
+        if asset.dest.trim().is_empty() {
+            bail!(
+                "[[assets]] dest must not be empty (bundle '{}')",
+                asset.bundle
+            );
         }
     }
     Ok(())

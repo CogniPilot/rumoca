@@ -1,7 +1,7 @@
 //! Shared symbol tables, reference/call resolution, and the small type and
 //! signal-set lattices used by the six validator analyses.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     Block, BlockMethod, BlockMethodKind, Dimension, FunctionKind, Name, Parameter,
@@ -65,15 +65,15 @@ pub(super) struct EntityInfo<'a> {
 /// name analysis, not silently merged).
 pub(super) struct BlockContext<'a> {
     pub block: &'a Block,
-    pub entities: HashMap<String, EntityInfo<'a>>,
-    pub compartments: HashMap<String, &'a StateCompartment>,
-    pub functions: HashMap<String, &'a UserFunction>,
+    pub entities: BTreeMap<String, EntityInfo<'a>>,
+    pub compartments: BTreeMap<String, &'a StateCompartment>,
+    pub functions: BTreeMap<String, &'a UserFunction>,
     pub signals: SignalTable,
 }
 
 impl<'a> BlockContext<'a> {
     pub(super) fn new(block: &'a Block) -> Self {
-        let mut entities = HashMap::new();
+        let mut entities = BTreeMap::new();
         for var in &block.interface {
             let kind = match var.kind {
                 crate::ast::InterfaceKind::Input => EntityKind::Input,
@@ -98,13 +98,13 @@ impl<'a> BlockContext<'a> {
             };
             entities.entry(lexeme(&entity.decl.name)).or_insert(info);
         }
-        let mut compartments = HashMap::new();
+        let mut compartments = BTreeMap::new();
         for compartment in &block.compartments {
             compartments
                 .entry(lexeme(&compartment.name))
                 .or_insert(compartment);
         }
-        let mut functions = HashMap::new();
+        let mut functions = BTreeMap::new();
         for function in block
             .protected_functions
             .iter()
@@ -177,20 +177,20 @@ enum LocalBinding<'a> {
 /// Lexical scope of one body: parameters, locals, and (dynamically pushed)
 /// loop iterators. Iterators shadow parameters/locals per lookup order.
 pub(super) struct FunctionScope<'a> {
-    parameters: HashMap<String, &'a Parameter>,
-    locals: HashMap<String, &'a VariableDeclaration>,
+    parameters: BTreeMap<String, &'a Parameter>,
+    locals: BTreeMap<String, &'a VariableDeclaration>,
     iterators: Vec<String>,
 }
 
 impl<'a> FunctionScope<'a> {
     pub(super) fn new(body: &BodyView<'a>) -> Self {
-        let mut parameters = HashMap::new();
+        let mut parameters = BTreeMap::new();
         for parameter in body.parameters {
             parameters
                 .entry(lexeme(&parameter.decl.name))
                 .or_insert(parameter);
         }
-        let mut locals = HashMap::new();
+        let mut locals = BTreeMap::new();
         for local in body.locals {
             locals.entry(lexeme(&local.name)).or_insert(local);
         }

@@ -3,12 +3,16 @@
 //! GALEC AST plus a typed Algorithm Code manifest model, and package
 //! validation. See `spec/SPEC_0034_GALEC_EFMI_EXPORT.md`.
 //!
-//! This crate is the projection layer of the SPEC_0034 three-module split
-//! (GAL-010): `rumoca-ir-galec` owns the language (AST/printer/validator),
-//! `rumoca-efmi` owns packaging (manifest models/XML/checksums/container),
-//! and this crate maps canonical compiler artifacts onto both. It is
-//! reached through `rumoca-compile`; GALEC is a target language, never a
-//! canonical IR stage (GAL-001).
+//! This crate is the projection + eFMI-packaging layer of the SPEC_0034
+//! module split (GAL-010, D3 amended): `rumoca-ir-galec` owns the language
+//! (AST/printer/validator), this crate maps canonical compiler artifacts
+//! onto the GALEC AST **and** owns the eFMI packaging data model +
+//! data-integrity validators + product-agnostic context views
+//! ([`crate::manifest_context`], the dissolved standalone eFMI packaging crate). The
+//! generic checksum/container build step lives beside the CLI in the
+//! `rumoca` crate; all XML text lives in minijinja templates. It is reached
+//! through `rumoca-compile`; GALEC is a target language, never a canonical
+//! IR stage (GAL-001).
 //!
 //! Module map:
 //!
@@ -38,10 +42,14 @@
 //!   commits (T2), Startup/Recalibrate construction (GAL-017), manifest
 //!   Clock wiring (GAL-016/D6), and GAL-004 post-validation;
 //! - [`emit`] — rendering facades: [`render_algorithm_code`] (`.alg` text),
-//!   [`render_manifest_document`] (typed manifest + its XML from one
-//!   serialization pass; [`render_manifest_xml`] is the XML-only wrapper),
-//!   and [`c_template_context`] (typed-then-serialized minijinja context
-//!   of the `embedded-c-galec` target, GAL-024);
+//!   [`assemble_manifest_with_identity`] (typed Algorithm Code manifest, no
+//!   XML — the templates own that), and [`c_template_context`]
+//!   (typed-then-serialized minijinja context of the `embedded-c-galec`
+//!   target, GAL-024);
+//! - [`crate::manifest_context`] — the eFMI packaging data model (manifest /
+//!   `__content.xml` models, checksums, id discipline), its data-integrity
+//!   validators, and the `#[derive(Serialize)]` context views the packaging
+//!   templates consume (the dissolved eFMI packaging crate; D3 amended);
 //! - [`c_mangle`] / [`c_print`] — the embedded-C side of the projection:
 //!   collision-checked GALEC-name → C-identifier mangling and the GALEC
 //!   AST → C99 printer feeding [`c_template_context`];
@@ -65,6 +73,7 @@ pub mod emit;
 pub mod input;
 pub mod lower;
 pub mod mangle;
+pub mod manifest_context;
 pub mod manifest_vars;
 pub mod package;
 pub mod production_manifest;
@@ -75,10 +84,17 @@ pub use c_print::CPrinter;
 pub use classify::{Classification, ClassifiedVariable, VariableClass, classify_variables};
 pub use diagnostic::GalecTargetError;
 pub use emit::{
-    c_template_context, render_algorithm_code, render_manifest_document, render_manifest_xml,
+    ManifestIdentity, assemble_manifest_with_identity, c_template_context, render_algorithm_code,
 };
 pub use input::{GalecInput, GalecOptions, GalecProfile, ScalarTypeMap};
 pub use lower::lower_to_algorithm_code;
+pub use manifest_context::{
+    AcManifestCtx, ContentCtx, EfmiError, EfmiManifestContext, FilePath, IdRegistry, Identifier,
+    ManifestId, ModelExport, NameWithoutSlashes, NormalizedText, PcManifestCtx, Sha1Hex, UnitCtx,
+    UtcTimestamp, xml_escape, xs_double,
+};
 pub use manifest_vars::{ManifestVariables, build_manifest_variables};
 pub use package::{AlgorithmCodePackage, ManifestFragment};
-pub use production_manifest::{EmittedCodeFile, assemble_production_manifest};
+pub use production_manifest::{
+    EmittedCodeFile, assemble_production_manifest, assemble_production_manifest_with_identity,
+};
