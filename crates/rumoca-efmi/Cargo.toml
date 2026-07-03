@@ -7,6 +7,19 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+quick-xml = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+# Deliberately not `workspace = true`: the workspace `zip` enables default
+# features (incl. lzma's system liblzma), which this pure-deflate writer does
+# not need; Cargo cannot disable inherited default features. Same pattern as
+# `xtask` and `rumoca-test-msl`.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
