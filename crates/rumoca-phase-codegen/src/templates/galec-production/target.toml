@@ -12,7 +12,7 @@ name = "galec-production"
 # the checksum web (__content.xml <-> both manifests <-> code files <-> PC
 # ManifestReference <-> AC manifest bytes) is computed from the exact
 # written bytes. The co-emitted GALEC also meets "GALEC language
-# conformance": it round-trip parses (rumoca-galec tests/roundtrip.rs).
+# conformance": it round-trip parses (rumoca-ir-galec tests/roundtrip.rs).
 description = "eFMI Production Code export: eFMU container with generated C99 + LogicalData mapping manifest (ProductionCode/) and co-emitted Algorithm Code representation (AlgorithmCode/), directory and .efmu zip forms"
 execution_mode = "packaged"
 # deployment_class is the deployment FAMILY axis of `rumoca targets` (like

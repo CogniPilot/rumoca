@@ -9,7 +9,7 @@ name = "galec"
 # XSD validation and checksum recomputation (crates/rumoca/tests/
 # cli_target_galec.rs). The emitted GALEC also meets "GALEC language
 # conformance": it round-trip parses (print∘parse∘print idempotence,
-# rumoca-galec tests/roundtrip.rs). "eFMI Production Code export" is the
+# rumoca-ir-galec tests/roundtrip.rs). "eFMI Production Code export" is the
 # galec-production target's claim, not this one's.
 description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with Model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
 execution_mode = "packaged"

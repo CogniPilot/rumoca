@@ -42,7 +42,7 @@ rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 # eFMU container packaging for `build = "efmu"` targets (the runner-gated
 # `efmu` module). Already in the unconditional dependency graph via
-# rumoca-compile -> rumoca-target-galec, so this adds no transitive weight
+# rumoca-compile -> rumoca-galec-codegen, so this adds no transitive weight
 # for library consumers.
 rumoca-efmi = { workspace = true }
 rumoca-ir-solve = { workspace = true }

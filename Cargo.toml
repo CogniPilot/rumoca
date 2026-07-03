@@ -36,9 +36,9 @@ members = [
     "crates/rumoca-solver-rk45",
     "crates/rumoca-phase-typecheck",
     # GALEC / eFMI export
-    "crates/rumoca-galec",
+    "crates/rumoca-ir-galec",
     "crates/rumoca-efmi",
-    "crates/rumoca-target-galec",
+    "crates/rumoca-galec-codegen",
     # Compile pipeline and tools
     "crates/rumoca-compile",
     "crates/rumoca-tool-lint",
@@ -104,9 +104,9 @@ rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
-rumoca-galec = { path = "crates/rumoca-galec" }
+rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }
 rumoca-efmi = { path = "crates/rumoca-efmi" }
-rumoca-target-galec = { path = "crates/rumoca-target-galec" }
+rumoca-galec-codegen = { path = "crates/rumoca-galec-codegen" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
 rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
 rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }

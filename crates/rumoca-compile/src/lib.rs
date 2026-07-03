@@ -155,14 +155,14 @@ pub mod codegen {
 }
 
 /// GALEC / eFMI Algorithm Code export facade (SPEC_0034 GAL-010: frontends
-/// reach the `rumoca-target-galec` projection only through this module).
+/// reach the `rumoca-galec-codegen` projection only through this module).
 pub mod galec {
     pub use crate::galec_api::{
         GalecCExport, GalecExport, GalecExportError, GalecProductionExport, build_scalar_type_map,
         render_galec_c_export, render_galec_export, render_galec_production_export,
     };
-    pub use rumoca_galec::ast::ScalarType;
-    pub use rumoca_target_galec::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
+    pub use rumoca_ir_galec::ast::ScalarType;
+    pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
 }
 
 /// Read-only DAE analysis helpers exposed through the compile facade.

@@ -1,7 +1,7 @@
 /* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
  * {{ conformance_header.summary }} Method bodies below are printed
  * from the validated GALEC block by the typed C printer
- * (rumoca-target-galec::c_print); this template only lays out the file. */
+ * (rumoca-galec-codegen::c_print); this template only lays out the file. */
 #include "{{ model_name }}.h"
 
 #include <math.h>
@@ -11,19 +11,19 @@
  * inline` so unused helpers survive -Wall -Werror. min/max use the GALEC
  * relational definition (`u1 < u2` selects), NOT fmin/fmax: a false qNaN
  * comparison must take the else operand (eFMI traps T9/T14). */
-static inline double rumoca_galec_sign(double x) {
+static inline double rumoca_ir_galec_sign(double x) {
     return (double)((x > 0.0) - (x < 0.0));
 }
-static inline double rumoca_galec_min(double u1, double u2) {
+static inline double rumoca_ir_galec_min(double u1, double u2) {
     return u1 < u2 ? u1 : u2;
 }
-static inline double rumoca_galec_max(double u1, double u2) {
+static inline double rumoca_ir_galec_max(double u1, double u2) {
     return u1 > u2 ? u1 : u2;
 }
-static inline int32_t rumoca_galec_imin(int32_t u1, int32_t u2) {
+static inline int32_t rumoca_ir_galec_imin(int32_t u1, int32_t u2) {
     return u1 < u2 ? u1 : u2;
 }
-static inline int32_t rumoca_galec_imax(int32_t u1, int32_t u2) {
+static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32_t u2) {
     return u1 > u2 ? u1 : u2;
 }
 

@@ -1,0 +1,19 @@
+[package]
+name = "rumoca-galec-codegen"
+description = "Projection from the Rumoca DAE IR to an eFMI Algorithm Code package (GALEC AST + manifest model)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-efmi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

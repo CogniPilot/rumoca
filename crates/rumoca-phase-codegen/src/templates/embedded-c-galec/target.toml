@@ -43,7 +43,7 @@ host_callbacks = false
 # D2/GAL-008 split: these templates own the C FILE LAYOUT only (includes,
 # guards, struct/function skeletons, the fixed builtin-helper prelude);
 # every C expression/statement and identifier is printed by the typed Rust
-# printer in rumoca-target-galec (c_mangle/c_print) and arrives pre-printed
+# printer in rumoca-galec-codegen (c_mangle/c_print) and arrives pre-printed
 # in the template context (`variables[*].c_name`, `methods.*.c_lines`).
 # Templates stay thin — iteration and interpolation, no C syntax logic.
 [[files]]
