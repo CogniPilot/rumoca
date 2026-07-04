@@ -843,6 +843,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // Re-apply parameter lookup from materialized flat variables after
     // class/package constant injection so record rebindings override injected
     // declaration defaults (MLS §7.2.3/§7.2.4, §8.3.3 structural ranges).
+    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     stabilize_symbolic_component_dimensions(ctx, flat, overlay, tree)?;
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     stabilize_symbolic_component_dimensions(ctx, flat, overlay, tree)?;

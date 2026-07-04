@@ -411,6 +411,9 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, input)| {
+                    if input.type_class != Some(rumoca_core::ClassType::Record) {
+                        return None;
+                    }
                     record_fields_from_constructor_metadata(
                         &flat.functions,
                         &input.type_name,
@@ -2845,6 +2848,58 @@ mod tests {
             .expect("function remains");
         assert_eq!(function.inputs.len(), 1);
         assert_eq!(function.inputs[0].name, "r");
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn record_param_lowering_keeps_external_object_inputs_opaque() {
+        let mut flat = flat::Model::new();
+        let mut external_constructor = rumoca_core::Function::new("Pkg.ExternalTable", Span::DUMMY);
+        external_constructor.is_constructor = true;
+        external_constructor.add_input(rumoca_core::FunctionParam::new(
+            "fileName",
+            "String",
+            test_span(),
+        ));
+        external_constructor.add_input(rumoca_core::FunctionParam::new(
+            "tableName",
+            "String",
+            test_span(),
+        ));
+        flat.add_function(external_constructor);
+
+        let mut external_reader = rumoca_core::Function::new("Pkg.getMin", Span::DUMMY);
+        external_reader.add_input(
+            rumoca_core::FunctionParam::new("tableID", "Pkg.ExternalTable", test_span())
+                .with_type_class(ClassType::Class),
+        );
+        external_reader.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        flat.add_function(external_reader);
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.getMin"),
+                args: vec![var_ref("tableID")],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat)
+            .expect("opaque external object should not decompose");
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.getMin"))
+            .expect("function remains");
+        assert_eq!(function.inputs.len(), 1);
+        assert_eq!(function.inputs[0].name, "tableID");
         let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
             panic!("expected function call");
         };

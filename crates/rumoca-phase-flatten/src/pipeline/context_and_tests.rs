@@ -503,7 +503,23 @@ impl Context {
             user_func_eval_ctx: None,
             var_context: Some(var_name),
         };
-        let Some(dim) = try_eval_integer_with_context(&lowered, &eval_ctx) else {
+        let dim = try_eval_integer_with_context(&lowered, &eval_ctx).or_else(|| {
+            self.target_def_integer_aliases_for_expr(&lowered)
+                .and_then(|known_ints| {
+                    let eval_ctx = ParamEvalContext {
+                        known_ints: &known_ints,
+                        known_reals: &self.real_parameter_values,
+                        known_bools: &self.boolean_parameter_values,
+                        known_enums: &self.enum_parameter_values,
+                        array_dims: &self.array_dimensions,
+                        functions: &self.functions,
+                        user_func_eval_ctx: None,
+                        var_context: Some(var_name),
+                    };
+                    try_eval_integer_with_context(&lowered, &eval_ctx)
+                })
+        });
+        let Some(dim) = dim else {
             return Err(FlattenError::unresolved_component_dimension(
                 var_name,
                 expr.to_string(),
@@ -518,6 +534,117 @@ impl Context {
             ));
         }
         Ok(dim)
+    }
+
+    fn target_def_integer_aliases_for_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<rustc_hash::FxHashMap<String, i64>> {
+        let mut known_ints = self.parameter_values.clone();
+        let mut changed = false;
+        self.collect_target_def_integer_aliases(expr, &mut known_ints, &mut changed);
+        changed.then_some(known_ints)
+    }
+
+    fn collect_target_def_integer_aliases(
+        &self,
+        expr: &Expression,
+        known_ints: &mut rustc_hash::FxHashMap<String, i64>,
+        changed: &mut bool,
+    ) {
+        match expr {
+            Expression::VarRef {
+                name, subscripts, ..
+            } => {
+                if subscripts.is_empty()
+                    && let Some(target_def_id) = name.target_def_id()
+                    && let Some(target_name) = self.target_def_names.get(&target_def_id)
+                    && let Some(value) = self.lookup_integer_by_declared_target_name(target_name)
+                    && known_ints.insert(name.as_str().to_string(), value) != Some(value)
+                {
+                    *changed = true;
+                }
+                for subscript in subscripts {
+                    self.collect_target_def_integer_aliases_from_subscript(
+                        subscript, known_ints, changed,
+                    );
+                }
+            }
+            Expression::Binary { lhs, rhs, .. } => {
+                self.collect_target_def_integer_aliases(lhs, known_ints, changed);
+                self.collect_target_def_integer_aliases(rhs, known_ints, changed);
+            }
+            Expression::Unary { rhs, .. } => {
+                self.collect_target_def_integer_aliases(rhs, known_ints, changed);
+            }
+            Expression::BuiltinCall { args, .. }
+            | Expression::FunctionCall { args, .. }
+            | Expression::Array { elements: args, .. }
+            | Expression::Tuple { elements: args, .. } => {
+                for arg in args {
+                    self.collect_target_def_integer_aliases(arg, known_ints, changed);
+                }
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (cond, value) in branches {
+                    self.collect_target_def_integer_aliases(cond, known_ints, changed);
+                    self.collect_target_def_integer_aliases(value, known_ints, changed);
+                }
+                self.collect_target_def_integer_aliases(else_branch, known_ints, changed);
+            }
+            Expression::Range {
+                start, step, end, ..
+            } => {
+                self.collect_target_def_integer_aliases(start, known_ints, changed);
+                if let Some(step) = step {
+                    self.collect_target_def_integer_aliases(step, known_ints, changed);
+                }
+                self.collect_target_def_integer_aliases(end, known_ints, changed);
+            }
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                ..
+            } => {
+                self.collect_target_def_integer_aliases(expr, known_ints, changed);
+                for index in indices {
+                    self.collect_target_def_integer_aliases(&index.range, known_ints, changed);
+                }
+                if let Some(filter) = filter {
+                    self.collect_target_def_integer_aliases(filter, known_ints, changed);
+                }
+            }
+            Expression::Index {
+                base, subscripts, ..
+            } => {
+                self.collect_target_def_integer_aliases(base, known_ints, changed);
+                for subscript in subscripts {
+                    self.collect_target_def_integer_aliases_from_subscript(
+                        subscript, known_ints, changed,
+                    );
+                }
+            }
+            Expression::FieldAccess { base, .. } => {
+                self.collect_target_def_integer_aliases(base, known_ints, changed);
+            }
+            Expression::Literal { .. } | Expression::Empty { .. } => {}
+        }
+    }
+
+    fn collect_target_def_integer_aliases_from_subscript(
+        &self,
+        subscript: &rumoca_core::Subscript,
+        known_ints: &mut rustc_hash::FxHashMap<String, i64>,
+        changed: &mut bool,
+    ) {
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            self.collect_target_def_integer_aliases(expr, known_ints, changed);
+        }
     }
 
     pub(crate) fn seed_flat_parameter_constant_keys(&mut self, flat: &Model) {

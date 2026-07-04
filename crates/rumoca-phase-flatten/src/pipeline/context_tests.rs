@@ -114,6 +114,14 @@ mod tests {
         })
     }
 
+    fn component_ref_expr_with_def_id(path: &str, def_id: DefId) -> ast::Expression {
+        let mut expr = component_ref_expr(path);
+        if let ast::Expression::ComponentReference(reference) = &mut expr {
+            reference.def_id = Some(def_id);
+        }
+        expr
+    }
+
     fn int_lit(value: i64) -> Expression {
         Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
@@ -927,6 +935,57 @@ mod tests {
             vec![7]
         );
         assert_eq!(ctx.array_dimensions.get("aD_Converter.y"), Some(&vec![7]));
+    }
+
+    #[test]
+    fn symbolic_component_dimensions_resolve_package_member_target_def_constant() {
+        let nstate_def = DefId::new(42);
+        let target_name = "Modelica.Math.Random.Generators.Xorshift128plus.nState";
+        let mut ctx = Context::new();
+        ctx.target_def_names
+            .insert(nstate_def, target_name.to_string());
+        ctx.parameter_values.insert(target_name.to_string(), 4);
+
+        let mut tree = source_backed_tree();
+        tree.def_map.insert(nstate_def, target_name.to_string());
+        let mut flat = flat::Model::default();
+        let state_name = rumoca_core::VarName::new("motor.uniformNoise.state");
+        flat.add_variable(
+            state_name.clone(),
+            flat::Variable {
+                name: state_name.clone(),
+                dims: vec![1],
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            symbolic_instance(
+                InstanceId::new(1),
+                "motor.uniformNoise.state",
+                vec![ast::Subscript::Expression(component_ref_expr_with_def_id(
+                    "generator.nState",
+                    nstate_def,
+                ))],
+            ),
+        );
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("dimension target definition constant should resolve");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables.get(&state_name).expect("state").dims,
+            vec![4]
+        );
+        assert_eq!(
+            ctx.array_dimensions.get("motor.uniformNoise.state"),
+            Some(&vec![4])
+        );
     }
 
     #[test]
