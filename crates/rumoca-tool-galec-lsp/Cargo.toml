@@ -24,10 +24,11 @@ lsp-types = { workspace = true }
 # no solver/simulation backends — only parse + validate — so it stays lean.
 tower-lsp = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [features]
 default = ["server"]
-server = ["dep:tower-lsp", "dep:tokio"]
+server = ["dep:tower-lsp", "dep:tokio", "dep:clap"]
 
 [dev-dependencies]
 futures-util = { workspace = true }

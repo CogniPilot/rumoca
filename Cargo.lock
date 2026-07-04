@@ -3819,6 +3819,7 @@ dependencies = [
 name = "rumoca-tool-galec-lsp"
 version = "0.9.9"
 dependencies = [
+ "clap",
  "futures-util",
  "lsp-types",
  "rumoca-ir-galec",

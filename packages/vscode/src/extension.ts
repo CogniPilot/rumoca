@@ -22,8 +22,10 @@ import {
 } from './language_client_runtime';
 import { createNotebookControllerRuntime } from './notebook_controller_runtime';
 import { buildNotebookPythonSnippet } from './notebook_python_snippets';
+import { createGalecLanguageClient } from './galec_client';
 
 let client: LanguageClient | undefined;
+let galecClient: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
 const nodeRequire = createRequire(__filename);
 const DEFAULT_WEB_RESULTS_OUTPUT_DIR = 'results';
@@ -2702,6 +2704,19 @@ export async function activate(context: vscode.ExtensionContext) {
         log('Continuing activation without a running language server so commands remain available.');
     }
 
+    // GALEC (.alg) language client — independent of the Modelica server above,
+    // so a missing or failed GALEC server never affects Modelica support.
+    galecClient = createGalecLanguageClient(context, log);
+    if (galecClient) {
+        try {
+            await galecClient.start();
+            log('GALEC language server started');
+        } catch (error) {
+            log(`Failed to start GALEC language server: ${error}`);
+            galecClient = undefined;
+        }
+    }
+
     const startInteractiveScenario = async (
         document: vscode.TextDocument,
         scenario: ScenarioConfigResponse,
@@ -4221,5 +4236,8 @@ export async function activate(context: vscode.ExtensionContext) {
 export async function deactivate(): Promise<void> {
     if (client) {
         await client.stop();
+    }
+    if (galecClient) {
+        await galecClient.stop();
     }
 }

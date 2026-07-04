@@ -32,6 +32,7 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:modelica",
+    "onLanguage:galec",
     "onLanguage:toml",
     "workspaceContains:**/rumoca-scenario.toml",
     "workspaceContains:**/rumoca-scenario.*.toml",
@@ -55,6 +56,17 @@
           ".mo"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "galec",
+        "aliases": [
+          "GALEC",
+          "galec"
+        ],
+        "extensions": [
+          ".alg"
+        ],
+        "configuration": "./galec-language-configuration.json"
       }
     ],
     "grammars": [
@@ -65,6 +77,11 @@
         "embeddedLanguages": {
           "meta.embedded.block.modelica": "modelica"
         }
+      },
+      {
+        "language": "galec",
+        "scopeName": "source.galec",
+        "path": "./syntaxes/galec.tmLanguage.json"
       },
       {
         "scopeName": "source.modelica.injection",
@@ -86,6 +103,11 @@
           "type": "string",
           "default": "",
           "description": "Path to the rumoca-lsp executable. If empty, will search in PATH."
+        },
+        "rumoca.galecServerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the rumoca-galec-lsp executable (GALEC .alg language server). If empty, uses the bundled binary, then searches PATH."
         },
         "rumoca.trace.server": {
           "type": "string",

@@ -367,6 +367,26 @@ test("surface contract: modelica files activate the extension", () => {
   );
 });
 
+test("surface contract: galec (.alg) files activate the extension", () => {
+  const packageJson = readPackageJson();
+
+  assert.ok(
+    Array.isArray(packageJson.activationEvents)
+      && packageJson.activationEvents.includes("onLanguage:galec"),
+    "opening a .alg file should activate the extension so GALEC LSP diagnostics appear",
+  );
+  const galec = (packageJson.contributes?.languages ?? []).find((entry) => entry?.id === "galec");
+  assert.ok(galec, "expected a galec language contribution");
+  assert.ok(
+    (galec.extensions ?? []).includes(".alg"),
+    "galec language should own the .alg extension",
+  );
+  const galecGrammar = (packageJson.contributes?.grammars ?? []).find(
+    (entry) => entry?.language === "galec",
+  );
+  assert.ok(galecGrammar, "expected a galec TextMate grammar for .alg highlighting");
+});
+
 test("surface contract: rumoca-scenario.toml scenario files activate as toml", () => {
   const packageJson = readPackageJson();
   const activationEvents = packageJson.activationEvents ?? [];
