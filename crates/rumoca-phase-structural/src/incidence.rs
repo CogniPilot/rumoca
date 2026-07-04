@@ -824,22 +824,7 @@ impl ExpressionUnknownCollector<'_> {
                 else_branch,
                 ..
             } => {
-                let mut has_unresolved_condition = false;
-                for (condition, value) in branches {
-                    if let Some(constants) = self.constants
-                        && let Some(value_is_active) = constants.eval_bool(condition)
-                    {
-                        if value_is_active {
-                            self.visit_projected_field_expression(value, field);
-                            return;
-                        }
-                        continue;
-                    }
-                    has_unresolved_condition = true;
-                    self.visit_expression(condition);
-                    self.visit_projected_field_expression(value, field);
-                }
-                if has_unresolved_condition || branches.is_empty() {
+                if !self.visit_projected_if_branches(branches, field) {
                     self.visit_projected_field_expression(else_branch, field);
                 }
             }
@@ -855,16 +840,12 @@ impl ExpressionUnknownCollector<'_> {
                 if let Some(projected) = complex_constructor_field_arg(args, field) {
                     self.visit_expression(projected);
                 } else {
-                    for arg in args {
-                        self.visit_expression(arg);
-                    }
+                    self.visit_expression_args(args);
                 }
             }
             rumoca_core::Expression::BuiltinCall { args, .. }
             | rumoca_core::Expression::FunctionCall { args, .. } => {
-                for arg in args {
-                    self.visit_expression(arg);
-                }
+                self.visit_expression_args(args);
             }
             rumoca_core::Expression::Index {
                 base, subscripts, ..
@@ -898,6 +879,37 @@ impl ExpressionUnknownCollector<'_> {
                 }
             }
             _ => self.visit_expression(expr),
+        }
+    }
+
+    fn visit_projected_if_branches(
+        &mut self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        field: &str,
+    ) -> bool {
+        let mut has_unresolved_condition = false;
+        for (condition, value) in branches {
+            match self
+                .constants
+                .and_then(|constants| constants.eval_bool(condition))
+            {
+                Some(true) => {
+                    self.visit_projected_field_expression(value, field);
+                    return true;
+                }
+                Some(false) => continue,
+                None => {}
+            }
+            has_unresolved_condition = true;
+            self.visit_expression(condition);
+            self.visit_projected_field_expression(value, field);
+        }
+        !has_unresolved_condition && !branches.is_empty()
+    }
+
+    fn visit_expression_args(&mut self, args: &[rumoca_core::Expression]) {
+        for arg in args {
+            self.visit_expression(arg);
         }
     }
 }

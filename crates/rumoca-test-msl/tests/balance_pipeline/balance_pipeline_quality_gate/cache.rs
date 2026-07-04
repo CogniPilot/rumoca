@@ -65,27 +65,15 @@ pub(super) struct SimulationParityCachePolicy {
     pub(super) stop_time_override: Option<f64>,
 }
 
-fn positive_usize_env(env_key: &str) -> Option<usize> {
-    std::env::var(env_key)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-}
-
-fn positive_u64_env(env_key: &str) -> Option<u64> {
-    std::env::var(env_key)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-}
-
 pub(super) fn simulation_stop_time_override() -> Option<f64> {
     // No stop-time override; use the model's experiment annotation.
     None
 }
 
 pub(super) fn omc_sim_reference_batch_timeout_seconds() -> u64 {
-    positive_u64_env(OMC_SIM_REFERENCE_BATCH_TIMEOUT_ENV)
+    parity_config()
+        .omc_sim_reference_batch_timeout_secs
+        .filter(|value| *value > 0)
         .unwrap_or(OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS)
 }
 
@@ -419,7 +407,9 @@ where
 }
 
 pub(super) fn omc_parity_workers() -> usize {
-    positive_usize_env(OMC_PARITY_WORKERS_ENV)
+    parity_config()
+        .omc_parity_workers
+        .filter(|value| *value > 0)
         .unwrap_or_else(|| msl_stage_parallelism().clamp(1, OMC_PARITY_WORKERS_DEFAULT_MAX))
 }
 
@@ -428,10 +418,5 @@ pub(super) fn omc_parity_threads() -> usize {
 }
 
 pub(super) fn force_omc_parity_refresh_enabled() -> bool {
-    std::env::var(FORCE_OMC_PARITY_REFRESH_ENV).is_ok_and(|value| {
-        value == "1"
-            || value.eq_ignore_ascii_case("true")
-            || value.eq_ignore_ascii_case("yes")
-            || value.eq_ignore_ascii_case("on")
-    })
+    parity_config().force_omc_parity_refresh.unwrap_or(false)
 }

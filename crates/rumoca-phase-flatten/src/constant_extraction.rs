@@ -1339,6 +1339,26 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
     resolve_context: &str,
     ctx: &mut Context,
 ) {
+    extract_constants_from_class_with_prefix_and_imports_shadowed(
+        tree,
+        class_index,
+        prefix,
+        class_def,
+        resolve_context,
+        ctx,
+        &rustc_hash::FxHashSet::default(),
+    );
+}
+
+pub(super) fn extract_constants_from_class_with_prefix_and_imports_shadowed(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    prefix: &str,
+    class_def: &ast::ClassDef,
+    resolve_context: &str,
+    ctx: &mut Context,
+    shadowed_names: &rustc_hash::FxHashSet<String>,
+) {
     let imports = constant_extraction_imports(tree, class_index, resolve_context);
     let empty_prefix = ast::QualifiedName::new();
     let qualify_opts = qualify::QualifyOptions {
@@ -1347,6 +1367,9 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
     };
 
     for (name, comp) in &class_def.components {
+        if shadowed_names.contains(name) {
+            continue;
+        }
         if !matches!(
             comp.variability,
             rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
@@ -1461,6 +1484,12 @@ pub(super) fn extract_single_constant_with_prefix_and_function_scope(
 
     let type_name = comp.type_name.to_string();
     let preserve_existing = ctx.flat_parameter_constant_keys.contains(full_name);
+    if matches!(comp.variability, rumoca_core::Variability::Constant(_)) {
+        ctx.class_constant_keys.insert(full_name.to_string());
+        if exposes_unprefixed_prefix(prefix) {
+            ctx.class_constant_keys.insert(name.to_string());
+        }
+    }
     if let Some(val) = try_extract_named_record_constructor_constant(expr, ctx, prefix, full_name)
         && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
     {

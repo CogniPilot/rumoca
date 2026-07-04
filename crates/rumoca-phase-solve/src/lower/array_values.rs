@@ -978,6 +978,7 @@ impl<'a> LowerBuilder<'a> {
         self.lower_array_like_values(expr, scope, call_depth)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn lower_function_call_array_like_values(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1247,6 +1248,7 @@ impl<'a> LowerBuilder<'a> {
         Ok(values)
     }
 
+    #[allow(clippy::excessive_nesting)]
     pub(super) fn lower_array_operand(
         &mut self,
         expr: &rumoca_core::Expression,

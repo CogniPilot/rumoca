@@ -78,6 +78,8 @@ use super::{
     variable_by_name,
 };
 
+type ConstructorInputScalars = (Vec<i64>, Vec<rumoca_core::Expression>);
+
 #[derive(Debug, Clone)]
 struct ProjectedFunctionOutput {
     field_path: Vec<String>,
@@ -341,6 +343,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         self.bind_inputs_with_projection_scope(function, args, depth, owner_span, None)
     }
 
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     fn bind_inputs_with_projection_scope(
         &self,
         function: &rumoca_core::Function,
@@ -398,9 +401,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             } else if let Some((prefix, field)) = split_flattened_projection_input_name(&input.name)
                 && let Some(actual) = positional.get(positional_idx).cloned()
                 && (flattened_projection_group_has_prefix(&function.inputs, prefix)
-                    || self.flattened_projection_actual_has_field(&actual, field, &scope)
+                    || self.flattened_projection_actual_has_field(actual, field, &scope)
                     || caller_scope.is_some_and(|caller_scope| {
-                        self.flattened_projection_actual_has_field(&actual, field, caller_scope)
+                        self.flattened_projection_actual_has_field(actual, field, caller_scope)
                     }))
             {
                 project_flattened_positional_field = true;
@@ -410,7 +413,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     .skip(input_idx + 1)
                     .any(|next| flattened_projection_input_has_prefix(&next.name, prefix));
                 let actual = self
-                    .flattened_projection_actual_field_value(&actual, field, caller_scope)
+                    .flattened_projection_actual_field_value(actual, field, caller_scope)
                     .unwrap_or_else(|| rumoca_core::Expression::FieldAccess {
                         base: Box::new(actual.clone()),
                         field: field.to_string(),
@@ -755,7 +758,6 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
         let target_span = inherited_projection_span(target.span, assignment_span);
         let target = target.base;
-        scope.full.insert(target.clone(), value.clone());
         let value_span = value.span().unwrap_or(target_span);
         if let Some(record_outputs) = self.record_constructor_outputs(&value, scope, depth + 1)? {
             if is_function_output_target(function, &target) {
@@ -766,6 +768,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     target_span,
                 )?;
             }
+            scope.full.insert(target, value);
             return Ok(());
         }
         let dims = assignment_projection_dims(
@@ -805,6 +808,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 )?;
             }
         }
+        scope.full.insert(target, value);
         Ok(())
     }
 
@@ -1189,7 +1193,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         output_span: rumoca_core::Span,
     ) -> Result<Vec<ProjectedFunctionOutput>, LowerError> {
         if output.dims.is_empty() {
-            let expr = self.substitute(expr, scope)?;
+            let expr = expr.clone();
             let expr = if matches!(
                 expr,
                 rumoca_core::Expression::FunctionCall {
@@ -1355,7 +1359,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         scope: &FunctionProjectionScope,
         depth: usize,
         actual_span: rumoca_core::Span,
-    ) -> Result<Option<(Vec<i64>, Vec<rumoca_core::Expression>)>, LowerError> {
+    ) -> Result<Option<ConstructorInputScalars>, LowerError> {
         let span = projection_arg_or_context_span(actual, actual_span)?;
         let Some(mut dims) = constructor_input_projection_dims(
             input,
@@ -1396,7 +1400,11 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         expr: &rumoca_core::Expression,
         scope: &FunctionProjectionScope,
     ) -> Result<rumoca_core::Expression, LowerError> {
-        let mut substituter = FunctionScopeSubstituter { scope, error: None };
+        let mut substituter = FunctionScopeSubstituter {
+            scope,
+            error: None,
+            stack: Vec::new(),
+        };
         let expr = substituter.rewrite_expression(expr);
         if let Some(error) = substituter.error {
             return Err(error);
@@ -1475,6 +1483,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(Some(scalars))
     }
 
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     fn project_value(
         &self,
         expr: &rumoca_core::Expression,
@@ -2054,6 +2063,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(None)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn project_record_field_value(
         &self,
         value: &rumoca_core::Expression,

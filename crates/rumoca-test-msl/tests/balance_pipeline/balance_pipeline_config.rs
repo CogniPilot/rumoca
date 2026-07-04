@@ -61,6 +61,12 @@ pub(crate) struct MslParityConfig {
     /// Opt into the generated simulation-targets file when no explicit file or
     /// committed file applies.
     pub generated_sim_targets_file: Option<bool>,
+    /// Force regeneration of the OMC simulation reference cache.
+    pub force_omc_parity_refresh: Option<bool>,
+    /// OMC reference-generation worker count.
+    pub omc_parity_workers: Option<usize>,
+    /// Whole-stage OMC reference-generation timeout in seconds.
+    pub omc_sim_reference_batch_timeout_secs: Option<u64>,
 }
 
 /// Load (once) the MSL parity configuration from [`parity_config_path`]. A

@@ -21,6 +21,11 @@ pub(super) fn prepare_dae_for_structural_analysis(
     lowered: &mut dae::Dae,
     opts: &SimOptions,
 ) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    log_solve_lowering_start("prepare.scalarize_vector_member_slices");
+    let timer = stage_timer_start();
+    rumoca_phase_dae::scalarize_phantom_vector_equations(lowered)
+        .map_err(vector_scalarization_lower_error)?;
+    log_solve_lowering_done("prepare.scalarize_vector_member_slices", timer);
     if opts.scalarize {
         log_solve_lowering_start("prepare.scalarize_equations");
         let timer = stage_timer_start();
@@ -341,6 +346,16 @@ pub(super) fn metadata_attachment_lower_error(
     err: rumoca_phase_dae::ToDaeError,
 ) -> rumoca_phase_solve::SolveModelLowerError {
     let reason = format!("DAE reference metadata attachment failed: {err}");
+    rumoca_phase_solve::SolveModelLowerError::Lower(lower_contract_error_from_optional_span(
+        reason,
+        err.source_span(),
+    ))
+}
+
+fn vector_scalarization_lower_error(
+    err: rumoca_phase_dae::ToDaeError,
+) -> rumoca_phase_solve::SolveModelLowerError {
+    let reason = format!("DAE vector scalarization failed: {err}");
     rumoca_phase_solve::SolveModelLowerError::Lower(lower_contract_error_from_optional_span(
         reason,
         err.source_span(),

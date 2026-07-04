@@ -649,37 +649,23 @@ fn component_visible_in_class_or_base(
     class: &ClassDef,
     name: &str,
 ) -> bool {
-    component_visible_in_class_or_base_inner(def, class, name, &mut HashSet::new())
-}
-
-fn component_visible_in_class_or_base_inner(
-    def: &StoredDefinition,
-    class: &ClassDef,
-    name: &str,
-    visited: &mut HashSet<DefId>,
-) -> bool {
-    if class.components.contains_key(name) {
-        return true;
-    }
-
-    for ext in &class.extends {
-        if ext.break_names.iter().any(|break_name| break_name == name) {
-            continue;
-        }
-        let Some(base_def_id) = ext.base_def_id else {
-            continue;
-        };
-        if !visited.insert(base_def_id) {
-            continue;
-        }
-        let Some(base_class) = find_class_by_def_id(def, base_def_id) else {
-            continue;
-        };
-        if component_visible_in_class_or_base_inner(def, base_class, name, visited) {
+    let mut to_visit = vec![class];
+    let mut visited = HashSet::new();
+    while let Some(current) = to_visit.pop() {
+        if current.components.contains_key(name) {
             return true;
         }
+        to_visit.extend(current.extends.iter().filter_map(|ext| {
+            if ext.break_names.iter().any(|break_name| break_name == name) {
+                return None;
+            }
+            let base_def_id = ext.base_def_id?;
+            visited
+                .insert(base_def_id)
+                .then(|| find_class_by_def_id(def, base_def_id))
+                .flatten()
+        }));
     }
-
     false
 }
 

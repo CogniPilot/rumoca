@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: function-expression lowering tests still
+// share builders across scalar, array, and record cases. split plan: move
+// builtin, projection, and record tests into sibling modules.
 use super::*;
 
 mod shape_diagnostic_tests;
@@ -1240,6 +1243,7 @@ fn lower_expression_projects_named_record_field_from_function_result() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn lower_expression_binds_flattened_named_record_field_actual() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();

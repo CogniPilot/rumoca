@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: statement lowering still owns function body,
+// loop, branch, and assignment lowering together. split plan: split loop/body
+// lowering and assignment projection into dedicated modules.
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve::{BinaryOp, Reg, ScalarSlot};
 
@@ -558,6 +561,7 @@ impl<'a> LowerBuilder<'a> {
         self.eval_compile_time_expr(start, const_scope).ok()
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn eval_unique_compile_time_suffix(
         &self,
         name: &str,

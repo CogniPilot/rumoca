@@ -57,16 +57,13 @@ pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
-pub(super) const FORCE_OMC_PARITY_REFRESH_ENV: &str = "RUMOCA_MSL_FORCE_OMC_PARITY_REFRESH";
-pub(super) const OMC_PARITY_WORKERS_ENV: &str = "RUMOCA_MSL_OMC_PARITY_WORKERS";
-pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_ENV: &str =
-    "RUMOCA_MSL_OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECS";
 /// Default OMC worker cap for parity reference generation.
 ///
 /// OMC is often accessed through a Docker-backed wrapper on macOS. Running one
 /// OMC process per local CPU can make otherwise quick Clocked examples hit the
 /// per-model timeout and collapse trace coverage. Keep this conservative by
-/// default; developers can still override it with `RUMOCA_MSL_OMC_PARITY_WORKERS`.
+/// default; `cargo xtask verify msl-parity --omc-parity-workers` can raise or
+/// lower it for a documented one-off run.
 pub(super) const OMC_PARITY_WORKERS_DEFAULT_MAX: usize = 2;
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
 pub(super) const MSL_QUALITY_CURRENT_FILE_REL: &str = "msl_quality_current.json";

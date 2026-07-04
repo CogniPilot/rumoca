@@ -444,17 +444,21 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn cerebri_bfbs_path(file_name: &str) -> Option<PathBuf> {
-        let dir = std::env::var_os("RUMOCA_CEREBRI_BFBS_DIR")?;
-        Some(PathBuf::from(dir).join(file_name))
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn cerebri_bfbs_path(file_name: &str) -> PathBuf {
+        workspace_root().join("target/cerebri-bfbs").join(file_name)
     }
 
     #[test]
     fn parse_cerebri2_topics() {
-        let Some(path) = cerebri_bfbs_path("cerebri2_topics.bfbs") else {
-            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
-            return;
-        };
+        let path = cerebri_bfbs_path("cerebri2_topics.bfbs");
         if !path.exists() {
             eprintln!("skipping test: bfbs not found");
             return;
@@ -494,10 +498,7 @@ mod tests {
 
     #[test]
     fn parse_cerebri2_sil() {
-        let Some(path) = cerebri_bfbs_path("cerebri2_sil.bfbs") else {
-            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
-            return;
-        };
+        let path = cerebri_bfbs_path("cerebri2_sil.bfbs");
         if !path.exists() {
             eprintln!("skipping test: bfbs not found");
             return;

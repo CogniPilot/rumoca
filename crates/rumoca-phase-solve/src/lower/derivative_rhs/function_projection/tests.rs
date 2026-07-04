@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: function derivative projection regressions
+// share source fixtures and tensor assertions. split plan: split constructor,
+// call-projection, and tensor-row cases into focused test modules.
 use super::*;
 
 fn test_span() -> rumoca_core::Span {
@@ -1585,6 +1588,7 @@ fn generated_function_call_projection_errors_use_owner_span() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn projected_record_field_expands_dynamic_cat_output() -> Result<(), LowerError> {
     let mut dae_model = dae::Dae::default();
     let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
@@ -1699,6 +1703,7 @@ fn projected_record_field_expands_dynamic_cat_output() -> Result<(), LowerError>
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn projected_record_field_expands_stream_variable_cat_output() -> Result<(), LowerError> {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.algebraics.insert(

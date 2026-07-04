@@ -1691,34 +1691,31 @@ fn eval_size_integer_with_context(
         return None;
     }
 
-    let array_name = match &args[0] {
+    let dims = match &args[0] {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => name.to_string(),
-        _ => {
+        } if subscripts.is_empty() => {
+            let array_name = name.to_string();
+
             #[cfg(feature = "tracing")]
-            warn!(
-                arg0_kind = std::any::type_name_of_val(&args[0]),
-                "size() first arg must be a simple VarRef"
-            );
-            return None;
+            debug!(array = %array_name, var_context = ?ctx.var_context, "looking up array dimensions with scope resolution");
+
+            lookup_array_dims_in_scope(&array_name, ctx.var_context, ctx.array_dims)?
         }
+        expr => infer_array_dimensions_with_context(expr, ctx)?,
     };
-
-    #[cfg(feature = "tracing")]
-    debug!(array = %array_name, var_context = ?ctx.var_context, "looking up array dimensions with scope resolution");
-
-    // Try scope-aware lookup for array dimensions (MLS §5.1)
-    let dims = lookup_array_dims_in_scope(&array_name, ctx.var_context, ctx.array_dims)?;
 
     if args.len() == 1 {
         if dims.len() == 1 {
             #[cfg(feature = "tracing")]
-            debug!(array = %array_name, size = dims[0], "size(A) for 1D array");
+            debug!(size = dims[0], "size(A) for 1D array");
             Some(dims[0])
         } else {
             #[cfg(feature = "tracing")]
-            warn!(array = %array_name, ndims = dims.len(), "size(A) requires explicit dimension for multi-dimensional arrays");
+            warn!(
+                ndims = dims.len(),
+                "size(A) requires explicit dimension for multi-dimensional arrays"
+            );
             None
         }
     } else {
@@ -1726,11 +1723,11 @@ fn eval_size_integer_with_context(
         if dim >= 1 && (dim as usize) <= dims.len() {
             let result = dims[(dim as usize) - 1];
             #[cfg(feature = "tracing")]
-            debug!(array = %array_name, dim = dim, result = result, "size(A, dim) evaluated");
+            debug!(dim = dim, result = result, "size(A, dim) evaluated");
             Some(result)
         } else {
             #[cfg(feature = "tracing")]
-            warn!(array = %array_name, dim = dim, ndims = dims.len(), "dimension out of range");
+            warn!(dim = dim, ndims = dims.len(), "dimension out of range");
             None
         }
     }

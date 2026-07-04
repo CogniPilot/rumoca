@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: pipeline context tests share class-tree and
+// lookup fixtures across constants, dimensions, and redeclare paths. split plan:
+// move constant-injection, scoped lookup, and redeclare fixtures into modules.
 use super::*;
 #[cfg(test)]
 mod tests {

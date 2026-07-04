@@ -830,6 +830,7 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1574,6 +1575,7 @@ impl<'a> LowerBuilder<'a> {
         self.emit_unary_at(UnaryOp::Trunc, shifted, span)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_field_access(
         &mut self,
         base: &rumoca_core::Expression,

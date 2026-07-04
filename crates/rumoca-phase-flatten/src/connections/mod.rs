@@ -1,5 +1,9 @@
 //! Connection processing for the flatten phase (MLS §9).
 //!
+//! SPEC_0021 file-size exception: connection processing still combines
+//! connector discovery, set grouping, and equation emission. split plan: move
+//! connector graph construction and equation generation into submodules.
+//!
 //! This module expands connect() statements into connection equations:
 //! - Flow variables: sum to zero (Kirchhoff's current law)
 //! - Non-flow (potential) variables: are equal

@@ -645,18 +645,18 @@ fn test_boundary_connection_alias_prefers_rhs_sink_element() {
     ];
     let direct_definitions = DirectDefinitionIndex::build(&dae);
     let protected = IndexSet::new();
-    let (var_name, solution) = choose_solvable_unknown_for_elimination(
-        &dae,
-        0,
-        &connection_rhs,
-        &live,
-        false,
-        &protected,
-        &direct_definitions,
-        true,
-    )
-    .expect("candidate selection should not fail")
-    .expect("connection alias should be solvable");
+    let choice_ctx = EliminationChoiceContext {
+        dae: &dae,
+        eq_idx: 0,
+        has_state_derivative: false,
+        runtime_protected_unknowns: &protected,
+        direct_definitions: &direct_definitions,
+        allow_multi_live_trivial_alias: true,
+    };
+    let (var_name, solution) =
+        choose_solvable_unknown_for_elimination(&choice_ctx, &connection_rhs, &live)
+            .expect("candidate selection should not fail")
+            .expect("connection alias should be solvable");
 
     assert_eq!(
         var_name.as_str(),
@@ -736,6 +736,71 @@ fn test_boundary_connection_policy_accepts_scalar_element_of_aggregate_var() {
     assert!(
         !should_skip_connection_equation(&dae, &connection_rhs, true, &live, &HashSet::new(),),
         "scalar element aliases of aggregate variables should be eligible for connection elimination"
+    );
+}
+
+#[test]
+fn test_boundary_eliminates_scalarized_element_with_boundary_known_derivative_use() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_dae_variable("x"));
+    let mut v = test_dae_variable("v");
+    v.dims = vec![3];
+    dae.variables.algebraics.insert(VarName::new("v"), v);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref_idx("v", 2)),
+            rhs: Box::new(lit(20.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "binding equation for v[2]".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rhs: Box::new(var_ref_idx("v", 2)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "ode".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "v[2]"),
+        "boundary-known scalarized element should be substituted into derivative use"
+    );
+    assert_eq!(dae.continuous.equations.len(), 1);
+    let Expression::Binary { rhs, .. } = &dae.continuous.equations[0].rhs else {
+        panic!("remaining ODE should stay as a binary residual");
+    };
+    assert!(
+        matches!(
+            rhs.as_ref(),
+            Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            } if *value == 20.0
+        ),
+        "derivative row should receive the boundary-known scalar value, got {:?}",
+        dae.continuous.equations[0].rhs
     );
 }
 

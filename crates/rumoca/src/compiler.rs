@@ -1,5 +1,9 @@
 //! High-level API for compiling Modelica models to DAE representations.
 //!
+//! SPEC_0021 file-size exception: compiler facade tests still live beside the
+//! public API while session facade migration is stabilizing. split plan: move
+//! FMI/codegen and session regression tests into compiler submodules.
+//!
 //! This module provides a clean, ergonomic interface for using rumoca as a library.
 //! The main entry point is the [`Compiler`] struct, which uses a builder pattern
 //! for configuration.
@@ -201,17 +205,21 @@ fn collect_assignment_expr_candidates(
                     .filter_map(Value::as_object)
                     .filter_map(|row_obj| {
                         let expr = row_obj.get("residual").or_else(|| row_obj.get("rhs"))?;
-                        if direct_only {
-                            extract_direct_residual_assignment_expr(expr, target)
-                        } else {
-                            extract_residual_assignment_expr(expr, target)
-                        }
+                        assignment_expr_for_mode(expr, target, direct_only)
                     }),
             );
         }
     }
 
     out
+}
+
+fn assignment_expr_for_mode(expr: &Value, target: &str, direct_only: bool) -> Option<Value> {
+    if direct_only {
+        extract_direct_residual_assignment_expr(expr, target)
+    } else {
+        extract_residual_assignment_expr(expr, target)
+    }
 }
 
 fn expr_complexity(expr: &Value) -> usize {

@@ -993,19 +993,12 @@ pub(crate) fn finalize_flat_model(
     if collected_new_functions {
         mark_record_constructor_calls(flat, tree);
         functions::lower_record_function_params(flat)?;
-        mark_record_constructor_calls(flat, tree);
-        inject_referenced_qualified_class_constants(
-            tree,
-            class_index,
-            model_name,
-            flat,
-            overlay,
-            ctx,
-        )?;
-        substitute_known_constants_in_flat(flat, ctx)?;
-        mark_record_constructor_calls(flat, tree);
-        collapse_index_refs_to_known_varrefs(flat);
     }
+    mark_record_constructor_calls(flat, tree);
+    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
+    substitute_known_constants_in_flat(flat, ctx)?;
+    mark_record_constructor_calls(flat, tree);
+    collapse_index_refs_to_known_varrefs(flat);
     canonicalize_varrefs_via_instantiated_def_ids(flat);
     functions::canonicalize_collected_function_calls(flat);
     functions::lower_record_function_params(flat)?;

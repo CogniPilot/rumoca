@@ -1527,11 +1527,6 @@ fn add_rhs_template_helpers(env: &mut Environment<'static>) {
         "discrete_rhs_for_var",
         render_c::discrete_rhs_for_var_function,
     );
-    env.add_function(
-        "event_indicator_expr",
-        render_c::event_indicator_expr_function,
-    );
-
     // Index into an array expression to render element i (1-based)
     env.add_function(
         "render_expr_at_index",
@@ -2335,6 +2330,9 @@ pub(crate) struct ExprConfig {
     /// Optional aliases from Appendix-B condition memory (`c[i]`) to live
     /// relation expressions for backends that do not run event iteration.
     pub(crate) condition_aliases: Option<Value>,
+    /// Optional Modelica source scope used to resolve unqualified VarRefs in
+    /// equations rendered from a scoped source component.
+    pub(crate) source_scope: Option<String>,
     /// Render-time substitutions for expression-level unrolling.
     pub(crate) substitutions: Vec<(String, String)>,
     /// Function return expression used when rendering `return` statements in
@@ -2377,6 +2375,7 @@ impl Default for ExprConfig {
             float_literals: false,
             symbols: None,
             condition_aliases: None,
+            source_scope: None,
             substitutions: Vec::new(),
             return_value: None,
         }
@@ -2476,6 +2475,9 @@ impl ExprConfig {
         }
         if let Some(val) = get_present_attr(v, "condition_aliases") {
             cfg.condition_aliases = Some(val);
+        }
+        if let Some(s) = get_non_empty_str_attr(v, "source_scope") {
+            cfg.source_scope = Some(s);
         }
 
         cfg

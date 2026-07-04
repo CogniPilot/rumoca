@@ -85,6 +85,7 @@ pub(in crate::lower::derivative_rhs) fn function_field_access(
         .then_some((base.as_ref(), field.as_str()))
 }
 
+#[allow(clippy::excessive_nesting)]
 pub(in crate::lower) fn function_call_projected_scalars_with_owner(
     expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,

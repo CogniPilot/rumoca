@@ -31,6 +31,9 @@ pub(super) fn aggregate_variable_fully_resolved(
             ));
         }
     }
+    if var.dims.len() == 1 {
+        return Ok(false);
+    }
     Ok(true)
 }
 

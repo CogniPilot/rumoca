@@ -1,5 +1,9 @@
 //! Compile-time constant evaluation for typecheck-time AST expressions.
 //!
+//! SPEC_0021 file-size exception: AST evaluation still shares lookup,
+//! dimension, enum, and expression semantics in one module. split plan: move
+//! scoped lookup and suffix indexing into a lookup submodule.
+//!
 //! The typecheck phase needs early evaluation for:
 //! - structural parameters and dimensions (MLS §10, §18)
 //! - enum/integer/boolean conditions in guarded expressions
@@ -8,8 +12,7 @@
 use rumoca_core::{Causality, ClassType, OpBinary, OpUnary};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, IntegerBinaryOperator, PrimaryLabel, Span,
-    eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin, has_top_level_dot,
-    top_level_last_segment,
+    eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin,
 };
 use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript, TerminalType};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -44,10 +47,12 @@ fn lookup_by_scope<'a, T>(name: &str, scope: &str, map: &'a FxHashMap<String, T>
     if let Some(val) = try_scope(scope) {
         return Some(val);
     }
-    if let Some(val) =
-        rumoca_core::find_map_top_level_splits_rev(scope, |base, _suffix| try_scope(base))
-    {
-        return Some(val);
+    let mut dot_positions = Vec::new();
+    collect_top_level_dot_positions(scope, &mut dot_positions);
+    for dot_idx in dot_positions.into_iter().rev() {
+        if let Some(val) = try_scope(&scope[..dot_idx]) {
+            return Some(val);
+        }
     }
 
     map.get(name)
@@ -75,13 +80,13 @@ fn lookup_with_scope<'a, T: PartialEq>(
     // For dotted names like "Medium.nX", prefer full dotted suffix
     // ".Medium.nX". If no full-dotted match exists, allow a guarded leaf
     // fallback only when the leaf suffix resolves to exactly one key.
-    if has_top_level_dot(name) {
+    if has_any_top_level_dot(name) {
         match lookup_by_suffix_state(name, map, suffix_index) {
             SuffixLookup::Found(val) => return Some(val),
             SuffixLookup::Ambiguous => return None,
             SuffixLookup::Missing => {}
         }
-        return lookup_by_suffix_unique_key(top_level_last_segment(name), map, suffix_index);
+        return lookup_by_suffix_unique_key(last_top_level_segment(name), map, suffix_index);
     }
 
     lookup_by_suffix(name, map, suffix_index)
@@ -104,7 +109,7 @@ fn lookup_structural_with_scope<'a, T: PartialEq>(
         return None;
     }
 
-    if has_top_level_dot(name) {
+    if has_any_top_level_dot(name) {
         return match lookup_by_suffix_state(name, map, suffix_index) {
             SuffixLookup::Found(value) => Some(value),
             SuffixLookup::Missing | SuffixLookup::Ambiguous => None,
@@ -143,7 +148,7 @@ fn lookup_by_suffix_state<'a, T: PartialEq>(
     map: &'a FxHashMap<String, T>,
     suffix_index: Option<&SuffixIndex>,
 ) -> SuffixLookup<'a, T> {
-    if has_top_level_dot(name) {
+    if has_any_top_level_dot(name) {
         if let Some(index) = suffix_index {
             let Some(candidates) = index.keys_by_dotted_suffix.get(name) else {
                 return SuffixLookup::Missing;
@@ -235,6 +240,30 @@ fn has_top_level_suffix_match(key: &str, suffix: &str) -> bool {
 
     let boundary_idx = key.len() - suffix.len() - 1;
     matches!(key.as_bytes().get(boundary_idx), Some(b'.')) && is_top_level_dot_at(key, boundary_idx)
+}
+
+fn has_any_top_level_dot(path: &str) -> bool {
+    let mut dots = Vec::new();
+    collect_top_level_dot_positions(path, &mut dots);
+    !dots.is_empty()
+}
+
+fn last_top_level_segment(path: &str) -> &str {
+    let mut dots = Vec::new();
+    collect_top_level_dot_positions(path, &mut dots);
+    dots.last().map_or(path, |dot_idx| &path[dot_idx + 1..])
+}
+
+fn collect_top_level_dot_positions(path: &str, out: &mut Vec<usize>) {
+    let mut bracket_depth = 0usize;
+    for (idx, byte) in path.bytes().enumerate() {
+        match byte {
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => out.push(idx),
+            _ => {}
+        }
+    }
 }
 
 fn is_top_level_dot_at(path: &str, dot_index: usize) -> bool {

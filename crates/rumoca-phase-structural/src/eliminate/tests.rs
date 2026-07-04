@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: elimination regression tests still share DAE
+// builders and substitution fixtures. split plan: split array-boundary,
+// complex-field, and scalar-alias replacement cases into focused modules.
 use super::*;
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;

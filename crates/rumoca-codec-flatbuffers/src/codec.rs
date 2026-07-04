@@ -697,21 +697,25 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn cerebri_bfbs_paths() -> Option<(PathBuf, PathBuf)> {
-        let dir = std::env::var_os("RUMOCA_CEREBRI_BFBS_DIR")?;
-        let dir = PathBuf::from(dir);
-        Some((
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn cerebri_bfbs_paths() -> (PathBuf, PathBuf) {
+        let dir = workspace_root().join("target/cerebri-bfbs");
+        (
             dir.join("cerebri2_topics.bfbs"),
             dir.join("cerebri2_sil.bfbs"),
-        ))
+        )
     }
 
     fn load_test_schema() -> Option<SchemaSet> {
         let mut ss = SchemaSet::new();
-        let Some((topics, sil)) = cerebri_bfbs_paths() else {
-            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
-            return None;
-        };
+        let (topics, sil) = cerebri_bfbs_paths();
         if !topics.exists() || !sil.exists() {
             return None;
         }
@@ -1130,13 +1134,20 @@ mod integration_tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    fn cerebri_bfbs_paths() -> Option<(PathBuf, PathBuf)> {
-        let dir = std::env::var_os("RUMOCA_CEREBRI_BFBS_DIR")?;
-        let dir = PathBuf::from(dir);
-        Some((
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn cerebri_bfbs_paths() -> (PathBuf, PathBuf) {
+        let dir = workspace_root().join("target/cerebri-bfbs");
+        (
             dir.join("cerebri2_topics.bfbs"),
             dir.join("cerebri2_sil.bfbs"),
-        ))
+        )
     }
 
     /// Simulate the full cerebri ↔ rumoca loop locally.
@@ -1146,10 +1157,7 @@ mod integration_tests {
     #[allow(clippy::too_many_lines)]
     fn full_loop_simulation() {
         let mut ss = bfbs::SchemaSet::new();
-        let Some((topics, sil)) = cerebri_bfbs_paths() else {
-            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
-            return;
-        };
+        let (topics, sil) = cerebri_bfbs_paths();
         if !topics.exists() || !sil.exists() {
             eprintln!("skipping: bfbs files not found");
             return;

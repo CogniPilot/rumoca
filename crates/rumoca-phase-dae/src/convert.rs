@@ -868,15 +868,11 @@ impl DaeReferenceScope {
                 .last()
                 .is_some_and(|part| !part.subs.is_empty())
             {
-                let mut array_prefix = rumoca_core::ComponentReference {
-                    local: component_ref.local,
-                    span: component_ref.span,
-                    parts: prefix_parts.to_vec(),
-                    def_id: None,
-                };
-                if let Some(part) = array_prefix.parts.last_mut() {
-                    part.subs.clear();
-                }
+                let array_prefix = Self::array_prefix_without_terminal_subscripts(
+                    component_ref.local,
+                    component_ref.span,
+                    prefix_parts,
+                );
                 let key = array_prefix.to_var_name();
                 aggregate_prefixes
                     .entry(key)
@@ -887,6 +883,23 @@ impl DaeReferenceScope {
                     });
             }
         }
+    }
+
+    fn array_prefix_without_terminal_subscripts(
+        local: bool,
+        span: rumoca_core::Span,
+        prefix_parts: &[rumoca_core::ComponentRefPart],
+    ) -> rumoca_core::ComponentReference {
+        let mut array_prefix = rumoca_core::ComponentReference {
+            local,
+            span,
+            parts: prefix_parts.to_vec(),
+            def_id: None,
+        };
+        if let Some(part) = array_prefix.parts.last_mut() {
+            part.subs.clear();
+        }
+        array_prefix
     }
 
     fn reference_for(
@@ -909,17 +922,17 @@ impl DaeReferenceScope {
         if let Some(metadata) = self.aggregate_prefixes.get(name.var_name()) {
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
-        if let Some(def_id) = name.target_def_id()
-            && let Some((target, metadata)) = self.variables_by_def_id.get(&def_id)
-        {
-            return self.reference_from_metadata(target, target.as_str(), metadata, span);
-        }
         // Element reference to an aggregate variable (`sum.u[2]` while the
         // declared variable is `sum.u`): derive the base structurally from
         // the parts (last part without its subscripts) and enrich def-ids
         // from the base variable's metadata, exactly as exact-name hits do.
         if let Some(enriched) = self.enrich_element_reference(name, span)? {
             return Ok(enriched);
+        }
+        if let Some(def_id) = name.target_def_id()
+            && let Some((target, metadata)) = self.variables_by_def_id.get(&def_id)
+        {
+            return self.reference_from_metadata(target, target.as_str(), metadata, span);
         }
         if name.has_structure() {
             return Ok(name.clone());

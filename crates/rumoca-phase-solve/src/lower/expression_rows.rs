@@ -1331,8 +1331,10 @@ fn scalarized_binary_residual_operands(
     let Some(dae_variables) = ctx.dae_variables else {
         return Ok(None);
     };
-    let mut dae_model = dae::Dae::default();
-    dae_model.variables = dae_variables.clone();
+    let mut dae_model = dae::Dae {
+        variables: dae_variables.clone(),
+        ..Default::default()
+    };
     dae_model.symbols.functions = ctx.functions.clone();
     let lhs_values = derivative_rhs::scalarized_rhs_expressions_with_owner(
         target,

@@ -402,6 +402,7 @@ pub(super) fn projection_assignment_target(
 pub(super) struct FunctionScopeSubstituter<'a> {
     pub(super) scope: &'a FunctionProjectionScope,
     pub(super) error: Option<LowerError>,
+    pub(super) stack: Vec<String>,
 }
 
 impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
@@ -446,6 +447,9 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             return self.walk_expression(expr);
         }
         if let Some(replacement) = self.scope.full.get(name.as_str()) {
+            if self.stack.iter().any(|active| active == name.as_str()) {
+                return expr.clone();
+            }
             if let rumoca_core::Expression::VarRef {
                 name: replacement_name,
                 subscripts: replacement_subscripts,
@@ -456,7 +460,10 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             {
                 return replacement.clone().with_span(*span);
             }
-            return self.rewrite_expression(replacement).with_span(*span);
+            self.stack.push(name.as_str().to_string());
+            let rewritten = self.rewrite_expression(replacement).with_span(*span);
+            self.stack.pop();
+            return rewritten;
         }
         let flattened_name = name.as_str().replace('.', "_");
         if flattened_name != name.as_str()

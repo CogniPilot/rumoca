@@ -121,16 +121,17 @@ fn scan_boundary_equation(
     if indexed_flow_equation && !can_eliminate_pairwise_flow_alias {
         return Ok(());
     }
-    if let Some((var_name, solution)) = choose_solvable_unknown_for_elimination(
-        ctx.dae,
+    let choice_ctx = EliminationChoiceContext {
+        dae: ctx.dae,
         eq_idx,
-        &eq_rhs,
-        &live,
         has_state_derivative,
-        ctx.runtime_protected_unknowns,
-        ctx.direct_definitions,
-        can_eliminate_pairwise_flow_alias,
-    )? {
+        runtime_protected_unknowns: ctx.runtime_protected_unknowns,
+        direct_definitions: ctx.direct_definitions,
+        allow_multi_live_trivial_alias: can_eliminate_pairwise_flow_alias,
+    };
+    if let Some((var_name, solution)) =
+        choose_solvable_unknown_for_elimination(&choice_ctx, &eq_rhs, &live)?
+    {
         state.push_solution(ctx.dae, eq_idx, var_name, solution)?;
     }
     Ok(())

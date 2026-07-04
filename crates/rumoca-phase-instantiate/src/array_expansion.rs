@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: array expansion still coordinates component
+// selection, modifier projection, and array-comprehension indexing. split plan:
+// move subscript projection and non-component binding indexing into submodules.
 use super::inheritance::resolve_effective_components_for_eval;
 use super::instantiate_component;
 use super::source_scope::component_declaration_source_scope;
@@ -1131,14 +1134,16 @@ fn project_existing_subscript_for_element(
     index: i64,
 ) -> Option<ast::Subscript> {
     match sub {
-        ast::Subscript::Expression(ast::Expression::Range { start, step, .. }) => {
+        ast::Subscript::Expression(ast::Expression::Range {
+            start, step, span, ..
+        }) => {
             let start = integer_literal_value(start)?;
             let step = match step.as_deref() {
                 Some(expr) => integer_literal_value(expr)?,
                 None => 1,
             };
             let selected = start + (index - 1) * step;
-            Some(ast::Subscript::Expression(make_int_expr(selected)))
+            Some(ast::Subscript::Expression(make_int_expr(selected, *span)))
         }
         ast::Subscript::Expression(ast::Expression::Array { elements, .. }) => {
             let idx = index.checked_sub(1)? as usize;
@@ -1156,14 +1161,14 @@ fn integer_literal_value(expr: &ast::Expression) -> Option<i64> {
     token.text.as_ref().parse().ok()
 }
 
-fn make_int_expr(value: i64) -> ast::Expression {
+fn make_int_expr(value: i64, span: rumoca_core::Span) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
         token: rumoca_core::Token {
             text: value.to_string().into(),
             ..rumoca_core::Token::default()
         },
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 

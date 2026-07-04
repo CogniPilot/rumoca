@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: postprocess still coordinates constant
+// substitution, annotations, and scoped parameter preservation. split plan:
+// move annotation substitution and scoped parameter rewrites into submodules.
 use super::*;
 use rumoca_core::{
     ExpressionRewriter, FallibleExpressionRewriter, FallibleStatementRewriter, StatementRewriter,
@@ -935,7 +938,9 @@ fn substitute_variable_annotations(
 ) -> Result<(), FlattenError> {
     for (name, var) in &mut flat.variables {
         let scope = parent_component_scope(var.name.as_str());
-        if !is_runtime_parameter_modifier_binding(var) {
+        if !is_runtime_parameter_modifier_binding(var)
+            || binding_references_class_constant(var.binding.as_ref(), ctx)
+        {
             substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope)?;
         }
         substitute_opt_expr_with_options(&mut var.start, ctx, live_vars, locals, &scope, true)?;
@@ -958,6 +963,26 @@ fn is_runtime_parameter_modifier_binding(var: &flat::Variable) -> bool {
         && !var.evaluate
         && !var.is_discrete_type
         && var.binding.is_some()
+}
+
+fn binding_references_class_constant(
+    binding: Option<&rumoca_core::Expression>,
+    ctx: &Context,
+) -> bool {
+    let Some(rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    }) = binding
+    else {
+        return false;
+    };
+    if !subscripts.is_empty() {
+        return false;
+    }
+    ctx.class_constant_keys.contains(name.as_str())
+        || name
+            .target_def_id()
+            .and_then(|def_id| ctx.target_def_names.get(&def_id))
+            .is_some_and(|target| ctx.class_constant_keys.contains(target))
 }
 
 fn variable_is_string_type(var: &flat::Variable, type_name: Option<&String>) -> bool {
@@ -1377,16 +1402,29 @@ fn substitute_indexed_constant_var_ref(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
 ) -> Option<rumoca_core::Expression> {
+    let constant_expr = resolve_constant_value_expr_for_ref(name, ctx)?.clone();
     if live_vars.contains(name.as_str()) {
-        return None;
+        return symbolic_alias_expr(&constant_expr).map(|base| rumoca_core::Expression::Index {
+            base: Box::new(base.with_span(span)),
+            subscripts,
+            span,
+        });
     }
 
-    let constant_expr = resolve_constant_value_expr_for_ref(name, ctx)?.clone();
     Some(rumoca_core::Expression::Index {
         base: Box::new(constant_expr),
         subscripts,
         span,
     })
+}
+
+fn symbolic_alias_expr(expr: &rumoca_core::Expression) -> Option<rumoca_core::Expression> {
+    match expr {
+        rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Index { .. }
+        | rumoca_core::Expression::FieldAccess { .. } => Some(expr.clone()),
+        _ => None,
+    }
 }
 
 fn substitute_scalar_var_ref(
@@ -1396,7 +1434,13 @@ fn substitute_scalar_var_ref(
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
     if env.live_vars.contains(key) {
-        if name.has_structure()
+        if parameter_is_non_structural(key, env) {
+            return Ok(None);
+        }
+        if let Some(expr) = structured_key_value_expr(key, span, env)? {
+            return Ok(Some(expr));
+        }
+        if reference_key_is_structured(key)
             && let Some(v) = resolve_constant_value_expr_for_ref(name, env.ctx)
         {
             return Ok(Some(substitute_resolved_constant_expr(key, v, span, env)?));
@@ -1417,6 +1461,9 @@ fn substitute_scalar_var_ref(
         && !env.scope.is_empty()
         && let Some(expr) = substitute_scoped_scalar_var_ref(key, span, env)?
     {
+        return Ok(Some(expr));
+    }
+    if let Some(expr) = structured_key_value_expr(key, span, env)? {
         return Ok(Some(expr));
     }
     if let Some(v) = resolve_constant_value_expr_for_ref(name, env.ctx) {
@@ -1449,6 +1496,68 @@ fn substitute_scalar_var_ref(
     }
 
     substitute_alias_resolved_scalar_var_ref(key, span, env)
+}
+
+fn parameter_is_non_structural(key: &str, env: ConstantSubstitutionEnv<'_>) -> bool {
+    env.ctx.non_structural_params.contains(key)
+        || (!env.scope.is_empty()
+            && !key.contains('.')
+            && env
+                .ctx
+                .non_structural_params
+                .contains(format!("{}.{}", env.scope, key).as_str()))
+}
+
+fn reference_key_is_structured(key: &str) -> bool {
+    key.contains('.') || key.contains('[')
+}
+
+fn scoped_name_is_structural_value(key: &str, ctx: &Context) -> bool {
+    ctx.constant_values.contains_key(key)
+        || ctx.structural_params.contains(key)
+        || ctx.parameter_values.contains_key(key)
+        || ctx.boolean_parameter_values.contains_key(key)
+        || ctx.string_parameter_values.contains_key(key)
+        || ctx.enum_parameter_values.contains_key(key)
+}
+
+fn structured_key_value_expr(
+    key: &str,
+    span: rumoca_core::Span,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    if !reference_key_is_structured(key) || !scoped_name_is_structural_value(key, env.ctx) {
+        return Ok(None);
+    }
+    if let Some(enum_name) = env.ctx.enum_parameter_values.get(key) {
+        return Ok(Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(enum_name.clone()),
+            subscripts: vec![],
+            span,
+        }));
+    }
+    if let Some(v) = resolve_constant_value_expr(key, env.ctx) {
+        return Ok(Some(substitute_resolved_constant_expr(key, v, span, env)?));
+    }
+    if let Some(value) = env.ctx.parameter_values.get(key) {
+        return Ok(Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(*value),
+            span,
+        }));
+    }
+    if let Some(value) = env.ctx.boolean_parameter_values.get(key) {
+        return Ok(Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(*value),
+            span,
+        }));
+    }
+    if let Some(value) = env.ctx.string_parameter_values.get(key) {
+        return Ok(Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value.clone()),
+            span,
+        }));
+    }
+    Ok(None)
 }
 
 fn scoped_live_var_ref(
@@ -1496,7 +1605,7 @@ fn substitute_alias_resolved_scalar_var_ref(
         )?));
     }
     if !reference_key_has_array_shape(&resolved_key, env.ctx, env.scope)
-        && let Some(literal) = scalar_parameter_literal(&resolved_key, span, env.ctx)
+        && let Some(literal) = evaluated_scalar_parameter_literal(&resolved_key, span, env.ctx)
     {
         return Ok(Some(literal));
     }
@@ -1548,6 +1657,47 @@ fn constant_expr_preserves_array_shape(expr: &rumoca_core::Expression) -> bool {
 }
 
 fn scalar_parameter_literal(
+    key: &str,
+    span: rumoca_core::Span,
+    ctx: &Context,
+) -> Option<rumoca_core::Expression> {
+    if ctx.structural_params.contains(key)
+        && let Some(v) = ctx.real_parameter_values.get(key)
+        && v.is_finite()
+    {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(*v),
+            span,
+        });
+    }
+    if let Some(v) = ctx.parameter_values.get(key) {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(*v),
+            span,
+        });
+    }
+    if let Some(v) = ctx.boolean_parameter_values.get(key) {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(*v),
+            span,
+        });
+    }
+    if let Some(v) = ctx.string_parameter_values.get(key) {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(v.clone()),
+            span,
+        });
+    }
+    ctx.enum_parameter_values
+        .get(key)
+        .map(|v| rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(v.clone()),
+            subscripts: vec![],
+            span,
+        })
+}
+
+fn evaluated_scalar_parameter_literal(
     key: &str,
     span: rumoca_core::Span,
     ctx: &Context,
@@ -1634,7 +1784,7 @@ fn substitute_scoped_scalar_var_ref(
         let candidate_has_array_shape =
             reference_key_has_array_shape(&candidate, env.ctx, &candidate_scope);
         if !candidate_has_array_shape
-            && let Some(literal) = scalar_parameter_literal(&candidate, span, env.ctx)
+            && let Some(literal) = evaluated_scalar_parameter_literal(&candidate, span, env.ctx)
         {
             return Ok(Some(literal));
         }

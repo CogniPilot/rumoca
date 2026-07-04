@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: verify command wiring still owns CLI parsing,
+// gate orchestration, and harness config serialization. split plan: move MSL
+// parity config serialization and GitHub baseline retrieval into submodules.
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -107,6 +110,15 @@ pub(crate) struct VerifyMslParityArgs {
     /// Total simulation memory budget in MB (caps the sim worker count)
     #[arg(long)]
     sim_total_memory_mb: Option<usize>,
+    /// Force regeneration of the OMC simulation reference cache
+    #[arg(long)]
+    force_omc_parity_refresh: bool,
+    /// OMC reference-generation worker count
+    #[arg(long)]
+    omc_parity_workers: Option<usize>,
+    /// Whole-stage OMC reference-generation timeout in seconds
+    #[arg(long)]
+    omc_sim_reference_batch_timeout_secs: Option<u64>,
     /// Explicit MSL quality baseline JSON for baseline-relative gates
     #[arg(long)]
     quality_baseline: Option<PathBuf>,
@@ -168,6 +180,15 @@ impl VerifyMslParityArgs {
         }
         if let Some(value) = self.sim_total_memory_mb {
             config.insert("sim_total_memory_mb".into(), value.into());
+        }
+        if self.force_omc_parity_refresh {
+            config.insert("force_omc_parity_refresh".into(), true.into());
+        }
+        if let Some(value) = self.omc_parity_workers {
+            config.insert("omc_parity_workers".into(), value.into());
+        }
+        if let Some(value) = self.omc_sim_reference_batch_timeout_secs {
+            config.insert("omc_sim_reference_batch_timeout_secs".into(), value.into());
         }
         if let Some(value) = &self.quality_baseline {
             config.insert(

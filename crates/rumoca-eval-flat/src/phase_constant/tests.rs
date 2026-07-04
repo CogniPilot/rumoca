@@ -1216,6 +1216,35 @@ fn infer_array_dims_from_comprehension_range_and_body() {
 }
 
 #[test]
+fn infer_array_dims_from_comprehension_range_using_size_of_array_literal() {
+    let literal = rumoca_core::Expression::Array {
+        elements: vec![int(1)],
+        is_matrix: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = rumoca_core::Expression::ArrayComprehension {
+        expr: Box::new(var("i")),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int(1)),
+                step: None,
+                end: Box::new(call(
+                    rumoca_core::BuiltinFunction::Size,
+                    vec![literal, int(1)],
+                )),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        filter: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let dims = infer_array_dimensions(&expr);
+    assert_eq!(dims, Some(vec![1]));
+}
+
+#[test]
 fn infer_array_dims_with_context_resolves_scoped_if_matrix_columns() {
     let mut known_ints = FxHashMap::default();
     known_ints.insert("booleanTable.n".to_string(), 7);

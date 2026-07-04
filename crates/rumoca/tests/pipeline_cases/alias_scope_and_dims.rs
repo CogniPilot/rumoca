@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: alias/scope/dimension pipeline cases share
+// package fixtures across resolve, typecheck, flatten, and DAE assertions. split plan:
+// move package override, record alias, and dimension cases by fixture.
 use super::*;
 
 mod package_override_dimension_tests;
@@ -1142,7 +1145,9 @@ package PartialMedium
     Real Xi[nXi];
     Real X[nX];
   equation
-    X[nX] = 1;
+    for i in 1:nX loop
+      X[i] = 1;
+    end for;
   end BaseProperties;
 end PartialMedium;
 
@@ -1872,7 +1877,6 @@ package Modelica
     package Interfaces
       partial package PartialMedium
         replaceable record ThermodynamicState
-          Real x;
         end ThermodynamicState;
 
         replaceable model BaseProperties
@@ -1952,7 +1956,6 @@ fn test_redeclared_model_body_uses_sibling_redeclared_record_type() {
     let source = r#"
 package BaseMedium
   replaceable record ThermodynamicState
-    Real x;
   end ThermodynamicState;
 
   replaceable model BaseProperties
@@ -2026,7 +2029,6 @@ package Modelica
     package Interfaces
       partial package PartialMedium
         replaceable record ThermodynamicState
-          Real x;
         end ThermodynamicState;
 
         replaceable partial function dynamicViscosity
@@ -2509,6 +2511,11 @@ end Coil;
 model UsesModifiedAirMedium
   package MediumAir = Air(extraPropertiesNames = {"CO2"});
   Coil coil(redeclare package Medium2 = MediumAir);
+equation
+  coil.state_a2_inflow.X[1] = 0.7;
+  coil.state_a2_inflow.X[2] = 0.3;
+  coil.state_a2_inflow.p = 101325;
+  coil.state_a2_inflow.T = 295.15;
 end UsesModifiedAirMedium;
 "#;
 
@@ -2583,8 +2590,6 @@ model SteamProperties
 equation
   basPro.p = p;
   basPro.T = 295.15;
-  basPro.state.p = p;
-  basPro.state.T = 295.15;
 end SteamProperties;
 "#;
 
@@ -2660,8 +2665,6 @@ end PartialProperties;
 
 model SteamProperties
   extends PartialProperties(redeclare package Medium = Steam);
-equation
-  basPro.MM = 18.01528;
 end SteamProperties;
 "#;
 

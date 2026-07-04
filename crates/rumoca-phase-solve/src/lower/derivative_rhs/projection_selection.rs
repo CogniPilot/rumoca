@@ -233,6 +233,9 @@ pub(super) fn static_subscript_indices(
         let Some(index) = (match subscript {
             rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
             rumoca_core::Subscript::Expr { expr, .. } => {
+                if plain_runtime_selector(expr, analysis, scope) {
+                    return Ok(None);
+                }
                 let expr = analysis.substitute(expr, scope)?;
                 let value = match analysis.compile_time_scalar(&expr) {
                     Some(value) => value,
@@ -247,6 +250,32 @@ pub(super) fn static_subscript_indices(
         indices.push(index);
     }
     Ok(Some(indices))
+}
+
+fn plain_runtime_selector(
+    expr: &rumoca_core::Expression,
+    analysis: &FunctionProjectionAnalysis<'_>,
+    scope: &FunctionProjectionScope,
+) -> bool {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return false;
+    };
+    if !subscripts.is_empty() {
+        return false;
+    }
+    if analysis.structural_bindings.contains_key(name.as_str()) {
+        return false;
+    }
+    let Some(replacement) = scope.full.get(name.as_str()) else {
+        return true;
+    };
+    if analysis.compile_time_scalar(replacement).is_some() {
+        return false;
+    }
+    true
 }
 
 fn positive_i64_from_compile_time_scalar(value: f64) -> Option<i64> {
@@ -314,6 +343,9 @@ pub(super) fn subscript_selector_expr(
             span: *span,
         }),
         rumoca_core::Subscript::Expr { expr, .. } => {
+            if plain_runtime_selector(expr, analysis, scope) {
+                return Ok(*expr.clone());
+            }
             Ok(analysis.scalar_assignment_value(expr, scope, depth + 1)?)
         }
         rumoca_core::Subscript::Colon { span } => Err(unsupported_at(

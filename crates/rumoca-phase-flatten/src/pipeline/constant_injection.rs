@@ -1978,6 +1978,8 @@ pub(crate) struct Context {
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,
+    /// Names whose source declaration variability is `constant`.
+    pub(crate) class_constant_keys: rustc_hash::FxHashSet<String>,
     /// Qualified declaration names keyed by semantic target DefId.
     pub target_def_names: rustc_hash::FxHashMap<rumoca_core::DefId, String>,
     /// Fully qualified constant names explicitly modified by extends clauses.

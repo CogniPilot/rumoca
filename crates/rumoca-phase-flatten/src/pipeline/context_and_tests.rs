@@ -1,3 +1,7 @@
+// SPEC_0021 file-size exception: flatten context still owns parameter lookup,
+// symbolic dimension reconciliation, and class-instance flatten entry wiring.
+// split plan: move dimension inference/reconciliation helpers into a dedicated
+// pipeline::dimensions module after the current redeclare/package-scope merge.
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
 
@@ -31,6 +35,165 @@ fn is_array_literal_binding(binding: &Expression) -> bool {
     matches!(binding, Expression::Array { .. })
 }
 
+fn is_modified_shape_binding(binding: &Expression) -> bool {
+    is_array_literal_binding(binding) || explicit_slice_binding(binding)
+}
+
+fn is_computed_shape_binding(binding: &Expression) -> bool {
+    !matches!(
+        binding,
+        Expression::VarRef { .. } | Expression::FieldAccess { .. } | Expression::Index { .. }
+    )
+}
+
+fn binding_targets_embedded_array_element(binding: &Expression) -> bool {
+    match binding {
+        Expression::VarRef { name, .. } => has_embedded_array_subscript_in_parent(name.as_str()),
+        Expression::FieldAccess { base, .. } | Expression::Index { base, .. } => {
+            binding_targets_embedded_array_element(base)
+        }
+        _ => false,
+    }
+}
+
+fn explicit_slice_binding(binding: &Expression) -> bool {
+    match binding {
+        Expression::VarRef { subscripts, .. } | Expression::Index { subscripts, .. } => subscripts
+            .iter()
+            .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. })),
+        _ => false,
+    }
+}
+
+fn dims_expr_has_open_range(dims_expr: &[ast::Subscript]) -> bool {
+    dims_expr.iter().any(|subscript| {
+        matches!(
+            subscript,
+            ast::Subscript::Range { .. } | ast::Subscript::Empty
+        )
+    })
+}
+
+fn dims_expr_reads_modifier_parameter(
+    var_name: &str,
+    dims_expr: &[ast::Subscript],
+    flat: &flat::Model,
+) -> bool {
+    dims_expr.iter().any(|subscript| {
+        let ast::Subscript::Expression(expr) = subscript else {
+            return false;
+        };
+        expression_reads_modifier_parameter(var_name, expr, flat)
+    })
+}
+
+fn expression_reads_modifier_parameter(
+    var_name: &str,
+    expr: &ast::Expression,
+    flat: &flat::Model,
+) -> bool {
+    match expr {
+        ast::Expression::ComponentReference(comp) => {
+            component_ref_reads_modifier_parameter(var_name, comp, flat)
+        }
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
+            expression_reads_modifier_parameter(var_name, start, flat)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expression_reads_modifier_parameter(var_name, step, flat))
+                || expression_reads_modifier_parameter(var_name, end, flat)
+        }
+        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs, .. } => {
+            expression_reads_modifier_parameter(var_name, rhs, flat)
+        }
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            expression_reads_modifier_parameter(var_name, lhs, flat)
+                || expression_reads_modifier_parameter(var_name, rhs, flat)
+        }
+        ast::Expression::FunctionCall { args, .. }
+        | ast::Expression::ClassModification {
+            modifications: args,
+            ..
+        }
+        | ast::Expression::Array { elements: args, .. }
+        | ast::Expression::Tuple { elements: args, .. } => args
+            .iter()
+            .any(|arg| expression_reads_modifier_parameter(var_name, arg, flat)),
+        ast::Expression::NamedArgument { value, .. }
+        | ast::Expression::Modification { value, .. } => {
+            expression_reads_modifier_parameter(var_name, value, flat)
+        }
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(cond, branch)| {
+                expression_reads_modifier_parameter(var_name, cond, flat)
+                    || expression_reads_modifier_parameter(var_name, branch, flat)
+            }) || expression_reads_modifier_parameter(var_name, else_branch, flat)
+        }
+        ast::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            expression_reads_modifier_parameter(var_name, expr, flat)
+                || indices
+                    .iter()
+                    .any(|index| expression_reads_modifier_parameter(var_name, &index.range, flat))
+                || filter.as_ref().is_some_and(|filter| {
+                    expression_reads_modifier_parameter(var_name, filter, flat)
+                })
+        }
+        ast::Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
+            expression_reads_modifier_parameter(var_name, base, flat)
+                || subscripts.iter().any(|subscript| {
+                    let ast::Subscript::Expression(expr) = subscript else {
+                        return false;
+                    };
+                    expression_reads_modifier_parameter(var_name, expr, flat)
+                })
+        }
+        ast::Expression::FieldAccess { base, .. } => {
+            expression_reads_modifier_parameter(var_name, base, flat)
+        }
+        ast::Expression::Empty { .. } | ast::Expression::Terminal { .. } => false,
+    }
+}
+
+fn component_ref_reads_modifier_parameter(
+    var_name: &str,
+    comp: &ast::ComponentReference,
+    flat: &flat::Model,
+) -> bool {
+    let rendered = comp.to_string();
+    let direct = rumoca_core::VarName::new(&rendered);
+    if flat
+        .variables
+        .get(&direct)
+        .is_some_and(|var| var.binding_from_modification)
+    {
+        return true;
+    }
+    if rendered.contains('.') {
+        return false;
+    }
+    let scoped_var = rumoca_core::VarName::new(var_name);
+    let Some(parent) = scoped_var.enclosing_scope() else {
+        return false;
+    };
+    let scoped = rumoca_core::VarName::new(format!("{parent}.{rendered}"));
+    flat.variables
+        .get(&scoped)
+        .is_some_and(|var| var.binding_from_modification)
+}
+
 impl Context {
     /// Create a new flatten context.
     pub(crate) fn new() -> Self {
@@ -41,6 +204,7 @@ impl Context {
             string_parameter_values: rustc_hash::FxHashMap::default(),
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
+            class_constant_keys: rustc_hash::FxHashSet::default(),
             target_def_names: rustc_hash::FxHashMap::default(),
             modified_constant_keys: rustc_hash::FxHashSet::default(),
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
@@ -123,21 +287,61 @@ impl Context {
                     continue;
                 };
                 let span = instance_source_span(instance_data, tree)?;
-                let resolved_dims = self.resolve_component_dims_expr(
+                let binding_dims = self.binding_shape_override_dimensions(
                     var_name.as_str(),
                     &instance_data.dims_expr,
                     flat_var,
                     tree,
-                    span,
-                )?;
+                );
+                let resolved_from_binding = binding_dims.is_some();
+                let computed_array_element_binding = !flat_var.binding_from_modification
+                    && has_embedded_array_subscript_in_parent(var_name.as_str())
+                    && flat_var.binding.as_ref().is_some_and(|binding| {
+                        is_computed_shape_binding(binding)
+                            || binding_targets_embedded_array_element(binding)
+                    });
+                let resolved_dims = if let Some(dims) = binding_dims {
+                    dims
+                } else {
+                    self.resolve_component_dims_expr(
+                        var_name.as_str(),
+                        &instance_data.dims_expr,
+                        flat_var,
+                        tree,
+                        span,
+                    )?
+                };
+                let declaration_dims_can_override_stale_flat_dims =
+                    !has_embedded_array_subscript_in_parent(var_name.as_str())
+                        && resolved_dims.iter().all(|dim| *dim >= 0)
+                        && (dims_expr_has_open_range(&instance_data.dims_expr)
+                            || dims_expr_reads_modifier_parameter(
+                                var_name.as_str(),
+                                &instance_data.dims_expr,
+                                flat,
+                            ));
                 let Some(flat_var) = flat.variables.get_mut(&var_name) else {
                     continue;
                 };
-                if flat_var.dims != resolved_dims {
+                let should_update_dims = dims_are_better(&resolved_dims, &flat_var.dims)
+                    || (resolved_from_binding
+                        && (flat_var.binding_from_modification || computed_array_element_binding)
+                        && same_rank_concrete_dims(&resolved_dims, &flat_var.dims))
+                    || (!resolved_from_binding && declaration_dims_can_override_stale_flat_dims);
+                if flat_var.dims != resolved_dims && should_update_dims {
                     flat_var.dims.clone_from(&resolved_dims);
                     pass_changed = true;
                 }
-                if self.array_dimensions.get(var_name.as_str()) != Some(&resolved_dims) {
+                let current_cached_dims = self.array_dimensions.get(var_name.as_str());
+                let should_update_cached_dims = current_cached_dims.is_none_or(|current| {
+                    dims_are_better(&resolved_dims, current)
+                        || (resolved_from_binding
+                            && (flat_var.binding_from_modification
+                                || computed_array_element_binding)
+                            && same_rank_concrete_dims(&resolved_dims, current))
+                        || (!resolved_from_binding && declaration_dims_can_override_stale_flat_dims)
+                });
+                if current_cached_dims != Some(&resolved_dims) && should_update_cached_dims {
                     self.array_dimensions
                         .insert(var_name.to_string(), resolved_dims);
                     pass_changed = true;
@@ -149,6 +353,33 @@ impl Context {
             }
         }
         Ok(changed)
+    }
+
+    fn binding_shape_override_dimensions(
+        &self,
+        var_name: &str,
+        dims_expr: &[ast::Subscript],
+        flat_var: &flat::Variable,
+        tree: &ClassTree,
+    ) -> Option<Vec<i64>> {
+        let binding = flat_var.binding.as_ref()?;
+        let name_has_array_element_parent = has_embedded_array_subscript_in_parent(var_name);
+        let can_override_shape = if flat_var.binding_from_modification {
+            !name_has_array_element_parent
+                || is_modified_shape_binding(binding)
+                || binding_targets_embedded_array_element(binding)
+        } else {
+            name_has_array_element_parent
+                && (is_computed_shape_binding(binding)
+                    || binding_targets_embedded_array_element(binding))
+        };
+        if !can_override_shape {
+            return None;
+        }
+
+        let binding_dims = self.infer_binding_dimensions(var_name, binding, tree)?;
+        (binding_dims.len() == dims_expr.len() && binding_dims.iter().all(|dim| *dim >= 0))
+            .then_some(binding_dims)
     }
 
     fn resolve_component_dims_expr(
@@ -578,9 +809,12 @@ impl Context {
         // are NOT indexed for each element. So `inductor[1].L` gets the same unindexed
         // binding as the parent `inductor.L`, which infers to the parent's array dims.
         // Detect this by checking if any path segment (not the last) has embedded subscripts.
-        if has_embedded_array_subscript_in_parent(name)
-            && !(binding_from_modification && is_array_literal_binding(binding))
-        {
+        let binding_can_drive_shape = if binding_from_modification {
+            is_modified_shape_binding(binding)
+        } else {
+            is_computed_shape_binding(binding)
+        };
+        if has_embedded_array_subscript_in_parent(name) && !binding_can_drive_shape {
             return false;
         }
 
@@ -606,6 +840,10 @@ impl Context {
         let should_update = self.array_dimensions.get(name).is_none_or(|existing| {
             dims_are_better(&inferred_dims, existing)
                 || (binding_from_modification && same_rank_concrete_dims(&inferred_dims, existing))
+                || (!binding_from_modification
+                    && has_embedded_array_subscript_in_parent(name)
+                    && is_computed_shape_binding(binding)
+                    && same_rank_concrete_dims(&inferred_dims, existing))
         });
 
         if should_update {
@@ -629,15 +867,27 @@ impl Context {
     fn propagate_varref_dimensions(&mut self, var_bindings: &[ParamBinding<'_>]) -> bool {
         var_bindings
             .iter()
-            .filter_map(|ParamBinding { name, binding, .. }| {
-                self.try_propagate_varref_dims(name, binding)
-            })
+            .filter_map(
+                |ParamBinding {
+                     name,
+                     binding,
+                     binding_from_modification,
+                     ..
+                 }| {
+                    self.try_propagate_varref_dims(name, binding, *binding_from_modification)
+                },
+            )
             .count()
             > 0
     }
 
     /// Try to propagate dimensions from a VarRef binding.
-    fn try_propagate_varref_dims(&mut self, name: &str, binding: &Expression) -> Option<()> {
+    fn try_propagate_varref_dims(
+        &mut self,
+        name: &str,
+        binding: &Expression,
+        binding_from_modification: bool,
+    ) -> Option<()> {
         let target_name = match binding {
             Expression::VarRef {
                 name: target,
@@ -648,7 +898,9 @@ impl Context {
         };
 
         // Skip when the name passes through an expanded array component element.
-        if has_embedded_array_subscript_in_parent(name) {
+        if has_embedded_array_subscript_in_parent(name)
+            && !has_embedded_array_subscript_in_parent(&target_name)
+        {
             return None;
         }
 
@@ -663,10 +915,13 @@ impl Context {
         let target_dims = best_dims(direct_dims, alias_dims)?;
 
         // Update if we don't have dims or new dims are better
-        let should_update = self
-            .array_dimensions
-            .get(name)
-            .is_none_or(|existing| dims_are_better(&target_dims, existing));
+        let should_update = self.array_dimensions.get(name).is_none_or(|existing| {
+            dims_are_better(&target_dims, existing)
+                || ((binding_from_modification
+                    || (has_embedded_array_subscript_in_parent(name)
+                        && has_embedded_array_subscript_in_parent(&target_name)))
+                    && same_rank_concrete_dims(&target_dims, existing))
+        });
 
         if should_update {
             self.array_dimensions.insert(name.to_string(), target_dims);

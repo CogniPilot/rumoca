@@ -1,5 +1,9 @@
 //! Symbolic elimination of trivially solvable equations.
 //!
+//! SPEC_0021 file-size exception: elimination still hosts boundary resolution,
+//! substitution grouping, and provenance-preserving replacement helpers. split plan:
+//! move substitution groups and scalar alias projection into submodules.
+//!
 //! Two-phase pipeline:
 //! 1. **Boundary resolution** — removes redundant equations (0 unknowns) and
 //!    resolves trivial single-unknown equations, making structurally singular
@@ -722,25 +726,34 @@ fn try_eliminate_zero_unknown_equation(
     Ok(())
 }
 
+pub(in crate::eliminate) struct EliminationChoiceContext<'a> {
+    pub(in crate::eliminate) dae: &'a Dae,
+    pub(in crate::eliminate) eq_idx: usize,
+    pub(in crate::eliminate) has_state_derivative: bool,
+    pub(in crate::eliminate) runtime_protected_unknowns: &'a IndexSet<String>,
+    pub(in crate::eliminate) direct_definitions: &'a DirectDefinitionIndex,
+    pub(in crate::eliminate) allow_multi_live_trivial_alias: bool,
+}
+
 fn choose_solvable_unknown_for_elimination(
-    dae: &Dae,
-    eq_idx: usize,
+    ctx: &EliminationChoiceContext<'_>,
     rhs: &Expression,
     live: &[VarName],
-    has_state_derivative: bool,
-    runtime_protected_unknowns: &IndexSet<String>,
-    direct_definitions: &DirectDefinitionIndex,
-    allow_multi_live_trivial_alias: bool,
 ) -> Result<Option<(VarName, Expression)>, StructuralError> {
     let mut candidates: Vec<&VarName> = live.iter().collect();
-    let connection_rhs = connection_rhs_assignment_target(dae, eq_idx, rhs);
+    let dae = ctx.dae;
+    let connection_rhs = connection_rhs_assignment_target(dae, ctx.eq_idx, rhs);
     candidates.sort_by(|a, b| {
         let a_is_connection_rhs =
             connection_rhs.is_some_and(|target| is_assignment_target(dae, target, a));
         let b_is_connection_rhs =
             connection_rhs.is_some_and(|target| is_assignment_target(dae, target, b));
-        let a_has_definition = direct_definitions.has_other_direct_definition(eq_idx, a);
-        let b_has_definition = direct_definitions.has_other_direct_definition(eq_idx, b);
+        let a_has_definition = ctx
+            .direct_definitions
+            .has_other_direct_definition(ctx.eq_idx, a);
+        let b_has_definition = ctx
+            .direct_definitions
+            .has_other_direct_definition(ctx.eq_idx, b);
         let a_is_output = output_partition_contains_unknown(dae, a);
         let b_is_output = output_partition_contains_unknown(dae, b);
         b_is_connection_rhs
@@ -760,7 +773,7 @@ fn choose_solvable_unknown_for_elimination(
         if dae.variables.states.contains_key(candidate) {
             continue;
         }
-        if is_runtime_protected_unknown(candidate, runtime_protected_unknowns) {
+        if is_runtime_protected_unknown(candidate, ctx.runtime_protected_unknowns) {
             continue;
         }
         let is_output = output_partition_contains_unknown(dae, candidate);
@@ -775,11 +788,13 @@ fn choose_solvable_unknown_for_elimination(
             continue;
         }
         let direct_assignment_solution = has_direct_assignment_form(dae, rhs, candidate);
-        if has_state_derivative && is_scalarized_element_of_aggregate(dae, candidate)? {
+        if ctx.has_state_derivative && is_scalarized_element_of_aggregate(dae, candidate)? {
             continue;
         }
         if is_scalarized_element_of_aggregate(dae, candidate)?
             && scalarized_element_has_derivative_equation_use(dae, candidate)
+            && (scalarized_aggregate_base_rank(dae, candidate)?.is_some_and(|rank| rank > 1)
+                || solution_references_algebraic_or_output_unknown(dae, &solution))
         {
             continue;
         }
@@ -793,10 +808,12 @@ fn choose_solvable_unknown_for_elimination(
         // elsewhere. The latter preserves first-order block inputs such as
         // der(x)=u while allowing u to be substituted into its connection-side
         // definition.
-        if has_state_derivative
+        if ctx.has_state_derivative
             && !is_output
             && !(direct_assignment_solution
-                && direct_definitions.has_other_direct_definition(eq_idx, candidate)
+                && ctx
+                    .direct_definitions
+                    .has_other_direct_definition(ctx.eq_idx, candidate)
                 && is_derivative_alias_expr(&solution))
         {
             continue;
@@ -826,7 +843,7 @@ fn choose_solvable_unknown_for_elimination(
         }
         if live.len() > 1
             && !direct_assignment_solution
-            && !(allow_multi_live_trivial_alias && is_trivial_alias_in_dae(dae, &solution))
+            && !(ctx.allow_multi_live_trivial_alias && is_trivial_alias_in_dae(dae, &solution))
         {
             continue;
         }
@@ -1014,6 +1031,37 @@ fn scalarized_element_has_derivative_equation_use(dae: &Dae, candidate: &VarName
     dae.continuous.equations.iter().any(|eq| {
         expression_contains_der_call(&eq.rhs)
             && expr_references_var_for_presence(&eq.rhs, candidate)
+    })
+}
+
+fn scalarized_aggregate_base_rank(
+    dae: &Dae,
+    candidate: &VarName,
+) -> Result<Option<usize>, StructuralError> {
+    let Some(scalar) = rumoca_core::parse_scalar_name(candidate.as_str()) else {
+        return Ok(None);
+    };
+    let base_name = VarName::new(scalar.base);
+    let Some(base_var) = DaeVariableScope::new(dae).exact(&base_name) else {
+        return Ok(None);
+    };
+    if scalar_count_from_dims(&base_name, &base_var.dims)? <= 1 {
+        return Ok(None);
+    }
+    Ok(Some(base_var.dims.len()))
+}
+
+fn solution_references_algebraic_or_output_unknown(dae: &Dae, expr: &Expression) -> bool {
+    let mut refs = Vec::new();
+    collect_exact_reference_expr_names_in_dae(dae, expr, &mut refs);
+    refs.into_iter().any(|name| {
+        dae.variables.algebraics.contains_key(&name)
+            || dae.variables.outputs.contains_key(&name)
+            || rumoca_ir_dae::component_base_name(name.as_str()).is_some_and(|base| {
+                let base = VarName::new(base);
+                dae.variables.algebraics.contains_key(&base)
+                    || dae.variables.outputs.contains_key(&base)
+            })
     })
 }
 
@@ -1305,14 +1353,7 @@ fn solution_has_blocking_unsliced_multiscalar_ref_inner(
             if solution_has_blocking_unsliced_multiscalar_ref_inner(base, scope)? {
                 true
             } else {
-                let mut blocked = false;
-                for sub in subscripts {
-                    if let rumoca_core::Subscript::Expr { expr, .. } = sub {
-                        blocked |=
-                            solution_has_blocking_unsliced_multiscalar_ref_inner(expr, scope)?;
-                    }
-                }
-                blocked
+                subscripts_have_blocking_unsliced_multiscalar_ref(subscripts, scope)?
             }
         }
         Expression::FieldAccess { base, .. } => {
@@ -1320,6 +1361,19 @@ fn solution_has_blocking_unsliced_multiscalar_ref_inner(
         }
         Expression::Literal { .. } | Expression::Empty { .. } => false,
     })
+}
+
+fn subscripts_have_blocking_unsliced_multiscalar_ref(
+    subscripts: &[rumoca_core::Subscript],
+    scope: &DaeVariableScope<'_>,
+) -> Result<bool, StructuralError> {
+    let mut blocked = false;
+    for sub in subscripts {
+        if let rumoca_core::Subscript::Expr { expr, .. } = sub {
+            blocked |= solution_has_blocking_unsliced_multiscalar_ref_inner(expr, scope)?;
+        }
+    }
+    Ok(blocked)
 }
 
 fn exprs_have_blocking_unsliced_multiscalar_ref(
@@ -2019,12 +2073,11 @@ impl AggregateAliasSubstitutionGroup {
         span: rumoca_core::Span,
     ) -> Option<Expression> {
         if depth >= dims.len() {
-            return Some(
-                self.values
-                    .get(current)
-                    .cloned()
-                    .unwrap_or_else(|| scalar_ref_for_indices(name, current, span)),
-            );
+            return self
+                .values
+                .get(current)
+                .cloned()
+                .or_else(|| scalar_ref_for_indices(name, current, span));
         }
         let mut elements = Vec::with_capacity(dims[depth]);
         for index in 1..=dims[depth] {
@@ -2057,10 +2110,15 @@ fn project_scalar_alias_replacement(
     let replacement_rank = replacement_dims.len();
     let start = indices.len().saturating_sub(replacement_rank);
     let projected_indices = &indices[start..];
-    let span = expr.span().unwrap_or(rumoca_core::Span::DUMMY);
+    let Some(span) = expr.span() else {
+        return expr;
+    };
+    let Ok(owner) = span.require_provenance("scalar alias replacement projection") else {
+        return expr;
+    };
     let projected_subscripts = projected_indices
         .iter()
-        .map(|index| rumoca_core::Subscript::generated_index(*index as i64, span))
+        .map(|index| rumoca_core::Subscript::generated_index_with_provenance(*index as i64, owner))
         .collect::<Vec<_>>();
     match expr {
         Expression::VarRef {
@@ -2087,15 +2145,24 @@ fn scalar_ref_for_indices(
     name: &Reference,
     indices: &[usize],
     span: rumoca_core::Span,
-) -> Expression {
-    Expression::VarRef {
+) -> Option<Expression> {
+    let Ok(owner) = span.require_provenance("scalar alias replacement reference") else {
+        return Some(Expression::VarRef {
+            name: name.clone(),
+            subscripts: Vec::new(),
+            span,
+        });
+    };
+    Some(Expression::VarRef {
         name: name.clone(),
         subscripts: indices
             .iter()
-            .map(|index| rumoca_core::Subscript::generated_index(*index as i64, span))
+            .map(|index| {
+                rumoca_core::Subscript::generated_index_with_provenance(*index as i64, owner)
+            })
             .collect(),
         span,
-    }
+    })
 }
 
 fn replacement_aggregate_base(
@@ -2621,9 +2688,9 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
 
     fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error> {
         if exact_reference_expr_name(expr).as_ref() == Some(&self.substitution.var_name) {
-            return Ok(replacement_with_owner_span(
-                self.replacement,
-                expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            return Ok(expr.span().map_or_else(
+                || self.replacement.clone(),
+                |span| replacement_with_owner_span(self.replacement, span),
             ));
         }
         match expr {

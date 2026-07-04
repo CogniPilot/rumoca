@@ -1006,10 +1006,6 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     canonicalize_embedded_subscript_equation_list(&mut dae.discrete.valued_updates, &array_dims)?;
     canonicalize_embedded_subscript_equation_list(&mut dae.conditions.equations, &array_dims)?;
 
-    if phantom_map.is_empty() {
-        return Ok(());
-    }
-
     // Expanding an array equation into scalar rows shifts every later row, so the
     // partitions that carry structured families (continuous, initialization) must
     // re-point those families at their new row blocks. Without this a family after
@@ -1320,6 +1316,7 @@ fn merge_phantom_widths(left: Option<usize>, right: Option<usize>) -> Option<usi
     left.into_iter().chain(right).max()
 }
 
+#[cfg(test)]
 fn expr_has_array_comprehension(expr: &rumoca_core::Expression) -> bool {
     match expr {
         rumoca_core::Expression::ArrayComprehension { .. } => true,
@@ -1364,9 +1361,73 @@ fn expr_has_array_comprehension(expr: &rumoca_core::Expression) -> bool {
     }
 }
 
+fn expr_has_record_array_member_slice(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            matches!(
+                base.as_ref(),
+                rumoca_core::Expression::Index {
+                    subscripts,
+                    ..
+                } if subscripts.iter().any(|subscript| {
+                    matches!(subscript, rumoca_core::Subscript::Colon { .. })
+                })
+            ) || expr_has_record_array_member_slice(base)
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            expr_has_record_array_member_slice(lhs) || expr_has_record_array_member_slice(rhs)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => expr_has_record_array_member_slice(rhs),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => {
+            args.iter().any(expr_has_record_array_member_slice)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                expr_has_record_array_member_slice(condition)
+                    || expr_has_record_array_member_slice(value)
+            }) || expr_has_record_array_member_slice(else_branch)
+        }
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            elements.iter().any(expr_has_record_array_member_slice)
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            expr_has_record_array_member_slice(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expr_has_record_array_member_slice(step))
+                || expr_has_record_array_member_slice(end)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            expr_has_record_array_member_slice(base)
+                || subscripts
+                    .iter()
+                    .any(subscript_has_record_array_member_slice)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
 fn subscript_has_array_comprehension(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
         rumoca_core::Subscript::Expr { expr, .. } => expr_has_array_comprehension(expr),
+        rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
+    }
+}
+
+fn subscript_has_record_array_member_slice(subscript: &rumoca_core::Subscript) -> bool {
+    match subscript {
+        rumoca_core::Subscript::Expr { expr, .. } => expr_has_record_array_member_slice(expr),
         rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
     }
 }
@@ -1534,6 +1595,9 @@ fn scalarize_field_access_at(
     span: rumoca_core::Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let Some(projected) = scalarize_record_array_member_slice_at(base, field, span, ctx.k)? {
+        return Ok(projected);
+    }
     let base = scalarize_expr_with_context(base, ctx)?;
     if let rumoca_core::Expression::VarRef { name, span, .. } = &base
         && let rumoca_core::Expression::VarRef { subscripts, .. } = &base
@@ -1550,6 +1614,62 @@ fn scalarize_field_access_at(
         field: field.to_string(),
         span,
     })
+}
+
+fn scalarize_record_array_member_slice_at(
+    base: &rumoca_core::Expression,
+    field: &str,
+    span: rumoca_core::Span,
+    k: usize,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    let rumoca_core::Expression::Index {
+        base: inner,
+        subscripts,
+        ..
+    } = base
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        subscripts.as_slice(),
+        [rumoca_core::Subscript::Colon { .. }]
+    ) {
+        return Ok(None);
+    }
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts: ref_subscripts,
+        ..
+    } = inner.as_ref()
+    else {
+        return Ok(None);
+    };
+    if !ref_subscripts.is_empty() {
+        return Ok(None);
+    }
+    let Some(component_ref) = name.component_ref() else {
+        return Ok(None);
+    };
+    let mut element_ref = component_ref.clone();
+    let Some(part) = element_ref.parts.last_mut() else {
+        return Ok(None);
+    };
+    let index = one_based_scalar_index(k, span, "DAE record-array member slice subscript")?;
+    part.subs = vec![generated_index_subscript(
+        index,
+        span,
+        "DAE record-array member slice subscript",
+    )?];
+    element_ref.parts.push(rumoca_core::ComponentRefPart {
+        ident: field.to_string(),
+        span,
+        subs: Vec::new(),
+    });
+    Ok(Some(rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(element_ref),
+        subscripts: Vec::new(),
+        span,
+    }))
 }
 
 fn scalarize_array_comprehension_at(
@@ -2114,7 +2234,8 @@ fn scalarize_equation_list(
     for eq in equations.drain(..) {
         let new_start = new_equations.len();
         let phantom_width = expr_phantom_ref_width(&eq.rhs, phantom_map);
-        if eq.scalar_count > 1 && (phantom_width.is_some() || expr_has_array_comprehension(&eq.rhs))
+        if eq.scalar_count > 1
+            && (phantom_width.is_some() || expr_has_record_array_member_slice(&eq.rhs))
         {
             // Expand into scalar_count individual equations
             for k in 0..eq.scalar_count {

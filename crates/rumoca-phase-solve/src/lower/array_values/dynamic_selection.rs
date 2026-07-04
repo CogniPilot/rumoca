@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: dynamic array selection still combines record
+// slice projection, compile-time indexing, and runtime selection. split plan:
+// move record slice paths and runtime index lowering into separate modules.
 use super::inference::concrete_i64_dims;
 use super::*;
 
@@ -31,7 +34,7 @@ fn record_array_slice_field_path<'a>(
 ) -> Option<RecordArraySliceFieldPath<'a>> {
     let mut fields = vec![leaf_field.to_string()];
     let mut cursor = base;
-    let mut span = base.span().unwrap_or(rumoca_core::Span::DUMMY);
+    let mut span = base.span()?;
     while let rumoca_core::Expression::FieldAccess {
         base: nested,
         field,

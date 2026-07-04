@@ -1,6 +1,7 @@
 use super::*;
 
 impl<'a> LowerBuilder<'a> {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn bind_complex_input(
         &mut self,
         scope: &mut Scope,

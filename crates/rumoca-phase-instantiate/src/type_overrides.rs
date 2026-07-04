@@ -550,7 +550,7 @@ pub(super) fn apply_type_override<'a>(
             .or(Some(prefix_override))
     })();
 
-    let override_def_id = exact_override.or(prefix_override).or(mod_env_override);
+    let override_def_id = mod_env_override.or(exact_override).or(prefix_override);
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {

@@ -29,7 +29,7 @@ impl<'a> LowerBuilder<'a> {
         if self
             .dae_variables
             .and_then(|variables| dae_variable(variables, name.var_name()))
-            .is_some_and(|variable| variable.dims.iter().any(|dim| *dim == 0))
+            .is_some_and(|variable| variable.dims.contains(&0))
         {
             return Ok(Vec::new());
         }

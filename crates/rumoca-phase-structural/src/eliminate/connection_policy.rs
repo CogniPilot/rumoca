@@ -271,7 +271,7 @@ fn direct_definition_expr_for_var<'a>(
     };
     let lhs_name = exact_reference_expr_name_in_dae(dae, lhs);
     let rhs_name = exact_reference_expr_name_in_dae(dae, rhs);
-    if lhs_name.as_ref() == Some(&var_name) {
+    if lhs_name.as_ref() == Some(var_name) {
         Some(rhs)
     } else if rhs_name.as_ref() == Some(var_name) {
         Some(lhs)

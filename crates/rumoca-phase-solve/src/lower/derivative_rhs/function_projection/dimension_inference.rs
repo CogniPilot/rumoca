@@ -394,6 +394,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         self.projected_declared_function_output_dims(name.as_str(), span)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn cat_expr_dims(
         &self,
         args: &[rumoca_core::Expression],

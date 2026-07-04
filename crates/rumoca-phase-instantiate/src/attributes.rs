@@ -402,15 +402,11 @@ pub(super) fn extract_attributes_in_scope(
 ) -> InstantiateResult<ExtractedAttributes> {
     let mut source_scopes = IndexMap::default();
     let start_path = ast::QualifiedName::from_ident(comp_name).child("start");
-    let start_from_source = extract_numeric_attr_source_from_modifications(comp, "start");
     let start_from_mod_env = mod_env.get(&start_path).map(|value| {
         if let Some(scope) = value.source_scope.clone() {
             source_scopes.insert("start".to_string(), scope);
         }
-        start_from_source
-            .clone()
-            .or_else(|| value.source.clone())
-            .unwrap_or_else(|| value.value.clone())
+        value.source.clone().unwrap_or_else(|| value.value.clone())
     });
     let mut attr_from_mod_env = |attr_name: &str| {
         let path = ast::QualifiedName::from_ident(comp_name).child(attr_name);
@@ -418,11 +414,7 @@ pub(super) fn extract_attributes_in_scope(
         if let Some(scope) = value.source_scope.clone() {
             source_scopes.insert(attr_name.to_string(), scope);
         }
-        Some(
-            extract_numeric_attr_source_from_modifications(comp, attr_name)
-                .or_else(|| value.source.clone())
-                .unwrap_or_else(|| value.value.clone()),
-        )
+        Some(value.source.clone().unwrap_or_else(|| value.value.clone()))
     };
 
     let state_select_path = ast::QualifiedName::from_ident(comp_name).child("stateSelect");

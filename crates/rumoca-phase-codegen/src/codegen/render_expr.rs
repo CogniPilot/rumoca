@@ -246,13 +246,13 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 
     let Some(subs) = get_field(var_ref, "subscripts").ok() else {
-        return render_unsubscripted_var_ref(&raw_name, cfg);
+        return render_unsubscripted_var_ref_with_source(&raw_name, &source_ref, cfg);
     };
     let len = subs
         .len()
         .ok_or_else(|| render_err("VarRef subscripts field is not a sequence"))?;
     if len == 0 {
-        return render_unsubscripted_var_ref(&raw_name, cfg);
+        return render_unsubscripted_var_ref_with_source(&raw_name, &source_ref, cfg);
     }
 
     let all_static = (0..len).all(|i| {
@@ -293,24 +293,53 @@ fn render_unsubscripted_var_ref(raw_name: &str, cfg: &ExprConfig) -> RenderResul
         .substitutions
         .iter()
         .rev()
-        .find(|(name, _)| name == &raw_name)
+        .find(|(name, _)| name == raw_name)
     {
         return Ok(value.clone());
     }
-    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name) {
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), raw_name) {
         return Ok(symbol);
     }
-    if let Some(source_name) = one_based_serialized_component_name(&raw_name)
+    if let Some(source_name) = one_based_serialized_component_name(raw_name)
         && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_name)
     {
         return Ok(symbol);
     }
     if cfg.symbols.is_none()
-        && let Some(source_name) = zero_component_name_to_one_based(&raw_name)
+        && let Some(source_name) = zero_component_name_to_one_based(raw_name)
     {
         return super::emitted_symbol(&source_name, cfg);
     }
-    super::emitted_symbol(&raw_name, cfg)
+    super::emitted_symbol(raw_name, cfg)
+}
+
+fn render_unsubscripted_var_ref_with_source(
+    raw_name: &str,
+    source_ref: &str,
+    cfg: &ExprConfig,
+) -> RenderResult {
+    if let Some(scope) = cfg.source_scope.as_deref()
+        && let Some(rest) = source_ref.strip_prefix(scope)
+        && rest.starts_with('.')
+        && super::lookup_symbol_value(cfg.symbols.as_ref(), source_ref).is_some()
+    {
+        return Ok(super::sanitize_name(source_ref));
+    }
+    if source_ref != raw_name
+        && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), source_ref)
+    {
+        return Ok(symbol);
+    }
+    if source_ref == raw_name
+        && !rumoca_core::has_top_level_dot(raw_name)
+        && let Some(scope) = cfg.source_scope.as_deref()
+    {
+        let scoped_ref = format!("{scope}.{raw_name}");
+        if super::lookup_symbol_value(cfg.symbols.as_ref(), &scoped_ref).is_some() {
+            return Ok(super::sanitize_name(&scoped_ref));
+        }
+    }
+    render_unsubscripted_var_ref(raw_name, cfg)
 }
 
 fn one_based_serialized_component_name(name: &str) -> Option<String> {
@@ -370,11 +399,18 @@ fn canonicalize_serialized_component_indices(name: &str, zeros_only: bool) -> Op
 }
 
 fn var_ref_source_ref(raw_name: &str, var_ref: &Value) -> RenderResult {
+    let base_name = if let Ok(name) = get_field(var_ref, "name")
+        && let Ok(component_ref) = get_field(&name, "component_ref")
+    {
+        render_component_ref_source_name(&component_ref, "VarRef", "name")?
+    } else {
+        raw_name.to_string()
+    };
     let subscripts = render_source_subscripts(var_ref)?;
     if subscripts.is_empty() {
-        Ok(raw_name.to_string())
+        Ok(base_name)
     } else {
-        Ok(format!("{raw_name}[{subscripts}]"))
+        Ok(format!("{base_name}[{subscripts}]"))
     }
 }
 
@@ -458,11 +494,6 @@ fn condition_source_ref(condition: &Value) -> Result<String, minijinja::Error> {
 fn render_name_field(value: &Value, field: &str, context: &str) -> RenderResult {
     let name = get_field(value, field)
         .map_err(|err| render_err(format!("{context} missing '{field}' field: {err}")))?;
-    if get_field(&name, "name").is_err()
-        && let Ok(component_ref) = get_field(&name, "component_ref")
-    {
-        return render_component_ref_source_name(&component_ref, context, field);
-    }
     let rendered = render_serialized_name(&name);
     if rendered.is_empty() {
         return Err(render_err(format!(

@@ -20,7 +20,7 @@ struct AliasPackageStaticKey {
 }
 
 enum ComponentStaticConstantCacheEntry {
-    Cacheable(ScopedConstantDelta),
+    Cacheable(Box<ScopedConstantDelta>),
     Uncacheable,
 }
 
@@ -32,6 +32,7 @@ struct ScopedKeySnapshot {
     string_parameter_values: rustc_hash::FxHashSet<String>,
     enum_parameter_values: rustc_hash::FxHashSet<String>,
     constant_values: rustc_hash::FxHashSet<String>,
+    class_constant_keys: rustc_hash::FxHashSet<String>,
     array_dimensions: rustc_hash::FxHashSet<String>,
     modified_constant_keys: rustc_hash::FxHashSet<String>,
 }
@@ -45,6 +46,7 @@ impl ScopedKeySnapshot {
             string_parameter_values: scoped_keys(&ctx.string_parameter_values, scope),
             enum_parameter_values: scoped_keys(&ctx.enum_parameter_values, scope),
             constant_values: scoped_keys(&ctx.constant_values, scope),
+            class_constant_keys: scoped_set_keys(&ctx.class_constant_keys, scope),
             array_dimensions: scoped_keys(&ctx.array_dimensions, scope),
             modified_constant_keys: ctx
                 .modified_constant_keys
@@ -64,6 +66,7 @@ struct ScopedConstantDelta {
     string_parameter_values: Vec<(String, String)>,
     enum_parameter_values: Vec<(String, String)>,
     constant_values: Vec<(String, rumoca_core::Expression)>,
+    class_constant_keys: Vec<String>,
     array_dimensions: Vec<(String, Vec<i64>)>,
     modified_constant_keys: Vec<String>,
 }
@@ -101,6 +104,11 @@ impl ScopedConstantDelta {
                 scope,
                 &before.constant_values,
             )?,
+            class_constant_keys: capture_set_delta(
+                &ctx.class_constant_keys,
+                scope,
+                &before.class_constant_keys,
+            ),
             array_dimensions: capture_map_delta(
                 &ctx.array_dimensions,
                 scope,
@@ -155,6 +163,11 @@ impl ScopedConstantDelta {
             &ctx.flat_parameter_constant_keys,
             &mut ctx.constant_values,
         );
+        replay_set_delta(
+            &self.class_constant_keys,
+            scope,
+            &mut ctx.class_constant_keys,
+        );
         replay_map_delta(
             &self.array_dimensions,
             scope,
@@ -173,6 +186,16 @@ fn scoped_keys<V>(
     scope: &str,
 ) -> rustc_hash::FxHashSet<String> {
     map.keys()
+        .filter(|key| is_scoped_key(key, scope))
+        .cloned()
+        .collect()
+}
+
+fn scoped_set_keys(
+    set: &rustc_hash::FxHashSet<String>,
+    scope: &str,
+) -> rustc_hash::FxHashSet<String> {
+    set.iter()
         .filter(|key| is_scoped_key(key, scope))
         .cloned()
         .collect()
@@ -223,6 +246,17 @@ fn capture_string_map_delta(
         .collect()
 }
 
+fn capture_set_delta(
+    set: &rustc_hash::FxHashSet<String>,
+    scope: &str,
+    before: &rustc_hash::FxHashSet<String>,
+) -> Vec<String> {
+    set.iter()
+        .filter(|key| is_scoped_key(key, scope) && !before.contains(*key))
+        .map(|key| scoped_key_suffix(key, scope).to_string())
+        .collect()
+}
+
 fn capture_expression_map_delta(
     map: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
     scope: &str,
@@ -253,6 +287,12 @@ fn replay_map_delta<V: Clone>(
             continue;
         }
         map.entry(key).or_insert_with(|| value.clone());
+    }
+}
+
+fn replay_set_delta(delta: &[String], scope: &str, set: &mut rustc_hash::FxHashSet<String>) {
+    for suffix in delta {
+        set.insert(rebase_scoped_key(scope, suffix));
     }
 }
 
@@ -500,13 +540,29 @@ fn component_static_cache_key(
     comp: &rumoca_ir_ast::InstanceData,
     class_def: &ClassDef,
 ) -> Option<ComponentStaticConstantKey> {
-    if comp.class_overrides.is_empty() && !component_scope_has_array_index(comp) {
+    if comp.class_overrides.is_empty()
+        && !component_scope_has_array_index(comp)
+        && !component_has_instance_specific_static_context(comp)
+    {
         class_def
             .def_id
             .map(|class_def_id| ComponentStaticConstantKey { class_def_id })
     } else {
         None
     }
+}
+
+fn component_has_instance_specific_static_context(comp: &rumoca_ir_ast::InstanceData) -> bool {
+    comp.binding.is_some()
+        || comp.binding_source.is_some()
+        || comp.binding_source_scope.is_some()
+        || comp.binding_from_modification
+        || !comp.attribute_source_scopes.is_empty()
+        || comp.start.is_some()
+        || comp.fixed.is_some()
+        || comp.min.is_some()
+        || comp.max.is_some()
+        || comp.nominal.is_some()
 }
 
 fn component_scope_has_array_index(comp: &rumoca_ir_ast::InstanceData) -> bool {
@@ -542,7 +598,7 @@ fn cache_component_static_delta(
     if let Some(delta) = ScopedConstantDelta::capture(request.ctx, request.comp_scope, before) {
         request.static_cache.insert(
             cache_key,
-            ComponentStaticConstantCacheEntry::Cacheable(delta),
+            ComponentStaticConstantCacheEntry::Cacheable(Box::new(delta)),
         );
         StaticInjectResult {
             injected: true,
@@ -769,6 +825,13 @@ pub(crate) fn inject_component_enclosing_class_constants(
     if ancestors.is_empty() {
         return;
     }
+    let shadowed_names = class_index
+        .get_by_qualified_name(class_context)
+        .or_else(|| {
+            class_index.get_by_qualified_name(crate::path_utils::leaf_segment(class_context))
+        })
+        .map(|class| class_member_names_with_bases(tree, class))
+        .unwrap_or_default();
 
     const MAX_PASSES: usize = 5;
     for _pass in 0..MAX_PASSES {
@@ -795,13 +858,14 @@ pub(crate) fn inject_component_enclosing_class_constants(
                     ctx,
                 );
             }
-            extract_constants_from_class_with_prefix_and_imports(
+            extract_constants_from_class_with_prefix_and_imports_shadowed(
                 tree,
                 class_index,
                 comp_scope,
                 ancestor,
                 &resolve_context,
                 ctx,
+                &shadowed_names,
             );
         }
 
@@ -814,6 +878,39 @@ pub(crate) fn inject_component_enclosing_class_constants(
             + ctx.constant_values.len();
         if new == prev {
             break;
+        }
+    }
+}
+
+fn class_member_names_with_bases(
+    tree: &rumoca_ir_ast::ClassTree,
+    class: &rumoca_ir_ast::ClassDef,
+) -> rustc_hash::FxHashSet<String> {
+    let mut names = rustc_hash::FxHashSet::default();
+    let mut visited = rustc_hash::FxHashSet::default();
+    collect_class_member_names_recursive(tree, class, &mut names, &mut visited);
+    names
+}
+
+fn collect_class_member_names_recursive(
+    tree: &rumoca_ir_ast::ClassTree,
+    class: &rumoca_ir_ast::ClassDef,
+    names: &mut rustc_hash::FxHashSet<String>,
+    visited: &mut rustc_hash::FxHashSet<rumoca_core::DefId>,
+) {
+    if let Some(def_id) = class.def_id
+        && !visited.insert(def_id)
+    {
+        return;
+    }
+    names.extend(class.components.keys().cloned());
+    for ext in &class.extends {
+        let base_class = ext
+            .base_def_id
+            .and_then(|def_id| tree.get_class_by_def_id(def_id))
+            .or_else(|| tree.get_class_by_qualified_name(&ext.base_name.to_string()));
+        if let Some(base_class) = base_class {
+            collect_class_member_names_recursive(tree, base_class, names, visited);
         }
     }
 }
@@ -1004,7 +1101,7 @@ fn inject_alias_package_constants_for_scope(
     if let Some(delta) = ScopedConstantDelta::capture(request.ctx, scope, &before) {
         request.alias_package_cache.insert(
             cache_key,
-            ComponentStaticConstantCacheEntry::Cacheable(delta),
+            ComponentStaticConstantCacheEntry::Cacheable(Box::new(delta)),
         );
     } else {
         request

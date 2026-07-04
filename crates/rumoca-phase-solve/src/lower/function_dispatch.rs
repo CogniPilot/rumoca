@@ -1,6 +1,7 @@
 use super::*;
 
 impl<'a> LowerBuilder<'a> {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn lower_function_call(
         &mut self,
         name: &rumoca_core::Reference,

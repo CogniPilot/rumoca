@@ -1018,6 +1018,7 @@ impl<'a> LowerBuilder<'a> {
         )
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn bind_function_inputs_for_name_with_used(
         &mut self,
         function_name: &str,
@@ -1741,7 +1742,7 @@ impl<'a> LowerBuilder<'a> {
             Ok(dims) => dims,
             Err(err)
                 if err.is_missing_binding_or_function()
-                    && input.dims.iter().any(|dim| *dim == 0)
+                    && input.dims.contains(&0)
                     && input.dims.iter().all(|dim| *dim >= 0) =>
             {
                 input.dims.clone()
