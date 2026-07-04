@@ -85,13 +85,47 @@ pub(in crate::lower::derivative_rhs) fn function_field_access(
         .then_some((base.as_ref(), field.as_str()))
 }
 
-pub(in crate::lower::derivative_rhs) fn function_call_projected_scalars_with_owner(
+pub(in crate::lower) fn function_call_projected_scalars_with_owner(
     expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
+    if let Some((call, field)) = function_field_access(expr)
+        && let Some(outputs) = analysis.top_level_function_call_outputs(
+            call,
+            inherited_projection_source_span(call.span(), owner_span),
+        )?
+    {
+        let scope = FunctionProjectionScope::default();
+        let mut selected = projection_vec_with_capacity(
+            outputs.len(),
+            "projected function field scalar count",
+            owner_span,
+        )?;
+        for output in outputs {
+            if let Some(expr) =
+                analysis.project_output_field_value(output, field, &scope, owner_span)?
+            {
+                let dims = analysis
+                    .expr_dims_with_owner(&expr, &scope, 0, owner_span)?
+                    .unwrap_or_default();
+                if dims.is_empty() {
+                    selected.push(expr);
+                } else if let Some(mut scalars) =
+                    analysis.project_value_scalars(&expr, &dims, &scope, 0, owner_span)?
+                {
+                    selected.append(&mut scalars);
+                } else {
+                    selected.push(expr);
+                }
+            }
+        }
+        if !selected.is_empty() {
+            return Ok(Some(selected));
+        }
+    }
     if let Some(outputs) = analysis.top_level_function_call_outputs(
         expr,
         inherited_projection_source_span(expr.span(), owner_span),
@@ -127,6 +161,23 @@ pub(in crate::lower::derivative_rhs) fn function_call_projected_scalars_with_own
         projection_vec_with_capacity(1, "selected function output scalar count", span)?;
     values.push(output_expr);
     Ok(Some(values))
+}
+
+pub(in crate::lower) fn project_array_like_scalars_with_owner(
+    expr: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    owner_span: rumoca_core::Span,
+) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
+    let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
+    let scope = FunctionProjectionScope::default();
+    let Some(dims) = analysis.expr_dims_with_owner(expr, &scope, 0, owner_span)? else {
+        return Ok(None);
+    };
+    if dims.is_empty() {
+        return Ok(None);
+    }
+    analysis.project_value_scalars(expr, &dims, &scope, 0, owner_span)
 }
 
 pub(in crate::lower::derivative_rhs) fn projected_output_expressions(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lower::function_calls::decode_named_function_arg;
 
 pub(in crate::lower) fn matmul_shape_from_dims(
     lhs_dims: &[usize],
@@ -60,6 +61,22 @@ pub(in crate::lower) fn projected_record_field_expression(
                 branches: projected_branches,
                 else_branch: Box::new(projected_record_field_expression(else_branch, field)?),
                 span,
+            })
+        }
+        rumoca_core::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                if let Some((name, value)) = decode_named_function_arg(arg)
+                    && name == field
+                {
+                    return Ok(value.clone());
+                }
+            }
+            Ok(rumoca_core::Expression::FieldAccess {
+                base: Box::new(value.clone()),
+                field: field.to_string(),
+                span: value
+                    .require_span("projected record field expression")?
+                    .span(),
             })
         }
         _ => Ok(rumoca_core::Expression::FieldAccess {

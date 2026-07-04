@@ -20,6 +20,201 @@ use helpers::{
 };
 pub(super) use runtime_intrinsics::*;
 
+pub(super) fn is_flattened_record_field_actual(
+    expr: &rumoca_core::Expression,
+    field: &str,
+) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            name.as_str().ends_with(&format!(".{field}"))
+                || name.as_str().ends_with(&format!("_{field}"))
+        }
+        rumoca_core::Expression::FieldAccess {
+            field: actual_field,
+            ..
+        } => actual_field == field,
+        _ => false,
+    }
+}
+
+pub(super) fn referenced_function_input_names(
+    function: &rumoca_core::Function,
+) -> IndexSet<String> {
+    let input_names: IndexSet<&str> = function
+        .inputs
+        .iter()
+        .map(|input| input.name.as_str())
+        .collect();
+    let mut used = IndexSet::new();
+    for statement in &function.body {
+        collect_statement_var_refs(statement, &input_names, &mut used);
+    }
+    used
+}
+
+fn collect_statement_var_refs(
+    statement: &rumoca_core::Statement,
+    input_names: &IndexSet<&str>,
+    used: &mut IndexSet<String>,
+) {
+    match statement {
+        rumoca_core::Statement::Assignment { value, .. } => {
+            collect_expression_var_refs(value, input_names, used);
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                collect_expression_var_refs(&block.cond, input_names, used);
+                for statement in &block.stmts {
+                    collect_statement_var_refs(statement, input_names, used);
+                }
+            }
+            if let Some(else_block) = else_block {
+                for statement in else_block {
+                    collect_statement_var_refs(statement, input_names, used);
+                }
+            }
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            for index in indices {
+                collect_expression_var_refs(&index.range, input_names, used);
+            }
+            for statement in equations {
+                collect_statement_var_refs(statement, input_names, used);
+            }
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            collect_expression_var_refs(&block.cond, input_names, used);
+            for statement in &block.stmts {
+                collect_statement_var_refs(statement, input_names, used);
+            }
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                collect_expression_var_refs(&block.cond, input_names, used);
+                for statement in &block.stmts {
+                    collect_statement_var_refs(statement, input_names, used);
+                }
+            }
+        }
+        rumoca_core::Statement::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_expression_var_refs(arg, input_names, used);
+            }
+        }
+        rumoca_core::Statement::Reinit { value, .. } => {
+            collect_expression_var_refs(value, input_names, used);
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            collect_expression_var_refs(condition, input_names, used);
+            collect_expression_var_refs(message, input_names, used);
+            if let Some(level) = level {
+                collect_expression_var_refs(level, input_names, used);
+            }
+        }
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. } => {}
+    }
+}
+
+fn collect_expression_var_refs(
+    expr: &rumoca_core::Expression,
+    input_names: &IndexSet<&str>,
+    used: &mut IndexSet<String>,
+) {
+    match expr {
+        rumoca_core::Expression::VarRef { name, .. } => {
+            if input_names.contains(name.as_str()) {
+                used.insert(name.as_str().to_string());
+            } else {
+                let flattened_name = name.as_str().replace('.', "_");
+                if input_names.contains(flattened_name.as_str()) {
+                    used.insert(flattened_name);
+                }
+            }
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            collect_expression_var_refs(rhs, input_names, used);
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            collect_expression_var_refs(lhs, input_names, used);
+            collect_expression_var_refs(rhs, input_names, used);
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                collect_expression_var_refs(condition, input_names, used);
+                collect_expression_var_refs(value, input_names, used);
+            }
+            collect_expression_var_refs(else_branch, input_names, used);
+        }
+        rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. } => {
+            for arg in args {
+                collect_expression_var_refs(arg, input_names, used);
+            }
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            if let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = base.as_ref()
+                && subscripts.is_empty()
+            {
+                let flattened_name = format!("{}_{}", name.as_str(), field);
+                if input_names.contains(flattened_name.as_str()) {
+                    used.insert(flattened_name);
+                }
+            }
+            collect_expression_var_refs(base, input_names, used);
+        }
+        rumoca_core::Expression::Index { base, .. } => {
+            collect_expression_var_refs(base, input_names, used);
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_expression_var_refs(start, input_names, used);
+            if let Some(step) = step {
+                collect_expression_var_refs(step, input_names, used);
+            }
+            collect_expression_var_refs(end, input_names, used);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_expression_var_refs(expr, input_names, used);
+            for index in indices {
+                collect_expression_var_refs(&index.range, input_names, used);
+            }
+            if let Some(filter) = filter {
+                collect_expression_var_refs(filter, input_names, used);
+            }
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
 impl<'a> LowerBuilder<'a> {
     pub(super) fn lower_qualified_standard_numeric_intrinsic(
         &mut self,
@@ -161,6 +356,11 @@ impl<'a> LowerBuilder<'a> {
         if let Some(reg) = self.lower_runtime_string_special_intrinsic(call_name, args, span)? {
             return Ok(Some(reg));
         }
+        if let Some(reg) = self.lower_buildings_energyplus_external_intrinsic(
+            call_name, args, span, scope, call_depth,
+        )? {
+            return Ok(Some(reg));
+        }
         if let Some(reg) =
             self.lower_external_table_intrinsic(call_name, args, span, scope, call_depth)?
         {
@@ -179,6 +379,31 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Some(reg));
         }
         Ok(None)
+    }
+
+    fn lower_buildings_energyplus_external_intrinsic(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(kind) = buildings_energyplus_external_kind(call_name) else {
+            return Ok(None);
+        };
+        let (named_args, positional_args) = split_named_and_positional_call_args(call_name, args)?;
+        let mut scalar_args = Vec::new();
+        if kind == rumoca_ir_solve::ExternalFunctionKind::BuildingsEnergyPlusInitialize
+            && let Some(expr) = named_args
+                .get("isSynchronized")
+                .copied()
+                .or_else(|| positional_args.last().copied())
+        {
+            scalar_args.push(self.lower_expr(expr, scope, call_depth)?);
+        }
+        self.emit_external_call(kind, &scalar_args, 0, span)
+            .map(Some)
     }
 
     fn lower_synchronous_value_intrinsic(
@@ -757,6 +982,24 @@ impl<'a> LowerBuilder<'a> {
         )
     }
 
+    pub(super) fn bind_used_function_inputs(
+        &mut self,
+        function: &rumoca_core::Function,
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<FunctionInputBindings, LowerError> {
+        let used_inputs = referenced_function_input_names(function);
+        self.bind_function_inputs_for_name_with_used(
+            function.name.as_str(),
+            &function.inputs,
+            args,
+            caller_scope,
+            call_depth,
+            Some(&used_inputs),
+        )
+    }
+
     pub(super) fn bind_function_inputs_for_name(
         &mut self,
         function_name: &str,
@@ -764,6 +1007,25 @@ impl<'a> LowerBuilder<'a> {
         args: &[rumoca_core::Expression],
         caller_scope: &Scope,
         call_depth: usize,
+    ) -> Result<FunctionInputBindings, LowerError> {
+        self.bind_function_inputs_for_name_with_used(
+            function_name,
+            inputs,
+            args,
+            caller_scope,
+            call_depth,
+            None,
+        )
+    }
+
+    fn bind_function_inputs_for_name_with_used(
+        &mut self,
+        function_name: &str,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+        used_inputs: Option<&IndexSet<String>>,
     ) -> Result<FunctionInputBindings, LowerError> {
         let (named_args, positional_args) =
             split_named_and_positional_call_args(function_name, args)?;
@@ -773,6 +1035,51 @@ impl<'a> LowerBuilder<'a> {
         let mut positional_idx = 0usize;
 
         for (input_idx, input) in inputs.iter().enumerate() {
+            if used_inputs.is_some_and(|used_inputs| !used_inputs.contains(&input.name)) {
+                let Some((prefix, field)) = split_flattened_record_input_name(&input.name) else {
+                    if self.try_bind_function_input(
+                        FunctionInputBindState {
+                            scope: &mut scope,
+                            const_scope: &mut const_scope,
+                            const_bindings: &mut const_bindings,
+                        },
+                        FunctionInputRequest {
+                            function_name,
+                            input,
+                            inputs,
+                            input_idx,
+                            named_args: &named_args,
+                            positional_args: &positional_args,
+                            positional_idx: &mut positional_idx,
+                            caller_scope,
+                            call_depth: call_depth + 1,
+                        },
+                    )? {
+                        continue;
+                    }
+                    return missing_required_function_input(function_name, input);
+                };
+                let flattened_group_has_used_sibling = inputs.iter().any(|candidate| {
+                    flattened_input_has_prefix(&candidate.name, prefix)
+                        && used_inputs.is_some_and(|used| used.contains(&candidate.name))
+                });
+                if flattened_group_has_used_sibling && !named_args.contains_key(input.name.as_str())
+                {
+                    let later_flattened_sibling_is_used =
+                        inputs.iter().skip(input_idx + 1).any(|next| {
+                            flattened_input_has_prefix(&next.name, prefix)
+                                && used_inputs.is_some_and(|used| used.contains(&next.name))
+                        });
+                    if !later_flattened_sibling_is_used
+                        || positional_args
+                            .get(positional_idx)
+                            .is_some_and(|arg| is_flattened_record_field_actual(arg, field))
+                    {
+                        positional_idx += usize::from(positional_idx < positional_args.len());
+                    }
+                    continue;
+                }
+            }
             if self.try_bind_function_input(
                 FunctionInputBindState {
                     scope: &mut scope,
@@ -1424,10 +1731,23 @@ impl<'a> LowerBuilder<'a> {
         if input.dims.is_empty() {
             return Ok(false);
         }
-        let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
-        let binding_dims =
-            self.resolve_function_input_binding_dims(function_name, input, expr, expr_scope)?;
         let span = expr.span().unwrap_or(input.span);
+        let binding_dims = match self.resolve_function_input_binding_dims(
+            function_name,
+            input,
+            expr,
+            expr_scope,
+        ) {
+            Ok(dims) => dims,
+            Err(err)
+                if err.is_missing_binding_or_function()
+                    && input.dims.iter().any(|dim| *dim == 0)
+                    && input.dims.iter().all(|dim| *dim >= 0) =>
+            {
+                input.dims.clone()
+            }
+            Err(err) => return Err(err),
+        };
         let expected = dims_scalar_count(
             &binding_dims,
             format!(
@@ -1436,6 +1756,11 @@ impl<'a> LowerBuilder<'a> {
             ),
             span,
         )?;
+        let values = if expected == 0 {
+            Vec::new()
+        } else {
+            self.lower_array_like_values(expr, expr_scope, call_depth)?
+        };
         if values.len() != expected {
             let shape = format_i64_dims(&binding_dims);
             return Err(LowerError::contract_violation(
@@ -1930,6 +2255,18 @@ impl<'a> LowerBuilder<'a> {
         self.guarded_uninitialized_locals = frame.guarded_uninitialized_locals;
         self.local_const_bindings = frame.local_const_bindings;
         self.function_closures = frame.function_closures;
+        result
+    }
+
+    pub(super) fn with_local_const_bindings<T>(
+        &mut self,
+        const_bindings: &IndexMap<String, f64>,
+        f: impl FnOnce(&mut Self) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        let saved = self.local_const_bindings.clone();
+        self.local_const_bindings.extend(const_bindings.clone());
+        let result = f(self);
+        self.local_const_bindings = saved;
         result
     }
 

@@ -53,6 +53,9 @@ pub(super) fn lower_continuous_row_targets_for_equation(
     row_count: usize,
 ) -> Result<Vec<Option<solve::ScalarSlot>>, LowerError> {
     let mut targets = lower_vec_with_capacity(row_count, "continuous row target count", eq.span)?;
+    if row_count == 0 {
+        return Ok(targets);
+    }
     if let Some(lhs) = eq.lhs.as_ref()
         && let Some(names) = scalarized_record_target_names(lhs.as_str(), layout)
     {

@@ -14,16 +14,10 @@ pub(super) fn project_reference_field_path_and_indices(
     if field_path.is_empty() && indices.is_empty() {
         return Ok(name.clone());
     }
-    let component_ref = name.component_ref().ok_or_else(|| {
-        LowerError::contract_violation(
-            format!(
-                "array projection for `{}` lost structured component-reference metadata",
-                name.as_str()
-            ),
-            span,
-        )
-    })?;
-    let mut component_ref = component_ref.clone();
+    let mut component_ref = name
+        .component_ref()
+        .cloned()
+        .unwrap_or_else(|| fallback_component_reference(name.as_str(), span));
     for field in field_path {
         component_ref.parts.push(rumoca_core::ComponentRefPart {
             ident: field.clone(),
@@ -49,6 +43,22 @@ pub(super) fn project_reference_field_path_and_indices(
     Ok(rumoca_core::Reference::from_component_reference(
         component_ref,
     ))
+}
+
+fn fallback_component_reference(
+    name: &str,
+    span: rumoca_core::Span,
+) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span,
+            subs: Vec::new(),
+        }],
+        def_id: None,
+    }
 }
 
 fn projected_reference_subscript(

@@ -15,6 +15,21 @@ fn real(value: f64) -> rumoca_core::Expression {
     }
 }
 
+fn integer(value: i64) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: Literal::Integer(value),
+        span: test_span(),
+    }
+}
+
+fn var_ref(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::VarName::new(name).into(),
+        subscripts: Vec::new(),
+        span: test_span(),
+    }
+}
+
 fn array(elements: Vec<rumoca_core::Expression>, is_matrix: bool) -> rumoca_core::Expression {
     rumoca_core::Expression::Array {
         elements,
@@ -57,6 +72,13 @@ fn component_reference(parts: Vec<rumoca_core::ComponentRefPart>) -> rumoca_core
     })
 }
 
+fn assert_var_ref_name(expr: &rumoca_core::Expression, expected: &str) {
+    let rumoca_core::Expression::VarRef { name, .. } = expr else {
+        panic!("expected VarRef `{expected}`, got {expr:?}");
+    };
+    assert_eq!(name.as_str(), expected);
+}
+
 #[test]
 fn flatten_array_elements_flattens_matrix_rows() -> Result<(), LowerError> {
     let row1 = array(vec![real(1.0), real(2.0)], false);
@@ -75,6 +97,580 @@ fn flatten_array_elements_flattens_matrix_rows() -> Result<(), LowerError> {
         .collect::<Vec<_>>();
 
     assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
+    Ok(())
+}
+
+#[test]
+fn scalar_flat_index_projects_to_empty_subscripts() -> Result<(), LowerError> {
+    let subscripts = required_flat_index_to_subscripts(&[], 0, test_span())?;
+
+    assert!(subscripts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn scalar_flat_index_rejects_nonzero_index() {
+    let err = required_flat_index_to_subscripts(&[], 1, test_span())
+        .expect_err("scalar flat index one should be out of bounds");
+
+    assert!(
+        err.reason()
+            .contains("flat index 1 is out of bounds for dimensions []"),
+        "{}",
+        err.reason()
+    );
+}
+
+#[test]
+fn stream_passthrough_projects_argument_scalars() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope
+        .scalars
+        .insert("u".to_string(), vec![real(1.0), real(2.0)]);
+    scope.dims.insert("u".to_string(), vec![2]);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("inStream").into(),
+        args: vec![rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("u"),
+            subscripts: Vec::new(),
+            span: test_span(),
+        }],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let projected = analysis
+        .project_value_scalars(&expr, &[2], &scope, 0, test_span())?
+        .expect("stream passthrough should project argument scalars");
+    let values = projected
+        .iter()
+        .map(|expr| match expr {
+            rumoca_core::Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            } => *value,
+            other => panic!("expected scalar literal, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(values, vec![1.0, 2.0]);
+    let dims = analysis
+        .expr_dims(&expr, &scope, 0, test_span())?
+        .expect("stream passthrough should infer argument dimensions");
+    assert_eq!(dims, vec![2]);
+    Ok(())
+}
+
+#[test]
+fn cat_projection_concatenates_dynamic_vector_and_computed_tail() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.scalars.insert("u".to_string(), vec![real(0.25)]);
+    scope.dims.insert("u".to_string(), vec![1]);
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Cat,
+        args: vec![
+            integer(1),
+            var_ref("u"),
+            array(
+                vec![binary(
+                    rumoca_core::OpBinary::Sub,
+                    integer(1),
+                    rumoca_core::Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Sum,
+                        args: vec![var_ref("u")],
+                        span: test_span(),
+                    },
+                    test_span(),
+                )],
+                false,
+            ),
+        ],
+        span: test_span(),
+    };
+
+    let dims = analysis
+        .expr_dims(&expr, &scope, 0, test_span())?
+        .expect("cat dimensions should be inferred");
+    assert_eq!(dims, vec![2]);
+    let projected = analysis
+        .project_value_scalars(&expr, &[2], &scope, 0, test_span())?
+        .expect("cat should project to scalar values");
+
+    assert_eq!(projected.len(), 2);
+    assert!(matches!(
+        &projected[0],
+        rumoca_core::Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } if (*value - 0.25).abs() < 1e-12
+    ));
+    assert!(matches!(
+        &projected[1],
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn full_binding_substitution_rewrites_nested_local_inputs() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.full.insert("p".to_string(), real(101325.0));
+    scope.full.insert(
+        "state".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("ThermodynamicState").into(),
+            args: vec![rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                args: vec![rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("p"),
+                    subscripts: Vec::new(),
+                    span: test_span(),
+                }],
+                is_constructor: true,
+                span: test_span(),
+            }],
+            is_constructor: true,
+            span: test_span(),
+        },
+    );
+
+    let substituted = analysis.substitute(
+        &rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("state"),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        &scope,
+    )?;
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = substituted else {
+        panic!("expected substituted record constructor");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = &args[0] else {
+        panic!("expected named argument constructor");
+    };
+    assert!(matches!(
+        args.as_slice(),
+        [rumoca_core::Expression::Literal {
+            value: Literal::Real(101325.0),
+            ..
+        }]
+    ));
+    Ok(())
+}
+
+#[test]
+fn named_constructor_field_access_projects_selected_actual() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.full.insert("p".to_string(), real(101325.0));
+    scope.full.insert("T".to_string(), real(295.0));
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("ThermodynamicState").into(),
+            args: vec![
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                    args: vec![rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("p"),
+                        subscripts: Vec::new(),
+                        span: test_span(),
+                    }],
+                    is_constructor: true,
+                    span: test_span(),
+                },
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.T").into(),
+                    args: vec![rumoca_core::Expression::Binary {
+                        op: OpBinary::Add,
+                        lhs: Box::new(rumoca_core::Expression::VarRef {
+                            name: rumoca_core::Reference::new("p"),
+                            subscripts: Vec::new(),
+                            span: test_span(),
+                        }),
+                        rhs: Box::new(rumoca_core::Expression::VarRef {
+                            name: rumoca_core::Reference::new("T"),
+                            subscripts: Vec::new(),
+                            span: test_span(),
+                        }),
+                        span: test_span(),
+                    }],
+                    is_constructor: true,
+                    span: test_span(),
+                },
+            ],
+            is_constructor: true,
+            span: test_span(),
+        }),
+        field: "p".to_string(),
+        span: test_span(),
+    };
+
+    let projected = analysis
+        .project_value_scalars(&expr, &[], &scope, 0, test_span())?
+        .expect("named constructor field should project");
+
+    assert!(matches!(
+        projected.as_slice(),
+        [rumoca_core::Expression::Literal {
+            value: Literal::Real(101325.0),
+            ..
+        }]
+    ));
+    Ok(())
+}
+
+#[test]
+fn function_record_field_access_projects_if_constructor_output() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.pure = true;
+    state_ctor.inputs.push(scalar_function_param("p"));
+    state_ctor.inputs.push(scalar_function_param("T"));
+    state_ctor
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.State"), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", test_span());
+    make_state.pure = true;
+    make_state.inputs.push(scalar_function_param("p"));
+    make_state.inputs.push(scalar_function_param("T"));
+    make_state
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    make_state.body.push(scalar_assignment(
+        "state",
+        rumoca_core::Expression::If {
+            branches: vec![(
+                rumoca_core::Expression::Binary {
+                    op: OpBinary::Eq,
+                    lhs: Box::new(local_var("p")),
+                    rhs: Box::new(local_var("p")),
+                    span: test_span(),
+                },
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("My.State").into(),
+                    args: vec![
+                        rumoca_core::Expression::FunctionCall {
+                            name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                            args: vec![local_var("p")],
+                            is_constructor: true,
+                            span: test_span(),
+                        },
+                        rumoca_core::Expression::FunctionCall {
+                            name: rumoca_core::VarName::new("__rumoca_named_arg__.T").into(),
+                            args: vec![rumoca_core::Expression::Binary {
+                                op: OpBinary::Add,
+                                lhs: Box::new(local_var("p")),
+                                rhs: Box::new(local_var("T")),
+                                span: test_span(),
+                            }],
+                            is_constructor: true,
+                            span: test_span(),
+                        },
+                    ],
+                    is_constructor: true,
+                    span: test_span(),
+                },
+            )],
+            else_branch: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("My.State").into(),
+                args: vec![local_var("p"), local_var("T")],
+                is_constructor: true,
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.makeState"), make_state);
+
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.full.insert("p".to_string(), real(101325.0));
+    scope.full.insert("T".to_string(), real(295.0));
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.makeState").into(),
+            args: vec![local_var("p"), local_var("T")],
+            is_constructor: false,
+            span: test_span(),
+        }),
+        field: "p".to_string(),
+        span: test_span(),
+    };
+
+    let projected = analysis
+        .project_value_scalars(&expr, &[], &scope, 0, test_span())?
+        .expect("function record field should project");
+
+    assert!(matches!(
+        projected.as_slice(),
+        [rumoca_core::Expression::Literal {
+            value: Literal::Real(101325.0),
+            ..
+        }]
+    ));
+    Ok(())
+}
+
+#[test]
+fn flattened_record_inputs_project_positional_record_actual_fields() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.pure = true;
+    state_ctor.inputs.push(scalar_function_param("p"));
+    state_ctor.inputs.push(scalar_function_param("T"));
+    state_ctor
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.State"), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", test_span());
+    make_state.pure = true;
+    make_state.inputs.push(scalar_function_param("p"));
+    make_state.inputs.push(scalar_function_param("T"));
+    make_state
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    make_state.body.push(scalar_assignment(
+        "state",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![local_var("p"), local_var("T")],
+            is_constructor: true,
+            span: test_span(),
+        },
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.makeState"), make_state);
+
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.full.insert("p".to_string(), real(101325.0));
+    scope.full.insert("T".to_string(), real(295.0));
+    let mut enthalpy = rumoca_core::Function::new("My.specificEnthalpy", test_span());
+    enthalpy.inputs.push(scalar_function_param("state_p"));
+    enthalpy.inputs.push(scalar_function_param("state_T"));
+    let actual = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.makeState").into(),
+        args: vec![local_var("p"), local_var("T")],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let p_field = rumoca_core::Expression::FieldAccess {
+        base: Box::new(actual.clone()),
+        field: "p".to_string(),
+        span: test_span(),
+    };
+    let direct_projected = analysis
+        .project_value_scalars(&p_field, &[], &scope, 0, test_span())?
+        .expect("direct record field projection should return a scalar");
+    assert!(matches!(
+        direct_projected.as_slice(),
+        [rumoca_core::Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        }] if (*value - 101325.0).abs() < 1e-12
+    ));
+
+    let projected = analysis
+        .bind_inputs(&enthalpy, &[actual], 0, test_span())?
+        .expect("flattened record inputs should bind from positional record actual");
+
+    assert_var_ref_name(
+        projected.full.get("state_p").expect("state_p should bind"),
+        "p",
+    );
+    assert_var_ref_name(
+        projected.full.get("state_T").expect("state_T should bind"),
+        "T",
+    );
+    Ok(())
+}
+
+#[test]
+fn nested_flattened_record_call_uses_caller_projection_scope() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.pure = true;
+    state_ctor.inputs.push(scalar_function_param("p"));
+    state_ctor.inputs.push(scalar_function_param("T"));
+    state_ctor
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.State"), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", test_span());
+    make_state.pure = true;
+    make_state.inputs.push(scalar_function_param("p"));
+    make_state.inputs.push(scalar_function_param("T"));
+    make_state
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    make_state.body.push(scalar_assignment(
+        "state",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![local_var("p"), local_var("T")],
+            is_constructor: true,
+            span: test_span(),
+        },
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.makeState"), make_state);
+
+    let mut density = rumoca_core::Function::new("My.density", test_span());
+    density.pure = true;
+    density.inputs.push(scalar_function_param("state_p"));
+    density.inputs.push(scalar_function_param("state_T"));
+    density.outputs.push(scalar_function_param("d"));
+    density
+        .body
+        .push(scalar_assignment("d", local_var("state_p")));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.density"), density);
+
+    let mut use_density = rumoca_core::Function::new("My.useDensity", test_span());
+    use_density.pure = true;
+    use_density.inputs.push(scalar_function_param("state_p"));
+    use_density.inputs.push(scalar_function_param("state_T"));
+    use_density.outputs.push(scalar_function_param("y"));
+    use_density.body.push(scalar_assignment(
+        "y",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.density").into(),
+            args: vec![local_var("state")],
+            is_constructor: false,
+            span: test_span(),
+        },
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.useDensity"), use_density);
+
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.useDensity").into(),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.makeState").into(),
+            args: vec![local_var("p"), local_var("T")],
+            is_constructor: false,
+            span: test_span(),
+        }],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let outputs = analysis
+        .function_call_outputs_with_owner(&call, 0, test_span())?
+        .expect("nested flattened call should project outputs");
+    assert_eq!(outputs.len(), 1);
+    assert_var_ref_name(&outputs[0].expr, "p");
+    Ok(())
+}
+
+#[test]
+fn record_field_projection_selects_compile_time_if_branch() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.pure = true;
+    state_ctor.inputs.push(scalar_function_param("p"));
+    state_ctor
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.State"), state_ctor);
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let scope = FunctionProjectionScope::default();
+    let value = rumoca_core::Expression::If {
+        branches: vec![(
+            binary(
+                rumoca_core::OpBinary::Eq,
+                integer(1),
+                integer(0),
+                test_span(),
+            ),
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("My.State").into(),
+                args: vec![rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                    args: vec![real(1.0)],
+                    is_constructor: true,
+                    span: test_span(),
+                }],
+                is_constructor: true,
+                span: test_span(),
+            },
+        )],
+        else_branch: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("__rumoca_named_arg__.p").into(),
+                args: vec![real(2.0)],
+                is_constructor: true,
+                span: test_span(),
+            }],
+            is_constructor: true,
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+
+    let projected = analysis
+        .project_record_field_value(&value, "p", &scope, test_span())?
+        .expect("compile-time record field branch should project");
+
+    assert!(matches!(
+        projected,
+        rumoca_core::Expression::Literal {
+            value: Literal::Real(2.0),
+            ..
+        }
+    ));
     Ok(())
 }
 
@@ -664,6 +1260,13 @@ fn function_param_with_type(name: &str, type_name: &str) -> rumoca_core::Functio
     }
 }
 
+fn record_function_param(name: &str, type_name: &str) -> rumoca_core::FunctionParam {
+    rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Record),
+        ..function_param_with_type(name, type_name)
+    }
+}
+
 #[test]
 fn vector_function_input_rejects_scalar_actual_with_span() {
     let dae_model = dae::Dae::default();
@@ -714,6 +1317,175 @@ fn dynamic_vector_function_input_uses_actual_dimensions() {
 }
 
 #[test]
+fn compile_time_if_selection_uses_projected_size_dimensions() {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut function = rumoca_core::Function::new("My.selectBySize", test_span());
+    function.inputs.push(function_param_with_dims("u", &[0]));
+    let scope = analysis
+        .bind_inputs(
+            &function,
+            &[array(vec![real(1.0), real(2.0), real(3.0)], false)],
+            0,
+            test_span(),
+        )
+        .expect("dynamic vector input projection should not fail")
+        .expect("dynamic vector input should bind");
+    let condition = binary(
+        rumoca_core::OpBinary::Eq,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![var_ref("u"), integer(1)],
+            span: test_span(),
+        },
+        integer(3),
+        test_span(),
+    );
+    let selected_branch = real(10.0);
+    let else_branch = real(20.0);
+    let branches = vec![(condition, selected_branch.clone())];
+
+    let selected = analysis
+        .compile_time_if_selection(&branches, &else_branch, &scope)
+        .expect("compile-time if selection should not fail")
+        .expect("size(u, 1) should select a branch");
+
+    assert_eq!(selected, &selected_branch);
+}
+
+#[test]
+fn compile_time_size_uses_stream_variable_dimensions() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("Xi"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("Xi"),
+            dims: vec![1],
+            ..rumoca_ir_dae::Variable::empty_with_span(test_span())
+        },
+    );
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Size,
+        args: vec![
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("inStream").into(),
+                args: vec![var_ref("Xi")],
+                is_constructor: false,
+                span: test_span(),
+            },
+            integer(1),
+        ],
+        span: test_span(),
+    };
+
+    assert_eq!(
+        analysis
+            .compile_time_scalar_in_scope(&expr, &FunctionProjectionScope::default())
+            .expect("stream size should not fail"),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn array_like_projection_expands_stream_size_selected_cat() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("Xi"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("Xi"),
+            dims: vec![1],
+            ..rumoca_ir_dae::Variable::empty_with_span(test_span())
+        },
+    );
+    let structural_bindings = IndexMap::new();
+    let xi_stream = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("inStream").into(),
+        args: vec![var_ref("Xi")],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let cat = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Cat,
+        args: vec![
+            integer(1),
+            xi_stream.clone(),
+            array(
+                vec![binary(
+                    rumoca_core::OpBinary::Sub,
+                    integer(1),
+                    rumoca_core::Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Sum,
+                        args: vec![xi_stream.clone()],
+                        span: test_span(),
+                    },
+                    test_span(),
+                )],
+                false,
+            ),
+        ],
+        span: test_span(),
+    };
+    let condition = binary(
+        rumoca_core::OpBinary::Eq,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![xi_stream.clone(), integer(1)],
+            span: test_span(),
+        },
+        integer(2),
+        test_span(),
+    );
+    let branches = vec![(condition, xi_stream.clone())];
+    let expr = rumoca_core::Expression::If {
+        branches: branches.clone(),
+        else_branch: Box::new(cat.clone()),
+        span: test_span(),
+    };
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    assert_eq!(
+        analysis.compile_time_if_selection(&branches, &cat, &FunctionProjectionScope::default())?,
+        Some(&cat)
+    );
+    assert!(
+        analysis
+            .project_value_scalars(
+                &cat,
+                &[2],
+                &FunctionProjectionScope::default(),
+                0,
+                test_span()
+            )?
+            .is_some()
+    );
+    assert_eq!(
+        analysis.expr_dims(&expr, &FunctionProjectionScope::default(), 0, test_span())?,
+        Some(vec![2])
+    );
+
+    let values = project_array_like_scalars_with_owner(
+        &expr,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("stream-size-selected cat should expand");
+
+    assert_eq!(values.len(), 2);
+    assert_var_ref_name(&values[0], "Xi[1]");
+    assert!(matches!(
+        &values[1],
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
 fn scalar_real_function_input_rejects_vector_actual_with_span() {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();
@@ -747,6 +1519,23 @@ fn scalar_real_function_input_rejects_vector_actual_with_span() {
         err.reason(),
         "function `My.needsScalar` input `u` expects dimensions [], got [2]"
     );
+}
+
+#[test]
+fn scalar_real_function_input_accepts_singleton_vector_actual() {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut function = rumoca_core::Function::new("My.needsScalar", test_span());
+    function.inputs.push(scalar_function_param("u"));
+
+    let scope = analysis
+        .bind_inputs(&function, &[array(vec![real(1.0)], false)], 0, test_span())
+        .expect("single scalar vector actual should bind")
+        .expect("single scalar vector actual should project");
+
+    assert_eq!(scope.dims.get("u"), Some(&vec![1]));
+    assert_eq!(scope.scalars.get("u").map(Vec::len), Some(1));
 }
 
 #[test]
@@ -793,6 +1582,242 @@ fn generated_function_call_projection_errors_use_owner_span() {
         err.reason(),
         "function `My.needsVector` input `u` expects dimensions [2], got []"
     );
+}
+
+#[test]
+fn projected_record_field_expands_dynamic_cat_output() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.pure = true;
+    state_ctor.inputs.push(function_param_with_dims("X", &[0]));
+    state_ctor
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut set_state = rumoca_core::Function::new("My.setState", test_span());
+    set_state.pure = true;
+    set_state.inputs.push(function_param_with_dims("X", &[0]));
+    set_state
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    let x_value = rumoca_core::Expression::If {
+        branches: vec![(
+            binary(
+                rumoca_core::OpBinary::Eq,
+                rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![var_ref("X"), integer(1)],
+                    span: test_span(),
+                },
+                integer(2),
+                test_span(),
+            ),
+            var_ref("X"),
+        )],
+        else_branch: Box::new(rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Cat,
+            args: vec![
+                integer(1),
+                var_ref("X"),
+                array(
+                    vec![binary(
+                        rumoca_core::OpBinary::Sub,
+                        integer(1),
+                        rumoca_core::Expression::BuiltinCall {
+                            function: rumoca_core::BuiltinFunction::Sum,
+                            args: vec![var_ref("X")],
+                            span: test_span(),
+                        },
+                        test_span(),
+                    )],
+                    false,
+                ),
+            ],
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+    set_state.body.push(scalar_assignment(
+        "state",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("__rumoca_named_arg__.X").into(),
+                args: vec![x_value],
+                is_constructor: true,
+                span: test_span(),
+            }],
+            is_constructor: true,
+            span: test_span(),
+        },
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(set_state.name.clone(), set_state);
+    let structural_bindings = IndexMap::new();
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.setState").into(),
+            args: vec![array(vec![real(0.25)], false)],
+            is_constructor: false,
+            span: test_span(),
+        }),
+        field: "X".to_string(),
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &expr,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("projected record field should expand");
+
+    assert_eq!(values.len(), 2);
+    assert!(matches!(
+        &values[0],
+        rumoca_core::Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } if (*value - 0.25).abs() < 1e-12
+    ));
+    assert!(matches!(
+        &values[1],
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn projected_record_field_expands_stream_variable_cat_output() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("Xi"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("Xi"),
+            dims: vec![1],
+            ..rumoca_ir_dae::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
+    state_ctor.is_constructor = true;
+    state_ctor.pure = true;
+    state_ctor.inputs.push(function_param_with_dims("X", &[0]));
+    state_ctor
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut set_state = rumoca_core::Function::new("My.setState", test_span());
+    set_state.pure = true;
+    set_state.inputs.push(function_param_with_dims("X", &[0]));
+    set_state
+        .outputs
+        .push(record_function_param("state", "My.State"));
+    let x_value = rumoca_core::Expression::If {
+        branches: vec![(
+            binary(
+                rumoca_core::OpBinary::Eq,
+                rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![var_ref("X"), integer(1)],
+                    span: test_span(),
+                },
+                integer(2),
+                test_span(),
+            ),
+            var_ref("X"),
+        )],
+        else_branch: Box::new(rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Cat,
+            args: vec![
+                integer(1),
+                var_ref("X"),
+                array(
+                    vec![binary(
+                        rumoca_core::OpBinary::Sub,
+                        integer(1),
+                        rumoca_core::Expression::BuiltinCall {
+                            function: rumoca_core::BuiltinFunction::Sum,
+                            args: vec![var_ref("X")],
+                            span: test_span(),
+                        },
+                        test_span(),
+                    )],
+                    false,
+                ),
+            ],
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+    set_state.body.push(scalar_assignment(
+        "state",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("__rumoca_named_arg__.X").into(),
+                args: vec![x_value],
+                is_constructor: true,
+                span: test_span(),
+            }],
+            is_constructor: true,
+            span: test_span(),
+        },
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(set_state.name.clone(), set_state);
+    let structural_bindings = IndexMap::new();
+    let xi_stream = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("inStream").into(),
+        args: vec![var_ref("Xi")],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.setState").into(),
+            args: vec![xi_stream.clone()],
+            is_constructor: false,
+            span: test_span(),
+        }),
+        field: "X".to_string(),
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &expr,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("projected stream record field should expand");
+
+    assert_eq!(values.len(), 2);
+    assert_var_ref_name(&values[0], "Xi[1]");
+    assert!(matches!(
+        &values[1],
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            ..
+        }
+    ));
+    Ok(())
 }
 
 #[test]
@@ -913,11 +1938,12 @@ fn scalar_constructor_input_uses_formal_scalar_dimensions() {
         span,
     };
 
-    let scalars = analysis
+    let (dims, scalars) = analysis
         .optional_constructor_input_scalars(&actual, &input, &scope, 0, span)
         .expect("scalar constructor input projection should not fail")
         .expect("scalar primitive input should project as a scalar");
 
+    assert!(dims.is_empty());
     assert_eq!(scalars.len(), 1);
 }
 

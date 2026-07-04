@@ -178,7 +178,10 @@ pub(super) fn validate_sim_function_call_name(
         });
     };
 
-    if func.external.is_some() && !eval::is_runtime_special_function_name(&func.name) {
+    if func.external.is_some()
+        && !eval::is_runtime_special_function_name(&func.name)
+        && !is_supported_solve_external_function(func.name.as_str())
+    {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
             reason: "external function is not supported by this simulator".to_string(),
@@ -264,7 +267,10 @@ pub(super) fn validate_sim_component_function_call_name(
         });
     };
 
-    if func.external.is_some() && !eval::is_runtime_special_function_name(&func.name) {
+    if func.external.is_some()
+        && !eval::is_runtime_special_function_name(&func.name)
+        && !is_supported_solve_external_function(func.name.as_str())
+    {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
             reason: "external function is not supported by this simulator".to_string(),
@@ -286,6 +292,16 @@ pub(super) fn validate_sim_component_function_call_name(
 
 pub(super) fn is_named_function_arg_marker(name: &rumoca_core::Reference) -> bool {
     name.as_str().starts_with(NAMED_FUNCTION_ARG_PREFIX)
+}
+
+pub(super) fn is_supported_solve_external_function(name: &str) -> bool {
+    matches!(
+        name,
+        "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.initialize"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.getParameters"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.exchange"
+            | "Buildings.ThermalZones.EnergyPlus_9_6_0.BaseClasses.SpawnExternalObject"
+    )
 }
 
 pub(super) fn validate_called_function_body(

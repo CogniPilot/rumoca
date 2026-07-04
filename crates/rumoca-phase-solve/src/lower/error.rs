@@ -255,6 +255,16 @@ impl LowerError {
         }
     }
 
+    pub fn is_missing_binding_or_function(&self) -> bool {
+        match self {
+            Self::MissingBinding { .. } | Self::MissingFunction { .. } => true,
+            Self::Spanned { source, .. } | Self::WithContext { source, .. } => {
+                source.is_missing_binding_or_function()
+            }
+            _ => false,
+        }
+    }
+
     pub fn with_fallback_span(self, span: rumoca_core::Span) -> Self {
         if span.is_dummy() || self.source_span().is_some() {
             return self;

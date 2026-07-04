@@ -1,4 +1,6 @@
-use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, ScalarSlot, UnaryOp};
+use rumoca_ir_solve::{
+    BinaryOp, CompareOp, ExternalFunctionKind, LinearOp, RandomGenerator, Reg, ScalarSlot, UnaryOp,
+};
 
 use super::cse::{SlotLoadKey, canonical_binary_key};
 use super::{LowerBuilder, LowerError};
@@ -351,6 +353,35 @@ impl LowerBuilder<'_> {
             imin,
             imax,
             call_site,
+        });
+        Ok(dst)
+    }
+
+    pub(super) fn emit_external_call(
+        &mut self,
+        function: ExternalFunctionKind,
+        args: &[Reg],
+        output_index: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        if args.len() > 8 {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "external call `{function:?}` has {} scalar argument registers; max supported is 8",
+                    args.len()
+                ),
+                span,
+            ));
+        }
+        let dst = self.try_alloc_reg(span)?;
+        let mut op_args = [0; 8];
+        op_args[..args.len()].copy_from_slice(args);
+        self.ops.push(LinearOp::ExternalCall {
+            dst,
+            function,
+            args: op_args,
+            arg_count: args.len(),
+            output_index,
         });
         Ok(dst)
     }

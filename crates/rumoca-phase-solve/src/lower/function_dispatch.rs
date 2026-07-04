@@ -106,9 +106,21 @@ impl<'a> LowerBuilder<'a> {
             ));
         }
 
+        if function.pure
+            && let Some(reg) = self.lower_projected_scalar_function_call(
+                name,
+                args,
+                span,
+                caller_scope,
+                call_depth,
+            )?
+        {
+            return Ok(reg);
+        }
+
         self.with_local_lower_frame(|this| {
             let bindings =
-                this.bind_function_inputs(name, &function.inputs, args, caller_scope, call_depth)?;
+                this.bind_used_function_inputs(&function, args, caller_scope, call_depth)?;
             let mut scope = bindings.scope;
             this.local_const_bindings.extend(bindings.const_bindings);
             this.initialize_function_output_scope(&function, &mut scope, call_depth)?;
@@ -117,6 +129,60 @@ impl<'a> LowerBuilder<'a> {
 
             this.lower_scalar_function_output_value(name.as_str(), &function, &scope, span)
         })
+    }
+
+    fn lower_projected_scalar_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        if !args.iter().any(contains_field_access_expr) {
+            return Ok(None);
+        }
+        let mut dae_model = dae::Dae::default();
+        dae_model.symbols.functions = self.functions.clone();
+        if let Some(variables) = self.dae_variables {
+            dae_model.variables = variables.clone();
+        }
+        let expr = rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: args.to_vec(),
+            is_constructor: false,
+            span,
+        };
+        let Some(mut values) = (match derivative_rhs::function_call_projected_scalars_with_owner(
+            &expr,
+            &dae_model,
+            self.structural_bindings.as_ref(),
+            span,
+        ) {
+            Ok(values) => values,
+            Err(_) => return Ok(None),
+        }) else {
+            return Ok(None);
+        };
+        if values.len() != 1 {
+            return Ok(None);
+        }
+        let value = values.remove(0);
+        if matches!(
+            &value,
+            rumoca_core::Expression::FunctionCall {
+                name: projected_name,
+                args: projected_args,
+                is_constructor: false,
+                ..
+            } if projected_name == name && projected_args == args
+        ) {
+            return Ok(None);
+        }
+        match self.lower_expr(&value, caller_scope, call_depth + 1) {
+            Ok(reg) => Ok(Some(reg)),
+            Err(_) => Ok(None),
+        }
     }
 
     pub(super) fn lookup_function_closure(
@@ -253,5 +319,50 @@ impl<'a> LowerBuilder<'a> {
             || self
                 .lookup_function_key(name)
                 .is_some_and(|function| is_record_constructor_signature(name, function))
+    }
+}
+
+fn contains_field_access_expr(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::FieldAccess { .. } => true,
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            contains_field_access_expr(lhs) || contains_field_access_expr(rhs)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => contains_field_access_expr(rhs),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. } => {
+            args.iter().any(contains_field_access_expr)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                contains_field_access_expr(condition) || contains_field_access_expr(value)
+            }) || contains_field_access_expr(else_branch)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            contains_field_access_expr(base)
+                || subscripts.iter().any(|subscript| {
+                    matches!(
+                        subscript,
+                        rumoca_core::Subscript::Expr { expr, .. }
+                            if contains_field_access_expr(expr)
+                    )
+                })
+        }
+        rumoca_core::Expression::ArrayComprehension { expr, filter, .. } => {
+            contains_field_access_expr(expr)
+                || filter.as_deref().is_some_and(contains_field_access_expr)
+        }
+        rumoca_core::Expression::Literal { .. }
+        | rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Range { .. }
+        | rumoca_core::Expression::Empty { .. } => false,
     }
 }

@@ -1127,6 +1127,17 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = base
+            && is_stream_passthrough_intrinsic(name.as_str())
+            && let Some(arg) = args.first()
+        {
+            return self.lower_index(arg, subscripts, owner_span, scope, call_depth);
+        }
         if matches!(
             base,
             rumoca_core::Expression::FieldAccess { .. }
@@ -1729,7 +1740,41 @@ impl<'a> LowerBuilder<'a> {
         if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {
             return Ok(reg);
         }
+        if let Some(reg) =
+            self.lower_singleton_record_array_field_binding(base, field, span, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
         Err(LowerError::MissingBinding { name: key })
+    }
+
+    fn lower_singleton_record_array_field_binding(
+        &mut self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Ok(base_key) = binding_base_key(base) else {
+            return Ok(None);
+        };
+        let singleton_key = format!("{base_key}[1].{field}");
+        if self.layout.binding(&singleton_key).is_none() {
+            return Ok(None);
+        }
+        let higher_prefix = format!("{base_key}[");
+        let higher_suffix = format!("].{field}");
+        let has_higher_member = self.layout.bindings().keys().any(|key| {
+            key.strip_prefix(higher_prefix.as_str())
+                .and_then(|rest| rest.strip_suffix(higher_suffix.as_str()))
+                .and_then(|index| index.parse::<usize>().ok())
+                .is_some_and(|index| index > 1)
+        });
+        if has_higher_member {
+            return Ok(None);
+        }
+        self.lower_var_ref_binding_key(&singleton_key, span, scope, call_depth)
     }
 
     fn lower_function_output_name_field_access(

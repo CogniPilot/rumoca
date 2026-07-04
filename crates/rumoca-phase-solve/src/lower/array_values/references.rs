@@ -26,6 +26,13 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let key = name.as_str();
+        if self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, name.var_name()))
+            .is_some_and(|variable| variable.dims.iter().any(|dim| *dim == 0))
+        {
+            return Ok(Vec::new());
+        }
         if let Some(values) = self.lower_record_field_array_values(key, span)? {
             return Ok(values);
         }

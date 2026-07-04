@@ -619,6 +619,17 @@ impl<'a> LowerBuilder<'a> {
             return self.emit_const_at(0.0, span).map(Some);
         }
 
+        if let Some(value) = self.compile_time_structural_element(
+            elements,
+            subscripts,
+            span,
+            scope,
+            call_depth,
+            projected_field,
+        )? {
+            return Ok(Some(value));
+        }
+
         let selector =
             self.lower_structural_index_selector(&subscripts[0], span, scope, call_depth)?;
         let fallback = self.emit_const_at(0.0, span)?;
@@ -650,6 +661,50 @@ impl<'a> LowerBuilder<'a> {
         }
 
         Ok(Some(merged))
+    }
+
+    fn compile_time_structural_element(
+        &mut self,
+        elements: &[rumoca_core::Expression],
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+        projected_field: Option<&str>,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(indices) = self.compile_time_subscript_indices(subscripts, span)? else {
+            return Ok(None);
+        };
+        let Some(index) = indices.first().copied() else {
+            return Ok(None);
+        };
+        let Some(zero_based) = index.checked_sub(1) else {
+            return Err(LowerError::contract_violation(
+                "structural array subscript index must be one-based",
+                span,
+            ));
+        };
+        let Some(element) = elements.get(zero_based) else {
+            return Ok(None);
+        };
+        if subscripts.len() == 1 {
+            return self
+                .lower_structural_index_leaf(
+                    element,
+                    projected_field,
+                    (!span.is_dummy()).then_some(span),
+                    scope,
+                    call_depth,
+                )
+                .map(Some);
+        }
+        self.lower_structural_index_expr(
+            element,
+            &subscripts[1..],
+            scope,
+            call_depth,
+            projected_field,
+        )
     }
 
     pub(in crate::lower) fn lower_structural_index_selector(
@@ -949,7 +1004,19 @@ impl<'a> LowerBuilder<'a> {
         }
         if is_stream_passthrough_intrinsic(name.as_str()) {
             return match args.first() {
-                Some(arg) => self.lower_array_like_values(arg, scope, call_depth),
+                Some(arg) => {
+                    let dims = self.infer_expr_dims(arg, scope)?;
+                    if !dims.is_empty()
+                        && checked_shape_size(
+                            &dims,
+                            "stream passthrough argument shape",
+                            call_span,
+                        )? == 0
+                    {
+                        return Ok(Vec::new());
+                    }
+                    self.lower_array_like_values(arg, scope, call_depth)
+                }
                 None => Ok(Vec::new()),
             };
         }
@@ -1152,6 +1219,12 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<Vec<Reg>, LowerError> {
         let lhs = self.lower_array_operand(lhs, scope, call_depth)?;
         let rhs = self.lower_array_operand(rhs, scope, call_depth)?;
+        if (lhs.values.is_empty() || rhs.values.is_empty())
+            && (operand_allows_empty_values(&lhs, span)?
+                || operand_allows_empty_values(&rhs, span)?)
+        {
+            return Ok(Vec::new());
+        }
         if !rhs.is_scalar() {
             return Err(unsupported_at(
                 // MLS §10.6.5: ordinary division is only array divided by
@@ -1186,6 +1259,16 @@ impl<'a> LowerBuilder<'a> {
         )?;
         let dims = if self.expr_uses_flat_call_or_tuple_width(expr) {
             vector_dims(values.len())
+        } else if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = expr
+            && is_stream_passthrough_intrinsic(name.as_str())
+            && let Some(arg) = args.first()
+        {
+            self.infer_expr_dims(arg, scope)?
         } else {
             self.infer_expr_dims(expr, scope)?
         };
@@ -1261,6 +1344,16 @@ impl<'a> LowerBuilder<'a> {
         rhs: &ArrayOperand,
         span: rumoca_core::Span,
     ) -> Result<ArrayOperand, LowerError> {
+        if lhs.values.is_empty() || rhs.values.is_empty() {
+            let dims = if lhs.values.is_empty() && !lhs.dims.is_empty() {
+                lhs.dims.clone()
+            } else if rhs.values.is_empty() && !rhs.dims.is_empty() {
+                rhs.dims.clone()
+            } else {
+                Vec::new()
+            };
+            return ArrayOperand::with_shape_span(Vec::new(), dims, span);
+        }
         match (lhs.dims.as_slice(), rhs.dims.as_slice()) {
             ([], []) => Ok(ArrayOperand::scalar_with_span(
                 self.emit_binary_at(BinaryOp::Mul, lhs.values[0], rhs.values[0], span)?,
@@ -1778,6 +1871,18 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = base
+            && is_stream_passthrough_intrinsic(name.as_str())
+            && let Some(arg) = args.first()
+        {
+            return self
+                .lower_index_array_like_values(arg, subscripts, owner_span, scope, call_depth);
+        }
         if matches!(
             base,
             rumoca_core::Expression::FieldAccess { .. }
