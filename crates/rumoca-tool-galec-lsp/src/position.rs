@@ -31,6 +31,34 @@ pub fn byte_offset_to_position(source: &str, byte_offset: usize) -> Position {
     Position::new(line, col_utf16)
 }
 
+/// Convert an LSP [`Position`] (line, UTF-16 column) back to a UTF-8 byte
+/// offset — the inverse of [`byte_offset_to_position`], for locating the symbol
+/// under a cursor. A position past the end of its line (or the document) clamps
+/// forward to the next boundary.
+#[must_use]
+pub fn position_to_byte_offset(source: &str, position: Position) -> usize {
+    let mut line = 0u32;
+    let mut col_utf16 = 0u32;
+    for (idx, ch) in source.char_indices() {
+        if line > position.line || (line == position.line && col_utf16 >= position.character) {
+            return idx;
+        }
+        // Clamp a past-end-of-line character to the line's end (LSP: a character
+        // greater than the line length defaults back to the line length) rather
+        // than rolling onto the next line.
+        if ch == '\n' && line == position.line {
+            return idx;
+        }
+        if ch == '\n' {
+            line = line.saturating_add(1);
+            col_utf16 = 0;
+        } else {
+            col_utf16 = col_utf16.saturating_add(ch.len_utf16() as u32);
+        }
+    }
+    source.len()
+}
+
 /// Convert a `[start, end)` byte range into an LSP [`Range`]. A zero-width or
 /// inverted range is widened to one column so editors still render a mark.
 #[must_use]
@@ -79,5 +107,28 @@ mod tests {
     fn out_of_range_offset_clamps_to_end() {
         let source = "ab";
         assert_eq!(byte_offset_to_position(source, 999), Position::new(0, 2));
+    }
+
+    #[test]
+    fn position_past_end_of_line_clamps_to_line_end() {
+        let source = "ab\ncd\n";
+        // Line 0 has two characters; a past-EOL character clamps to the line end
+        // (byte 2, the newline), not onto line 1.
+        assert_eq!(position_to_byte_offset(source, Position::new(0, 99)), 2);
+        // An exact end-of-line position also maps to the newline offset.
+        assert_eq!(position_to_byte_offset(source, Position::new(0, 2)), 2);
+    }
+
+    #[test]
+    fn position_round_trips_through_byte_offset() {
+        let source = "block A\n  x := é;\n";
+        for (offset, _) in source.char_indices() {
+            let position = byte_offset_to_position(source, offset);
+            assert_eq!(
+                position_to_byte_offset(source, position),
+                offset,
+                "round-trip failed at byte {offset}"
+            );
+        }
     }
 }
