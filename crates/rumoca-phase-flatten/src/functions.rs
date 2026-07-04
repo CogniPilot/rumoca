@@ -1639,6 +1639,7 @@ fn convert_function<'tree>(
     // Process components to find inputs, outputs, and locals
     for (comp_name, component) in &effective_components {
         let param = convert_component_to_param(
+            tree,
             class_index,
             comp_name,
             component,
@@ -1695,6 +1696,7 @@ fn convert_function<'tree>(
                 prefix: &prefix,
                 imports: &import_map,
                 def_map: Some(&filtered_def_map),
+                class_tree: Some(tree),
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
                 instance_name: None,

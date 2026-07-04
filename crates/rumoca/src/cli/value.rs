@@ -22,7 +22,7 @@ use super::{
     CompilationResult, CompileArgs, CompilePhase, EarlyIrArtifact, SimCommandArgs, SimOptions,
     SimulationRequestSummary, SimulationRunMetrics, TemplateIr,
     compile_str_dae_with_inferred_model, compile_str_early_ir_with_inferred_model,
-    compile_str_with_inferred_model, diffsol_method_for_solver_label, direct_sim_t_end,
+    compile_str_with_inferred_model, diffsol_method_for_solver_label, direct_sim_defaults,
     render_early_ir_as_modelica_ast, render_early_ir_as_modelica_flat, render_ir_as_modelica,
     simulate_solver_or_auto, target_manifest,
 };
@@ -154,20 +154,18 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
     )?;
     let compile_seconds = compile_started.elapsed().as_secs_f64();
     let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+    let sim_defaults = direct_sim_defaults(args.t_end, args.dt, args.atol, args.rtol, &result);
 
-    let mut opts = SimOptions {
-        t_end: direct_sim_t_end(args.t_end),
-        dt: args.dt,
+    let opts = SimOptions {
+        t_start: sim_defaults.t_start,
+        t_end: sim_defaults.t_end,
+        dt: sim_defaults.dt,
+        atol: sim_defaults.atol,
+        rtol: sim_defaults.rtol,
         solver_mode: solver.into(),
         diffsol_method: diffsol_method_for_solver_label(solver.as_label()),
         ..SimOptions::default()
     };
-    if let Some(atol) = args.atol {
-        opts.atol = atol;
-    }
-    if let Some(rtol) = args.rtol {
-        opts.rtol = rtol;
-    }
 
     let sim_started = Instant::now();
     // Dispatch on `opts.solver_mode` (auto / bdf / rk-like) exactly like the

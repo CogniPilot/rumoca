@@ -607,7 +607,11 @@ impl ExpressionRewriter for ConditionRewriter<'_> {
                 span,
             } => {
                 let suppressed = self.suppress_events
-                    || matches!(function, rumoca_core::BuiltinFunction::NoEvent);
+                    || matches!(
+                        function,
+                        rumoca_core::BuiltinFunction::NoEvent
+                            | rumoca_core::BuiltinFunction::Smooth
+                    );
                 let mut arg_rewriter = ConditionRewriter {
                     relations: self.relations,
                     relation_spans: self.relation_spans,
@@ -742,8 +746,11 @@ impl ExpressionVisitor for ConditionCandidateCollector<'_> {
         function: &rumoca_core::BuiltinFunction,
         args: &[rumoca_core::Expression],
     ) {
-        let suppressed =
-            self.suppress_events || matches!(function, rumoca_core::BuiltinFunction::NoEvent);
+        let suppressed = self.suppress_events
+            || matches!(
+                function,
+                rumoca_core::BuiltinFunction::NoEvent | rumoca_core::BuiltinFunction::Smooth
+            );
         if !suppressed
             && matches!(
                 function,

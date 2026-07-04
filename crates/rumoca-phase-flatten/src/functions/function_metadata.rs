@@ -475,6 +475,7 @@ fn ast_subscript_span(
 
 /// Convert a component declaration to a function parameter.
 pub(super) fn convert_component_to_param(
+    tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     name: &str,
     component: &ast::Component,
@@ -516,7 +517,15 @@ pub(super) fn convert_component_to_param(
             .shape_expr
             .iter()
             .map(|sub| {
-                lower_function_shape_subscript(sub, class_index, imports, locals, def_map, span)
+                lower_function_shape_subscript(
+                    sub,
+                    tree,
+                    class_index,
+                    imports,
+                    locals,
+                    def_map,
+                    span,
+                )
             })
             .collect::<Result<Vec<_>, FlattenError>>()?;
         param_dims = shape_expr.iter().map(function_shape_dim).collect();
@@ -538,15 +547,23 @@ pub(super) fn convert_component_to_param(
             && !matches!(binding_expr, ast::Expression::Empty { .. })
         {
             let qualified = qualify_function_expr(binding_expr, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
+            param = param.with_default(ast_lower::expression_from_ast_with_context(
                 &qualified,
-                Some(def_map),
+                ast_lower::LoweringContext {
+                    def_map: Some(def_map),
+                    class_tree: Some(tree),
+                    instance_name: None,
+                },
             )?);
         } else if !matches!(component.start, ast::Expression::Empty { .. }) {
             let qualified = qualify_function_expr(&component.start, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
+            param = param.with_default(ast_lower::expression_from_ast_with_context(
                 &qualified,
-                Some(def_map),
+                ast_lower::LoweringContext {
+                    def_map: Some(def_map),
+                    class_tree: Some(tree),
+                    instance_name: None,
+                },
             )?);
         }
     }
@@ -573,6 +590,7 @@ fn function_shape_dim(subscript: &rumoca_core::Subscript) -> i64 {
 
 pub(super) fn lower_function_shape_subscript(
     subscript: &ast::Subscript,
+    tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     imports: &qualify::ImportMap,
     locals: &HashSet<String>,
@@ -587,9 +605,13 @@ pub(super) fn lower_function_shape_subscript(
             }
             let qualified = qualify_function_expr(expr, imports, locals);
             Ok(rumoca_core::Subscript::expr(
-                Box::new(ast_lower::expression_from_ast_with_def_map(
+                Box::new(ast_lower::expression_from_ast_with_context(
                     &qualified,
-                    Some(def_map),
+                    ast_lower::LoweringContext {
+                        def_map: Some(def_map),
+                        class_tree: Some(tree),
+                        instance_name: None,
+                    },
                 )?),
                 span,
             ))

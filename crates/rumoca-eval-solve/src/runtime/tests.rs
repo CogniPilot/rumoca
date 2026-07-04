@@ -394,6 +394,52 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
 }
 
 #[test]
+fn refresh_uses_projection_alternative_when_parameter_select_deactivates_primary_row() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["target".to_string(), "other".to_string()],
+                    ..Default::default()
+                },
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        parameter_select_primary_row(),
+                        target_minus_constant_residual_row(0, 2.0),
+                    ],
+                    "parameter_select_projection.mo",
+                )),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![0, 1],
+                        y_indices: vec![0],
+                        causal_steps: vec![solve::AlgebraicProjectionStep { row: 0, y_index: 0 }],
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![10.0, 5.0],
+        parameters: vec![0.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let mut solver_y = model.initial_y.clone();
+
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &model.parameters, 1.0e-12, 1)
+        .expect("active projection alternative should solve the target");
+
+    assert_eq!(solver_y[0], 2.0);
+    assert_eq!(solver_y[1], 5.0);
+}
+
+#[test]
 fn derivative_refresh_errors_on_missing_algebraic_producer() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
@@ -872,6 +918,45 @@ fn positive_sum_residual_row() -> Vec<solve::LinearOp> {
         solve::LinearOp::Binary {
             dst: 2,
             op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ]
+}
+
+fn parameter_select_primary_row() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadP { dst: 0, index: 0 },
+        solve::LinearOp::Const { dst: 1, value: 0.0 },
+        solve::LinearOp::Compare {
+            dst: 2,
+            op: solve::CompareOp::Le,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::LoadY { dst: 3, index: 1 },
+        solve::LinearOp::LoadY { dst: 4, index: 0 },
+        solve::LinearOp::Select {
+            dst: 5,
+            cond: 2,
+            if_true: 3,
+            if_false: 4,
+        },
+        solve::LinearOp::StoreOutput { src: 5 },
+    ]
+}
+
+fn target_minus_constant_residual_row(target: usize, value: f64) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: target,
+        },
+        solve::LinearOp::Const { dst: 1, value },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
             lhs: 0,
             rhs: 1,
         },

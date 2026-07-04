@@ -194,10 +194,7 @@ pub fn event_right_limit_time(t_event: f64) -> f64 {
     if !t_event.is_finite() {
         return t_event;
     }
-    let next = next_representable_time(t_event);
-    let step = (1.0e-6 * (1.0 + t_event.abs())).max(f64::EPSILON * (1.0 + t_event.abs()));
-    let stepped = t_event + step;
-    next.max(stepped)
+    next_representable_time(t_event)
 }
 
 pub fn merge_output_times_with_event_observations(
@@ -262,7 +259,7 @@ mod tests {
         let t_event = 0.001_f64;
         let t_right = event_right_limit_time(t_event);
         assert!(t_right > t_event);
-        assert!(t_right - t_event >= 1.0e-6);
+        assert_eq!(t_right, f64::from_bits(t_event.to_bits() + 1));
     }
 
     #[test]

@@ -181,6 +181,66 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
 }
 
 #[test]
+fn state_only_bdf_rejects_loop_projection_until_loop_reduction_is_supported() {
+    let mut model = projected_derivative_model();
+    model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .push("b".to_string());
+    model
+        .problem
+        .solve_layout
+        .solver_maps
+        .name_to_idx
+        .insert("b".to_string(), 2);
+    model
+        .problem
+        .solve_layout
+        .solver_maps
+        .base_to_indices
+        .insert("b".to_string(), vec![2]);
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![
+                state_residual_row(),
+                y_minus_y_row(1, 0),
+                y_minus_y_row(2, 1),
+            ],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![solve::AlgebraicProjectionBlock {
+            // For loop blocks these are sets, not row-target pairs. The
+            // producer map must use causal_steps instead.
+            rows: vec![2, 1],
+            y_indices: vec![1, 2],
+            causal_steps: vec![
+                solve::AlgebraicProjectionStep { row: 1, y_index: 1 },
+                solve::AlgebraicProjectionStep { row: 2, y_index: 2 },
+            ],
+        }],
+    };
+
+    assert!(
+        !can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
+        "loop projection needs the general implicit DAE path until reduced loop sensitivities are proven"
+    );
+}
+
+#[test]
 fn state_only_periodic_events_do_not_advance_to_right_limit_without_state_integration() {
     let mut model = unit_integrator_model();
     model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {

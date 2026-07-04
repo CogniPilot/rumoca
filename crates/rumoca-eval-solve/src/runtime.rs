@@ -598,7 +598,28 @@ impl SolveRuntime {
             return Ok(value);
         }
         let residual = self.refresh_row_residual(row, t, solver_y, params)?;
-        self.solve_refresh_residual_row(row, residual, t, solver_y, params)
+        if let Some(value) = self.solve_refresh_residual_row(row, residual, t, solver_y, params)? {
+            return Ok(value);
+        }
+        for candidate in &row.alternatives {
+            if candidate.row_idx == row.row_idx && candidate.output_offset == row.output_offset {
+                continue;
+            }
+            let candidate_row = AlgebraicRefreshRow {
+                row_idx: candidate.row_idx,
+                output_offset: candidate.output_offset,
+                target_index: row.target_index,
+                assignment_target: candidate.assignment_target,
+                alternatives: Vec::new(),
+            };
+            let residual = self.refresh_row_residual(&candidate_row, t, solver_y, params)?;
+            if let Some(value) =
+                self.solve_refresh_residual_row(&candidate_row, residual, t, solver_y, params)?
+            {
+                return Ok(value);
+            }
+        }
+        Err(self.refresh_row_independent_error(row))
     }
 
     /// Residual of a refresh row at the current point. Rows lowered with an
@@ -650,7 +671,7 @@ impl SolveRuntime {
         t: f64,
         solver_y: &[f64],
         params: &[f64],
-    ) -> Result<f64, RuntimeSolveError> {
+    ) -> Result<Option<f64>, RuntimeSolveError> {
         let index = row.target_index;
         let current = solver_y[index];
         let mut probe_y = self.refresh_probe_scratch.borrow_mut();
@@ -661,19 +682,23 @@ impl SolveRuntime {
         let probe_residual = self.refresh_row_residual(row, t, &probe_y, params)?;
         let slope = probe_residual - residual;
         if slope.is_finite() && slope.abs() > 1.0e-12 {
-            return Ok(current - residual / slope);
+            return Ok(Some(current - residual / slope));
         }
+        Ok(None)
+    }
+
+    fn refresh_row_independent_error(&self, row: &AlgebraicRefreshRow) -> RuntimeSolveError {
         // A residual that does not respond to the paired variable means the
         // refresh plan paired this row with a variable it cannot determine.
         // Nudging the value by the residual (the old fallback) converges to a
         // wrong but stable solution; fail loudly instead.
-        Err(RuntimeSolveError::UnsupportedModel {
+        RuntimeSolveError::UnsupportedModel {
             reason: format!(
                 "algebraic refresh row {} cannot be solved for '{}': the residual does not depend on it",
                 row.row_idx,
-                self.solver_name(index)
+                self.solver_name(row.target_index)
             ),
-        })
+        }
     }
 
     fn trace_refresh_iteration(&self, iter_idx: usize, max: &RefreshIterationMax) {

@@ -808,6 +808,7 @@ fn test_convert_component_to_param_prefers_binding_over_start_default() {
     let tree = ast::ClassTree::new();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
+        &tree,
         &class_index,
         "m",
         &component,
@@ -870,6 +871,7 @@ fn test_convert_component_to_param_preserves_mixed_dynamic_rank() {
     let tree = ast::ClassTree::new();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
+        &tree,
         &class_index,
         "den2",
         &component,
@@ -926,6 +928,7 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
     };
 
     let param = convert_component_to_param(
+        &tree,
         &class_index,
         "state",
         &component,
@@ -1019,6 +1022,7 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
     let source_map = test_source_map();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
+        &tree,
         &class_index,
         "T",
         &component,

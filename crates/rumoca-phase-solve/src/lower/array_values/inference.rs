@@ -181,9 +181,17 @@ impl<'a> LowerBuilder<'a> {
         base: &rumoca_core::Expression,
         field: &str,
     ) -> Result<Option<Vec<usize>>, LowerError> {
-        let rumoca_core::Expression::FunctionCall { name, .. } = base else {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor,
+            ..
+        } = base
+        else {
             return Ok(None);
         };
+        if self.is_record_constructor_call(name, *is_constructor) {
+            return self.infer_constructor_field_dims(base, field);
+        }
         let Some(function) = self.lookup_function(name) else {
             return Ok(None);
         };

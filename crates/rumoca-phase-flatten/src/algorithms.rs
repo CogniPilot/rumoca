@@ -230,6 +230,7 @@ pub(crate) struct AlgorithmSectionContext<'a> {
     pub(crate) prefix: &'a ast::QualifiedName,
     pub(crate) imports: &'a ImportMap,
     pub(crate) def_map: Option<&'a crate::ResolveDefMap>,
+    pub(crate) class_tree: Option<&'a ast::ClassTree>,
     pub(crate) initial_locals: &'a HashSet<String>,
     pub(crate) source_map: Option<&'a SourceMap>,
     pub(crate) instance_name: Option<&'a str>,
@@ -269,6 +270,7 @@ pub(crate) fn flatten_algorithm_section(
                 stmt,
                 ast_lower::LoweringContext {
                     def_map: context.def_map,
+                    class_tree: context.class_tree,
                     instance_name: context.instance_name,
                 },
                 context.source_map,

@@ -440,7 +440,7 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         let start = root_counters.as_ref().map(|_| Instant::now());
         with_runtime_params(&root_params, p.as_slice(), |params| {
             if root_runtime
-                .eval_root_conditions_into(
+                .eval_root_search_conditions_into(
                     t,
                     y.as_slice(),
                     params,
@@ -520,7 +520,7 @@ fn build_ode_problem_with_initial(
     let root_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         with_runtime_params(&root_runtime_params, p.as_slice(), |params| {
             if root_runtime
-                .eval_root_conditions_into(
+                .eval_root_search_conditions_into(
                     t,
                     y.as_slice(),
                     params,

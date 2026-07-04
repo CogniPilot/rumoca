@@ -421,7 +421,10 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
                 let mut else_suppressed = self.suppress_events;
                 for (cond, value) in branches {
                     let condition_activation = condition_activation::runtime_activation(cond);
-                    let cond_suppressed = else_suppressed || condition_activation.is_some();
+                    let event_suppressed_condition = is_event_suppressed_wrapper(cond);
+                    let cond_suppressed = else_suppressed
+                        || condition_activation.is_some()
+                        || event_suppressed_condition;
                     push_relation_root_if_event_condition(
                         cond,
                         cond_suppressed,
@@ -431,7 +434,9 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
                     self.visit_expr_with_suppression(cond, cond_suppressed);
                     self.visit_expr_with_suppression(
                         value,
-                        else_suppressed || matches!(condition_activation, Some(false)),
+                        else_suppressed
+                            || matches!(condition_activation, Some(false))
+                            || event_suppressed_condition,
                     );
                     else_suppressed |= matches!(condition_activation, Some(true));
                 }
@@ -447,7 +452,8 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
                 self.walk_expression(expr);
             }
             rumoca_core::Expression::BuiltinCall {
-                function: rumoca_core::BuiltinFunction::NoEvent,
+                function:
+                    rumoca_core::BuiltinFunction::NoEvent | rumoca_core::BuiltinFunction::Smooth,
                 args,
                 ..
             } => {
@@ -470,6 +476,16 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
             _ => self.walk_expression(expr),
         }
     }
+}
+
+fn is_event_suppressed_wrapper(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::NoEvent,
+            ..
+        }
+    )
 }
 
 fn push_relation_root_if_event_condition(

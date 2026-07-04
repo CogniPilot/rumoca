@@ -570,6 +570,13 @@ impl Context {
                 {
                     self.non_structural_params.insert(name.to_string());
                 }
+                if matches!(var.variability, rumoca_core::Variability::Parameter(_))
+                    && var.binding_from_modification
+                    && !var.evaluate
+                    && !var.is_discrete_type
+                {
+                    self.non_structural_params.insert(name.to_string());
+                }
                 let is_fixed_parameter =
                     matches!(var.variability, rumoca_core::Variability::Parameter(_))
                         && var.fixed != Some(false);
@@ -1918,6 +1925,7 @@ fn process_class_instance_body(
             prefix,
             imports,
             def_map,
+            tree,
             &tree.source_map,
             instance_name.as_deref(),
         )?;
@@ -1955,6 +1963,7 @@ fn process_class_instance_body(
             prefix,
             imports,
             def_map,
+            tree,
             &tree.source_map,
             instance_name.as_deref(),
         )?;
@@ -1980,6 +1989,7 @@ pub(crate) fn flatten_algorithm_section(
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
+    tree: &rumoca_ir_ast::ClassTree,
     source_map: &rumoca_core::SourceMap,
     instance_name: Option<&str>,
 ) -> Result<Algorithm, FlattenError> {
@@ -2007,6 +2017,7 @@ pub(crate) fn flatten_algorithm_section(
             prefix,
             imports,
             def_map,
+            class_tree: Some(tree),
             initial_locals: &no_locals,
             source_map: Some(source_map),
             instance_name,
@@ -2232,6 +2243,7 @@ fn qualify_expression_with_effective_imports(
         &qualified,
         crate::ast_lower::LoweringContext {
             def_map,
+            class_tree: None,
             instance_name,
         },
     )

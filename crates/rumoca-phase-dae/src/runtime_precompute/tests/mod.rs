@@ -619,6 +619,99 @@ fn test_runtime_precompute_skips_noevent_wrapped_conditions_for_events() {
 }
 
 #[test]
+fn test_runtime_precompute_skips_smooth_wrapped_conditions_for_synthetic_roots() {
+    let mut dae_model = dae::Dae::default();
+    let cond = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Ge,
+        lhs: Box::new(var("w")),
+        rhs: Box::new(lit(0.0)),
+        span: test_span(10, 18),
+    };
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Smooth,
+            args: vec![
+                lit(1.0),
+                rumoca_core::Expression::If {
+                    branches: vec![(
+                        cond,
+                        rumoca_core::Expression::Binary {
+                            op: rumoca_core::OpBinary::Mul,
+                            lhs: Box::new(var("w")),
+                            rhs: Box::new(var("w")),
+                            span: test_span(20, 25),
+                        },
+                    )],
+                    else_branch: Box::new(rumoca_core::Expression::Unary {
+                        op: rumoca_core::OpUnary::Minus,
+                        rhs: Box::new(rumoca_core::Expression::Binary {
+                            op: rumoca_core::OpBinary::Mul,
+                            lhs: Box::new(var("w")),
+                            rhs: Box::new(var("w")),
+                            span: test_span(30, 35),
+                        }),
+                        span: test_span(29, 35),
+                    }),
+                    span: test_span(10, 35),
+                },
+            ],
+            span: test_span(1, 36),
+        },
+        test_span(1, 36),
+        "smooth directional loss",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!(
+        dae_model.events.synthetic_root_conditions.is_empty(),
+        "smooth-wrapped relations should not become synthetic zero-crossing roots"
+    );
+}
+
+#[test]
+fn test_runtime_precompute_suppresses_branch_roots_guarded_by_noevent_condition() {
+    let mut dae_model = dae::Dae::default();
+    let guard = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::NoEvent,
+        args: vec![rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Gt,
+            lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Abs,
+                args: vec![var("w")],
+                span: test_span(10, 16),
+            }),
+            rhs: Box::new(var("wLinear")),
+            span: test_span(10, 26),
+        }],
+        span: test_span(2, 27),
+    };
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        rumoca_core::Expression::If {
+            branches: vec![(
+                guard,
+                rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Sign,
+                    args: vec![var("w")],
+                    span: test_span(30, 37),
+                },
+            )],
+            else_branch: Box::new(var("w")),
+            span: test_span(1, 40),
+        },
+        test_span(1, 40),
+        "noevent guarded sign",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!(
+        dae_model.events.synthetic_root_conditions.is_empty(),
+        "roots inside branches guarded by noEvent conditions should not fire at unreachable surfaces"
+    );
+}
+
+#[test]
 fn test_runtime_precompute_skips_time_vs_parameter_synthetic_roots() {
     let cond = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Lt,

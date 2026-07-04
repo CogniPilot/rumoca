@@ -55,6 +55,9 @@ impl<'a> DaeVariableScope<'a> {
             validate_scalarized_indices(name, &scalar.indices, &base_var.dims, None)?;
             return Ok(base_var.dims[scalar.indices.len()..].to_vec());
         }
+        if let Some(dims) = self.indexed_descendant_aggregate_dims(name) {
+            return Ok(dims);
+        }
         Err(missing_dae_variable_metadata(name, None))
     }
 
@@ -66,13 +69,21 @@ impl<'a> DaeVariableScope<'a> {
         &self,
         name: &Reference,
     ) -> Result<DaeVariableShape, StructuralError> {
-        if let Some(var) = self.exact(name.var_name()) {
+        if let Some(var) = self.exact_reference(name) {
             return Ok(DaeVariableShape::Dimensions(var.dims.clone()));
         }
         if let Some(dims) = self.indexed_reference_dims(name)? {
             return Ok(DaeVariableShape::Dimensions(dims));
         }
-        if name.as_str() == "time" || self.has_descendant_reference(name) {
+        if let Some(dims) = self.indexed_descendant_aggregate_dims(name.var_name()) {
+            return Ok(DaeVariableShape::Dimensions(dims));
+        }
+        if name.as_str() == "time"
+            || self.has_descendant_reference(name)
+            || name
+                .component_ref()
+                .is_some_and(|component_ref| component_ref.parts.len() > 1)
+        {
             return Ok(DaeVariableShape::StructuredAggregate);
         }
         Err(missing_dae_variable_metadata(name.var_name(), name.span()))
@@ -196,6 +207,45 @@ impl<'a> DaeVariableScope<'a> {
             .chain(self.dae.variables.constants.values())
             .chain(self.dae.variables.discrete_reals.values())
             .chain(self.dae.variables.discrete_valued.values())
+    }
+
+    fn indexed_descendant_aggregate_dims(&self, name: &VarName) -> Option<Vec<i64>> {
+        let mut max_indices: Vec<i64> = Vec::new();
+        let mut matched = false;
+        for variable in self.all_variables() {
+            let Some(component_ref) = &variable.component_ref else {
+                continue;
+            };
+            let Some((stripped_name, indices)) =
+                stripped_component_ref_name_and_indices(component_ref)
+            else {
+                continue;
+            };
+            if stripped_name != name.as_str() {
+                continue;
+            }
+            matched = true;
+            if max_indices.len() < indices.len() {
+                max_indices.resize(indices.len(), 0);
+            }
+            for (slot, index) in max_indices.iter_mut().zip(indices) {
+                *slot = (*slot).max(index);
+            }
+        }
+        (matched && !max_indices.is_empty()).then_some(max_indices)
+    }
+
+    fn exact_reference(&self, name: &Reference) -> Option<&'a dae::Variable> {
+        if name
+            .component_ref()
+            .is_some_and(component_ref_has_scalar_subscript)
+        {
+            self.exact(&VarName::new(name.as_str()))
+                .or_else(|| self.exact(name.var_name()))
+        } else {
+            self.exact(name.var_name())
+                .or_else(|| self.exact(&VarName::new(name.as_str())))
+        }
     }
 
     fn indexed_reference_dims(
@@ -411,6 +461,23 @@ fn index_key(component_ref: &ComponentReference, indexed_part: usize) -> Option<
         .collect()
 }
 
+fn stripped_component_ref_name_and_indices(
+    component_ref: &ComponentReference,
+) -> Option<(String, Vec<i64>)> {
+    let mut stripped = component_ref.clone();
+    let mut indices = Vec::new();
+    for part in &mut stripped.parts {
+        if part.subs.is_empty() {
+            continue;
+        }
+        for subscript in &part.subs {
+            indices.push(scalar_subscript_index(subscript)?);
+        }
+        part.subs.clear();
+    }
+    (!indices.is_empty()).then(|| (stripped.to_var_name().as_str().to_string(), indices))
+}
+
 fn scalar_subscript_index(subscript: &Subscript) -> Option<i64> {
     match subscript {
         Subscript::Index { value, .. } if *value > 0 => Some(*value),
@@ -560,6 +627,102 @@ mod tests {
                 span: actual
             }) if reason.contains("missing DAE variable metadata for `missing`") && actual == span
         ));
+    }
+
+    #[test]
+    fn hierarchical_structured_reference_without_leaf_metadata_is_aggregate() {
+        let span = test_span();
+        let reference = Reference::from_component_reference(component_ref_with_span(
+            vec![
+                part("machine", Vec::new()),
+                part("plug", Vec::new()),
+                part("pin", Vec::new()),
+                part("i", Vec::new()),
+            ],
+            span,
+        ));
+        let dae_model = dae::Dae::default();
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert_eq!(
+            scope
+                .shape_for_reference(&reference)
+                .expect("hierarchical source reference should retain aggregate shape"),
+            DaeVariableShape::StructuredAggregate
+        );
+    }
+
+    #[test]
+    fn indexed_component_reference_prefers_scalar_variable_metadata() {
+        let span = test_span();
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            VarName::new("machine.plug.pin[1].i"),
+            dae::Variable {
+                name: VarName::new("machine.plug.pin[1].i"),
+                dims: Vec::new(),
+                component_ref: Some(component_ref_with_span(
+                    vec![
+                        part("machine", Vec::new()),
+                        part("plug", Vec::new()),
+                        part("pin", vec![index(1)]),
+                        part("i", Vec::new()),
+                    ],
+                    span,
+                )),
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        let reference = Reference::from_component_reference(component_ref_with_span(
+            vec![
+                part("machine", Vec::new()),
+                part("plug", Vec::new()),
+                part("pin", vec![index(1)]),
+                part("i", Vec::new()),
+            ],
+            span,
+        ));
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert_eq!(
+            scope
+                .dims_for_reference(&reference)
+                .expect("indexed scalar reference should resolve"),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn aggregate_dims_can_be_inferred_from_indexed_scalar_descendants() {
+        let span = test_span();
+        let mut dae_model = dae::Dae::default();
+        for pin_index in [1, 2, 3] {
+            dae_model.variables.algebraics.insert(
+                VarName::new(format!("machine.plug.pin[{pin_index}].i")),
+                dae::Variable {
+                    name: VarName::new(format!("machine.plug.pin[{pin_index}].i")),
+                    dims: Vec::new(),
+                    component_ref: Some(component_ref_with_span(
+                        vec![
+                            part("machine", Vec::new()),
+                            part("plug", Vec::new()),
+                            part("pin", vec![index(pin_index)]),
+                            part("i", Vec::new()),
+                        ],
+                        span,
+                    )),
+                    ..rumoca_ir_dae::Variable::empty_with_span(span)
+                },
+            );
+        }
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert_eq!(
+            scope
+                .dims(&VarName::new("machine.plug.pin.i"))
+                .expect("aggregate shape should be inferred from scalar descendants"),
+            vec![3]
+        );
     }
 
     #[test]

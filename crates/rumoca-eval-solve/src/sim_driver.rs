@@ -224,7 +224,6 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
         runtime,
         runtime_params,
     };
-
     for &target in times {
         if state
             .recorded_times

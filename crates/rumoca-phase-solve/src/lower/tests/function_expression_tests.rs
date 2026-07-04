@@ -357,6 +357,69 @@ fn lower_expression_binds_named_record_constructor_input_fields() {
 }
 
 #[test]
+fn lower_expression_binds_constructor_actual_to_flattened_record_inputs_with_defaults() {
+    let mut function = rumoca_core::Function::new("Pkg.drop", lower_test_span());
+    function
+        .inputs
+        .push(function_param("brushParameters_V").with_default(real_lit(0.0)));
+    function
+        .inputs
+        .push(function_param("brushParameters_ILinear"));
+    function.inputs.push(function_param("i"));
+    function.outputs.push(function_param("v"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("v"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var("brushParameters_V")),
+            rhs: Box::new(var("brushParameters_ILinear")),
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+
+    let mut constructor = rumoca_core::Function::new(
+        "Modelica.Electrical.Machines.Losses.BrushParameters",
+        lower_test_span(),
+    );
+    constructor.is_constructor = true;
+    constructor
+        .inputs
+        .push(function_param("V").with_default(real_lit(0.0)));
+    constructor.inputs.push(function_param("ILinear"));
+
+    let mut functions = IndexMap::new();
+    functions.insert(function.name.clone(), function);
+    functions.insert(constructor.name.clone(), constructor);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.drop",
+        )),
+        args: vec![
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name(
+                        "Modelica.Electrical.Machines.Losses.BrushParameters",
+                    ),
+                ),
+                args: vec![named_arg("ILinear", real_lit(4.0))],
+                is_constructor: true,
+                span: lower_test_span(),
+            },
+            real_lit(100.0),
+        ],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("record constructor actual should bind flattened input fields");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 4.0);
+}
+
+#[test]
 fn lower_expression_projects_record_output_assigned_from_if_constructor() {
     let span = lower_test_span();
     let mut function = rumoca_core::Function::new("Pkg.recordIf", lower_test_span());

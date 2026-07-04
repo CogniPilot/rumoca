@@ -2,6 +2,7 @@ use super::*;
 use crate::source_spans::required_location_span;
 
 fn collect_constructor_params(
+    tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     class_def: &ast::ClassDef,
     visited_classes: &mut HashSet<usize>,
@@ -25,6 +26,7 @@ fn collect_constructor_params(
             });
         if let Some(base_class) = base_class {
             collect_constructor_params(
+                tree,
                 class_index,
                 base_class,
                 visited_classes,
@@ -49,6 +51,7 @@ fn collect_constructor_params(
             });
         }
         let param = convert_component_to_param(
+            tree,
             class_index,
             comp_name,
             component,
@@ -162,6 +165,7 @@ pub(super) fn convert_constructor_signature<'tree>(
     let mut visited_classes = HashSet::new();
     let constructor_def_map = constructor_def_map(class_index, class_def, def_map);
     collect_constructor_params(
+        tree,
         class_index,
         class_def,
         &mut visited_classes,

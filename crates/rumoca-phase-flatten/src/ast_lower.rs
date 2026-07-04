@@ -12,6 +12,7 @@ type LowerResult<T> = Result<T, FlattenError>;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LoweringContext<'a> {
     pub(crate) def_map: Option<&'a IndexMap<DefId, String>>,
+    pub(crate) class_tree: Option<&'a ast::ClassTree>,
     pub(crate) instance_name: Option<&'a str>,
 }
 
@@ -27,6 +28,7 @@ pub(crate) fn expression_from_ast_with_def_map(
         expr,
         LoweringContext {
             def_map,
+            class_tree: None,
             instance_name: None,
         },
     )
@@ -179,6 +181,7 @@ pub(crate) fn statement_from_ast_with_def_map_and_source_map(
         stmt,
         LoweringContext {
             def_map,
+            class_tree: None,
             instance_name: None,
         },
         source_map,
@@ -794,6 +797,7 @@ fn convert_function_call_with_def_map(
         args,
         LoweringContext {
             def_map,
+            class_tree: None,
             instance_name: None,
         },
     )
@@ -827,6 +831,10 @@ fn convert_function_call_with_context(
         }
     }
 
+    if is_type_alias_constructor_call(comp, context) {
+        return predefined_type_constructor_call(comp, args, context);
+    }
+
     let function_ref = match resolved_function_call_reference(comp, context.def_map) {
         Some(function_ref) => function_ref,
         None => Reference::from_component_reference(component_reference_from_ast(comp)?),
@@ -841,6 +849,36 @@ fn convert_function_call_with_context(
         is_constructor: false,
         span: comp.span,
     })
+}
+
+fn is_type_alias_constructor_call(
+    comp: &ast::ComponentReference,
+    context: LoweringContext<'_>,
+) -> bool {
+    let Some(tree) = context.class_tree else {
+        return false;
+    };
+    if comp
+        .def_id
+        .is_some_and(|def_id| is_type_alias_def(tree, def_id))
+    {
+        return true;
+    }
+    let Some(resolved) = comp
+        .def_id
+        .and_then(|def_id| context.def_map.and_then(|map| map.get(&def_id)))
+    else {
+        return false;
+    };
+    tree.name_map
+        .get(resolved.as_str())
+        .copied()
+        .is_some_and(|def_id| is_type_alias_def(tree, def_id))
+}
+
+fn is_type_alias_def(tree: &ast::ClassTree, def_id: DefId) -> bool {
+    tree.get_class_by_def_id(def_id)
+        .is_some_and(|class| matches!(class.class_type, rumoca_core::ClassType::Type))
 }
 
 fn predefined_type_constructor_call(
@@ -1516,6 +1554,7 @@ mod tests {
             &[],
             LoweringContext {
                 def_map: None,
+                class_tree: None,
                 instance_name: Some("Vehicle.engine.controller"),
             },
         )
@@ -1553,12 +1592,64 @@ mod tests {
             &[ast_var("x")],
             LoweringContext {
                 def_map: None,
+                class_tree: None,
                 instance_name: Some("Vehicle.engine.controller"),
             },
         )
         .unwrap_err();
 
         assert!(err.to_string().contains("takes no arguments"));
+    }
+
+    #[test]
+    fn type_alias_function_call_lowers_as_constructor() {
+        let type_def = DefId::new(17);
+        let mut tree = ast::ClassTree::new();
+        tree.definitions.classes.insert(
+            "AngularVelocity".to_string(),
+            ast::ClassDef {
+                def_id: Some(type_def),
+                name: rumoca_core::Token {
+                    text: Arc::from("AngularVelocity"),
+                    ..rumoca_core::Token::default()
+                },
+                class_type: rumoca_core::ClassType::Type,
+                ..ast::ClassDef::default()
+            },
+        );
+        tree.name_map
+            .insert("AngularVelocity".to_string(), type_def);
+        tree.def_map.insert(type_def, "AngularVelocity".to_string());
+
+        let comp = ast::ComponentReference {
+            local: false,
+            parts: vec![part("AngularVelocity")],
+            span: test_span(),
+            def_id: Some(type_def),
+        };
+        let expr = convert_function_call_with_context(
+            &comp,
+            &[ast_var("w")],
+            LoweringContext {
+                def_map: Some(&tree.def_map),
+                class_tree: Some(&tree),
+                instance_name: None,
+            },
+        )
+        .expect("type alias constructor call should lower");
+
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } = expr
+        else {
+            panic!("expected function call");
+        };
+        assert_eq!(name.as_str(), "AngularVelocity");
+        assert!(is_constructor);
+        assert_eq!(args.len(), 1);
     }
 
     #[test]

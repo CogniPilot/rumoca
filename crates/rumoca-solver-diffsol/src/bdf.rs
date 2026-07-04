@@ -317,6 +317,27 @@ where
 }
 
 pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> Result<bool, SimError> {
+    match state_only_bdf_eligibility(model)? {
+        StateOnlyBdfEligibility::Eligible => Ok(true),
+        StateOnlyBdfEligibility::Ineligible(reason) => {
+            tracing::debug!(
+                target: "rumoca_solver_diffsol::bdf_path",
+                reason = reason.as_str(),
+                "state-only BDF ineligible"
+            );
+            Ok(false)
+        }
+    }
+}
+
+enum StateOnlyBdfEligibility {
+    Eligible,
+    Ineligible(String),
+}
+
+fn state_only_bdf_eligibility(
+    model: &solve::SolveModel,
+) -> Result<StateOnlyBdfEligibility, SimError> {
     let state_count = model.state_scalar_count();
     let derivative_rhs_len = model
         .problem
@@ -325,12 +346,33 @@ pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> Result<bool, 
         .len()
         .map_err(|err| SimError::SolveIr(err.to_string()))?;
     if derivative_rhs_len != state_count {
-        return Ok(false);
+        return Ok(StateOnlyBdfEligibility::Ineligible(format!(
+            "derivative_rhs_len={derivative_rhs_len} does not match state_count={state_count}"
+        )));
     }
     let derivative_rows =
         solve_eval::to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
     let direct_deps = derivative_non_state_loads(model, &derivative_rows);
-    Ok(direct_deps.is_empty() || projection_plan_covers_non_state_loads(model, direct_deps)?)
+    if direct_deps.is_empty() {
+        return Ok(StateOnlyBdfEligibility::Eligible);
+    }
+    if model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .iter()
+        .any(|block| !block.causal_steps.is_empty())
+    {
+        return Ok(StateOnlyBdfEligibility::Ineligible(
+            "algebraic loop projection requires the general implicit DAE path".to_string(),
+        ));
+    }
+    if let Some(reason) = projection_plan_missing_non_state_loads(model, direct_deps)? {
+        Ok(StateOnlyBdfEligibility::Ineligible(reason))
+    } else {
+        Ok(StateOnlyBdfEligibility::Eligible)
+    }
 }
 
 fn derivative_non_state_loads(
@@ -347,10 +389,10 @@ fn derivative_non_state_loads(
         .collect()
 }
 
-fn projection_plan_covers_non_state_loads(
+fn projection_plan_missing_non_state_loads(
     model: &solve::SolveModel,
     direct_deps: BTreeSet<usize>,
-) -> Result<bool, SimError> {
+) -> Result<Option<String>, SimError> {
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
     let implicit_rows =
@@ -358,8 +400,9 @@ fn projection_plan_covers_non_state_loads(
     // The projection plan references residual rows by OUTPUT index; a program may
     // now emit several outputs, so the producer map is bounded by output count
     // and resolved to its producing program.
-    let Some(producer_rows) = projection_producer_rows(model, implicit_rows.output_count()) else {
-        return Ok(false);
+    let producer_rows = match projection_producer_rows(model, implicit_rows.output_count()) {
+        Ok(producer_rows) => producer_rows,
+        Err(reason) => return Ok(Some(reason)),
     };
     let mut needed = BTreeSet::new();
     let mut stack = direct_deps.into_iter().collect::<Vec<_>>();
@@ -368,48 +411,76 @@ fn projection_plan_covers_non_state_loads(
             continue;
         }
         let Some(output_idx) = producer_rows.get(&index).copied() else {
-            return Ok(false);
+            return Ok(Some(format!(
+                "missing projection producer for solver_y[{index}] ({})",
+                solver_name(model, index)
+            )));
         };
         let Some(program_idx) = implicit_rows.program_index_for_output(output_idx) else {
-            return Ok(false);
+            return Ok(Some(format!(
+                "missing implicit program for projection output row {output_idx} producing solver_y[{index}] ({})",
+                solver_name(model, index)
+            )));
         };
         let Some(row) = implicit_rows.programs.get(program_idx) else {
-            return Ok(false);
+            return Ok(Some(format!(
+                "missing implicit row program {program_idx} for projection output row {output_idx}"
+            )));
         };
         stack.extend(non_state_y_loads(row, state_count, solver_count));
     }
-    Ok(true)
+    Ok(None)
+}
+
+fn solver_name(model: &solve::SolveModel, index: usize) -> &str {
+    model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .get(index)
+        .map(String::as_str)
+        .unwrap_or("<unnamed>")
 }
 
 fn projection_producer_rows(
     model: &solve::SolveModel,
     implicit_row_count: usize,
-) -> Option<BTreeMap<usize, usize>> {
+) -> Result<BTreeMap<usize, usize>, String> {
     let mut producer_rows = BTreeMap::new();
     for block in &model.problem.continuous.algebraic_projection_plan.blocks {
-        for (row_idx, target_index) in block
-            .rows
-            .iter()
-            .copied()
-            .zip(block.y_indices.iter().copied())
-            .chain(
-                block
-                    .causal_steps
-                    .iter()
-                    .map(|step| (step.row, step.y_index)),
-            )
-        {
+        let pairs = if block.causal_steps.is_empty() {
+            block
+                .rows
+                .iter()
+                .copied()
+                .zip(block.y_indices.iter().copied())
+                .collect::<Vec<_>>()
+        } else {
+            block
+                .causal_steps
+                .iter()
+                .map(|step| (step.row, step.y_index))
+                .collect::<Vec<_>>()
+        };
+        for (row_idx, target_index) in pairs {
             if row_idx >= implicit_row_count {
-                return None;
+                return Err(format!(
+                    "projection row {row_idx} for solver_y[{target_index}] ({}) is outside implicit output count {implicit_row_count}",
+                    solver_name(model, target_index)
+                ));
             }
             if let Some(previous_row) = producer_rows.insert(target_index, row_idx)
                 && previous_row != row_idx
             {
-                return None;
+                return Err(format!(
+                    "solver_y[{target_index}] ({}) has multiple projection producer rows: {previous_row} and {row_idx}",
+                    solver_name(model, target_index)
+                ));
             }
         }
     }
-    Some(producer_rows)
+    Ok(producer_rows)
 }
 
 fn non_state_y_loads(

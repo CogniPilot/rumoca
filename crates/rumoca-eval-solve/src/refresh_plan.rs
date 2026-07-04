@@ -77,6 +77,19 @@ pub(crate) struct AlgebraicRefreshRow {
     /// must linear-solve the row's residual for the paired variable instead
     /// of evaluating the assignment value.
     pub(crate) assignment_target: Option<usize>,
+    /// Alternate residual rows from the same projection block that structurally
+    /// reference this target. Parameter-dependent `select` branches can make
+    /// the primary structural match inactive at runtime; candidates preserve
+    /// the residual-dependence guard while letting the runtime use the active
+    /// row for the current parameter point.
+    pub(crate) alternatives: Vec<AlgebraicRefreshCandidate>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AlgebraicRefreshCandidate {
+    pub(crate) row_idx: usize,
+    pub(crate) output_offset: usize,
+    pub(crate) assignment_target: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -195,21 +208,39 @@ fn algebraic_refresh_rows_from_projection_plan(
         reserve_refresh_vec_capacity(&mut rows, row_capacity, "projection refresh rows", span)?;
         for (row_idx, target_index) in pairs {
             let position = required_program_position(&output_row_positions, row_idx, span)?;
+            let alternatives = projection_row_alternatives(
+                block,
+                &plan_block.rows,
+                target_index,
+                &output_row_positions,
+                &assignment_target,
+                span,
+            )?;
             rows.push(AlgebraicRefreshRow {
                 row_idx: position.program_index,
                 output_offset: position.output_offset,
                 target_index,
                 assignment_target: assignment_target(row_idx),
+                alternatives,
             });
         }
         for step in &plan_block.causal_steps {
             if step.y_index >= state_count {
                 let position = required_program_position(&output_row_positions, step.row, span)?;
+                let alternatives = projection_row_alternatives(
+                    block,
+                    &plan_block.rows,
+                    step.y_index,
+                    &output_row_positions,
+                    &assignment_target,
+                    span,
+                )?;
                 rows.push(AlgebraicRefreshRow {
                     row_idx: position.program_index,
                     output_offset: position.output_offset,
                     target_index: step.y_index,
                     assignment_target: assignment_target(step.row),
+                    alternatives,
                 });
             }
         }
@@ -234,29 +265,6 @@ fn match_block_rows_to_targets(
     for (pos, y) in ys.iter().copied().enumerate() {
         y_pos.insert(y, pos);
     }
-    let mut adjacency = Vec::new();
-    reserve_refresh_vec_capacity(&mut adjacency, rows.len(), "matching adjacency", span)?;
-    for &row_idx in rows {
-        let own = assignment_target(row_idx).and_then(|y| y_pos.get(&y).copied());
-        let mut candidates = Vec::new();
-        let candidate_capacity = y_pos
-            .len()
-            .checked_add(usize::from(own.is_some()))
-            .ok_or_else(|| refresh_plan_capacity_error("matching candidates", span))?;
-        reserve_refresh_vec_capacity(
-            &mut candidates,
-            candidate_capacity,
-            "matching candidates",
-            span,
-        )?;
-        candidates.extend(own);
-        for (&y, &pos) in &y_pos {
-            if Some(pos) != own && reads(row_idx, y) {
-                candidates.push(pos);
-            }
-        }
-        adjacency.push(candidates);
-    }
     let mut matched_row_for_y = Vec::new();
     reserve_refresh_vec_capacity(
         &mut matched_row_for_y,
@@ -265,6 +273,38 @@ fn match_block_rows_to_targets(
         span,
     )?;
     matched_row_for_y.resize(ys.len(), None);
+
+    let mut row_fixed = Vec::new();
+    reserve_refresh_vec_capacity(&mut row_fixed, rows.len(), "matching fixed rows", span)?;
+    row_fixed.resize(rows.len(), false);
+    for (row_pos, row_idx) in rows.iter().copied().enumerate() {
+        let Some(y_pos) = assignment_target(row_idx).and_then(|y| y_pos.get(&y).copied()) else {
+            continue;
+        };
+        if matched_row_for_y[y_pos].is_none() {
+            matched_row_for_y[y_pos] = Some(row_pos);
+            row_fixed[row_pos] = true;
+        }
+    }
+
+    let mut adjacency = Vec::new();
+    reserve_refresh_vec_capacity(&mut adjacency, rows.len(), "matching adjacency", span)?;
+    for (row_pos, &row_idx) in rows.iter().enumerate() {
+        let mut candidates = Vec::new();
+        let candidate_capacity = y_pos.len();
+        reserve_refresh_vec_capacity(
+            &mut candidates,
+            candidate_capacity,
+            "matching candidates",
+            span,
+        )?;
+        for (&y, &pos) in &y_pos {
+            if matched_row_for_y[pos].is_none() && !row_fixed[row_pos] && reads(row_idx, y) {
+                candidates.push(pos);
+            }
+        }
+        adjacency.push(candidates);
+    }
     fn try_assign(
         row_pos: usize,
         adjacency: &[Vec<usize>],
@@ -288,6 +328,9 @@ fn match_block_rows_to_targets(
         false
     }
     for row_pos in 0..rows.len() {
+        if row_fixed[row_pos] {
+            continue;
+        }
         let mut visited = Vec::new();
         reserve_refresh_vec_capacity(&mut visited, ys.len(), "matching visited flags", span)?;
         visited.resize(ys.len(), false);
@@ -355,9 +398,39 @@ fn algebraic_refresh_rows_from_row_targets(
             output_offset: position.output_offset,
             target_index,
             assignment_target: Some(target_index),
+            alternatives: Vec::new(),
         });
     }
     Ok(rows)
+}
+
+fn projection_row_alternatives(
+    block: &PreparedScalarProgramBlock,
+    rows: &[usize],
+    target_index: usize,
+    output_row_positions: &IndexMap<usize, OutputRowPosition>,
+    assignment_target: &dyn Fn(usize) -> Option<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<AlgebraicRefreshCandidate>, EvalSolveError> {
+    let mut alternatives = Vec::new();
+    reserve_refresh_vec_capacity(
+        &mut alternatives,
+        rows.len(),
+        "projection row alternatives",
+        span,
+    )?;
+    for &row_idx in rows {
+        let position = required_program_position(output_row_positions, row_idx, span)?;
+        if !block.row_reads_y(position.program_index, target_index) {
+            continue;
+        }
+        alternatives.push(AlgebraicRefreshCandidate {
+            row_idx: position.program_index,
+            output_offset: position.output_offset,
+            assignment_target: assignment_target(row_idx),
+        });
+    }
+    Ok(alternatives)
 }
 
 pub(crate) fn build_derivative_refresh_plan(
@@ -1039,5 +1112,27 @@ fn refresh_plan_capacity_error(
     EvalSolveError::InvalidRow {
         message: format!("refresh plan {context} capacity overflows"),
         span,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_matching_keeps_rows_on_their_own_targets() {
+        let rows = [0, 1];
+        let ys = [10, 11];
+        let pairs = match_block_rows_to_targets(
+            &rows,
+            &ys,
+            &|row| (row == 0).then_some(10),
+            |row, y| matches!((row, y), (0, 11) | (1, 10)),
+            None,
+        )
+        .expect("matching should succeed");
+
+        assert!(pairs.contains(&(0, 10)));
+        assert!(!pairs.contains(&(0, 11)));
     }
 }

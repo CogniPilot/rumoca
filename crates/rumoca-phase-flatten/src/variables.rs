@@ -421,6 +421,7 @@ fn qualify_variable_attribute(
             &qualified,
             ast_lower::LoweringContext {
                 def_map: Some(ctx.def_map),
+                class_tree: Some(ctx.tree),
                 instance_name: instance_name.as_deref(),
             },
         )?,
@@ -528,6 +529,7 @@ fn qualify_modification_binding(
             &qualified,
             ast_lower::LoweringContext {
                 def_map: Some(ctx.def_map),
+                class_tree: Some(ctx.tree),
                 instance_name: instance_name.as_deref(),
             },
         )?,
@@ -557,6 +559,7 @@ fn qualify_declaration_binding(
             &qualified,
             ast_lower::LoweringContext {
                 def_map: Some(ctx.def_map),
+                class_tree: Some(ctx.tree),
                 instance_name: instance_name.as_deref(),
             },
         )?,

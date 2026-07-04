@@ -510,6 +510,30 @@ mod tests {
     }
 
     #[test]
+    fn real_modifier_binding_parameter_is_non_structural_even_when_fixed_default() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let name = rumoca_core::VarName::new("force.v_nominal");
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(real_lit(5.0)),
+                binding_from_modification: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        assert!(ctx.non_structural_params.contains("force.v_nominal"));
+        assert_eq!(ctx.real_parameter_values.get("force.v_nominal"), Some(&5.0));
+    }
+
+    #[test]
     fn real_modifier_bindings_resolve_transmission_line_delay_chain() {
         let mut ctx = Context::new();
         let tree = ClassTree::default();

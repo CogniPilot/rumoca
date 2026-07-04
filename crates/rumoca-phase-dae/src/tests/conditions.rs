@@ -552,7 +552,7 @@ fn test_todae_suppresses_not_initial_else_relations_from_runtime_roots() {
 }
 
 #[test]
-fn test_todae_keeps_smooth_if_conditions_event_generating() {
+fn test_todae_suppresses_smooth_if_conditions_from_runtime_roots() {
     let mut flat = Model::new();
     flat.add_variable(VarName::new("x"), scalar_var("x"));
     flat.add_variable(VarName::new("u"), input_var("u"));
@@ -566,15 +566,11 @@ fn test_todae_keeps_smooth_if_conditions_event_generating() {
 
     let dae_model = to_dae_unbalanced_ok(&flat);
 
-    assert_eq!(
-        dae_model.conditions.relations.len(),
-        1,
-        "smooth is not noEvent; relations inside smooth may still generate events"
-    );
     assert!(
-        rumoca_core::expressions_semantically_equal(&dae_model.conditions.relations[0], &condition),
-        "relation should match the source condition"
+        dae_model.conditions.relations.is_empty(),
+        "relations inside smooth() may be evaluated without zero-crossing events"
     );
+    assert!(dae_model.conditions.equations.is_empty());
     assert!(
         matches!(
             &dae_model.continuous.equations[0].rhs,
@@ -587,17 +583,12 @@ fn test_todae_keeps_smooth_if_conditions_event_generating() {
                             rumoca_core::Expression::If { branches, .. }
                                 if matches!(
                                     &branches[0].0,
-                                    rumoca_core::Expression::VarRef { name, subscripts, .. }
-                                        if name.as_str() == "c"
-                                            && matches!(
-                                                subscripts.as_slice(),
-                                                [rumoca_core::Subscript::Index { value: 1, .. }]
-                                            )
+                                    rumoca_core::Expression::Binary { .. }
                                 )
                         )
                 )
         ),
-        "relations inside smooth should be rewritten through Appendix B condition memory"
+        "relations inside smooth should remain direct expressions"
     );
 }
 

@@ -893,10 +893,11 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         return run_simulation(SimulationRun {
             dae: result.dae.as_ref(),
             model: &compiled_model,
+            t_start: SimOptions::default().t_start,
             t_end: configured_sim_t_end(args.t_end, config.sim.t_end),
             dt: Some(configured_sim_dt(args.dt, config.sim.dt)),
-            atol: args.atol,
-            rtol: args.rtol,
+            atol: args.atol.unwrap_or_else(|| SimOptions::default().atol),
+            rtol: args.rtol.unwrap_or_else(|| SimOptions::default().rtol),
             solver_mode,
             solver_label: &solver_label,
             output: args.output.as_deref().or(config.sim.output.as_deref()),
@@ -1237,13 +1238,15 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     }
     let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
     let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+    let sim_defaults = direct_sim_defaults(args.t_end, args.dt, args.atol, args.rtol, &result);
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
-        t_end: direct_sim_t_end(args.t_end),
-        dt: args.dt,
-        atol: args.atol,
-        rtol: args.rtol,
+        t_start: sim_defaults.t_start,
+        t_end: sim_defaults.t_end,
+        dt: sim_defaults.dt,
+        atol: sim_defaults.atol,
+        rtol: sim_defaults.rtol,
         solver_mode: solver.into(),
         solver_label: solver.as_label(),
         output: args.output.as_deref(),
@@ -1278,8 +1281,42 @@ fn simulate_solver_or_auto(
     }
 }
 
-fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
-    t_end.unwrap_or(1.0)
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DirectSimDefaults {
+    pub t_start: f64,
+    pub t_end: f64,
+    pub dt: Option<f64>,
+    pub atol: f64,
+    pub rtol: f64,
+}
+
+pub(crate) fn direct_sim_defaults(
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    atol: Option<f64>,
+    rtol: Option<f64>,
+    result: &DaeCompilationResult,
+) -> DirectSimDefaults {
+    let default_opts = SimOptions::default();
+    let t_start = result.experiment_start_time.unwrap_or(default_opts.t_start);
+    DirectSimDefaults {
+        t_start,
+        t_end: t_end
+            .or(result.experiment_stop_time)
+            .unwrap_or(default_opts.t_end)
+            .max(t_start),
+        dt: dt.or_else(|| {
+            result
+                .experiment_interval
+                .filter(|value| value.is_finite() && *value > 0.0)
+        }),
+        atol: atol
+            .or(result.experiment_tolerance)
+            .unwrap_or(default_opts.atol),
+        rtol: rtol
+            .or(result.experiment_tolerance)
+            .unwrap_or(default_opts.rtol),
+    }
 }
 
 fn run_lint(args: LintArgs) -> Result<()> {
@@ -1642,10 +1679,11 @@ fn print_summary(model: &str, result: &CompilationResult) {
 struct SimulationRun<'a> {
     dae: &'a Dae,
     model: &'a str,
+    t_start: f64,
     t_end: f64,
     dt: Option<f64>,
-    atol: Option<f64>,
-    rtol: Option<f64>,
+    atol: f64,
+    rtol: f64,
     solver_mode: SimSolverMode,
     solver_label: &'a str,
     output: Option<&'a str>,
@@ -1665,23 +1703,18 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         );
     }
 
-    let mut opts = SimOptions {
+    let opts = SimOptions {
+        t_start: run.t_start,
         t_end: run.t_end,
         dt: run.dt,
+        atol: run.atol,
+        rtol: run.rtol,
         solver_mode: run.solver_mode,
         // `--solver esdirk34` / `trbdf2` selects an implicit SDIRK tableau on
         // the diffsol path; other names leave the BDF default.
         diffsol_method: diffsol_method_for_solver_label(run.solver_label),
         ..SimOptions::default()
     };
-    // Explicit --atol/--rtol override the backend default so a host's tolerance
-    // policy can be reproduced exactly from the CLI.
-    if let Some(atol) = run.atol {
-        opts.atol = atol;
-    }
-    if let Some(rtol) = run.rtol {
-        opts.rtol = rtol;
-    }
 
     eprintln!("Simulating {} to t={}...", run.model, run.t_end);
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
