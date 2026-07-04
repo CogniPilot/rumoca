@@ -25,24 +25,26 @@ test("isGalecTarget recognizes exactly the three GALEC targets", () => {
 });
 
 test("galec target yields only the .alg (Algorithm Code), C fields ignored", () => {
-  const files = galecResultToFiles("pkg.Model", "galec", {
+  const files = galecResultToFiles("galec", {
+    model_identifier: "pkg_Model",
     alg: "DoStep{}",
     c_header: "",
     c_source: "",
   });
-  assert.deepEqual(files, [{ path: "Model.alg", content: "DoStep{}" }]);
+  assert.deepEqual(files, [{ path: "pkg_Model.alg", content: "DoStep{}" }]);
 });
 
-test("C targets add .h and .c alongside the .alg, keyed on the model leaf", () => {
+test("C targets add .h and .c named by the model identifier (matches the #include)", () => {
   for (const target of ["galec-production", "embedded-c-galec"]) {
-    const files = galecResultToFiles("a.b.Demo", target, {
+    const files = galecResultToFiles(target, {
+      model_identifier: "a_b_Demo",
       alg: "ALG",
       c_header: "HDR",
       c_source: "SRC",
     });
     assert.deepEqual(
       files.map((file) => file.path),
-      ["Demo.alg", "Demo.h", "Demo.c"],
+      ["a_b_Demo.alg", "a_b_Demo.h", "a_b_Demo.c"],
       target,
     );
     assert.equal(files[1].content, "HDR", target);
@@ -50,8 +52,8 @@ test("C targets add .h and .c alongside the .alg, keyed on the model leaf", () =
   }
 });
 
-test("galecResultToFiles tolerates missing fields and empty model name", () => {
-  const files = galecResultToFiles("", "galec-production", {});
+test("galecResultToFiles tolerates missing fields and identifier", () => {
+  const files = galecResultToFiles("galec-production", {});
   assert.deepEqual(files, [
     { path: "model.alg", content: "" },
     { path: "model.h", content: "" },
@@ -60,8 +62,9 @@ test("galecResultToFiles tolerates missing fields and empty model name", () => {
 });
 
 test("renderGalec rejects a non-GALEC target before touching the addon wasm", async () => {
+  const workspaceSources = JSON.stringify({ "M.mo": "model M end M;" });
   await assert.rejects(
-    () => renderGalec("./", "model M end M;", "M", "sympy"),
+    () => renderGalec("./", workspaceSources, "M", "sympy"),
     /not a GALEC codegen target/,
   );
 });

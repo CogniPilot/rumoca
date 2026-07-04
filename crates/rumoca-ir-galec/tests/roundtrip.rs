@@ -28,11 +28,12 @@
 
 #![cfg(feature = "parse")]
 
+use rumoca_core::Span;
 use rumoca_ir_galec::ast::{
     BinaryOp, Block, BlockMethod, Condition, Dimension, Direction, Expression, ForLoop,
     FunctionCall, FunctionKind, Identifier, IfBranch, IfExpression, IfStatement, InterfaceKind,
     InterfaceVariable, LimitTarget, Name, Parameter, PredefinedSignal, ProtectedEntity,
-    ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Span,
+    ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest,
     Spanned, StateCompartment, Statement, TypeRef, UserFunction, VariableDeclaration,
 };
 use rumoca_ir_galec::parse::{GalecParseError, parse, parse_expression};

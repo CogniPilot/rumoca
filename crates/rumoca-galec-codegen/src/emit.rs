@@ -116,12 +116,32 @@ impl ManifestIdentity {
             ))?),
         })
     }
+
+    /// A deterministic, identity-FREE placeholder identity (nil UUID, fixed
+    /// timestamp, no tool string). For assembly whose *only* purpose is to
+    /// prove the manifest fragment validates (the GAL-004 post-validation
+    /// path) — it does not mint a real identity, so it calls neither
+    /// `Uuid::new_v4` nor `SystemTime::now` and stays safe on `wasm32` (the
+    /// identity-free render contract the WASM addon relies on). The minted
+    /// identity for a real container comes from [`Self::generated`], threaded
+    /// in via [`assemble_manifest_with_identity`].
+    #[must_use]
+    pub fn placeholder() -> Self {
+        Self {
+            id: ManifestId::nil(),
+            generated_at: UtcTimestamp::placeholder(),
+            generation_tool: None,
+        }
+    }
 }
 
-/// Assemble the full typed manifest from the projection-owned fragment
-/// plus render-time packaging facts (also the GAL-004 post-validation
-/// path for the manifest side), minting a fresh identity and hashing the
-/// `.alg` bytes. Thin wrapper over [`assemble_manifest_with_identity`].
+/// Assemble the full typed manifest from the projection-owned fragment plus
+/// the `.alg` bytes, using an IDENTITY-FREE placeholder identity. This is the
+/// GAL-004 post-validation path (and the test-assembly helper): it only proves
+/// the manifest fragment assembles into a valid typed manifest, so it must NOT
+/// mint a real UUID/timestamp — that keeps the shared lowering/render path free
+/// of `Uuid::new_v4`/`SystemTime::now` and safe on `wasm32`. A real container
+/// gets its minted, shared identity via [`assemble_manifest_with_identity`].
 pub(crate) fn assemble_manifest(
     package: &AlgorithmCodePackage,
     alg_bytes: &[u8],
@@ -129,7 +149,7 @@ pub(crate) fn assemble_manifest(
     assemble_manifest_with_identity(
         package,
         Sha1Hex::of_bytes(alg_bytes),
-        &ManifestIdentity::generated()?,
+        &ManifestIdentity::placeholder(),
     )
 }
 
@@ -429,17 +449,18 @@ fn print_reference(
     print_expression(&rumoca_ir_galec::ast::Expression::Ref(reference.clone()))
 }
 
-/// Make traceability text safe inside a C block comment by breaking any
-/// `*/` into `* /`. Modelica quoted identifiers may legally contain `*/`
+/// Make traceability text safe inside a C block comment by breaking both the
+/// comment-close `*/` (into `* /`) and the comment-open `/*` (into `/ *`).
+/// Modelica quoted identifiers may legally contain either sequence
 /// ([`crate::mangle::check_quotable`] only rejects quotes, whitespace, and
-/// control characters), and the templates put these fields in comments —
-/// an unbroken `*/` would terminate the comment and surface as a `cc`
-/// syntax error instead of well-formed output (GAL-012: failures belong in
-/// rumoca, generated C must compile). Comments are non-normative, so the
-/// inserted space is display-only; C identifiers go through
-/// [`crate::c_mangle`] and never through this.
+/// control characters), and the templates put these fields in comments: an
+/// unbroken `*/` would terminate the comment (a `cc` syntax error), and an
+/// embedded `/*` fires `-Wcomment` under the mandated `cc -Wall -Werror`
+/// (GAL-012: failures belong in rumoca, generated C must compile). Comments
+/// are non-normative, so the inserted spaces are display-only; C identifiers
+/// go through [`crate::c_mangle`] and never through this.
 fn c_comment_text(text: &str) -> String {
-    text.replace("*/", "* /")
+    text.replace("*/", "* /").replace("/*", "/ *")
 }
 
 #[cfg(test)]
@@ -447,10 +468,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn comment_text_cannot_terminate_a_c_block_comment() {
+    fn comment_text_cannot_terminate_or_open_a_c_block_comment() {
         assert_eq!(c_comment_text("motor.emf.v"), "motor.emf.v");
+        // The comment-close `*/` is broken...
         assert_eq!(c_comment_text("a*/b"), "a* /b");
-        assert_eq!(c_comment_text("a*/*/b"), "a* /* /b");
-        assert!(!c_comment_text("**/").contains("*/"));
+        // ...and the comment-open `/*` too (fires -Wcomment under -Wall -Werror).
+        assert_eq!(c_comment_text("a/*b"), "a/ *b");
+        // Adjacent sequences: both are broken, including the `/*` the first
+        // replacement leaves behind between two broken `*/`s.
+        assert_eq!(c_comment_text("a*/*/b"), "a* / * /b");
+        for hazard in ["**/", "a/*b", "x*/*y", "'/*'", "*/", "/*"] {
+            let safe = c_comment_text(hazard);
+            assert!(!safe.contains("*/"), "`{hazard}` -> `{safe}` still closes");
+            assert!(!safe.contains("/*"), "`{hazard}` -> `{safe}` still opens");
+        }
     }
 }

@@ -3571,6 +3571,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-lsp-position"
+version = "0.9.9"
+dependencies = [
+ "lsp-types",
+]
+
+[[package]]
 name = "rumoca-phase-codegen"
 version = "0.9.9"
 dependencies = [
@@ -3579,6 +3586,7 @@ dependencies = [
  "minijinja",
  "rumoca-core",
  "rumoca-eval-solve",
+ "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -3835,6 +3843,7 @@ dependencies = [
  "futures-util",
  "lsp-types",
  "rumoca-ir-galec",
+ "rumoca-lsp-position",
  "tokio",
  "tower-lsp",
 ]
@@ -3860,6 +3869,7 @@ dependencies = [
  "futures-util",
  "lsp-types",
  "rumoca-compile",
+ "rumoca-lsp-position",
  "rumoca-phase-dae",
  "rumoca-sim",
  "rumoca-tool-fmt",

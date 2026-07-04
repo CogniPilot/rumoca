@@ -335,13 +335,12 @@ fn for_each_stateful_call<'a>(
         Expression::Paren(inner) | Expression::Not(inner) => {
             for_each_stateful_call(ctx, inner, visit);
         }
-        Expression::If(if_expression) => {
-            for (condition, value) in &if_expression.branches {
-                for_each_stateful_call(ctx, condition, visit);
-                for_each_stateful_call(ctx, value, visit);
-            }
-            for_each_stateful_call(ctx, &if_expression.else_value, visit);
-        }
+        // A nested if-expression is a reporting boundary: it is independently
+        // summarized (every if-expression flows through `if_expression_summary`
+        // via `summarize`), so it reports its OWN stateful calls. Descending
+        // here would re-report them once per enclosing if-expression level —
+        // violating "each defect diagnosed exactly once".
+        Expression::If(_) => {}
         Expression::Array(elements) => {
             for element in elements {
                 for_each_stateful_call(ctx, element, visit);

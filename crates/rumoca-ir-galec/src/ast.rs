@@ -23,11 +23,26 @@
 //! codegen provenance can point at where a construct came from — uniform with
 //! the rest of Rumoca. Parsed nodes span the `.alg` text; codegen-generated
 //! nodes carry the originating Modelica span, or [`Span::DUMMY`] when there is
-//! no source. Spans are **provenance, not identity**: they participate in
-//! derived `PartialEq` (matching the Modelica AST), so structural comparisons
-//! such as round-trip AST equality normalize spans to `DUMMY` first.
+//! no source.
+//!
+//! Spans currently live on declarations, block/method/compartment/function
+//! nodes, [`Spanned`] statements, [`Name`]s, and [`RefPart`]s. Interior
+//! **expression** operands (binary/if/literal subnodes) carry no span of their
+//! own yet: they locate via their enclosing statement / reference / name span,
+//! which is why the parser reconstructs a statement span from its target
+//! reference and a diagnostic on a bare expression falls back to that coarser
+//! anchor. Per-expression spans (`Spanned<Expression>`) are tracked follow-up
+//! work; nothing here claims unconditional per-node coverage.
+//!
+//! Spans are **provenance, not identity**: they participate in derived
+//! `PartialEq` (matching the Modelica AST), so structural comparisons such as
+//! round-trip AST equality normalize spans to `DUMMY` first.
 
-pub use rumoca_core::Span;
+// The GALEC AST's span type IS the foundation `rumoca_core::Span` (D11). It is
+// imported privately, not re-exported: SPEC_0029 §8 forbids exposing another
+// crate's symbols via `pub use`, so downstream crates import `rumoca_core::Span`
+// directly rather than through `rumoca_ir_galec::ast::Span`.
+use rumoca_core::Span;
 
 /// A node paired with its source [`Span`] — the span carrier for enums (whose
 /// variants cannot each hold a field ergonomically) and for statement lists.
@@ -105,6 +120,20 @@ impl Name {
     pub fn span(&self) -> Span {
         match self {
             Self::Ident(_, span) | Self::Quoted(_, span) => *span,
+        }
+    }
+
+    /// The name's lexeme (identifier text or quoted content), independent of
+    /// span. This is the name's *identity* for "same name" comparisons that
+    /// must not depend on provenance — the derived [`PartialEq`] on `Name`
+    /// includes the span, so a span-sensitive comparison of two spellings of
+    /// the same name would wrongly differ (D11: spans are provenance, not
+    /// identity).
+    #[must_use]
+    pub fn lexeme(&self) -> &str {
+        match self {
+            Self::Ident(identifier, _) => identifier.as_str(),
+            Self::Quoted(content, _) => content.as_str(),
         }
     }
 }

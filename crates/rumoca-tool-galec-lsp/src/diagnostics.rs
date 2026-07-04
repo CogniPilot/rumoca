@@ -14,7 +14,7 @@ use rumoca_ir_galec::ast::Block;
 use rumoca_ir_galec::parse::{GalecParseError, parse};
 use rumoca_ir_galec::{GalecError, span_of, validate};
 
-use crate::position::span_to_range;
+use rumoca_lsp_position::span_to_range;
 
 /// The `source` label attached to every GALEC diagnostic (shown by editors).
 const DIAGNOSTIC_SOURCE: &str = "rumoca-galec";

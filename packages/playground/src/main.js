@@ -426,9 +426,9 @@ function collectCustomCodegenTarget(targetPath) {
 // the flat model the projection needs. The worker loads the addon on demand.
 const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
 
-async function renderGalecCodegenSelection(modelName, source, target) {
+async function renderGalecCodegenSelection(modelName, workspaceSources, target) {
     const rendered = await sendWorkspaceCommand('rumoca.workspace.renderGalec', {
-        source,
+        workspaceSources,
         modelName,
         target,
     });
@@ -3711,11 +3711,17 @@ async function createCodegenRunForModel(modelName) {
         const templateSelection = await resolveCodegenTemplateSelection(nextModel);
         let renderedFiles;
         if (GALEC_CODEGEN_TARGETS.has(templateSelection.target)) {
-            const source = trimMaybeString(result.source);
-            if (!source) {
-                throw new Error('GALEC code generation needs the Modelica source; recompile the model.');
-            }
-            renderedFiles = await renderGalecCodegenSelection(nextModel, source, templateSelection.target);
+            // Project GALEC from the FULL workspace sources (the addon owns its
+            // own compile), so a model spanning several files renders just as it
+            // compiles for every other target — not only the active document.
+            const workspaceSources = collectWorkspaceModelicaSourcesJson(
+                workspaceFs.getActiveDocumentPath(),
+            );
+            renderedFiles = await renderGalecCodegenSelection(
+                nextModel,
+                workspaceSources,
+                templateSelection.target,
+            );
         } else {
             const daeJson = JSON.stringify(result.dae_native);
             renderedFiles = await renderCodegenSelection(nextModel, daeJson, templateSelection);
@@ -5401,9 +5407,6 @@ require(['vs/editor/editor.main'], function() {
                     dae_native: result.dae_native,
                     balance: result.balance,
                     pretty: result.pretty,
-                    // GALEC codegen re-projects from source (the addon owns the
-                    // flat model), so keep the source that produced this model.
-                    source,
                 };
                 // Update DAE for codegen completions (use dae_native for actual field names)
                 if (result.dae_native && (modelName === modelSelect.value || modelSelect.value === '')) {

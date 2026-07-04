@@ -54,11 +54,11 @@ host_callbacks = false
 
 # Declared asset bundle (contract §4d): the vendored eFMI Beta-1 XSD tree plus
 # its BSD-3-Clause LICENSE (GAL-023), copied verbatim into schemas/. Assets sit
-# OUTSIDE the render/hash checksum DAG — nothing checksums the XSDs. The generic
-# declarative build step (contract §4b) copies this bundle; the typed
-# `build = "efmu"` path installs the identical bundle itself, so this
-# declaration is additive today (the switch to the declarative step is a later
-# work item; contract §9).
+# OUTSIDE the render/hash checksum DAG — nothing checksums the XSDs. This
+# declaration is the SOLE mechanism that installs the schemas: the generic
+# declarative build step (contract §4b) copies this bundle, and there is no
+# separate typed schema-install path — removing this bundle ships a schema-less
+# eFMU. (Matches galec-production/target.toml.)
 [[assets]]
 bundle = "efmi-schemas"
 dest = "schemas/"

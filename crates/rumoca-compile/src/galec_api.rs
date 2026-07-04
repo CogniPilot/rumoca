@@ -76,6 +76,14 @@ pub enum GalecExportError {
     /// break) or strict-undefined interpolation rejected the context.
     #[error("GALEC C-layout template rendering failed: {detail}")]
     CTemplate { detail: String },
+    /// An internal invariant break in the packaging plan (a build-step bug):
+    /// a missing or malformed injected checksum, a checksum-web topological
+    /// order violation, or a context serialization failure. Distinct from
+    /// [`Self::CTemplate`] so a misdeclared checksum web is not reported as a
+    /// C-layout *template* failure (SPEC_0008 structured, correctly-attributed
+    /// errors).
+    #[error("GALEC packaging invariant broken: {detail}")]
+    Internal { detail: String },
     /// [`render_galec_sources`] was asked for a target that is not one of the
     /// GALEC codegen targets.
     #[error(
@@ -209,7 +217,7 @@ impl GalecPackagingPlan {
     fn pc_identity(&self) -> Result<ManifestIdentity, GalecExportError> {
         let id = self
             .pc_manifest_id
-            .ok_or_else(|| GalecExportError::CTemplate {
+            .ok_or_else(|| GalecExportError::Internal {
                 detail:
                     "internal: Production Code manifest requested from an Algorithm-Code-only plan"
                         .to_owned(),
@@ -263,7 +271,7 @@ impl GalecPackagingPlan {
         checksums
             .get(key)
             .map(String::as_str)
-            .ok_or_else(|| GalecExportError::CTemplate {
+            .ok_or_else(|| GalecExportError::Internal {
                 detail: format!(
                     "internal: build step did not inject checksum '{key}' \
                      (missing [[files.checksums]] edge?)"
@@ -295,7 +303,7 @@ impl GalecPackagingPlan {
         c_source_sha1: &str,
     ) -> Result<serde_json::Value, GalecExportError> {
         let cached = self.ac_manifest.borrow();
-        let ac_manifest = cached.as_ref().ok_or_else(|| GalecExportError::CTemplate {
+        let ac_manifest = cached.as_ref().ok_or_else(|| GalecExportError::Internal {
             detail: "internal: Algorithm Code manifest must be rendered before the Production \
                      Code manifest (checksum-web topological order)"
                 .to_owned(),
@@ -335,7 +343,7 @@ impl GalecPackagingPlan {
         if let Some(pc_sha1) = pc_manifest_sha1 {
             let pc_id = self
                 .pc_manifest_id
-                .ok_or_else(|| GalecExportError::CTemplate {
+                .ok_or_else(|| GalecExportError::Internal {
                     detail:
                         "internal: a Production Code representation checksum was injected into an \
                          Algorithm-Code-only plan"
@@ -464,7 +472,7 @@ pub fn plan_galec_production_export(
 /// a render error (it can only be malformed on an internal build-step bug —
 /// `Sha1Hex::of_bytes` always emits a valid digest).
 fn parse_sha1(hex: &str) -> Result<Sha1Hex, GalecExportError> {
-    Sha1Hex::parse(hex).map_err(|error| GalecExportError::CTemplate {
+    Sha1Hex::parse(hex).map_err(|error| GalecExportError::Internal {
         detail: format!("internal: build step injected a malformed SHA-1 '{hex}': {error}"),
     })
 }
@@ -489,7 +497,7 @@ fn representation_name(name: &str) -> Result<NameWithoutSlashes, GalecExportErro
 /// Serialize a product-agnostic context view to a `serde_json::Value` for the
 /// manifest templates; a serialization failure is an internal bug.
 fn to_ctx_value<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, GalecExportError> {
-    serde_json::to_value(value).map_err(|error| GalecExportError::CTemplate {
+    serde_json::to_value(value).map_err(|error| GalecExportError::Internal {
         detail: format!("internal: manifest context serialization failed: {error}"),
     })
 }
@@ -650,10 +658,7 @@ pub fn render_galec_sources(
     model_name: &str,
     target: &str,
 ) -> Result<GalecSources, GalecExportError> {
-    if !matches!(
-        target,
-        GALEC_TARGET | GALEC_PRODUCTION_TARGET | EMBEDDED_C_GALEC_TARGET
-    ) {
+    if !is_galec_target(target) {
         return Err(GalecExportError::UnknownTarget(target.to_string()));
     }
     let package = lower_package(dae, flat, model_name)?;

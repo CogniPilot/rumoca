@@ -43,35 +43,57 @@ pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
 /// Integer literals >= 1: no derived dimensions, no `size()`, no structural
 /// parameters (S-2.13, GAL-020).
 fn check_block_declarations(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
-    let block_decls = ctx
+    let block = PathSegment::Block(lexeme(&ctx.block.name));
+    // Interface + protected entities: [Block, Variable].
+    let flat = ctx
         .block
         .interface
         .iter()
         .map(|v| &v.decl)
-        .chain(ctx.block.protected.iter().map(|e| &e.decl))
-        .chain(
-            ctx.block
-                .compartments
-                .iter()
-                .flat_map(|c| c.entities.iter().map(|e| &e.decl)),
-        );
-    for decl in block_decls {
+        .chain(ctx.block.protected.iter().map(|e| &e.decl));
+    for decl in flat {
         let location = crate::diagnostic::Location::at(vec![
-            PathSegment::Block(lexeme(&ctx.block.name)),
+            block.clone(),
             PathSegment::Variable(lexeme(&decl.name)),
         ]);
-        for dimension in &decl.dimensions {
-            match dimension {
-                Dimension::Derived => diags.push(GalecError::DerivedDimensionOutsideInput {
-                    location: location.clone(),
-                    name: lexeme(&decl.name),
-                }),
-                Dimension::Expr(Expression::Integer(size)) if *size >= 1 => {}
-                Dimension::Expr(_) => diags.push(GalecError::BlockDimensionNotLiteral {
-                    location: location.clone(),
-                    name: lexeme(&decl.name),
-                }),
-            }
+        check_declaration_dims(decl, &location, diags);
+    }
+    // Compartment entities are qualified `[Block, Compartment, Variable]`
+    // (matching the name analysis) so `span_of` resolves the entity — a
+    // `[Block, Variable]` path would mis-resolve to a same-named block
+    // interface variable or fall back to the whole-block span (D11).
+    for compartment in &ctx.block.compartments {
+        let compartment_segment = PathSegment::Compartment(lexeme(&compartment.name));
+        for entity in &compartment.entities {
+            let location = crate::diagnostic::Location::at(vec![
+                block.clone(),
+                compartment_segment.clone(),
+                PathSegment::Variable(lexeme(&entity.decl.name)),
+            ]);
+            check_declaration_dims(&entity.decl, &location, diags);
+        }
+    }
+}
+
+/// One block/compartment declaration's dimension checks against its resolved
+/// `location`: block-level dims must be Integer literals >= 1 — no derived
+/// dimensions, no `size()`, no structural parameters (S-2.13, GAL-020).
+fn check_declaration_dims(
+    decl: &VariableDeclaration,
+    location: &crate::diagnostic::Location,
+    diags: &mut Vec<GalecError>,
+) {
+    for dimension in &decl.dimensions {
+        match dimension {
+            Dimension::Derived => diags.push(GalecError::DerivedDimensionOutsideInput {
+                location: location.clone(),
+                name: lexeme(&decl.name),
+            }),
+            Dimension::Expr(Expression::Integer(size)) if *size >= 1 => {}
+            Dimension::Expr(_) => diags.push(GalecError::BlockDimensionNotLiteral {
+                location: location.clone(),
+                name: lexeme(&decl.name),
+            }),
         }
     }
 }

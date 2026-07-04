@@ -611,7 +611,7 @@ self.onmessage = async (e) => {
                             ok: true,
                             files: await renderGalecFilesWithRuntime({
                                 pkgBase: './',
-                                source: payload.source || '',
+                                workspaceSources: payload.workspaceSources || '{}',
                                 modelName: payload.modelName || 'Model',
                                 target: payload.target || '',
                             }),

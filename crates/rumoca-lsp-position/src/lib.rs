@@ -1,10 +1,12 @@
-//! Byte-offset → LSP [`Position`] conversion (UTF-16), WASM-safe.
+//! Byte-offset <-> LSP [`Position`] conversion (UTF-16), WASM-safe.
 //!
-//! GALEC spans (`rumoca_core::Span`) and parse-error offsets are UTF-8 **byte**
-//! offsets; LSP `Position.character` counts **UTF-16 code units** (the default
-//! `positionEncoding`). This mirrors the Modelica LSP's converter
-//! (`rumoca-tool-lsp/src/handlers/diagnostics.rs`) — the single, shared byte↔
-//! UTF-16 boundary — rather than introducing a fourth coordinate system.
+//! Rumoca source spans (`rumoca_core::Span`) and parse-error offsets are UTF-8
+//! **byte** offsets; LSP `Position.character` counts **UTF-16 code units** (the
+//! default `positionEncoding`). This crate is the single, shared byte<->UTF-16
+//! boundary — the Modelica (`rumoca-tool-lsp`) and GALEC (`rumoca-tool-galec-lsp`)
+//! language servers both use it — rather than each maintaining its own copy of
+//! this fiddly arithmetic. It depends only on `lsp-types`, so a future in-browser
+//! `.alg`/`.mo` editor can reuse it on `wasm32` without pulling any compiler code.
 
 use lsp_types::{Position, Range};
 
@@ -121,7 +123,10 @@ mod tests {
 
     #[test]
     fn position_round_trips_through_byte_offset() {
-        let source = "block A\n  x := é;\n";
+        // Include an astral char `𝔸` (U+1D538: 4 UTF-8 bytes / 2 UTF-16 units)
+        // and a BMP non-ASCII `é`, so the inverse's UTF-16 accumulation across a
+        // surrogate pair is exercised, not just single-unit chars.
+        let source = "block A\n  x := 𝔸 é;\n";
         for (offset, _) in source.char_indices() {
             let position = byte_offset_to_position(source, offset);
             assert_eq!(
@@ -130,5 +135,19 @@ mod tests {
                 "round-trip failed at byte {offset}"
             );
         }
+    }
+
+    #[test]
+    fn position_to_byte_offset_handles_astral_surrogate_pairs() {
+        // `𝔸` = bytes 0..4 / UTF-16 units 0..2; `x` = byte 4 / unit 2.
+        let source = "𝔸x";
+        assert_eq!(position_to_byte_offset(source, Position::new(0, 0)), 0);
+        // Column 2 is exactly `x` (past the whole surrogate pair).
+        assert_eq!(position_to_byte_offset(source, Position::new(0, 2)), 4);
+        // Column 1 lands mid-surrogate: it must clamp forward to the char
+        // boundary (byte 4), never split the code point.
+        assert_eq!(position_to_byte_offset(source, Position::new(0, 1)), 4);
+        // Past the end of the line maps to the document length.
+        assert_eq!(position_to_byte_offset(source, Position::new(0, 3)), 5);
     }
 }

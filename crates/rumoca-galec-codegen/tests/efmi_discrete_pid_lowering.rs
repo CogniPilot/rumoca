@@ -27,7 +27,7 @@ use rumoca_galec_codegen::{
     render_algorithm_code,
 };
 use rumoca_ir_dae as dae;
-use rumoca_ir_galec::ast::ScalarType;
+use rumoca_ir_galec::ast::{ScalarType, Spanned, Statement};
 
 // ---------------------------------------------------------------------
 // Expression builders
@@ -932,4 +932,53 @@ fn errors_are_collected_across_rows() {
     let input = GalecInput::new(&model, "EfmiDiscretePid").with_scalar_types(&types);
     let errors = lower_to_algorithm_code(&input, &GalecOptions::default()).unwrap_err();
     assert!(errors.len() >= 2, "{errors:#?}");
+}
+
+// ---------------------------------------------------------------------
+// (vii) D11 codegen provenance
+// ---------------------------------------------------------------------
+
+/// SPEC_0034 D11 / GAL-014: codegen-generated statements carry the originating
+/// Modelica span, not unconditional `Span::DUMMY`. Every equation and variable
+/// in the fixture is stamped with `span()`, so every lowered *real* statement
+/// (DoStep updates, Startup inits, Recalibrate recomputes) must carry it, while
+/// genuinely-synthesized bookkeeping — the `'previous(x)' := x` commits — stays
+/// `DUMMY` (the honest "or `Span::DUMMY` when none" half of the contract).
+#[test]
+fn generated_statements_carry_originating_modelica_spans() {
+    let package = lower_pid();
+    let block = &package.block;
+
+    // Each method carries real provenance, and every non-dummy span it carries
+    // is the fixture's source span — never an unrelated or fabricated one.
+    let assert_provenance = |method: &str, statements: &[Spanned<Statement>]| {
+        let real: Vec<Span> = statements
+            .iter()
+            .filter(|statement| !statement.span.is_dummy())
+            .map(|statement| statement.span)
+            .collect();
+        assert!(
+            !real.is_empty(),
+            "{method} statements must carry the originating Modelica span (D11), \
+             not all DUMMY"
+        );
+        assert!(
+            real.iter().all(|carried| *carried == span()),
+            "{method} real spans must be the fixture source span, got {real:?}"
+        );
+    };
+    assert_provenance("DoStep", &block.do_step.statements);
+    assert_provenance("Startup", &block.startup.statements);
+    assert_provenance("Recalibrate", &block.recalibrate.statements);
+
+    // The synthesized end-of-DoStep `'previous(x)' := x` commits have no
+    // originating Modelica construct, so they honestly carry DUMMY.
+    assert!(
+        block
+            .do_step
+            .statements
+            .iter()
+            .any(|statement| statement.span.is_dummy()),
+        "synthesized pre-commits must carry DUMMY (no originating construct)"
+    );
 }

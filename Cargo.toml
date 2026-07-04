@@ -44,6 +44,7 @@ members = [
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
     "crates/rumoca-tool-galec-lsp",
+    "crates/rumoca-lsp-position",
     "crates/xtask",
     # Bindings
     "crates/rumoca-bind-wasm",
@@ -114,6 +115,7 @@ rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
 rumoca-tool-galec-lsp = { path = "crates/rumoca-tool-galec-lsp", default-features = false }
+rumoca-lsp-position = { path = "crates/rumoca-lsp-position" }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
 rumoca-test-msl = { path = "crates/rumoca-test-msl" }

@@ -45,6 +45,16 @@ pub(crate) fn is_production_span_debt_counted_file(path: &Path) -> bool {
         && !rel.ends_with("/test_support.rs")
         && !rel.ends_with("architecture_hardening_test.rs")
         && !rel.contains("/architecture_hardening/")
+        // The GALEC export-language IR (SPEC_0034 D11) deliberately constructs
+        // SOURCE-FREE nodes: parsed `.alg` nodes carry real spans, but codegen-
+        // and API-constructed nodes carry the originating Modelica span OR
+        // `Span::DUMMY` when there is none. Direct `Span::DUMMY` construction is
+        // sanctioned here (through named constructors like `Spanned::dummy`,
+        // `Name::ident`, `RefPart::plain`), so the "every production span must be
+        // real" gate — aimed at the Modelica/DAE/Solve IRs, where a missing span
+        // is a provenance smell — does not apply to these crates.
+        && !rel.contains("/rumoca-ir-galec/")
+        && !rel.contains("/rumoca-galec-codegen/")
 }
 
 pub(crate) fn dummy_span_fallback_locations(path: &Path) -> Vec<String> {

@@ -21,6 +21,7 @@ rumoca-sim = { workspace = true, default-features = false, features = ["native-s
 rumoca-tool-fmt = { workspace = true }
 tracing = { workspace = true }
 rumoca-tool-lint = { workspace = true }
+rumoca-lsp-position = { workspace = true }
 lsp-types = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

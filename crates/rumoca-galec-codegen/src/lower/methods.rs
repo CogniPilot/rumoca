@@ -137,7 +137,7 @@ pub(crate) fn build_startup(
     classification: &Classification<'_>,
     conditions: &ConditionTable<'_>,
     starts: &HashMap<&str, &ManifestVariable>,
-) -> Result<Vec<Statement>, Vec<GalecTargetError>> {
+) -> Result<Vec<gast::Spanned<Statement>>, Vec<GalecTargetError>> {
     let mut statements = Vec::new();
     let mut errors = Vec::new();
     for classified in listed(classification) {
@@ -157,10 +157,13 @@ pub(crate) fn build_startup(
             continue;
         };
         match start_literal(manifest_variable) {
-            Ok(value) => statements.push(Statement::Assignment {
-                target: plain_state_target(classified),
-                value,
-            }),
+            Ok(value) => statements.push(gast::Spanned::new(
+                Statement::Assignment {
+                    target: plain_state_target(classified),
+                    value,
+                },
+                init_origin(classified),
+            )),
             Err(error) => errors.push(error),
         }
     }
@@ -180,7 +183,7 @@ pub(crate) fn build_startup(
 pub(crate) fn build_recalibrate(
     classification: &Classification<'_>,
     conditions: &ConditionTable<'_>,
-) -> Result<Vec<Statement>, Vec<GalecTargetError>> {
+) -> Result<Vec<gast::Spanned<Statement>>, Vec<GalecTargetError>> {
     let dependents: Vec<&ClassifiedVariable<'_>> = listed(classification)
         .filter(|classified| classified.class == VariableClass::DependentParameter)
         .collect();
@@ -204,7 +207,7 @@ pub(crate) fn build_recalibrate(
 fn dependent_assignment(
     classified: &ClassifiedVariable<'_>,
     lowerer: &mut ExprLowerer<'_>,
-) -> Result<Statement, GalecTargetError> {
+) -> Result<gast::Spanned<Statement>, GalecTargetError> {
     let name = classified.variable.name.as_str();
     let Some(defining) = &classified.variable.start else {
         return Err(GalecTargetError::AttributeNotEvaluable {
@@ -216,10 +219,13 @@ fn dependent_assignment(
     };
     let typed = lowerer.lower(defining)?;
     let value = coerce_to(typed, classified.scalar_type, name)?;
-    Ok(Statement::Assignment {
-        target: plain_state_target(classified),
-        value,
-    })
+    Ok(gast::Spanned::new(
+        Statement::Assignment {
+            target: plain_state_target(classified),
+            value,
+        },
+        init_origin(classified),
+    ))
 }
 
 /// Topological order of dependent parameters by start-expression reads.
@@ -306,7 +312,7 @@ fn referenced_names(expr: &rumoca_core::Expression) -> Vec<String> {
 pub(crate) fn build_pre_commits(
     classification: &Classification<'_>,
     referenced: &crate::lower::expr::ReferencedPre,
-) -> Result<Vec<Statement>, Vec<GalecTargetError>> {
+) -> Result<Vec<gast::Spanned<Statement>>, Vec<GalecTargetError>> {
     let mut statements = Vec::new();
     let mut errors = Vec::new();
     for classified in &classification.variables {
@@ -323,16 +329,29 @@ pub(crate) fn build_pre_commits(
             });
             continue;
         };
-        statements.push(Statement::Assignment {
+        // A `'previous(x)' := x` commit is synthesized bookkeeping (trap T2)
+        // with no originating Modelica construct, so it carries no span (D11).
+        statements.push(gast::Spanned::dummy(Statement::Assignment {
             target: plain_state_target(classified),
             value: state_ref(base_classified.galec_name.clone(), Vec::new()),
-        });
+        }));
     }
     if errors.is_empty() {
         Ok(statements)
     } else {
         Err(errors)
     }
+}
+
+/// The originating Modelica span for a generated `Startup`/`Recalibrate`
+/// statement over `classified` (D11): its `start=`/binding span when the
+/// binding was explicit, else its declaration span. `Span::DUMMY` when neither
+/// is real (e.g. a projection-generated variable with no Modelica source).
+fn init_origin(classified: &ClassifiedVariable<'_>) -> rumoca_core::Span {
+    classified
+        .variable
+        .start_span
+        .unwrap_or(classified.variable.source_span)
 }
 
 /// Coerce a lowered value to the target's scalar type: identity, or an

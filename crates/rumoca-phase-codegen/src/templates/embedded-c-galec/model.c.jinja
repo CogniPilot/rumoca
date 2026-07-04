@@ -5,25 +5,36 @@
 #include "{{ model_name }}.h"
 
 #include <math.h>
+#include <string.h> /* memcpy, for whole-array state copies */
+
+/* A model uses only some of the fixed helper prelude below. `static inline`
+ * alone is not enough to keep the rest quiet under -Wall -Werror: clang's
+ * -Wunused-function flags an unused `static inline` (gcc does not), so the
+ * helpers are marked maybe-unused. The macro is a no-op on compilers without
+ * the GNU attribute. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define RUMOCA_MAYBE_UNUSED __attribute__((unused))
+#else
+#  define RUMOCA_MAYBE_UNUSED
+#endif
 
 /* GALEC §3.2.6 builtins without a direct C99 counterpart. The names are a
- * fixed contract with the typed C printer (compile-checked in CI). `static
- * inline` so unused helpers survive -Wall -Werror. min/max use the GALEC
- * relational definition (`u1 < u2` selects), NOT fmin/fmax: a false qNaN
- * comparison must take the else operand (eFMI traps T9/T14). */
-static inline double rumoca_ir_galec_sign(double x) {
+ * fixed contract with the typed C printer (compile-checked in CI). min/max use
+ * the GALEC relational definition (`u1 < u2` selects), NOT fmin/fmax: a false
+ * qNaN comparison must take the else operand (eFMI traps T9/T14). */
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_sign(double x) {
     return (double)((x > 0.0) - (x < 0.0));
 }
-static inline double rumoca_ir_galec_min(double u1, double u2) {
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_min(double u1, double u2) {
     return u1 < u2 ? u1 : u2;
 }
-static inline double rumoca_ir_galec_max(double u1, double u2) {
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_max(double u1, double u2) {
     return u1 > u2 ? u1 : u2;
 }
-static inline int32_t rumoca_ir_galec_imin(int32_t u1, int32_t u2) {
+RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imin(int32_t u1, int32_t u2) {
     return u1 < u2 ? u1 : u2;
 }
-static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32_t u2) {
+RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32_t u2) {
     return u1 > u2 ? u1 : u2;
 }
 

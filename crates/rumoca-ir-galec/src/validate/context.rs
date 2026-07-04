@@ -270,6 +270,27 @@ pub(super) fn resolve<'a>(
     }
 }
 
+/// Resolve the reference truncated to its first `part_count` parts (clamped to
+/// at least one, at most the reference's part count). Navigation resolves the
+/// PREFIX under the cursor — `self.comp` when the cursor sits on `comp` in
+/// `self.comp.field` — rather than always the leaf target; `part_count` equal
+/// to the full part count resolves the whole reference (as [`resolve`] does).
+pub(super) fn resolve_prefix<'a>(
+    ctx: &BlockContext<'a>,
+    scope: &FunctionScope<'a>,
+    reference: &'a Reference,
+    part_count: usize,
+) -> Result<ResolvedRef<'a>, String> {
+    match reference {
+        // A local reference is always single-part.
+        Reference::Local(part) => resolve_local(scope, part),
+        Reference::State(parts) => {
+            let count = part_count.clamp(1, parts.len().max(1));
+            resolve_state(ctx, &parts[..count.min(parts.len())])
+        }
+    }
+}
+
 fn resolve_local<'a>(
     scope: &FunctionScope<'a>,
     part: &'a RefPart,

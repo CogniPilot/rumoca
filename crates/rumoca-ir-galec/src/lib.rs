@@ -27,6 +27,7 @@
 pub mod ast;
 pub mod builtins;
 pub mod diagnostic;
+pub mod lexical;
 #[cfg(feature = "parse")]
 pub mod parse;
 pub mod print;
@@ -45,5 +46,6 @@ pub use parse::generated::galec_grammar_trait as grammar_trait;
 pub use ast::{Block, BlockMethod, BlockMethodKind, Expression, PredefinedSignal, Statement};
 pub use builtins::{BUILTINS, Builtin, is_reserved_name};
 pub use diagnostic::{GalecError, Location, PathSegment};
+pub use lexical::{is_legal_plain_identifier, plain_identifier_shape_error};
 pub use print::{format_real_literal, is_conformant_real_literal, print_block, print_expression};
 pub use validate::{SymbolInfo, span_of, symbol_at, validate};

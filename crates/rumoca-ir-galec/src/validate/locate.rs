@@ -14,6 +14,7 @@
 use rumoca_core::Span;
 
 use super::context::lexeme;
+use super::spans::non_dummy;
 use crate::ast::{
     Block, BlockMethod, BlockMethodKind, Parameter, Spanned, StateCompartment, Statement,
     UserFunction, VariableDeclaration,
@@ -161,11 +162,6 @@ fn variable_span(
         return non_dummy(entity.decl.span);
     }
     None
-}
-
-/// `Some(span)` iff `span` is a real (non-dummy) span.
-fn non_dummy(span: Span) -> Option<Span> {
-    (!span.is_dummy()).then_some(span)
 }
 
 /// Keep the deeper real span: `span` when real, else the prior `best`.

@@ -141,7 +141,11 @@ pub fn lower_to_algorithm_code(
     .map_err(|error| vec![error])?;
     if let Some(constant) = &wired.synthesized {
         protected.push(clock::synthesized_declaration(constant));
-        startup.push(clock::synthesized_startup_statement(constant));
+        // A synthesized clock-period constant has no originating Modelica
+        // construct (the projection materializes it), so it carries no span.
+        startup.push(gast::Spanned::dummy(clock::synthesized_startup_statement(
+            constant,
+        )));
     }
 
     let block_name = block_name(input, options).map_err(|error| vec![error])?;
@@ -149,9 +153,11 @@ pub fn lower_to_algorithm_code(
     let mut block = Block::new(block_name);
     block.interface = interface;
     block.protected = protected;
-    block.startup.statements = startup.into_iter().map(gast::Spanned::dummy).collect();
-    block.recalibrate.statements = recalibrate.into_iter().map(gast::Spanned::dummy).collect();
-    block.do_step.statements = do_step.into_iter().map(gast::Spanned::dummy).collect();
+    // The method builders already carry each generated statement's originating
+    // Modelica span (D11); assign the spanned statements directly.
+    block.startup.statements = startup;
+    block.recalibrate.statements = recalibrate;
+    block.do_step.statements = do_step;
 
     let package = AlgorithmCodePackage {
         block,
@@ -170,14 +176,15 @@ pub fn lower_to_algorithm_code(
     Ok(package)
 }
 
-/// One guarded `f_z`/`f_m` row → one flat `DoStep` assignment.
+/// One guarded `f_z`/`f_m` row → one flat `DoStep` assignment, carrying the
+/// originating Modelica equation span (D11).
 fn lower_update_row(
     equation: &Equation,
     classification: &Classification<'_>,
     conditions: &ConditionTable<'_>,
     sample_index: Option<usize>,
     lowerer: &mut ExprLowerer<'_>,
-) -> Result<Statement, GalecTargetError> {
+) -> Result<gast::Spanned<Statement>, GalecTargetError> {
     let Some(lhs) = &equation.lhs else {
         return Err(GalecTargetError::UnsupportedFeature {
             feature: "implicit-discrete-update".to_owned(),
@@ -193,14 +200,21 @@ fn lower_update_row(
     let body = guard::unwrap_guarded_update(equation, target_name, conditions, sample_index)?;
     let typed = lowerer.lower(body)?;
     let value = methods::coerce_to(typed, classified.scalar_type, target_name)?;
-    Ok(Statement::Assignment {
-        target: gast::Reference::State(vec![gast::RefPart {
-            name: classified.galec_name.clone(),
-            subscripts,
-            span: gast::Span::DUMMY,
-        }]),
-        value,
-    })
+    Ok(gast::Spanned::new(
+        Statement::Assignment {
+            target: gast::Reference::State(vec![gast::RefPart {
+                name: classified.galec_name.clone(),
+                subscripts,
+                // The DAE lhs reference carries no finer Modelica span than the
+                // equation itself; the statement below carries `equation.span`
+                // (D11), so the target part stays `DUMMY` rather than repeating
+                // the coarser whole-equation span on a sub-node.
+                span: rumoca_core::Span::DUMMY,
+            }]),
+            value,
+        },
+        equation.span,
+    ))
 }
 
 /// Resolve an update target to its classified variable, carrying a rendered
