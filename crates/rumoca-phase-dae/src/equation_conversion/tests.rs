@@ -9,8 +9,8 @@ use super::{
     EqFilterContext, classify_equations, collect_discrete_valued_binding_targets,
     collect_discrete_valued_lhs_target_counts, collect_explicit_discrete_assignments,
     collect_explicit_discrete_assignments_with_binding_targets, expand_record_field_equation,
-    explicit_lhs_reference_from_target, is_stream_stream_connection, output_alias_skip_reason,
-    output_has_component_equation, should_skip_stream_stream_connection,
+    explicit_lhs_reference_from_target, is_identity_equation, is_stream_stream_connection,
+    output_alias_skip_reason, output_has_component_equation, should_skip_stream_stream_connection,
 };
 use crate::ToDaeError;
 
@@ -42,6 +42,35 @@ fn call(name: &str) -> rumoca_core::Expression {
         is_constructor: false,
         span: fixture_span(),
     }
+}
+
+#[test]
+fn identity_equation_detects_same_variable_residual() {
+    let eq = flat::Equation {
+        residual: residual(var_ref("medium.h"), var_ref("medium.h")),
+        span: fixture_span(),
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: "medium".to_string(),
+        },
+        scalar_count: 1,
+    };
+
+    assert!(is_identity_equation(&eq));
+}
+
+#[test]
+fn identity_equation_rejects_distinct_alias_residual() {
+    let eq = flat::Equation {
+        residual: residual(var_ref("port_a.p"), var_ref("port_b.p")),
+        span: fixture_span(),
+        origin: flat::EquationOrigin::Connection {
+            lhs: "port_a.p".to_string(),
+            rhs: "port_b.p".to_string(),
+        },
+        scalar_count: 1,
+    };
+
+    assert!(!is_identity_equation(&eq));
 }
 
 fn component_ref_with_def_id(

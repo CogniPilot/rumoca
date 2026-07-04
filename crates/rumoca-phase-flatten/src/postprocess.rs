@@ -576,6 +576,21 @@ impl KnownFlatVars {
         }
         None
     }
+
+    fn array_base_reference(&self, path: &str) -> Option<rumoca_core::ComponentReference> {
+        let prefix = format!("{path}[");
+        let (leaf_name, leaf_ref) = self.names.range(prefix.clone()..).next()?;
+        if !leaf_name.starts_with(&prefix) {
+            return None;
+        }
+        let span = leaf_ref
+            .as_ref()
+            .map(|reference| reference.span)
+            .unwrap_or(rumoca_core::Span::DUMMY);
+        Some(rumoca_core::ComponentReference::from_flat_segments(
+            path, span, None,
+        ))
+    }
 }
 
 struct CollapseIndexRewriter<'a> {
@@ -584,6 +599,21 @@ struct CollapseIndexRewriter<'a> {
 
 impl ExpressionRewriter for CollapseIndexRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = expr
+            && subscripts.is_empty()
+            && !self.known_flat_vars.contains(name.as_str())
+            && let Some(collapsed) = collapse_repeated_field_tail_to_known_var(
+                name.as_str(),
+                *span,
+                self.known_flat_vars,
+            )
+        {
+            return collapsed;
+        }
         if let rumoca_core::Expression::FieldAccess { base, field, span } = expr {
             let base = self.rewrite_expression(base);
             if let Some(collapsed) =
@@ -685,6 +715,11 @@ fn collapse_field_access_to_known_var(
                 span,
             });
         }
+        if let Some(collapsed) =
+            collapse_repeated_field_tail_to_known_var(&candidate, span, known_flat_vars)
+        {
+            return Some(collapsed);
+        }
         // Scalarized record base (`comp[1].port_p.Phi` where only the
         // `.re`/`.im` leaves exist as flat variables): collapse to a single
         // structured VarRef so downstream record-equation expansion sees the
@@ -721,6 +756,151 @@ fn collapse_field_access_to_known_var(
         }
         _ => None,
     }
+}
+
+fn collapse_repeated_field_tail_to_known_var(
+    candidate: &str,
+    span: rumoca_core::Span,
+    known_flat_vars: &KnownFlatVars,
+) -> Option<rumoca_core::Expression> {
+    let mut path = candidate;
+    while let Some((prefix, field)) = path.rsplit_once('.') {
+        if !prefix.ends_with(field) {
+            return collapse_penultimate_field_to_known_var(path, span, known_flat_vars);
+        }
+        path = prefix;
+        if known_flat_vars.contains(path) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(path.to_string()),
+                subscripts: vec![],
+                span,
+            });
+        }
+        if let Some(alternate) = alternate_array_field_path(path)
+            && known_flat_vars.contains(&alternate)
+        {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(alternate),
+                subscripts: vec![],
+                span,
+            });
+        }
+        if let Some(reference) = known_flat_vars.record_base_reference(path) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(path, reference),
+                subscripts: vec![],
+                span,
+            });
+        }
+        if let Some(reference) = known_flat_vars.array_base_reference(path) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(path, reference),
+                subscripts: vec![],
+                span,
+            });
+        }
+        if let Some(alternate) = alternate_array_field_path(path)
+            && let Some(reference) = known_flat_vars.record_base_reference(&alternate)
+        {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(&alternate, reference),
+                subscripts: vec![],
+                span,
+            });
+        }
+        if let Some(alternate) = alternate_array_field_path(path)
+            && let Some(reference) = known_flat_vars.array_base_reference(&alternate)
+        {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(&alternate, reference),
+                subscripts: vec![],
+                span,
+            });
+        }
+        if let Some(collapsed) =
+            collapse_penultimate_field_to_known_var(path, span, known_flat_vars)
+        {
+            return Some(collapsed);
+        }
+    }
+    None
+}
+
+fn collapse_penultimate_field_to_known_var(
+    path: &str,
+    span: rumoca_core::Span,
+    known_flat_vars: &KnownFlatVars,
+) -> Option<rumoca_core::Expression> {
+    let (prefix, leaf) = path.rsplit_once('.')?;
+    let (base, _) = prefix.rsplit_once('.')?;
+    let candidate = format!("{base}.{leaf}");
+    known_path_expression(&candidate, span, known_flat_vars)
+}
+
+fn known_path_expression(
+    path: &str,
+    span: rumoca_core::Span,
+    known_flat_vars: &KnownFlatVars,
+) -> Option<rumoca_core::Expression> {
+    if known_flat_vars.contains(path) {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(path.to_string()),
+            subscripts: vec![],
+            span,
+        });
+    }
+    if let Some(alternate) = alternate_array_field_path(path)
+        && known_flat_vars.contains(&alternate)
+    {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(alternate),
+            subscripts: vec![],
+            span,
+        });
+    }
+    if let Some(reference) = known_flat_vars.record_base_reference(path) {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(path, reference),
+            subscripts: vec![],
+            span,
+        });
+    }
+    if let Some(reference) = known_flat_vars.array_base_reference(path) {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(path, reference),
+            subscripts: vec![],
+            span,
+        });
+    }
+    if let Some(alternate) = alternate_array_field_path(path)
+        && let Some(reference) = known_flat_vars.record_base_reference(&alternate)
+    {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(&alternate, reference),
+            subscripts: vec![],
+            span,
+        });
+    }
+    if let Some(alternate) = alternate_array_field_path(path)
+        && let Some(reference) = known_flat_vars.array_base_reference(&alternate)
+    {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(&alternate, reference),
+            subscripts: vec![],
+            span,
+        });
+    }
+    None
+}
+
+fn alternate_array_field_path(path: &str) -> Option<String> {
+    let (base, field) = path.rsplit_once('.')?;
+    if !base.ends_with(']') {
+        return None;
+    }
+    let bracket_start = base.rfind('[')?;
+    let (array_base, suffix) = base.split_at(bracket_start);
+    Some(format!("{array_base}.{field}{suffix}"))
 }
 
 fn field_access_flat_path(base: &rumoca_core::Expression, field: &str) -> Option<String> {

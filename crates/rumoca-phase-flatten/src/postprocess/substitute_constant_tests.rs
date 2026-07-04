@@ -302,6 +302,195 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
 }
 
 #[test]
+fn collapse_index_refs_collapses_repeated_record_field_tail_to_known_var() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("pipe.flowModel.states[1].phase"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("pipe.flowModel.states[1].phase"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let states = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("pipe.flowModel.states"),
+        subscripts: vec![rumoca_core::Subscript::generated_index(
+            1,
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let phase = rumoca_core::Expression::FieldAccess {
+        base: Box::new(states),
+        field: "phase".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let phase_phase = rumoca_core::Expression::FieldAccess {
+        base: Box::new(phase),
+        field: "phase".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(phase_phase),
+            field: "phase".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "pipe.flowModel.states[1].phase" && subscripts.is_empty()
+    ));
+}
+
+#[test]
+fn collapse_index_refs_collapses_rendered_repeated_record_field_tail_to_known_var() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("pipe.flowModel.states[1].phase"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("pipe.flowModel.states[1].phase"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pipe.flowModel.states[1].phase.phase.phase"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "pipe.flowModel.states[1].phase" && subscripts.is_empty()
+    ));
+}
+
+#[test]
+fn collapse_index_refs_collapses_repeated_record_field_tail_to_array_field_var() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("pipe.flowModel.states.phase[1]"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("pipe.flowModel.states.phase[1]"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pipe.flowModel.states[1].phase.phase"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "pipe.flowModel.states.phase[1]" && subscripts.is_empty()
+    ));
+}
+
+#[test]
+fn collapse_index_refs_collapses_overexpanded_record_sibling_field_to_array_field_var() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("pipe.flowModel.states.h[1]"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("pipe.flowModel.states.h[1]"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pipe.flowModel.states[1].phase.h"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "pipe.flowModel.states.h[1]" && subscripts.is_empty()
+    ));
+}
+
+#[test]
+fn collapse_index_refs_collapses_repeated_record_field_tail_to_array_base_ref() {
+    let mut model = flat::Model::new();
+    let leaf = "pipe.flowModel.states.phase[1]";
+    model.add_variable(
+        rumoca_core::VarName::new(leaf),
+        flat::Variable {
+            name: rumoca_core::VarName::new(leaf),
+            component_ref: Some(rumoca_core::ComponentReference::from_flat_segments(
+                leaf,
+                test_span(),
+                None,
+            )),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = &model.equations[0].residual
+    else {
+        panic!("expected collapsed VarRef");
+    };
+    assert_eq!(name.as_str(), "pipe.flowModel.states.phase");
+    assert!(name.has_structure());
+    assert!(subscripts.is_empty());
+}
+
+#[test]
 fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
     let mut model = flat::Model::new();
     add_primitive_variable(&mut model, "arr[1]");
@@ -1184,6 +1373,37 @@ fn materializes_referenced_zero_sized_array_declaration() {
         .expect("zero-sized referenced array should have a Flat declaration");
     assert_eq!(var.dims, vec![0]);
     assert!(var.is_primitive);
+}
+
+#[test]
+fn materializes_unspanned_zero_sized_array_reference_from_dimension_provenance() {
+    let mut model = flat::Model::new();
+    model.equations.push(flat::Equation::new(
+        var_ref("Modelica.Media.Water.WaterIF97_base.C_default"),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "PumpingSystem".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    let name = "Modelica.Media.Water.WaterIF97_base.C_default";
+    ctx.array_dimensions.insert(name.to_string(), vec![0]);
+    ctx.array_dimension_spans
+        .insert(name.to_string(), test_span());
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let var = model
+        .variables
+        .get(&rumoca_core::VarName::new(name))
+        .expect("zero-sized referenced array should have a Flat declaration");
+    assert_eq!(var.dims, vec![0]);
+    assert_eq!(var.source_span, test_span());
+    assert!(
+        var.component_ref.is_some(),
+        "materialized zero-sized array variable should carry structured metadata"
+    );
 }
 
 #[test]

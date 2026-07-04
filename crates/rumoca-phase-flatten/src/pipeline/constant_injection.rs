@@ -1990,6 +1990,8 @@ pub(crate) struct Context {
     pub flat_parameter_constant_keys: rustc_hash::FxHashSet<String>,
     /// Array dimensions for evaluating size() calls (name -> dims).
     pub array_dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
+    /// Source spans for entries in `array_dimensions`.
+    pub array_dimension_spans: rustc_hash::FxHashMap<String, rumoca_core::Span>,
     /// Parameters marked with annotation(Evaluate=true) or declared final (MLS §18.3).
     /// Only these structural parameters can be used for compile-time branch selection.
     pub structural_params: std::collections::HashSet<String>,

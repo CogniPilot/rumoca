@@ -601,9 +601,11 @@ fn expand_dae_record_arg(
 
     // Variable reference → emit field VarRefs
     if let rumoca_core::Expression::VarRef { name, .. } = arg {
+        let base_name =
+            record_arg_projection_base_name(name, fields).unwrap_or_else(|| name.clone());
         for field in fields {
             out.push(rumoca_core::Expression::VarRef {
-                name: name.with_appended_field(field),
+                name: base_name.with_appended_field(field),
                 subscripts: vec![],
                 span: owner_span,
             });
@@ -634,6 +636,26 @@ fn expand_dae_record_arg(
         });
     }
     Ok(())
+}
+
+fn record_arg_projection_base_name(
+    name: &rumoca_core::Reference,
+    fields: &[String],
+) -> Option<rumoca_core::Reference> {
+    let terminal = name.as_str().rsplit('.').next()?;
+    if !fields.iter().any(|field| field == terminal) {
+        return None;
+    }
+    if let Some(component_ref) = name.component_ref()
+        && component_ref.parts.len() > 1
+    {
+        let mut base_ref = component_ref.clone();
+        base_ref.parts.pop();
+        base_ref.def_id = None;
+        return Some(rumoca_core::Reference::from_component_reference(base_ref));
+    }
+    let (base, _) = name.as_str().rsplit_once('.')?;
+    Some(rumoca_core::Reference::new(base.to_string()))
 }
 
 /// Returns true if the expression is obviously a scalar (not a record type).
@@ -1603,8 +1625,10 @@ fn scalarize_field_access_at(
         && let rumoca_core::Expression::VarRef { subscripts, .. } = &base
         && subscripts.is_empty()
     {
+        let base_name = record_arg_projection_base_name(name, &[field.to_string()])
+            .unwrap_or_else(|| name.clone());
         return Ok(rumoca_core::Expression::VarRef {
-            name: name.with_appended_field(field),
+            name: base_name.with_appended_field(field),
             subscripts: Vec::new(),
             span: *span,
         });

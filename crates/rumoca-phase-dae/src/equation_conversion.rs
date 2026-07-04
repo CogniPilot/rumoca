@@ -101,6 +101,34 @@ fn should_skip_stream_stream_connection(eq: &flat::Equation, ctx: &EqFilterConte
     !(lhs_consumed && rhs_consumed)
 }
 
+fn is_identity_equation(eq: &flat::Equation) -> bool {
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
+        return false;
+    };
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
+        return false;
+    }
+    let rumoca_core::Expression::VarRef {
+        name: lhs_name,
+        subscripts: lhs_subscripts,
+        ..
+    } = lhs.as_ref()
+    else {
+        return false;
+    };
+    let rumoca_core::Expression::VarRef {
+        name: rhs_name,
+        subscripts: rhs_subscripts,
+        ..
+    } = rhs.as_ref()
+    else {
+        return false;
+    };
+
+    lhs_name.var_name() == rhs_name.var_name()
+        && subscripts_match_semantically(lhs_subscripts, rhs_subscripts)
+}
+
 /// Check if an equation defines an input variable with a constant/parameter value.
 ///
 /// Equations of the form `input_var = literal` where `input_var` is an input
@@ -372,6 +400,7 @@ struct EqFilterStats {
     skipped_top_level_oc: usize,
     skipped_input_input: usize,
     skipped_stream_stream: usize,
+    skipped_identity: usize,
     skipped_output_alias: usize,
     skipped_input_default: usize,
     skipped_explicit_zero: usize,
@@ -390,7 +419,7 @@ impl EqFilterStats {
 
     fn log(&self) {
         crate::log_equation_filter_debug(format!(
-            "eq-filter: kept(connection={}, flow_sum={}, unconnected_flow={}, other={}) skipped(top_level_oc={}, input_input={}, stream_stream={}, output_alias={}, input_default={}, explicit_zero={}, inferred_zero={})",
+            "eq-filter: kept(connection={}, flow_sum={}, unconnected_flow={}, other={}) skipped(top_level_oc={}, input_input={}, stream_stream={}, identity={}, output_alias={}, input_default={}, explicit_zero={}, inferred_zero={})",
             self.kept_connection,
             self.kept_flow_sum,
             self.kept_unconnected_flow,
@@ -398,6 +427,7 @@ impl EqFilterStats {
             self.skipped_top_level_oc,
             self.skipped_input_input,
             self.skipped_stream_stream,
+            self.skipped_identity,
             self.skipped_output_alias,
             self.skipped_input_default,
             self.skipped_explicit_zero,
@@ -484,6 +514,12 @@ fn skip_equation_pre_classification(
     if should_skip_stream_stream_connection(eq, ctx) {
         stats.skipped_stream_stream += 1;
         log_skip(ctx.debug_eq_filter, "stream_stream", eq);
+        return true;
+    }
+
+    if is_identity_equation(eq) {
+        stats.skipped_identity += 1;
+        log_skip(ctx.debug_eq_filter, "identity", eq);
         return true;
     }
 

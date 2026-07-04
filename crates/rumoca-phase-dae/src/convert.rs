@@ -934,6 +934,9 @@ impl DaeReferenceScope {
         {
             return self.reference_from_metadata(target, target.as_str(), metadata, span);
         }
+        if let Some(reference) = self.overexpanded_record_path_reference(name.as_str(), span)? {
+            return Ok(reference);
+        }
         if name.has_structure() {
             return Ok(name.clone());
         }
@@ -1043,6 +1046,107 @@ impl DaeReferenceScope {
                 ))
             }
         }
+    }
+
+    fn overexpanded_record_path_reference(
+        &self,
+        rendered: &str,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+        let mut path = rendered;
+        while let Some((prefix, field)) = path.rsplit_once('.') {
+            if !prefix.ends_with(field) {
+                return self.penultimate_field_reference(path, span);
+            }
+            path = prefix;
+            if let Some(reference) = self.reference_for_known_rendered_path(path, span)? {
+                return Ok(Some(reference));
+            }
+            if let Some(reference) = self.penultimate_field_reference(path, span)? {
+                return Ok(Some(reference));
+            }
+        }
+        Ok(None)
+    }
+
+    fn penultimate_field_reference(
+        &self,
+        rendered: &str,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+        let Some((prefix, leaf)) = rendered.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let Some((base, _)) = prefix.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let candidate = format!("{base}.{leaf}");
+        if let Some(reference) = self.reference_for_known_rendered_path(&candidate, span)? {
+            return Ok(Some(reference));
+        }
+        if candidate != rendered {
+            return self.overexpanded_record_path_reference(&candidate, span);
+        }
+        Ok(None)
+    }
+
+    fn reference_for_known_rendered_path(
+        &self,
+        rendered: &str,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+        let target = rumoca_core::VarName::new(rendered);
+        if let Some(metadata) = self.variables.get(&target) {
+            return self
+                .reference_from_metadata(&target, rendered, metadata, span)
+                .map(Some);
+        }
+        if let Some(metadata) = self.aggregate_prefixes.get(&target) {
+            return self
+                .reference_from_metadata(&target, rendered, metadata, span)
+                .map(Some);
+        }
+        let array_prefix = format!("{rendered}[");
+        if let Some((_, leaf_metadata)) = self
+            .variables
+            .iter()
+            .find(|(name, _)| name.as_str().starts_with(&array_prefix))
+        {
+            let metadata = DaeReferenceMetadata {
+                component_ref: Some(rumoca_core::ComponentReference::from_flat_segments(
+                    rendered,
+                    leaf_metadata.source_span,
+                    None,
+                )),
+                origin: dae::VariableOrigin::Generated,
+                source_span: leaf_metadata.source_span,
+            };
+            return self
+                .reference_from_metadata(&target, rendered, &metadata, span)
+                .map(Some);
+        }
+        if let Some((base, field)) = rendered.rsplit_once('.') {
+            let indexed_base_prefix = format!("{base}[");
+            let indexed_field_suffix = format!("].{field}");
+            if let Some((_, leaf_metadata)) = self.variables.iter().find(|(name, _)| {
+                let name = name.as_str();
+                name.starts_with(&indexed_base_prefix) && name.contains(&indexed_field_suffix)
+            }) {
+                let metadata = DaeReferenceMetadata {
+                    component_ref: Some(rumoca_core::ComponentReference::from_flat_segments(
+                        rendered,
+                        leaf_metadata.source_span,
+                        None,
+                    )),
+                    origin: dae::VariableOrigin::Generated,
+                    source_span: leaf_metadata.source_span,
+                };
+                return self
+                    .reference_from_metadata(&target, rendered, &metadata, span)
+                    .map(Some);
+            }
+        }
+        Ok(None)
     }
 
     fn indexed_record_field_reference(
@@ -1754,6 +1858,129 @@ mod tests {
         assert_eq!(component_ref.parts.len(), 2);
         assert_eq!(component_ref.parts[0].ident, "mp");
         assert_eq!(component_ref.parts[1].ident, "modelcard");
+    }
+
+    #[test]
+    fn dae_metadata_attachment_collapses_overexpanded_record_array_prefix() {
+        let field_name = rumoca_core::VarName::new("pipe.flowModel.states.phase[1]");
+        let span = test_span(70, 77);
+        let field_ref = rumoca_core::ComponentReference::from_flat_segments(
+            field_name.as_str(),
+            span,
+            Some(rumoca_core::DefId::new(701)),
+        );
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            field_name.clone(),
+            dae::Variable {
+                name: field_name,
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase.phase"),
+                subscripts: Vec::new(),
+                span,
+            },
+            span,
+            origin: "test".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae)
+            .expect("overexpanded record prefix should resolve to aggregate metadata");
+
+        let rumoca_core::Expression::VarRef { name, .. } = &dae.continuous.equations[0].rhs else {
+            panic!("expected variable reference");
+        };
+        assert_eq!(name.as_str(), "pipe.flowModel.states.phase");
+        assert!(name.has_structure());
+    }
+
+    #[test]
+    fn dae_metadata_attachment_collapses_overexpanded_indexed_record_field_prefix() {
+        let field_name = rumoca_core::VarName::new("pipe.flowModel.states[1].phase");
+        let span = test_span(74, 81);
+        let field_ref = rumoca_core::ComponentReference::from_flat_segments(
+            field_name.as_str(),
+            span,
+            Some(rumoca_core::DefId::new(702)),
+        );
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            field_name.clone(),
+            dae::Variable {
+                name: field_name,
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase.phase"),
+                subscripts: Vec::new(),
+                span,
+            },
+            span,
+            origin: "test".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae)
+            .expect("overexpanded indexed record field prefix should resolve");
+
+        let rumoca_core::Expression::VarRef { name, .. } = &dae.continuous.equations[0].rhs else {
+            panic!("expected variable reference");
+        };
+        assert_eq!(name.as_str(), "pipe.flowModel.states.phase");
+        assert!(name.has_structure());
+    }
+
+    #[test]
+    fn dae_metadata_attachment_collapses_overexpanded_record_sibling_field_prefix() {
+        let field_name = rumoca_core::VarName::new("pipe.flowModel.states[1].h");
+        let span = test_span(76, 83);
+        let field_ref = rumoca_core::ComponentReference::from_flat_segments(
+            field_name.as_str(),
+            span,
+            Some(rumoca_core::DefId::new(703)),
+        );
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            field_name.clone(),
+            dae::Variable {
+                name: field_name,
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase.h"),
+                subscripts: Vec::new(),
+                span,
+            },
+            span,
+            origin: "test".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae)
+            .expect("overexpanded record sibling field should resolve");
+
+        let rumoca_core::Expression::VarRef { name, .. } = &dae.continuous.equations[0].rhs else {
+            panic!("expected variable reference");
+        };
+        assert_eq!(name.as_str(), "pipe.flowModel.states.h");
+        assert!(name.has_structure());
     }
 
     #[test]

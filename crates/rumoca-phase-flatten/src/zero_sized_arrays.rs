@@ -28,15 +28,22 @@ pub(crate) fn materialize_referenced_zero_sized_array_variables(
         if flat.variables.contains_key(&var_name) {
             continue;
         }
-        let source_span = name.span().ok_or_else(|| {
+        let source_span = zero_sized_array_source_span(&name, ctx).ok_or_else(|| {
             FlattenError::missing_source_context(format!(
                 "zero-sized array reference `{}` is missing source provenance",
                 name.as_str()
             ))
         })?;
+        let component_ref = name.component_ref().cloned().or_else(|| {
+            Some(rumoca_core::ComponentReference::from_flat_segments(
+                name.as_str(),
+                source_span,
+                None,
+            ))
+        });
         let variable = flat::Variable {
             name: var_name.clone(),
-            component_ref: name.component_ref().cloned(),
+            component_ref,
             source_span,
             dims,
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
@@ -117,4 +124,21 @@ fn zero_sized_array_dims_for_ref(name: &rumoca_core::Reference, ctx: &Context) -
             .and_then(|target_name| ctx.array_dimensions.get(target_name))
     })?;
     (!dims.is_empty() && dims.iter().any(|dim| *dim <= 0)).then(|| dims.clone())
+}
+
+fn zero_sized_array_source_span(
+    name: &rumoca_core::Reference,
+    ctx: &Context,
+) -> Option<rumoca_core::Span> {
+    name.span().or_else(|| {
+        ctx.array_dimension_spans
+            .get(name.as_str())
+            .copied()
+            .or_else(|| {
+                name.target_def_id()
+                    .and_then(|def_id| ctx.target_def_names.get(&def_id))
+                    .and_then(|target_name| ctx.array_dimension_spans.get(target_name))
+                    .copied()
+            })
+    })
 }

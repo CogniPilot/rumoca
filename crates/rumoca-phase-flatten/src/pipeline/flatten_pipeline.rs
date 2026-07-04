@@ -1006,6 +1006,7 @@ pub(crate) fn finalize_flat_model(
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
     resolve_nested_constructor_field_access_bindings(flat);
+    collapse_index_refs_to_known_varrefs(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
     functions::validate_flat_function_call_args(flat)?;
@@ -1017,6 +1018,7 @@ pub(crate) fn finalize_flat_model(
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;
     }
+    collapse_index_refs_to_known_varrefs(flat);
     // Final boundary pass: every rendered variable reference leaves flatten
     // with its structured component reference attached, so downstream phases
     // never re-derive structure from names.

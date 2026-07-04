@@ -406,6 +406,42 @@ fn dae_record_param_lowering_infers_fields_from_already_lowered_body() {
 }
 
 #[test]
+fn dae_record_arg_expansion_projects_overexpanded_record_field_actual_to_base() {
+    let mut out = Vec::new();
+    expand_dae_record_arg(
+        &var_ref("pipe.flowModel.states.phase", test_span(1)),
+        &[
+            "phase".to_string(),
+            "h".to_string(),
+            "d".to_string(),
+            "T".to_string(),
+            "p".to_string(),
+        ],
+        &mut out,
+        test_span(1),
+    )
+    .expect("record arg expansion should project to record base");
+
+    let names = out
+        .iter()
+        .map(|expr| match expr {
+            rumoca_core::Expression::VarRef { name, .. } => name.as_str().to_string(),
+            other => panic!("expected VarRef, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            "pipe.flowModel.states.phase",
+            "pipe.flowModel.states.h",
+            "pipe.flowModel.states.d",
+            "pipe.flowModel.states.T",
+            "pipe.flowModel.states.p",
+        ]
+    );
+}
+
+#[test]
 fn dae_record_param_lowering_merges_metadata_and_body_inferred_fields() {
     let mut dae = Dae::default();
     let mut constructor = rumoca_core::Function::new("Pkg.Record", test_span(1));

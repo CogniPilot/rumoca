@@ -209,6 +209,7 @@ impl Context {
             modified_constant_keys: rustc_hash::FxHashSet::default(),
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
             array_dimensions: rustc_hash::FxHashMap::default(),
+            array_dimension_spans: rustc_hash::FxHashMap::default(),
             structural_params: std::collections::HashSet::new(),
             non_structural_params: std::collections::HashSet::new(),
             functions: rustc_hash::FxHashMap::default(),
@@ -764,7 +765,9 @@ impl Context {
                 continue;
             }
             let dims_to_use = try_infer_better_dims(var);
-            self.array_dimensions.insert(name.to_string(), dims_to_use);
+            let key = name.to_string();
+            self.array_dimensions.insert(key.clone(), dims_to_use);
+            self.array_dimension_spans.insert(key, var.source_span);
         }
     }
 
@@ -797,8 +800,10 @@ impl Context {
             {
                 #[cfg(feature = "tracing")]
                 tracing::debug!(var = %name, dims = ?inferred_dims, "inferred array dimensions from binding");
-                self.array_dimensions
-                    .insert(name.to_string(), inferred_dims);
+                let key = name.to_string();
+                self.array_dimensions.insert(key.clone(), inferred_dims);
+                self.array_dimension_spans
+                    .insert(key, binding.span().unwrap_or(var.source_span));
             }
         }
     }

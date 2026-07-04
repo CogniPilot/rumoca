@@ -1362,12 +1362,13 @@ fn extract_extends_shape_and_alias_modification(
         );
     }
     if let Some(dims) = infer_dims_from_expr(qualified_value, ctx, prefix) {
-        insert_with_prefix(
-            &mut ctx.array_dimensions,
+        insert_array_dimensions_with_prefix(
+            ctx,
             prefix,
             target_name,
             full_name,
             dims,
+            qualified_value.span(),
         );
     }
     if let Some(alias_name) = alias_ref {
@@ -1647,14 +1648,35 @@ pub(super) fn extract_single_constant_with_prefix_and_function_scope(
         && !comp.shape.is_empty()
     {
         let dims: Vec<i64> = comp.shape.iter().map(|&d| d as i64).collect();
-        insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
+        insert_array_dimensions_with_prefix(ctx, prefix, name, full_name, dims, expr.span());
     }
     // Array dimensions from binding (array literal length)
     if (!preserve_existing || !ctx.array_dimensions.contains_key(full_name))
         && let Some(dims) = infer_dims_from_expr(expr, ctx, prefix)
     {
-        insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
+        insert_array_dimensions_with_prefix(ctx, prefix, name, full_name, dims, expr.span());
     }
+}
+
+fn insert_array_dimensions_with_prefix(
+    ctx: &mut Context,
+    prefix: &str,
+    name: &str,
+    full_name: &str,
+    dims: Vec<i64>,
+    span: rumoca_core::Span,
+) {
+    insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
+    if span.is_dummy() {
+        return;
+    }
+    insert_with_prefix(
+        &mut ctx.array_dimension_spans,
+        prefix,
+        name,
+        full_name,
+        span,
+    );
 }
 
 pub(super) fn try_extract_constant_alias_expr(
@@ -1738,6 +1760,13 @@ pub(super) fn materialize_record_constant_alias_fields(
     );
     propagate_alias_fields_in_map(
         &mut ctx.array_dimensions,
+        prefix,
+        target_name,
+        full_name,
+        alias_name,
+    );
+    propagate_alias_fields_in_map(
+        &mut ctx.array_dimension_spans,
         prefix,
         target_name,
         full_name,

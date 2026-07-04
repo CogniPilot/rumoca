@@ -114,11 +114,23 @@ fn validate_call_slots(
 
     let inputs = &function.inputs;
     if positional > inputs.len() {
+        let input_names = inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let actuals = args
+            .iter()
+            .filter(|arg| !is_named_arg_marker(arg))
+            .take(16)
+            .map(expression_summary)
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(FlattenError::invalid_function_call_args(
             call_name,
             format!(
-                "{positional} positional argument(s) for {} input slot(s)",
-                inputs.len()
+                "{positional} positional argument(s) for {} input slot(s) [{input_names}]; actuals: {actuals}",
+                inputs.len(),
             ),
             span,
         ));
@@ -215,4 +227,16 @@ fn is_named_arg_marker(arg: &rumoca_core::Expression) -> bool {
         rumoca_core::Expression::FunctionCall { name, .. }
             if name.as_str().starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
     )
+}
+
+fn expression_summary(expr: &rumoca_core::Expression) -> String {
+    match expr {
+        rumoca_core::Expression::VarRef { name, .. } => name.as_str().to_string(),
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            format!("{}.{}", expression_summary(base), field)
+        }
+        rumoca_core::Expression::FunctionCall { name, .. } => format!("{}(...)", name.as_str()),
+        rumoca_core::Expression::Literal { value, .. } => format!("{value:?}"),
+        _ => format!("{expr:?}"),
+    }
 }
