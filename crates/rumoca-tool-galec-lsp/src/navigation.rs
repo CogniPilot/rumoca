@@ -13,7 +13,7 @@ use lsp_types::{
 use rumoca_ir_galec::parse::parse;
 use rumoca_ir_galec::symbol_at;
 
-use crate::position::{position_to_byte_offset, span_to_range};
+use rumoca_lsp_position::{position_to_byte_offset, span_to_range};
 
 /// Hover summary for the symbol at `position`, or `None` when the cursor is not
 /// on a resolvable reference (or the document does not parse).
@@ -62,6 +62,7 @@ mod tests {
         Block, Expression, InterfaceKind, InterfaceVariable, Name, Reference, ScalarType, Spanned,
         Statement, VariableDeclaration,
     };
+    use rumoca_lsp_position::byte_offset_to_position;
 
     /// A block whose `DoStep` assigns `self.y := self.u`, printed to text.
     fn sample_source() -> String {
@@ -86,7 +87,7 @@ mod tests {
     /// The line/column of the `u` in the `self.u` reference.
     fn reference_position(source: &str) -> Position {
         let offset = source.find("self.u").expect("self.u present") + "self.".len();
-        crate::position::byte_offset_to_position(source, offset)
+        byte_offset_to_position(source, offset)
     }
 
     #[test]

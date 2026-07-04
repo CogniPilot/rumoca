@@ -27,7 +27,7 @@
 //! are rejected with a stable diagnostic instead of being emitted in a
 //! silently wrong order (GAL-007).
 
-use rumoca_ir_galec::ast::{Expression, Name, Reference, Statement};
+use rumoca_ir_galec::ast::{Expression, Name, Reference, Spanned, Statement};
 
 use crate::diagnostic::GalecTargetError;
 use crate::mangle::manifest_name;
@@ -45,7 +45,11 @@ struct AccessKey {
 impl AccessKey {
     /// Whether a read with this key can observe the target `other`.
     fn overlaps(&self, other: &Self) -> bool {
-        if self.name != other.name {
+        // Compare the name's lexeme, not the `Name` value: `Name`'s derived
+        // equality includes its source span (D11 provenance), and a generated
+        // target and a read of the same variable can carry different spans, so
+        // a span-sensitive comparison would silently miss the dependency.
+        if self.name.lexeme() != other.name.lexeme() {
             return false;
         }
         match (&self.subscripts, &other.subscripts) {
@@ -65,13 +69,16 @@ impl AccessKey {
 /// each other's current-tick values cyclically; `ET018` when a statement is
 /// not the single-part flat assignment lowering produces.
 pub(crate) fn order_by_dependencies(
-    statements: Vec<Statement>,
-) -> Result<Vec<Statement>, GalecTargetError> {
+    statements: Vec<Spanned<Statement>>,
+) -> Result<Vec<Spanned<Statement>>, GalecTargetError> {
     let targets = statements
         .iter()
-        .map(target_key)
+        .map(|statement| target_key(&statement.node))
         .collect::<Result<Vec<_>, _>>()?;
-    let reads: Vec<Vec<AccessKey>> = statements.iter().map(read_keys).collect();
+    let reads: Vec<Vec<AccessKey>> = statements
+        .iter()
+        .map(|statement| read_keys(&statement.node))
+        .collect();
     let mut indegree = vec![0_usize; statements.len()];
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); statements.len()];
     for (reader, reader_reads) in reads.iter().enumerate() {
@@ -88,11 +95,11 @@ pub(crate) fn order_by_dependencies(
 /// Kahn's algorithm picking the smallest ready index each round, so rows
 /// without ordering constraints keep their DAE order.
 fn stable_kahn(
-    statements: Vec<Statement>,
+    statements: Vec<Spanned<Statement>>,
     targets: &[AccessKey],
     mut indegree: Vec<usize>,
     dependents: &[Vec<usize>],
-) -> Result<Vec<Statement>, GalecTargetError> {
+) -> Result<Vec<Spanned<Statement>>, GalecTargetError> {
     let count = statements.len();
     let mut emitted = vec![false; count];
     let mut order = Vec::with_capacity(count);
@@ -120,7 +127,7 @@ fn stable_kahn(
         }
         order.push(next);
     }
-    let mut slots: Vec<Option<Statement>> = statements.into_iter().map(Some).collect();
+    let mut slots: Vec<Option<Spanned<Statement>>> = statements.into_iter().map(Some).collect();
     Ok(order
         .into_iter()
         .map(|index| slots[index].take().expect("each index emitted once"))
@@ -150,14 +157,23 @@ fn reference_key(reference: &Reference) -> Option<AccessKey> {
     let [part] = parts.as_slice() else {
         return None;
     };
-    let subscripts = part
-        .subscripts
-        .iter()
-        .map(|subscript| match subscript {
-            Expression::Integer(value) => Some(*value),
-            _ => None,
-        })
-        .collect::<Option<Vec<i64>>>();
+    let subscripts = if part.subscripts.is_empty() {
+        // A whole-variable access (no subscripts) covers EVERY element of an
+        // array base, so it must match any indexed access of the same base
+        // conservatively (the `None` case below), not act as a distinct
+        // empty-index element that only equals another empty access. (For a
+        // scalar this is equivalent — the name guard already prevents matching
+        // a different variable.)
+        None
+    } else {
+        part.subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                Expression::Integer(value) => Some(*value),
+                _ => None,
+            })
+            .collect::<Option<Vec<i64>>>()
+    };
     Some(AccessKey {
         name: part.name.clone(),
         subscripts,
@@ -221,5 +237,115 @@ fn collect_reads(expression: &Expression, reads: &mut Vec<AccessKey>) {
             collect_reads(lhs, reads);
             collect_reads(rhs, reads);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_by_dependencies;
+    use rumoca_core::Span;
+    use rumoca_ir_galec::ast::{Expression, Name, RefPart, Reference, Spanned, Statement};
+
+    /// `self.name[sub] := value`, `sub = None` for a whole/scalar access.
+    fn assign(name: &str, sub: Option<i64>, value: Expression) -> Spanned<Statement> {
+        Spanned::dummy(Statement::Assignment {
+            target: Reference::State(vec![part(name, sub)]),
+            value,
+        })
+    }
+
+    fn part(name: &str, sub: Option<i64>) -> RefPart {
+        RefPart {
+            name: Name::ident(name),
+            subscripts: sub
+                .map(|i| vec![Expression::Integer(i)])
+                .into_iter()
+                .flatten()
+                .collect(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn read(name: &str, sub: Option<i64>) -> Expression {
+        Expression::Ref(Reference::State(vec![part(name, sub)]))
+    }
+
+    /// The (name, subscript) target of each ordered assignment, for asserting
+    /// the emitted sequence.
+    fn targets(ordered: &[Spanned<Statement>]) -> Vec<(String, Option<i64>)> {
+        ordered
+            .iter()
+            .map(|statement| {
+                let Statement::Assignment { target, .. } = &statement.node else {
+                    panic!("expected an assignment");
+                };
+                let Reference::State(parts) = target else {
+                    panic!("expected a state target");
+                };
+                let [p] = parts.as_slice() else {
+                    panic!("expected a single-part target");
+                };
+                let sub = match p.subscripts.as_slice() {
+                    [] => None,
+                    [Expression::Integer(i)] => Some(*i),
+                    _ => panic!("unexpected subscripts"),
+                };
+                (p.name.lexeme().to_owned(), sub)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn element_wise_reads_order_after_their_element_writer_only() {
+        // `x[1] := x[2]` reads x[2]; `x[2] := 5` writes it. The writer must run
+        // first. A third row `x[3] := 9` writes a DIFFERENT element and carries
+        // no ordering constraint, so it keeps its input position (stable sort).
+        let input = vec![
+            assign("x", Some(1), read("x", Some(2))),
+            assign("x", Some(2), Expression::Integer(5)),
+            assign("x", Some(3), Expression::Integer(9)),
+        ];
+        let ordered = order_by_dependencies(input).expect("acyclic");
+        let targets = targets(&ordered);
+        let writer = targets.iter().position(|t| *t == ("x".to_owned(), Some(2)));
+        let reader = targets.iter().position(|t| *t == ("x".to_owned(), Some(1)));
+        assert!(
+            writer < reader,
+            "x[2] writer must precede its x[1] reader: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn whole_array_read_depends_on_every_element_writer() {
+        // `a := x` reads the WHOLE array x; `x[1] := 5` writes an element of it.
+        // The element writer must precede the whole-array reader — the regression
+        // this pins: an empty-subscript access must overlap indexed accesses of
+        // the same base, not act as a distinct empty-index element.
+        let input = vec![
+            assign("a", None, read("x", None)),
+            assign("x", Some(1), Expression::Integer(5)),
+        ];
+        let ordered = order_by_dependencies(input).expect("acyclic");
+        assert_eq!(
+            targets(&ordered),
+            vec![("x".to_owned(), Some(1)), ("a".to_owned(), None)],
+            "the x[1] writer must precede the whole-array reader `a := x`"
+        );
+    }
+
+    #[test]
+    fn current_tick_element_cycle_is_rejected() {
+        // `x[1] := x[2]` and `x[2] := x[1]` read each other's current-tick
+        // values — a discrete algebraic loop, rejected, never mis-ordered.
+        let input = vec![
+            assign("x", Some(1), read("x", Some(2))),
+            assign("x", Some(2), read("x", Some(1))),
+        ];
+        let error = order_by_dependencies(input).expect_err("cyclic reads must be rejected");
+        assert!(
+            error.to_string().contains("discrete-algebraic-loop")
+                || error.to_string().contains("discrete algebraic loop"),
+            "{error}"
+        );
     }
 }

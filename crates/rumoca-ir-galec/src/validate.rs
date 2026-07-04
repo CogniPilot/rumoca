@@ -36,6 +36,7 @@ mod locate;
 mod names;
 mod navigate;
 mod signals;
+mod spans;
 mod termination;
 mod types;
 

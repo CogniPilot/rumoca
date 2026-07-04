@@ -61,6 +61,13 @@ impl ManifestId {
         Self(uuid)
     }
 
+    /// The nil (all-zero) UUID `{00000000-0000-0000-0000-000000000000}`. A
+    /// deterministic placeholder for validation-only assembly that must not
+    /// mint randomness — no `getrandom`, so it is safe on `wasm32`.
+    pub fn nil() -> Self {
+        Self(Uuid::nil())
+    }
+
     /// The underlying UUID.
     pub fn uuid(&self) -> Uuid {
         self.0
@@ -88,6 +95,14 @@ impl UtcTimestamp {
                 reason: e.to_string(),
             })?;
         Ok(Self(parsed))
+    }
+
+    /// A fixed placeholder timestamp (`2000-01-01T00:00:00Z`) for
+    /// validation-only assembly that must not read the wall clock — no
+    /// `SystemTime::now`, so it is safe on `wasm32`.
+    pub fn placeholder() -> Self {
+        Self::parse("2000-01-01T00:00:00Z")
+            .expect("the hardcoded placeholder timestamp is a valid strict-UTC literal")
     }
 
     /// Current wall-clock time, truncated to whole seconds. Generation helper

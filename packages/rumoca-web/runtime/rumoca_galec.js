@@ -10,7 +10,8 @@
 // Usage (the main module does NOT need to be initialized first — the addon
 // carries its own in-memory compile + projection):
 //   import { renderGalecTargetFiles } from "@cognipilot/rumoca/galec";
-//   const files = await renderGalecTargetFiles(pkgBase, src, model, "galec");
+//   const workspaceSources = JSON.stringify({ "Model.mo": src });
+//   const files = await renderGalecTargetFiles(pkgBase, workspaceSources, model, "galec");
 //
 // `pkgBase` is the same base URL the main `rumoca_bind_wasm.js` was imported
 // from (the addon wasm sits next to it); pass "./" from a worker co-located
@@ -51,14 +52,19 @@ export function loadGalecAddon(pkgBase = "./") {
 }
 
 /**
- * Compile `source` in the addon and project the model to `target`, returning
- * the parsed success payload `{ ok, target, alg, c_header, c_source }`.
+ * Compile the workspace sources in the addon and project the model to
+ * `target`, returning the parsed success payload
+ * `{ ok, target, model_identifier, alg, c_header, c_source }`.
+ *
+ * `workspaceSources` is a JSON object string mapping each document path to its
+ * Modelica text — the same map the core compile uses — so a model spanning
+ * several files projects to GALEC just as it compiles for other targets.
  *
  * Throws with the addon's diagnostic message when the model is inadmissible
  * (e.g. continuous dynamics) or the target is unknown, and when this rumoca
  * build predates the addon.
  */
-export async function renderGalec(pkgBase, source, modelName, target) {
+export async function renderGalec(pkgBase, workspaceSources, modelName, target) {
   if (!isGalecTarget(target)) {
     throw new Error(
       `'${target}' is not a GALEC codegen target ` +
@@ -79,7 +85,9 @@ export async function renderGalec(pkgBase, source, modelName, target) {
       "this rumoca build predates the GALEC addon; rebuild the package",
     );
   }
-  const parsed = JSON.parse(addon.render_galec(source, modelName, target));
+  const parsed = JSON.parse(
+    addon.render_galec(workspaceSources, modelName, target),
+  );
   if (!parsed || parsed.ok !== true) {
     throw new Error((parsed && parsed.error) || "GALEC code generation failed");
   }
@@ -97,12 +105,17 @@ export async function renderGalec(pkgBase, source, modelName, target) {
  * checksums), so it would be dishonest to wrap these in an AlgorithmCode/…
  * container layout; that packaging is the native CLI's job.
  */
-export function galecResultToFiles(modelName, target, result) {
-  const leaf = String(modelName || "").split(".").filter(Boolean).pop() || "model";
-  const files = [{ path: `${leaf}.alg`, content: String(result?.alg ?? "") }];
+export function galecResultToFiles(target, result) {
+  // Name the files with the SAME identifier the addon used (dots -> underscores)
+  // so the generated `#include "<id>.h"` resolves. Using the bare model leaf
+  // would break C compilation for a package-qualified model (`MyLib.Demo` emits
+  // `#include "MyLib_Demo.h"`, not `Demo.h`). The addon always supplies
+  // `model_identifier`.
+  const base = String(result?.model_identifier || "model");
+  const files = [{ path: `${base}.alg`, content: String(result?.alg ?? "") }];
   if (target === "galec-production" || target === "embedded-c-galec") {
-    files.push({ path: `${leaf}.h`, content: String(result?.c_header ?? "") });
-    files.push({ path: `${leaf}.c`, content: String(result?.c_source ?? "") });
+    files.push({ path: `${base}.h`, content: String(result?.c_header ?? "") });
+    files.push({ path: `${base}.c`, content: String(result?.c_source ?? "") });
   }
   return files;
 }
@@ -113,7 +126,12 @@ export function galecResultToFiles(modelName, target, result) {
  * (never the core module's DAE-JSON `render_target` path, which drops the flat
  * model the projection needs).
  */
-export async function renderGalecTargetFiles(pkgBase, source, modelName, target) {
-  const parsed = await renderGalec(pkgBase, source, modelName, target);
-  return galecResultToFiles(modelName, target, parsed);
+export async function renderGalecTargetFiles(
+  pkgBase,
+  workspaceSources,
+  modelName,
+  target,
+) {
+  const parsed = await renderGalec(pkgBase, workspaceSources, modelName, target);
+  return galecResultToFiles(target, parsed);
 }

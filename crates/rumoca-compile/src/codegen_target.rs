@@ -582,10 +582,10 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
 /// Fail-early structural checks on the declared checksum web (contract §4a/
 /// §4c), before any rendering: file `id`s are unique, every `[[files.checksums]]`
 /// `of` resolves to a declared `id`, no file checksums itself (the no-self-hash
-/// invariant that keeps the edge set a DAG), and every `as` key is non-empty.
-/// Cycle detection is the packaging topo sort's job (it renders nothing on a
-/// cycle); this rejects the malformed declarations that can be seen without
-/// ordering.
+/// invariant that keeps the edge set a DAG), and every `as` key is non-empty and
+/// unique per file. Cycle detection is the packaging topo sort's job (it renders
+/// nothing on a cycle); this rejects the malformed declarations that can be seen
+/// without ordering.
 fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
     let mut ids = std::collections::BTreeSet::new();
     for file in files {
@@ -599,12 +599,22 @@ fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
         }
     }
     for file in files {
+        let mut as_keys = std::collections::BTreeSet::new();
         for need in &file.checksums {
             if need.as_key.trim().is_empty() {
                 bail!(
                     "[[files.checksums]] `as` must not be empty (file '{}', of = '{}')",
                     file.path,
                     need.of
+                );
+            }
+            if !as_keys.insert(need.as_key.as_str()) {
+                bail!(
+                    "[[files.checksums]] `as` = '{}' is declared twice on file '{}'; each `as` \
+                     key names one distinct injected checksum, so a duplicate would silently \
+                     overwrite one producer's real SHA-1 with another's",
+                    need.as_key,
+                    file.path
                 );
             }
             if !ids.contains(need.of.as_str()) {
@@ -1512,5 +1522,180 @@ dynamic_derivative_subscripts = false
             .expect_err("dynamic derivative subscripts should be rejected");
 
         assert!(err.to_string().contains("dynamic_derivative_subscripts"));
+    }
+
+    // --- checksum-web / asset-bundle validators (each fail-early branch) ---
+
+    /// A well-formed checksum web (one producer, one consumer edge) parses and
+    /// validates — the positive control for the rejection tests below.
+    #[test]
+    fn checksum_web_accepts_a_wellformed_declaration() {
+        super::parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "checksum-web"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "a"
+as = "a_sha1"
+"#,
+        )
+        .expect("a well-formed checksum web validates");
+    }
+
+    fn expect_target_error(source: &str, needle: &str) {
+        let err = super::parse_target_manifest(source)
+            .expect_err("malformed target.toml must be rejected");
+        assert!(
+            err.to_string().contains(needle),
+            "error `{err}` should mention `{needle}`"
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_duplicate_file_ids() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "dup-id"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "x"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+id = "x"
+"#,
+            "duplicate [[files]] id",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_dangling_of() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "dangling"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "ghost"
+as = "ghost_sha1"
+"#,
+            "names no [[files]] id",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_self_hash() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "self-hash"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files.checksums]]
+of = "a"
+as = "a_sha1"
+"#,
+            "checksums itself",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_empty_as_key() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "empty-as"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "a"
+as = ""
+"#,
+            "`as` must not be empty",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_duplicate_as_key_on_one_file() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "dup-as"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files]]
+path = "c.txt"
+template = "c.jinja"
+id = "c"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "a"
+as = "sha1"
+[[files.checksums]]
+of = "c"
+as = "sha1"
+"#,
+            "declared twice",
+        );
+    }
+
+    #[test]
+    fn asset_bundle_rejects_empty_bundle_and_dest() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "empty-bundle"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+[[assets]]
+bundle = ""
+dest = "schemas/"
+"#,
+            "bundle name must not be empty",
+        );
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "empty-dest"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+[[assets]]
+bundle = "efmi-schemas"
+dest = ""
+"#,
+            "dest",
+        );
     }
 }

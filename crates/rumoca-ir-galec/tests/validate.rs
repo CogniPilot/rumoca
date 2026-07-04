@@ -7,11 +7,12 @@
 //! The golden PID / array fixtures also pass `validate` — asserted next to
 //! their definitions in `tests/block_print.rs`.
 
+use rumoca_core::Span;
 use rumoca_ir_galec::ast::{
     BinaryOp, Block, Condition, Dimension, Direction, Expression, ForLoop, FunctionCall,
     FunctionKind, Identifier, IfBranch, IfExpression, IfStatement, InterfaceKind,
     InterfaceVariable, Name, Parameter, PredefinedSignal, ProtectedEntity, ProtectedKind,
-    RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Span, Spanned,
+    RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Spanned,
     StateCompartment, Statement, TypeRef, UserFunction, VariableDeclaration,
 };
 use rumoca_ir_galec::validate;

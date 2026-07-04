@@ -20,7 +20,7 @@
 //! whole package and fails with a typed `ET022` — names are never silently
 //! renamed apart (SPEC_0008: no silent defaults).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_galec::ast::{Block, Name};
 
@@ -261,6 +261,10 @@ pub fn c_identifier(name: &Name) -> Result<String, GalecTargetError> {
 #[derive(Debug)]
 pub struct CNameTable {
     by_spelling: HashMap<String, String>,
+    /// Manifest spellings whose declaration is dimensioned (an array). A C
+    /// array field is not assignable with `=`, so whole-array copies of these
+    /// must be `memcpy`'d rather than scalar-assigned (see [`Self::is_array`]).
+    array_spellings: HashSet<String>,
 }
 
 impl CNameTable {
@@ -274,13 +278,14 @@ impl CNameTable {
         let declared = block
             .interface
             .iter()
-            .map(|variable| &variable.decl.name)
-            .chain(block.protected.iter().map(|entity| &entity.decl.name));
+            .map(|variable| &variable.decl)
+            .chain(block.protected.iter().map(|entity| &entity.decl));
         let mut by_spelling = HashMap::new();
+        let mut array_spellings = HashSet::new();
         let mut owners: HashMap<String, String> = HashMap::new();
-        for name in declared {
-            let spelling = manifest_name(name).to_owned();
-            let c_name = c_identifier(name)?;
+        for decl in declared {
+            let spelling = manifest_name(&decl.name).to_owned();
+            let c_name = c_identifier(&decl.name)?;
             if let Some(first) = owners.get(&c_name)
                 && first != &spelling
             {
@@ -291,9 +296,23 @@ impl CNameTable {
                 });
             }
             owners.insert(c_name.clone(), spelling.clone());
+            if !decl.dimensions.is_empty() {
+                array_spellings.insert(spelling.clone());
+            }
             by_spelling.insert(spelling, c_name);
         }
-        Ok(Self { by_spelling })
+        Ok(Self {
+            by_spelling,
+            array_spellings,
+        })
+    }
+
+    /// Whether a declared GALEC name is an array (dimensioned). A whole-array
+    /// copy of such a name cannot use C `=` (arrays are not assignable) — the
+    /// C printer emits `memcpy` instead.
+    #[must_use]
+    pub fn is_array(&self, name: &Name) -> bool {
+        self.array_spellings.contains(manifest_name(name))
     }
 
     /// The C identifier of a declared GALEC name.

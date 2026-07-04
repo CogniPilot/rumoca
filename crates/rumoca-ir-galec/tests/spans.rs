@@ -6,9 +6,10 @@
 //! Gated behind `parse` (the parser is the only span *producer*).
 #![cfg(feature = "parse")]
 
+use rumoca_core::Span;
 use rumoca_ir_galec::ast::{
-    Block, Expression, InterfaceKind, InterfaceVariable, Name, Reference, ScalarType, Span,
-    Spanned, Statement, VariableDeclaration,
+    Block, Expression, InterfaceKind, InterfaceVariable, Name, Reference, ScalarType, Spanned,
+    Statement, VariableDeclaration,
 };
 use rumoca_ir_galec::parse::{GalecParseError, parse};
 use rumoca_ir_galec::print::print_block;

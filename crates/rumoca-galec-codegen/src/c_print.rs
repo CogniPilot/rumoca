@@ -108,6 +108,17 @@ impl<'a> CPrinter<'a> {
                     self.array_assignment(&self.reference(target)?, elements, &mut lines)?;
                     Ok(lines)
                 }
+                // A whole-array copy `x := y` (array target, array-valued
+                // reference, e.g. the `'previous(x)' := x` pre-commit for an
+                // array discrete state): a C array is not assignable with `=`,
+                // so copy its contiguous storage with `memcpy`. Both operands
+                // have equal dimensions (the GALEC type validator enforces it),
+                // so `sizeof(dst)` is the exact copy length.
+                Expression::Ref(source) if self.is_whole_array_target(target) => {
+                    let dst = self.reference(target)?;
+                    let src = self.reference(source)?;
+                    Ok(vec![format!("memcpy({dst}, {src}, sizeof({dst}));")])
+                }
                 scalar => Ok(vec![format!(
                     "{} = {};",
                     self.reference(target)?,
@@ -249,6 +260,20 @@ impl<'a> CPrinter<'a> {
             CBuiltin::RealCast => format!("((double)({}))", arguments[0]),
             CBuiltin::IntegerDivision => format!("({} / {})", arguments[0], arguments[1]),
         })
+    }
+
+    /// Whether `reference` is a whole-array assignment target: a single-part
+    /// `self.x` state reference with NO subscripts whose declaration is an
+    /// array. An indexed element target (`self.x[i]`) or a scalar returns
+    /// `false` (they assign element-wise / scalar with `=`).
+    fn is_whole_array_target(&self, reference: &Reference) -> bool {
+        let Reference::State(parts) = reference else {
+            return false;
+        };
+        let [part] = parts.as_slice() else {
+            return false;
+        };
+        part.subscripts.is_empty() && self.names.is_array(&part.name)
     }
 
     /// `self.x[i]` → `self->x[i-1]` struct member access on the block-state
@@ -455,14 +480,14 @@ mod tests {
         let expr = Expression::Ref(Reference::State(vec![RefPart {
             name: Name::ident("x"),
             subscripts: vec![Expression::Integer(2)],
-            span: rumoca_ir_galec::ast::Span::DUMMY,
+            span: rumoca_core::Span::DUMMY,
         }]));
         assert_eq!(print(&["x"], &expr), "self->x[1]");
 
         let dynamic = Expression::Ref(Reference::State(vec![RefPart {
             name: Name::ident("x"),
             subscripts: vec![state("i")],
-            span: rumoca_ir_galec::ast::Span::DUMMY,
+            span: rumoca_core::Span::DUMMY,
         }]));
         assert_eq!(print(&["x", "i"], &dynamic), "self->x[(self->i - 1)]");
     }

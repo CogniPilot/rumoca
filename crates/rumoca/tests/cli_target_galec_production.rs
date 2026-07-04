@@ -907,7 +907,8 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
         run.status.code()
     );
     assert_eq!(
-        String::from_utf8_lossy(&run.stdout),
+        // Normalize CRLF: Windows text-mode stdio emits `\n` as `\r\n`.
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
         "2.0\n6.0\n14.0\n",
         "three dostep ticks of y := gain * (previous(y) + 1) with gain = 2"
     );

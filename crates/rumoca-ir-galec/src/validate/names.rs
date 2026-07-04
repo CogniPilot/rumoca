@@ -26,6 +26,7 @@ use crate::ast::{
 };
 use crate::builtins::{is_lexically_reserved, is_reserved_name};
 use crate::diagnostic::{GalecError, Location, PathSegment};
+use crate::lexical::plain_identifier_shape_error;
 
 use super::context::{BlockContext, lexeme};
 
@@ -97,7 +98,7 @@ fn check_identifier(
         });
         return;
     }
-    if let Some(reason) = identifier_shape_error(name) {
+    if let Some(reason) = plain_identifier_shape_error(name) {
         diags.push(GalecError::IllegalIdentifier {
             location: location.clone(),
             name: name.to_string(),
@@ -111,18 +112,6 @@ fn check_identifier(
             name: name.to_string(),
         });
     }
-}
-
-fn identifier_shape_error(name: &str) -> Option<&'static str> {
-    let mut chars = name.chars();
-    let first = chars.next()?;
-    if !first.is_ascii_alphabetic() {
-        return Some("must start with an ASCII letter");
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Some("may contain only ASCII letters, digits, and `_`");
-    }
-    None
 }
 
 /// Full `quoted-identifier` grammar check (G-1.21..G-1.24): content is
@@ -216,18 +205,11 @@ fn check_scalarized(content: &str) -> Option<&'static str> {
     None
 }
 
-/// Segment names are `identifier | keyword`: ASCII-letter-first, or the
-/// `__`-prefixed keyword space.
+/// Segment names are `identifier | keyword`: a plain identifier, or the
+/// `__`-prefixed keyword space (whose body is itself a plain identifier).
 fn scalarized_segment_name_error(name: &str) -> Option<&'static str> {
     let body = name.strip_prefix("__").unwrap_or(name);
-    let mut chars = body.chars();
-    let starts_with_letter = chars.next().is_some_and(|c| c.is_ascii_alphabetic());
-    let tail_ok = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if starts_with_letter && tail_ok {
-        None
-    } else {
-        Some("segment is not an identifier or keyword")
-    }
+    plain_identifier_shape_error(body).map(|_| "segment is not an identifier or keyword")
 }
 
 fn is_positive_integer(text: &str) -> bool {

@@ -3,8 +3,9 @@
 //! parenthesized `not` and self-parenthesized if-expressions (T12), and
 //! quoted-identifier printing (T13).
 
+use rumoca_core::Span;
 use rumoca_ir_galec::ast::{
-    BinaryOp, Expression, FunctionCall, IfExpression, Name, RefPart, Reference, Span,
+    BinaryOp, Expression, FunctionCall, IfExpression, Name, RefPart, Reference,
 };
 use rumoca_ir_galec::{GalecError, print_expression};
 

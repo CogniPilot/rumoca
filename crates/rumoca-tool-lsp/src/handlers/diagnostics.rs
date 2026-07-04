@@ -11,6 +11,7 @@ use rumoca_compile::compile::core::{
 };
 use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
+use rumoca_lsp_position::span_to_range;
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;
@@ -414,15 +415,6 @@ fn label_in_file(
         .unwrap_or(false)
 }
 
-fn span_to_range(source: &str, start_byte: usize, end_byte: usize) -> Range {
-    let start = byte_offset_to_position(source, start_byte);
-    let mut end = byte_offset_to_position(source, end_byte);
-    if (end.line < start.line) || (end.line == start.line && end.character <= start.character) {
-        end = Position::new(start.line, start.character.saturating_add(1));
-    }
-    Range { start, end }
-}
-
 fn label_source_text<'a>(
     source: &'a str,
     file_name: &str,
@@ -766,26 +758,6 @@ fn parse_u32_from(bytes: &[u8], mut index: usize) -> Option<(u32, usize)> {
         index += 1;
     }
     Some((value, index))
-}
-
-fn byte_offset_to_position(source: &str, byte_offset: usize) -> Position {
-    let clamped = byte_offset.min(source.len());
-    let mut line = 0u32;
-    let mut col_utf16 = 0u32;
-
-    for (idx, ch) in source.char_indices() {
-        if idx >= clamped {
-            break;
-        }
-        if ch == '\n' {
-            line = line.saturating_add(1);
-            col_utf16 = 0;
-        } else {
-            col_utf16 = col_utf16.saturating_add(ch.len_utf16() as u32);
-        }
-    }
-
-    Position::new(line, col_utf16)
 }
 
 /// Convert a lint message to LSP diagnostic.

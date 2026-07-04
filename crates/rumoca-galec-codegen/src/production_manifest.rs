@@ -556,7 +556,7 @@ mod tests {
                         Dimension::Expr(Expression::Integer(3)),
                     ],
                     range: Default::default(),
-                    span: rumoca_ir_galec::ast::Span::DUMMY,
+                    span: rumoca_core::Span::DUMMY,
                 },
                 start: Some(Expression::Real(0.0)),
             },
@@ -607,6 +607,36 @@ mod tests {
     fn ac_of(package: &AlgorithmCodePackage) -> AlgorithmCodeManifest {
         crate::emit::assemble_manifest(package, b"rendered .alg bytes")
             .expect("AC manifest assembles")
+    }
+
+    /// The GAL-004 post-validation assembly path (`assemble_manifest`, which the
+    /// WASM addon's render path drives via `lower_to_algorithm_code`) must be
+    /// IDENTITY-FREE: a deterministic nil UUID + fixed placeholder timestamp,
+    /// never a minted `Uuid::new_v4` / `now_utc`. This is the host-runnable pin
+    /// for that invariant — a regression to a minted identity makes two
+    /// assemblies differ AND reintroduces the wasm32-only `now_utc` panic (the
+    /// addon has no wasm-target test, so this catches it on the host instead).
+    #[test]
+    fn validation_assembly_is_identity_free_and_deterministic() {
+        use crate::manifest_context::{ManifestId, UtcTimestamp};
+        let package = base_package();
+        let first = ac_of(&package);
+        let second = ac_of(&package);
+        assert_eq!(
+            first.parts().attributes.id,
+            ManifestId::nil(),
+            "assembly must use the nil placeholder UUID, not Uuid::new_v4"
+        );
+        assert_eq!(
+            first.parts().attributes.generation_date_and_time,
+            UtcTimestamp::placeholder(),
+            "assembly must use the fixed placeholder timestamp, not now_utc"
+        );
+        assert_eq!(
+            first.parts().attributes.id,
+            second.parts().attributes.id,
+            "assembly must be deterministic (no minted identity)"
+        );
     }
 
     fn assemble(

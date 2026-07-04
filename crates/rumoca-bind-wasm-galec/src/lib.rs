@@ -15,6 +15,8 @@
 //! the C targets, the embedded C, identity-free (no eFMU container / UUID /
 //! clock, so it is safe on `wasm32-unknown-unknown`).
 
+use std::collections::BTreeMap;
+
 use rumoca_compile::galec::render_galec_sources;
 use rumoca_compile::{Session, SessionConfig};
 use serde_json::{Value, json};
@@ -28,21 +30,27 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-/// Compile Modelica `source`, project the model named `model_name` to GALEC,
-/// and return the rendered artifacts as a JSON string.
+/// Compile the workspace Modelica sources, project the model named
+/// `model_name` to GALEC, and return the rendered artifacts as a JSON string.
 ///
-/// `target` is one of `galec`, `galec-production`, `embedded-c-galec`.
+/// `workspace_sources` is a JSON object mapping each document path to its
+/// Modelica text (`{ "<path>": "<content>", … }`) — the SAME map the core
+/// binding compiles with, so a model spanning several files (imports, a
+/// library, a non-active file) projects to GALEC exactly as it compiles for
+/// every other target. `target` is one of `galec`, `galec-production`,
+/// `embedded-c-galec`.
 ///
 /// Success shape:
 /// ```json
-/// { "ok": true, "target": "<target>", "alg": "<.alg text>",
-///   "c_header": "<.h text or empty>", "c_source": "<.c text or empty>" }
+/// { "ok": true, "target": "<target>", "model_identifier": "<id>",
+///   "alg": "<.alg text>", "c_header": "<.h text or empty>",
+///   "c_source": "<.c text or empty>" }
 /// ```
 /// The `c_header`/`c_source` fields are empty strings for the `galec` target
 /// (Algorithm Code only). Failure shape: `{ "ok": false, "error": "<msg>" }`.
 #[wasm_bindgen]
-pub fn render_galec(source: &str, model_name: &str, target: &str) -> String {
-    let value = match render_galec_impl(source, model_name, target) {
+pub fn render_galec(workspace_sources: &str, model_name: &str, target: &str) -> String {
+    let value = match render_galec_impl(workspace_sources, model_name, target) {
         Ok(value) => value,
         Err(error) => json!({ "ok": false, "error": error }),
     };
@@ -54,16 +62,28 @@ pub fn render_galec(source: &str, model_name: &str, target: &str) -> String {
     })
 }
 
-fn render_galec_impl(source: &str, model_name: &str, target: &str) -> Result<Value, String> {
-    // 1. Compile the source in-memory to the canonical DAE + Flat model
-    //    (mirror the sibling core binding's in-memory Session path).
+fn render_galec_impl(
+    workspace_sources: &str,
+    model_name: &str,
+    target: &str,
+) -> Result<Value, String> {
+    // 1. Load every workspace document into an in-memory Session, then compile
+    //    the requested (resolved) model across all of them — a model defined in
+    //    or importing a non-active file compiles just as the core binding's
+    //    workspace compile does.
+    let documents: BTreeMap<String, String> = serde_json::from_str(workspace_sources)
+        .map_err(|error| format!("invalid workspace sources JSON: {error}"))?;
+    if documents.is_empty() {
+        return Err("no Modelica sources were provided".to_owned());
+    }
     let mut session = Session::new(SessionConfig::default());
-    session
-        .add_document("input.mo", source)
-        .map_err(|error| format!("failed to load source: {error}"))?;
-    let requested = qualify_input_model_name(&session, model_name);
+    for (path, content) in &documents {
+        session
+            .add_document(path, content)
+            .map_err(|error| format!("failed to load `{path}`: {error}"))?;
+    }
     let result = session
-        .compile_model(&requested)
+        .compile_model(model_name)
         .map_err(|error| format!("compilation error: {error}"))?;
 
     // 2. Delegate to the shared identity-free renderer (validates the target,
@@ -76,38 +96,16 @@ fn render_galec_impl(source: &str, model_name: &str, target: &str) -> Result<Val
     Ok(json!({
         "ok": true,
         "target": target,
+        // The file-system-safe identifier the projection and the C `#include`
+        // both use (dots -> underscores). The web layer names the .alg/.h/.c
+        // files with THIS so the generated `#include "<id>.h"` resolves; naming
+        // them by the bare model leaf breaks C compilation for a package-
+        // qualified model (e.g. `MyLib.Demo` -> include `MyLib_Demo.h`).
+        "model_identifier": model_id,
         "alg": sources.alg,
         "c_header": sources.c_header,
         "c_source": sources.c_source,
     }))
-}
-
-/// Qualify a bare model name against the in-memory document's `within` prefix
-/// (mirrors `rumoca-bind-wasm`'s `qualify_input_model_name`): a dotted name is
-/// already qualified, and a bare top-level class in a `within P;` file resolves
-/// to `P.<name>`.
-fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
-    if model_name.contains('.') {
-        return model_name.to_string();
-    }
-    let Some(doc) = session.get_document("input.mo") else {
-        return model_name.to_string();
-    };
-    let Some(parsed) = doc.parsed().or_else(|| doc.recovered()) else {
-        return model_name.to_string();
-    };
-    if !parsed.classes.contains_key(model_name) {
-        return model_name.to_string();
-    }
-    let within = parsed
-        .within
-        .as_ref()
-        .map(ToString::to_string)
-        .filter(|prefix| !prefix.is_empty());
-    within.map_or_else(
-        || model_name.to_string(),
-        |prefix| format!("{prefix}.{model_name}"),
-    )
 }
 
 #[cfg(test)]
@@ -138,10 +136,16 @@ end GalecWasmDemo;
         serde_json::from_str(json).expect("render_galec must return valid JSON")
     }
 
+    /// A single-document workspace-sources map (the JSON object `render_galec`
+    /// takes): `{ "<path>": "<content>" }`.
+    fn workspace(path: &str, source: &str) -> String {
+        json!({ path: source }).to_string()
+    }
+
     #[test]
     fn galec_target_returns_alg_only() {
         let value = parse(&render_galec(
-            DISCRETE_SOURCE,
+            &workspace("input.mo", DISCRETE_SOURCE),
             "GalecWasmDemo",
             GALEC_TARGET,
         ));
@@ -160,7 +164,7 @@ end GalecWasmDemo;
     #[test]
     fn embedded_c_target_renders_c_with_not_a_container_header() {
         let value = parse(&render_galec(
-            DISCRETE_SOURCE,
+            &workspace("input.mo", DISCRETE_SOURCE),
             "GalecWasmDemo",
             EMBEDDED_C_GALEC_TARGET,
         ));
@@ -178,7 +182,7 @@ end GalecWasmDemo;
     #[test]
     fn production_target_renders_c_with_production_conformance_header() {
         let value = parse(&render_galec(
-            DISCRETE_SOURCE,
+            &workspace("input.mo", DISCRETE_SOURCE),
             "GalecWasmDemo",
             GALEC_PRODUCTION_TARGET,
         ));
@@ -201,12 +205,69 @@ end GalecWasmDemo;
 
     #[test]
     fn unknown_target_is_a_loud_error() {
-        let value = parse(&render_galec(DISCRETE_SOURCE, "GalecWasmDemo", "fmi3"));
+        let value = parse(&render_galec(
+            &workspace("input.mo", DISCRETE_SOURCE),
+            "GalecWasmDemo",
+            "fmi3",
+        ));
         assert_eq!(value["ok"], false);
         assert!(
             value["error"]
                 .as_str()
                 .is_some_and(|error| error.contains("not a GALEC codegen target")),
+            "{value}"
+        );
+    }
+
+    /// A model spanning several workspace files projects to GALEC exactly as it
+    /// compiles for every other target — the addon loads all documents, not
+    /// just one (regression for the single-active-document gap).
+    #[test]
+    fn model_spanning_multiple_files_projects() {
+        let library = r#"
+within Demo;
+model Gain
+  parameter Real k = 2.0;
+end Gain;
+"#;
+        let top = r#"
+within Demo;
+model Counter
+  extends Demo.Gain;
+  constant Real samplePeriod = 0.001;
+  discrete Integer count(start = 0);
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    count = pre(count) + 1;
+    y = k * count;
+  end when;
+end Counter;
+"#;
+        let sources = json!({
+            "Demo/Gain.mo": library,
+            "Demo/Counter.mo": top,
+        })
+        .to_string();
+        let value = parse(&render_galec(&sources, "Demo.Counter", GALEC_TARGET));
+        assert_eq!(value["ok"], true, "multi-file model must project: {value}");
+        assert_eq!(value["model_identifier"], "Demo_Counter");
+        assert!(
+            value["alg"]
+                .as_str()
+                .is_some_and(|alg| alg.contains("DoStep")),
+            "{value}"
+        );
+    }
+
+    #[test]
+    fn empty_workspace_is_a_loud_error() {
+        let value = parse(&render_galec("{}", "GalecWasmDemo", GALEC_TARGET));
+        assert_eq!(value["ok"], false);
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("no Modelica sources")),
             "{value}"
         );
     }
@@ -221,7 +282,11 @@ equation
   der(x) = -k * x;
 end ContinuousDemo;
 "#;
-        let value = parse(&render_galec(source, "ContinuousDemo", GALEC_TARGET));
+        let value = parse(&render_galec(
+            &workspace("input.mo", source),
+            "ContinuousDemo",
+            GALEC_TARGET,
+        ));
         assert_eq!(value["ok"], false);
         assert!(
             value["error"]

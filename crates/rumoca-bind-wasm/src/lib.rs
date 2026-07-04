@@ -612,30 +612,11 @@ fn singleton_session_lock() -> Result<MutexGuard<'static, Option<Session>>, JsVa
     }
 }
 
+/// Qualify a bare model name against the single in-memory `input.mo` document
+/// the WASM bindings load, delegating to the shared [`Session::qualify_model_name`]
+/// rule so the `within`-qualification logic lives in one place.
 pub(crate) fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
-    if model_name.contains('.') {
-        return model_name.to_string();
-    }
-
-    let Some(doc) = session.get_document("input.mo") else {
-        return model_name.to_string();
-    };
-    let Some(parsed) = doc.parsed().or(doc.recovered()) else {
-        return model_name.to_string();
-    };
-    if !parsed.classes.contains_key(model_name) {
-        return model_name.to_string();
-    }
-
-    let within = parsed
-        .within
-        .as_ref()
-        .map(ToString::to_string)
-        .filter(|prefix| !prefix.is_empty());
-    within.map_or_else(
-        || model_name.to_string(),
-        |prefix| format!("{prefix}.{model_name}"),
-    )
+    session.qualify_model_name("input.mo", model_name)
 }
 
 fn compile_source_in_session(

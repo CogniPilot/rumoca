@@ -226,6 +226,40 @@ impl Session {
         self.documents.get(uri).map(Arc::as_ref)
     }
 
+    /// Qualify a bare model name against a document's `within` prefix: a name
+    /// that is already dotted is returned unchanged; a bare top-level class
+    /// declared in a file with `within P;` resolves to `P.<name>`; anything
+    /// the document does not declare is returned unchanged. Falls back to the
+    /// recovered parse so partial input still resolves.
+    ///
+    /// This is the single home for the `within`-qualification rule the WASM
+    /// bindings need (each loads one in-memory document); the Modelica and
+    /// GALEC binding crates call this instead of keeping their own copies.
+    #[must_use]
+    pub fn qualify_model_name(&self, document_uri: &str, model_name: &str) -> String {
+        if model_name.contains('.') {
+            return model_name.to_string();
+        }
+        let Some(parsed) = self
+            .get_document(document_uri)
+            .and_then(|doc| doc.parsed().or_else(|| doc.recovered()))
+        else {
+            return model_name.to_string();
+        };
+        if !parsed.classes.contains_key(model_name) {
+            return model_name.to_string();
+        }
+        parsed
+            .within
+            .as_ref()
+            .map(ToString::to_string)
+            .filter(|prefix| !prefix.is_empty())
+            .map_or_else(
+                || model_name.to_string(),
+                |prefix| format!("{prefix}.{model_name}"),
+            )
+    }
+
     /// Return structured parse diagnostics and a source map for one document.
     pub fn document_parse_diagnostics_with_source_map(
         &self,

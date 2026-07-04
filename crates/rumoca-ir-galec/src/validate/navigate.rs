@@ -10,8 +10,10 @@
 use rumoca_core::Span;
 
 use super::context::{
-    BlockContext, Callee, FunctionScope, Resolved, lexeme, reference_parts, resolve, resolve_call,
+    BlockContext, Callee, FunctionScope, Resolved, lexeme, reference_parts, resolve_call,
+    resolve_prefix,
 };
+use super::spans::{non_dummy, span_contains};
 use crate::ast::{
     Block, Condition, Expression, FunctionCall, LimitTarget, Reference, Statement, TypeRef,
     VariableDeclaration,
@@ -182,20 +184,24 @@ fn reference_at<'a>(
             }
         }
     }
-    if !parts.iter().any(|part| span_contains(part.span, offset)) {
-        return None;
-    }
-    let reference_span = union_spans(parts.iter().map(|part| part.span));
-    resolve_reference(ctx, scope, reference, reference_span)
+    // Resolve the PREFIX ending at the part under the cursor: hovering `comp`
+    // in `self.comp.field` resolves `self.comp` (the compartment component),
+    // not the leaf `field`. The hover range is that part's own span, not the
+    // union over the whole reference.
+    let index = parts
+        .iter()
+        .position(|part| span_contains(part.span, offset))?;
+    resolve_reference(ctx, scope, reference, index, parts[index].span)
 }
 
 fn resolve_reference<'a>(
     ctx: &BlockContext<'a>,
     scope: &FunctionScope<'a>,
     reference: &'a Reference,
+    part_index: usize,
     reference_span: Span,
 ) -> Option<SymbolInfo> {
-    let resolved = resolve(ctx, scope, reference).ok()?;
+    let resolved = resolve_prefix(ctx, scope, reference, part_index + 1).ok()?;
     let (definition_span, hover) = match resolved.target {
         Resolved::Entity { decl, .. } => {
             (non_dummy(decl.span), describe_var(decl, "block variable"))
@@ -264,25 +270,4 @@ fn type_string(decl: &VariableDeclaration) -> String {
     } else {
         format!("{base}[{}]", decl.dimensions.len())
     }
-}
-
-fn span_contains(span: Span, offset: usize) -> bool {
-    !span.is_dummy() && offset >= span.start.0 && offset < span.end.0
-}
-
-fn non_dummy(span: Span) -> Option<Span> {
-    (!span.is_dummy()).then_some(span)
-}
-
-/// The smallest span covering all of `spans` (ignoring dummies).
-fn union_spans(spans: impl Iterator<Item = Span>) -> Span {
-    spans.fold(Span::DUMMY, |acc, span| {
-        if acc.is_dummy() {
-            span
-        } else if span.is_dummy() {
-            acc
-        } else {
-            Span::new(acc.source, acc.start.min(span.start), acc.end.max(span.end))
-        }
-    })
 }

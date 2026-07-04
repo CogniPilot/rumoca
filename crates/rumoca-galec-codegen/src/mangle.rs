@@ -40,20 +40,9 @@
 
 use rumoca_ir_galec::ast::Name;
 use rumoca_ir_galec::builtins::is_reserved_name;
+use rumoca_ir_galec::is_legal_plain_identifier;
 
 use crate::diagnostic::GalecTargetError;
-
-/// True when `name` is lexically a legal *plain* GALEC identifier (ASCII
-/// letter first, ASCII alphanumeric/underscore continuation). Reservedness
-/// is a separate question — see [`galec_variable_name`].
-#[must_use]
-pub fn is_legal_plain_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
 
 /// Reject content that cannot form a single quoted-identifier lexeme.
 fn check_quotable(name: &str) -> Result<(), &'static str> {

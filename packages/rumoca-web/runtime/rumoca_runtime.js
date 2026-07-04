@@ -172,9 +172,9 @@ export async function diffsolAvailable(pkgBase) {
 // instead of the core module's DAE-JSON `render_target` path.
 export async function renderGalecFilesWithRuntime({
   pkgBase = './',
-  source,
+  workspaceSources,
   modelName,
   target,
 }) {
-  return renderGalecTargetFiles(pkgBase, source, modelName, target);
+  return renderGalecTargetFiles(pkgBase, workspaceSources, modelName, target);
 }

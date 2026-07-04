@@ -19,5 +19,12 @@ miette = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+# Test-only: pins this crate's manifest-template filter copies (xs_double_str /
+# xml_escape_str) against the canonical rumoca-galec-codegen implementations the
+# shipping `galec` render path uses (SPEC_0034 contract §6 sanctions the
+# duplication across the crate boundary; this proves the copies stay in sync).
+rumoca-galec-codegen = { workspace = true }
+
 [lints]
 workspace = true
