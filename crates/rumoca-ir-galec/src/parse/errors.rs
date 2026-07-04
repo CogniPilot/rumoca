@@ -64,6 +64,31 @@ pub enum GalecParseError {
 }
 
 impl GalecParseError {
+    /// Stable diagnostic code (SPEC_0008), reserved range EG050–EG069 —
+    /// symmetric with [`crate::diagnostic::GalecError::code`].
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Syntax { .. } => "EG050",
+            Self::TerminatorMismatch { .. } => "EG051",
+            Self::MethodHasParameters { .. } => "EG052",
+            Self::MissingMethod { .. } => "EG053",
+            Self::DuplicateMethod { .. } => "EG054",
+            Self::UnknownPredefinedSignal { .. } => "EG055",
+            Self::NoAstProduced => "EG056",
+        }
+    }
+
+    /// Local byte offsets `(start, end)` of the error when known (syntax and
+    /// terminator-mismatch errors carry one; the rest are whole-construct).
+    #[must_use]
+    pub const fn span(&self) -> Option<(usize, usize)> {
+        match self {
+            Self::Syntax { span, .. } | Self::TerminatorMismatch { span, .. } => *span,
+            _ => None,
+        }
+    }
+
     /// Construct a `Syntax` error with just a message (no expected set / span).
     #[must_use]
     pub fn syntax(message: impl Into<String>) -> Self {

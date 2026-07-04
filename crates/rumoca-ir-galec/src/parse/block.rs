@@ -446,10 +446,14 @@ fn check_terminator(header: &Name, footer: &Name) -> anyhow::Result<()> {
     if name_text(header) == name_text(footer) {
         Ok(())
     } else {
+        // Position the diagnostic at the offending `end <Name>` footer, whose
+        // span is available now that `Name` carries one (D11) — not a whole-
+        // construct fallback.
+        let span = footer.span();
         Err(GalecParseError::TerminatorMismatch {
             expected: name_text(header),
             found: name_text(footer),
-            span: None,
+            span: (!span.is_dummy()).then_some((span.start.0, span.end.0)),
         }
         .into_anyhow())
     }
