@@ -1,3 +1,8 @@
+//! SPEC_0021 file-size exception: Flat-to-DAE conversion still owns reference
+//! metadata rehydration, equation conversion, and discrete update rewrites in
+//! one module while DAE admission is stabilizing. split plan: move reference
+//! metadata resolution and discrete update rewriting into focused submodules.
+
 use crate::errors::ToDaeError;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::ExpressionRewriter;
@@ -934,7 +939,7 @@ impl DaeReferenceScope {
         {
             return self.reference_from_metadata(target, target.as_str(), metadata, span);
         }
-        if let Some(reference) = self.overexpanded_record_path_reference(name.as_str(), span)? {
+        if let Some(reference) = self.overexpanded_record_reference(name, span)? {
             return Ok(reference);
         }
         if name.has_structure() {
@@ -1048,21 +1053,31 @@ impl DaeReferenceScope {
         }
     }
 
-    fn overexpanded_record_path_reference(
+    fn overexpanded_record_reference(
         &self,
-        rendered: &str,
+        name: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
-        let mut path = rendered;
-        while let Some((prefix, field)) = path.rsplit_once('.') {
-            if !prefix.ends_with(field) {
-                return self.penultimate_field_reference(path, span);
+        let Some(component_ref) = name.component_ref() else {
+            return Ok(None);
+        };
+        let mut current = component_ref.clone();
+        while current.parts.len() > 1 {
+            let field = current.parts.last().map(|part| part.ident.as_str());
+            let prefix_ends_with_field = current
+                .parts
+                .get(current.parts.len() - 2)
+                .zip(field)
+                .is_some_and(|(prefix_leaf, field)| prefix_leaf.ident == field);
+            if !prefix_ends_with_field {
+                return self.penultimate_field_reference(&current, span);
             }
-            path = prefix;
-            if let Some(reference) = self.reference_for_known_rendered_path(path, span)? {
+            current.parts.pop();
+            current.def_id = None;
+            if let Some(reference) = self.reference_for_known_component_ref(&current, span)? {
                 return Ok(Some(reference));
             }
-            if let Some(reference) = self.penultimate_field_reference(path, span)? {
+            if let Some(reference) = self.penultimate_field_reference(&current, span)? {
                 return Ok(Some(reference));
             }
         }
@@ -1071,23 +1086,36 @@ impl DaeReferenceScope {
 
     fn penultimate_field_reference(
         &self,
-        rendered: &str,
+        component_ref: &rumoca_core::ComponentReference,
         span: rumoca_core::Span,
     ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
-        let Some((prefix, leaf)) = rendered.rsplit_once('.') else {
+        if component_ref.parts.len() < 3 {
             return Ok(None);
-        };
-        let Some((base, _)) = prefix.rsplit_once('.') else {
-            return Ok(None);
-        };
-        let candidate = format!("{base}.{leaf}");
-        if let Some(reference) = self.reference_for_known_rendered_path(&candidate, span)? {
+        }
+        let mut candidate = component_ref.clone();
+        let penultimate_idx = candidate.parts.len() - 2;
+        candidate.parts.remove(penultimate_idx);
+        candidate.def_id = None;
+        if let Some(reference) = self.reference_for_known_component_ref(&candidate, span)? {
             return Ok(Some(reference));
         }
-        if candidate != rendered {
-            return self.overexpanded_record_path_reference(&candidate, span);
+        if candidate.parts.len() != component_ref.parts.len() {
+            let candidate_ref = rumoca_core::Reference::from_component_reference(candidate);
+            return self.overexpanded_record_reference(&candidate_ref, span);
         }
         Ok(None)
+    }
+
+    fn reference_for_known_component_ref(
+        &self,
+        component_ref: &rumoca_core::ComponentReference,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+        let target = component_ref.to_var_name();
+        if let Some(reference) = self.reference_for_known_rendered_path(target.as_str(), span)? {
+            return Ok(Some(reference));
+        }
+        self.indexed_field_variant_reference(component_ref, span)
     }
 
     fn reference_for_known_rendered_path(
@@ -1125,26 +1153,39 @@ impl DaeReferenceScope {
                 .reference_from_metadata(&target, rendered, &metadata, span)
                 .map(Some);
         }
-        if let Some((base, field)) = rendered.rsplit_once('.') {
-            let indexed_base_prefix = format!("{base}[");
-            let indexed_field_suffix = format!("].{field}");
-            if let Some((_, leaf_metadata)) = self.variables.iter().find(|(name, _)| {
-                let name = name.as_str();
-                name.starts_with(&indexed_base_prefix) && name.contains(&indexed_field_suffix)
-            }) {
-                let metadata = DaeReferenceMetadata {
-                    component_ref: Some(rumoca_core::ComponentReference::from_flat_segments(
-                        rendered,
-                        leaf_metadata.source_span,
-                        None,
-                    )),
-                    origin: dae::VariableOrigin::Generated,
-                    source_span: leaf_metadata.source_span,
-                };
-                return self
-                    .reference_from_metadata(&target, rendered, &metadata, span)
-                    .map(Some);
-            }
+        Ok(None)
+    }
+
+    fn indexed_field_variant_reference(
+        &self,
+        component_ref: &rumoca_core::ComponentReference,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+        let Some(field) = component_ref.parts.last() else {
+            return Ok(None);
+        };
+        if component_ref.parts.len() < 2 {
+            return Ok(None);
+        }
+        let mut base_ref = component_ref.clone();
+        base_ref.parts.pop();
+        base_ref.def_id = None;
+        let base = base_ref.to_var_name();
+        let indexed_base_prefix = format!("{}[", base.as_str());
+        let indexed_field_suffix = format!("].{}", field.ident);
+        if let Some((_, leaf_metadata)) = self.variables.iter().find(|(name, _)| {
+            let name = name.as_str();
+            name.starts_with(&indexed_base_prefix) && name.contains(&indexed_field_suffix)
+        }) {
+            let target = component_ref.to_var_name();
+            let metadata = DaeReferenceMetadata {
+                component_ref: Some(component_ref.clone()),
+                origin: dae::VariableOrigin::Generated,
+                source_span: leaf_metadata.source_span,
+            };
+            return self
+                .reference_from_metadata(&target, target.as_str(), &metadata, span)
+                .map(Some);
         }
         Ok(None)
     }
@@ -1882,7 +1923,13 @@ mod tests {
         dae.continuous.equations.push(dae::Equation {
             lhs: None,
             rhs: rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase.phase"),
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::ComponentReference::from_flat_segments(
+                        "pipe.flowModel.states.phase.phase.phase",
+                        span,
+                        None,
+                    ),
+                ),
                 subscripts: Vec::new(),
                 span,
             },
@@ -1923,7 +1970,13 @@ mod tests {
         dae.continuous.equations.push(dae::Equation {
             lhs: None,
             rhs: rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase.phase"),
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::ComponentReference::from_flat_segments(
+                        "pipe.flowModel.states.phase.phase.phase",
+                        span,
+                        None,
+                    ),
+                ),
                 subscripts: Vec::new(),
                 span,
             },
@@ -1964,7 +2017,13 @@ mod tests {
         dae.continuous.equations.push(dae::Equation {
             lhs: None,
             rhs: rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("pipe.flowModel.states.phase.phase.h"),
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::ComponentReference::from_flat_segments(
+                        "pipe.flowModel.states.phase.phase.h",
+                        span,
+                        None,
+                    ),
+                ),
                 subscripts: Vec::new(),
                 span,
             },

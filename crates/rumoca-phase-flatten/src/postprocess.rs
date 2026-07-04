@@ -583,10 +583,7 @@ impl KnownFlatVars {
         if !leaf_name.starts_with(&prefix) {
             return None;
         }
-        let span = leaf_ref
-            .as_ref()
-            .map(|reference| reference.span)
-            .unwrap_or(rumoca_core::Span::DUMMY);
+        let span = leaf_ref.as_ref()?.span;
         Some(rumoca_core::ComponentReference::from_flat_segments(
             path, span, None,
         ))
@@ -764,7 +761,7 @@ fn collapse_repeated_field_tail_to_known_var(
     known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
     let mut path = candidate;
-    while let Some((prefix, field)) = path.rsplit_once('.') {
+    while let Some((prefix, field)) = rendered_path_last_segment(path) {
         if !prefix.ends_with(field) {
             return collapse_penultimate_field_to_known_var(path, span, known_flat_vars);
         }
@@ -831,8 +828,8 @@ fn collapse_penultimate_field_to_known_var(
     span: rumoca_core::Span,
     known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
-    let (prefix, leaf) = path.rsplit_once('.')?;
-    let (base, _) = prefix.rsplit_once('.')?;
+    let (prefix, leaf) = rendered_path_last_segment(path)?;
+    let (base, _) = rendered_path_last_segment(prefix)?;
     let candidate = format!("{base}.{leaf}");
     known_path_expression(&candidate, span, known_flat_vars)
 }
@@ -894,13 +891,26 @@ fn known_path_expression(
 }
 
 fn alternate_array_field_path(path: &str) -> Option<String> {
-    let (base, field) = path.rsplit_once('.')?;
+    let (base, field) = rendered_path_last_segment(path)?;
     if !base.ends_with(']') {
         return None;
     }
     let bracket_start = base.rfind('[')?;
     let (array_base, suffix) = base.split_at(bracket_start);
     Some(format!("{array_base}.{field}{suffix}"))
+}
+
+fn rendered_path_last_segment(path: &str) -> Option<(&str, &str)> {
+    let mut bracket_depth = 0usize;
+    for (idx, byte) in path.bytes().enumerate().rev() {
+        match byte {
+            b']' => bracket_depth += 1,
+            b'[' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => return Some((&path[..idx], &path[idx + 1..])),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn field_access_flat_path(base: &rumoca_core::Expression, field: &str) -> Option<String> {

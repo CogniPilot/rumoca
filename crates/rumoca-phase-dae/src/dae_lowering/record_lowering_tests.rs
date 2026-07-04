@@ -17,6 +17,16 @@ fn var_ref(name: &str, span: Span) -> rumoca_core::Expression {
     }
 }
 
+fn structured_var_ref(name: &str, span: Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(
+            rumoca_core::ComponentReference::from_flat_segments(name, span, None),
+        ),
+        subscripts: vec![],
+        span,
+    }
+}
+
 fn record_constructor() -> rumoca_core::Function {
     let mut constructor = rumoca_core::Function::new("Pkg.Record", test_span(1));
     constructor.is_constructor = true;
@@ -409,7 +419,7 @@ fn dae_record_param_lowering_infers_fields_from_already_lowered_body() {
 fn dae_record_arg_expansion_projects_overexpanded_record_field_actual_to_base() {
     let mut out = Vec::new();
     expand_dae_record_arg(
-        &var_ref("pipe.flowModel.states.phase", test_span(1)),
+        &structured_var_ref("pipe.flowModel.states.phase", test_span(1)),
         &[
             "phase".to_string(),
             "h".to_string(),

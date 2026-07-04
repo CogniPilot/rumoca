@@ -642,20 +642,18 @@ fn record_arg_projection_base_name(
     name: &rumoca_core::Reference,
     fields: &[String],
 ) -> Option<rumoca_core::Reference> {
-    let terminal = name.as_str().rsplit('.').next()?;
+    let component_ref = name.component_ref()?;
+    let terminal = component_ref.last_ident()?;
     if !fields.iter().any(|field| field == terminal) {
         return None;
     }
-    if let Some(component_ref) = name.component_ref()
-        && component_ref.parts.len() > 1
-    {
+    if component_ref.parts.len() > 1 {
         let mut base_ref = component_ref.clone();
         base_ref.parts.pop();
         base_ref.def_id = None;
         return Some(rumoca_core::Reference::from_component_reference(base_ref));
     }
-    let (base, _) = name.as_str().rsplit_once('.')?;
-    Some(rumoca_core::Reference::new(base.to_string()))
+    None
 }
 
 /// Returns true if the expression is obviously a scalar (not a record type).
