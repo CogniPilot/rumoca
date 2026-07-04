@@ -109,6 +109,7 @@ pub(crate) fn canonicalize_varrefs_via_instantiated_def_ids(flat: &mut flat::Mod
 struct DefIdVarRefIndex {
     by_def_id: HashMap<rumoca_core::DefId, Vec<IndexedVarRef>>,
     by_leaf: HashMap<String, Vec<IndexedVarRef>>,
+    aggregate_projection_refs: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -122,12 +123,16 @@ impl DefIdVarRefIndex {
     fn build(flat: &flat::Model) -> Self {
         let mut by_def_id: HashMap<rumoca_core::DefId, Vec<IndexedVarRef>> = HashMap::new();
         let mut by_leaf: HashMap<String, Vec<IndexedVarRef>> = HashMap::new();
+        let mut aggregate_projection_counts: HashMap<String, usize> = HashMap::new();
         for (name, var) in &flat.variables {
             let indexed = indexed_var_ref(name, var);
             by_leaf
                 .entry(indexed_var_leaf(name, var).to_string())
                 .or_default()
                 .push(indexed.clone());
+            if let Some(projection) = aggregate_projection_ref(name.as_str()) {
+                *aggregate_projection_counts.entry(projection).or_insert(0) += 1;
+            }
             if let Some(def_id) = var.component_ref.as_ref().and_then(|comp| comp.def_id) {
                 push_indexed_candidate(&mut by_def_id, def_id, indexed.clone());
                 if let Some(ancestry) = flat.symbol_ancestry.get(&def_id) {
@@ -137,7 +142,15 @@ impl DefIdVarRefIndex {
                 }
             }
         }
-        Self { by_def_id, by_leaf }
+        let aggregate_projection_refs = aggregate_projection_counts
+            .into_iter()
+            .filter_map(|(projection, count)| (count > 1).then_some(projection))
+            .collect();
+        Self {
+            by_def_id,
+            by_leaf,
+            aggregate_projection_refs,
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -157,6 +170,12 @@ impl DefIdVarRefIndex {
             if known_variables.contains(structured.as_str()) {
                 return (structured.as_str() != raw).then_some(structured);
             }
+            if self.aggregate_projection_refs.contains(structured.as_str()) {
+                return (structured.as_str() != raw).then_some(structured);
+            }
+        }
+        if self.aggregate_projection_refs.contains(raw) {
+            return None;
         }
         if known_variables.contains(raw) {
             return None;
@@ -198,6 +217,40 @@ impl DefIdVarRefIndex {
         }
         None
     }
+}
+
+pub(super) fn aggregate_projection_ref(name: &str) -> Option<String> {
+    let mut projection = String::with_capacity(name.len());
+    let mut depth = 0i32;
+    let mut group_start = None;
+    let mut indices = 0usize;
+
+    for (idx, ch) in name.char_indices() {
+        match ch {
+            '[' => {
+                if depth == 0 {
+                    group_start = Some(idx + 1);
+                }
+                depth += 1;
+            }
+            ']' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    name[group_start?..idx].trim().parse::<i64>().ok()?;
+                    indices += 1;
+                    group_start = None;
+                }
+            }
+            _ if depth == 0 => projection.push(ch),
+            _ => {}
+        }
+    }
+
+    (depth == 0 && indices == 1 && !projection.is_empty() && projection != name)
+        .then_some(projection)
 }
 
 fn push_indexed_candidate(
@@ -445,3 +498,83 @@ impl ExpressionRewriter for DefIdVarRefCanonicalizer<'_> {
 }
 
 impl StatementRewriter for DefIdVarRefCanonicalizer<'_> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{ComponentRefPart, ComponentReference, DefId, Reference, Span, VarName};
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("phase_flatten_postprocess_def_id_source.mo"),
+            0,
+            1,
+        )
+    }
+
+    fn component_ref(path: &[&str], def_id: DefId) -> ComponentReference {
+        ComponentReference {
+            local: false,
+            span: test_span(),
+            parts: path
+                .iter()
+                .map(|part| ComponentRefPart {
+                    ident: (*part).to_string(),
+                    span: test_span(),
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id: Some(def_id),
+        }
+    }
+
+    fn variable(name: &str, def_id: DefId) -> flat::Variable {
+        let mut var = flat::Variable::empty_with_span(test_span());
+        var.name = VarName::new(name);
+        var.component_ref = Some(ComponentReference::from_flat_segments(
+            name,
+            test_span(),
+            Some(def_id),
+        ));
+        var
+    }
+
+    #[test]
+    fn aggregate_array_member_reference_is_not_rewritten_to_same_leaf_parent_var() {
+        let omega_def = DefId::new(7);
+        let mut flat = flat::Model::new();
+        flat.add_variable(
+            VarName::new("vehicle.omega"),
+            variable("vehicle.omega", omega_def),
+        );
+        flat.add_variable(
+            VarName::new("vehicle.motor[1].omega"),
+            variable("vehicle.motor[1].omega", omega_def),
+        );
+        flat.add_variable(
+            VarName::new("vehicle.motor[2].omega"),
+            variable("vehicle.motor[2].omega", omega_def),
+        );
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::VarRef {
+                name: Reference::from_component_reference(component_ref(
+                    &["vehicle", "motor", "omega"],
+                    omega_def,
+                )),
+                subscripts: Vec::new(),
+                span: test_span(),
+            },
+            test_span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: "vehicle".to_string(),
+            },
+        ));
+
+        canonicalize_varrefs_via_instantiated_def_ids(&mut flat);
+
+        let rumoca_core::Expression::VarRef { name, .. } = &flat.equations[0].residual else {
+            panic!("expected aggregate var ref to remain a var ref");
+        };
+        assert_eq!(name.as_str(), "vehicle.motor.omega");
+    }
+}

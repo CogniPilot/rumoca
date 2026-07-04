@@ -302,6 +302,40 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
 }
 
 #[test]
+fn collapse_index_refs_preserves_array_member_aggregate_projection() {
+    let mut model = flat::Model::new();
+    for name in [
+        "vehicle.omega",
+        "vehicle.motor[1].omega",
+        "vehicle.motor[2].omega",
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+    model.add_equation(flat::Equation::new(
+        spanned_var_ref("vehicle.motor.omega"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "vehicle".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "vehicle.motor.omega" && subscripts.is_empty()
+    ));
+}
+
+#[test]
 fn collapse_index_refs_collapses_repeated_record_field_tail_to_known_var() {
     let mut model = flat::Model::new();
     model.add_variable(

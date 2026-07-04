@@ -2,9 +2,11 @@
 // substitution, annotations, and scoped parameter preservation. split plan:
 // move annotation substitution and scoped parameter rewrites into submodules.
 use super::*;
+use def_id::aggregate_projection_ref;
 use rumoca_core::{
     ExpressionRewriter, FallibleExpressionRewriter, FallibleStatementRewriter, StatementRewriter,
 };
+use std::collections::HashMap;
 #[path = "postprocess_record_alias.rs"]
 mod record_alias;
 use record_alias::*;
@@ -534,20 +536,38 @@ fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &Kno
 /// only flat variables are the `.re`/`.im` leaves).
 struct KnownFlatVars {
     names: std::collections::BTreeMap<String, Option<rumoca_core::ComponentReference>>,
+    aggregate_projection_refs: HashSet<String>,
 }
 
 impl KnownFlatVars {
     fn build(flat: &flat::Model) -> Self {
+        let mut aggregate_projection_counts: HashMap<String, usize> = HashMap::new();
         let names = flat
             .variables
             .iter()
-            .map(|(name, var)| (name.as_str().to_string(), var.component_ref.clone()))
+            .map(|(name, var)| {
+                if let Some(projection) = aggregate_projection_ref(name.as_str()) {
+                    *aggregate_projection_counts.entry(projection).or_insert(0) += 1;
+                }
+                (name.as_str().to_string(), var.component_ref.clone())
+            })
             .collect();
-        Self { names }
+        let aggregate_projection_refs = aggregate_projection_counts
+            .into_iter()
+            .filter_map(|(projection, count)| (count > 1).then_some(projection))
+            .collect();
+        Self {
+            names,
+            aggregate_projection_refs,
+        }
     }
 
     fn contains(&self, name: &str) -> bool {
         self.names.contains_key(name)
+    }
+
+    fn is_aggregate_projection_ref(&self, name: &str) -> bool {
+        self.aggregate_projection_refs.contains(name)
     }
 
     /// Structured reference for a scalarized record base: `path` names no flat
@@ -603,6 +623,9 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
         } = expr
             && subscripts.is_empty()
             && !self.known_flat_vars.contains(name.as_str())
+            && !self
+                .known_flat_vars
+                .is_aggregate_projection_ref(name.as_str())
             && let Some(collapsed) = collapse_repeated_field_tail_to_known_var(
                 name.as_str(),
                 *span,
