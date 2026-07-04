@@ -26,6 +26,18 @@ test("BDF simulations sync workspace sources before the diffsol runtime path", (
   assert.doesNotMatch(bdfBranch, /simulate_model_with_workspace_sources/);
 });
 
+test("GALEC codegen routes through the lazy addon, not the core render_target", () => {
+  const renderGalec = workerSource.slice(
+    workerSource.indexOf("case 'rumoca.workspace.renderGalec':"),
+    workerSource.indexOf("default:", workerSource.indexOf("case 'rumoca.workspace.renderGalec':")),
+  );
+  assert.match(renderGalec, /renderGalecFilesWithRuntime/);
+  assert.match(renderGalec, /pkgBase: '\.\/'/);
+  // GALEC must never reach the core DAE-JSON render_target path.
+  assert.doesNotMatch(renderGalec, /render_target\(/);
+  assert.match(workerSource, /import \{[\s\S]*renderGalecFilesWithRuntime,[\s\S]*\} from '\.\/rumoca_runtime\.js'/);
+});
+
 test("worker exposes effective workspace source-root command", () => {
   assert.match(workerSource, /workspace_effective_source_roots = mod\.workspace_effective_source_roots/);
   assert.match(workerSource, /case 'rumoca\.workspace\.effectiveSourceRoots':/);

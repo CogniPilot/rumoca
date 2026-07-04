@@ -421,6 +421,23 @@ function collectCustomCodegenTarget(targetPath) {
     return { manifest, templates };
 }
 
+// GALEC codegen targets (all ir = "dae") are served by the SEPARATE, lazily
+// loaded GALEC addon — never the core render_target/DAE-JSON path, which drops
+// the flat model the projection needs. The worker loads the addon on demand.
+const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+
+async function renderGalecCodegenSelection(modelName, source, target) {
+    const rendered = await sendWorkspaceCommand('rumoca.workspace.renderGalec', {
+        source,
+        modelName,
+        target,
+    });
+    if (!rendered || !Array.isArray(rendered.files)) {
+        throw new Error('GALEC codegen renderer did not return files.');
+    }
+    return rendered.files;
+}
+
 async function renderCodegenSelection(modelName, daeJson, templateSelection) {
     let manifest = '';
     let templates = {};
@@ -3692,8 +3709,17 @@ async function createCodegenRunForModel(modelName) {
     try {
         await ensureBuiltInCodegenTemplatesLoaded();
         const templateSelection = await resolveCodegenTemplateSelection(nextModel);
-        const daeJson = JSON.stringify(result.dae_native);
-        const renderedFiles = await renderCodegenSelection(nextModel, daeJson, templateSelection);
+        let renderedFiles;
+        if (GALEC_CODEGEN_TARGETS.has(templateSelection.target)) {
+            const source = trimMaybeString(result.source);
+            if (!source) {
+                throw new Error('GALEC code generation needs the Modelica source; recompile the model.');
+            }
+            renderedFiles = await renderGalecCodegenSelection(nextModel, source, templateSelection.target);
+        } else {
+            const daeJson = JSON.stringify(result.dae_native);
+            renderedFiles = await renderCodegenSelection(nextModel, daeJson, templateSelection);
+        }
         const configuredOutputRoot = normalizePath(templateSelection.outputRoot || '');
         const outputRoot = configuredOutputRoot || defaultCodegenOutputRoot(nextModel, templateSelection);
         const paths = writeRenderedTargetFiles(renderedFiles, outputRoot);
@@ -5374,7 +5400,10 @@ require(['vs/editor/editor.main'], function() {
                     dae: result.dae,
                     dae_native: result.dae_native,
                     balance: result.balance,
-                    pretty: result.pretty
+                    pretty: result.pretty,
+                    // GALEC codegen re-projects from source (the addon owns the
+                    // flat model), so keep the source that produced this model.
+                    source,
                 };
                 // Update DAE for codegen completions (use dae_native for actual field names)
                 if (result.dae_native && (modelName === modelSelect.value || modelSelect.value === '')) {

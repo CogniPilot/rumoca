@@ -89,6 +89,16 @@ export const patchWasmPackageJson = async (pkgDir, variant, runtimeFiles = []) =
     addFile("rumoca_bind_wasm_diffsol_bg.wasm");
     addFile("rumoca_bind_wasm_diffsol.d.ts");
   }
+  // Lazy GALEC / eFMI codegen addon, exposed as `@cognipilot/rumoca/galec`
+  // (only present in the full-web build). The driver is the entry point; it
+  // lazy-loads the separate GALEC codegen addon module on demand.
+  if (await exists(path.join(pkgDir, "rumoca_galec.js"))) {
+    pkg.exports["./galec"] = { import: "./rumoca_galec.js" };
+    addFile("rumoca_galec.js");
+    addFile("rumoca_bind_wasm_galec.js");
+    addFile("rumoca_bind_wasm_galec_bg.wasm");
+    addFile("rumoca_bind_wasm_galec.d.ts");
+  }
   if (await exists(path.join(pkgDir, "rumoca_worker.js"))) {
     addFile("rumoca_worker.js");
   }

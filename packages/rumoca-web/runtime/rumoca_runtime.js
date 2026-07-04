@@ -1,4 +1,5 @@
 import { diffsolAvailable as diffsolAddonAvailable, simulateWithDiffsol } from './rumoca_diffsol.js';
+import { renderGalecTargetFiles } from './rumoca_galec.js';
 
 const loadedSourceRootCaches = new WeakMap();
 
@@ -161,4 +162,19 @@ export async function renderDaeTextWithRuntime({
 
 export async function diffsolAvailable(pkgBase) {
   return diffsolAddonAvailable(pkgBase);
+}
+
+// Render a GALEC codegen target (`galec` / `galec-production` /
+// `embedded-c-galec`) via the separate GALEC addon and return the
+// presentation-ready `{ path, content }[]` file list. Mirrors
+// `renderDaeTextWithRuntime`, but the GALEC projection needs the flat model —
+// so it drives the addon's in-memory compile (which owns the projection)
+// instead of the core module's DAE-JSON `render_target` path.
+export async function renderGalecFilesWithRuntime({
+  pkgBase = './',
+  source,
+  modelName,
+  target,
+}) {
+  return renderGalecTargetFiles(pkgBase, source, modelName, target);
 }

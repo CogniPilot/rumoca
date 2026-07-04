@@ -17,5 +17,14 @@ thiserror = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
 
+# The `v4` uuid feature (ManifestId minting on the native identity path) pulls a
+# randomness source that `uuid` refuses to auto-select on wasm32. This crate is
+# compiled to wasm through the `rumoca-bind-wasm-galec` addon, where the
+# identity path is never *called* (the addon drives the identity-free lowering)
+# but must still *link*. The `js` feature supplies the wasm randomness source
+# (wasm-bindgen/js-sys); wasm32-gated so native builds are unchanged.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
 [lints]
 workspace = true
