@@ -421,7 +421,7 @@ fn bracket_event_limits_kernel<St: SolverStepper + ?Sized>(
     right_t: f64,
 ) -> Result<(), SimDriverError> {
     let dt = right_t - root_t;
-    if dt <= 0.0 || sample_time_match_with_tol(root_t, right_t) {
+    if dt <= 0.0 {
         return Ok(());
     }
     let dy = stepper.derivative_guess(y, p, root_t)?;

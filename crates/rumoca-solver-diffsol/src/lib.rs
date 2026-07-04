@@ -879,6 +879,27 @@ pub(crate) fn record_sample_if_new(
     Ok(())
 }
 
+pub(crate) fn record_runtime_sample_at_distinct_time(
+    runtime: &SolveRuntime,
+    recorded_times: &mut Vec<f64>,
+    data: &mut [Vec<f64>],
+    sample: SamplePoint<'_>,
+) -> Result<(), SimError> {
+    let values = runtime
+        .visible_values(sample.y, sample.params, sample.t)
+        .map_err(|err| SimError::SolveIr(err.to_string()))?;
+    if recorded_times
+        .last()
+        .is_some_and(|last| last.to_bits() == sample.t.to_bits())
+    {
+        replace_last_visible_values(data, &values)?;
+        return Ok(());
+    }
+    recorded_times.push(sample.t);
+    push_visible_values(data, &values)?;
+    Ok(())
+}
+
 fn record_initial_samples(
     recorder: &mut SampleRecorder<'_>,
     runtime: &SolveRuntime,

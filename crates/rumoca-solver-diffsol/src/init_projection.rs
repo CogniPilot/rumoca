@@ -342,14 +342,10 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
             right_t,
             self.tol,
         )?;
-        let mut samples = SampleRecorder {
-            runtime: Some(self.runtime),
-            model: self.model,
-            recorded_times: &mut *self.recorded_times,
-            data: &mut *self.data,
-        };
-        record_sample_if_new(
-            &mut samples,
+        crate::record_runtime_sample_at_distinct_time(
+            self.runtime,
+            &mut *self.recorded_times,
+            &mut *self.data,
             SamplePoint {
                 y: self.y,
                 params: self.params,

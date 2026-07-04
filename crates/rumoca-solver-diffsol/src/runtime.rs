@@ -580,9 +580,9 @@ fn first_root_crossing_time(
     eval_refreshed_roots(runtime, y, p, t_end, tol, &mut end)?;
 
     let mut crossing = None;
-    for (a, b) in start.iter().zip(end.iter()) {
+    for (root_index, (a, b)) in start.iter().zip(end.iter()).enumerate() {
         if root_surface_crossed_or_near(*a, *b, tol) {
-            let root = bisect_first_root(runtime, model, y, p, t_start, t_end, tol)?;
+            let root = bisect_first_root(runtime, model, y, p, (t_start, t_end), root_index, tol)?;
             crossing = Some(crossing.map_or(root, |current| f64::min(current, root)));
         }
     }
@@ -615,21 +615,20 @@ fn bisect_first_root(
     model: &OdeModel,
     y: &[f64],
     p: &[f64],
-    mut lo: f64,
-    mut hi: f64,
+    interval: (f64, f64),
+    root_index: usize,
     tol: f64,
 ) -> Result<f64, SimError> {
+    let (mut lo, mut hi) = interval;
     let mut lo_roots = vec![0.0; model.root_conditions.len()];
     eval_refreshed_roots(runtime, y, p, lo, tol, &mut lo_roots)?;
     for _ in 0..ROOT_BISECTION_ITERS {
         let mid = lo + 0.5 * (hi - lo);
         let mut mid_roots = vec![0.0; model.root_conditions.len()];
         eval_refreshed_roots(runtime, y, p, mid, tol, &mut mid_roots)?;
-        if lo_roots
-            .iter()
-            .zip(mid_roots.iter())
-            .any(|(a, b)| a.signum() != b.signum() || root_surface_near_zero(*b, tol))
-        {
+        let lo_root = lo_roots.get(root_index).copied().unwrap_or(0.0);
+        let mid_root = mid_roots.get(root_index).copied().unwrap_or(0.0);
+        if lo_root.signum() != mid_root.signum() || root_surface_near_zero(mid_root, 0.0) {
             hi = mid;
         } else {
             lo = mid;
