@@ -1251,18 +1251,17 @@ fn project_field_access_actuals(
     for (base, base_expr) in bases {
         let mut projected = Vec::new();
         for field in fields {
-            let actual = actuals.iter().find_map(|actual| {
+            let actual = actuals.iter().find(|actual| {
                 let rumoca_core::Expression::FieldAccess {
                     base: actual_base,
                     field: actual_field,
                     ..
                 } = actual
                 else {
-                    return None;
+                    return false;
                 };
-                (expression_summary_for_projection(actual_base).as_deref() == Some(base.as_str())
-                    && function_field_names_match(&field.name, actual_field))
-                .then_some(actual)
+                expression_summary_for_projection(actual_base).as_deref() == Some(base.as_str())
+                    && function_field_names_match(&field.name, actual_field)
             });
             if let Some(actual) = actual {
                 projected.push(actual.clone());
