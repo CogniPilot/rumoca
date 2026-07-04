@@ -97,10 +97,55 @@ impl GalecParseError {
                 .downcast_ref::<Self>()
                 .cloned()
                 .unwrap_or_else(|| Self::syntax(format!("parse error: {user}"))),
-            ParolError::ParserError(parser_err) => {
-                Self::syntax(format!("syntax error: {parser_err}"))
-            }
+            ParolError::ParserError(parser_err) => Self::from_parser_error(parser_err),
             ParolError::LexerError(lexer_err) => Self::syntax(format!("lexer error: {lexer_err}")),
+        }
+    }
+
+    /// Normalize a parol `ParserError` into a **positioned** `Syntax` error,
+    /// carrying the error location's byte offsets and the expected/unexpected
+    /// token sets where parol supplies them (D11: parse errors are positioned
+    /// so an editor can underline the offending text). Variants that carry no
+    /// source location surface their message with `span: None`.
+    #[cfg(feature = "parse")]
+    fn from_parser_error(err: &parol_runtime::errors::ParserError) -> Self {
+        use parol_runtime::errors::ParserError;
+        use parol_runtime::lexer::Location;
+
+        let offsets = |location: &Location| Some((location.start(), location.end()));
+        match err {
+            ParserError::SyntaxErrors { entries } => match entries.first() {
+                Some(entry) => Self::Syntax {
+                    message: format!("syntax error: {}", entry.cause),
+                    expected: entry.expected_tokens.iter().cloned().collect(),
+                    unexpected: entry
+                        .unexpected_tokens
+                        .first()
+                        .map(|token| token.token_type.clone()),
+                    span: offsets(&entry.error_location),
+                },
+                // `SyntaxErrors` is constructed non-empty in practice; never
+                // assume it, but there is no location to report if it is empty.
+                None => Self::syntax("syntax error"),
+            },
+            ParserError::UnprocessedInput { last_token, .. } => Self::Syntax {
+                message: "unprocessed input after parsing finished".to_string(),
+                expected: Vec::new(),
+                unexpected: None,
+                span: offsets(last_token),
+            },
+            ParserError::Unsupported {
+                context,
+                error_location,
+            } => Self::Syntax {
+                message: format!("unsupported language feature: {context}"),
+                expected: Vec::new(),
+                unexpected: None,
+                span: offsets(error_location),
+            },
+            // Tree/data/prediction/recovery/internal errors carry no source
+            // location; surface the message without a span.
+            other => Self::syntax(format!("syntax error: {other}")),
         }
     }
 }

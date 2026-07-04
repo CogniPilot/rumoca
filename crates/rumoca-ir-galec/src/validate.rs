@@ -32,10 +32,13 @@ use crate::diagnostic::GalecError;
 mod context;
 mod dims;
 mod effects;
+mod locate;
 mod names;
 mod signals;
 mod termination;
 mod types;
+
+pub use locate::span_of;
 
 /// Run all six analyses over `block`, collecting every finding.
 ///
