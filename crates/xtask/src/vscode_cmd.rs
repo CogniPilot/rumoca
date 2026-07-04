@@ -1492,6 +1492,8 @@ mod tests {
         select_vscode_smoke_launch_mode, should_copy_vscode_smoke_root_entry,
         should_retry_vscode_npm_ci_after_clean, stage_vscode_smoke_workspace,
     };
+    #[cfg(target_os = "linux")]
+    use super::{VscodeSmokeOptions, should_install_vscode_smoke_prereqs};
     use anyhow::anyhow;
     use serde_json::json;
 

@@ -330,6 +330,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(outputs)
     }
 
+    #[cfg(test)]
     fn bind_inputs(
         &self,
         function: &rumoca_core::Function,
