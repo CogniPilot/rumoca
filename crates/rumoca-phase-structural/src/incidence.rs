@@ -69,6 +69,12 @@ pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
 
     apply_regular_family_corner_incidence(dae, &mut eq_unknowns);
     debug_check_regular_family_incidence(dae, &eq_unknowns);
+    let (unknown_names, unknown_spans) = prune_zero_degree_scalarized_aggregate_variables(
+        dae,
+        &mut eq_unknowns,
+        unknown_names,
+        unknown_spans,
+    );
 
     Incidence {
         n_eq,
@@ -78,6 +84,60 @@ pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
         unknown_spans,
         equation_refs,
     }
+}
+
+fn prune_zero_degree_scalarized_aggregate_variables(
+    dae: &dae::Dae,
+    eq_unknowns: &mut [HashSet<usize>],
+    unknown_names: Vec<UnknownId>,
+    unknown_spans: Vec<Option<rumoca_core::Span>>,
+) -> (Vec<UnknownId>, Vec<Option<rumoca_core::Span>>) {
+    let mut has_incidence = vec![false; unknown_names.len()];
+    for row in eq_unknowns.iter() {
+        for &idx in row {
+            if let Some(slot) = has_incidence.get_mut(idx) {
+                *slot = true;
+            }
+        }
+    }
+
+    let mut remap = vec![None; unknown_names.len()];
+    let mut pruned_names = Vec::with_capacity(unknown_names.len());
+    let mut pruned_spans = Vec::with_capacity(unknown_spans.len());
+    for (old_idx, (unknown, span)) in unknown_names.into_iter().zip(unknown_spans).enumerate() {
+        if !has_incidence[old_idx] && is_scalarized_aggregate_variable_unknown(dae, &unknown) {
+            continue;
+        }
+        let new_idx = pruned_names.len();
+        remap[old_idx] = Some(new_idx);
+        pruned_names.push(unknown);
+        pruned_spans.push(span);
+    }
+
+    for row in eq_unknowns.iter_mut() {
+        let remapped = row
+            .iter()
+            .filter_map(|&idx| remap.get(idx).and_then(|mapped| *mapped))
+            .collect();
+        *row = remapped;
+    }
+
+    (pruned_names, pruned_spans)
+}
+
+fn is_scalarized_aggregate_variable_unknown(dae: &dae::Dae, unknown: &UnknownId) -> bool {
+    let UnknownId::Variable(name) = unknown else {
+        return false;
+    };
+    let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) else {
+        return false;
+    };
+    let base = rumoca_core::VarName::new(scalar.base);
+    dae.variables
+        .algebraics
+        .get(&base)
+        .or_else(|| dae.variables.outputs.get(&base))
+        .is_some_and(|var| var.size() > 1)
 }
 
 /// Debug-only invariant guarding the P3 family-native lowering contract: every
@@ -400,7 +460,7 @@ fn collect_equation_unknowns(
     let mut der_collector = DerOperandCollector::default();
     der_collector.visit_expression(&eq.rhs);
     for (name, subscripts) in der_collector.operands {
-        for idx in der_resolver.resolve_var_ref_all(&name, &subscripts) {
+        for idx in der_resolver.resolve_var_ref_all_with_constants(&name, &subscripts, constants) {
             result.insert(idx);
         }
     }
@@ -411,7 +471,9 @@ fn collect_equation_unknowns(
         && let Some(target) = direct_residual_definition_target(&eq.rhs)
         && equation_contains_derivative(&eq.rhs)
     {
-        for idx in variable_resolver.resolve_var_ref_all(target.0, target.1) {
+        for idx in
+            variable_resolver.resolve_var_ref_all_with_constants(target.0, target.1, constants)
+        {
             result.remove(&idx);
         }
     }
@@ -650,6 +712,21 @@ impl ScalarUnknownResolver {
         }
         self.resolve_name_all(name.as_str())
     }
+
+    fn resolve_var_ref_all_with_constants(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        constants: &ConstantEvalContext,
+    ) -> Vec<usize> {
+        if let Some(canonical) = canonical_var_ref_key_with_constants(name, subscripts, constants) {
+            let resolved = self.resolve_name_all(&canonical);
+            if !resolved.is_empty() {
+                return resolved;
+            }
+        }
+        self.resolve_var_ref_all(name, subscripts)
+    }
 }
 
 fn record_field_parent_name(name: &str) -> Option<String> {
@@ -704,6 +781,32 @@ fn canonical_var_ref_key(
     Some(dae::format_subscript_key(name.as_str(), &indices))
 }
 
+fn canonical_var_ref_key_with_constants(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    constants: &ConstantEvalContext,
+) -> Option<String> {
+    if subscripts.is_empty() {
+        return Some(name.as_str().to_string());
+    }
+
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for sub in subscripts {
+        indices.push(subscript_index_value_with_constants(sub, constants)?);
+    }
+    Some(dae::format_subscript_key(name.as_str(), &indices))
+}
+
+fn subscript_index_value_with_constants(
+    sub: &rumoca_core::Subscript,
+    constants: &ConstantEvalContext,
+) -> Option<usize> {
+    subscript_index_value(sub).or_else(|| match sub {
+        rumoca_core::Subscript::Expr { expr, .. } => constants.eval_positive_integer(expr),
+        _ => None,
+    })
+}
+
 pub(crate) fn collect_expression_unknowns(
     expr: &rumoca_core::Expression,
     resolver: &ScalarUnknownResolver,
@@ -729,7 +832,14 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) {
-        for idx in self.resolver.resolve_var_ref_all(name, subscripts) {
+        let resolved = self
+            .constants
+            .map(|constants| {
+                self.resolver
+                    .resolve_var_ref_all_with_constants(name, subscripts, constants)
+            })
+            .unwrap_or_else(|| self.resolver.resolve_var_ref_all(name, subscripts));
+        for idx in resolved {
             self.cols.insert(idx);
         }
         for subscript in subscripts {
@@ -745,14 +855,20 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
         if let rumoca_core::Expression::VarRef {
             name,
             subscripts: base_subscripts,
-            span,
+            span: _,
         } = base
-            && span.is_dummy()
         {
             let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
             combined.extend_from_slice(base_subscripts);
             combined.extend_from_slice(subscripts);
-            for idx in self.resolver.resolve_var_ref_all(name, &combined) {
+            let resolved = self
+                .constants
+                .map(|constants| {
+                    self.resolver
+                        .resolve_var_ref_all_with_constants(name, &combined, constants)
+                })
+                .unwrap_or_else(|| self.resolver.resolve_var_ref_all(name, &combined));
+            for idx in resolved {
                 self.cols.insert(idx);
             }
             for subscript in base_subscripts {
@@ -773,7 +889,17 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
     fn visit_field_access(&mut self, base: &rumoca_core::Expression, field: &str) {
         if let Some((name, subscripts)) = indexed_field_access_var_ref_key(base, field) {
             let reference = rumoca_core::Reference::new(&name);
-            for idx in self.resolver.resolve_var_ref_all(&reference, &subscripts) {
+            let resolved = self
+                .constants
+                .map(|constants| {
+                    self.resolver.resolve_var_ref_all_with_constants(
+                        &reference,
+                        &subscripts,
+                        constants,
+                    )
+                })
+                .unwrap_or_else(|| self.resolver.resolve_var_ref_all(&reference, &subscripts));
+            for idx in resolved {
                 self.cols.insert(idx);
             }
             for subscript in &subscripts {
@@ -802,7 +928,17 @@ impl ExpressionUnknownCollector<'_> {
     fn visit_projected_field_expression(&mut self, expr: &rumoca_core::Expression, field: &str) {
         if let Some((name, subscripts)) = indexed_field_access_var_ref_key(expr, field) {
             let reference = rumoca_core::Reference::new(&name);
-            for idx in self.resolver.resolve_var_ref_all(&reference, &subscripts) {
+            let resolved = self
+                .constants
+                .map(|constants| {
+                    self.resolver.resolve_var_ref_all_with_constants(
+                        &reference,
+                        &subscripts,
+                        constants,
+                    )
+                })
+                .unwrap_or_else(|| self.resolver.resolve_var_ref_all(&reference, &subscripts));
+            for idx in resolved {
                 self.cols.insert(idx);
             }
             for subscript in &subscripts {
@@ -948,13 +1084,20 @@ struct ConstantEvalContext {
 impl ConstantEvalContext {
     fn from_dae(dae: &dae::Dae) -> Self {
         let mut ctx = Self::default();
-        for (name, variable) in dae
+        let variables = dae
             .variables
             .parameters
             .iter()
             .chain(dae.variables.constants.iter())
-        {
-            ctx.insert_variable(name, variable);
+            .collect::<Vec<_>>();
+        for _ in 0..variables.len().max(1) {
+            let before = ctx.scalars.len() + ctx.booleans.len();
+            for (name, variable) in &variables {
+                ctx.insert_variable(name, variable);
+            }
+            if ctx.scalars.len() + ctx.booleans.len() == before {
+                break;
+            }
         }
         ctx
     }
@@ -964,7 +1107,7 @@ impl ConstantEvalContext {
             return;
         };
         let keys = self.variable_keys(name, variable);
-        if let Some(value) = literal_scalar(start) {
+        if let Some(value) = self.eval_scalar(start) {
             for key in keys {
                 self.scalars.insert(key, value);
             }
@@ -1055,8 +1198,39 @@ impl ConstantEvalContext {
                 rhs,
                 ..
             } => self.eval_scalar(rhs),
+            rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+                self.eval_scalar_binary(op.clone(), lhs, rhs)
+            }
             _ => None,
         }
+    }
+
+    fn eval_scalar_binary(
+        &self,
+        op: rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) -> Option<f64> {
+        let lhs = self.eval_scalar(lhs)?;
+        let rhs = self.eval_scalar(rhs)?;
+        match op {
+            rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some(lhs + rhs),
+            rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some(lhs - rhs),
+            rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Some(lhs * rhs),
+            rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem if rhs != 0.0 => {
+                Some(lhs / rhs)
+            }
+            rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => Some(lhs.powf(rhs)),
+            _ => None,
+        }
+    }
+
+    fn eval_positive_integer(&self, expr: &rumoca_core::Expression) -> Option<usize> {
+        let value = self.eval_scalar(expr)?;
+        (value.is_finite() && value.fract() == 0.0)
+            .then(|| usize::try_from(value as i64).ok())
+            .flatten()
+            .filter(|index| *index > 0)
     }
 
     fn lookup_scalar(&self, name: &rumoca_core::Reference) -> Option<f64> {
@@ -1203,6 +1377,21 @@ mod tests {
         rumoca_core::Expression::Index {
             base: Box::new(expr),
             subscripts: vec![rumoca_core::Subscript::generated_index(value, span)],
+            span,
+        }
+    }
+
+    fn index_expr(
+        expr: rumoca_core::Expression,
+        subscript: rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        let span = test_span();
+        rumoca_core::Expression::Index {
+            base: Box::new(expr),
+            subscripts: vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(subscript),
+                span,
+            }],
             span,
         }
     }
@@ -1519,6 +1708,37 @@ mod tests {
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert_eq!(triplets, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn incidence_resolves_parameter_expression_subscripts_to_scalar_unknowns() {
+        let mut dae = dae::Dae::new();
+
+        let mut features = dae::Variable::new(rumoca_core::VarName::new("features"), test_span());
+        features.dims = vec![10];
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("features"), features);
+
+        let mut n_latent = dae::Variable::new(rumoca_core::VarName::new("nLatent"), test_span());
+        n_latent.start = Some(int_lit(8));
+        dae.variables
+            .parameters
+            .insert(rumoca_core::VarName::new("nLatent"), n_latent);
+
+        let mut n_feature = dae::Variable::new(rumoca_core::VarName::new("nFeature"), test_span());
+        n_feature.start = Some(add(var("nLatent"), int_lit(2)));
+        dae.variables
+            .parameters
+            .insert(rumoca_core::VarName::new("nFeature"), n_feature);
+
+        dae.continuous.equations.push(eq(sub(
+            index_expr(var("features"), var("nFeature")),
+            lit(0.0),
+        )));
+
+        let triplets = build_solver_sparsity_triplets(&dae);
+        assert_eq!(triplets, vec![(0, 9)]);
     }
 
     #[test]

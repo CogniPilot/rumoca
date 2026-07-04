@@ -2026,6 +2026,10 @@ impl AggregateAliasSubstitutionGroup {
         })
     }
 
+    fn covers_dims(&self, dims: &[usize]) -> bool {
+        !dims.is_empty() && self.dims == dims && self.values.len() == dims.iter().product::<usize>()
+    }
+
     fn to_partial_replacement_expr(
         &self,
         name: &Reference,
@@ -2418,20 +2422,18 @@ impl ExpressionRewriter for RecordFieldAggregateRewriter<'_> {
     ) -> Expression {
         if !subscripts.is_empty()
             && !subscripts_are_static_scalar_indices(subscripts)
-            && let Some(replacement) = self
-                .aggregate_alias_groups
-                .get(name.var_name())
-                .and_then(|group| group.to_indexed_replacement_expr(subscripts, span))
+            && let Some(group) = self.aggregate_alias_groups.get(name.var_name())
+            && self.group_covers_reference_dims(name, group)
+            && let Some(replacement) = group.to_indexed_replacement_expr(subscripts, span)
         {
             return replacement;
         }
         if !subscripts.is_empty() {
             return self.walk_var_ref_expression(name, subscripts, span);
         }
-        if let Some(replacement) = self
-            .aggregate_alias_groups
-            .get(name.var_name())
-            .and_then(|group| group.to_replacement_expr(span))
+        if let Some(group) = self.aggregate_alias_groups.get(name.var_name())
+            && self.group_covers_reference_dims(name, group)
+            && let Some(replacement) = group.to_replacement_expr(span)
         {
             return replacement;
         }
@@ -2453,6 +2455,15 @@ impl ExpressionRewriter for RecordFieldAggregateRewriter<'_> {
 }
 
 impl RecordFieldAggregateRewriter<'_> {
+    fn group_covers_reference_dims(
+        &self,
+        name: &Reference,
+        group: &AggregateAliasSubstitutionGroup,
+    ) -> bool {
+        self.aggregate_dims_for_reference(name)
+            .is_none_or(|dims| group.covers_dims(&dims))
+    }
+
     fn aggregate_dims_for_reference(&self, name: &Reference) -> Option<Vec<usize>> {
         let dims = self.dae_scope.as_ref()?.dims(name.var_name()).ok()?;
         dims.into_iter()

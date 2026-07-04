@@ -2132,7 +2132,7 @@ mod tests {
             .expect("prepared FMI2 C render should succeed");
 
         assert!(
-            rendered.contains("child_p = root;\n    m->p[1] = child_p;  /* binding child.p */"),
+            rendered.contains("p = root;\n    m->p[1] = p;  /* binding child.p */"),
             "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
         );
         assert!(

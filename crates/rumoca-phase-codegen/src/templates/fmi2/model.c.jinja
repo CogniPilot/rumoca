@@ -927,8 +927,8 @@ static void apply_parameter_bindings(ModelInstance* m) {
 {% set rhs = "" %}
 {% endif %}
 {% if rhs %}
-    {{ binding_name | sanitize }} = {{ rhs }};
-    m->p[{{ ns_idx.offset }}] = {{ binding_name | sanitize }};  /* binding {{ binding_name }} */
+    {{ symbol(symbols, binding_name) }} = {{ rhs }};
+    m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, binding_name) }};  /* binding {{ binding_name }} */
 {% endif %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
@@ -941,8 +941,8 @@ static void apply_parameter_bindings(ModelInstance* m) {
 {% set rhs = "" %}
 {% endif %}
 {% if rhs %}
-    {{ name | sanitize }} = {{ rhs }};
-    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* binding {{ name }} */
+    {{ symbol(symbols, name) }} = {{ rhs }};
+    m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* binding {{ name }} */
 {% endif %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}

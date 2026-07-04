@@ -42,6 +42,12 @@ fn exact_reference_keeps_unknown(dae: &Dae, exact_refs: &[VarName], name: &VarNa
     if exact_refs.binary_search(name).is_ok() {
         return true;
     }
+    if exact_refs.iter().any(|exact_ref| {
+        rumoca_core::parse_scalar_name(exact_ref.as_str())
+            .is_some_and(|scalar| scalar.base == name.as_str())
+    }) {
+        return true;
+    }
     if continuous_unknown_is_scalar(dae, name) {
         return false;
     }
