@@ -84,10 +84,7 @@ fn runtime_event_final_time(event: RuntimeEventStop, event_t: f64, right_t: f64)
 }
 
 fn should_process_right_limit(event: RuntimeEventStop, event_t: f64, right_t: f64) -> bool {
-    event.observe_right_limit
-        && event.pre_mode == EventPreMode::FollowCurrent
-        && right_t > event_t
-        && !sample_time_match_with_tol(right_t, event_t)
+    event.observe_right_limit && event.pre_mode == EventPreMode::FollowCurrent && right_t > event_t
 }
 
 #[cfg(test)]
