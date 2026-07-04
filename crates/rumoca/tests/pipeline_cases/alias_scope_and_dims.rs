@@ -63,6 +63,7 @@ end PartialMedium;
 
 package RealMedium
   extends PartialMedium;
+  constant String extraPropertiesNames[:] = fill("", 0);
 
   redeclare model extends BaseProperties
     Real R_s;
@@ -1061,5 +1062,752 @@ end FluidLike;
             .iter()
             .any(|name| name == "pipe2.flowModel.x"),
         "pipe2.flowModel.x should be instantiated from inherited FlowModel local class"
+    );
+}
+
+/// MLS §7.3: a component with a single package redeclare override must expose
+/// that package's constants in component scope, even when the component type is
+/// fully qualified (e.g. `Modelica.Fluid.Sources.Boundary_pT` style).
+#[test]
+fn test_single_package_override_applies_to_fully_qualified_component_type_scope() {
+    let source = r#"
+package PartialMedium
+  constant Integer nX = 1;
+  constant Integer nXi = 0;
+
+  replaceable partial model BaseProperties
+    Real Xi[nXi];
+    Real X[nX];
+  equation
+    X[nX] = 1;
+  end BaseProperties;
+end PartialMedium;
+
+package MixMedium
+  extends PartialMedium(
+    nX=2,
+    nXi=1);
+
+  redeclare model extends BaseProperties
+  end BaseProperties;
+end MixMedium;
+
+package Sources
+  model Boundary_pT
+    replaceable package Medium = PartialMedium;
+    Medium.BaseProperties medium;
+  equation
+    medium.Xi[1] = 0.5;
+  end Boundary_pT;
+end Sources;
+
+model Top
+  Sources.Boundary_pT src(redeclare package Medium = MixMedium);
+end Top;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Top").expect("compile failed");
+
+    let xi_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "src.medium.Xi")
+        .map(|(_, var)| var.dims.clone())
+        .expect("src.medium.Xi should exist");
+    assert_eq!(
+        xi_dims,
+        vec![1],
+        "src.medium.Xi should use nXi from src's redeclared Medium package"
+    );
+
+    let x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "src.medium.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("src.medium.X should exist");
+    assert_eq!(
+        x_dims,
+        vec![2],
+        "src.medium.X should use nX from src's redeclared Medium package"
+    );
+}
+
+/// MLS §7.3: local package aliases with class modifications (e.g.
+/// `package Medium = PureMedium(AbsolutePressure(max=...))`) must preserve the
+/// aliased package constants for member model dimensions (`Medium.nX/nXi`).
+#[test]
+fn test_local_package_alias_with_class_modification_preserves_member_model_dims() {
+    let source = r#"
+package PartialMedium
+  type AbsolutePressure = Real;
+  constant Integer nS = 2;
+  final constant Integer nX = nS;
+  final constant Integer nXi = 0;
+
+  replaceable model BaseProperties
+    AbsolutePressure p;
+    Real h;
+    Real d;
+    Real X[nX];
+    input Real Xi[nXi];
+  equation
+    d = p + h;
+    X = fill(1.0, nX);
+    Xi = fill(0.0, nXi);
+  end BaseProperties;
+end PartialMedium;
+
+package PureMedium
+  extends PartialMedium(nS = 1);
+end PureMedium;
+
+model UsesAliasWithModification
+  package Medium = PureMedium(AbsolutePressure(max = 1e6));
+  Medium.BaseProperties medium;
+  Medium.BaseProperties medium2;
+equation
+  medium.p = 1;
+  medium.h = 2;
+  medium2.p = 3;
+  medium2.h = 4;
+end UsesAliasWithModification;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session
+        .compile_model("UsesAliasWithModification")
+        .expect("compile failed");
+
+    let medium_x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.X should exist");
+    assert_eq!(
+        medium_x_dims,
+        vec![1],
+        "medium.X should use Medium.nX=1 from the aliased PureMedium package"
+    );
+
+    let medium2_x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium2.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium2.X should exist");
+    assert_eq!(
+        medium2_x_dims,
+        vec![1],
+        "medium2.X should use Medium.nX=1 from the aliased PureMedium package"
+    );
+
+    let medium_xi_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.Xi")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.Xi should exist");
+    assert_eq!(
+        medium_xi_dims,
+        vec![0],
+        "medium.Xi should use Medium.nXi=0 from the aliased PureMedium package"
+    );
+}
+
+/// MLS §7.3 + §10.1: forwarding redeclares (`redeclare package Medium = Medium`)
+/// inside nested components must evaluate dimensions against the enclosing
+/// effective package override, not the local default package.
+#[test]
+fn test_forwarding_package_redeclare_applies_to_nested_stream_dimension() {
+    let source = r#"
+package P
+  package MediumBase
+    constant Integer nC = 0;
+  end MediumBase;
+
+  package MediumCO2
+    extends MediumBase(nC = 1);
+  end MediumCO2;
+
+  connector Port
+    replaceable package Medium = MediumBase;
+    Real p;
+    flow Real m_flow;
+    stream Real C_outflow[Medium.nC];
+  end Port;
+
+  model Source
+    replaceable package Medium = MediumBase;
+    Port port(redeclare package Medium = Medium);
+  equation
+    port.p = 0;
+    port.C_outflow = fill(0.0, Medium.nC);
+  end Source;
+
+  model M
+    Source s(redeclare package Medium = MediumCO2);
+  end M;
+end P;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("P.M").expect("compile failed");
+
+    let dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "s.port.C_outflow")
+        .map(|(_, var)| var.dims.clone())
+        .expect("s.port.C_outflow should exist");
+    assert_eq!(
+        dims,
+        vec![1],
+        "s.port.C_outflow should use MediumCO2.nC through the forwarding redeclare"
+    );
+}
+
+/// MLS §7.3: chained forwarding redeclares inside component instances must keep
+/// the active package override when a nested component instantiates
+/// `Medium.BaseProperties`.
+#[test]
+fn test_component_redeclare_chain_instantiates_concrete_baseproperties() {
+    let source = r#"
+package PartialMedium
+  replaceable partial model BaseProperties
+    Real p;
+    Real h;
+    Real d;
+  equation
+    d = p + h;
+  end BaseProperties;
+end PartialMedium;
+
+package RealMedium
+  extends PartialMedium;
+
+  redeclare replaceable model BaseProperties
+    Real p;
+    Real h;
+    Real d;
+    Real marker;
+  equation
+    d = p + h;
+    marker = d - p;
+  end BaseProperties;
+end RealMedium;
+
+model Volume
+  replaceable package Medium = PartialMedium;
+
+  model Balance
+    replaceable package Medium = PartialMedium;
+    Medium.BaseProperties medium;
+  equation
+    medium.p = 3;
+    medium.h = 2;
+  end Balance;
+
+  Balance dynBal(redeclare package Medium = Medium);
+end Volume;
+
+partial model MediumCarrier
+  replaceable package Medium = PartialMedium;
+end MediumCarrier;
+
+partial model PortCarrier
+  replaceable package Medium = PartialMedium;
+end PortCarrier;
+
+model FanBase
+  extends MediumCarrier;
+  extends PortCarrier;
+  Volume vol(redeclare package Medium = Medium);
+end FanBase;
+
+model Top
+  package MediumAir = RealMedium(extraPropertiesNames = {"CO2"});
+
+  model AirHandler
+    replaceable package MediumAir = PartialMedium;
+    FanBase fan(redeclare package Medium = MediumAir);
+  end AirHandler;
+
+  AirHandler ahu(redeclare package MediumAir = MediumAir);
+  Real y;
+equation
+  y = ahu.fan.vol.dynBal.medium.marker;
+end Top;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Top").expect("compile failed");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names
+            .iter()
+            .any(|name| name == "ahu.fan.vol.dynBal.medium.marker"),
+        "nested Medium.BaseProperties should use RealMedium, vars={flat_var_names:?}"
+    );
+}
+
+/// MLS §7.3: package aliases in sibling models must not leak into the active
+/// model's alias resolution. Compiling `Examples.A` should use `A.Medium`.
+#[test]
+fn test_sibling_model_package_alias_does_not_pollute_active_model_dims() {
+    let source = r#"
+package PartialMedium
+  constant Integer nX = 1;
+  replaceable model BaseProperties
+    Real p;
+    Real h;
+    Real d;
+    Real X[nX];
+  equation
+    d = p + h;
+    X = fill(1.0, nX);
+  end BaseProperties;
+end PartialMedium;
+
+package MediumOne
+  extends PartialMedium(nX = 1);
+end MediumOne;
+
+package MediumTwo
+  extends PartialMedium(nX = 2);
+end MediumTwo;
+
+package Examples
+  model A
+    package Medium = MediumOne;
+    Medium.BaseProperties medium;
+  equation
+    medium.p = 1;
+    medium.h = 2;
+  end A;
+
+  model B
+    package Medium = MediumTwo;
+    Medium.BaseProperties medium;
+  equation
+    medium.p = 3;
+    medium.h = 4;
+  end B;
+end Examples;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Examples.A").expect("compile failed");
+
+    let x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.X should exist");
+    assert_eq!(
+        x_dims,
+        vec![1],
+        "Examples.A.medium.X should use A.Medium (MediumOne.nX=1), not sibling alias values"
+    );
+}
+
+/// MLS §7.3: inherited package-constant chains (`PartialMedium ->
+/// PartialPureSubstance -> PartialSimpleMedium`) must preserve `nS/nX/nXi`
+/// when used through a local `package Medium = ...` alias.
+#[test]
+fn test_local_medium_alias_preserves_partial_pure_substance_constants() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+    type SpecificEnthalpy = Real;
+    constant Boolean reducedX = true;
+    constant Boolean fixedX = false;
+    constant String substanceNames[:] = {"single"};
+    final constant Integer nS = size(substanceNames, 1);
+    constant Integer nX = nS;
+    constant Integer nXi = if fixedX then 0 else if reducedX then nS - 1 else nS;
+    constant Real reference_X[nX] = fill(1.0 / nX, nX);
+
+    replaceable partial model BaseProperties
+      Real p;
+      SpecificEnthalpy h;
+      Real d;
+      Real X[nX];
+      input Real Xi[nXi];
+    equation
+      X = reference_X;
+      Xi = X[1:nXi];
+      d = p + h;
+    end BaseProperties;
+  end PartialMedium;
+
+  partial package PartialPureSubstance
+    extends PartialMedium(final reducedX = true, final fixedX = true);
+  end PartialPureSubstance;
+
+  partial package PartialSimpleMedium
+    extends PartialPureSubstance;
+  end PartialSimpleMedium;
+end Interfaces;
+
+package WaterLike
+  extends Interfaces.PartialSimpleMedium;
+  redeclare model extends BaseProperties
+  end BaseProperties;
+end WaterLike;
+
+model UsesLocalMediumAlias
+  package Medium = WaterLike(SpecificEnthalpy(max = 1e6));
+  Medium.BaseProperties medium;
+equation
+  medium.p = 1;
+  medium.h = 2;
+end UsesLocalMediumAlias;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session
+        .compile_model("UsesLocalMediumAlias")
+        .expect("compile failed");
+
+    let x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.X should exist");
+    assert_eq!(
+        x_dims,
+        vec![1],
+        "medium.X should use nX=1 for PartialPureSubstance aliases"
+    );
+
+    let xi_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.Xi")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.Xi should exist");
+    assert_eq!(
+        xi_dims,
+        vec![0],
+        "medium.Xi should use nXi=0 for PartialPureSubstance aliases"
+    );
+}
+
+/// MLS §7.3: extends-modification redeclarations inside a package (e.g.
+/// `extends PartialMedium(redeclare record ThermodynamicState=...)`) must be
+/// visible when resolving dotted member types (`Medium.ThermodynamicState`).
+#[test]
+fn test_package_extends_redeclare_record_alias_applies_to_dotted_member_type() {
+    let source = r#"
+package Common
+  record BaseProps_Tpoly
+    Real T;
+    Real p;
+  end BaseProps_Tpoly;
+end Common;
+
+package Interfaces
+  partial package PartialMedium
+    replaceable record ThermodynamicState
+      Real x;
+    end ThermodynamicState;
+
+    replaceable function setState_pTX
+      input Real p;
+      input Real T;
+      output ThermodynamicState state;
+    algorithm
+      state := ThermodynamicState();
+    end setState_pTX;
+  end PartialMedium;
+end Interfaces;
+
+package TableBased
+  extends Interfaces.PartialMedium(
+    redeclare record ThermodynamicState = Common.BaseProps_Tpoly
+  );
+
+  redeclare function setState_pTX
+    input Real p;
+    input Real T;
+    output ThermodynamicState state;
+  algorithm
+    state := Common.BaseProps_Tpoly(T=T, p=p);
+  end setState_pTX;
+end TableBased;
+
+model UsesTableBasedState
+  package Medium = TableBased;
+  Medium.ThermodynamicState state = Medium.setState_pTX(1, 2);
+end UsesTableBasedState;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session
+        .compile_model("UsesTableBasedState")
+        .expect("compile failed");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+
+    assert!(
+        flat_var_names.iter().any(|n| n == "state.T"),
+        "state.T should come from redeclared ThermodynamicState; vars={flat_var_names:?}"
+    );
+    assert!(
+        flat_var_names.iter().any(|n| n == "state.p"),
+        "state.p should come from redeclared ThermodynamicState; vars={flat_var_names:?}"
+    );
+    assert!(
+        !flat_var_names.iter().any(|n| n == "state.x"),
+        "base ThermodynamicState field should be replaced by redeclare; vars={flat_var_names:?}"
+    );
+}
+
+/// MLS §5.3 + §7.3: model-level `extends(... redeclare package Medium=...)`
+/// must override unrelated import aliases, and short member types inside
+/// `Medium.BaseProperties` (e.g. `ThermodynamicState state`) must resolve to
+/// the redeclared package record.
+#[test]
+fn test_model_redeclare_package_controls_member_dims_and_short_record_type() {
+    let source = r#"
+package Common
+  record BaseProps_Tpoly
+    Real T;
+    Real p;
+  end BaseProps_Tpoly;
+end Common;
+
+package Interfaces
+  partial package PartialMedium
+    constant Boolean reducedX = true;
+    constant Boolean fixedX = false;
+    constant String substanceNames[:] = {"single"};
+    final constant Integer nS = size(substanceNames, 1);
+    constant Integer nX = nS;
+    constant Integer nXi = if fixedX then 0 else if reducedX then nS - 1 else nS;
+    constant Real reference_X[nX] = fill(1.0 / nX, nX);
+
+    replaceable record ThermodynamicState
+      Real x;
+    end ThermodynamicState;
+
+    replaceable model BaseProperties
+      input Real Xi[nXi];
+      Real X[nX];
+      ThermodynamicState state;
+    equation
+      X = reference_X;
+      Xi = X[1:nXi];
+    end BaseProperties;
+  end PartialMedium;
+end Interfaces;
+
+package TableBased
+  extends Interfaces.PartialMedium(
+    final reducedX = true,
+    final fixedX = true,
+    redeclare record ThermodynamicState = Common.BaseProps_Tpoly
+  );
+
+  redeclare model extends BaseProperties
+  equation
+    state.T = 1;
+    state.p = 2;
+  end BaseProperties;
+end TableBased;
+
+model Base
+  replaceable package Medium = Interfaces.PartialMedium;
+  Medium.BaseProperties medium;
+equation
+  medium.Xi = Medium.reference_X[1:Medium.nXi];
+end Base;
+
+model Probe
+  extends Base(redeclare package Medium = TableBased);
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Probe").expect("compile failed");
+
+    let medium_x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.X should exist");
+    assert_eq!(
+        medium_x_dims,
+        vec![1],
+        "medium.X should use redeclared Medium.nX=1"
+    );
+
+    let medium_xi_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.Xi")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.Xi should exist");
+    assert_eq!(
+        medium_xi_dims,
+        vec![0],
+        "medium.Xi should use redeclared Medium.nXi=0"
+    );
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names.iter().any(|n| n == "medium.state.T"),
+        "medium.state.T should come from redeclared ThermodynamicState; vars={flat_var_names:?}"
+    );
+    assert!(
+        flat_var_names.iter().any(|n| n == "medium.state.p"),
+        "medium.state.p should come from redeclared ThermodynamicState; vars={flat_var_names:?}"
+    );
+    assert!(
+        !flat_var_names.iter().any(|n| n == "medium.state.x"),
+        "base ThermodynamicState field should be replaced by redeclare; vars={flat_var_names:?}"
+    );
+}
+
+/// MLS §5.3: a local nested package declaration must shadow import aliases
+/// with the same name when evaluating constants used in dimensions.
+#[test]
+fn test_local_package_shadows_import_alias_for_dimension_constants() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+    constant String mediumName = "unset";
+    constant String substanceNames[:] = {mediumName};
+    final constant Integer nS = size(substanceNames, 1);
+    constant Integer nX = nS;
+    constant Integer nXi = 0;
+
+    replaceable model BaseProperties
+      Real p;
+      Real h;
+      Real X[nX];
+      input Real Xi[nXi];
+    equation
+      X = fill(1.0, nX);
+      Xi = fill(0.0, nXi);
+    end BaseProperties;
+  end PartialMedium;
+
+  partial package PartialPureSubstance
+    extends PartialMedium;
+  end PartialPureSubstance;
+
+  partial package PartialSimpleMedium
+    extends PartialPureSubstance;
+  end PartialSimpleMedium;
+end Interfaces;
+
+package MediumTwo
+  extends Interfaces.PartialSimpleMedium(
+    mediumName = "two",
+    substanceNames = {"A", "B"}
+  );
+end MediumTwo;
+
+package MediumOne
+  extends Interfaces.PartialSimpleMedium(
+    mediumName = "one",
+    substanceNames = {"A"}
+  );
+end MediumOne;
+
+model Target
+  import Medium = MediumTwo;
+  package Medium = MediumOne;
+  Medium.BaseProperties medium;
+equation
+  medium.p = 1;
+  medium.h = 2;
+end Target;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Target").expect("compile failed");
+
+    let x_dims = result
+        .flat
+        .variables
+        .iter()
+        .find(|(name, _)| name.as_str() == "medium.X")
+        .map(|(_, var)| var.dims.clone())
+        .expect("medium.X should exist");
+    assert_eq!(
+        x_dims,
+        vec![1],
+        "local package Medium=MediumOne must shadow import Medium=MediumTwo for nX"
     );
 }
