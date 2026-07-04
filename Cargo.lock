@@ -3298,6 +3298,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-bind-wasm-galec"
+version = "0.9.9"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "minijinja",
+ "rumoca-compile",
+ "rumoca-galec-codegen",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "rumoca-codec"
 version = "0.9.9"
 dependencies = [

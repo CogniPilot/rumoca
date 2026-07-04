@@ -48,6 +48,7 @@ members = [
     # Bindings
     "crates/rumoca-bind-wasm",
     "crates/rumoca-bind-wasm-diffsol",
+    "crates/rumoca-bind-wasm-galec",
     "crates/rumoca-bind-python",
     # Compiled execution adapters
     "crates/rumoca-exec-cranelift",

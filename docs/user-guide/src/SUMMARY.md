@@ -36,6 +36,7 @@
 
 - [Targets and Templates](./codegen/targets.md)
 - [Custom Targets](./codegen/custom-targets.md)
+- [eFMI Algorithm Code Export (GALEC)](./codegen/galec-efmi.md)
 
 ---
 
