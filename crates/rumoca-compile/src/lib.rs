@@ -163,7 +163,8 @@ pub mod galec {
         EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET, GALEC_TARGET, GalecCExport,
         GalecExportError, GalecPackagingPlan, GalecSources, PRODUCTION_CONFORMANCE_LINES,
         PRODUCTION_CONFORMANCE_SUMMARY, build_scalar_type_map, is_galec_target, plan_galec_export,
-        plan_galec_production_export, render_galec_c_export, render_galec_sources,
+        plan_galec_production_export, render_galec_c_export, render_galec_c_files_from_context,
+        render_galec_sources,
     };
     pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
     pub use rumoca_ir_galec::ast::ScalarType;

@@ -3,7 +3,8 @@
 // Upgrades fenced code blocks marked `modelica,interactive` into mini Monaco
 // editor windows backed by the Rumoca WASM package: syntax highlighting,
 // LSP completion/hover/diagnostics, one-click simulation with an inline plot,
-// and a "Show DAE" view of the flattened system.
+// and a "Show DAE" view of the flattened system. Blocks marked
+// `modelica,codegen` use a smaller GALEC code-generation widget.
 //
 // Loading strategy:
 //   - Monaco loads from generated local vendor assets when a page contains at
@@ -21,6 +22,7 @@
     'use strict';
 
     const PKG_SUBDIRS = ['release-full-web', 'release-full-web-rayon'];
+    const LOCAL_PKG_SUBDIRS = ['dev-full-web'];
     const LANGUAGE_MODULE_CANDIDATES = [
         // GitHub Pages: staged runtime package next to the deployed book.
         '../pkg/release-full-web/modelica_language.js',
@@ -33,6 +35,7 @@
     const SERIES_COLORS = [
         '#2470c2', '#d94f30', '#2c9462', '#9356c8', '#c8842c', '#3aa0ab',
     ];
+    const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
     const MAX_PLOT_SERIES = 6;
     const MAX_EDITOR_LINES = 28;
     const DIAGNOSTIC_DEBOUNCE_MS = 400;
@@ -41,6 +44,8 @@
     let wasmModulePromise = null;
     let wasmRequested = false;
     let languageServicesRegistered = false;
+    let galecLanguageRegistered = false;
+    let galecLanguageServicesRegistered = false;
     // Resolved pkg base URL (where rumoca_bind_wasm.js loaded from); the diffsol
     // driver + addon sit next to it. Cached the first time the WASM is loaded.
     let resolvedPkgBase = null;
@@ -61,6 +66,8 @@
     let monacoThemeObserver = null;
     const monacoEditors = new Set();
     const monacoModelWidgets = new WeakMap();
+    const galecModelFileNames = new WeakMap();
+    const galecDiagnosticsState = new WeakMap();
     const widgets = [];
     const scenarioConfigHostHandlers = new Map();
 
@@ -83,6 +90,10 @@
 
     function pageUrl(relative) {
         return new URL(relative, window.location.href).href;
+    }
+
+    function isLocalPreviewHost() {
+        return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
     }
 
     function trimMaybeString(value) {
@@ -121,9 +132,10 @@
         }
         const root = bookRoot();
         const layouts = [root + '../pkg/', root + '../../../packages/rumoca/dist/'];
+        const subdirs = isLocalPreviewHost() ? [...LOCAL_PKG_SUBDIRS, ...PKG_SUBDIRS] : PKG_SUBDIRS;
         const candidates = [];
         for (const layout of layouts) {
-            for (const subdir of PKG_SUBDIRS) {
+            for (const subdir of subdirs) {
                 candidates.push(layout + subdir + '/');
             }
         }
@@ -289,7 +301,23 @@
         if (!runtimeDriverPromise) {
             runtimeDriverPromise = (async () => {
                 const base = resolvedPkgBase || await locatePkgBase();
-                return import(base + 'rumoca_runtime.js');
+                const packageRuntime = base + 'rumoca_runtime.js';
+                const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_runtime.js');
+                const localPreview = isLocalPreviewHost();
+                const candidates = localPreview
+                    ? [sourceRuntime, packageRuntime]
+                    : [packageRuntime, sourceRuntime];
+                let lastError = null;
+                for (const candidate of candidates) {
+                    try {
+                        const url = new URL(candidate, window.location.href);
+                        url.searchParams.set('rumoca_live_runtime', String(Date.now()));
+                        return await import(url.href);
+                    } catch (error) {
+                        lastError = error;
+                    }
+                }
+                throw lastError || new Error('Rumoca runtime module not found');
             })().catch((error) => {
                 runtimeDriverPromise = null;
                 throw error;
@@ -304,7 +332,7 @@
                 const base = resolvedPkgBase || await locatePkgBase();
                 const packageRuntime = base + 'rumoca_interactive.js';
                 const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_interactive.js');
-                const localPreview = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
+                const localPreview = isLocalPreviewHost();
                 const candidates = localPreview
                     ? [sourceRuntime, packageRuntime]
                     : [packageRuntime, sourceRuntime];
@@ -455,8 +483,10 @@ import {
     ensureParsedSourceRootCache,
     prepareGpuSimulationWithRuntime,
     renderDaeTextWithRuntime,
+    renderGalecFilesWithRuntime,
     simulateModelWithRuntime,
 } from '${pkgBase}rumoca_runtime.js';
+const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
 const ready = init();
 self.onmessage = async (event) => {
     const { id, action, args } = event.data;
@@ -494,6 +524,34 @@ self.onmessage = async (event) => {
                 modelName: args.model,
                 sourceRootCacheUrl: args.sourceRootCacheUrl || '',
             });
+        } else if (action === 'codegen') {
+            const target = args.target || '';
+            if (GALEC_CODEGEN_TARGETS.has(target)) {
+                result = JSON.stringify(await renderGalecFilesWithRuntime({
+                    pkgBase: '${pkgBase}',
+                    workspaceSources: args.workspaceSources || '{}',
+                    modelName: args.model,
+                    target,
+                }));
+            } else {
+                if (!/^[A-Za-z0-9_.-]+$/.test(target)) {
+                    throw new Error('The book widget supports built-in codegen targets only.');
+                }
+                await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
+                if (typeof rumoca.compile !== 'function' || typeof rumoca.render_target !== 'function') {
+                    throw new Error('code generation APIs are missing in this WASM build');
+                }
+                const compiled = JSON.parse(rumoca.compile(args.source || '', args.model || 'Model'));
+                const daeJson = JSON.stringify(compiled.dae_native || compiled.dae);
+                const rendered = rumoca.render_target(
+                    daeJson,
+                    args.model || 'Model',
+                    target,
+                    '',
+                    '{}',
+                );
+                result = JSON.stringify(Array.isArray(rendered?.files) ? rendered.files : []);
+            }
         } else if (action === 'rumoca.model.parameterMetadata') {
             await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
             if (typeof rumoca.model_parameter_metadata !== 'function') {
@@ -688,6 +746,68 @@ self.onmessage = async (event) => {
         }
     }
 
+    function registerGalecLanguage(monaco) {
+        if (galecLanguageRegistered || !monaco) {
+            return;
+        }
+        galecLanguageRegistered = true;
+        if (!monaco.languages.getLanguages().some((lang) => lang.id === 'galec')) {
+            monaco.languages.register({ id: 'galec' });
+        }
+        monaco.languages.setLanguageConfiguration('galec', {
+            comments: { blockComment: ['/*', '*/'] },
+            brackets: [
+                ['{', '}'],
+                ['[', ']'],
+                ['(', ')'],
+            ],
+            autoClosingPairs: [
+                { open: '{', close: '}' },
+                { open: '[', close: ']' },
+                { open: '(', close: ')' },
+                { open: "'", close: "'", notIn: ['string', 'comment'] },
+            ],
+        });
+        monaco.languages.setMonarchTokensProvider('galec', {
+            keywords: [
+                'algorithm', 'and', 'block', 'constant', 'else', 'end', 'false',
+                'for', 'if', 'input', 'limit', 'loop', 'method', 'not', 'or',
+                'output', 'parameter', 'protected', 'public', 'self', 'signals',
+                'then', 'true',
+            ],
+            types: ['Boolean', 'Integer', 'Real'],
+            builtins: [
+                'absolute', 'arccos', 'arcsin', 'arctan', 'atan2', 'cos', 'cosh',
+                'exp', 'integer', 'ln', 'lg', 'max', 'min', 'real', 'sign', 'sin',
+                'sinh', 'sqrt', 'tan', 'tanh',
+            ],
+            tokenizer: {
+                root: [
+                    [/\/\*/, 'comment', '@comment'],
+                    [/'[^']*'/, 'string'],
+                    [/[A-Za-z_][A-Za-z0-9_]*/, {
+                        cases: {
+                            '@keywords': 'keyword',
+                            '@types': 'type',
+                            '@builtins': 'predefined',
+                            '@default': 'identifier',
+                        },
+                    }],
+                    [/[{}()[\]]/, 'delimiter.bracket'],
+                    [/[;,.]/, 'delimiter'],
+                    [/:=|<=|>=|<>|[=<>+\-*/^:]/, 'operator'],
+                    [/\d+\.\d+(?:[eE][+-]\d+)?/, 'number.float'],
+                    [/\d+/, 'number'],
+                ],
+                comment: [
+                    [/[^/*]+/, 'comment'],
+                    [/\*\//, 'comment', '@pop'],
+                    [/[/*]/, 'comment'],
+                ],
+            },
+        });
+    }
+
     function loadMonaco() {
         if (!monacoPromise) {
             monacoPromise = (async () => {
@@ -701,6 +821,7 @@ self.onmessage = async (event) => {
                 });
                 const monaco = window.monaco;
                 await loadModelicaLanguage(monaco);
+                registerGalecLanguage(monaco);
                 registerMonacoThemeSync(monaco);
                 return monaco;
             })();
@@ -779,6 +900,165 @@ self.onmessage = async (event) => {
             endLineNumber: Math.max(1, Number(end.line ?? start.line ?? 0) + 1),
             endColumn: Math.max(1, Number(end.character ?? start.character ?? 0) + 1),
         };
+    }
+
+    function lspSeverityToMonaco(monaco, severity) {
+        const severities = [
+            monaco.MarkerSeverity.Error,
+            monaco.MarkerSeverity.Error,
+            monaco.MarkerSeverity.Warning,
+            monaco.MarkerSeverity.Info,
+            monaco.MarkerSeverity.Hint,
+        ];
+        return severities[severity] || monaco.MarkerSeverity.Error;
+    }
+
+    function lspHoverContentsToMarkdown(contents) {
+        if (!contents) {
+            return '';
+        }
+        if (typeof contents === 'string') {
+            return contents;
+        }
+        if (Array.isArray(contents)) {
+            return contents.map(lspHoverContentsToMarkdown).filter(Boolean).join('\n\n');
+        }
+        if (typeof contents.value === 'string') {
+            if (typeof contents.language === 'string') {
+                return `\`\`\`${contents.language}\n${contents.value}\n\`\`\``;
+            }
+            return contents.value;
+        }
+        return '';
+    }
+
+    function lspDefinitionLocations(monaco, model, response) {
+        const locations = [];
+        const addLocation = (location) => {
+            const range = location?.range || location?.targetRange || location?.targetSelectionRange;
+            if (!range) {
+                return;
+            }
+            locations.push({
+                uri: model.uri,
+                range: lspRangeToMonaco(range),
+            });
+        };
+        if (Array.isArray(response)) {
+            response.forEach(addLocation);
+        } else if (response) {
+            addLocation(response);
+        }
+        return locations.length > 0 ? locations : null;
+    }
+
+    async function galecRuntimeRequest(method, payload) {
+        const runtime = await loadRuntimeDriver();
+        if (typeof runtime[method] !== 'function') {
+            throw new Error(`${method} missing in this runtime build`);
+        }
+        return runtime[method]({
+            pkgBase: resolvedPkgBase || await locatePkgBase(),
+            ...payload,
+        });
+    }
+
+    function registerGalecLanguageServices(monaco) {
+        if (galecLanguageServicesRegistered || !monaco) {
+            return;
+        }
+        galecLanguageServicesRegistered = true;
+        registerGalecLanguage(monaco);
+        monaco.languages.registerHoverProvider('galec', {
+            async provideHover(model, position) {
+                try {
+                    const hover = await galecRuntimeRequest('galecHoverWithRuntime', {
+                        source: model.getValue(),
+                        fileName: galecModelFileNames.get(model) || 'generated.alg',
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                    });
+                    const value = lspHoverContentsToMarkdown(hover?.contents);
+                    if (!value) {
+                        return null;
+                    }
+                    return {
+                        contents: [{ value }],
+                        range: hover.range ? lspRangeToMonaco(hover.range) : undefined,
+                    };
+                } catch (error) {
+                    console.warn('rumoca-live GALEC hover error:', error);
+                    return null;
+                }
+            },
+        });
+        monaco.languages.registerDefinitionProvider('galec', {
+            async provideDefinition(model, position) {
+                try {
+                    const response = await galecRuntimeRequest('galecDefinitionWithRuntime', {
+                        source: model.getValue(),
+                        fileName: galecModelFileNames.get(model) || 'generated.alg',
+                        uri: model.uri?.toString?.() || 'file:///generated.alg',
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                    });
+                    return lspDefinitionLocations(monaco, model, response);
+                } catch (error) {
+                    console.warn('rumoca-live GALEC definition error:', error);
+                    return null;
+                }
+            },
+        });
+    }
+
+    async function updateGalecDiagnostics(monaco, model) {
+        const state = galecDiagnosticsState.get(model) || { requestId: 0 };
+        const requestId = state.requestId + 1;
+        state.requestId = requestId;
+        galecDiagnosticsState.set(model, state);
+        const source = model.getValue();
+        const versionId = model.getVersionId?.();
+        try {
+            const diagnostics = await galecRuntimeRequest('galecDiagnosticsWithRuntime', {
+                source,
+                fileName: galecModelFileNames.get(model) || 'generated.alg',
+            });
+            const current = galecDiagnosticsState.get(model);
+            if (
+                !current
+                || current.requestId !== requestId
+                || (versionId !== undefined && model.getVersionId?.() !== versionId)
+            ) {
+                return;
+            }
+            const markers = (Array.isArray(diagnostics) ? diagnostics : []).map((diagnostic) => ({
+                ...lspRangeToMonaco(diagnostic.range),
+                severity: lspSeverityToMonaco(monaco, diagnostic.severity),
+                message: String(diagnostic.message || ''),
+                source: String(diagnostic.source || 'rumoca-galec'),
+                code: diagnostic.code,
+            }));
+            monaco.editor.setModelMarkers(model, 'rumoca-galec', markers);
+        } catch (error) {
+            console.warn('rumoca-live GALEC diagnostics error:', error);
+        }
+    }
+
+    function activateGalecEditorLanguageServices(monaco, editor, fileName) {
+        if (!monaco || !editor?.model) {
+            return;
+        }
+        registerGalecLanguageServices(monaco);
+        galecModelFileNames.set(editor.model, fileName || 'generated.alg');
+        updateGalecDiagnostics(monaco, editor.model);
+        let timer = null;
+        editor.onChange(() => {
+            clearTimeout(timer);
+            timer = setTimeout(
+                () => updateGalecDiagnostics(monaco, editor.model),
+                DIAGNOSTIC_DEBOUNCE_MS
+            );
+        });
     }
 
     function registerLanguageServices(wasm) {
@@ -900,16 +1180,9 @@ self.onmessage = async (event) => {
             console.warn('rumoca-live diagnostics error:', error);
             return;
         }
-        const severities = [
-            monaco.MarkerSeverity.Error,
-            monaco.MarkerSeverity.Error,
-            monaco.MarkerSeverity.Warning,
-            monaco.MarkerSeverity.Info,
-            monaco.MarkerSeverity.Hint,
-        ];
         const markers = diagnostics.map((diagnostic) => ({
             ...lspRangeToMonaco(diagnostic.range),
-            severity: severities[diagnostic.severity] || monaco.MarkerSeverity.Error,
+            severity: lspSeverityToMonaco(monaco, diagnostic.severity),
             message: String(diagnostic.message || ''),
             source: 'rumoca',
         }));
@@ -1603,11 +1876,12 @@ self.onmessage = async (event) => {
     // Editor backends: Monaco (preferred) and a plain textarea fallback
     // ---------------------------------------------------------------------
 
-    function createMonacoEditor(monaco, host, source, language = 'modelica') {
+    function createMonacoEditor(monaco, host, source, language = 'modelica', options = {}) {
         const lineHeight = 19;
         const verticalPadding = 12;
         const heightFor = (text) => {
-            const lines = Math.min(text.split('\n').length + 1, MAX_EDITOR_LINES);
+            const maxLines = Number.isFinite(options.maxLines) ? options.maxLines : MAX_EDITOR_LINES;
+            const lines = Math.min(text.split('\n').length + 1, maxLines);
             return Math.max(lines, 4) * lineHeight + verticalPadding;
         };
         host.style.height = `${heightFor(source)}px`;
@@ -1620,6 +1894,8 @@ self.onmessage = async (event) => {
             lineNumbers: 'on',
             lineNumbersMinChars: 3,
             automaticLayout: true,
+            readOnly: Boolean(options.readOnly),
+            domReadOnly: Boolean(options.readOnly),
             quickSuggestions: false,
             suggestOnTriggerCharacters: true,
             glyphMargin: false,
@@ -1629,6 +1905,7 @@ self.onmessage = async (event) => {
             renderLineHighlight: 'none',
             scrollbar: { alwaysConsumeMouseWheel: false },
         });
+        const model = editor.getModel();
         editor.onDidChangeModelContent(() => {
             host.style.height = `${heightFor(editor.getValue())}px`;
         });
@@ -1638,7 +1915,13 @@ self.onmessage = async (event) => {
             setValue: (text) => editor.setValue(text),
             onChange: (cb) => editor.onDidChangeModelContent(cb),
             onFocus: (cb) => editor.onDidFocusEditorText(cb),
-            model: editor.getModel(),
+            layout: () => editor.layout(),
+            model,
+            dispose: () => {
+                monacoEditors.delete(editor);
+                editor.dispose();
+                model?.dispose?.();
+            },
         };
     }
 
@@ -1727,6 +2010,547 @@ self.onmessage = async (event) => {
             getValue: () => editor.getValue(),
             reset: () => editor.setValue(originalSource),
         };
+    }
+
+    function buildGalecCodegenWidget(codeEl, monaco) {
+        const pre = codeEl.parentElement;
+        let originalSource = codeEl.textContent.replace(/\n$/, '');
+        const liveDirectives = parseLiveDirectives(originalSource);
+        let sourceUrl = liveDirectives.source || '';
+        const scenarioUrl = liveDirectives.scenario || '';
+        let modelOverride = liveDirectives.model || '';
+        let scenarioText = '';
+        let scenarioConfig = null;
+        let scenarioDescriptor = null;
+
+        const workspaceFocusPath = () =>
+            repoExamplesRelativePath(scenarioUrl || sourceUrl);
+        const scenarioWorkspacePath = () =>
+            repoExamplesRelativePath(scenarioUrl) || 'rumoca-scenario.toml';
+
+        function scenarioWorkspaceSources(text = scenarioText) {
+            return JSON.stringify({ [scenarioWorkspacePath()]: text });
+        }
+
+        async function parseScenarioTextWithWasm(text) {
+            const wasm = await loadWasm();
+            if (typeof wasm.scenario_get_scenario_config_full !== 'function') {
+                throw new Error('scenario_get_scenario_config_full missing in this WASM build');
+            }
+            const parsed = JSON.parse(wasm.scenario_get_scenario_config_full(
+                scenarioWorkspaceSources(text),
+                scenarioWorkspacePath()
+            ));
+            if (!parsed?.ok) {
+                throw new Error(parsed?.error || 'failed to parse scenario config');
+            }
+            return parsed;
+        }
+
+        function codegenTarget() {
+            return trimMaybeString(scenarioConfig?.codegen?.target);
+        }
+
+        function modelWorkspacePath(model) {
+            return repoExamplesRelativePath(sourceUrl) || modelFileNameForInlineScenario(model);
+        }
+
+        function workspaceSourcesJson(source, model) {
+            return JSON.stringify({ [modelWorkspacePath(model)]: source });
+        }
+
+        const container = document.createElement('div');
+        container.className = 'rumoca-live rumoca-live-codegen-widget';
+        const editorHost = document.createElement('div');
+        editorHost.className = 'rumoca-live-editor-host';
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'rumoca-live-toolbar';
+        const generateAlgBtn = document.createElement('button');
+        generateAlgBtn.type = 'button';
+        generateAlgBtn.className = 'rumoca-live-button rumoca-live-run';
+        generateAlgBtn.textContent = 'Generate .alg';
+        generateAlgBtn.title = 'Project the Modelica source into GALEC Algorithm Code';
+        const resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.className = 'rumoca-live-button';
+        resetBtn.textContent = 'Reset';
+        const status = document.createElement('span');
+        status.className = 'rumoca-live-status';
+        toolbar.append(generateAlgBtn, resetBtn, status);
+
+        const progress = document.createElement('div');
+        progress.className = 'rumoca-live-progress';
+        progress.hidden = true;
+        const progressFill = document.createElement('div');
+        progressFill.className = 'rumoca-live-progress-fill rumoca-live-progress-indeterminate';
+        progress.appendChild(progressFill);
+
+        const output = document.createElement('div');
+        output.className = 'rumoca-live-output';
+        output.hidden = true;
+        container.append(editorHost, toolbar, progress, output);
+        pre.replaceWith(container);
+
+        const editor = monaco
+            ? createMonacoEditor(monaco, editorHost, originalSource)
+            : createTextareaEditor(editorHost, originalSource);
+
+        const widget = {
+            busy: false,
+            generatedEditors: [],
+            languageServicesActive: false,
+            diagnosticsTimer: null,
+            diagnosticsSubscription: null,
+            diagnosticsRequestId: 0,
+            sourceRootCacheUrlPromise: null,
+            sourceRootsSessionKey: null,
+            workspaceSourceRootsPromise: null,
+            scenarioSourceRootPaths() {
+                return normalizeStringArray(scenarioConfig?.source_roots);
+            },
+            async workspaceSourceRootPaths(wasm) {
+                const focusPath = workspaceFocusPath();
+                if (!focusPath) {
+                    return [];
+                }
+                if (!widget.workspaceSourceRootsPromise) {
+                    widget.workspaceSourceRootsPromise = (async () => {
+                        const workspaceSources = await loadWorkspaceSourcesForFocus(focusPath);
+                        if (Object.keys(workspaceSources).length === 0) {
+                            return [];
+                        }
+                        if (!wasm || typeof wasm.workspace_effective_source_roots !== 'function') {
+                            throw new Error('workspace_effective_source_roots missing in this WASM build');
+                        }
+                        return normalizeStringArray(JSON.parse(wasm.workspace_effective_source_roots(
+                            JSON.stringify(workspaceSources),
+                            focusPath
+                        )));
+                    })().catch((error) => {
+                        widget.workspaceSourceRootsPromise = null;
+                        throw error;
+                    });
+                }
+                return widget.workspaceSourceRootsPromise;
+            },
+            async sourceRootPaths(wasm) {
+                const sourceRoots = uniqueStrings([
+                    ...(await widget.workspaceSourceRootPaths(wasm)),
+                    ...widget.scenarioSourceRootPaths(),
+                ]);
+                if (widget.scenarioSourceRootPaths().length > 0 && sourceRoots.length === 0) {
+                    throw new Error(
+                        `No effective Modelica source roots were resolved for ${workspaceFocusPath()}. ` +
+                        'Check the scenario source_roots and the staged source-root cache.'
+                    );
+                }
+                return sourceRoots;
+            },
+            sourceRootCacheUrl(wasm) {
+                if (!widget.sourceRootCacheUrlPromise) {
+                    widget.sourceRootCacheUrlPromise = widget.sourceRootPaths(wasm)
+                        .then(loadSourceRootCacheUrlForRoots)
+                        .catch((error) => {
+                            widget.sourceRootCacheUrlPromise = null;
+                            throw error;
+                        });
+                }
+                return widget.sourceRootCacheUrlPromise;
+            },
+            setStatus(text) { status.textContent = text; },
+            onWasmReady(wasm) {
+                if (widget.languageServicesActive) {
+                    activateEditorLanguageServices(wasm);
+                }
+            },
+        };
+        widgets.push(widget);
+        if (editor.model) {
+            monacoModelWidgets.set(editor.model, widget);
+        }
+
+        function scheduleDiagnostics(wasm) {
+            if (!monaco || !editor.model) {
+                return;
+            }
+            clearTimeout(widget.diagnosticsTimer);
+            widget.diagnosticsTimer = setTimeout(
+                () => updateDiagnostics(wasm, monaco, editor.model, widget),
+                DIAGNOSTIC_DEBOUNCE_MS
+            );
+        }
+
+        function activateEditorLanguageServices(wasm) {
+            widget.languageServicesActive = true;
+            if (!monaco || !editor.model) {
+                return;
+            }
+            updateDiagnostics(wasm, monaco, editor.model, widget);
+            if (!widget.diagnosticsSubscription) {
+                widget.diagnosticsSubscription = editor.onChange(() => scheduleDiagnostics(wasm));
+            }
+        }
+
+        function clearGeneratedEditors() {
+            for (const generatedEditor of widget.generatedEditors) {
+                generatedEditor.dispose?.();
+            }
+            widget.generatedEditors = [];
+        }
+
+        function showError(error) {
+            clearGeneratedEditors();
+            const message = error instanceof Error ? error.message : String(error);
+            const errBox = document.createElement('pre');
+            errBox.className = 'rumoca-live-error';
+            errBox.textContent = message;
+            output.replaceChildren(errBox);
+            output.hidden = false;
+            widget.setStatus('Failed');
+        }
+
+        function beginProgress(label) {
+            progress.hidden = false;
+            progressFill.style.width = '100%';
+            progressFill.classList.add('rumoca-live-progress-indeterminate');
+            widget.setStatus(label);
+        }
+
+        function endProgress() {
+            progress.hidden = true;
+            progressFill.classList.remove('rumoca-live-progress-indeterminate');
+        }
+
+        async function loadScenarioSource() {
+            const response = await fetch(pageUrl(scenarioUrl));
+            if (!response.ok) {
+                throw new Error(`${response.status} ${response.statusText}`);
+            }
+            scenarioText = (await response.text()).replace(/\n$/, '');
+            const parsed = await parseScenarioTextWithWasm(scenarioText);
+            scenarioConfig = parsed.config || {};
+            scenarioDescriptor = parsed.descriptor || {};
+            const task = trimMaybeString(scenarioConfig?.rumoca?.task).toLowerCase();
+            if (task && task !== 'codegen') {
+                throw new Error(`GALEC codegen widget expected task = "codegen", found "${task}".`);
+            }
+            const target = codegenTarget();
+            if (!GALEC_CODEGEN_TARGETS.has(target)) {
+                throw new Error(`GALEC codegen widget does not support target "${target || '(missing)'}".`);
+            }
+            modelOverride = trimMaybeString(scenarioDescriptor.model)
+                || trimMaybeString(scenarioConfig.model?.name)
+                || modelOverride;
+            sourceUrl = new URL(trimMaybeString(scenarioConfig.model?.file), pageUrl(scenarioUrl)).href;
+            widget.sourceRootCacheUrlPromise = null;
+            widget.sourceRootsSessionKey = null;
+            widget.workspaceSourceRootsPromise = null;
+        }
+
+        async function loadExternalSource() {
+            if (!sourceUrl && !scenarioUrl) {
+                return;
+            }
+            generateAlgBtn.disabled = true;
+            resetBtn.disabled = true;
+            widget.setStatus(`Loading ${scenarioUrl || sourceUrl}…`);
+            try {
+                if (scenarioUrl) {
+                    await loadScenarioSource();
+                }
+                const response = await fetch(sourceUrl.startsWith('http') ? sourceUrl : pageUrl(sourceUrl));
+                if (!response.ok) {
+                    throw new Error(`${response.status} ${response.statusText}`);
+                }
+                originalSource = (await response.text()).replace(/\n$/, '');
+                editor.setValue(originalSource);
+                generateAlgBtn.disabled = false;
+                resetBtn.disabled = false;
+                widget.setStatus('');
+                if (widget.languageServicesActive && wasmModulePromise && monaco && editor.model) {
+                    wasmModulePromise.then((wasm) => updateDiagnostics(wasm, monaco, editor.model, widget));
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                widget.setStatus(`Failed to load ${scenarioUrl || sourceUrl}: ${message}`);
+                resetBtn.disabled = false;
+            }
+        }
+
+        async function renderGalecAlgFiles(wasm, source, model, signal) {
+            const workspaceSources = workspaceSourcesJson(source, model);
+            const filesJson = await runHeavy('codegen', {
+                source,
+                model,
+                target: 'galec',
+                workspaceSources,
+                sourceRootCacheUrl: '',
+            }, async () => {
+                const runtime = await loadRuntimeDriver();
+                const files = await runtime.renderGalecFilesWithRuntime({
+                    pkgBase: resolvedPkgBase || await locatePkgBase(),
+                    workspaceSources,
+                    modelName: model,
+                    target: 'galec',
+                });
+                return JSON.stringify(files);
+            }, signal);
+            throwIfAborted(signal);
+            const files = JSON.parse(filesJson);
+            if (!Array.isArray(files) || files.length === 0) {
+                throw new Error('GALEC generation did not render any files.');
+            }
+            return files;
+        }
+
+        function codegenLanguageForPath(path) {
+            const lower = String(path || '').toLowerCase();
+            if (lower.endsWith('.alg')) return 'galec';
+            if (lower.endsWith('.c') || lower.endsWith('.h')) return 'c';
+            return 'plaintext';
+        }
+
+        function codegenStageLabel(path) {
+            const lower = String(path || '').toLowerCase();
+            if (lower.endsWith('.alg')) return 'GALEC Algorithm Code';
+            if (lower.endsWith('.h')) return 'C header';
+            if (lower.endsWith('.c')) return 'C source';
+            return 'Generated file';
+        }
+
+        function modelIdentifierFromAlgPath(path) {
+            const leaf = String(path || 'model.alg').split('/').pop() || 'model.alg';
+            const stem = leaf.replace(/\.alg$/i, '') || 'model';
+            return stem.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'model';
+        }
+
+        function galecCGenerationTarget(target) {
+            return target === 'galec-production' || target === 'embedded-c-galec'
+                ? target
+                : 'embedded-c-galec';
+        }
+
+        async function generateCFromAlg(generatedEditor, algPath, configuredTarget, button) {
+            const target = galecCGenerationTarget(configuredTarget);
+            const algSource = generatedEditor.getValue();
+            const modelName = modelIdentifierFromAlgPath(algPath);
+            button.disabled = true;
+            widget.setStatus(`Generating C/H from ${algPath}…`);
+            try {
+                const runtime = await loadRuntimeDriver();
+                const cFiles = await runtime.renderGalecCFromAlgWithRuntime({
+                    pkgBase: resolvedPkgBase || await locatePkgBase(),
+                    algSource,
+                    fileName: algPath,
+                    modelName,
+                    target,
+                });
+                renderCodegenResult([{ path: algPath, content: algSource }, ...cFiles], target);
+                widget.setStatus(`Generated C/H from ${algPath}`);
+            } catch (error) {
+                showError(error);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function appendCodegenPipeline(shell, files) {
+            const hasAlg = files.some((file) => String(file.path || '').toLowerCase().endsWith('.alg'));
+            const hasC = files.some((file) => /\.(?:c|h)$/i.test(String(file.path || '')));
+            const stages = ['Modelica source'];
+            if (hasAlg) stages.push('GALEC .alg');
+            if (hasC) stages.push('C .h/.c');
+            const pipeline = document.createElement('div');
+            pipeline.className = 'rumoca-live-codegen-pipeline';
+            for (const [index, label] of stages.entries()) {
+                const stage = document.createElement('span');
+                stage.className = 'rumoca-live-codegen-stage';
+                stage.textContent = label;
+                pipeline.appendChild(stage);
+                if (index + 1 < stages.length) {
+                    const arrow = document.createElement('span');
+                    arrow.className = 'rumoca-live-codegen-arrow';
+                    arrow.textContent = '→';
+                    pipeline.appendChild(arrow);
+                }
+            }
+            shell.appendChild(pipeline);
+        }
+
+        function appendCodegenFile(shell, file, index, target) {
+            const path = trimMaybeString(file.path) || `file-${index + 1}`;
+            const content = String(file.content ?? '');
+            const language = codegenLanguageForPath(path);
+            const details = document.createElement('details');
+            details.open = index === 0;
+            const summary = document.createElement('summary');
+            const summaryMain = document.createElement('span');
+            summaryMain.className = 'rumoca-live-codegen-summary-main';
+            const stage = document.createElement('span');
+            stage.className = 'rumoca-live-codegen-kind';
+            stage.textContent = codegenStageLabel(path);
+            const name = document.createElement('span');
+            name.className = 'rumoca-live-codegen-name';
+            name.textContent = path;
+            summaryMain.append(stage, name);
+            summary.appendChild(summaryMain);
+            details.appendChild(summary);
+            shell.appendChild(details);
+
+            if (language === 'galec') {
+                const host = document.createElement('div');
+                host.className = 'rumoca-live-codegen-editor';
+                details.appendChild(host);
+                const generatedEditor = monaco
+                    ? createMonacoEditor(monaco, host, content, language, { maxLines: 34 })
+                    : createTextareaEditor(host, content);
+                widget.generatedEditors.push(generatedEditor);
+                details.addEventListener('toggle', () => {
+                    if (details.open) {
+                        generatedEditor.layout?.();
+                    }
+                });
+                if (monaco) {
+                    activateGalecEditorLanguageServices(monaco, generatedEditor, path);
+                }
+                const actions = document.createElement('span');
+                actions.className = 'rumoca-live-codegen-actions';
+                const generateCButton = document.createElement('button');
+                generateCButton.type = 'button';
+                generateCButton.className = 'rumoca-live-button rumoca-live-codegen-action';
+                generateCButton.textContent = 'Generate C/H';
+                generateCButton.title = 'Generate C header/source from the current GALEC .alg editor text';
+                generateCButton.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void generateCFromAlg(generatedEditor, path, target, generateCButton);
+                });
+                actions.appendChild(generateCButton);
+                summary.appendChild(actions);
+                return;
+            }
+
+            if (monaco) {
+                const host = document.createElement('div');
+                host.className = 'rumoca-live-codegen-editor';
+                details.appendChild(host);
+                const generatedEditor = createMonacoEditor(
+                    monaco,
+                    host,
+                    content,
+                    language,
+                    { readOnly: true },
+                );
+                widget.generatedEditors.push(generatedEditor);
+                details.addEventListener('toggle', () => {
+                    if (details.open) {
+                        generatedEditor.layout?.();
+                    }
+                });
+                return;
+            }
+
+            const pre = document.createElement('pre');
+            pre.className = 'rumoca-live-dae rumoca-live-codegen-pre';
+            pre.textContent = content;
+            details.appendChild(pre);
+        }
+
+        function renderCodegenResult(files, target) {
+            clearGeneratedEditors();
+            const shell = document.createElement('div');
+            shell.className = 'rumoca-live-codegen';
+            output.replaceChildren(shell);
+            output.hidden = false;
+            appendCodegenPipeline(shell, files);
+            files.forEach((file, index) => appendCodegenFile(shell, file, index, target));
+            const hasOnlyAlg = files.length === 1
+                && String(files[0]?.path || '').toLowerCase().endsWith('.alg');
+            widget.setStatus(hasOnlyAlg
+                ? 'Generated GALEC .alg; use Generate C/H in the .alg panel for the next step'
+                : `Generated ${files.length} ${target} file(s)`);
+        }
+
+        async function runGalecCodegen(wasm, source, model, signal) {
+            const target = codegenTarget();
+            if (!GALEC_CODEGEN_TARGETS.has(target)) {
+                throw new Error(`GALEC codegen widget does not support target "${target || '(missing)'}".`);
+            }
+            await ensureWasmSourceRootsLoaded(wasm, widget);
+            const files = await renderGalecAlgFiles(wasm, source, model, signal);
+            renderCodegenResult(files, target);
+        }
+
+        async function withWasm(action) {
+            if (widget.busy) {
+                return;
+            }
+            const run = new AbortController();
+            widget.busy = true;
+            generateAlgBtn.disabled = true;
+            resetBtn.disabled = true;
+            clearGeneratedEditors();
+            beginProgress('Generating GALEC .alg…');
+            let succeeded = false;
+            try {
+                const wasm = await loadWasm();
+                throwIfAborted(run.signal);
+                const source = editor.getValue();
+                const model = modelOverride || inferModelName(wasm, source);
+                if (!model) {
+                    throw new Error('No model/block/class found in this example.');
+                }
+                activateEditorLanguageServices(wasm);
+                await action(wasm, source, model, run.signal);
+                throwIfAborted(run.signal);
+                succeeded = true;
+            } catch (error) {
+                if (isAbortError(error)) {
+                    widget.setStatus('Stopped');
+                } else {
+                    showError(error);
+                }
+            } finally {
+                endProgress();
+                widget.busy = false;
+                generateAlgBtn.disabled = false;
+                resetBtn.disabled = false;
+                if (!succeeded && output.hidden) {
+                    widget.setStatus('Failed');
+                }
+            }
+        }
+
+        generateAlgBtn.addEventListener('click', () => {
+            void withWasm(runGalecCodegen);
+        });
+
+        resetBtn.addEventListener('click', () => {
+            clearGeneratedEditors();
+            editor.setValue(originalSource);
+            output.hidden = true;
+            output.replaceChildren();
+            widget.setStatus('');
+        });
+
+        editor.onFocus(() => {
+            if (!wasmRequested) {
+                loadWasm()
+                    .then(activateEditorLanguageServices)
+                    .catch(() => { /* surfaced via status */ });
+            } else if (wasmModulePromise) {
+                wasmModulePromise
+                    .then(activateEditorLanguageServices)
+                    .catch(() => { /* surfaced via status */ });
+            }
+        });
+
+        if (sourceUrl || scenarioUrl) {
+            void loadExternalSource();
+        }
+
+        return widget;
     }
 
     function buildWidget(codeEl, monaco) {
@@ -1899,6 +2723,11 @@ self.onmessage = async (event) => {
         liveCheck.checked = false;
         liveLabel.append(liveCheck, document.createTextNode(' Interactive'));
         liveLabel.title = 'Keep registered input sliders live during WasmStepper runs';
+        const scenarioControlsPending = Boolean(scenarioUrl);
+        solverLabel.hidden = scenarioControlsPending;
+        gpuLabel.hidden = scenarioControlsPending;
+        liveLabel.hidden = scenarioControlsPending;
+        daeBtn.hidden = scenarioControlsPending;
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
         toolbar.append(runBtn, stopBtn, daeBtn, resetBtn, settingsBtn, solverLabel, gpuLabel, liveLabel, status);
@@ -2027,6 +2856,7 @@ self.onmessage = async (event) => {
             viewerScriptsByPath: new Map(),
             gpuPrep: null,
             interactiveRunner: null,
+            generatedEditors: [],
             activeRun: null,
             rerunAfterStop: false,
             paramOverrides: {},
@@ -2212,6 +3042,26 @@ self.onmessage = async (event) => {
             return trimMaybeString(scenarioConfig?.viewer?.mode).toLowerCase();
         }
 
+        function scenarioTask() {
+            return trimMaybeString(scenarioConfig?.rumoca?.task).toLowerCase();
+        }
+
+        function isCodegenScenario() {
+            return scenarioTask() === 'codegen';
+        }
+
+        function codegenTarget() {
+            return trimMaybeString(scenarioConfig?.codegen?.target);
+        }
+
+        function modelWorkspacePath(model) {
+            return repoExamplesRelativePath(sourceUrl) || modelFileNameForInlineScenario(model);
+        }
+
+        function workspaceSourcesJson(source, model) {
+            return JSON.stringify({ [modelWorkspacePath(model)]: source });
+        }
+
         function scenarioRelativeUrl(path) {
             const base = scenarioUrl || sourceUrl || window.location.href;
             return new URL(path, pageUrl(base)).href;
@@ -2317,9 +3167,23 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }
 
         function refreshExecutionAvailability(loading = false) {
+            const codegen = isCodegenScenario();
+            const galecCodegen = codegen && GALEC_CODEGEN_TARGETS.has(codegenTarget());
+            runBtn.textContent = galecCodegen ? 'Generate .alg' : codegen ? 'Generate Code' : '▶ Simulate';
+            runBtn.title = codegen
+                ? 'Render the code generation target configured by this scenario'
+                : '';
+            if (codegen) {
+                gpuCheck.checked = false;
+                liveCheck.checked = false;
+            }
+            solverLabel.hidden = codegen;
+            gpuLabel.hidden = codegen;
+            liveLabel.hidden = codegen;
+            daeBtn.hidden = codegen;
             const unavailable = sourceOnly;
             runBtn.disabled = loading || unavailable;
-            daeBtn.disabled = loading || unavailable;
+            daeBtn.disabled = codegen || loading || unavailable;
             if (loading) {
                 return;
             }
@@ -2521,6 +3385,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         });
 
         const showError = (error) => {
+            clearGeneratedEditors();
             const message = error instanceof Error ? error.message : String(error);
             const errBox = document.createElement('pre');
             errBox.className = 'rumoca-live-error';
@@ -2540,6 +3405,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             stopBtn.disabled = false;
             daeBtn.disabled = true;
             widget.busy = true;
+            clearGeneratedEditors();
             // Parameters are frozen during a simulation: lock ordinary tuners.
             // Registered input tuners stay enabled in Interactive mode because
             // the WasmStepper path reads their current values before each step.
@@ -2576,7 +3442,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     widget.busy = false;
                     runBtn.disabled = false;
                     stopBtn.disabled = !widget.interactiveRunner;
-                    daeBtn.disabled = false;
+                    daeBtn.disabled = isCodegenScenario();
                     for (const input of widget.tunerInputs) {
                         input.disabled = false;
                     }
@@ -2588,7 +3454,236 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             }
         };
 
-        runBtn.addEventListener('click', () => withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model, signal) => {
+        async function renderCodegenFiles(wasm, source, model, target, sourceRootCacheUrl, signal) {
+            const workspaceSources = workspaceSourcesJson(source, model);
+            const filesJson = await runHeavy('codegen', {
+                source,
+                model,
+                target,
+                workspaceSources,
+                sourceRootCacheUrl,
+            }, async () => {
+                const runtime = await loadRuntimeDriver();
+                if (GALEC_CODEGEN_TARGETS.has(target)) {
+                    return JSON.stringify(await runtime.renderGalecFilesWithRuntime({
+                        pkgBase: resolvedPkgBase || await locatePkgBase(),
+                        workspaceSources,
+                        modelName: model,
+                        target,
+                    }));
+                }
+                if (!/^[A-Za-z0-9_.-]+$/.test(target)) {
+                    throw new Error('The book widget supports built-in codegen targets only.');
+                }
+                await runtime.ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
+                const compiled = JSON.parse(wasm.compile(source, model));
+                const daeJson = JSON.stringify(compiled.dae_native || compiled.dae);
+                const rendered = wasm.render_target(daeJson, model, target, '', '{}');
+                return JSON.stringify(Array.isArray(rendered?.files) ? rendered.files : []);
+            }, signal);
+            throwIfAborted(signal);
+            const files = JSON.parse(filesJson);
+            if (!Array.isArray(files) || files.length === 0) {
+                throw new Error(`Target '${target}' did not render any files.`);
+            }
+            return files;
+        }
+
+        async function runCodegenScenario(wasm, source, model, signal) {
+            const target = codegenTarget();
+            if (!target) {
+                throw new Error('Codegen scenario is missing [codegen].target.');
+            }
+            const renderTarget = GALEC_CODEGEN_TARGETS.has(target) ? 'galec' : target;
+            const sourceRootCacheUrl = await widget.sourceRootCacheUrl(wasm);
+            if (sourceRootCacheUrl && !GALEC_CODEGEN_TARGETS.has(renderTarget)) {
+                setPhase('Loading source-root cache', null);
+                await ensureWasmSourceRootsLoaded(wasm, widget);
+            }
+            setPhase(`Rendering ${renderTarget}`, null);
+            const files = await renderCodegenFiles(
+                wasm,
+                source,
+                model,
+                renderTarget,
+                sourceRootCacheUrl,
+                signal,
+            );
+            throwIfAborted(signal);
+            renderCodegenResult(files, target);
+        }
+
+        function clearGeneratedEditors() {
+            for (const generatedEditor of widget.generatedEditors) {
+                generatedEditor.dispose?.();
+            }
+            widget.generatedEditors = [];
+        }
+
+        function codegenLanguageForPath(path) {
+            const lower = String(path || '').toLowerCase();
+            if (lower.endsWith('.alg')) return 'galec';
+            if (lower.endsWith('.c') || lower.endsWith('.h')) return 'c';
+            if (lower.endsWith('.json')) return 'json';
+            if (lower.endsWith('.xml')) return 'xml';
+            if (lower.endsWith('.toml')) return 'toml';
+            return 'plaintext';
+        }
+
+        function codegenStageLabel(path) {
+            const lower = String(path || '').toLowerCase();
+            if (lower.endsWith('.alg')) return 'GALEC Algorithm Code';
+            if (lower.endsWith('.h')) return 'C header';
+            if (lower.endsWith('.c')) return 'C source';
+            return 'Generated file';
+        }
+
+        function modelIdentifierFromAlgPath(path) {
+            const leaf = String(path || 'model.alg').split('/').pop() || 'model.alg';
+            const stem = leaf.replace(/\.alg$/i, '') || 'model';
+            return stem.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'model';
+        }
+
+        function galecCGenerationTarget(target) {
+            return target === 'galec-production' || target === 'embedded-c-galec'
+                ? target
+                : 'embedded-c-galec';
+        }
+
+        async function generateCFromAlg(generatedEditor, algPath, configuredTarget, button) {
+            const target = galecCGenerationTarget(configuredTarget);
+            const algSource = generatedEditor.getValue();
+            const modelName = modelIdentifierFromAlgPath(algPath);
+            button.disabled = true;
+            widget.setStatus(`Generating C/H from ${algPath}…`);
+            try {
+                const runtime = await loadRuntimeDriver();
+                const cFiles = await runtime.renderGalecCFromAlgWithRuntime({
+                    pkgBase: resolvedPkgBase || await locatePkgBase(),
+                    algSource,
+                    fileName: algPath,
+                    modelName,
+                    target,
+                });
+                renderCodegenResult(
+                    [{ path: algPath, content: algSource }, ...cFiles],
+                    target,
+                );
+                widget.setStatus(`Generated C/H from ${algPath}`);
+            } catch (error) {
+                showError(error);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function appendCodegenPipeline(shell, files) {
+            const hasAlg = files.some((file) => String(file.path || '').toLowerCase().endsWith('.alg'));
+            const hasC = files.some((file) => /\.(?:c|h)$/i.test(String(file.path || '')));
+            const stages = ['Modelica source'];
+            if (hasAlg) stages.push('GALEC .alg');
+            if (hasC) stages.push('C .h/.c');
+            const pipeline = document.createElement('div');
+            pipeline.className = 'rumoca-live-codegen-pipeline';
+            for (const [index, label] of stages.entries()) {
+                const stage = document.createElement('span');
+                stage.className = 'rumoca-live-codegen-stage';
+                stage.textContent = label;
+                pipeline.appendChild(stage);
+                if (index + 1 < stages.length) {
+                    const arrow = document.createElement('span');
+                    arrow.className = 'rumoca-live-codegen-arrow';
+                    arrow.textContent = '→';
+                    pipeline.appendChild(arrow);
+                }
+            }
+            shell.appendChild(pipeline);
+        }
+
+        function appendCodegenFile(shell, file, index, target) {
+            const path = trimMaybeString(file.path) || `file-${index + 1}`;
+            const content = String(file.content ?? '');
+            const language = codegenLanguageForPath(path);
+            const details = document.createElement('details');
+            details.open = index === 0;
+            const summary = document.createElement('summary');
+            const summaryMain = document.createElement('span');
+            summaryMain.className = 'rumoca-live-codegen-summary-main';
+            const stage = document.createElement('span');
+            stage.className = 'rumoca-live-codegen-kind';
+            stage.textContent = codegenStageLabel(path);
+            const name = document.createElement('span');
+            name.className = 'rumoca-live-codegen-name';
+            name.textContent = path;
+            summaryMain.append(stage, name);
+            summary.appendChild(summaryMain);
+            details.appendChild(summary);
+            shell.appendChild(details);
+            if (monaco) {
+                const host = document.createElement('div');
+                host.className = 'rumoca-live-codegen-editor';
+                details.appendChild(host);
+                const generatedEditor = createMonacoEditor(
+                    monaco,
+                    host,
+                    content,
+                    language,
+                    {
+                        maxLines: language === 'galec' ? 34 : MAX_EDITOR_LINES,
+                        readOnly: language !== 'galec',
+                    },
+                );
+                widget.generatedEditors.push(generatedEditor);
+                details.addEventListener('toggle', () => {
+                    if (details.open) {
+                        generatedEditor.layout?.();
+                    }
+                });
+                if (language === 'galec') {
+                    activateGalecEditorLanguageServices(monaco, generatedEditor, path);
+                    const actions = document.createElement('span');
+                    actions.className = 'rumoca-live-codegen-actions';
+                    const generateCButton = document.createElement('button');
+                    generateCButton.type = 'button';
+                    generateCButton.className = 'rumoca-live-button rumoca-live-codegen-action';
+                    generateCButton.textContent = 'Generate C/H';
+                    generateCButton.title = 'Generate C header/source from the current GALEC .alg editor text';
+                    generateCButton.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void generateCFromAlg(generatedEditor, path, target, generateCButton);
+                    });
+                    actions.appendChild(generateCButton);
+                    summary.appendChild(actions);
+                }
+            } else {
+                const pre = document.createElement('pre');
+                pre.className = 'rumoca-live-dae rumoca-live-codegen-pre';
+                pre.textContent = content;
+                details.appendChild(pre);
+            }
+        }
+
+        function renderCodegenResult(files, target) {
+            clearGeneratedEditors();
+            const shell = document.createElement('div');
+            shell.className = 'rumoca-live-codegen';
+            output.replaceChildren(shell);
+            output.hidden = false;
+            appendCodegenPipeline(shell, files);
+            files.forEach((file, index) => appendCodegenFile(shell, file, index, target));
+            const hasOnlyAlg = files.length === 1
+                && String(files[0]?.path || '').toLowerCase().endsWith('.alg');
+            widget.setStatus(hasOnlyAlg
+                ? 'Generated GALEC .alg; use Generate C/H in the .alg panel for the next step'
+                : `Generated ${files.length} ${target} file(s)`);
+        }
+
+        runBtn.addEventListener('click', () => {
+            if (isCodegenScenario()) {
+                return withWasm('codegen', 'Generating code…', runCodegenScenario);
+            }
+            return withWasm('simulate', 'Compiling & simulating…', async (wasm, source, model, signal) => {
             stopInteractiveRunner();
             const sim = scenarioConfig?.sim || {};
             const solver = trimMaybeString(sim.solver).toLowerCase() || solverSelect.value || 'auto';
@@ -3003,7 +4098,8 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             }, signal);
             throwIfAborted(signal);
             await renderRunResult(JSON.parse(raw));
-        }));
+            });
+        });
 
         stopBtn.addEventListener('click', () => {
             widget.rerunAfterStop = false;
@@ -3124,6 +4220,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }));
 
         resetBtn.addEventListener('click', () => {
+            clearGeneratedEditors();
             widget.rerunAfterStop = false;
             if (widget.interactiveRunner && typeof widget.interactiveRunner.reset === 'function') {
                 widget.interactiveRunner.reset();
@@ -3179,8 +4276,9 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         const liveBlocks = [...document.querySelectorAll('pre > code')].filter((code) => {
             const cls = code.className || '';
             const isInteractive = cls.includes('language-modelica') && /\binteractive\b/.test(cls);
+            const isCodegen = cls.includes('language-modelica') && /\b(?:codegen|galec-codegen)\b/.test(cls);
             const isViz = cls.includes('language-js') && /\brumoca-viz\b/.test(cls);
-            return isInteractive || isViz;
+            return isInteractive || isCodegen || isViz;
         });
         if (liveBlocks.length === 0) {
             return;
@@ -3202,6 +4300,9 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 } else {
                     console.warn('rumoca-live: viz script with no preceding interactive block');
                 }
+            } else if (/\b(?:codegen|galec-codegen)\b/.test(cls)) {
+                buildGalecCodegenWidget(code, monaco);
+                lastWidget = null;
             } else {
                 lastWidget = buildWidget(code, monaco);
             }

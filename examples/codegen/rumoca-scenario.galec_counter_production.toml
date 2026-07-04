@@ -1,0 +1,11 @@
+[rumoca]
+version = "1"
+task = "codegen"
+
+[model]
+file = "../models/GalecCounter.mo"
+name = "GalecCounter"
+
+[codegen]
+target = "galec-production"
+output_dir = "gen/galec_counter_production"

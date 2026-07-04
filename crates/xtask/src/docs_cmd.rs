@@ -165,10 +165,15 @@ fn stage_user_guide_repo_examples(root: &Path) -> Result<()> {
     for (source, target) in [
         ("examples/models", "models"),
         ("examples/simulation", "simulation"),
+        ("examples/codegen", "codegen"),
         ("examples/interactive", "interactive"),
         ("examples/assets", "assets"),
     ] {
-        copy_dir_recursive(&root.join(source), &out_dir.join(target))?;
+        if source == "examples/codegen" {
+            copy_dir_recursive_excluding(&root.join(source), &out_dir.join(target), &["gen"])?;
+        } else {
+            copy_dir_recursive(&root.join(source), &out_dir.join(target))?;
+        }
     }
     let staged_source_roots = stage_user_guide_source_roots(root, &out_dir.join(SOURCE_ROOTS_DIR))?;
     write_user_guide_workspace_config(&out_dir, &staged_source_roots)?;
@@ -356,15 +361,30 @@ fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
 }
 
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
+    copy_dir_recursive_excluding(source, target, &[])
+}
+
+fn copy_dir_recursive_excluding(
+    source: &Path,
+    target: &Path,
+    excluded_names: &[&str],
+) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("failed to create {}", target.display()))?;
     for entry in sorted_dir_entries(source)? {
+        let file_name = entry.file_name();
+        if excluded_names
+            .iter()
+            .any(|excluded| file_name.to_string_lossy() == *excluded)
+        {
+            continue;
+        }
         let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
+        let target_path = target.join(file_name);
         let file_type = entry
             .file_type()
             .with_context(|| format!("failed to stat {}", source_path.display()))?;
         if file_type.is_dir() {
-            copy_dir_recursive(&source_path, &target_path)?;
+            copy_dir_recursive_excluding(&source_path, &target_path, excluded_names)?;
         } else if file_type.is_file() {
             fs::copy(&source_path, &target_path).with_context(|| {
                 format!(

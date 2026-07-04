@@ -33,8 +33,13 @@ test("book live runner merges inherited workspace roots outside scenario setting
   );
   assert.match(
     settingsFrame,
-    /effectiveSourceRootPaths,\s*\}\)/,
+    /effectiveSourceRootPaths/,
     "book settings should pass resolved roots as read-only context to the shared GUI"
+  );
+  assert.match(
+    settingsFrame,
+    /parameterMetadata/,
+    "book settings should pass parameter metadata to the shared GUI"
   );
 });
 
@@ -69,19 +74,54 @@ test("book live runner round-trips scenario TOML through WASM", async () => {
   assert.match(liveSource, /scenario_get_scenario_config_full/);
   assert.match(liveSource, /scenario_set_scenario_config/);
 
+  const applyScenarioStart = liveSource.indexOf("async function applyScenarioText");
   const applyScenario = liveSource.slice(
-    liveSource.indexOf("async function applyScenarioText"),
-    liveSource.indexOf("async function loadScenarioSource")
+    applyScenarioStart,
+    liveSource.indexOf("async function loadScenarioSource", applyScenarioStart)
   );
   assert.match(applyScenario, /parseScenarioTextWithWasm/);
   assert.match(applyScenario, /scenarioConfig = parsed\.config/);
 });
 
-test("docs staging writes workspace config and strips generated scenario roots", async () => {
+test("book live runner can execute codegen scenarios", async () => {
+  const liveSource = await readRepoFile("docs/user-guide/live/rumoca-live.js");
+
+  assert.match(liveSource, /GALEC_CODEGEN_TARGETS/);
+  assert.match(liveSource, /function buildGalecCodegenWidget/);
+  assert.match(liveSource, /renderGalecFilesWithRuntime/);
+  assert.match(liveSource, /renderGalecCFromAlgWithRuntime/);
+  assert.match(liveSource, /Generate \.alg/);
+  assert.match(liveSource, /Generate C\/H/);
+  assert.match(liveSource, /runHeavy\('codegen'/);
+  assert.match(liveSource, /rumoca-live-codegen/);
+  assert.match(liveSource, /registerGalecLanguage/);
+  assert.match(liveSource, /galecDiagnosticsWithRuntime/);
+  assert.match(liveSource, /activateGalecEditorLanguageServices/);
+  assert.match(liveSource, /Modelica source/);
+  assert.match(liveSource, /GALEC \.alg/);
+  assert.match(liveSource, /C \.h\/\.c/);
+  assert.match(liveSource, /rumoca-live-codegen-editor/);
+
+  const codegenWidget = liveSource.slice(
+    liveSource.indexOf("function buildGalecCodegenWidget"),
+    liveSource.indexOf("function buildWidget")
+  );
+  assert.doesNotMatch(codegenWidget, /Show DAE/);
+  assert.doesNotMatch(codegenWidget, /GPU/);
+  assert.doesNotMatch(codegenWidget, /Interactive/);
+  assert.doesNotMatch(codegenWidget, /solverLabel/);
+  assert.doesNotMatch(codegenWidget, /stopBtn/);
+
+  const galecDocs = await readRepoFile("docs/user-guide/src/codegen/galec-efmi.md");
+  assert.match(galecDocs, /```modelica,codegen/);
+});
+
+test("docs staging writes workspace config and stages examples", async () => {
   const docsCmd = await readRepoFile("crates/xtask/src/docs_cmd.rs");
 
   assert.match(docsCmd, /write_user_guide_workspace_config/);
+  assert.match(docsCmd, /\("examples\/codegen", "codegen"\)/);
+  assert.match(docsCmd, /copy_dir_recursive_excluding/);
+  assert.match(docsCmd, /&\["gen"\]/);
   assert.match(docsCmd, /WORKSPACE_CONFIG_FILE/);
-  assert.match(docsCmd, /strip_staged_scenario_source_roots/);
-  assert.match(docsCmd, /table\.remove\("source_roots"\)/);
 });

@@ -1,5 +1,11 @@
 import { diffsolAvailable as diffsolAddonAvailable, simulateWithDiffsol } from './rumoca_diffsol.js';
-import { renderGalecTargetFiles } from './rumoca_galec.js';
+import {
+  galecDefinition,
+  galecDiagnostics,
+  galecHover,
+  renderGalecCFromAlg,
+  renderGalecTargetFiles,
+} from './rumoca_galec.js';
 
 const loadedSourceRootCaches = new WeakMap();
 
@@ -177,4 +183,43 @@ export async function renderGalecFilesWithRuntime({
   target,
 }) {
   return renderGalecTargetFiles(pkgBase, workspaceSources, modelName, target);
+}
+
+export async function renderGalecCFromAlgWithRuntime({
+  pkgBase = './',
+  algSource,
+  fileName = 'generated.alg',
+  modelName = 'model',
+  target = 'embedded-c-galec',
+}) {
+  return renderGalecCFromAlg(pkgBase, algSource, fileName, modelName, target);
+}
+
+export async function galecDiagnosticsWithRuntime({
+  pkgBase = './',
+  source,
+  fileName = 'generated.alg',
+}) {
+  return galecDiagnostics(pkgBase, source, fileName);
+}
+
+export async function galecHoverWithRuntime({
+  pkgBase = './',
+  source,
+  fileName = 'generated.alg',
+  line = 0,
+  character = 0,
+}) {
+  return galecHover(pkgBase, source, fileName, line, character);
+}
+
+export async function galecDefinitionWithRuntime({
+  pkgBase = './',
+  source,
+  fileName = 'generated.alg',
+  uri = 'file:///generated.alg',
+  line = 0,
+  character = 0,
+}) {
+  return galecDefinition(pkgBase, source, fileName, uri, line, character);
 }

@@ -84,7 +84,8 @@ pub use c_print::CPrinter;
 pub use classify::{Classification, ClassifiedVariable, VariableClass, classify_variables};
 pub use diagnostic::GalecTargetError;
 pub use emit::{
-    ManifestIdentity, assemble_manifest_with_identity, c_template_context, render_algorithm_code,
+    ManifestIdentity, assemble_manifest_with_identity, c_template_context,
+    c_template_context_for_block, render_algorithm_code,
 };
 pub use input::{GalecInput, GalecOptions, GalecProfile, ScalarTypeMap};
 pub use lower::lower_to_algorithm_code;

@@ -7,6 +7,8 @@ at the model it needs.
 
 - `Ball.mo`: bouncing ball with `reinit` event behavior.
 - `Circuit.mo`: small package-style circuit model.
+- `GalecCounter.mo`: fixed-sample discrete model used by the GALEC/eFMI
+  codegen example.
 - `KalmanFilterStepTest.mo`: MSL-backed Kalman filter step test.
 - `PIDMSL.mo`: MSL-backed PID example.
 - `SwitchedRLC.mo`: local switched RLC model.

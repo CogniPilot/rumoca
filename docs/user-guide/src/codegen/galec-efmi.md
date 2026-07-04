@@ -51,15 +51,38 @@ exposes a **Code Generation** task. Pick a GALEC target from the codegen
 target dropdown (`galec`, `galec-production`, or `embedded-c-galec`), choose
 an output location, and select **Generate Code**.
 
-The GUI renders the **inspectable GALEC sources** for the chosen target: the
-`.alg` Algorithm Code text and, for the two C tracks, the generated C header
-and source. This render is *identity-free* — it does not mint the eFMU
-**container** (the `__content.xml` registry, per-representation `manifest.xml`,
-and checksum web). For `galec`/`galec-production`, those container artifacts —
-including the `ProductionCode/manifest.xml` that the generated C files name as
-their conformance surface — are produced by the CLI packaging step
-(`rumoca compile … --target galec-production`). The GUI shows exactly the code
-the CLI would package, so you can inspect it without building the container.
+The GUI renders the **inspectable GALEC sources** in stages: first the `.alg`
+Algorithm Code text, then generated C header/source from the current `.alg`
+editor contents. This browser render is *identity-free* — it does not mint the
+eFMU **container** (the `__content.xml` registry, per-representation
+`manifest.xml`, and checksum web). For `galec`/`galec-production`, those
+container artifacts are produced by the CLI packaging step
+(`rumoca compile … --target galec-production`). Use the GUI to inspect and edit
+the target-language code, and use the CLI when you need the full eFMU package.
+
+## Try GALEC Production Code in the guide
+
+The example below is a fixed-sample discrete counter, which is the subset the
+current GALEC projection accepts. Select **Generate .alg** to project the
+Modelica source into GALEC Algorithm Code. The `.alg` artifact opens in the
+same Monaco editor surface as the Modelica input, with GALEC syntax
+highlighting and the GALEC language service diagnostics/hover/definition hooks
+active. Then select **Generate C/H** in the `.alg` panel to generate C header
+and source from the current GALEC editor text.
+
+```modelica,codegen
+// rumoca-live-scenario: ../repo-examples/codegen/rumoca-scenario.galec_counter_production.toml
+```
+
+Native run:
+
+```bash
+cargo run -p rumoca -- \
+  compile examples/models/GalecCounter.mo \
+  --model GalecCounter \
+  --target galec-production \
+  --output examples/codegen/gen/galec_counter_production
+```
 
 ## See also
 

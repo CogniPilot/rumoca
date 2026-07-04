@@ -3303,7 +3303,11 @@ version = "0.9.9"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
+ "lsp-types",
  "rumoca-compile",
+ "rumoca-galec-codegen",
+ "rumoca-ir-galec",
+ "rumoca-tool-galec-lsp",
  "serde",
  "serde_json",
  "wasm-bindgen",
