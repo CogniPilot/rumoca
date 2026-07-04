@@ -1101,6 +1101,11 @@ fn start_wasm_smoke_server(root: &Path) -> Result<(u16, ChildGuard)> {
         server
             .arg("playground")
             .arg("edit")
+            // The `playground build` above already produced the bundle; serve it
+            // as-is so the server binds the port promptly instead of repeating a
+            // ~2 min wasm-bindgen/wasm-opt rebuild that overruns the readiness
+            // window below.
+            .arg("--skip-build")
             .arg("--port")
             .arg(port.to_string())
             .stdout(Stdio::null())

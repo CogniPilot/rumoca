@@ -476,6 +476,30 @@ fn cli_parses_playground_edit() {
             PlaygroundCommand::Edit(args) => {
                 assert_eq!(args.port, Some(9001));
                 assert!(!args.rayon);
+                assert!(!args.skip_build);
+            }
+            other => panic!("expected playground edit, got {other:?}"),
+        },
+        other => panic!("expected playground command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_playground_edit_skip_build() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "playground",
+        "edit",
+        "--skip-build",
+        "--port",
+        "9002",
+    ])
+    .expect("parse playground edit --skip-build");
+    match cli.command {
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Edit(args) => {
+                assert_eq!(args.port, Some(9002));
+                assert!(args.skip_build);
             }
             other => panic!("expected playground edit, got {other:?}"),
         },
