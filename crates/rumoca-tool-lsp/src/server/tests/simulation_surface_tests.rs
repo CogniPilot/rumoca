@@ -693,6 +693,71 @@ fn render_target_command_renders_compiled_open_document_model() {
 }
 
 #[test]
+fn render_target_command_renders_galec_embedded_c_from_compiled_model() {
+    run_async_test(async {
+        let temp = new_temp_dir("render-target-galec");
+        let focus = temp.join("Sampler.mo");
+        // A fixed-sample discrete model (GALEC rejects continuous der()).
+        std::fs::write(
+            &focus,
+            "model Sampler\n  constant Real dt = 0.001;\n  parameter Real gain = 2.0;\n  \
+             discrete Integer n(start = 0);\n  discrete output Real y(start = 0.0);\nequation\n  \
+             when sample(0.0, dt) then\n    n = pre(n) + 1;\n    y = gain * n;\n  end when;\nend Sampler;\n",
+        )
+        .expect("write focus");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let response = server
+            .execute_command(ExecuteCommandParams {
+                command: "rumoca.workspace.renderTarget".to_string(),
+                arguments: vec![serde_json::json!({
+                    "uri": Url::from_file_path(&focus).expect("file uri").to_string(),
+                    "model": "Sampler",
+                    "target": "embedded-c-galec",
+                })],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await
+            .expect("execute command should succeed")
+            .expect("execute command should return a payload");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "GALEC codegen should succeed natively: {response}"
+        );
+        let paths: Vec<&str> = response
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .expect("files array")
+            .iter()
+            .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
+            .collect();
+        assert!(
+            paths.contains(&"Sampler.alg"),
+            "expected the .alg: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"Sampler.h"),
+            "expected the C header: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"Sampler.c"),
+            "expected the C source: {paths:?}"
+        );
+    });
+}
+
+#[test]
 fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
     run_async_test(async {
         let temp = new_temp_dir("render-target-raw-jinja-scenario");
