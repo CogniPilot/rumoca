@@ -226,6 +226,11 @@ struct PlaygroundEditArgs {
     /// Build and serve the threaded wasm-rayon package
     #[arg(long)]
     rayon: bool,
+    /// Serve an already-built bundle without rebuilding it. Requires a prior
+    /// `cargo xtask playground build` for the matching variant. Used by the
+    /// browser-smoke harness, which pre-builds and only needs a server.
+    #[arg(long)]
+    skip_build: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -524,17 +529,33 @@ fn cmd_playground(args: PlaygroundArgs) -> Result<()> {
             let rayon = args.rayon;
             playground_cmd::stage_playground_vendor_assets(&root)?;
             modelica_dependency_cache::ensure_cmm_library(&root, false)?;
-            ensure_wasm_deps(&root)?;
-            build_wasm(
-                &root,
-                WasmBuildProfile::Release,
-                WasmVariant::FullWeb,
-                rayon,
-                false,
-                false,
-            )?;
             let pkg_subdir =
                 wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, rayon);
+            if args.skip_build {
+                // Serve the pre-built bundle as-is. Rebuilding here would repeat
+                // wasm-bindgen/wasm-opt on the full-web bundle (~2 min) and blow
+                // the browser-smoke server's readiness window; that caller runs
+                // `playground build` first, so the dist is already current.
+                let bundle = root
+                    .join("packages/rumoca/dist")
+                    .join(&pkg_subdir)
+                    .join("rumoca_bind_wasm.js");
+                anyhow::ensure!(
+                    bundle.is_file(),
+                    "--skip-build requires a prior `cargo xtask playground build`; missing {}",
+                    bundle.display()
+                );
+            } else {
+                ensure_wasm_deps(&root)?;
+                build_wasm(
+                    &root,
+                    WasmBuildProfile::Release,
+                    WasmVariant::FullWeb,
+                    rayon,
+                    false,
+                    false,
+                )?;
+            }
             serve_wasm(&root, args.port, &pkg_subdir)
         }
         PlaygroundCommand::Clean => clean_wasm(&repo_root()),
