@@ -602,6 +602,38 @@ fn render_c_layout_template(
     })
 }
 
+/// Render C header/source files from a prebuilt GALEC C-template context. This
+/// is the `.alg -> .h/.c` browser/editor path: the caller owns parsing and
+/// validating the edited `.alg` block, while this facade owns the shared
+/// embedded-C templates and target conformance header text.
+///
+/// # Errors
+///
+/// [`GalecExportError::UnknownTarget`] for a non-GALEC target,
+/// [`GalecExportError::CTemplate`] when the target is the Algorithm-Code-only
+/// `galec` target or template rendering fails.
+pub fn render_galec_c_files_from_context(
+    c_context: &serde_json::Value,
+    target: &str,
+) -> Result<GalecSources, GalecExportError> {
+    if !is_galec_target(target) {
+        return Err(GalecExportError::UnknownTarget(target.to_string()));
+    }
+    let Some((lines, summary)) = galec_c_conformance(target) else {
+        return Err(GalecExportError::CTemplate {
+            detail: format!("target '{target}' does not emit C files"),
+        });
+    };
+    let bundle = embedded_c_layout_bundle()?;
+    let c_header = render_c_layout_template(&bundle, HEADER_TEMPLATE, c_context, lines, summary)?;
+    let c_source = render_c_layout_template(&bundle, SOURCE_TEMPLATE, c_context, lines, summary)?;
+    Ok(GalecSources {
+        alg: String::new(),
+        c_header,
+        c_source,
+    })
+}
+
 /// Whether `target` is one of the GALEC codegen targets, so a codegen caller
 /// can route it to [`render_galec_sources`] instead of the generic DAE
 /// template render (which lacks the GALEC projection context).

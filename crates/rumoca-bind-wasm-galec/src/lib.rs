@@ -17,8 +17,12 @@
 
 use std::collections::BTreeMap;
 
-use rumoca_compile::galec::render_galec_sources;
+use lsp_types::{Position, Url};
+use rumoca_compile::galec::{render_galec_c_files_from_context, render_galec_sources};
 use rumoca_compile::{Session, SessionConfig};
+use rumoca_galec_codegen::c_template_context_for_block;
+use rumoca_ir_galec::parse::parse as parse_galec;
+use rumoca_tool_galec_lsp::{compute_diagnostics, navigation};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 
@@ -60,6 +64,84 @@ pub fn render_galec(workspace_sources: &str, model_name: &str, target: &str) -> 
     serde_json::to_string(&value).unwrap_or_else(|error| {
         format!("{{\"ok\":false,\"error\":\"response serialization failed: {error}\"}}")
     })
+}
+
+/// Compute GALEC `.alg` LSP diagnostics and return them as JSON.
+#[wasm_bindgen]
+pub fn galec_diagnostics(source: &str, file_name: &str) -> String {
+    serialize_language_response(&compute_diagnostics(source, file_name))
+}
+
+/// Return GALEC hover information for a UTF-16 LSP position, or `null`.
+#[wasm_bindgen]
+pub fn galec_hover(source: &str, file_name: &str, line: u32, character: u32) -> String {
+    let hover = navigation::hover(source, file_name, Position { line, character });
+    serialize_language_response(&hover)
+}
+
+/// Return the GALEC definition location for a UTF-16 LSP position, or `null`.
+#[wasm_bindgen]
+pub fn galec_definition(
+    source: &str,
+    file_name: &str,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> String {
+    let definition = Url::parse(uri).ok().and_then(|url| {
+        navigation::goto_definition(source, file_name, url, Position { line, character })
+    });
+    serialize_language_response(&definition)
+}
+
+/// Parse an edited GALEC `.alg` block and render GALEC-derived C files.
+///
+/// This is the editor-owned second step for the docs/playground flow:
+/// Modelica projection produces editable `.alg`; this function consumes the
+/// current `.alg` text and emits `.h`/`.c` without re-reading the Modelica
+/// source. It is intentionally source-only: the eFMI container and Production
+/// Code manifests remain the native CLI packaging step.
+#[wasm_bindgen]
+pub fn render_galec_c_from_alg(
+    alg_source: &str,
+    file_name: &str,
+    model_name: &str,
+    target: &str,
+) -> String {
+    let value = match render_galec_c_from_alg_impl(alg_source, file_name, model_name, target) {
+        Ok(value) => value,
+        Err(error) => json!({ "ok": false, "error": error }),
+    };
+    serde_json::to_string(&value).unwrap_or_else(|error| {
+        format!("{{\"ok\":false,\"error\":\"response serialization failed: {error}\"}}")
+    })
+}
+
+fn serialize_language_response<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|error| format!("{{\"error\":\"JSON serialization failed: {error}\"}}"))
+}
+
+fn render_galec_c_from_alg_impl(
+    alg_source: &str,
+    file_name: &str,
+    model_name: &str,
+    target: &str,
+) -> Result<Value, String> {
+    let block = parse_galec(alg_source, file_name)
+        .map_err(|error| format!("GALEC parse error: {error}"))?;
+    let model_id = model_name.replace('.', "_");
+    let c_context = c_template_context_for_block(&block, &model_id)
+        .map_err(|error| format!("GALEC-to-C rejected `{file_name}`: {error}"))?;
+    let sources =
+        render_galec_c_files_from_context(&c_context, target).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "ok": true,
+        "target": target,
+        "model_identifier": model_id,
+        "c_header": sources.c_header,
+        "c_source": sources.c_source,
+    }))
 }
 
 fn render_galec_impl(
@@ -142,6 +224,16 @@ end GalecWasmDemo;
         json!({ path: source }).to_string()
     }
 
+    fn line_character_for(source: &str, needle: &str, offset_in_needle: usize) -> (u32, u32) {
+        let offset = source.find(needle).expect("needle present") + offset_in_needle;
+        let prefix = &source[..offset];
+        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
+        let character = prefix
+            .rsplit_once('\n')
+            .map_or(prefix.len(), |(_, tail)| tail.len()) as u32;
+        (line, character)
+    }
+
     #[test]
     fn galec_target_returns_alg_only() {
         let value = parse(&render_galec(
@@ -216,6 +308,84 @@ end GalecWasmDemo;
                 .as_str()
                 .is_some_and(|error| error.contains("not a GALEC codegen target")),
             "{value}"
+        );
+    }
+
+    #[test]
+    fn galec_lsp_diagnostics_reports_parse_errors() {
+        let value = parse(&galec_diagnostics("block Bad\nend Other;\n", "bad.alg"));
+        let diagnostics = value.as_array().expect("diagnostics array");
+        assert_eq!(diagnostics.len(), 1, "{value}");
+        assert_eq!(diagnostics[0]["source"], "rumoca-galec");
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty()),
+            "{value}"
+        );
+    }
+
+    #[test]
+    fn galec_lsp_hover_and_definition_are_json() {
+        let value = parse(&render_galec(
+            &workspace("input.mo", DISCRETE_SOURCE),
+            "GalecWasmDemo",
+            GALEC_TARGET,
+        ));
+        let alg = value["alg"].as_str().expect("alg string");
+        assert!(
+            parse(&galec_diagnostics(alg, "GalecWasmDemo.alg"))
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "generated GALEC must diagnose cleanly"
+        );
+        let (line, character) = line_character_for(alg, "self.count :=", "self.".len());
+
+        let hover = parse(&galec_hover(alg, "GalecWasmDemo.alg", line, character));
+        assert!(
+            hover["contents"].to_string().contains("Integer"),
+            "hover should describe the protected count state: {hover}"
+        );
+
+        let definition = parse(&galec_definition(
+            alg,
+            "GalecWasmDemo.alg",
+            "file:///GalecWasmDemo.alg",
+            line,
+            character,
+        ));
+        assert!(
+            definition["range"].is_object(),
+            "definition should return a scalar LSP location: {definition}"
+        );
+    }
+
+    #[test]
+    fn edited_alg_text_renders_c_without_modelica_source() {
+        let value = parse(&render_galec(
+            &workspace("input.mo", DISCRETE_SOURCE),
+            "GalecWasmDemo",
+            GALEC_TARGET,
+        ));
+        let alg = value["alg"].as_str().expect("alg string");
+        let c = parse(&render_galec_c_from_alg(
+            alg,
+            "GalecWasmDemo.alg",
+            "GalecWasmDemo",
+            EMBEDDED_C_GALEC_TARGET,
+        ));
+        assert_eq!(c["ok"], true, "{c}");
+        assert!(
+            c["c_header"]
+                .as_str()
+                .is_some_and(|header| header.contains("GalecWasmDemoState")),
+            "{c}"
+        );
+        assert!(
+            c["c_source"]
+                .as_str()
+                .is_some_and(|source| source.contains("_dostep(")),
+            "{c}"
         );
     }
 

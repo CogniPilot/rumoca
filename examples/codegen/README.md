@@ -21,11 +21,19 @@ cargo run -p rumoca -- \
   --model SympyDecay \
   --target examples/codegen/custom_casadi.jinja \
   --output examples/codegen/gen/sympy_decay_custom_casadi.py
+
+cargo run -p rumoca -- \
+  compile examples/models/GalecCounter.mo \
+  --model GalecCounter \
+  --target galec-production \
+  --output examples/codegen/gen/galec_counter_production
 ```
 
 Scenarios:
 
 - `rumoca-scenario.ball_jax.toml`: built-in JAX target.
+- `rumoca-scenario.galec_counter_production.toml`: GALEC/eFMI Production
+  Code target (`.alg` plus generated C).
 - `rumoca-scenario.sympy_decay_sympy.toml`: built-in SymPy target.
 - `rumoca-scenario.sympy_decay_standalone_web.toml`: custom target directory that renders
   standalone HTML and companion JavaScript.

@@ -51,6 +51,27 @@ export function loadGalecAddon(pkgBase = "./") {
   return addonPromise;
 }
 
+async function requireGalecAddon(pkgBase) {
+  try {
+    return await loadGalecAddon(pkgBase);
+  } catch (err) {
+    throw new Error(
+      "the GALEC / eFMI codegen addon could not be loaded; rebuild the " +
+        `package (cargo xtask playground build). (${err && err.message ? err.message : err})`,
+    );
+  }
+}
+
+function parseAddonJson(text, context) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `${context} returned invalid JSON: ${err && err.message ? err.message : err}`,
+    );
+  }
+}
+
 /**
  * Compile the workspace sources in the addon and project the model to
  * `target`, returning the parsed success payload
@@ -71,27 +92,114 @@ export async function renderGalec(pkgBase, workspaceSources, modelName, target) 
         `(expected one of ${GALEC_TARGETS.join(", ")})`,
     );
   }
-  let addon;
-  try {
-    addon = await loadGalecAddon(pkgBase);
-  } catch (err) {
-    throw new Error(
-      "the GALEC / eFMI codegen addon could not be loaded; rebuild the " +
-        `package (cargo xtask playground build). (${err && err.message ? err.message : err})`,
-    );
-  }
+  const addon = await requireGalecAddon(pkgBase);
   if (typeof addon.render_galec !== "function") {
     throw new Error(
       "this rumoca build predates the GALEC addon; rebuild the package",
     );
   }
-  const parsed = JSON.parse(
+  const parsed = parseAddonJson(
     addon.render_galec(workspaceSources, modelName, target),
+    "render_galec",
   );
   if (!parsed || parsed.ok !== true) {
     throw new Error((parsed && parsed.error) || "GALEC code generation failed");
   }
   return parsed;
+}
+
+async function callGalecLanguageService(pkgBase, exportName, args) {
+  const addon = await requireGalecAddon(pkgBase);
+  if (typeof addon[exportName] !== "function") {
+    throw new Error(
+      `this rumoca build predates ${exportName}; rebuild the package`,
+    );
+  }
+  return parseAddonJson(addon[exportName](...args), exportName);
+}
+
+/** Compute GALEC `.alg` diagnostics via the lazy addon LSP surface. */
+export async function galecDiagnostics(pkgBase, source, fileName = "generated.alg") {
+  const diagnostics = await callGalecLanguageService(pkgBase, "galec_diagnostics", [
+    String(source ?? ""),
+    String(fileName || "generated.alg"),
+  ]);
+  return Array.isArray(diagnostics) ? diagnostics : [];
+}
+
+/** Return GALEC hover information for a zero-based LSP position, or `null`. */
+export async function galecHover(
+  pkgBase,
+  source,
+  fileName,
+  line,
+  character,
+) {
+  return callGalecLanguageService(pkgBase, "galec_hover", [
+    String(source ?? ""),
+    String(fileName || "generated.alg"),
+    Number(line) || 0,
+    Number(character) || 0,
+  ]);
+}
+
+/** Return a GALEC definition location for a zero-based LSP position, or `null`. */
+export async function galecDefinition(
+  pkgBase,
+  source,
+  fileName,
+  uri,
+  line,
+  character,
+) {
+  return callGalecLanguageService(pkgBase, "galec_definition", [
+    String(source ?? ""),
+    String(fileName || "generated.alg"),
+    String(uri || "file:///generated.alg"),
+    Number(line) || 0,
+    Number(character) || 0,
+  ]);
+}
+
+function galecCResultToFiles(result) {
+  const base = String(result?.model_identifier || "model");
+  return [
+    { path: `${base}.h`, content: String(result?.c_header ?? "") },
+    { path: `${base}.c`, content: String(result?.c_source ?? "") },
+  ];
+}
+
+/**
+ * Parse edited GALEC `.alg` text and render the derived C header/source.
+ * Unlike `renderGalecTargetFiles`, this path does not recompile Modelica:
+ * the current `.alg` editor contents are the source of truth.
+ */
+export async function renderGalecCFromAlg(
+  pkgBase,
+  algSource,
+  fileName,
+  modelName,
+  target = "embedded-c-galec",
+) {
+  const addon = await requireGalecAddon(pkgBase);
+  if (typeof addon.render_galec_c_from_alg !== "function") {
+    throw new Error(
+      "this rumoca build predates render_galec_c_from_alg; rebuild the package",
+    );
+  }
+  const parsed = parseAddonJson(
+    addon.render_galec_c_from_alg(
+      String(algSource ?? ""),
+      String(fileName || "generated.alg"),
+      String(modelName || "model"),
+      String(target || "embedded-c-galec"),
+    ),
+    "render_galec_c_from_alg",
+  );
+  if (!parsed || parsed.ok !== true) {
+    throw new Error((parsed && parsed.error) || "GALEC-to-C generation failed");
+  }
+  return galecCResultToFiles(parsed);
 }
 
 /**

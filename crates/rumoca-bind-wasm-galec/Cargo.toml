@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-compile = { workspace = true }
+rumoca-galec-codegen = { workspace = true }
+rumoca-ir-galec = { workspace = true, features = ["parse"] }
+rumoca-tool-galec-lsp = { workspace = true }
+lsp-types = { workspace = true }
 wasm-bindgen = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

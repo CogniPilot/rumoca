@@ -28,7 +28,10 @@ use crate::manifest_context::production_code_manifest::TargetTypeKind;
 use crate::manifest_context::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
-use rumoca_ir_galec::ast::{Block, Name, ScalarType, Spanned, Statement};
+use rumoca_ir_galec::ast::{
+    Block, Dimension, Expression, InterfaceKind, Name, ProtectedKind, ScalarType, Spanned,
+    Statement, TypeRef, VariableDeclaration,
+};
 
 use crate::diagnostic::GalecTargetError;
 use crate::package::AlgorithmCodePackage;
@@ -344,6 +347,137 @@ pub fn c_template_context(
     serde_json::to_value(&context).map_err(|error| GalecTargetError::LoweringInternal {
         detail: format!("C template context serialization failed: {error}"),
     })
+}
+
+/// Serialize the same typed C-template context directly from parsed GALEC
+/// Algorithm Code. This is the browser/editor path for `.alg -> .h/.c`: it
+/// validates the edited block and uses the same C name table, C printer, and
+/// C-layout templates as the package-based export, but it does not assemble an
+/// eFMI Production Code manifest or container.
+///
+/// # Errors
+///
+/// `ET018`/`ET022`/`ET023` for validator, C-name, or unsupported C-export
+/// findings. Dimensioned variables are accepted when their dimensions are
+/// literal positive integers, matching the shape the current projection emits.
+pub fn c_template_context_for_block(
+    block: &Block,
+    model_name: &str,
+) -> Result<serde_json::Value, GalecTargetError> {
+    validate_block(block)?;
+    ensure_c_exportable(block)?;
+    let names = crate::c_mangle::CNameTable::build(block)?;
+    let mut ordinal = 1usize;
+    let mut variables = Vec::new();
+    for variable in &block.interface {
+        variables.push(c_variable_for_decl(
+            &variable.decl,
+            next_variable_id(&mut ordinal),
+            interface_causality(variable.kind),
+            &names,
+        )?);
+    }
+    for entity in &block.protected {
+        variables.push(c_variable_for_decl(
+            &entity.decl,
+            next_variable_id(&mut ordinal),
+            protected_causality(entity.kind),
+            &names,
+        )?);
+    }
+    let printer = crate::c_print::CPrinter::new(&names);
+    let function_prefix = crate::c_mangle::c_identifier(&block.name)?;
+    let context = CContext {
+        model_name: model_name.to_owned(),
+        block_name: c_comment_text(&block_display_name(&block.name)),
+        struct_name: format!("{function_prefix}State"),
+        include_guard: format!("{}_GALEC_C_H", function_prefix.to_ascii_uppercase()),
+        function_prefix,
+        variables,
+        methods: CMethods {
+            startup: statements(&block.startup.statements, &printer)?,
+            recalibrate: statements(&block.recalibrate.statements, &printer)?,
+            do_step: statements(&block.do_step.statements, &printer)?,
+        },
+    };
+    serde_json::to_value(&context).map_err(|error| GalecTargetError::LoweringInternal {
+        detail: format!("C template context serialization failed: {error}"),
+    })
+}
+
+fn next_variable_id(ordinal: &mut usize) -> String {
+    let id = format!("V{ordinal}");
+    *ordinal += 1;
+    id
+}
+
+fn interface_causality(kind: InterfaceKind) -> &'static str {
+    match kind {
+        InterfaceKind::Input => "input",
+        InterfaceKind::Output => "output",
+        InterfaceKind::TunableParameter => "tunableParameter",
+    }
+}
+
+fn protected_causality(kind: ProtectedKind) -> &'static str {
+    match kind {
+        ProtectedKind::DependentParameter => "dependentParameter",
+        ProtectedKind::Constant => "constant",
+        ProtectedKind::State => "state",
+    }
+}
+
+fn c_variable_for_decl(
+    decl: &VariableDeclaration,
+    id: String,
+    causality: &'static str,
+    names: &crate::c_mangle::CNameTable,
+) -> Result<CVariable, GalecTargetError> {
+    let spelling = crate::mangle::manifest_name(&decl.name);
+    Ok(CVariable {
+        name: c_comment_text(spelling),
+        id,
+        causality,
+        c_type: c_scalar_type_for_decl(decl)?,
+        c_name: names.c_name_by_spelling(spelling)?.to_owned(),
+        dimensions: c_dimensions(&decl.dimensions)?,
+    })
+}
+
+fn c_scalar_type_for_decl(decl: &VariableDeclaration) -> Result<&'static str, GalecTargetError> {
+    match &decl.ty {
+        TypeRef::Primitive(scalar) => Ok(c_scalar_binding(*scalar).1),
+        TypeRef::Compartment(_) => Err(GalecTargetError::CExportUnsupported {
+            construct: "a state-compartment variable",
+            detail: "the standalone GALEC-to-C preview currently supports only primitive block variables"
+                .to_owned(),
+        }),
+    }
+}
+
+fn c_dimensions(dimensions: &[Dimension]) -> Result<Vec<u64>, GalecTargetError> {
+    dimensions.iter().map(c_dimension).collect()
+}
+
+fn c_dimension(dimension: &Dimension) -> Result<u64, GalecTargetError> {
+    match dimension {
+        Dimension::Expr(Expression::Integer(value)) if *value > 0 => {
+            u64::try_from(*value).map_err(|_| GalecTargetError::CExportUnsupported {
+                construct: "a too-large array dimension",
+                detail: "dimension literals must fit in the generated C declaration".to_owned(),
+            })
+        }
+        Dimension::Expr(_) => Err(GalecTargetError::CExportUnsupported {
+            construct: "a non-literal array dimension",
+            detail:
+                "the standalone GALEC-to-C preview currently supports literal positive dimensions"
+                    .to_owned(),
+        }),
+        Dimension::Derived => Err(GalecTargetError::CExportUnsupported {
+            construct: "a derived array dimension",
+            detail: "block variables need concrete dimensions for generated C fields".to_owned(),
+        }),
+    }
 }
 
 /// Reject block shapes the current lowering never produces before any C is
