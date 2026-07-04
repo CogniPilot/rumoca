@@ -149,9 +149,9 @@ pub fn lower_to_algorithm_code(
     let mut block = Block::new(block_name);
     block.interface = interface;
     block.protected = protected;
-    block.startup.statements = startup;
-    block.recalibrate.statements = recalibrate;
-    block.do_step.statements = do_step;
+    block.startup.statements = startup.into_iter().map(gast::Spanned::dummy).collect();
+    block.recalibrate.statements = recalibrate.into_iter().map(gast::Spanned::dummy).collect();
+    block.do_step.statements = do_step.into_iter().map(gast::Spanned::dummy).collect();
 
     let package = AlgorithmCodePackage {
         block,
@@ -197,6 +197,7 @@ fn lower_update_row(
         target: gast::Reference::State(vec![gast::RefPart {
             name: classified.galec_name.clone(),
             subscripts,
+            span: gast::Span::DUMMY,
         }]),
         value,
     })

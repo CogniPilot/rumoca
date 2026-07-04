@@ -32,7 +32,8 @@
 //! restructuring.
 
 use crate::ast::{
-    BinaryOp, Condition, Expression, FunctionCall, Identifier, IfStatement, SignalCheck, Statement,
+    BinaryOp, Condition, Expression, FunctionCall, Identifier, IfStatement, SignalCheck, Spanned,
+    Statement,
 };
 use crate::diagnostic::{GalecError, PathSegment};
 
@@ -116,10 +117,10 @@ impl<'a> SignalWalker<'a, '_> {
     // Dataflow over statements
     // -----------------------------------------------------------------
 
-    fn statements(&mut self, statements: &[Statement], mut set: SignalSet) -> SignalSet {
+    fn statements(&mut self, statements: &[Spanned<Statement>], mut set: SignalSet) -> SignalSet {
         for (index, statement) in statements.iter().enumerate() {
             self.cursor.push(PathSegment::Statement(index));
-            set = self.statement(statement, set);
+            set = self.statement(&statement.node, set);
             self.cursor.pop();
         }
         set

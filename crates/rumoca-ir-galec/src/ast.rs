@@ -16,6 +16,43 @@
 //! Everything else (name legality, typing, escape-set dataflow, dimensional
 //! analysis) is the future validator's job and is deliberately *not* encoded
 //! structurally.
+//!
+//! # Source spans (SPEC_0034 D11 / GAL-014)
+//!
+//! Nodes carry a `rumoca_core::Span` so diagnostics, the `.alg` LSP, and
+//! codegen provenance can point at where a construct came from — uniform with
+//! the rest of Rumoca. Parsed nodes span the `.alg` text; codegen-generated
+//! nodes carry the originating Modelica span, or [`Span::DUMMY`] when there is
+//! no source. Spans are **provenance, not identity**: they participate in
+//! derived `PartialEq` (matching the Modelica AST), so structural comparisons
+//! such as round-trip AST equality normalize spans to `DUMMY` first.
+
+pub use rumoca_core::Span;
+
+/// A node paired with its source [`Span`] — the span carrier for enums (whose
+/// variants cannot each hold a field ergonomically) and for statement lists.
+/// Structs instead carry an inline `span` field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spanned<T> {
+    pub node: T,
+    pub span: Span,
+}
+
+impl<T> Spanned<T> {
+    /// Pair a node with a real source span.
+    pub fn new(node: T, span: Span) -> Self {
+        Self { node, span }
+    }
+
+    /// Pair a node with [`Span::DUMMY`] (codegen-generated / test construction
+    /// with no `.alg` source).
+    pub fn dummy(node: T) -> Self {
+        Self {
+            node,
+            span: Span::DUMMY,
+        }
+    }
+}
 
 /// A plain GALEC identifier (ASCII-letter-first; legality checked by the
 /// validator, trap T13).
@@ -44,22 +81,31 @@ impl Identifier {
 /// the printer only rejects content that cannot be a single lexeme at all.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Name {
-    /// Plain identifier, e.g. `firstTick`.
-    Ident(Identifier),
+    /// Plain identifier, e.g. `firstTick`, with its source span (D11).
+    Ident(Identifier, Span),
     /// Quoted identifier content, e.g. `previous(feedback.y)` for
-    /// `'previous(feedback.y)'`.
-    Quoted(String),
+    /// `'previous(feedback.y)'`, with its source span (D11).
+    Quoted(String, Span),
 }
 
 impl Name {
-    /// Plain identifier name.
+    /// Plain identifier name (source-free; span [`Span::DUMMY`]).
     pub fn ident(name: impl Into<String>) -> Self {
-        Self::Ident(Identifier::new(name))
+        Self::Ident(Identifier::new(name), Span::DUMMY)
     }
 
-    /// Quoted identifier name (content without the surrounding quotes).
+    /// Quoted identifier name (content without the surrounding quotes;
+    /// source-free, span [`Span::DUMMY`]).
     pub fn quoted(content: impl Into<String>) -> Self {
-        Self::Quoted(content.into())
+        Self::Quoted(content.into(), Span::DUMMY)
+    }
+
+    /// The name's source span (D11).
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Ident(_, span) | Self::Quoted(_, span) => *span,
+        }
     }
 }
 
@@ -126,6 +172,8 @@ pub struct VariableDeclaration {
     /// Empty means scalar (zero-dimensional, S-2.12).
     pub dimensions: Vec<Dimension>,
     pub range: RangeAttributes,
+    /// Source span of the declaration (D11).
+    pub span: Span,
 }
 
 impl VariableDeclaration {
@@ -136,6 +184,7 @@ impl VariableDeclaration {
             name,
             dimensions: Vec::new(),
             range: RangeAttributes::default(),
+            span: Span::DUMMY,
         }
     }
 }
@@ -194,6 +243,8 @@ pub struct ProtectedEntity {
 pub struct StateCompartment {
     pub name: Name,
     pub entities: Vec<ProtectedEntity>,
+    /// Source span of the `record … end …;` declaration (D11).
+    pub span: Span,
 }
 
 /// The six predefined error signals with their normative 32-bit encoding
@@ -270,13 +321,26 @@ impl BlockMethodKind {
 /// A block-interface method body. Parameter-free by construction (trap T1);
 /// its name is fixed by its position in [`Block`]. Exposable signals are
 /// restricted to the six predefined ones by construction (§3.2.5 §1.3).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BlockMethod {
     /// `signals …;` clause; must equal the computed escape set (validator).
     pub signals: Vec<PredefinedSignal>,
     /// Method-local `protected` variables (not listed in the manifest).
     pub locals: Vec<VariableDeclaration>,
-    pub statements: Vec<Statement>,
+    pub statements: Vec<Spanned<Statement>>,
+    /// Source span of the method body (D11); `DUMMY` for the empty default.
+    pub span: Span,
+}
+
+impl Default for BlockMethod {
+    fn default() -> Self {
+        Self {
+            signals: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            span: Span::DUMMY,
+        }
+    }
 }
 
 /// `function` (stateless) vs `method` (stateful), S-2.3.
@@ -334,7 +398,9 @@ pub struct UserFunction {
     pub signals: Vec<Identifier>,
     pub parameters: Vec<Parameter>,
     pub locals: Vec<VariableDeclaration>,
-    pub statements: Vec<Statement>,
+    pub statements: Vec<Spanned<Statement>>,
+    /// Source span of the function declaration (D11).
+    pub span: Span,
 }
 
 /// A GALEC `block` — the grammar's only start symbol (R-2.1).
@@ -364,6 +430,8 @@ pub struct Block {
     pub do_step: BlockMethod,
     /// Additional public functions after the three methods.
     pub public_functions: Vec<UserFunction>,
+    /// Source span of the whole `block … end …;` (D11).
+    pub span: Span,
 }
 
 impl Block {
@@ -381,6 +449,7 @@ impl Block {
             recalibrate: BlockMethod::default(),
             do_step: BlockMethod::default(),
             public_functions: Vec::new(),
+            span: Span::DUMMY,
         }
     }
 }
@@ -391,6 +460,9 @@ pub struct RefPart {
     pub name: Name,
     /// `computed-dimensions`: constant-scalar-integer-expressions (S-3.1).
     pub subscripts: Vec<Expression>,
+    /// Source span of the part's `name` (D11). Subscripts are unspanned
+    /// expressions in M1, so this covers the name only, not the `[…]` suffix.
+    pub span: Span,
 }
 
 impl RefPart {
@@ -399,6 +471,7 @@ impl RefPart {
         Self {
             name,
             subscripts: Vec::new(),
+            span: Span::DUMMY,
         }
     }
 }
@@ -643,7 +716,12 @@ pub struct SignalCheck {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfBranch {
     pub condition: Condition,
-    pub body: Vec<Statement>,
+    pub body: Vec<Spanned<Statement>>,
+    /// Source span covering the branch's body statements (D11). The `if`/
+    /// `elseif` keyword and the condition are not spanned in M1 (the condition
+    /// is an unspanned expression / signal-check), so this is the union of the
+    /// body statement spans, or [`Span::DUMMY`] for an empty body.
+    pub span: Span,
 }
 
 /// `if … then … [elseif … then …]* [else …] end if;`.
@@ -652,7 +730,7 @@ pub struct IfStatement {
     /// `if` branch plus `elseif` branches; must be non-empty (printer).
     pub branches: Vec<IfBranch>,
     /// Optional `else` branch (statements may be empty).
-    pub else_body: Option<Vec<Statement>>,
+    pub else_body: Option<Vec<Spanned<Statement>>>,
 }
 
 /// `for i in start[:step]:stop loop … end for;` with statically-evaluated
@@ -664,7 +742,7 @@ pub struct ForLoop {
     pub start: Expression,
     pub step: Option<Expression>,
     pub stop: Expression,
-    pub body: Vec<Statement>,
+    pub body: Vec<Spanned<Statement>>,
 }
 
 /// Target of a `limit` statement.

@@ -297,6 +297,7 @@ fn local_ref_or_call_to_expr(local: &g::LocalRefOrCall) -> Expression {
     let name = local.name.clone();
     match &local.local_ref_or_call_opt {
         None => Expression::Ref(crate::ast::Reference::Local(crate::ast::RefPart {
+            span: name.span(),
             name,
             subscripts: Vec::new(),
         })),
@@ -309,6 +310,7 @@ fn local_ref_or_call_to_expr(local: &g::LocalRefOrCall) -> Expression {
             }
             g::LocalRefOrCallOptGroup::ComputedDimensions(group) => {
                 Expression::Ref(crate::ast::Reference::Local(crate::ast::RefPart {
+                    span: name.span(),
                     name,
                     subscripts: computed_dimensions_to_vec(&group.computed_dimensions),
                 }))

@@ -7,8 +7,8 @@ use rumoca_ir_galec::ast::{
     BinaryOp, Block, BlockMethod, Condition, Dimension, Direction, Expression, ForLoop,
     FunctionCall, FunctionKind, Identifier, IfBranch, IfExpression, IfStatement, InterfaceKind,
     InterfaceVariable, LimitTarget, Name, Parameter, PredefinedSignal, ProtectedEntity,
-    ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest,
-    Statement, UserFunction, VariableDeclaration,
+    ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Span,
+    Spanned, Statement, UserFunction, VariableDeclaration,
 };
 use rumoca_ir_galec::print_block;
 
@@ -72,6 +72,7 @@ fn state_idx(name: &str, subscripts: Vec<Expression>) -> Reference {
     Reference::State(vec![RefPart {
         name: n(name),
         subscripts,
+        span: Span::DUMMY,
     }])
 }
 
@@ -83,6 +84,7 @@ fn local_idx(name: &str, index: i64) -> Reference {
     Reference::Local(RefPart {
         name: n(name),
         subscripts: vec![Expression::Integer(index)],
+        span: Span::DUMMY,
     })
 }
 
@@ -102,8 +104,8 @@ fn bin(op: BinaryOp, lhs: Expression, rhs: Expression) -> Expression {
     Expression::binary(op, lhs, rhs)
 }
 
-fn assign(target: Reference, value: Expression) -> Statement {
-    Statement::Assignment { target, value }
+fn assign(target: Reference, value: Expression) -> Spanned<Statement> {
+    Spanned::dummy(Statement::Assignment { target, value })
 }
 
 fn call(function: &str, arguments: Vec<Expression>) -> FunctionCall {
@@ -184,7 +186,7 @@ fn rate_controller_protected() -> Vec<ProtectedEntity> {
 
 /// Dependent parameter recomputation shared by `Startup` (inline) and
 /// `Recalibrate` (GAL-020).
-fn dependent_gain_update() -> Statement {
+fn dependent_gain_update() -> Spanned<Statement> {
     assign(
         state("integralGain"),
         bin(BinaryOp::Div, sref("gain"), sref("integralTime")),
@@ -215,6 +217,7 @@ fn rate_controller_do_step() -> BlockMethod {
             assign(state("firstTick"), Expression::Bool(false)),
             assign(local("derivativeEstimate"), r(0.0)),
         ],
+        span: Span::DUMMY,
     };
     let error_delta = bin(
         BinaryOp::Sub,
@@ -265,11 +268,13 @@ fn rate_controller_do_step() -> BlockMethod {
                 local("trackingError"),
                 bin(BinaryOp::Sub, sref("speedSetpoint"), sref("speedMeasured")),
             ),
-            Statement::If(IfStatement {
+            Spanned::dummy(Statement::If(IfStatement {
                 branches: vec![first_tick_branch],
                 else_body: Some(integrate),
-            }),
-            Statement::Limit(vec![LimitTarget::Reference(state("integralState"))]),
+            })),
+            Spanned::dummy(Statement::Limit(vec![LimitTarget::Reference(state(
+                "integralState",
+            ))])),
             assign(
                 local("unboundedDrive"),
                 bin(
@@ -290,6 +295,7 @@ fn rate_controller_do_step() -> BlockMethod {
             // `'previous(x)'` state committed at the END of DoStep (trap T2).
             assign(stateq("previous(trackingError)"), lref("trackingError")),
         ],
+        span: Span::DUMMY,
     }
 }
 
@@ -395,7 +401,7 @@ fn matrix_do_step() -> BlockMethod {
         dimension: Box::new(Expression::Integer(d)),
     };
     let ij = || vec![lref("i"), lref("j")];
-    let inner = Statement::For(ForLoop {
+    let inner = Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("j")),
         start: Expression::Integer(1),
         step: None,
@@ -414,8 +420,8 @@ fn matrix_do_step() -> BlockMethod {
                 ),
             ),
         ],
-    });
-    let outer = Statement::For(ForLoop {
+    }));
+    let outer = Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("i")),
         start: Expression::Integer(1),
         step: None,
@@ -428,7 +434,7 @@ fn matrix_do_step() -> BlockMethod {
                 bin(BinaryOp::Div, lref("total"), r(3.0)),
             ),
         ],
-    });
+    }));
     BlockMethod {
         locals: vec![real_decl(n("total"))],
         statements: vec![outer],
@@ -529,7 +535,7 @@ fn classify_function() -> UserFunction {
             },
         ],
         locals: vec![],
-        statements: vec![Statement::If(IfStatement {
+        statements: vec![Spanned::dummy(Statement::If(IfStatement {
             branches: vec![IfBranch {
                 condition: Condition::Expression(bin(
                     BinaryOp::Gt,
@@ -537,12 +543,14 @@ fn classify_function() -> UserFunction {
                     r(99.0),
                 )),
                 body: vec![
-                    Statement::Signal(vec![id("sensorFault")]),
+                    Spanned::dummy(Statement::Signal(vec![id("sensorFault")])),
                     assign(local("ok"), Expression::Bool(false)),
                 ],
+                span: Span::DUMMY,
             }],
             else_body: Some(vec![assign(local("ok"), Expression::Bool(true))]),
-        })],
+        }))],
+        span: Span::DUMMY,
     }
 }
 
@@ -552,7 +560,7 @@ fn classify_function() -> UserFunction {
 /// two fault signals (leaving NAN), the `not in` branch catches NAN, the
 /// unrestricted final check catches any remainder and deliberately
 /// re-raises NAN so DoStep's declared escape set is exactly {NAN}.
-fn signal_guard_statements() -> Vec<Statement> {
+fn signal_guard_statements() -> Vec<Spanned<Statement>> {
     let identity = Expression::Array(vec![
         Expression::Array(vec![r(2.0), r(0.0)]),
         Expression::Array(vec![r(0.0), r(4.0)]),
@@ -563,7 +571,8 @@ fn signal_guard_statements() -> Vec<Statement> {
                 "isNaN",
                 vec![Expression::Ref(local_idx("solution", 1))],
             ))),
-            body: vec![Statement::Signal(vec![id("NAN")])],
+            body: vec![Spanned::dummy(Statement::Signal(vec![id("NAN")]))],
+            span: Span::DUMMY,
         }],
         else_body: None,
     };
@@ -579,6 +588,7 @@ fn signal_guard_statements() -> Vec<Statement> {
                     fallback: Some(Expression::Not(Box::new(lref("ok")))),
                 }),
                 body: vec![assign(state("filtered"), r(0.0))],
+                span: Span::DUMMY,
             },
             IfBranch {
                 condition: Condition::SignalCheck(SignalCheck {
@@ -593,6 +603,7 @@ fn signal_guard_statements() -> Vec<Statement> {
                     state("filtered"),
                     Expression::Ref(local_idx("solution", 1)),
                 )],
+                span: Span::DUMMY,
             },
         ],
         else_body: Some(vec![assign(
@@ -613,8 +624,9 @@ fn signal_guard_statements() -> Vec<Statement> {
             }),
             body: vec![
                 assign(state("filtered"), r(0.0)),
-                Statement::Signal(vec![id("NAN")]),
+                Spanned::dummy(Statement::Signal(vec![id("NAN")])),
             ],
+            span: Span::DUMMY,
         }],
         else_body: None,
     };
@@ -623,11 +635,11 @@ fn signal_guard_statements() -> Vec<Statement> {
             local("ok"),
             Expression::Call(call("classify", vec![sref("reading")])),
         ),
-        Statement::MultiAssignment {
+        Spanned::dummy(Statement::MultiAssignment {
             targets: vec![local("lu"), local("pivots")],
             call: call("luFactorize", vec![identity]),
-        },
-        Statement::MultiAssignment {
+        }),
+        Spanned::dummy(Statement::MultiAssignment {
             targets: vec![local("solution")],
             call: call(
                 "luSolve",
@@ -637,11 +649,11 @@ fn signal_guard_statements() -> Vec<Statement> {
                     Expression::Array(vec![sref("reading"), r(0.0)]),
                 ],
             ),
-        },
-        Statement::If(nan_raise),
-        Statement::If(guard),
-        Statement::If(final_catch),
-        Statement::Limit(vec![LimitTarget::SelfState]),
+        }),
+        Spanned::dummy(Statement::If(nan_raise)),
+        Spanned::dummy(Statement::If(guard)),
+        Spanned::dummy(Statement::If(final_catch)),
+        Spanned::dummy(Statement::Limit(vec![LimitTarget::SelfState])),
     ]
 }
 
@@ -677,6 +689,7 @@ fn signal_guard() -> Block {
                 dims(real_decl(n("solution")), &[2]),
             ],
             statements: signal_guard_statements(),
+            span: Span::DUMMY,
         },
         ..Block::new(n("SignalGuard"))
     }
@@ -752,7 +765,7 @@ fn golden_signal_machinery_block_validates() {
 // Structural errors and layout details
 // ---------------------------------------------------------------------------
 
-fn minimal_block(statements: Vec<Statement>) -> Block {
+fn minimal_block(statements: Vec<Spanned<Statement>>) -> Block {
     let mut block = Block::new(n("Minimal"));
     block.do_step.statements = statements;
     block
@@ -760,13 +773,13 @@ fn minimal_block(statements: Vec<Statement>) -> Block {
 
 #[test]
 fn for_loop_with_step_prints_start_step_stop() {
-    let block = minimal_block(vec![Statement::For(ForLoop {
+    let block = minimal_block(vec![Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("k")),
         start: Expression::Integer(8),
         step: Some(Expression::Integer(-2)),
         stop: Expression::Integer(2),
         body: vec![assign(local("k2"), lref("k"))],
-    })]);
+    }))]);
     let printed = print_block(&block).expect("block must print");
     assert!(
         printed.contains("for k in 8:-2:2 loop"),
@@ -776,7 +789,7 @@ fn for_loop_with_step_prints_start_step_stop() {
 
 #[test]
 fn empty_limit_statement_is_a_stable_error() {
-    let block = minimal_block(vec![Statement::Limit(vec![])]);
+    let block = minimal_block(vec![Spanned::dummy(Statement::Limit(vec![]))]);
     let error = print_block(&block).expect_err("empty limit must fail");
     assert_eq!(error.code(), "EG005");
     let message = error.to_string();
@@ -788,24 +801,24 @@ fn empty_limit_statement_is_a_stable_error() {
 
 #[test]
 fn empty_signal_statement_is_a_stable_error() {
-    let block = minimal_block(vec![Statement::Signal(vec![])]);
+    let block = minimal_block(vec![Spanned::dummy(Statement::Signal(vec![]))]);
     let error = print_block(&block).expect_err("empty signal must fail");
     assert_eq!(error.code(), "EG004");
 }
 
 #[test]
 fn if_statement_without_branches_is_a_stable_error() {
-    let block = minimal_block(vec![Statement::If(IfStatement {
+    let block = minimal_block(vec![Spanned::dummy(Statement::If(IfStatement {
         branches: vec![],
         else_body: None,
-    })]);
+    }))]);
     let error = print_block(&block).expect_err("branchless if must fail");
     assert_eq!(error.code(), "EG006");
 }
 
 #[test]
 fn empty_signal_test_list_is_a_stable_error() {
-    let block = minimal_block(vec![Statement::If(IfStatement {
+    let block = minimal_block(vec![Spanned::dummy(Statement::If(IfStatement {
         branches: vec![IfBranch {
             condition: Condition::SignalCheck(SignalCheck {
                 closure: None,
@@ -816,9 +829,10 @@ fn empty_signal_test_list_is_a_stable_error() {
                 fallback: None,
             }),
             body: vec![],
+            span: Span::DUMMY,
         }],
         else_body: None,
-    })]);
+    }))]);
     let error = print_block(&block).expect_err("empty signal test list must fail");
     assert_eq!(error.code(), "EG008");
 }
@@ -837,6 +851,7 @@ fn compartment_entities_print_kind_prefixes() {
             entity(ProtectedKind::Constant, real_decl(n("c")), Some(r(2.0))),
             entity(ProtectedKind::State, real_decl(n("s")), Some(r(0.0))),
         ],
+        span: Span::DUMMY,
     }];
     let printed = print_block(&block).expect("block must print");
     let expected = "    record Cfg\n        parameter Real k;\n        constant Real c;\n        Real s;\n    end Cfg;\n";

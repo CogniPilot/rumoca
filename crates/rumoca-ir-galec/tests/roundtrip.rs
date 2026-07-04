@@ -32,8 +32,8 @@ use rumoca_ir_galec::ast::{
     BinaryOp, Block, BlockMethod, Condition, Dimension, Direction, Expression, ForLoop,
     FunctionCall, FunctionKind, Identifier, IfBranch, IfExpression, IfStatement, InterfaceKind,
     InterfaceVariable, LimitTarget, Name, Parameter, PredefinedSignal, ProtectedEntity,
-    ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest,
-    StateCompartment, Statement, UserFunction, VariableDeclaration,
+    ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Span,
+    Spanned, StateCompartment, Statement, TypeRef, UserFunction, VariableDeclaration,
 };
 use rumoca_ir_galec::parse::{GalecParseError, parse, parse_expression};
 use rumoca_ir_galec::{print_block, print_expression};
@@ -98,6 +98,7 @@ fn state_idx(name: &str, subscripts: Vec<Expression>) -> Reference {
     Reference::State(vec![RefPart {
         name: n(name),
         subscripts,
+        span: Span::DUMMY,
     }])
 }
 
@@ -109,6 +110,7 @@ fn local_idx(name: &str, index: i64) -> Reference {
     Reference::Local(RefPart {
         name: n(name),
         subscripts: vec![Expression::Integer(index)],
+        span: Span::DUMMY,
     })
 }
 
@@ -132,8 +134,8 @@ fn bin(op: BinaryOp, lhs: Expression, rhs: Expression) -> Expression {
     Expression::binary(op, lhs, rhs)
 }
 
-fn assign(target: Reference, value: Expression) -> Statement {
-    Statement::Assignment { target, value }
+fn assign(target: Reference, value: Expression) -> Spanned<Statement> {
+    Spanned::dummy(Statement::Assignment { target, value })
 }
 
 fn fcall(function: &str, arguments: Vec<Expression>) -> FunctionCall {
@@ -147,8 +149,8 @@ fn ecall(function: &str, arguments: Vec<Expression>) -> Expression {
     Expression::Call(fcall(function, arguments))
 }
 
-fn call_stmt(function: &str, arguments: Vec<Expression>) -> Statement {
-    Statement::Call(fcall(function, arguments))
+fn call_stmt(function: &str, arguments: Vec<Expression>) -> Spanned<Statement> {
+    Spanned::dummy(Statement::Call(fcall(function, arguments)))
 }
 
 fn in_real(name: &str) -> Parameter {
@@ -218,18 +220,30 @@ fn assert_expr_text_stable(expression: &Expression) {
 }
 
 /// Secondary property over an expression: `parse(print(e)) == e` (only where
-/// `print` is injective — no printer-inserted parentheses).
+/// `print` is injective — no printer-inserted parentheses). Spans are
+/// provenance, not structure: the parsed side carries real `.alg` spans while
+/// the fixture carries `DUMMY`, so both are normalized (which resets spans and,
+/// for these injective cases, leaves the tree otherwise untouched) before the
+/// structural comparison.
 fn assert_expr_ast_stable(expression: &Expression) {
     let text = printed_expr(expression);
-    let reparsed = reparse_expr(&text);
-    assert_eq!(&reparsed, expression, "ast round-trip failed for {text:?}");
+    let mut reparsed = reparse_expr(&text);
     assert_eq!(printed_expr(&reparsed), text);
+    norm_expr(&mut reparsed);
+    let mut expected = expression.clone();
+    norm_expr(&mut expected);
+    assert_eq!(&reparsed, &expected, "ast round-trip failed for {text:?}");
 }
 
 /// Normalize a block to the canonical comparison form: drop every
-/// manifest-bound `start` and strip all `Paren` wrappers (pure syntactic
-/// grouping already carried by the `Binary` tree shape).
+/// manifest-bound `start`, strip all `Paren` wrappers (pure syntactic grouping
+/// already carried by the `Binary` tree shape), and reset every node's source
+/// span to [`Span::DUMMY`]. Spans are provenance, not structure: the parsed
+/// side carries real `.alg` spans while the fixtures carry `DUMMY`, so they
+/// must be canonicalized away before the structural `assert_eq!`.
 fn normalize(block: &mut Block) {
+    block.span = Span::DUMMY;
+    norm_name(&mut block.name);
     for variable in &mut block.interface {
         variable.start = None;
         norm_decl(&mut variable.decl);
@@ -239,6 +253,8 @@ fn normalize(block: &mut Block) {
         norm_decl(&mut entity.decl);
     }
     for compartment in &mut block.compartments {
+        compartment.span = Span::DUMMY;
+        norm_name(&mut compartment.name);
         for entity in &mut compartment.entities {
             entity.start = None;
             norm_decl(&mut entity.decl);
@@ -249,11 +265,16 @@ fn normalize(block: &mut Block) {
         .iter_mut()
         .chain(block.public_functions.iter_mut())
     {
+        function.span = Span::DUMMY;
+        norm_name(&mut function.name);
         for parameter in &mut function.parameters {
             norm_decl(&mut parameter.decl);
         }
         norm_body(&mut function.locals, &mut function.statements);
     }
+    block.startup.span = Span::DUMMY;
+    block.recalibrate.span = Span::DUMMY;
+    block.do_step.span = Span::DUMMY;
     norm_body(&mut block.startup.locals, &mut block.startup.statements);
     norm_body(
         &mut block.recalibrate.locals,
@@ -262,16 +283,34 @@ fn normalize(block: &mut Block) {
     norm_body(&mut block.do_step.locals, &mut block.do_step.statements);
 }
 
-fn norm_body(locals: &mut [VariableDeclaration], statements: &mut [Statement]) {
+/// Reset a [`Name`]'s span slot to [`Span::DUMMY`] in place.
+fn norm_name(name: &mut Name) {
+    match name {
+        Name::Ident(_, span) | Name::Quoted(_, span) => *span = Span::DUMMY,
+    }
+}
+
+fn norm_body(locals: &mut [VariableDeclaration], statements: &mut [Spanned<Statement>]) {
     for local in locals {
         norm_decl(local);
     }
+    norm_stmts(statements);
+}
+
+/// Reset each statement's carrier span, then recurse into the statement node.
+fn norm_stmts(statements: &mut [Spanned<Statement>]) {
     for statement in statements {
-        norm_stmt(statement);
+        statement.span = Span::DUMMY;
+        norm_stmt(&mut statement.node);
     }
 }
 
 fn norm_decl(decl: &mut VariableDeclaration) {
+    decl.span = Span::DUMMY;
+    norm_name(&mut decl.name);
+    if let TypeRef::Compartment(name) = &mut decl.ty {
+        norm_name(name);
+    }
     for dimension in &mut decl.dimensions {
         if let Dimension::Expr(e) = dimension {
             norm_expr(e);
@@ -293,25 +332,33 @@ fn norm_stmt(statement: &mut Statement) {
         }
         Statement::MultiAssignment { targets, call } => {
             targets.iter_mut().for_each(norm_ref);
+            norm_name(&mut call.function);
             call.arguments.iter_mut().for_each(norm_expr);
         }
-        Statement::Call(call) => call.arguments.iter_mut().for_each(norm_expr),
+        Statement::Call(call) => {
+            norm_name(&mut call.function);
+            call.arguments.iter_mut().for_each(norm_expr);
+        }
         Statement::If(if_statement) => {
             for branch in &mut if_statement.branches {
+                branch.span = Span::DUMMY;
                 norm_condition(&mut branch.condition);
-                branch.body.iter_mut().for_each(norm_stmt);
+                norm_stmts(&mut branch.body);
             }
             if let Some(else_body) = &mut if_statement.else_body {
-                else_body.iter_mut().for_each(norm_stmt);
+                norm_stmts(else_body);
             }
         }
         Statement::For(for_loop) => {
+            if let Some(iterator) = &mut for_loop.iterator {
+                norm_name(iterator);
+            }
             norm_expr(&mut for_loop.start);
             if let Some(step) = &mut for_loop.step {
                 norm_expr(step);
             }
             norm_expr(&mut for_loop.stop);
-            for_loop.body.iter_mut().for_each(norm_stmt);
+            norm_stmts(&mut for_loop.body);
         }
         Statement::Limit(targets) => {
             for target in targets {
@@ -341,6 +388,8 @@ fn norm_ref(reference: &mut Reference) {
         Reference::State(parts) => parts.as_mut_slice(),
     };
     for part in parts {
+        part.span = Span::DUMMY;
+        norm_name(&mut part.name);
         part.subscripts.iter_mut().for_each(norm_expr);
     }
 }
@@ -357,7 +406,10 @@ fn norm_expr(expression: &mut Expression) {
             norm_ref(array);
             norm_expr(dimension);
         }
-        Expression::Call(call) => call.arguments.iter_mut().for_each(norm_expr),
+        Expression::Call(call) => {
+            norm_name(&mut call.function);
+            call.arguments.iter_mut().for_each(norm_expr);
+        }
         Expression::Paren(_) => unreachable!("Paren collapsed above"),
         Expression::If(if_expression) => {
             for (condition, value) in &mut if_expression.branches {
@@ -434,6 +486,7 @@ fn references_round_trip() {
         RefPart {
             name: n("gear"),
             subscripts: vec![int(2)],
+            span: Span::DUMMY,
         },
     ])));
 }
@@ -521,6 +574,7 @@ fn f5_quoted_names() {
         RefPart {
             name: Name::quoted("shaft[2].gear"),
             subscripts: vec![int(1)],
+            span: Span::DUMMY,
         },
         RefPart::plain(n("w")),
     ]));
@@ -564,7 +618,7 @@ fn f6_matrix_assignment() {
 // F7 — full projected PID-shaped block
 // ===========================================================================
 
-fn dependent_gain_update() -> Statement {
+fn dependent_gain_update() -> Spanned<Statement> {
     assign(
         state("integralGain"),
         bin(BinaryOp::Div, sref("gain"), sref("integralTime")),
@@ -578,6 +632,7 @@ fn pid_do_step() -> BlockMethod {
             assign(state("firstTick"), Expression::Bool(false)),
             assign(local("derivativeEstimate"), r(0.0)),
         ],
+        span: Span::DUMMY,
     };
     let error_delta = bin(
         BinaryOp::Sub,
@@ -628,11 +683,13 @@ fn pid_do_step() -> BlockMethod {
                 local("trackingError"),
                 bin(BinaryOp::Sub, sref("speedSetpoint"), sref("speedMeasured")),
             ),
-            Statement::If(IfStatement {
+            Spanned::dummy(Statement::If(IfStatement {
                 branches: vec![first_tick_branch],
                 else_body: Some(integrate),
-            }),
-            Statement::Limit(vec![LimitTarget::Reference(state("integralState"))]),
+            })),
+            Spanned::dummy(Statement::Limit(vec![LimitTarget::Reference(state(
+                "integralState",
+            ))])),
             assign(
                 local("unboundedDrive"),
                 bin(
@@ -652,6 +709,7 @@ fn pid_do_step() -> BlockMethod {
             assign(state("drive"), limiter),
             assign(stateq("previous(trackingError)"), lref("trackingError")),
         ],
+        span: Span::DUMMY,
     }
 }
 
@@ -752,7 +810,7 @@ fn matrix_do_step() -> BlockMethod {
         dimension: Box::new(Expression::Integer(d)),
     };
     let ij = || vec![lref("i"), lref("j")];
-    let inner = Statement::For(ForLoop {
+    let inner = Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("j")),
         start: int(1),
         step: None,
@@ -771,8 +829,8 @@ fn matrix_do_step() -> BlockMethod {
                 ),
             ),
         ],
-    });
-    let outer = Statement::For(ForLoop {
+    }));
+    let outer = Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("i")),
         start: int(1),
         step: Some(int(1)),
@@ -785,7 +843,7 @@ fn matrix_do_step() -> BlockMethod {
                 bin(BinaryOp::Div, lref("total"), r(3.0)),
             ),
         ],
-    });
+    }));
     BlockMethod {
         locals: vec![real_decl(n("total"))],
         statements: vec![outer],
@@ -821,6 +879,7 @@ fn matrix_averager() -> Block {
                     None,
                 ),
             ],
+            span: Span::DUMMY,
         }],
         protected: vec![entity(
             ProtectedKind::State,
@@ -864,7 +923,7 @@ fn classify_function() -> UserFunction {
             },
         ],
         locals: vec![],
-        statements: vec![Statement::If(IfStatement {
+        statements: vec![Spanned::dummy(Statement::If(IfStatement {
             branches: vec![IfBranch {
                 condition: Condition::Expression(bin(
                     BinaryOp::Gt,
@@ -872,16 +931,18 @@ fn classify_function() -> UserFunction {
                     r(99.0),
                 )),
                 body: vec![
-                    Statement::Signal(vec![id("sensorFault")]),
+                    Spanned::dummy(Statement::Signal(vec![id("sensorFault")])),
                     assign(local("ok"), Expression::Bool(false)),
                 ],
+                span: Span::DUMMY,
             }],
             else_body: Some(vec![assign(local("ok"), Expression::Bool(true))]),
-        })],
+        }))],
+        span: Span::DUMMY,
     }
 }
 
-fn signal_guard_statements() -> Vec<Statement> {
+fn signal_guard_statements() -> Vec<Spanned<Statement>> {
     let identity = Expression::Array(vec![
         Expression::Array(vec![r(2.0), r(0.0)]),
         Expression::Array(vec![r(0.0), r(4.0)]),
@@ -892,7 +953,8 @@ fn signal_guard_statements() -> Vec<Statement> {
                 "isNaN",
                 vec![Expression::Ref(local_idx("solution", 1))],
             )),
-            body: vec![Statement::Signal(vec![id("NAN")])],
+            body: vec![Spanned::dummy(Statement::Signal(vec![id("NAN")]))],
+            span: Span::DUMMY,
         }],
         else_body: None,
     };
@@ -908,6 +970,7 @@ fn signal_guard_statements() -> Vec<Statement> {
                     fallback: Some(Expression::Not(Box::new(lref("ok")))),
                 }),
                 body: vec![assign(state("filtered"), r(0.0))],
+                span: Span::DUMMY,
             },
             IfBranch {
                 condition: Condition::SignalCheck(SignalCheck {
@@ -922,6 +985,7 @@ fn signal_guard_statements() -> Vec<Statement> {
                     state("filtered"),
                     Expression::Ref(local_idx("solution", 1)),
                 )],
+                span: Span::DUMMY,
             },
         ],
         else_body: Some(vec![assign(
@@ -942,18 +1006,19 @@ fn signal_guard_statements() -> Vec<Statement> {
             }),
             body: vec![
                 assign(state("filtered"), r(0.0)),
-                Statement::Signal(vec![id("NAN")]),
+                Spanned::dummy(Statement::Signal(vec![id("NAN")])),
             ],
+            span: Span::DUMMY,
         }],
         else_body: None,
     };
     vec![
         assign(local("ok"), ecall("classify", vec![sref("reading")])),
-        Statement::MultiAssignment {
+        Spanned::dummy(Statement::MultiAssignment {
             targets: vec![local("lu"), local("pivots")],
             call: fcall("luFactorize", vec![identity]),
-        },
-        Statement::MultiAssignment {
+        }),
+        Spanned::dummy(Statement::MultiAssignment {
             targets: vec![local("solution")],
             call: fcall(
                 "luSolve",
@@ -963,11 +1028,11 @@ fn signal_guard_statements() -> Vec<Statement> {
                     Expression::Array(vec![sref("reading"), r(0.0)]),
                 ],
             ),
-        },
-        Statement::If(nan_raise),
-        Statement::If(guard),
-        Statement::If(final_catch),
-        Statement::Limit(vec![LimitTarget::SelfState]),
+        }),
+        Spanned::dummy(Statement::If(nan_raise)),
+        Spanned::dummy(Statement::If(guard)),
+        Spanned::dummy(Statement::If(final_catch)),
+        Spanned::dummy(Statement::Limit(vec![LimitTarget::SelfState])),
     ]
 }
 
@@ -1003,6 +1068,7 @@ fn signal_guard() -> Block {
                 dims(real_decl(n("solution")), &[2]),
             ],
             statements: signal_guard_statements(),
+            span: Span::DUMMY,
         },
         ..Block::new(n("SignalGuard"))
     }
@@ -1148,16 +1214,18 @@ fn canonical_classify() -> UserFunction {
         signals: vec![id("probeFault")],
         parameters: vec![in_real("v"), out_real("w")],
         locals: vec![],
-        statements: vec![Statement::If(IfStatement {
+        statements: vec![Spanned::dummy(Statement::If(IfStatement {
             branches: vec![IfBranch {
                 condition: Condition::Expression(bin(BinaryOp::Gt, lref("v"), r(100.0))),
                 body: vec![
-                    Statement::Signal(vec![id("probeFault")]),
+                    Spanned::dummy(Statement::Signal(vec![id("probeFault")])),
                     assign(local("w"), r(0.0)),
                 ],
+                span: Span::DUMMY,
             }],
             else_body: Some(vec![assign(local("w"), lref("v"))]),
-        })],
+        }))],
+        span: Span::DUMMY,
     }
 }
 
@@ -1173,6 +1241,7 @@ fn canonical_accumulate() -> UserFunction {
             state("total"),
             bin(BinaryOp::Add, sref("total"), lref("w")),
         )],
+        span: Span::DUMMY,
     }
 }
 
@@ -1209,7 +1278,7 @@ fn canonical_estimator() -> Block {
     block.do_step.locals = vec![real_decl(n("w"))];
     block.do_step.statements = vec![
         assign(local("w"), ecall("classify", vec![sref("u")])),
-        Statement::If(IfStatement {
+        Spanned::dummy(Statement::If(IfStatement {
             branches: vec![IfBranch {
                 condition: Condition::SignalCheck(SignalCheck {
                     closure: None,
@@ -1220,9 +1289,10 @@ fn canonical_estimator() -> Block {
                     fallback: None,
                 }),
                 body: vec![assign(local("w"), r(0.0))],
+                span: Span::DUMMY,
             }],
             else_body: None,
-        }),
+        })),
         call_stmt("accumulate", vec![lref("w")]),
         assign(
             state("y"),

@@ -28,7 +28,7 @@ use crate::manifest_context::production_code_manifest::TargetTypeKind;
 use crate::manifest_context::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
-use rumoca_ir_galec::ast::{Block, Name, ScalarType, Statement};
+use rumoca_ir_galec::ast::{Block, Name, ScalarType, Spanned, Statement};
 
 use crate::diagnostic::GalecTargetError;
 use crate::package::AlgorithmCodePackage;
@@ -386,12 +386,13 @@ pub(crate) fn c_scalar_binding(scalar: ScalarType) -> (TargetTypeKind, &'static 
 }
 
 fn statements(
-    block_statements: &[Statement],
+    block_statements: &[Spanned<Statement>],
     printer: &crate::c_print::CPrinter<'_>,
 ) -> Result<Vec<CStatement>, GalecTargetError> {
     block_statements
         .iter()
         .map(|statement| {
+            let statement = &statement.node;
             // Non-assignment kinds fail here with ET023 (the printer owns
             // that rejection); a kind the printer someday accepts still
             // needs a CStatement shape before it can pass below.

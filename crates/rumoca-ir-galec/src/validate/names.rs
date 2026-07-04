@@ -21,7 +21,8 @@
 //! function name exactly once and the printer emits it at both ends.
 
 use crate::ast::{
-    Condition, Identifier, InterfaceKind, Name, Statement, UserFunction, VariableDeclaration,
+    Condition, Identifier, InterfaceKind, Name, Spanned, Statement, UserFunction,
+    VariableDeclaration,
 };
 use crate::builtins::{is_lexically_reserved, is_reserved_name};
 use crate::diagnostic::{GalecError, Location, PathSegment};
@@ -78,8 +79,8 @@ fn check_name(
     diags: &mut Vec<GalecError>,
 ) {
     match name {
-        Name::Ident(id) => check_identifier(id, location, surface, diags),
-        Name::Quoted(content) => check_quoted(content, location, diags),
+        Name::Ident(id, _) => check_identifier(id, location, surface, diags),
+        Name::Quoted(content, _) => check_quoted(content, location, diags),
     }
 }
 
@@ -401,14 +402,14 @@ fn check_body_names(
 }
 
 fn check_statement_declarations(
-    statements: &[Statement],
+    statements: &[Spanned<Statement>],
     base: &[PathSegment],
     diags: &mut Vec<GalecError>,
 ) {
     for (index, statement) in statements.iter().enumerate() {
         let mut path = base.to_vec();
         path.push(PathSegment::Statement(index));
-        match statement {
+        match &statement.node {
             Statement::For(for_loop) => {
                 if let Some(iterator) = &for_loop.iterator {
                     check_name(

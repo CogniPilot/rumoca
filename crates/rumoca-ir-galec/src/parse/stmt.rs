@@ -9,13 +9,14 @@
 
 use crate::ast::{
     Condition, ForLoop, Identifier, IfBranch, IfStatement, LimitTarget, Reference, SignalCheck,
-    SignalTest, Statement,
+    SignalTest, Spanned, Statement,
 };
 use crate::parse::expr::call_args_to_vec;
 use crate::parse::generated::galec_grammar_trait as g;
 use crate::parse::refs::{
     computed_dimensions_to_vec, local_reference_ref_part, state_reference_tail_parts,
 };
+use crate::parse::span::{spanned_statement, statements_span};
 
 // ---------------------------------------------------------------------------
 // Statement
@@ -65,7 +66,11 @@ fn name_headed_statement(ast: &g::NameHeadedStatement) -> Statement {
                 None => Vec::new(),
             };
             Statement::Assignment {
-                target: Reference::Local(crate::ast::RefPart { name, subscripts }),
+                target: Reference::Local(crate::ast::RefPart {
+                    span: name.span(),
+                    name,
+                    subscripts,
+                }),
                 value: group.expression.clone(),
             }
         }
@@ -100,15 +105,15 @@ fn multi_assignment(ast: &g::MultiAssignment) -> Statement {
 ///   { 'elseif' condition 'then' { stmt } } [ 'else' { stmt } ] 'end' 'if'`.
 fn if_statement(ast: &g::IfStatement) -> IfStatement {
     let mut branches = Vec::with_capacity(1 + ast.if_statement_list0.len());
-    branches.push(IfBranch {
-        condition: ast.condition.clone(),
-        body: statements(ast.if_statement_list.iter().map(|s| &s.statement)),
-    });
+    branches.push(if_branch(
+        ast.condition.clone(),
+        statements(ast.if_statement_list.iter().map(|s| &s.statement)),
+    ));
     for elseif in &ast.if_statement_list0 {
-        branches.push(IfBranch {
-            condition: elseif.condition.clone(),
-            body: statements(elseif.if_statement_list0_list.iter().map(|s| &s.statement)),
-        });
+        branches.push(if_branch(
+            elseif.condition.clone(),
+            statements(elseif.if_statement_list0_list.iter().map(|s| &s.statement)),
+        ));
     }
     let else_body = ast
         .if_statement_opt
@@ -227,10 +232,23 @@ impl TryFrom<&g::ErrorSignalCheck> for SignalCheck {
 // Shared helpers over non-`%nt_type` repetition wrappers
 // ---------------------------------------------------------------------------
 
-/// Collect a statement list from any generated repetition wrapper whose element
-/// exposes an already-converted `statement` field.
-fn statements<'a>(items: impl Iterator<Item = &'a crate::ast::Statement>) -> Vec<Statement> {
-    items.cloned().collect()
+/// Collect a spanned statement list from any generated repetition wrapper whose
+/// element exposes an already-converted `statement` field, reconstructing each
+/// statement's span from its spanned children (D11).
+fn statements<'a>(
+    items: impl Iterator<Item = &'a crate::ast::Statement>,
+) -> Vec<Spanned<Statement>> {
+    items.map(spanned_statement).collect()
+}
+
+/// Build an [`IfBranch`] whose span is the union of its body statements (the
+/// condition is an expression / signal-check, which carry no span in M1).
+fn if_branch(condition: Condition, body: Vec<Spanned<Statement>>) -> IfBranch {
+    IfBranch {
+        span: statements_span(&body),
+        condition,
+        body,
+    }
 }
 
 /// `error_signal_statement : 'signal' ident { ',' ident }` → the non-empty

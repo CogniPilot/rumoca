@@ -699,10 +699,10 @@ fn mutated_package_cannot_render_unvalidated_galec() {
         .block
         .do_step
         .statements
-        .push(gast::Statement::Assignment {
+        .push(gast::Spanned::dummy(gast::Statement::Assignment {
             target: gast::Reference::state(gast::Name::ident("undeclared")),
             value: gast::Expression::Real(1.0),
-        });
+        }));
     let error = render_algorithm_code(&package).expect_err("facade must re-validate the block");
     assert_eq!(error.code(), "ET018");
 }
@@ -780,7 +780,7 @@ mod block_interface {
             .startup
             .statements
             .iter()
-            .map(|statement| match statement {
+            .map(|statement| match &statement.node {
                 gast::Statement::Assignment { target, value } => {
                     let gast::Reference::State(parts) = target else {
                         panic!("Startup writes block state only, got {target:?}");

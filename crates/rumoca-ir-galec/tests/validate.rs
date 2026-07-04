@@ -11,8 +11,8 @@ use rumoca_ir_galec::ast::{
     BinaryOp, Block, Condition, Dimension, Direction, Expression, ForLoop, FunctionCall,
     FunctionKind, Identifier, IfBranch, IfExpression, IfStatement, InterfaceKind,
     InterfaceVariable, Name, Parameter, PredefinedSignal, ProtectedEntity, ProtectedKind,
-    RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, StateCompartment,
-    Statement, TypeRef, UserFunction, VariableDeclaration,
+    RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Span, Spanned,
+    StateCompartment, Statement, TypeRef, UserFunction, VariableDeclaration,
 };
 use rumoca_ir_galec::validate;
 
@@ -66,6 +66,7 @@ fn with_compartment(mut block: Block) -> Block {
     block.compartments = vec![StateCompartment {
         name: n("Cfg"),
         entities: vec![protected_entity(ProtectedKind::State, real_decl("a"))],
+        span: Span::DUMMY,
     }];
     block
 }
@@ -74,6 +75,7 @@ fn state_at(name: &str, subscripts: Vec<Expression>) -> Reference {
     Reference::State(vec![RefPart {
         name: n(name),
         subscripts,
+        span: Span::DUMMY,
     }])
 }
 
@@ -101,8 +103,8 @@ fn bin(op: BinaryOp, lhs: Expression, rhs: Expression) -> Expression {
     Expression::binary(op, lhs, rhs)
 }
 
-fn assign(target: Reference, value: Expression) -> Statement {
-    Statement::Assignment { target, value }
+fn assign(target: Reference, value: Expression) -> Spanned<Statement> {
+    Spanned::dummy(Statement::Assignment { target, value })
 }
 
 fn fcall(function: &str, arguments: Vec<Expression>) -> FunctionCall {
@@ -112,8 +114,8 @@ fn fcall(function: &str, arguments: Vec<Expression>) -> FunctionCall {
     }
 }
 
-fn call_stmt(function: &str, arguments: Vec<Expression>) -> Statement {
-    Statement::Call(fcall(function, arguments))
+fn call_stmt(function: &str, arguments: Vec<Expression>) -> Spanned<Statement> {
+    Spanned::dummy(Statement::Call(fcall(function, arguments)))
 }
 
 fn in_real(name: &str) -> Parameter {
@@ -146,7 +148,7 @@ fn protected_entity(kind: ProtectedKind, decl: VariableDeclaration) -> Protected
     }
 }
 
-fn function(kind: FunctionKind, name: &str, statements: Vec<Statement>) -> UserFunction {
+fn function(kind: FunctionKind, name: &str, statements: Vec<Spanned<Statement>>) -> UserFunction {
     UserFunction {
         kind,
         name: n(name),
@@ -154,6 +156,7 @@ fn function(kind: FunctionKind, name: &str, statements: Vec<Statement>) -> UserF
         parameters: Vec::new(),
         locals: Vec::new(),
         statements,
+        span: Span::DUMMY,
     }
 }
 
@@ -169,14 +172,15 @@ fn catch_cond(signals: &[&str]) -> Condition {
     })
 }
 
-fn catch_stmt(signals: &[&str], body: Vec<Statement>) -> Statement {
-    Statement::If(IfStatement {
+fn catch_stmt(signals: &[&str], body: Vec<Spanned<Statement>>) -> Spanned<Statement> {
+    Spanned::dummy(Statement::If(IfStatement {
         branches: vec![IfBranch {
             condition: catch_cond(signals),
             body,
+            span: Span::DUMMY,
         }],
         else_body: None,
-    })
+    }))
 }
 
 #[track_caller]
@@ -212,7 +216,7 @@ fn minimal() -> Block {
 fn classify_fn(declared: bool, raises: bool) -> UserFunction {
     let mut then_body = vec![assign(local("w"), r(0.0))];
     if raises {
-        then_body.insert(0, Statement::Signal(vec![id("probeFault")]));
+        then_body.insert(0, Spanned::dummy(Statement::Signal(vec![id("probeFault")])));
     }
     UserFunction {
         kind: FunctionKind::Stateless,
@@ -224,13 +228,15 @@ fn classify_fn(declared: bool, raises: bool) -> UserFunction {
         },
         parameters: vec![in_real("v"), out_real("w")],
         locals: Vec::new(),
-        statements: vec![Statement::If(IfStatement {
+        statements: vec![Spanned::dummy(Statement::If(IfStatement {
             branches: vec![IfBranch {
                 condition: Condition::Expression(bin(BinaryOp::Gt, lref("v"), r(100.0))),
                 body: then_body,
+                span: Span::DUMMY,
             }],
             else_body: Some(vec![assign(local("w"), lref("v"))]),
-        })],
+        }))],
+        span: Span::DUMMY,
     }
 }
 
@@ -405,10 +411,12 @@ fn duplicate_compartments_rejected() {
         StateCompartment {
             name: n("cfg"),
             entities: vec![protected_entity(ProtectedKind::State, real_decl("a"))],
+            span: Span::DUMMY,
         },
         StateCompartment {
             name: n("cfg"),
             entities: vec![protected_entity(ProtectedKind::State, real_decl("b"))],
+            span: Span::DUMMY,
         },
     ];
     expect_codes(&block, &["EG012"]);
@@ -451,13 +459,14 @@ fn if_expression_branches_must_be_equally_typed() {
 #[test]
 fn conditions_must_be_boolean() {
     let mut block = minimal();
-    block.do_step.statements = vec![Statement::If(IfStatement {
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
         branches: vec![IfBranch {
             condition: Condition::Expression(sref("u")),
             body: vec![],
+            span: Span::DUMMY,
         }],
         else_body: None,
-    })];
+    }))];
     expect_codes(&block, &["EG017"]);
 }
 
@@ -533,13 +542,14 @@ fn relational_operators_are_scalar_only() {
     block
         .protected
         .push(protected_entity(ProtectedKind::State, arr_decl("v", &[3])));
-    block.do_step.statements = vec![Statement::If(IfStatement {
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
         branches: vec![IfBranch {
             condition: Condition::Expression(bin(BinaryOp::Lt, sref("v"), sref("v"))),
             body: vec![],
+            span: Span::DUMMY,
         }],
         else_body: None,
-    })];
+    }))];
     expect_codes(&block, &["EG016"]);
 }
 
@@ -579,10 +589,10 @@ fn multi_assignment_output_arity_checked() {
     lu.dimensions = vec![Dimension::Expr(int(2)), Dimension::Expr(int(2))];
     block.do_step.locals = vec![lu];
     // One target for luFactorize's two outputs.
-    block.do_step.statements = vec![Statement::MultiAssignment {
+    block.do_step.statements = vec![Spanned::dummy(Statement::MultiAssignment {
         targets: vec![local("lu")],
         call: fcall("luFactorize", vec![matrix2()]),
-    }];
+    })];
     expect_codes(&block, &["EG019"]);
 }
 
@@ -594,10 +604,10 @@ fn multi_assignment_mismatch_reports_target_as_expected() {
     lu.dimensions = vec![Dimension::Expr(int(2)), Dimension::Expr(int(2))];
     // Should be Integer[2] (luFactorize's pivots output).
     block.do_step.locals = vec![lu, arr_decl("pivots", &[2])];
-    block.do_step.statements = vec![Statement::MultiAssignment {
+    block.do_step.statements = vec![Spanned::dummy(Statement::MultiAssignment {
         targets: vec![local("lu"), local("pivots")],
         call: fcall("luFactorize", vec![matrix2()]),
-    }];
+    })];
     let errors = validate(&block).expect_err("mismatched target must fail");
     assert_eq!(errors.len(), 1, "diagnostics: {errors:#?}");
     assert_eq!(errors[0].code(), "EG017");
@@ -617,6 +627,7 @@ fn component_typed_locals_rejected() {
         name: n("c"),
         dimensions: vec![],
         range: RangeAttributes::default(),
+        span: Span::DUMMY,
     }];
     expect_codes(&block, &["EG020"]);
 }
@@ -631,6 +642,7 @@ fn components_may_not_be_used_as_values() {
             name: n("box"),
             dimensions: vec![],
             range: RangeAttributes::default(),
+            span: Span::DUMMY,
         },
     ));
     block.do_step.statements = vec![assign(state("y"), Expression::Ref(state("box")))];
@@ -658,13 +670,13 @@ fn subscripts_must_be_static() {
 fn loop_bounds_must_be_static() {
     let mut block = minimal();
     block.do_step.locals = vec![int_decl("k")];
-    block.do_step.statements = vec![Statement::For(ForLoop {
+    block.do_step.statements = vec![Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("i")),
         start: int(1),
         step: None,
         stop: lref("k"),
         body: vec![],
-    })];
+    }))];
     expect_codes(&block, &["EG022"]);
 }
 
@@ -761,6 +773,7 @@ fn derived_dimensions_only_on_function_inputs() {
         name: n("v"),
         dimensions: vec![Dimension::Derived],
         range: RangeAttributes::default(),
+        span: Span::DUMMY,
     }];
     expect_codes(&block, &["EG025"]);
 }
@@ -828,6 +841,7 @@ fn calls_inside_subscripts_count_for_reachability() {
         }],
         locals: Vec::new(),
         statements: vec![assign(local("k"), int(1))],
+        span: Span::DUMMY,
     };
     index_fn.signals = Vec::new();
     block.protected_functions = vec![index_fn];
@@ -877,12 +891,16 @@ fn stateless_functions_may_not_limit_state() {
         function(
             FunctionKind::Stateless,
             "clampY",
-            vec![Statement::Limit(vec![LimitTarget::Reference(state("y"))])],
+            vec![Spanned::dummy(Statement::Limit(vec![
+                LimitTarget::Reference(state("y")),
+            ]))],
         ),
         function(
             FunctionKind::Stateless,
             "clampAll",
-            vec![Statement::Limit(vec![LimitTarget::SelfState])],
+            vec![Spanned::dummy(Statement::Limit(vec![
+                LimitTarget::SelfState,
+            ]))],
         ),
     ];
     block.do_step.statements = vec![call_stmt("clampY", vec![]), call_stmt("clampAll", vec![])];
@@ -893,7 +911,9 @@ fn stateless_functions_may_not_limit_state() {
 fn control_inputs_may_not_be_limited() {
     use rumoca_ir_galec::ast::LimitTarget;
     let mut block = minimal();
-    block.do_step.statements = vec![Statement::Limit(vec![LimitTarget::Reference(state("u"))])];
+    block.do_step.statements = vec![Spanned::dummy(Statement::Limit(vec![
+        LimitTarget::Reference(state("u")),
+    ]))];
     expect_codes(&block, &["EG033"]);
 }
 
@@ -996,26 +1016,28 @@ fn testing_an_unsettable_signal_rejected() {
 fn testing_an_already_caught_signal_rejected() {
     let mut block = estimator();
     // Second branch re-tests a signal the first branch already caught.
-    block.do_step.statements[1] = Statement::If(IfStatement {
+    block.do_step.statements[1] = Spanned::dummy(Statement::If(IfStatement {
         branches: vec![
             IfBranch {
                 condition: catch_cond(&["probeFault"]),
                 body: vec![assign(local("w"), r(0.0))],
+                span: Span::DUMMY,
             },
             IfBranch {
                 condition: catch_cond(&["probeFault"]),
                 body: vec![assign(local("w"), r(1.0))],
+                span: Span::DUMMY,
             },
         ],
         else_body: None,
-    });
+    }));
     expect_codes(&block, &["EG038"]);
 }
 
 #[test]
 fn unrestricted_check_needs_a_settable_signal() {
     let mut block = minimal();
-    block.do_step.statements = vec![Statement::If(IfStatement {
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
         branches: vec![IfBranch {
             condition: Condition::SignalCheck(SignalCheck {
                 closure: None,
@@ -1023,9 +1045,10 @@ fn unrestricted_check_needs_a_settable_signal() {
                 fallback: None,
             }),
             body: vec![],
+            span: Span::DUMMY,
         }],
         else_body: None,
-    })];
+    }))];
     expect_codes(&block, &["EG039"]);
 }
 
@@ -1039,7 +1062,7 @@ fn at_most_sixteen_user_signals() {
 #[test]
 fn unknown_signal_names_rejected() {
     let mut block = minimal();
-    block.do_step.statements = vec![Statement::Signal(vec![id("ghost")])];
+    block.do_step.statements = vec![Spanned::dummy(Statement::Signal(vec![id("ghost")]))];
     expect_codes(&block, &["EG034"]);
 }
 
@@ -1053,18 +1076,19 @@ fn signal_closure_reraise_is_accounted() {
         FunctionKind::Stateless,
         "relabel",
         vec![
-            Statement::Signal(vec![id("probeFault")]),
-            Statement::If(IfStatement {
+            Spanned::dummy(Statement::Signal(vec![id("probeFault")])),
+            Spanned::dummy(Statement::If(IfStatement {
                 branches: vec![IfBranch {
                     condition: Condition::SignalCheck(SignalCheck {
                         closure: Some(id("c")),
                         test: None,
                         fallback: None,
                     }),
-                    body: vec![Statement::Signal(vec![id("c")])],
+                    body: vec![Spanned::dummy(Statement::Signal(vec![id("c")]))],
+                    span: Span::DUMMY,
                 }],
                 else_body: None,
-            }),
+            })),
         ],
     );
     relabel.signals = vec![id("probeFault")];

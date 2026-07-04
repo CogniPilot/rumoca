@@ -19,8 +19,8 @@
 use crate::ast::{
     Associativity, Block, BlockMethod, BlockMethodKind, Condition, Dimension, Expression, ForLoop,
     FunctionCall, Identifier, IfExpression, IfStatement, LimitTarget, Name, PrecedenceClass,
-    RangeAttributes, RefPart, Reference, SignalCheck, StateCompartment, Statement, TypeRef,
-    UserFunction, VariableDeclaration,
+    RangeAttributes, RefPart, Reference, SignalCheck, Spanned, StateCompartment, Statement,
+    TypeRef, UserFunction, VariableDeclaration,
 };
 use crate::diagnostic::{GalecError, Location, PathSegment};
 
@@ -122,15 +122,15 @@ fn ensure_decimal_places(mut s: String) -> String {
 /// diagnostic locations, not `.alg` output).
 fn display_name(name: &Name) -> String {
     match name {
-        Name::Ident(id) => id.0.clone(),
-        Name::Quoted(content) => format!("'{content}'"),
+        Name::Ident(id, _) => id.0.clone(),
+        Name::Quoted(content, _) => format!("'{content}'"),
     }
 }
 
 fn print_name(name: &Name, location: &Location) -> Result<String, GalecError> {
     match name {
-        Name::Ident(id) => print_identifier(id, location),
-        Name::Quoted(content) => print_quoted(content, location),
+        Name::Ident(id, _) => print_identifier(id, location),
+        Name::Quoted(content, _) => print_quoted(content, location),
     }
 }
 
@@ -526,7 +526,7 @@ impl Printer {
     fn body(
         &mut self,
         locals: &[VariableDeclaration],
-        statements: &[Statement],
+        statements: &[Spanned<Statement>],
     ) -> Result<(), GalecError> {
         if !locals.is_empty() {
             self.line("protected");
@@ -547,10 +547,10 @@ impl Printer {
         Ok(())
     }
 
-    fn statements(&mut self, statements: &[Statement]) -> Result<(), GalecError> {
+    fn statements(&mut self, statements: &[Spanned<Statement>]) -> Result<(), GalecError> {
         for (index, statement) in statements.iter().enumerate() {
             self.path.push(PathSegment::Statement(index));
-            self.statement(statement)?;
+            self.statement(&statement.node)?;
             self.path.pop();
         }
         Ok(())

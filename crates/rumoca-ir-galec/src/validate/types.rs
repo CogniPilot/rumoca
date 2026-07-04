@@ -21,7 +21,8 @@
 
 use crate::ast::{
     BinaryOp, Condition, Dimension, Expression, FunctionCall, IfExpression, IfStatement,
-    LimitTarget, PrecedenceClass, Reference, ScalarType, Statement, TypeRef, VariableDeclaration,
+    LimitTarget, PrecedenceClass, Reference, ScalarType, Spanned, Statement, TypeRef,
+    VariableDeclaration,
 };
 use crate::diagnostic::{GalecError, PathSegment};
 
@@ -81,10 +82,10 @@ impl<'a> TypeChecker<'a, '_> {
         }
     }
 
-    fn statements(&mut self, statements: &'a [Statement]) {
+    fn statements(&mut self, statements: &'a [Spanned<Statement>]) {
         for (index, statement) in statements.iter().enumerate() {
             self.cursor.push(PathSegment::Statement(index));
-            self.statement(statement);
+            self.statement(&statement.node);
             self.cursor.pop();
         }
     }
