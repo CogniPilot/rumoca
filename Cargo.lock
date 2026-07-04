@@ -3816,6 +3816,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-tool-galec-lsp"
+version = "0.9.9"
+dependencies = [
+ "futures-util",
+ "lsp-types",
+ "rumoca-ir-galec",
+ "tokio",
+ "tower-lsp",
+]
+
+[[package]]
 name = "rumoca-tool-lint"
 version = "0.9.9"
 dependencies = [
