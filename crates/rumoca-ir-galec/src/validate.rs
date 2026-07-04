@@ -34,11 +34,13 @@ mod dims;
 mod effects;
 mod locate;
 mod names;
+mod navigate;
 mod signals;
 mod termination;
 mod types;
 
 pub use locate::span_of;
+pub use navigate::{SymbolInfo, symbol_at};
 
 /// Run all six analyses over `block`, collecting every finding.
 ///

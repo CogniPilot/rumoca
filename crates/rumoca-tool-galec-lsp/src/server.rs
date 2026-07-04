@@ -12,12 +12,14 @@ use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, MessageType, OneOf, ServerCapabilities,
     ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::diagnostics::compute_diagnostics;
+use crate::navigation;
 
 /// The GALEC `.alg` language server: a document store plus diagnostics on open
 /// and change.
@@ -44,8 +46,15 @@ impl GalecLanguageServer {
     fn server_capabilities() -> ServerCapabilities {
         ServerCapabilities {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            hover_provider: Some(HoverProviderCapability::Simple(true)),
+            definition_provider: Some(OneOf::Left(true)),
             ..Default::default()
         }
+    }
+
+    /// The current text of a document by URI, if open.
+    async fn document_text(&self, uri: &Url) -> Option<String> {
+        self.documents.read().await.get(&document_key(uri)).cloned()
     }
 
     /// Store a document's text and publish its diagnostics.
@@ -100,6 +109,32 @@ impl LanguageServer for GalecLanguageServer {
         self.client
             .publish_diagnostics(params.text_document.uri, Vec::new(), None)
             .await;
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(text) = self.document_text(&uri).await else {
+            return Ok(None);
+        };
+        Ok(navigation::hover(&text, &document_key(&uri), position))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(text) = self.document_text(&uri).await else {
+            return Ok(None);
+        };
+        Ok(navigation::goto_definition(
+            &text,
+            &document_key(&uri),
+            uri,
+            position,
+        ))
     }
 }
 

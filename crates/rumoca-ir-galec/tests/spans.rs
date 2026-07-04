@@ -12,7 +12,7 @@ use rumoca_ir_galec::ast::{
 };
 use rumoca_ir_galec::parse::{GalecParseError, parse};
 use rumoca_ir_galec::print::print_block;
-use rumoca_ir_galec::{span_of, validate};
+use rumoca_ir_galec::{span_of, symbol_at, validate};
 
 /// Slice the source a span covers. `BytePos` is a `usize` newtype; `end` is
 /// exclusive (matches `Span`'s convention and Rust range semantics).
@@ -143,6 +143,46 @@ fn input_real(name: &str) -> InterfaceVariable {
         decl: VariableDeclaration::scalar(ScalarType::Real, Name::ident(name)),
         start: None,
     }
+}
+
+#[test]
+fn symbol_at_resolves_a_reference_to_its_declaration() {
+    // `self.y := self.u;` — the cursor on the `u` reference resolves to the
+    // declaration `input Real u`, and hovers its type.
+    let mut block = Block::new(Name::ident("Nav"));
+    block.interface.push(input_real("u"));
+    block.interface.push(InterfaceVariable {
+        kind: InterfaceKind::Output,
+        decl: VariableDeclaration::scalar(ScalarType::Real, Name::ident("y")),
+        start: None,
+    });
+    block
+        .do_step
+        .statements
+        .push(Spanned::dummy(Statement::Assignment {
+            target: Reference::state(Name::ident("y")),
+            value: Expression::Ref(Reference::state(Name::ident("u"))),
+        }));
+    let text = print_block(&block).expect("prints");
+    let parsed = parse(&text, "nav").expect("parses");
+
+    // Offset of the `u` in the `self.u` reference (not the `input Real u` decl).
+    let reference_offset = text.find("self.u").expect("self.u present") + "self.".len();
+    let info = symbol_at(&parsed, reference_offset).expect("cursor is on a reference");
+
+    let def = info.definition_span.expect("reference has a declaration");
+    assert_eq!(
+        slice(&text, def),
+        "u",
+        "go-to-definition lands on the `u` declaration"
+    );
+    assert!(
+        info.hover.contains("Real"),
+        "hover shows the type: {}",
+        info.hover
+    );
+    // The definition span differs from the reference span (distinct occurrences).
+    assert_ne!(def, info.reference_span);
 }
 
 #[test]
