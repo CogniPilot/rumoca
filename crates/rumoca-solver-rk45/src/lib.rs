@@ -462,6 +462,18 @@ fn root_value_at(values: &[f64], index: usize, label: &str) -> Result<f64, SimEr
     })
 }
 
+fn root_condition_is_time_only(row: &[solve::LinearOp]) -> bool {
+    let mut reads_time = false;
+    for op in row {
+        match op {
+            solve::LinearOp::LoadTime { .. } => reads_time = true,
+            solve::LinearOp::LoadY { .. } => return false,
+            _ => {}
+        }
+    }
+    reads_time
+}
+
 impl<'a> Rk45Backend<'a> {
     fn new(model: &'a SolveRuntime, opts: &SimOptions) -> Result<Self, SimError> {
         let state = model.model.initial_y[..model.state_count].to_vec();
@@ -836,7 +848,7 @@ impl<'a> Rk45Backend<'a> {
             )?;
             let old = root_value_at(&lo_roots, crossing.index, "left bisection")?;
             let new = root_value_at(&mid_roots, crossing.index, "midpoint bisection")?;
-            if root_value_crossed(old, new, self.atol) {
+            if root_value_crossed(old, new, self.root_bisection_tol(crossing.index)) {
                 hi_t = mid_t;
                 hi_state = mid_state;
             } else {
@@ -850,6 +862,25 @@ impl<'a> Rk45Backend<'a> {
             state: hi_state,
             pre_state: lo_state,
         })
+    }
+
+    fn root_bisection_tol(&self, root_index: usize) -> f64 {
+        let Some(row) = self
+            .model
+            .model
+            .problem
+            .events
+            .root_conditions
+            .programs
+            .get(root_index)
+        else {
+            return self.atol;
+        };
+        if root_condition_is_time_only(row) {
+            0.0
+        } else {
+            self.atol
+        }
     }
 
     fn locate_simultaneous_crossings(

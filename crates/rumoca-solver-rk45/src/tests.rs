@@ -406,6 +406,58 @@ fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
 }
 
 #[test]
+fn rk45_root_bisection_does_not_stop_at_state_atol_band() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.5 },
+            LinearOp::LoadTime { dst: 1 },
+            LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+    let runtime = SolveRuntime::new(&model).expect("test model should build runtime");
+    let backend = Rk45Backend::new(
+        &runtime,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.501,
+            atol: 1.0e-6,
+            ..Default::default()
+        },
+    )
+    .expect("rk45 backend should initialize");
+
+    let root = backend
+        .bisect_root(
+            0.5,
+            vec![0.0],
+            0.501,
+            RootCrossing {
+                index: 0,
+                post_relation_memory_value: 0.0,
+            },
+            None,
+        )
+        .expect("time root should locate");
+
+    assert!(
+        (root.time - 0.5).abs() <= 1.0e-12,
+        "root location should not stop at the solver state tolerance band; t={}",
+        root.time
+    );
+}
+
+#[test]
 fn rk45_applies_periodic_event_update() {
     let mut model = single_state_model(vec![vec![
         LinearOp::Const { dst: 0, value: 0.0 },
