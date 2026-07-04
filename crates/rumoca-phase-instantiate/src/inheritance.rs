@@ -1122,7 +1122,7 @@ pub fn process_extends_with_cache(
         let base_inherited = process_extends_with_cache(tree, base_class, cache)?;
         merge_inherited(&mut inherited, base_inherited, extend, &tree.source_map)?;
 
-        // MLS §7.2: Apply extends modifications after recursive merge so
+        // MLS §7.2/§7.3: Apply extends modifications after recursive merge so
         // transitively inherited targets are available.
         apply_extends_modifications(tree, &mut inherited, base_class, extend)?;
     }
@@ -1864,6 +1864,16 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
     }
 }
 
+fn activate_constrainedby_defaults_for_replaceable_components(
+    components: &mut IndexMap<String, ast::Component>,
+) {
+    for comp in components.values_mut() {
+        if comp.is_replaceable {
+            activate_constrainedby_defaults_for_redeclare(comp);
+        }
+    }
+}
+
 /// Merge nested class modifications from extends clause into inherited components.
 ///
 /// MLS §7.2: When an extends clause has modifications like
@@ -2043,6 +2053,8 @@ pub fn get_effective_components_with_cache(
     for (name, comp) in &class.components {
         inherited.components.insert(name.clone(), comp.clone());
     }
+
+    activate_constrainedby_defaults_for_replaceable_components(&mut inherited.components);
 
     // MLS §7.1/§7.3: local class names (including inherited replaceable classes)
     // are valid type names for component declarations in the effective class scope.
