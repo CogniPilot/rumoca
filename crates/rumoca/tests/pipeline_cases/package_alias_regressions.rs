@@ -1,5 +1,72 @@
 use super::*;
 
+/// MLS §7.3.2: if a replaceable package declaration has no explicit
+/// `constrainedby`, the declaration type is its implicit constraining type.
+///
+/// A later redeclare must be checked against that original constraining type,
+/// not against the local alias class introduced by the replaceable declaration.
+#[test]
+fn test_replaceable_package_implicit_constraint_uses_declared_type() {
+    let source = r#"
+package Modelica
+  package Media
+    package Interfaces
+      partial package PartialMedium
+      end PartialMedium;
+
+      partial package PartialMixtureMedium
+        extends PartialMedium;
+      end PartialMixtureMedium;
+
+      partial package PartialCondensingGases
+        extends PartialMixtureMedium;
+      end PartialCondensingGases;
+    end Interfaces;
+  end Media;
+end Modelica;
+
+package Buildings
+  package Fluid
+    package Interfaces
+      partial model PartialFourPort
+        replaceable package Medium2 =
+          Modelica.Media.Interfaces.PartialMedium;
+      end PartialFourPort;
+
+      partial model PartialFourPortInterface
+        extends PartialFourPort;
+      end PartialFourPortInterface;
+    end Interfaces;
+
+    package HeatExchangers
+      model DryCoilCounterFlow
+        extends Interfaces.PartialFourPortInterface;
+      end DryCoilCounterFlow;
+
+      model WetCoilCounterFlow
+        extends DryCoilCounterFlow(
+          redeclare replaceable package Medium2 =
+            Modelica.Media.Interfaces.PartialCondensingGases);
+      end WetCoilCounterFlow;
+    end HeatExchangers;
+  end Fluid;
+end Buildings;
+
+model Probe
+  Buildings.Fluid.HeatExchangers.WetCoilCounterFlow coil;
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    session
+        .compile_model("Probe")
+        .expect("implicit constraining type should accept PartialCondensingGases");
+}
+
 /// MLS §7.3: constant evaluation in nested package aliases must use alias-local scope.
 ///
 /// Without scope-aware lookup, `size(substanceNames, 1)` for `Medium.nS` can resolve to
