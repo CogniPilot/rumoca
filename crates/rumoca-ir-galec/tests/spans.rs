@@ -7,11 +7,12 @@
 #![cfg(feature = "parse")]
 
 use rumoca_ir_galec::ast::{
-    Block, InterfaceKind, InterfaceVariable, Name, Reference, ScalarType, Span, Statement,
-    VariableDeclaration,
+    Block, Expression, InterfaceKind, InterfaceVariable, Name, Reference, ScalarType, Span,
+    Spanned, Statement, VariableDeclaration,
 };
-use rumoca_ir_galec::parse::parse;
+use rumoca_ir_galec::parse::{GalecParseError, parse};
 use rumoca_ir_galec::print::print_block;
+use rumoca_ir_galec::{span_of, validate};
 
 /// Slice the source a span covers. `BytePos` is a `usize` newtype; `end` is
 /// exclusive (matches `Span`'s convention and Rust range semantics).
@@ -86,6 +87,39 @@ fn statement_span_slices_its_assignment_target() {
 }
 
 #[test]
+fn syntax_errors_carry_an_in_bounds_source_span() {
+    // A statement position that begins with an integer literal is a syntax
+    // error (a statement must start with a name / `self` / `if` / `for` / …).
+    // `from_parol` must surface it positioned, not span-less.
+    let bad = "block Bad\n\
+               protected\n\
+               public\n\
+               method Startup\nalgorithm\nend Startup;\n\
+               method Recalibrate\nalgorithm\nend Recalibrate;\n\
+               method DoStep\nalgorithm\n1 := 2;\nend DoStep;\n\
+               end Bad;\n";
+    let err = parse(bad, "bad").expect_err("must fail to parse");
+    let GalecParseError::Syntax { span, .. } = err else {
+        panic!("expected a positioned Syntax error, got {err:?}");
+    };
+    let (start, end) = span.expect("syntax error must carry a source span");
+    assert!(
+        start <= end && end <= bad.len(),
+        "span in bounds: {start}..{end}"
+    );
+    // The offending token `1` is well past the block header, so the error is
+    // positioned at the body, not pinned at offset 0.
+    assert!(
+        start > 0,
+        "span should point at the offending token, not the start"
+    );
+    assert!(
+        !bad[start..end].is_empty(),
+        "span slices a non-empty lexeme"
+    );
+}
+
+#[test]
 fn distinct_occurrences_get_distinct_spans() {
     let text = print_block(&sample()).expect("fixture prints");
     let parsed = parse(&text, "spans").expect("fixture parses");
@@ -101,4 +135,66 @@ fn distinct_occurrences_get_distinct_spans() {
         decl_y, assign_y,
         "the declaration and the assignment of `y` are at different source offsets"
     );
+}
+
+fn input_real(name: &str) -> InterfaceVariable {
+    InterfaceVariable {
+        kind: InterfaceKind::Input,
+        decl: VariableDeclaration::scalar(ScalarType::Real, Name::ident(name)),
+        start: None,
+    }
+}
+
+#[test]
+fn span_of_positions_a_declaration_diagnostic() {
+    // Two interface inputs named `u` -> EG012 duplicate name. Its structural
+    // Location resolves via span_of to the declaration's span, which slices `u`.
+    let mut block = Block::new(Name::ident("Dup"));
+    block.interface.push(input_real("u"));
+    block.interface.push(input_real("u"));
+    let text = print_block(&block).expect("prints");
+    let parsed = parse(&text, "dup").expect("parses");
+
+    let diags = validate(&parsed).expect_err("a duplicate name is a diagnostic");
+    let dup = diags
+        .iter()
+        .find(|d| d.code() == "EG012")
+        .expect("EG012 duplicate-name present");
+    let span = span_of(&parsed, dup.location()).expect("diagnostic is positioned");
+    assert_eq!(slice(&text, span), "u");
+}
+
+#[test]
+fn span_of_positions_a_statement_diagnostic() {
+    // `self.y := self.nope;` in DoStep references an undeclared state -> EG014.
+    // The statement-granular Location resolves to the statement's span.
+    let mut block = Block::new(Name::ident("Ref"));
+    block.interface.push(InterfaceVariable {
+        kind: InterfaceKind::Output,
+        decl: VariableDeclaration::scalar(ScalarType::Real, Name::ident("y")),
+        start: None,
+    });
+    block
+        .do_step
+        .statements
+        .push(Spanned::dummy(Statement::Assignment {
+            target: Reference::state(Name::ident("y")),
+            value: Expression::Ref(Reference::state(Name::ident("nope"))),
+        }));
+    let text = print_block(&block).expect("prints");
+    let parsed = parse(&text, "ref").expect("parses");
+
+    let diags = validate(&parsed).expect_err("an unresolved reference is a diagnostic");
+    let unresolved = diags
+        .iter()
+        .find(|d| d.code() == "EG014")
+        .expect("EG014 unresolved-reference present");
+    let span = span_of(&parsed, unresolved.location()).expect("diagnostic is positioned");
+    // The statement span reconstructs from the assignment target `self.y` (M1).
+    let sliced = slice(&text, span);
+    assert!(
+        !sliced.is_empty() && text.contains(sliced),
+        "in-bounds slice: {sliced:?}"
+    );
+    assert!(!span.is_dummy());
 }

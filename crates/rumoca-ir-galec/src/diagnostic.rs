@@ -1,12 +1,15 @@
 //! SPEC_0008-shaped diagnostics for the GALEC language module.
 //!
-//! GALEC ASTs are *generated* (never parsed from source text yet, GAL-014),
-//! so there is no source span to point at. Locations are therefore
-//! **structural paths** into the AST (block / method / statement index …)
-//! plus an optional provenance string naming the Modelica origin. When a
-//! parser lands (parol grammar + LSP, SPEC_0034 Non-Goals), an optional
-//! source span slots into [`Location`] as an additional field without
-//! disturbing existing variants — diagnostics keep their stable codes.
+//! GALEC ASTs come from two sources: the parser, which attaches source
+//! `rumoca_core::Span`s to nodes (SPEC_0034 D11), and codegen, which generates
+//! them from a DAE with no `.alg` source. Diagnostic locations are therefore
+//! **structural paths** into the AST (block / method / statement index …) plus
+//! an optional provenance string naming the Modelica origin — a representation
+//! that serves both sources. A path is resolved to the offending node's source
+//! span on demand by [`crate::validate::span_of`], so parsed diagnostics are
+//! positionable for the LSP without storing a span on every location, while
+//! generated diagnostics keep their structural path + provenance. Diagnostics
+//! keep their stable `EG0xx` codes regardless.
 //!
 //! Error codes use the stable `EG0xx` range (**G**ALEC language). Runtime
 //! error *signals* (§3.2.5) are language machinery modeled in the AST, not
