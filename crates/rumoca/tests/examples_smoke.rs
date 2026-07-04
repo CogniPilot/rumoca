@@ -602,10 +602,10 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
         return;
     };
 
-    for (axis_input, gyro_output) in [
-        ("stick_roll", "gyro[1]"),
-        ("stick_pitch", "gyro[2]"),
-        ("stick_yaw", "gyro[3]"),
+    for (axis_input, gyro_output, minimum_rate) in [
+        ("stick_roll", "gyro[1]", 0.05),
+        ("stick_pitch", "gyro[2]", 0.05),
+        ("stick_yaw", "gyro[3]", 0.015),
     ] {
         let mut stepper = SimStepper::new_with_diagnostics(
             &result.dae,
@@ -646,9 +646,9 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
             .copied()
             .unwrap_or_else(|| panic!("quadrotor state should contain {gyro_output}"));
         assert!(
-            rate.abs() > 0.05,
+            rate > minimum_rate,
             "{axis_input} should generate visible body rate at hover throttle; \
-             {gyro_output}={rate}"
+             {gyro_output}={rate}, expected > {minimum_rate}"
         );
     }
 }

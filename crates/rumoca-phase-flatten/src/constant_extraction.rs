@@ -1,15 +1,14 @@
 use super::*;
 
+// Well-known constant packages to resolve. ModelicaServices.Machine must come
+// first since Modelica.Constants.eps references ModelicaServices.Machine.eps.
+const WELL_KNOWN_CONSTANT_PACKAGES: &[&str] = &["ModelicaServices.Machine", "Modelica.Constants"];
+
 pub(super) fn resolve_constants_from_tree(
     tree: &ast::ClassTree,
     eval_ctx: &mut rumoca_eval_flat::constant::EvalContext,
 ) -> Result<(), FlattenError> {
-    // Well-known constant packages to resolve.
-    // ModelicaServices.Machine must come first since Modelica.Constants.eps
-    // references ModelicaServices.Machine.eps.
-    const CONSTANT_PACKAGES: &[&str] = &["ModelicaServices.Machine", "Modelica.Constants"];
-
-    for &pkg_name in CONSTANT_PACKAGES {
+    for &pkg_name in WELL_KNOWN_CONSTANT_PACKAGES {
         let Some(class_def) = tree.get_class_by_qualified_name(pkg_name) else {
             continue;
         };
@@ -31,6 +30,86 @@ pub(super) fn resolve_constants_from_tree(
     Ok(())
 }
 
+pub(super) fn inject_well_known_constant_package_values(
+    tree: &ast::ClassTree,
+    ctx: &mut Context,
+) -> Result<(), FlattenError> {
+    let mut eval_ctx = rumoca_eval_flat::constant::EvalContext::with_capacity(
+        ctx.parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.boolean_parameter_values.len()
+            + ctx.string_parameter_values.len(),
+        0,
+        ctx.functions.len() * 2,
+    );
+    for (name, value) in &ctx.parameter_values {
+        eval_ctx.add_parameter(
+            name.clone(),
+            rumoca_eval_flat::constant::Value::Integer(*value),
+        );
+    }
+    for (name, value) in &ctx.real_parameter_values {
+        eval_ctx.add_parameter(
+            name.clone(),
+            rumoca_eval_flat::constant::Value::Real(*value),
+        );
+    }
+    for (name, value) in &ctx.boolean_parameter_values {
+        eval_ctx.add_parameter(
+            name.clone(),
+            rumoca_eval_flat::constant::Value::Bool(*value),
+        );
+    }
+    for (name, value) in &ctx.string_parameter_values {
+        eval_ctx.add_parameter(
+            name.clone(),
+            rumoca_eval_flat::constant::Value::String(value.clone()),
+        );
+    }
+
+    resolve_constants_from_tree(tree, &mut eval_ctx)?;
+    for &pkg_name in WELL_KNOWN_CONSTANT_PACKAGES {
+        let Some(class_def) = tree.get_class_by_qualified_name(pkg_name) else {
+            continue;
+        };
+        for (comp_name, component) in &class_def.components {
+            if !matches!(
+                component.variability,
+                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+            ) {
+                continue;
+            }
+            let qualified = format!("{pkg_name}.{comp_name}");
+            if matches!(component.variability, rumoca_core::Variability::Constant(_)) {
+                ctx.class_constant_keys.insert(qualified.clone());
+            }
+            let Some(value) = eval_ctx.get(&qualified) else {
+                continue;
+            };
+            match value {
+                rumoca_eval_flat::constant::Value::Real(value) if value.is_finite() => {
+                    ctx.real_parameter_values.entry(qualified).or_insert(*value);
+                }
+                rumoca_eval_flat::constant::Value::Integer(value) => {
+                    ctx.parameter_values.entry(qualified).or_insert(*value);
+                }
+                rumoca_eval_flat::constant::Value::Bool(value) => {
+                    ctx.boolean_parameter_values
+                        .entry(qualified)
+                        .or_insert(*value);
+                }
+                rumoca_eval_flat::constant::Value::String(value) => {
+                    ctx.string_parameter_values
+                        .entry(qualified)
+                        .or_insert_with(|| value.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn inject_referenced_qualified_class_constants(
     tree: &ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
@@ -39,9 +118,8 @@ pub(super) fn inject_referenced_qualified_class_constants(
     overlay: &InstanceOverlay,
     ctx: &mut Context,
 ) -> Result<(), FlattenError> {
-    const WELL_KNOWN_CONSTANT_PACKAGES: &[&str] =
-        &["ModelicaServices.Machine", "Modelica.Constants"];
     const MAX_PASSES: usize = 4;
+    inject_well_known_constant_package_values(tree, ctx)?;
     let live_vars: HashSet<String> = flat
         .variables
         .keys()

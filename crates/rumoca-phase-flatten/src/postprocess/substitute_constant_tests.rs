@@ -99,6 +99,54 @@ fn add_primitive_variable(model: &mut flat::Model, name: &str) {
 }
 
 #[test]
+fn substitutes_qualified_real_class_constant_inside_builtin_array_binding() {
+    let mut model = flat::Model::new();
+    let name = rumoca_core::VarName::new("pid.D.T");
+    model.add_variable(
+        name.clone(),
+        flat::Variable {
+            name: name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Max,
+                args: vec![rumoca_core::Expression::Array {
+                    elements: vec![
+                        var_ref("pid.Nd"),
+                        rumoca_core::Expression::Binary {
+                            op: rumoca_core::OpBinary::Mul,
+                            lhs: Box::new(int_literal(100)),
+                            rhs: Box::new(spanned_var_ref("Modelica.Constants.eps")),
+                            span: test_span(),
+                        },
+                    ],
+                    is_matrix: false,
+                    span: test_span(),
+                }],
+                span: test_span(),
+            }),
+            binding_from_modification: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.class_constant_keys
+        .insert("Modelica.Constants.eps".to_string());
+    ctx.real_parameter_values
+        .insert("Modelica.Constants.eps".to_string(), f64::EPSILON);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    assert!(
+        !expr_contains_var_ref(
+            model.variables[&name].binding.as_ref().unwrap(),
+            "Modelica.Constants.eps"
+        ),
+        "Modelica.Constants.eps should be folded inside runtime parameter modifier bindings: {:?}",
+        model.variables[&name].binding
+    );
+}
+
+#[test]
 fn substitute_known_constants_preserves_named_arg_marker_for_record_constructor_value() {
     let mut model = flat::Model::new();
     model.add_equation(flat::Equation::new(

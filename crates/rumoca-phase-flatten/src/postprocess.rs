@@ -969,20 +969,89 @@ fn binding_references_class_constant(
     binding: Option<&rumoca_core::Expression>,
     ctx: &Context,
 ) -> bool {
-    let Some(rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    }) = binding
-    else {
-        return false;
-    };
-    if !subscripts.is_empty() {
-        return false;
+    binding.is_some_and(|expr| expr_references_class_constant(expr, ctx))
+}
+
+fn expr_references_class_constant(expr: &rumoca_core::Expression, ctx: &Context) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let self_is_class_constant = subscripts.is_empty()
+                && (ctx.class_constant_keys.contains(name.as_str())
+                    || name
+                        .target_def_id()
+                        .and_then(|def_id| ctx.target_def_names.get(&def_id))
+                        .is_some_and(|target| ctx.class_constant_keys.contains(target)));
+            self_is_class_constant || subscripts_reference_class_constant(subscripts, ctx)
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            expr_references_class_constant(lhs, ctx) || expr_references_class_constant(rhs, ctx)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => expr_references_class_constant(rhs, ctx),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => args
+            .iter()
+            .any(|expr| expr_references_class_constant(expr, ctx)),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_references_class_constant(cond, ctx)
+                    || expr_references_class_constant(value, ctx)
+            }) || expr_references_class_constant(else_branch, ctx)
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            expr_references_class_constant(start, ctx)
+                || step
+                    .as_ref()
+                    .is_some_and(|expr| expr_references_class_constant(expr, ctx))
+                || expr_references_class_constant(end, ctx)
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            expr_references_class_constant(expr, ctx)
+                || indices
+                    .iter()
+                    .any(|index| expr_references_class_constant(&index.range, ctx))
+                || filter
+                    .as_ref()
+                    .is_some_and(|expr| expr_references_class_constant(expr, ctx))
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            expr_references_class_constant(base, ctx)
+                || subscripts_reference_class_constant(subscripts, ctx)
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            expr_references_class_constant(base, ctx)
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
     }
-    ctx.class_constant_keys.contains(name.as_str())
-        || name
-            .target_def_id()
-            .and_then(|def_id| ctx.target_def_names.get(&def_id))
-            .is_some_and(|target| ctx.class_constant_keys.contains(target))
+}
+
+fn subscripts_reference_class_constant(
+    subscripts: &[rumoca_core::Subscript],
+    ctx: &Context,
+) -> bool {
+    subscripts.iter().any(|subscript| {
+        matches!(
+            subscript,
+            rumoca_core::Subscript::Expr { expr, .. }
+            if expr_references_class_constant(expr, ctx)
+        )
+    })
 }
 
 fn variable_is_string_type(var: &flat::Variable, type_name: Option<&String>) -> bool {
@@ -1514,6 +1583,7 @@ fn reference_key_is_structured(key: &str) -> bool {
 
 fn scoped_name_is_structural_value(key: &str, ctx: &Context) -> bool {
     ctx.constant_values.contains_key(key)
+        || ctx.class_constant_keys.contains(key)
         || ctx.structural_params.contains(key)
         || ctx.parameter_values.contains_key(key)
         || ctx.boolean_parameter_values.contains_key(key)
@@ -1542,6 +1612,15 @@ fn structured_key_value_expr(
     if let Some(value) = env.ctx.parameter_values.get(key) {
         return Ok(Some(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(*value),
+            span,
+        }));
+    }
+    if env.ctx.class_constant_keys.contains(key)
+        && let Some(value) = env.ctx.real_parameter_values.get(key)
+        && value.is_finite()
+    {
+        return Ok(Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(*value),
             span,
         }));
     }
