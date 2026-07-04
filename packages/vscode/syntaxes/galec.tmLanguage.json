@@ -1,0 +1,85 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "GALEC",
+  "scopeName": "source.galec",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#quoted-identifier" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.galec",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.galec",
+          "match": "\\b(if|then|elseif|else|for|in|loop|end)\\b"
+        },
+        {
+          "name": "keyword.declaration.galec",
+          "match": "\\b(block|record|function|method|algorithm|protected|public|constant|parameter|input|output)\\b"
+        },
+        {
+          "name": "keyword.other.galec",
+          "match": "\\b(self|signal|signals|limit|size)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.galec",
+          "match": "\\b(Real|Integer|Boolean)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.galec",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.galec",
+          "match": "\\b[0-9]+(\\.[0-9]+([eE][+-][0-9]+)?)?\\b"
+        }
+      ]
+    },
+    "quoted-identifier": {
+      "patterns": [
+        {
+          "name": "variable.other.quoted.galec",
+          "match": "'[^'\\r\\n]*'"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.logical.galec",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "keyword.operator.galec",
+          "match": ":=|\\^|\\*|/|\\+|-|<=|>=|<>|==|<|>"
+        }
+      ]
+    }
+  }
+}
