@@ -211,7 +211,7 @@ impl<'a> CPrinter<'a> {
     }
 
     fn call(&self, call: &FunctionCall) -> Result<String, GalecTargetError> {
-        let Name::Ident(function) = &call.function else {
+        let Name::Ident(function, _) = &call.function else {
             return Err(GalecTargetError::LoweringInternal {
                 detail: "C export met a call to a quoted function name; the lowering \
                          only emits plain-identifier catalog builtins"
@@ -455,12 +455,14 @@ mod tests {
         let expr = Expression::Ref(Reference::State(vec![RefPart {
             name: Name::ident("x"),
             subscripts: vec![Expression::Integer(2)],
+            span: rumoca_ir_galec::ast::Span::DUMMY,
         }]));
         assert_eq!(print(&["x"], &expr), "self->x[1]");
 
         let dynamic = Expression::Ref(Reference::State(vec![RefPart {
             name: Name::ident("x"),
             subscripts: vec![state("i")],
+            span: rumoca_ir_galec::ast::Span::DUMMY,
         }]));
         assert_eq!(print(&["x", "i"], &dynamic), "self->x[(self->i - 1)]");
     }

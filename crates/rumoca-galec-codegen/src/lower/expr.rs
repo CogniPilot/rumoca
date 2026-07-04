@@ -877,7 +877,11 @@ pub fn emittable_builtin_targets() -> Vec<(&'static str, usize)> {
 
 /// `self.<name>[subscripts]` state reference.
 pub(crate) fn state_ref(name: Name, subscripts: Vec<gast::Expression>) -> gast::Expression {
-    gast::Expression::Ref(Reference::State(vec![RefPart { name, subscripts }]))
+    gast::Expression::Ref(Reference::State(vec![RefPart {
+        name,
+        subscripts,
+        span: Span::DUMMY,
+    }]))
 }
 
 fn call(function: &'static str, arguments: Vec<gast::Expression>) -> gast::Expression {

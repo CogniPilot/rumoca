@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     Block, BlockMethod, BlockMethodKind, Dimension, FunctionKind, Name, Parameter,
-    PredefinedSignal, RefPart, Reference, ScalarType, StateCompartment, Statement, TypeRef,
-    UserFunction, VariableDeclaration,
+    PredefinedSignal, RefPart, Reference, ScalarType, Spanned, StateCompartment, Statement,
+    TypeRef, UserFunction, VariableDeclaration,
 };
 use crate::builtins::{Builtin, BuiltinType, find_builtin, find_lifted_base};
 use crate::diagnostic::{Location, PathSegment};
@@ -15,8 +15,8 @@ use crate::diagnostic::{Location, PathSegment};
 /// equivalence, so `x` and `'x'` are different names (S-1.3).
 pub(super) fn lexeme(name: &Name) -> String {
     match name {
-        Name::Ident(id) => id.0.clone(),
-        Name::Quoted(content) => format!("'{content}'"),
+        Name::Ident(id, _) => id.0.clone(),
+        Name::Quoted(content, _) => format!("'{content}'"),
     }
 }
 
@@ -163,7 +163,7 @@ pub(super) struct BodyView<'a> {
     pub method: Option<BlockMethodKind>,
     pub parameters: &'a [Parameter],
     pub locals: &'a [VariableDeclaration],
-    pub statements: &'a [Statement],
+    pub statements: &'a [Spanned<Statement>],
     pub user: Option<&'a UserFunction>,
 }
 
@@ -527,7 +527,9 @@ pub(super) fn resolve_call<'a>(ctx: &BlockContext<'a>, name: &Name) -> Option<Ca
     if let Some(function) = ctx.functions.get(&lexeme(name)) {
         return Some(Callee::User(function));
     }
-    let Name::Ident(id) = name else { return None };
+    let Name::Ident(id, _) = name else {
+        return None;
+    };
     if let Some(builtin) = find_builtin(&id.0) {
         return Some(Callee::Builtin(builtin));
     }

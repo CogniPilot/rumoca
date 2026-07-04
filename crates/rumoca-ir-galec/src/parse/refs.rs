@@ -21,7 +21,10 @@ impl TryFrom<&g::Name> for crate::ast::Name {
 
     fn try_from(ast: &g::Name) -> Result<Self, Self::Error> {
         Ok(match ast {
-            g::Name::Ident(n) => Self::Ident(crate::ast::Identifier::new(n.ident.ident.text())),
+            g::Name::Ident(n) => Self::Ident(
+                crate::ast::Identifier::new(n.ident.ident.text()),
+                n.ident.ident.span(),
+            ),
             g::Name::Quoted(n) => {
                 let text = n.quoted.quoted.text();
                 let content = text
@@ -33,7 +36,7 @@ impl TryFrom<&g::Name> for crate::ast::Name {
                         ))
                         .into_anyhow()
                     })?;
-                Self::Quoted(content.to_string())
+                Self::Quoted(content.to_string(), n.quoted.quoted.span())
             }
         })
     }
@@ -61,6 +64,7 @@ impl TryFrom<&g::RefPart> for crate::ast::RefPart {
 
     fn try_from(ast: &g::RefPart) -> Result<Self, Self::Error> {
         Ok(Self {
+            span: ast.name.span(),
             name: ast.name.clone(),
             subscripts: match &ast.ref_part_opt {
                 Some(opt) => computed_dimensions_to_vec(&opt.computed_dimensions),
@@ -84,6 +88,7 @@ pub(crate) fn state_reference_tail_parts(tail: &g::StateReferenceTail) -> Vec<cr
 /// `local_reference : name [ computed_dimensions ]` → a single [`crate::ast::RefPart`].
 pub(crate) fn local_reference_ref_part(local: &g::LocalReference) -> crate::ast::RefPart {
     crate::ast::RefPart {
+        span: local.name.span(),
         name: local.name.clone(),
         subscripts: match &local.local_reference_opt {
             Some(opt) => computed_dimensions_to_vec(&opt.computed_dimensions),

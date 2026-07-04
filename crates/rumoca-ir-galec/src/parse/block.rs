@@ -20,11 +20,12 @@
 use crate::ast::{
     Block, BlockMethod, BlockMethodKind, Dimension, Direction, FunctionKind, Identifier,
     InterfaceKind, InterfaceVariable, Name, Parameter, PredefinedSignal, ProtectedEntity,
-    ProtectedKind, RangeAttributes, ScalarType, StateCompartment, Statement, TypeRef, UserFunction,
-    VariableDeclaration,
+    ProtectedKind, RangeAttributes, ScalarType, Spanned, StateCompartment, Statement, TypeRef,
+    UserFunction, VariableDeclaration,
 };
 use crate::parse::errors::GalecParseError;
 use crate::parse::generated::galec_grammar_trait as g;
+use crate::parse::span::{spanned_statement, union};
 
 // ---------------------------------------------------------------------------
 // Block
@@ -65,6 +66,8 @@ impl TryFrom<&g::Block> for Block {
                 .push(user_function(&item.function_declaration)?);
         }
         route_public_functions(&mut block, &ast.block_list4)?;
+        // Span the whole block from its header name to its `end` name (D11).
+        block.span = union(ast.name.span(), ast.name0.span());
         Ok(block)
     }
 }
@@ -135,7 +138,7 @@ fn require_method(seen: bool, name: &str) -> anyhow::Result<()> {
 /// The fixed block-method a `function`/`method` header names, if any (plain
 /// identifier only — a quoted name never denotes a fixed method).
 fn method_kind(name: &Name) -> Option<BlockMethodKind> {
-    let Name::Ident(id) = name else {
+    let Name::Ident(id, _) = name else {
         return None;
     };
     match id.as_str() {
@@ -164,6 +167,8 @@ fn block_method(fd: &g::FunctionDeclaration) -> anyhow::Result<BlockMethod> {
         signals: predefined_signals(fd)?,
         locals: locals(fd),
         statements: function_statements(fd),
+        // `method DoStep … end DoStep` — header name to `end` name (D11).
+        span: union(fd.name.span(), fd.name0.span()),
     })
 }
 
@@ -181,6 +186,8 @@ fn user_function(fd: &g::FunctionDeclaration) -> anyhow::Result<UserFunction> {
         parameters: parameters(fd),
         locals: locals(fd),
         statements: function_statements(fd),
+        // `function f … end f` — header name to `end` name (D11).
+        span: union(fd.name.span(), fd.name0.span()),
     })
 }
 
@@ -252,11 +259,12 @@ fn locals(fd: &g::FunctionDeclaration) -> Vec<VariableDeclaration> {
     }
 }
 
-/// `'algorithm' { statement }` → the body statements (already converted).
-fn function_statements(fd: &g::FunctionDeclaration) -> Vec<Statement> {
+/// `'algorithm' { statement }` → the body statements, each wrapped with its
+/// reconstructed span (D11).
+fn function_statements(fd: &g::FunctionDeclaration) -> Vec<Spanned<Statement>> {
     fd.function_declaration_list0
         .iter()
-        .map(|item| item.statement.clone())
+        .map(|item| spanned_statement(&item.statement))
         .collect()
 }
 
@@ -330,6 +338,7 @@ fn compartment(scd: &g::StateCompartmentDeclaration) -> anyhow::Result<StateComp
         entities.push(protected_entity(&item.state_entity_declaration)?);
     }
     Ok(StateCompartment {
+        span: union(scd.name.span(), scd.name0.span()),
         name: scd.name.clone(),
         entities,
     })
@@ -367,6 +376,7 @@ impl TryFrom<&g::VariableDeclaration> for VariableDeclaration {
             Some(opt) => opt.range_attributes.clone(),
         };
         Ok(Self {
+            span: ast.name.span(),
             ty,
             name: ast.name.clone(),
             dimensions,
@@ -429,9 +439,11 @@ fn apply_range_attr(range: &mut RangeAttributes, attr: &g::RangeAttr) -> anyhow:
 // ---------------------------------------------------------------------------
 
 /// Reject an `end <Name>;` terminator that does not lexically equal its header
-/// name (contract §4.3 point 4).
+/// name (contract §4.3 point 4). Compares the lexeme text only: names carry
+/// source spans (provenance, not identity), and the header and footer occupy
+/// distinct source positions, so raw `Name` equality would spuriously fail.
 fn check_terminator(header: &Name, footer: &Name) -> anyhow::Result<()> {
-    if header == footer {
+    if name_text(header) == name_text(footer) {
         Ok(())
     } else {
         Err(GalecParseError::TerminatorMismatch {
@@ -447,7 +459,7 @@ fn check_terminator(header: &Name, footer: &Name) -> anyhow::Result<()> {
 /// `'…'` delimiters).
 fn name_text(name: &Name) -> String {
     match name {
-        Name::Ident(id) => id.as_str().to_string(),
-        Name::Quoted(content) => format!("'{content}'"),
+        Name::Ident(id, _) => id.as_str().to_string(),
+        Name::Quoted(content, _) => format!("'{content}'"),
     }
 }

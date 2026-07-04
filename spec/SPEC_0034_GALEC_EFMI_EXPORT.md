@@ -26,7 +26,7 @@ DAE (+ optional provenance)
 ```text
 rumoca-compile -> rumoca-galec-codegen  projection + eFMI packaging: lower -> package -> c_context;
         manifest_context (validators, SHA-1, brace-UUID/UTC ids)  [no XML text — templates own it, D3]
-    -> rumoca-ir-galec  language (printer/validator; no IR/eFMI deps)  -> rumoca-ir-dae/solve, rumoca-core
+    -> rumoca-ir-galec  language (printer/validator/parser; + rumoca-core foundation for Span/provenance; no IR-stage (dae/solve) or eFMI deps)  -> rumoca-ir-dae/solve, rumoca-core
 rumoca crate  generic container/checksum build step + vendored schemas (BSD-3 verbatim)
 ```
 
@@ -43,11 +43,11 @@ rumoca crate  generic container/checksum build step + vendored schemas (BSD-3 ve
 | GAL-007 | Unsupported features fail with stable `unsupported-feature:<feature_id>` diagnostics; errors are structured phase-local enums with stable codes and spans (SPEC_0008); no silent defaults. | all GALEC crates | Fail early; CI-aggregatable. |
 | GAL-008 | Generated C **and eFMI packaging XML** are owned by minijinja templates (D3 amended); the producer emits typed serializable context only — never C/XML strings in Rust. | `rumoca-phase-codegen` | SPEC_0029 §12 template ownership. |
 | GAL-009 | `.alg` text is printed from the GALEC AST (recorded SPEC_0029 §12 exception), reaching emitted files as template context via the `target.toml` + minijinja pipeline. | `rumoca-ir-galec` printer | T4–T7/T12 need typed printing. |
-| GAL-010 | Crate split: `rumoca-ir-galec` (language; no IR/eFMI deps) and `rumoca-galec-codegen` (projection **+ eFMI packaging via `manifest_context`**); the generic container/checksum build step + vendored schemas live in the `rumoca` crate. `rumoca-efmi` **dissolved** (D3 amended). | workspace layout | Product-agnostic packaging; validators reusable. |
+| GAL-010 | Crate split: `rumoca-ir-galec` (language; depends on the `rumoca-core` foundation for source `Span`/provenance **only** — no IR-stage (dae/solve) or eFMI/packaging deps, D11) and `rumoca-galec-codegen` (projection **+ eFMI packaging via `manifest_context`**); the generic container/checksum build step + vendored schemas live in the `rumoca` crate. `rumoca-efmi` **dissolved** (D3 amended). | workspace layout | Product-agnostic packaging; validators reusable. |
 | GAL-011 | GALEC output via `--target galec` / `--target embedded-c-galec`; `--emit` stays reserved for canonical IR inspection. | `rumoca` CLI | Preserves the CLI contract. |
 | GAL-012 | Template CI renders GALEC targets against a dedicated smoke fixture; skipped targets MUST NOT be marked covered; generated C is compile-checked (Testing Requirements). | template CI (xtask) | False coverage hides broken output. |
 | GAL-013 | Generated C/H/object outputs MUST NOT be committed except as intentional, small, documented fixtures. | CI | Repository hygiene. |
-| GAL-014 | A parser, if added, parses into the GALEC AST only — never into DAE/Solve, never Modelica input. | `rumoca-ir-galec` | Export language stays out of the front end. |
+| GAL-014 | A parser, if added, parses into the GALEC AST only — never into DAE/Solve, never Modelica input. The AST carries source `rumoca_core::Span`s (D11): parsed nodes span the `.alg` text; codegen-generated nodes carry the originating Modelica span (or `Span::DUMMY` when none). | `rumoca-ir-galec` | Export language stays out of the front end; provenance is uniform with the rest of Rumoca. |
 | GAL-015 | Mangling MUST be injective AND disjoint from keywords/reserved words/builtins/Appendix C names/`__` prefix space; quoted identifiers carry original scalarized Modelica names. | `rumoca-galec-codegen` | Injectivity alone still emits illegal names (T13). |
 | GAL-016 | Discrete-time semantics derive from structured compiler metadata, never string/unit/value heuristics; one static base period per block; dynamic clocks and multi-rate rejected pre-projection with stable diagnostics. | `rumoca-galec-codegen` | **Why** below. |
 | GAL-017 | Block interface: exactly `Startup`/`Recalibrate`/`DoStep` (§3.1.3), stateful, parameter-free; I/O via `self.*`; Startup initializes ALL writable block variables, builtins only (inputs are read-only; their manifest `start` stays the default); Recalibrate emitted even when empty; all other functions reachable from DoStep; acyclic call graph. | `rumoca-galec-codegen` | §3.1.3, §3.2.3–3.2.4. |
@@ -83,6 +83,7 @@ non-conformant (§2.2).
 | D8 | Slice-1 signal scope | Full signal machinery in AST + validator; lowering emits Real relationals with empty escape sets and rejects constructs needing non-empty sets; NAN accounting (T9) is slice 2. |
 | D9 | Embedded-C sequencing | GAL-024: non-eFMI C export after the projection crate; PC container after AC packaging. |
 | D10 | XSD vendoring | `crates/rumoca/assets/efmi-schemas/` (GAL-023). |
+| D11 | GALEC AST source spans | The GALEC AST carries `rumoca_core::Span` on its nodes, **reversing** the earlier "`rumoca-ir-galec` imports no `rumoca_core`" stance (which had `GalecParseError`/diagnostics hand-roll `(usize,usize)` offsets). Rationale: `rumoca-core` is the *foundation* crate, not an IR stage, so depending on it for `Span`/provenance does not make GALEC a Rumoca IR stage (GAL-001/GAL-010 intent preserved) — it makes GALEC provenance uniform with the rest of Rumoca ("everything shows where it came from"). Parsed nodes span `.alg` bytes (`SourceId::from_source_name(file)`); generated nodes carry the originating Modelica span or `Span::DUMMY`. Spans are provenance, not identity: round-trip AST equality is span-insensitive. Unlocks positioned parse + validator diagnostics and the `.alg` LSP. |
 
 ### Conformance Ladder (GAL-021, GAL-024)
 

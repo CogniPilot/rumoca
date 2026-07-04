@@ -592,7 +592,7 @@ mod mangling {
     #[test]
     fn plain_identifiers_are_never_reserved() {
         for name in CORPUS {
-            if let Name::Ident(ident) = galec_variable_name(name).expect(name) {
+            if let Name::Ident(ident, _) = galec_variable_name(name).expect(name) {
                 assert!(
                     !is_reserved_name(ident.as_str()),
                     "mangling emitted reserved plain identifier `{}`",

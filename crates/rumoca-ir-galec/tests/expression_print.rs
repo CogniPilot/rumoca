@@ -4,7 +4,7 @@
 //! quoted-identifier printing (T13).
 
 use rumoca_ir_galec::ast::{
-    BinaryOp, Expression, FunctionCall, IfExpression, Name, RefPart, Reference,
+    BinaryOp, Expression, FunctionCall, IfExpression, Name, RefPart, Reference, Span,
 };
 use rumoca_ir_galec::{GalecError, print_expression};
 
@@ -208,6 +208,7 @@ fn quoted_identifiers_print_with_quotes() {
         RefPart {
             name: Name::quoted("shaft[2].gear"),
             subscripts: vec![Expression::Integer(1)],
+            span: Span::DUMMY,
         },
         RefPart::plain(Name::ident("w")),
     ]));

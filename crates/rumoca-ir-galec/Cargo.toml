@@ -8,6 +8,7 @@ repository.workspace = true
 build = "build.rs"
 
 [dependencies]
+rumoca-core = { workspace = true }
 thiserror = { workspace = true }
 parol_runtime = { workspace = true, optional = true }
 scnr2 = { workspace = true, optional = true }

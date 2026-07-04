@@ -115,7 +115,7 @@ pub fn pre_state_name(base_source_name: &str) -> Result<Name, GalecTargetError> 
 #[must_use]
 pub fn manifest_name(name: &Name) -> &str {
     match name {
-        Name::Ident(ident) => ident.as_str(),
-        Name::Quoted(content) => content.as_str(),
+        Name::Ident(ident, _) => ident.as_str(),
+        Name::Quoted(content, _) => content.as_str(),
     }
 }

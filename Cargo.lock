@@ -3542,6 +3542,7 @@ dependencies = [
  "anyhow",
  "parol",
  "parol_runtime",
+ "rumoca-core",
  "scnr2",
  "thiserror 2.0.17",
 ]

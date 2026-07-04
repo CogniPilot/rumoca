@@ -556,6 +556,7 @@ mod tests {
                         Dimension::Expr(Expression::Integer(3)),
                     ],
                     range: Default::default(),
+                    span: rumoca_ir_galec::ast::Span::DUMMY,
                 },
                 start: Some(Expression::Real(0.0)),
             },

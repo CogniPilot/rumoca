@@ -4,8 +4,12 @@
 //! module's own `EG` code family, reserved sub-range **EG050–EG069** (existing
 //! GALEC semantic codes reach EG040). It is a *distinct* type from
 //! [`crate::diagnostic::GalecError`] (the semantic/lexeme family, whose location
-//! is a structural AST path): a parse error carries **local byte offsets**, not
-//! a `rumoca_core::Span` — importing `rumoca_core` here would violate GAL-010.
+//! is a structural AST path): a parse error carries **local byte offsets**
+//! `(start, end)` into the parsed source. The AST itself now carries full
+//! `rumoca_core::Span`s (SPEC_0034 D11 amended GAL-010 to permit the foundation
+//! dependency); the parse-error type deliberately keeps bare offsets because it
+//! is produced at the `parse()` boundary where the caller already holds the
+//! source text and needs no `SourceId`.
 //!
 //! ## Builder-error bridging (WI-2 decision)
 //!
@@ -30,7 +34,8 @@ pub enum GalecParseError {
         message: String,
         expected: Vec<String>,
         unexpected: Option<String>,
-        /// Local byte offsets `(start, end)` — NOT `rumoca_core::Span` (GAL-010).
+        /// Local byte offsets `(start, end)` into the parsed source; the caller
+        /// holds the source text, so no `SourceId` is needed here (see mod docs).
         span: Option<(usize, usize)>,
     },
     /// A `block` / `record` / `function` / `method` terminator name did not

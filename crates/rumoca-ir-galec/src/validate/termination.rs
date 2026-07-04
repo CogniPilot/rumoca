@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Condition, Expression, FunctionCall, LimitTarget, Reference, Statement};
+use crate::ast::{Condition, Expression, FunctionCall, LimitTarget, Reference, Spanned, Statement};
 use crate::diagnostic::{GalecError, Location, PathSegment};
 
 use super::context::{BlockContext, Callee, lexeme, reference_parts, resolve_call};
@@ -65,7 +65,7 @@ fn user_functions<'a>(
         .chain(&ctx.block.public_functions)
 }
 
-fn user_callees(ctx: &BlockContext<'_>, statements: &[Statement]) -> Vec<String> {
+fn user_callees(ctx: &BlockContext<'_>, statements: &[Spanned<Statement>]) -> Vec<String> {
     let mut callees = Vec::new();
     for_each_call(statements, &[], &mut |call, _| {
         if matches!(resolve_call(ctx, &call.function), Some(Callee::User(_))) {
@@ -162,14 +162,14 @@ fn function_location(ctx: &BlockContext<'_>, name: &str) -> Location {
 /// Visit every function call in a statement list, including calls nested in
 /// expressions, with a statement-precise location.
 fn for_each_call(
-    statements: &[Statement],
+    statements: &[Spanned<Statement>],
     base: &[PathSegment],
     visit: &mut impl FnMut(&FunctionCall, Location),
 ) {
     for (index, statement) in statements.iter().enumerate() {
         let mut path = base.to_vec();
         path.push(PathSegment::Statement(index));
-        statement_calls(statement, &path, visit);
+        statement_calls(&statement.node, &path, visit);
     }
 }
 

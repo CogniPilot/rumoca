@@ -15,7 +15,8 @@
 //! reported twice.
 
 use crate::ast::{
-    Condition, Dimension, Direction, Expression, ForLoop, Reference, Statement, VariableDeclaration,
+    Condition, Dimension, Direction, Expression, ForLoop, Reference, Spanned, Statement,
+    VariableDeclaration,
 };
 use crate::diagnostic::{GalecError, PathSegment};
 
@@ -113,10 +114,10 @@ impl<'a> DimChecker<'a, '_> {
         self.cursor.pop();
     }
 
-    fn statements(&mut self, statements: &'a [Statement]) {
+    fn statements(&mut self, statements: &'a [Spanned<Statement>]) {
         for (index, statement) in statements.iter().enumerate() {
             self.cursor.push(PathSegment::Statement(index));
-            self.statement(statement);
+            self.statement(&statement.node);
             self.cursor.pop();
         }
     }

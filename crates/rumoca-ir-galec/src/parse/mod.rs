@@ -14,6 +14,7 @@ pub mod errors;
 pub mod expr;
 pub mod generated;
 pub mod refs;
+pub(crate) mod span;
 pub mod stmt;
 pub mod token;
 
