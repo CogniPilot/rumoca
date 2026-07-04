@@ -627,6 +627,43 @@ mod tests {
     }
 
     #[test]
+    fn test_propagate_unexpanded_component_array_dims_to_model_fields() {
+        let mut flat = flat::Model::default();
+        let var_name = rumoca_core::VarName::new("sensor.child.y");
+        flat.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name.clone(),
+                is_primitive: true,
+                dims: Vec::new(),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("sensor.child"),
+                dims: vec![6],
+                is_primitive: false,
+                ..Default::default()
+            },
+        );
+
+        propagate_unexpanded_record_array_dims(&mut flat, &overlay);
+
+        assert_eq!(
+            flat.variables
+                .get(&var_name)
+                .expect("missing sensor child field")
+                .dims,
+            vec![6]
+        );
+    }
+
+    #[test]
     fn test_propagate_unexpanded_record_array_dims_does_not_double_prefix_dims() {
         let mut flat = flat::Model::default();
         let var_name = rumoca_core::VarName::new("world.cylinders.R.T");

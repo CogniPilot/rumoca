@@ -5,8 +5,7 @@ use super::collect_exact_reference_expr_names_in_dae;
 
 pub(super) fn drop_unreferenced_continuous_unknowns(dae: &mut Dae) {
     let exact_references = collect_continuous_exact_references(dae);
-    let referenced =
-        |name: &VarName| exact_reference_keeps_unknown(dae, &exact_references, name);
+    let referenced = |name: &VarName| exact_reference_keeps_unknown(dae, &exact_references, name);
     let algebraics = dae
         .variables
         .algebraics

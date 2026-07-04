@@ -969,10 +969,12 @@ fn initial_structural_dae_artifact_error(
         Ok(prepared_dae) => write_prepared_structural_dae_artifacts(request, &prepared_dae),
         Err(error) => Some(error.to_string()),
     };
-    error = error.or(match boundary_reduced_dae_for_simulation_artifact(dae, opts) {
-        Ok(reduced_dae) => write_boundary_reduced_dae_artifacts(request, &reduced_dae),
-        Err(error) => Some(error.to_string()),
-    });
+    error = error.or(
+        match boundary_reduced_dae_for_simulation_artifact(dae, opts) {
+            Ok(reduced_dae) => write_boundary_reduced_dae_artifacts(request, &reduced_dae),
+            Err(error) => Some(error.to_string()),
+        },
+    );
     match structurally_lowered_dae_for_simulation_artifact(dae, opts) {
         Ok(structural_dae) => {
             if request.emit_modelica {
@@ -1003,9 +1005,12 @@ fn write_boundary_reduced_dae_artifacts(
 ) -> Option<String> {
     let mut error = None;
     if request.emit_modelica {
-        error = error.or(
-            write_modelica_dae_artifact(request, "ir-boundary-reduced-dae.mo", reduced_dae).err(),
-        );
+        error = error.or(write_modelica_dae_artifact(
+            request,
+            "ir-boundary-reduced-dae.mo",
+            reduced_dae,
+        )
+        .err());
     }
     if request.emit_json {
         error = error
@@ -1020,19 +1025,18 @@ fn write_prepared_structural_dae_artifacts(
 ) -> Option<String> {
     let mut error = None;
     if request.emit_modelica {
-        error = error.or(
-            write_modelica_dae_artifact(
-                request,
-                "ir-prepared-structural-dae.mo",
-                prepared_dae,
-            )
-            .err(),
-        );
+        error = error.or(write_modelica_dae_artifact(
+            request,
+            "ir-prepared-structural-dae.mo",
+            prepared_dae,
+        )
+        .err());
     }
     if request.emit_json {
-        error = error.or(
-            write_artifact_json(request, "ir-prepared-structural-dae.json", prepared_dae).err(),
-        );
+        error =
+            error.or(
+                write_artifact_json(request, "ir-prepared-structural-dae.json", prepared_dae).err(),
+            );
     }
     error
 }

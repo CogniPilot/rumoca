@@ -965,11 +965,7 @@ impl ConstantEvalContext {
         }
     }
 
-    fn variable_keys(
-        &self,
-        name: &rumoca_core::VarName,
-        variable: &dae::Variable,
-    ) -> Vec<String> {
+    fn variable_keys(&self, name: &rumoca_core::VarName, variable: &dae::Variable) -> Vec<String> {
         let mut keys = vec![name.as_str().to_string()];
         if let Some(component_ref) = &variable.component_ref {
             keys.push(component_ref_flat_name(component_ref));
@@ -1238,7 +1234,10 @@ mod tests {
         }
     }
 
-    fn complex(re: rumoca_core::Expression, im: rumoca_core::Expression) -> rumoca_core::Expression {
+    fn complex(
+        re: rumoca_core::Expression,
+        im: rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
         rumoca_core::Expression::FunctionCall {
             name: rumoca_core::Reference::new("Complex"),
             args: vec![re, im],

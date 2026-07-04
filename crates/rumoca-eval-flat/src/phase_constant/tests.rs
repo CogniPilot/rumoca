@@ -414,6 +414,52 @@ fn infer_scalar_user_function_output_does_not_broadcast_array_formal_dims() {
 }
 
 #[test]
+fn infer_scalar_user_function_output_does_not_broadcast_shape_expr_formal_dims() {
+    let mut functions = FxHashMap::default();
+    let mut function = rumoca_core::Function::new("Polyphase.activePower", test_span());
+    function
+        .add_input(rumoca_core::FunctionParam::new("v", "Real", test_span()).with_dims(vec![0]));
+    function.add_input(
+        rumoca_core::FunctionParam::new("i", "Real", test_span()).with_shape_expr(vec![
+            rumoca_core::Subscript::expr(
+                Box::new(call(
+                    rumoca_core::BuiltinFunction::Size,
+                    vec![var("v"), int(1)],
+                )),
+                rumoca_core::Span::DUMMY,
+            ),
+        ]),
+    );
+    function.add_output(rumoca_core::FunctionParam::new("p", "Real", test_span()));
+    functions.insert("Polyphase.activePower".to_string(), function);
+
+    let known_ints = FxHashMap::default();
+    let known_reals = FxHashMap::default();
+    let known_bools = FxHashMap::default();
+    let known_enums = FxHashMap::default();
+    let mut array_dims = FxHashMap::default();
+    array_dims.insert("sensor.v".to_string(), vec![3]);
+    array_dims.insert("sensor.i".to_string(), vec![3]);
+    let expr = function_call("Polyphase.activePower", vec![var("v"), var("i")]);
+
+    assert_eq!(
+        infer_array_dimensions_full_with_functions(
+            &expr,
+            &ParamEvalContext::new(
+                &known_ints,
+                &known_reals,
+                &known_bools,
+                &known_enums,
+                &array_dims,
+                &functions,
+                Some("sensor.y"),
+            ),
+        ),
+        None
+    );
+}
+
+#[test]
 fn user_function_integer_eval_error_means_not_constant_evaluable() {
     let mut functions = FxHashMap::default();
     functions.insert(

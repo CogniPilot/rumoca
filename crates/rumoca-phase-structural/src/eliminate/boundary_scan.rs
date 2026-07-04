@@ -67,6 +67,16 @@ fn scan_boundary_equation(
     let eq_rhs = apply_substitutions_in_order(&expr, &state.substitutions)?;
     let is_connection_eq = equation.origin.starts_with("connection equation:");
     let live = find_live_scalar_unknowns(&eq_rhs, ctx.unknown_index, &state.resolved)?;
+    if is_connection_eq
+        && let Some((var_name, solution)) = scalar_connection_alias_for_elimination(
+            ctx.dae,
+            &eq_rhs,
+            ctx.runtime_protected_unknowns,
+            ctx.runtime_defined_discrete_targets,
+        )?
+    {
+        return state.push_solution(ctx.dae, eq_idx, var_name, solution);
+    }
     if should_skip_connection_equation(
         ctx.dae,
         &eq_rhs,

@@ -59,8 +59,16 @@ fn var_ref_is_scalar_after_subscripts(
     dae: &dae::Dae,
 ) -> Result<bool, StructuralError> {
     let scope = DaeVariableScope::new(dae);
-    let Some(dims) = scope.dims_for_reference(name)? else {
-        return Ok(false);
+    let dims = match scope.dims_for_reference(name) {
+        Ok(Some(dims)) => dims,
+        Ok(None) => return Ok(false),
+        Err(StructuralError::ContractViolation { reason, .. })
+        | Err(StructuralError::UnspannedContractViolation { reason })
+            if reason.contains("missing DAE variable metadata") =>
+        {
+            return Ok(false);
+        }
+        Err(err) => return Err(err),
     };
     let remaining_dims = dims_after_subscripts(name.var_name(), &dims, subscripts, reference_span)?;
     Ok(scalar_count_from_dims(name.var_name(), &remaining_dims)? == 1)

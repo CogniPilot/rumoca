@@ -454,6 +454,35 @@ fn test_try_solve_negated() {
 }
 
 #[test]
+fn test_try_solve_if_residual_solves_each_branch() {
+    let rhs = Expression::If {
+        branches: vec![(
+            var_ref("c"),
+            Expression::Binary {
+                op: sub_op(),
+                lhs: Box::new(var_ref("z")),
+                rhs: Box::new(var_ref("u")),
+                span: rumoca_core::Span::DUMMY,
+            },
+        )],
+        else_branch: Box::new(Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("z")),
+            rhs: Box::new(lit(0.0)),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let result = try_solve_for_unknown(&rhs, &VarName::new("z"));
+
+    assert!(
+        matches!(&result, Some(Expression::If { branches, .. }) if branches.len() == 1),
+        "expected branch-wise If solution, got {result:?}"
+    );
+}
+
+#[test]
 fn test_try_solve_sub_lhs_with_unity_subscript_alias_matches() {
     let rhs = Expression::Binary {
         op: sub_op(),
@@ -734,6 +763,49 @@ fn test_substitute_var_does_not_project_scalarized_alias_as_aggregate() {
 }
 
 #[test]
+fn test_substitute_var_does_not_rewrite_sibling_indexed_component_ref() {
+    let expr = var_ref("analysatorAC.iH1[2].u");
+    let result = substitute_var(
+        &expr,
+        &VarName::new("analysatorAC.iH1[6].u"),
+        &var_ref("analysatorAC.multiSensorAC.i[6]"),
+    );
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "analysatorAC.iH1[2].u" && subscripts.is_empty()
+        ),
+        "a scalarized component substitution must not rewrite sibling indexed component instances"
+    );
+}
+
+#[test]
+fn test_aggregate_subscript_substitution_does_not_rewrite_sibling_indexed_component_ref() {
+    let expr = var_ref_idx("analysatorAC.iH1[2].product2.u", 1);
+    let substitutions = [Substitution {
+        var_name: VarName::new("analysatorAC.iH1[6].product2.u"),
+        var_ref: Some(reference("analysatorAC.iH1[6].product2.u")),
+        expr: var_ref("analysatorAC.multiSensorAC.i"),
+        var_dims: vec![2],
+        replacement_dims: vec![6],
+        env_keys: Vec::new(),
+    }];
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "analysatorAC.iH1[2].product2.u"
+                    && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 1, .. }])
+        ),
+        "aggregate alias substitution must keep sibling indexed component instances distinct"
+    );
+}
+
+#[test]
 fn test_substitute_var_rewrites_exact_indexed_component_without_use_site_component_ref() {
     let expr = Expression::VarRef {
         name: rumoca_core::Reference::new("vehicle.motor[1].tau_inv"),
@@ -839,6 +911,74 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
                 if name.as_str() == "vehicle.omega" && subscripts.is_empty()
         ),
         "complete scalar alias groups should rewrite aggregate vector arguments"
+    );
+}
+
+#[test]
+fn test_partial_scalar_alias_group_rewrites_dae_aggregate_function_argument() {
+    let mut dae = Dae::new();
+    let mut u = test_dae_variable("block.u");
+    u.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("block.u"), u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("x"), test_dae_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_dae_variable("y"));
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("y")),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Product,
+                args: vec![var_ref("block.u")],
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: "product aggregate use".to_string(),
+        scalar_count: 1,
+    });
+    let substitutions = [Substitution {
+        var_name: VarName::new("block.u[1]"),
+        var_ref: Some(reference("block.u[1]")),
+        expr: var_ref("x"),
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: Vec::new(),
+    }];
+
+    apply_substitutions_to_dae_partitions(&mut dae, &substitutions)
+        .expect("DAE substitutions should succeed");
+
+    let Expression::Binary { rhs, .. } = &dae.continuous.equations[0].rhs else {
+        panic!("expected product equation residual");
+    };
+    assert!(
+        matches!(
+            rhs.as_ref(),
+            Expression::BuiltinCall { function: BuiltinFunction::Product, args, .. }
+                if matches!(
+                    args.as_slice(),
+                    [Expression::Array { elements, .. }]
+                        if elements.len() == 2
+                            && matches!(
+                                &elements[0],
+                                Expression::VarRef { name, subscripts, .. }
+                                    if name.as_str() == "x" && subscripts.is_empty()
+                            )
+                            && matches!(
+                                &elements[1],
+                                Expression::VarRef { name, subscripts, .. }
+                                    if name.as_str() == "block.u"
+                                        && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 2, .. }])
+                            )
+                )
+        ),
+        "partial scalar alias groups should materialize aggregate function arguments with original fallback elements"
     );
 }
 

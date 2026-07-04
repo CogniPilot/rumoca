@@ -1743,6 +1743,146 @@ fn test_validate_dimension_compatibility_partial_subscript_projects_remaining_di
 }
 
 #[test]
+fn test_validate_dimension_compatibility_embedded_subscript_projects_exact_vars() {
+    let mut flat = flat::Model::new();
+
+    let lhs = flat::Variable {
+        dims: vec![6],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("a.pin[1].v"), lhs);
+
+    let rhs = flat::Variable {
+        dims: vec![2],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("b.pin[1].v"), rhs);
+
+    let result = validate_dimension_compatibility(
+        &flat,
+        &rumoca_core::VarName::new("a.pin[1].v"),
+        &rumoca_core::VarName::new("b.pin[1].v"),
+        Span::DUMMY,
+    );
+    assert!(
+        result.is_ok(),
+        "indexed connector members are scalar element connections even when flat vars retain parent dims"
+    );
+}
+
+#[test]
+fn test_validate_dimension_compatibility_embedded_subscript_preserves_parent_dims() {
+    let mut flat = flat::Model::new();
+
+    let lhs = flat::Variable {
+        dims: vec![6],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("harmonic.sin1.y"), lhs);
+
+    let rhs = flat::Variable {
+        dims: vec![6, 2],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("harmonic.product1.u[1]"), rhs);
+
+    let result = validate_dimension_compatibility(
+        &flat,
+        &rumoca_core::VarName::new("harmonic.sin1.y"),
+        &rumoca_core::VarName::new("harmonic.product1.u[1]"),
+        Span::DUMMY,
+    );
+    assert!(
+        result.is_ok(),
+        "embedded subscripts consume child dimensions while preserving component-array parent dimensions"
+    );
+}
+
+#[test]
+fn test_validate_dimension_compatibility_indexed_child_can_use_counterpart_parent_dims() {
+    let mut flat = flat::Model::new();
+
+    let lhs = flat::Variable {
+        dims: vec![6],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("harmonic.sin1.y"), lhs);
+
+    let rhs = flat::Variable {
+        dims: vec![2],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("harmonic.product1.u[1]"), rhs);
+
+    let result = validate_dimension_compatibility(
+        &flat,
+        &rumoca_core::VarName::new("harmonic.sin1.y"),
+        &rumoca_core::VarName::new("harmonic.product1.u[1]"),
+        Span::DUMMY,
+    );
+    assert!(
+        result.is_ok(),
+        "collapsed indexed children may be missing component-array parent dims carried by the counterpart"
+    );
+}
+
+#[test]
+fn test_validate_dimension_compatibility_accepts_collapsed_pin_member_subsystem_dims() {
+    let mut flat = flat::Model::new();
+
+    let lhs = flat::Variable {
+        dims: vec![6],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("multi.plug_p.pin.v"), lhs);
+
+    let rhs = flat::Variable {
+        dims: vec![2],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("multi.starpoints.pin.v"), rhs);
+
+    let result = validate_dimension_compatibility(
+        &flat,
+        &rumoca_core::VarName::new("multi.plug_p.pin.v"),
+        &rumoca_core::VarName::new("multi.starpoints.pin.v"),
+        Span::DUMMY,
+    );
+    assert!(
+        result.is_ok(),
+        "collapsed pin member validation must not reject loop-expanded scalar subsystem connections"
+    );
+}
+
+#[test]
+fn test_validate_dimension_compatibility_accepts_collapsed_pin_member_to_scalar_pin() {
+    let mut flat = flat::Model::new();
+
+    let lhs = flat::Variable {
+        dims: vec![2],
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("star.plug_p.pin.v"), lhs);
+
+    let rhs = flat::Variable {
+        dims: Vec::new(),
+        ..flat::Variable::empty_with_span(test_span())
+    };
+    flat.add_variable(rumoca_core::VarName::new("star.pin_n.v"), rhs);
+
+    let result = validate_dimension_compatibility(
+        &flat,
+        &rumoca_core::VarName::new("star.plug_p.pin.v"),
+        &rumoca_core::VarName::new("star.pin_n.v"),
+        Span::DUMMY,
+    );
+    assert!(
+        result.is_ok(),
+        "collapsed for-loop pin element connections may map a plug pin array onto a scalar pin"
+    );
+}
+
+#[test]
 fn test_validate_dimension_compatibility_partial_subscript_mismatch_fails() {
     let mut flat = flat::Model::new();
 

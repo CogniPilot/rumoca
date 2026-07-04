@@ -421,11 +421,9 @@ fn test_boundary_eliminates_pairwise_indexed_flow_alias() {
     let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(
-        result
-            .substitutions
-            .iter()
-            .any(|sub| sub.var_name.as_str() == "star.plugToPin[2].pin_p.i.im"
-                || sub.var_name.as_str() == "star.pin_p[2].i.im"),
+        result.substitutions.iter().any(|sub| sub.var_name.as_str()
+            == "star.plugToPin[2].pin_p.i.im"
+            || sub.var_name.as_str() == "star.pin_p[2].i.im"),
         "pairwise indexed flow aliases should be eliminated before KCL rows"
     );
 }

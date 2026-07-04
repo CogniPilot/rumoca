@@ -21,7 +21,6 @@ use rumoca_ir_solve::{
     resolve_indexed_slot,
 };
 
-pub mod sim_driver;
 mod compute_block_scalarize;
 pub mod eval_at;
 mod inspect_alloc;
@@ -35,6 +34,7 @@ mod refresh_plan;
 mod reverse;
 mod runtime;
 mod runtime_events;
+pub mod sim_driver;
 mod sparsity;
 mod table_runtime;
 mod update_rows;

@@ -948,6 +948,7 @@ pub(crate) fn finalize_flat_model(
     } = input;
     outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
     materialize_referenced_expandable_connector_members(flat, overlay, tree, class_index)?;
+    propagate_unexpanded_record_array_dims(flat, overlay);
 
     let connections_start = maybe_start_timer();
     let connections_result =

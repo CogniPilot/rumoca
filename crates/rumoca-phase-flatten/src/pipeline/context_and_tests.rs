@@ -817,6 +817,7 @@ impl Context {
         let target = unqualified_varref_name(binding)?;
         let source_scope = modifier_source_scope(name)?;
         rumoca_core::EvalLookup::lookup_integer(self, target, source_scope.as_str())
+            .or_else(|| self.lookup_modifier_binding_target_integer(binding))
     }
 
     fn lookup_modifier_binding_target_integer(&self, binding: &Expression) -> Option<i64> {
@@ -1436,6 +1437,10 @@ fn unqualified_varref_name(expr: &Expression) -> Option<&str> {
     };
     if !subscripts.is_empty() {
         return None;
+    }
+    let parts = name.parts();
+    if parts.len() == 1 && parts[0].subs.is_empty() {
+        return Some(parts[0].ident.as_str());
     }
     let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
     (path.len() == 1).then_some(name.as_str())

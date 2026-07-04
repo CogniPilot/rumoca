@@ -177,7 +177,7 @@ pub(crate) fn infer_expr_dims(
 }
 
 pub(crate) fn collect_parent_dims(flat: &Model, overlay: &InstanceOverlay) -> ParentDims {
-    overlay
+    let mut parent_dims: ParentDims = overlay
         .components
         .values()
         .filter(|inst| !inst.is_primitive && !inst.dims.is_empty())
@@ -194,7 +194,23 @@ pub(crate) fn collect_parent_dims(flat: &Model, overlay: &InstanceOverlay) -> Pa
                 Some((path, inst.dims.clone()))
             }
         })
-        .collect()
+        .collect();
+
+    for (path, dims) in &overlay.array_parent_dims {
+        if dims.is_empty() || parent_dims.iter().any(|(existing, _)| existing == path) {
+            continue;
+        }
+        let first_elem = format!("{path}[1].");
+        let expanded = flat
+            .variables
+            .keys()
+            .any(|k| k.as_str().starts_with(&first_elem));
+        if !expanded {
+            parent_dims.push((path.clone(), dims.clone()));
+        }
+    }
+
+    parent_dims
 }
 
 pub(crate) fn collect_function_output_dims(flat: &Model) -> DimMap {
@@ -279,6 +295,12 @@ pub(crate) fn recover_nested_dims_from_bindings(
 
         let mut changed = false;
         for var in flat.variables.values_mut() {
+            if matches!(
+                var.variability,
+                rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+            ) {
+                continue;
+            }
             let Some((_, parent)) = matching_parent(var.name.as_str(), parent_dims) else {
                 continue;
             };
@@ -300,6 +322,12 @@ pub(crate) fn recover_nested_dims_from_bindings(
 
 pub(crate) fn prepend_missing_parent_dims(flat: &mut Model, parent_dims: &ParentDims) {
     for var in flat.variables.values_mut() {
+        if matches!(
+            var.variability,
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+        ) {
+            continue;
+        }
         let Some((_, parent)) = matching_parent(var.name.as_str(), parent_dims) else {
             continue;
         };
@@ -344,6 +372,12 @@ pub(crate) fn complete_child_dims_from_hints(
     hints: &DimMap,
 ) {
     for var in flat.variables.values_mut() {
+        if matches!(
+            var.variability,
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+        ) {
+            continue;
+        }
         let Some((prefix, parent)) = matching_parent(var.name.as_str(), parent_dims) else {
             continue;
         };
