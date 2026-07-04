@@ -327,8 +327,8 @@ fn match_block_rows_to_targets(
         }
         false
     }
-    for row_pos in 0..rows.len() {
-        if row_fixed[row_pos] {
+    for (row_pos, fixed) in row_fixed.iter().enumerate().take(rows.len()) {
+        if *fixed {
             continue;
         }
         let mut visited = Vec::new();
