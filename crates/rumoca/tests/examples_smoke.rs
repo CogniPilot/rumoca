@@ -276,19 +276,12 @@ fn assert_codegen_config_renders(
     if assert_raw_template_config_renders(config_path, config, result, &codegen.target) {
         return;
     }
-    let target = load_codegen_target(config_path, &codegen.target);
-    let manifest = target.parse_manifest().unwrap_or_else(|error| {
-        panic!(
-            "example TOML {} should parse target {}: {error}",
-            config_path.display(),
-            codegen.target
-        )
-    });
-    let rendered_files = rumoca_compile::codegen::targets::render_dae_target_files(
-        &target,
-        &manifest,
-        &result.dae,
+    let target = renderable_codegen_target(config_path, &codegen.target);
+    let rendered_files = rumoca::render_target_files(
+        result,
         &config.model.name,
+        target.to_str().expect("example target path should be utf8"),
+        None,
     )
     .unwrap_or_else(|error| {
         panic!(
@@ -349,29 +342,14 @@ fn assert_raw_template_config_renders(
     true
 }
 
-fn load_codegen_target(
-    config_path: &Path,
-    target: &str,
-) -> rumoca_compile::codegen::targets::TargetBundle {
-    if let Some(bundle) = rumoca_compile::codegen::targets::TargetBundle::builtin(target) {
-        return bundle;
+fn renderable_codegen_target(config_path: &Path, target: &str) -> PathBuf {
+    if rumoca_compile::codegen::targets::TargetBundle::builtin(target).is_some() {
+        return PathBuf::from(target);
     }
     let config_dir = config_path
         .parent()
         .expect("example TOML should have a parent directory");
-    let target_path = resolve_config_path(config_dir, target);
-    rumoca_compile::codegen::targets::TargetBundle::load(
-        target_path
-            .to_str()
-            .expect("example target path should be utf8"),
-    )
-    .unwrap_or_else(|error| {
-        panic!(
-            "example TOML {} should load target {}: {error}",
-            config_path.display(),
-            target_path.display()
-        )
-    })
+    resolve_config_path(config_dir, target)
 }
 
 #[cfg(feature = "runner")]
