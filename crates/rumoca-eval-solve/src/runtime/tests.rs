@@ -196,6 +196,72 @@ fn refresh_once_batches_shapeless_multi_output_assignment_program() {
 }
 
 #[test]
+fn refresh_once_batches_contiguous_matmul_projection_outputs() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.state_scalar_count = 1;
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model.problem.solve_layout.solver_maps.names =
+        vec!["x".to_string(), "a".to_string(), "b".to_string()];
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock {
+        nodes: vec![
+            solve::ComputeNode::ScalarPrograms(spanned_block(
+                vec![derivative_placeholder_row(0)],
+                "matmul_refresh.mo",
+            )),
+            solve::ComputeNode::MatMul {
+                lhs_ops: vec![
+                    solve::LinearOp::Const { dst: 0, value: 2.0 },
+                    solve::LinearOp::Const { dst: 1, value: 3.0 },
+                    solve::LinearOp::Const { dst: 2, value: 5.0 },
+                    solve::LinearOp::Const { dst: 3, value: 7.0 },
+                ],
+                lhs_start: 0,
+                rhs_ops: vec![
+                    solve::LinearOp::LoadY { dst: 4, index: 0 },
+                    solve::LinearOp::Const { dst: 5, value: 1.0 },
+                ],
+                rhs_start: 4,
+                m: 2,
+                k: 2,
+                n: 1,
+                lhs_sparsity: solve::SparsityPattern::Dense,
+                rhs_sparsity: solve::SparsityPattern::Dense,
+                metadata: solve::TensorNodeMetadata::default(),
+                span: test_span("matmul_refresh.mo"),
+            },
+        ],
+    };
+    model.problem.continuous.implicit_row_targets = vec![
+        Some(solve::scalar_slot_y(0)),
+        Some(solve::scalar_slot_y(1)),
+        Some(solve::scalar_slot_y(2)),
+    ];
+
+    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+
+    assert_eq!(runtime.algebraic_refresh.rows.len(), 2);
+    assert_eq!(runtime.algebraic_refresh.rows[0].row_idx, 1);
+    assert_eq!(runtime.algebraic_refresh.rows[0].output_offset, 0);
+    assert_eq!(runtime.algebraic_refresh.rows[1].row_idx, 1);
+    assert_eq!(runtime.algebraic_refresh.rows[1].output_offset, 1);
+
+    let mut solver_y = vec![11.0, 0.0, 0.0];
+    let rows = runtime.algebraic_refresh.rows.clone();
+    let next = runtime
+        .try_refresh_tensor_output_segment(&rows, 0, 0.0, &mut solver_y, &[])
+        .expect("tensor refresh segment should evaluate");
+    assert_eq!(next, Some(2));
+    assert_eq!(solver_y, vec![11.0, 25.0, 62.0]);
+
+    solver_y = vec![11.0, 0.0, 0.0];
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
+        .expect("MatMul projection refresh should update both targets");
+
+    assert_eq!(solver_y, vec![11.0, 25.0, 62.0]);
+}
+
+#[test]
 fn batched_assignment_refresh_preserves_row_order_dependencies() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {

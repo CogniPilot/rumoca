@@ -93,6 +93,7 @@ pub struct SolveRuntime {
     visible_value_plan: Option<VisibleValuePlan>,
     visible_scratch: RefCell<Vec<f64>>,
     refresh_probe_scratch: RefCell<Vec<f64>>,
+    refresh_tensor_scratch: RefCell<Vec<f64>>,
     runtime_state: solve_eval::SimulationRuntimeState,
     derivative_scratch: RefCell<StateDerivativeScratch>,
     root_scratch: RefCell<Vec<f64>>,
@@ -158,6 +159,7 @@ impl SolveRuntime {
             visible_value_plan,
             visible_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
+            refresh_tensor_scratch: RefCell::new(Vec::new()),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             derivative_scratch: RefCell::new(StateDerivativeScratch::default()),
             root_scratch: RefCell::new(Vec::new()),
@@ -745,6 +747,12 @@ impl SolveRuntime {
         let mut row_outputs = Vec::new();
         let mut row_pos = 0usize;
         while row_pos < plan.len() {
+            if let Some(next_pos) =
+                self.try_refresh_tensor_output_segment(plan, row_pos, t, solver_y, params)?
+            {
+                row_pos = next_pos;
+                continue;
+            }
             if let Some(next_pos) = self.try_refresh_shapeless_output_segment(
                 plan,
                 row_pos,

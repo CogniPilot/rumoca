@@ -478,6 +478,16 @@ impl PreparedScalarProgramBlock {
             .map(|row| ScalarProgramBlock::program_output_count(row))
     }
 
+    pub(crate) fn row_output_index(&self, row_idx: usize, output_offset: usize) -> Option<usize> {
+        let mut stored_ordinal = 0usize;
+        for row in self.block.programs.get(..row_idx)? {
+            stored_ordinal =
+                stored_ordinal.checked_add(ScalarProgramBlock::program_output_count(row))?;
+        }
+        stored_ordinal = stored_ordinal.checked_add(output_offset)?;
+        self.block.output_indices.get(stored_ordinal).copied()
+    }
+
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;
@@ -1223,6 +1233,16 @@ pub struct PreparedComputeBlock {
     scratch: RefCell<RowEvalScratch>,
 }
 
+pub(crate) struct ComputeNodeOutputRangeRequest<'a> {
+    pub(crate) start: usize,
+    pub(crate) len: usize,
+    pub(crate) y: &'a [f64],
+    pub(crate) p: &'a [f64],
+    pub(crate) t: f64,
+    pub(crate) context: RowEvalContext<'a>,
+    pub(crate) out: &'a mut Vec<f64>,
+}
+
 impl Clone for PreparedComputeBlock {
     fn clone(&self) -> Self {
         Self {
@@ -1310,6 +1330,47 @@ impl PreparedComputeBlock {
             node.eval_into(y, p, t, context, out, &mut scratch)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn eval_node_covering_output_range_with_context(
+        &self,
+        request: ComputeNodeOutputRangeRequest<'_>,
+    ) -> Result<bool, EvalSolveError> {
+        let Some(end) = request.start.checked_add(request.len) else {
+            return Err(EvalSolveError::ShapeContract {
+                message: "prepared compute node output range overflows".to_string(),
+                span: None,
+            });
+        };
+        let Some(node) = self
+            .nodes
+            .iter()
+            .find(|node| node.contiguous_output_range_covers(request.start, end))
+        else {
+            return Ok(false);
+        };
+
+        let local_runtime_state;
+        let context = match request.context.runtime_state {
+            Some(_) => request.context,
+            None => {
+                local_runtime_state = SimulationRuntimeState::new();
+                request.context.with_runtime_state(&local_runtime_state)
+            }
+        };
+        validate_input_requirements(self.requirements, request.y, request.p, context.seed)?;
+        request.out.resize(self.len, 0.0);
+        record_solve_block_eval(self.label, self.len, request.len);
+        let mut scratch = self.scratch.borrow_mut();
+        node.eval_into(
+            request.y,
+            request.p,
+            request.t,
+            context,
+            request.out,
+            &mut scratch,
+        )?;
+        Ok(true)
     }
 }
 
@@ -1563,6 +1624,30 @@ impl PreparedComputeNode {
         match self {
             Self::ScalarPrograms(block) => block.requirements(),
             Self::MatMul { setup, .. } | Self::LinSolve { setup, .. } => setup.requirements,
+        }
+    }
+
+    fn contiguous_output_range_covers(&self, start: usize, end: usize) -> bool {
+        let Some((node_start, node_len)) = self.contiguous_output_range() else {
+            return false;
+        };
+        let Some(node_end) = node_start.checked_add(node_len) else {
+            return false;
+        };
+        start >= node_start && end <= node_end
+    }
+
+    fn contiguous_output_range(&self) -> Option<(usize, usize)> {
+        match self {
+            Self::MatMul {
+                output_start,
+                output_len,
+                ..
+            } => Some((*output_start, *output_len)),
+            Self::LinSolve {
+                output_start, n, ..
+            } => Some((*output_start, *n)),
+            Self::ScalarPrograms(_) => None,
         }
     }
 
