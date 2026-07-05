@@ -5,9 +5,9 @@ use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
+use crate::BuildSimulationTimings;
 #[cfg(feature = "runner")]
 use crate::SimulationSessionApi;
-use crate::BuildSimulationTimings;
 use crate::solve_lowering::{
     SimulationDiagnosticError, lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing,
 };

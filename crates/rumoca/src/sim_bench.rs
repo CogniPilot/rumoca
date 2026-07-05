@@ -52,7 +52,7 @@ pub struct SimBenchArgs {
     pub(crate) dt: Option<f64>,
 
     /// Solver mode. Hot benchmarking uses the prepared BDF/diffsol path or the
-    /// reusable rk-like stepper, depending on this selection.
+    /// reusable rk-like session, depending on this selection.
     #[arg(long, value_enum)]
     pub(crate) solver: Option<BenchSolverMode>,
 
@@ -104,7 +104,7 @@ enum PreparedHotBench {
 }
 
 struct RkLikeHotBench {
-    stepper: rumoca_sim::rk45::SimStepper,
+    session: rumoca_sim::rk45::SimulationSession,
     sample_times: Vec<f64>,
     t_start: f64,
 }
@@ -261,12 +261,12 @@ impl RkLikeHotBench {
         dae: &rumoca_compile::compile::Dae,
         opts: &SimOptions,
     ) -> Result<(Self, BuildSimulationTimings)> {
-        let (stepper, timings) =
-            rumoca_sim::rk45::SimStepper::new_with_stage_timing(dae, opts.clone(), |_| {})
+        let (session, timings) =
+            rumoca_sim::rk45::SimulationSession::new_with_stage_timing(dae, opts.clone(), |_| {})
                 .map_err(|err| anyhow::anyhow!("failed to prepare rk-like simulation: {err}"))?;
         Ok((
             Self {
-                stepper,
+                session,
                 sample_times: build_output_times(opts.t_start, opts.t_end, bench_output_dt(opts)),
                 t_start: opts.t_start,
             },
@@ -275,18 +275,17 @@ impl RkLikeHotBench {
     }
 
     fn run_hot(&mut self) -> Result<HotRunSummary> {
-        self.stepper
+        self.session
             .reset(self.t_start)
             .map_err(|err| anyhow::anyhow!("failed to reset rk-like simulation: {err}"))?;
         for &target in self.sample_times.iter().skip(1) {
-            let dt = target - self.stepper.time();
-            self.stepper
-                .step(dt)
+            self.session
+                .advance_to(target)
                 .map_err(|err| anyhow::anyhow!("failed to step rk-like simulation: {err}"))?;
         }
         Ok(HotRunSummary {
             points: self.sample_times.len(),
-            final_time: Some(self.stepper.time()),
+            final_time: Some(self.session.time()),
         })
     }
 }
