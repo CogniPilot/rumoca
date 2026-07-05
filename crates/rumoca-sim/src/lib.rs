@@ -27,12 +27,11 @@ pub use rumoca_solver::{
 };
 
 pub mod bulk;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-mod discrete_stepper;
-mod interactive_stepper;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-mod sim_stepper;
 pub mod sim_trace_compare;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod simulation_session;
+#[cfg(feature = "runner")]
+mod simulation_session_api;
 
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
@@ -50,7 +49,9 @@ pub use diffsol::{
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub use sim_stepper::{SimStepper, StepperState};
+pub use simulation_session::{SessionState, SimulationSession};
+#[cfg(feature = "runner")]
+pub(crate) use simulation_session_api::SimulationSessionApi;
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
 // report types are re-exported from there rather than as root cross-crate uses.
@@ -611,8 +612,6 @@ pub fn compiled_layout_related_bindings_debug(
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
         .collect())
 }
-
-pub use interactive_stepper::InteractiveStepper;
 
 #[cfg(test)]
 mod tests {

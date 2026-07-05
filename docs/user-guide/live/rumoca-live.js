@@ -2722,7 +2722,7 @@ self.onmessage = async (event) => {
         liveCheck.type = 'checkbox';
         liveCheck.checked = false;
         liveLabel.append(liveCheck, document.createTextNode(' Interactive'));
-        liveLabel.title = 'Keep registered input sliders live during WasmStepper runs';
+        liveLabel.title = 'Keep registered input sliders live during WasmSimulationSession runs';
         const scenarioControlsPending = Boolean(scenarioUrl);
         solverLabel.hidden = scenarioControlsPending;
         gpuLabel.hidden = scenarioControlsPending;
@@ -3408,7 +3408,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             clearGeneratedEditors();
             // Parameters are frozen during a simulation: lock ordinary tuners.
             // Registered input tuners stay enabled in Interactive mode because
-            // the WasmStepper path reads their current values before each step.
+            // the WasmSimulationSession path reads their current values before each advance.
             for (const input of widget.tunerInputs) {
                 input.disabled = !(liveCheck.checked && input.dataset.rumocaLiveInput);
             }
@@ -3733,7 +3733,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 shell.append(host, help);
                 output.replaceChildren(shell);
                 output.hidden = false;
-                setPhase('Compiling interactive stepper', null);
+                setPhase('Compiling interactive simulation session', null);
                 const runner = await interactiveRuntime.createInteractiveSimulation({
                     wasm,
                     THREE,
@@ -3768,7 +3768,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     );
                 }
                 const adapter = await gpu.probeGpu();
-                setPhase('Preparing interactive GPU stepper', null);
+                setPhase('Preparing interactive GPU session', null);
                 const prep = JSON.parse(await runHeavy(
                     'prepare_gpu',
                     { source: liveSource, model, sourceRootCacheUrl },

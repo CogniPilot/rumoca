@@ -182,7 +182,7 @@ function createKeyboardDecaySpec(decay, keyboardBindings) {
   };
 }
 
-function sourceValue(source, locals, stepper, runtime) {
+function sourceValue(source, locals, session, runtime) {
   const text = trimMaybeString(source);
   if (!text) {
     return 0;
@@ -190,19 +190,19 @@ function sourceValue(source, locals, stepper, runtime) {
   if (text.startsWith('local:')) {
     return locals.get(text.slice('local:'.length)) ?? 0;
   }
-  if (text.startsWith('stepper:')) {
-    const name = text.slice('stepper:'.length);
-    return name === 'time' ? stepper.time() : (stepper.get(name) ?? 0);
+  if (text.startsWith('model:')) {
+    const name = text.slice('model:'.length);
+    return name === 'time' ? session.time() : (session.get(name) ?? 0);
   }
   if (text.startsWith('runtime:')) {
     return runtime[text.slice('runtime:'.length)] ?? 0;
   }
-  return locals.get(text) ?? stepper.get(text) ?? 0;
+  return locals.get(text) ?? session.get(text) ?? 0;
 }
 
-function routeValue(route, locals, stepper, runtime) {
+function routeValue(route, locals, session, runtime) {
   if (typeof route === 'string') {
-    return sourceValue(route, locals, stepper, runtime);
+    return sourceValue(route, locals, session, runtime);
   }
   if (!route || typeof route !== 'object') {
     return 0;
@@ -210,7 +210,7 @@ function routeValue(route, locals, stepper, runtime) {
   if (Object.prototype.hasOwnProperty.call(route, 'const')) {
     return finiteNumber(route.const, 0);
   }
-  const value = sourceValue(route.from, locals, stepper, runtime);
+  const value = sourceValue(route.from, locals, session, runtime);
   if (typeof value === 'boolean') {
     return value ? finiteNumber(route.when_true, 1) : finiteNumber(route.when_false, 0);
   }
@@ -479,13 +479,13 @@ export function createInputRuntime(config) {
     resetLocals,
     takeSignal,
     update,
-    runtimeFields(frameNum, stepperTime = 0) {
+    runtimeFields(frameNum, modelTime = 0) {
       return {
         frame_num: frameNum,
         wall_ms: performance.now(),
         input_connected: Boolean(connectedGamepad),
         input_mode: lastMode,
-        stepper_time: stepperTime,
+        model_time: modelTime,
       };
     },
   };
@@ -846,18 +846,18 @@ function compileSceneScript(scriptText, api) {
   return fn(ctx, api) || ctx;
 }
 
-function buildStepperInputs(config, input, stepper, runtime) {
-  const routes = config?.signals?.stepper_inputs || {};
+function buildModelInputs(config, input, session, runtime) {
+  const routes = config?.signals?.model_inputs || {};
   return sortedEntries(routes).map(([name, route]) => [
     name,
-    routeValue(route, input.locals, stepper, runtime),
+    routeValue(route, input.locals, session, runtime),
   ]);
 }
 
-function buildViewerSignals(config, input, stepper, runtime) {
+function buildViewerSignals(config, input, session, runtime) {
   const result = new Map();
   for (const [name, route] of sortedEntries(config?.signals?.viewer)) {
-    result.set(name, routeValue(route, input.locals, stepper, runtime));
+    result.set(name, routeValue(route, input.locals, session, runtime));
   }
   return result;
 }
@@ -882,8 +882,8 @@ export async function createInteractiveSimulation(options) {
     onStatus = () => {},
     onError = () => {},
   } = options || {};
-  if (!wasm || typeof wasm.WasmStepper !== 'function') {
-    throw new Error('Interactive stepping is missing from this WASM package.');
+  if (!wasm || typeof wasm.WasmSimulationSession !== 'function') {
+    throw new Error('Interactive simulation sessions are missing from this WASM package.');
   }
   await ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
   if (hasJsonObjectPayload(sourceRoots)) {
@@ -901,8 +901,17 @@ export async function createInteractiveSimulation(options) {
     wasm.sync_workspace_sources(workspaceSources);
   }
   const input = createInputRuntime(config || {});
-  onStatus('compiling stepper');
-  const stepper = new wasm.WasmStepper(source, modelName);
+  onStatus('compiling session');
+  const simConfig = config?.sim || {};
+  const session = wasm.WasmSimulationSession.withOptions(
+    source,
+    modelName,
+    finiteNumber(simConfig.t_end, 0),
+    finiteNumber(simConfig.dt, 0),
+    trimMaybeString(simConfig.solver),
+    finiteNumber(simConfig.atol, 0),
+    finiteNumber(simConfig.rtol, 0),
+  );
   const viewerSignals = new Map();
   const pointer = {
     captured: false,
@@ -939,8 +948,8 @@ export async function createInteractiveSimulation(options) {
     const nextSignals = buildViewerSignals(
       config,
       input,
-      stepper,
-      input.runtimeFields(frameNum, stepper.time()),
+      session,
+      input.runtimeFields(frameNum, session.time()),
     );
     for (const [name, value] of nextSignals) {
       viewerSignals.set(name, value);
@@ -963,8 +972,14 @@ export async function createInteractiveSimulation(options) {
   }
 
   function statusLine() {
-    const inputMode = input.runtimeFields(frameNum, stepper.time()).input_mode;
-    return `live t=${stepper.time().toFixed(2)} s · ${pacingModeLabel(pacingMode)} · ${speedRatioLabel(speedRatio)} · ${inputMode}`;
+    const inputMode = input.runtimeFields(frameNum, session.time()).input_mode;
+    return `live t=${session.time().toFixed(2)} s · ${pacingModeLabel(pacingMode)} · ${speedRatioLabel(speedRatio)} · ${inputMode}`;
+  }
+
+  function simulationFinished() {
+    const end = session.end_time();
+    const tolerance = 1e-12 * (1 + Math.abs(end));
+    return session.time() >= end - tolerance;
   }
 
   function recordSpeed(simAdvanced, wallDt) {
@@ -978,7 +993,7 @@ export async function createInteractiveSimulation(options) {
   function resetSimulation(options = {}) {
     const {
       resetLocals = true,
-      resetStepper = true,
+      resetSession = true,
       render = true,
       statusText = 'reset',
     } = options;
@@ -986,8 +1001,8 @@ export async function createInteractiveSimulation(options) {
       input.resetLocals();
     }
     input.releaseKeys();
-    if (resetStepper) {
-      stepper.reset();
+    if (resetSession) {
+      session.reset();
     }
     frameNum = 0;
     accumulator = 0;
@@ -1016,7 +1031,7 @@ export async function createInteractiveSimulation(options) {
     if (config?.reset?.on_signal && input.takeSignal(config.reset.on_signal)) {
       resetSimulation({
         resetLocals: Boolean(config.reset.reset_locals),
-        resetStepper: Boolean(config.reset.rebuild_stepper),
+        resetSession: Boolean(config.reset.reset_session),
         render: false,
         statusText: 'reset',
       });
@@ -1026,13 +1041,18 @@ export async function createInteractiveSimulation(options) {
       onStatus('stopped');
       return false;
     }
-    const runtime = input.runtimeFields(frameNum, stepper.time());
-    for (const [name, value] of buildStepperInputs(config, input, stepper, runtime)) {
-      stepper.set_input(name, finiteNumber(value, 0));
+    const runtime = input.runtimeFields(frameNum, session.time());
+    for (const [name, value] of buildModelInputs(config, input, session, runtime)) {
+      session.set_input(name, finiteNumber(value, 0));
     }
-    stepper.step(simDt);
+    session.advance_to(Math.min(session.time() + simDt, session.end_time()));
     refreshViewerSignals();
     frameNum += 1;
+    if (simulationFinished()) {
+      stopAnimation();
+      onStatus('finished');
+      return false;
+    }
     return true;
   }
 
@@ -1427,7 +1447,7 @@ export async function createInteractiveSimulation(options) {
       releasePointerCapture();
     },
     reset() {
-      resetSimulation({ resetLocals: true, resetStepper: true });
+      resetSimulation({ resetLocals: true, resetSession: true });
     },
   };
 }

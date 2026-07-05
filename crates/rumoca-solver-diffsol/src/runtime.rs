@@ -203,10 +203,28 @@ pub(crate) fn check_no_state_initialization(
     initialize_no_state_runtime(model, opts, 1).map(|_| ())
 }
 
-struct DiffsolNoStateOrchestration<'a> {
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    runtime: &'a mut NoStateRuntime,
+pub(crate) fn advance_no_state_runtime_to(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    runtime: &mut NoStateRuntime,
+    target: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    run_no_state_output_schedule(
+        &mut DiffsolNoStateOrchestration {
+            model,
+            opts,
+            runtime,
+        },
+        [target],
+        tol,
+    )
+}
+
+pub(crate) struct DiffsolNoStateOrchestration<'a> {
+    pub(crate) model: &'a solve::SolveModel,
+    pub(crate) opts: &'a SimOptions,
+    pub(crate) runtime: &'a mut NoStateRuntime,
 }
 
 impl NoStateOrchestrationBackend for DiffsolNoStateOrchestration<'_> {
@@ -366,15 +384,15 @@ fn record_no_state_event_step(
     Ok(())
 }
 
-struct NoStateRuntime {
-    runtime: SolveRuntime,
-    params: Vec<f64>,
-    current_y: Vec<f64>,
-    current_t: f64,
-    data: Vec<Vec<f64>>,
-    recorded_times: Vec<f64>,
-    equilibrium_model: OdeModel,
-    stop_schedule: SolveStopSchedule,
+pub(crate) struct NoStateRuntime {
+    pub(crate) runtime: SolveRuntime,
+    pub(crate) params: Vec<f64>,
+    pub(crate) current_y: Vec<f64>,
+    pub(crate) current_t: f64,
+    pub(crate) data: Vec<Vec<f64>>,
+    pub(crate) recorded_times: Vec<f64>,
+    pub(crate) equilibrium_model: OdeModel,
+    pub(crate) stop_schedule: SolveStopSchedule,
 }
 
 fn settle_and_record_no_state_output(
@@ -415,7 +433,7 @@ fn settle_and_record_no_state_output(
     )
 }
 
-fn initialize_no_state_runtime(
+pub(crate) fn initialize_no_state_runtime(
     model: &solve::SolveModel,
     opts: &SimOptions,
     output_count: usize,

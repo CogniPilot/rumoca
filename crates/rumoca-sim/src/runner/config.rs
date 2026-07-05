@@ -141,6 +141,10 @@ pub struct SimConfig {
     #[serde(default = "default_t_end")]
     pub t_end: f64,
     #[serde(default)]
+    pub atol: Option<f64>,
+    #[serde(default)]
+    pub rtol: Option<f64>,
+    #[serde(default)]
     pub solver: Option<String>,
     #[serde(default)]
     pub output: Option<String>,
@@ -172,7 +176,7 @@ pub struct LockstepConfig {
     /// Maximum plant integration step used while advancing between scheduled
     /// send/control boundaries. Defaults to `[sim].dt`.
     #[serde(default)]
-    pub max_step_dt: Option<f64>,
+    pub max_advance_dt: Option<f64>,
 }
 
 fn default_dt() -> f64 {
@@ -437,7 +441,7 @@ pub struct ResetConfig {
     #[serde(default)]
     pub reset_locals: bool,
     #[serde(default)]
-    pub rebuild_stepper: bool,
+    pub reset_session: bool,
     #[serde(default)]
     pub restart_external_interface: bool,
 }
@@ -470,6 +474,14 @@ impl SimulationConfig {
     /// The three FB sections must all be present (external coupling) or all
     /// absent (standalone). Any mix is a user error.
     fn validate(&self) -> anyhow::Result<()> {
+        if self.sim.dt <= 0.0 || !self.sim.dt.is_finite() {
+            anyhow::bail!("[sim] dt must be a positive finite number");
+        }
+        if self.sim.t_end <= 0.0 || !self.sim.t_end.is_finite() {
+            anyhow::bail!("[sim] t_end must be a positive finite number");
+        }
+        validate_positive_finite_option("[sim] atol", self.sim.atol)?;
+        validate_positive_finite_option("[sim] rtol", self.sim.rtol)?;
         if self.sim.steps_per_packet == 0 {
             anyhow::bail!("[sim] steps_per_packet must be at least 1");
         }
@@ -480,10 +492,10 @@ impl SimulationConfig {
             if lockstep.receive_rate_hz <= 0.0 || !lockstep.receive_rate_hz.is_finite() {
                 anyhow::bail!("[lockstep] receive_rate_hz must be a positive finite number");
             }
-            if let Some(max_step_dt) = lockstep.max_step_dt
-                && (max_step_dt <= 0.0 || !max_step_dt.is_finite())
+            if let Some(max_advance_dt) = lockstep.max_advance_dt
+                && (max_advance_dt <= 0.0 || !max_advance_dt.is_finite())
             {
-                anyhow::bail!("[lockstep] max_step_dt must be a positive finite number");
+                anyhow::bail!("[lockstep] max_advance_dt must be a positive finite number");
             }
         }
         let present = [
@@ -517,6 +529,7 @@ impl SimulationConfig {
         if !self.subscribe.is_empty() && !self.has_zenoh_transport() {
             anyhow::bail!("[subscribe] requires a [transport.zenoh] section");
         }
+        self.validate_zenoh_message_maps()?;
         if self.controller.is_some() {
             anyhow::bail!(
                 "[controller] is no longer part of simulation config. Compose the controller \
@@ -525,6 +538,33 @@ impl SimulationConfig {
         }
         self.validate_viewer_presentation()?;
         Ok(())
+    }
+
+    fn validate_zenoh_message_maps(&self) -> anyhow::Result<()> {
+        if self.publish.is_empty() && self.subscribe.is_empty() {
+            return Ok(());
+        }
+        if !self.has_fb() {
+            anyhow::bail!(
+                "[publish] and [subscribe] require complete FlatBuffer coupling: provide \
+                 [schema], [send], and [receive]"
+            );
+        }
+        let send = self.send.as_ref().expect("has_fb checked [send]");
+        let receive = self.receive.as_ref().expect("has_fb checked [receive]");
+        validate_zenoh_map_keys(
+            "publish",
+            &self.publish,
+            &[
+                message_aliases("send", &send.root_type),
+                message_aliases("receive", &receive.root_type),
+            ],
+        )?;
+        validate_zenoh_map_keys(
+            "subscribe",
+            &self.subscribe,
+            &[message_aliases("receive", &receive.root_type)],
+        )
     }
 
     /// Cross-check [[viewer.frame]], [[viewer.camera]], and [viewer.hud]:
@@ -604,6 +644,67 @@ impl SimulationConfig {
     }
 }
 
+fn validate_positive_finite_option(field: &str, value: Option<f64>) -> anyhow::Result<()> {
+    if let Some(value) = value
+        && (value <= 0.0 || !value.is_finite())
+    {
+        anyhow::bail!("{field} must be a positive finite number");
+    }
+    Ok(())
+}
+
+fn validate_zenoh_map_keys(
+    section: &str,
+    map: &HashMap<String, String>,
+    valid_groups: &[Vec<String>],
+) -> anyhow::Result<()> {
+    let valid = valid_groups
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let invalid = map
+        .keys()
+        .filter(|key| !valid.iter().any(|candidate| candidate == &key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if invalid.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "[{section}] contains unknown message name(s): {}; expected one of: {}",
+        invalid.join(", "),
+        valid.join(", ")
+    );
+}
+
+fn message_aliases(alias: &str, root_type: &str) -> Vec<String> {
+    vec![
+        alias.to_string(),
+        root_type.to_string(),
+        snake_case_type_leaf(root_type),
+    ]
+}
+
+fn snake_case_type_leaf(root_type: &str) -> String {
+    let leaf = match root_type.rfind('.') {
+        Some(dot) => &root_type[dot + 1..],
+        None => root_type,
+    };
+    let mut out = String::with_capacity(leaf.len());
+    for (i, ch) in leaf.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i != 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,7 +731,7 @@ mod tests {
         assert!(!cfg.has_fb());
         assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
         let sig = cfg.signals.as_ref().expect("[signals]");
-        assert_eq!(sig.stepper_inputs.len(), 2, "steering + throttle");
+        assert_eq!(sig.model_inputs.len(), 2, "steering + throttle");
         let viewer = cfg.viewer.as_ref().expect("[viewer]");
         assert_eq!(viewer.status_title.as_deref(), Some("Rover"));
         assert_eq!(viewer.show_armed, Some(false));
@@ -680,11 +781,15 @@ name = "Ball"
 [sim]
 t_end = 10.0
 dt = 0.01
+atol = 1e-7
+rtol = 1e-6
 output = "Ball_results.html"
 "#;
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
         assert!(!cfg.is_interactive_runner());
         assert_eq!(cfg.sim.t_end, 10.0);
+        assert_eq!(cfg.sim.atol, Some(1.0e-7));
+        assert_eq!(cfg.sim.rtol, Some(1.0e-6));
         assert_eq!(cfg.sim.output.as_deref(), Some("Ball_results.html"));
     }
 
@@ -746,13 +851,13 @@ mode = "lockstep"
 [lockstep]
 send_rate_hz = 240
 receive_rate_hz = 50
-max_step_dt = 0.002
+max_advance_dt = 0.002
 "#;
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
         let lockstep = cfg.lockstep.as_ref().expect("lockstep config");
         assert_eq!(lockstep.send_rate_hz, 240.0);
         assert_eq!(lockstep.receive_rate_hz, 50.0);
-        assert_eq!(lockstep.max_step_dt, Some(0.002));
+        assert_eq!(lockstep.max_advance_dt, Some(0.002));
         cfg.validate().expect("multirate lockstep validates");
     }
 
@@ -807,9 +912,9 @@ frame = "chassis"
 mount = [0.95, 0.0, 0.24]
 
 [signals.viewer]
-x = "stepper:x"
-y = "stepper:y"
-theta = "stepper:theta"
+x = "model:x"
+y = "model:y"
+theta = "model:theta"
 "#;
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
         cfg.validate()
@@ -828,9 +933,9 @@ position = ["x", "y_typo"]
 heading = "theta"
 
 [signals.viewer]
-x = "stepper:x"
-y = "stepper:y"
-theta = "stepper:theta"
+x = "model:x"
+y = "model:y"
+theta = "model:theta"
 "#;
         let err = toml::from_str::<SimulationConfig>(text)
             .unwrap()
@@ -875,11 +980,11 @@ heading = "theta"
 quaternion = ["q0", "q1", "q2", "q3"]
 
 [signals.viewer]
-theta = "stepper:theta"
-q0 = "stepper:q0"
-q1 = "stepper:q1"
-q2 = "stepper:q2"
-q3 = "stepper:q3"
+theta = "model:theta"
+q0 = "model:q0"
+q1 = "model:q1"
+q2 = "model:q2"
+q3 = "model:q3"
 "#;
         let err = toml::from_str::<SimulationConfig>(text)
             .unwrap()
@@ -937,6 +1042,59 @@ bfbs = []
             .validate()
             .unwrap_err();
         assert!(err.to_string().contains("partial"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_zenoh_publish_without_fb_config() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[transport.zenoh]
+
+[publish]
+send = "demo/send"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("FlatBuffer coupling"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_zenoh_unknown_message_name() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[schema]
+bfbs = []
+
+[send]
+root_type = "cerebri2.topic.SensorPacket"
+route = {}
+
+[receive]
+root_type = "cerebri2.topic.CommandPacket"
+route = {}
+
+[transport.zenoh]
+
+[publish]
+sensor_typo = "demo/send"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("sensor_typo") && err.to_string().contains("[publish]"),
+            "got: {err}"
+        );
     }
 
     #[test]

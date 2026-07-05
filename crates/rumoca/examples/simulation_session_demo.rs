@@ -1,11 +1,11 @@
 #![allow(clippy::excessive_nesting)]
-//! Interactive real-time stepper demo.
+//! Interactive real-time session demo.
 //!
 //! Simulates a mass-spring-damper with keyboard control:
 //!   Left/Right arrows apply force, space resets force to zero.
 //!
 //! Usage:
-//!   cargo run --example stepper_demo -p rumoca
+//!   cargo run --example simulation_session_demo -p rumoca
 
 use std::io::{Write, stdout};
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
-use rumoca_sim::{SimOptions, SimStepper};
+use rumoca_sim::{SimOptions, SimulationSession};
 
 const MODEL_SOURCE: &str = r#"
 model MassSpringDamperControl
@@ -40,11 +40,11 @@ fn main() -> anyhow::Result<()> {
     let compiler = rumoca::Compiler::new().model("MassSpringDamperControl");
     let result = compiler.compile_str(MODEL_SOURCE, "demo.mo")?;
 
-    // Create the stepper
-    let mut stepper = SimStepper::new(&result.dae, SimOptions::default())?;
+    // Create the session
+    let mut session = SimulationSession::new(&result.dae, SimOptions::default())?;
 
-    println!("Inputs:  {:?}", stepper.input_names());
-    println!("Variables: {:?}", stepper.variable_names());
+    println!("Inputs:  {:?}", session.input_names());
+    println!("Variables: {:?}", session.variable_names());
     println!();
     println!("Controls: Left/Right = apply force, Space = zero force, q = quit");
     println!();
@@ -83,16 +83,16 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Apply input and step
-        stepper.set_input("u", force)?;
-        stepper.step(DT)?;
+        session.set_input("u", force)?;
+        session.advance_to(session.time() + DT)?;
 
-        let t = stepper.time();
-        let x = stepper
+        let t = session.time();
+        let x = session
             .get("x")?
-            .ok_or_else(|| anyhow::anyhow!("stepper variable 'x' is not visible"))?;
-        let v = stepper
+            .ok_or_else(|| anyhow::anyhow!("session variable 'x' is not visible"))?;
+        let v = session
             .get("v")?
-            .ok_or_else(|| anyhow::anyhow!("stepper variable 'v' is not visible"))?;
+            .ok_or_else(|| anyhow::anyhow!("session variable 'v' is not visible"))?;
 
         // Render a simple ASCII visualization
         let bar_width = 60i32;

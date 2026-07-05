@@ -1878,11 +1878,11 @@ fn docs_wasm_package_supports_live_examples(package_dir: &Path) -> Result<bool> 
             return Err(error).with_context(|| format!("failed to read {}", types_path.display()));
         }
     };
-    Ok(types.contains("export class WasmStepper"))
+    Ok(types.contains("export class WasmSimulationSession"))
 }
 
 /// Freshness gate for the docs WASM package. The capability check alone (does the
-/// package exist and expose `WasmStepper`) silently serves a bundle built before
+/// package exist and expose `WasmSimulationSession`) silently serves a bundle built before
 /// the latest source edit -- so `docs serve` would keep shipping stale wasm until
 /// the dist is hand-cleaned. The package is up to date only when every compiled
 /// `.wasm` output postdates every input that feeds the Rust->WASM build (crate

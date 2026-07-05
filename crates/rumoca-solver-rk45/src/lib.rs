@@ -84,19 +84,19 @@ impl From<rumoca_eval_solve::EvalSolveError> for SimError {
 }
 
 #[derive(Debug, Clone)]
-pub struct StepperState {
+pub struct SessionState {
     pub time: f64,
     pub values: IndexMap<String, f64>,
 }
 
-pub struct SimStepper {
+pub struct SimulationSession {
     runtime: &'static SolveRuntime,
     backend: Rk45Backend<'static>,
     reset_snapshot: Rk45ResetSnapshot,
     input_values: IndexMap<String, f64>,
 }
 
-impl SimStepper {
+impl SimulationSession {
     pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         match opts.solver_mode {
             SimSolverMode::Auto | SimSolverMode::RkLike => {}
@@ -140,12 +140,12 @@ impl SimStepper {
         Ok(())
     }
 
-    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
-        if dt <= 0.0 {
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        let target_time = target_time.min(self.backend.t_end);
+        if target_time <= self.backend.time {
             return Ok(());
         }
-        let target = self.backend.time + dt;
-        advance_backend_to(&mut self.backend, target)
+        advance_backend_to(&mut self.backend, target_time)
     }
 
     pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
@@ -186,15 +186,15 @@ impl SimStepper {
         })
     }
 
-    pub fn state(&self) -> Result<StepperState, SimError> {
-        Ok(StepperState {
+    pub fn state(&self) -> Result<SessionState, SimError> {
+        Ok(SessionState {
             time: self.time(),
-            values: self.stepper_visible_values()?,
+            values: self.session_visible_values()?,
         })
     }
 
     pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
-        let visible_values = self.stepper_visible_values()?;
+        let visible_values = self.session_visible_values()?;
         let mut values = IndexMap::with_capacity(names.len());
         for name in names {
             if let Some(value) = visible_values.get(name).copied() {
@@ -212,7 +212,7 @@ impl SimStepper {
         &self.runtime.model.visible_names
     }
 
-    fn stepper_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
+    fn session_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
         let solver_y = self.backend.current_solver_y()?;
         let visible_values =
             self.runtime

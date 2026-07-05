@@ -70,8 +70,8 @@ zip = { workspace = true, optional = true }
 sigpipe = { workspace = true }
 
 [[example]]
-name = "stepper_demo"
-path = "examples/stepper_demo.rs"
+name = "simulation_session_demo"
+path = "examples/simulation_session_demo.rs"
 
 [[example]]
 name = "quadrotor_sil"

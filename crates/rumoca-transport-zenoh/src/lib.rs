@@ -88,10 +88,14 @@ impl ZenohTransport {
     }
 
     /// Publish one byte payload for the configured message name.
-    pub fn publish(&self, message: &str, data: &[u8]) {
-        if let Some(publisher) = self.publishers.get(message) {
-            let _ = publisher.put(data.to_vec()).wait();
-        }
+    pub fn publish(&self, message: &str, data: &[u8]) -> Result<()> {
+        let Some(publisher) = self.publishers.get(message) else {
+            anyhow::bail!("Zenoh publisher for message '{message}' is not configured");
+        };
+        publisher
+            .put(data.to_vec())
+            .wait()
+            .map_err(|err| anyhow::anyhow!("Publish Zenoh message '{message}': {err}"))
     }
 
     /// Drain queued samples for a subscribed message.

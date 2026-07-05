@@ -14,7 +14,7 @@ mod init_projection;
 mod ode;
 mod prepared;
 mod runtime;
-pub mod stepper;
+pub mod session;
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -30,7 +30,7 @@ use diffsol::{
 };
 use init_projection::{EventObservation, initialize_state_runtime_values};
 use rumoca_eval_solve::sim_driver::{
-    SimDriverError, SolverStepper, StateTrajectory, StepOutcome, simulate_state_targets,
+    SimDriverError, SolverAdvanceBackend, StateTrajectory, StepOutcome, simulate_state_targets,
 };
 use rumoca_eval_solve::{
     self as solve_eval, RowEvalContext, SolveRuntime, current_dynamic_time_event_stop,
@@ -238,7 +238,7 @@ fn simulate_with_states(
         equilibrium_model.clone(),
         runtime.clone(),
     )?;
-    let mut stepper = build_general_stepper(GeneralStepperInput {
+    let mut backend = build_general_advance_backend(GeneralAdvanceBackendInput {
         model,
         opts,
         equilibrium_model,
@@ -253,7 +253,7 @@ fn simulate_with_states(
         opts,
         &times,
         &runtime_params,
-        stepper.as_mut(),
+        backend.as_mut(),
         StateTrajectory {
             params: &mut params,
             data: &mut data,
@@ -282,7 +282,7 @@ fn simulate_with_states(
     )
 }
 
-struct GeneralStepperInput<'a, 'b, Eqn>
+struct GeneralAdvanceBackendInput<'a, 'b, Eqn>
 where
     Eqn: OdeEquations,
 {
@@ -296,15 +296,15 @@ where
     params: &'b [f64],
 }
 
-fn build_general_stepper<'a, Eqn>(
-    input: GeneralStepperInput<'a, '_, Eqn>,
-) -> Result<Box<dyn SolverStepper + 'a>, SimError>
+fn build_general_advance_backend<'a, Eqn>(
+    input: GeneralAdvanceBackendInput<'a, '_, Eqn>,
+) -> Result<Box<dyn SolverAdvanceBackend + 'a>, SimError>
 where
     Eqn:
         OdeEquationsImplicit<M = Matrix, V = Vector, T = f64, C = <Matrix as MatrixCommon>::C> + 'a,
     Eqn::V: VectorHost<T = f64>,
 {
-    let GeneralStepperInput {
+    let GeneralAdvanceBackendInput {
         model,
         opts,
         equilibrium_model,
@@ -330,15 +330,17 @@ where
             let solver = solver_call("BDF new", || {
                 diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(problem, state, nl_solver)
             })?;
-            Ok(Box::new(DiffsolStepper::new(DiffsolStepperInputs {
-                solver,
-                model,
-                equilibrium_model: equilibrium_model.as_ref(),
-                runtime: runtime.as_ref(),
-                runtime_params,
-                opts,
-                mode: DiffsolMode::General,
-            })))
+            Ok(Box::new(DiffsolAdvanceBackend::new(
+                DiffsolAdvanceBackendInputs {
+                    solver,
+                    model,
+                    equilibrium_model: equilibrium_model.as_ref(),
+                    runtime: runtime.as_ref(),
+                    runtime_params,
+                    opts,
+                    mode: DiffsolMode::General,
+                },
+            )))
         }
         method @ (DiffsolMethod::Esdirk34 | DiffsolMethod::TrBdf2) => {
             let state = initial_rk_state(
@@ -352,15 +354,17 @@ where
                 DiffsolMethod::Esdirk34 => problem.esdirk34_solver::<LinearSolver>(state),
                 _ => problem.tr_bdf2_solver::<LinearSolver>(state),
             })?;
-            Ok(Box::new(DiffsolStepper::new(DiffsolStepperInputs {
-                solver,
-                model,
-                equilibrium_model: equilibrium_model.as_ref(),
-                runtime: runtime.as_ref(),
-                runtime_params,
-                opts,
-                mode: DiffsolMode::General,
-            })))
+            Ok(Box::new(DiffsolAdvanceBackend::new(
+                DiffsolAdvanceBackendInputs {
+                    solver,
+                    model,
+                    equilibrium_model: equilibrium_model.as_ref(),
+                    runtime: runtime.as_ref(),
+                    runtime_params,
+                    opts,
+                    mode: DiffsolMode::General,
+                },
+            )))
         }
     }
 }
@@ -481,7 +485,7 @@ fn simulate_state_only_bdf(
     let solver = solver_call("BDF new", || {
         diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
     })?;
-    let mut stepper = DiffsolStepper::new(DiffsolStepperInputs {
+    let mut backend = DiffsolAdvanceBackend::new(DiffsolAdvanceBackendInputs {
         solver,
         model,
         equilibrium_model,
@@ -493,13 +497,13 @@ fn simulate_state_only_bdf(
 
     // Drive the reduced state-only solver through the *same* backend-neutral
     // output / event / root loop as the general path; `DiffsolMode::StateOnly`
-    // (inside the stepper) projects the reduced state to the full solver_y.
+    // (inside the backend) projects the reduced state to the full solver_y.
     let result = simulate_state_targets(
         model,
         opts,
         times,
         &runtime_params,
-        &mut stepper,
+        &mut backend,
         StateTrajectory {
             params: &mut params,
             data: &mut data,
@@ -579,7 +583,7 @@ impl From<SimDriverError> for SimError {
     }
 }
 
-/// Which system the diffsol solver integrates (folded behind the stepper so the
+/// Which system the diffsol solver integrates (folded behind the backend so the
 /// shared driver never sees it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiffsolMode {
@@ -589,10 +593,10 @@ enum DiffsolMode {
     StateOnly,
 }
 
-/// diffsol adapter implementing the backend-neutral [`SolverStepper`] over an
+/// diffsol adapter implementing the backend-neutral [`SolverAdvanceBackend`] over an
 /// `OdeSolverMethod` plus the `OdeModel` / runtime context its projection, reset,
 /// and event kernels need.
-struct DiffsolStepper<'a, Eqn, S> {
+struct DiffsolAdvanceBackend<'a, Eqn, S> {
     solver: S,
     model: &'a solve::SolveModel,
     equilibrium_model: &'a OdeModel,
@@ -603,7 +607,7 @@ struct DiffsolStepper<'a, Eqn, S> {
     _eqn: std::marker::PhantomData<fn() -> Eqn>,
 }
 
-struct DiffsolStepperInputs<'a, S> {
+struct DiffsolAdvanceBackendInputs<'a, S> {
     solver: S,
     model: &'a solve::SolveModel,
     equilibrium_model: &'a OdeModel,
@@ -613,13 +617,13 @@ struct DiffsolStepperInputs<'a, S> {
     mode: DiffsolMode,
 }
 
-impl<'a, Eqn, S> DiffsolStepper<'a, Eqn, S>
+impl<'a, Eqn, S> DiffsolAdvanceBackend<'a, Eqn, S>
 where
     Eqn: OdeEquations<T = f64> + 'a,
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    fn new(inputs: DiffsolStepperInputs<'a, S>) -> Self {
+    fn new(inputs: DiffsolAdvanceBackendInputs<'a, S>) -> Self {
         Self {
             solver: inputs.solver,
             model: inputs.model,
@@ -637,7 +641,7 @@ where
     }
 }
 
-impl<'a, Eqn, S> SolverStepper for DiffsolStepper<'a, Eqn, S>
+impl<'a, Eqn, S> SolverAdvanceBackend for DiffsolAdvanceBackend<'a, Eqn, S>
 where
     Eqn: OdeEquations<T = f64> + 'a,
     Eqn::V: VectorHost<T = f64>,

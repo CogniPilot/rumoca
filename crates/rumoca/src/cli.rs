@@ -895,8 +895,8 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
             model: &compiled_model,
             t_end: configured_sim_t_end(args.t_end, config.sim.t_end),
             dt: Some(configured_sim_dt(args.dt, config.sim.dt)),
-            atol: args.atol,
-            rtol: args.rtol,
+            atol: configured_sim_option(args.atol, config.sim.atol),
+            rtol: configured_sim_option(args.rtol, config.sim.rtol),
             solver_mode,
             solver_label: &solver_label,
             output: args.output.as_deref().or(config.sim.output.as_deref()),
@@ -911,6 +911,9 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         model_path: Some(model_path),
         model_name,
         solver_mode,
+        solver_label,
+        atol: configured_sim_option(args.atol, config.sim.atol),
+        rtol: configured_sim_option(args.rtol, config.sim.rtol),
         http_port: config.http_port(),
         ws_port: config.websocket_port(),
         config,
@@ -946,6 +949,10 @@ fn configured_sim_dt(cli_dt: Option<f64>, config_dt: f64) -> f64 {
         Some(dt) => dt,
         None => config_dt,
     }
+}
+
+fn configured_sim_option(cli_value: Option<f64>, config_value: Option<f64>) -> Option<f64> {
+    cli_value.or(config_value)
 }
 
 #[cfg(feature = "runner")]

@@ -60,7 +60,7 @@ when raw terminal input is available.
 ```
 input engine          rumoca sim                          Browser
   │                       │                                  │
-  │── sticks → stepper ─► │── step QuadrotorAcro (dt=5ms)
+  │── sticks → session ─► │── step QuadrotorAcro (dt=5ms)
   │   inputs              │   (vehicle + controller in Modelica)
   │                       │                                  │
   │                       │── viewer JSON ─────── WS ──────► │

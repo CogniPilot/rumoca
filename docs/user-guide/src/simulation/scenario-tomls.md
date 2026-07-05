@@ -34,6 +34,8 @@ name = "Ball"
 [sim]
 solver = "rk-like"
 t_end = 10.0
+atol = 1e-6
+rtol = 1e-6
 
 [[plot.views]]
 id = "states_time"
@@ -76,7 +78,9 @@ every scenario; scenario `source_roots` are for paths specific to this run.
 ```toml
 [sim]
 dt = 0.01          # simulation timestep [s]
-t_end = 10.0       # batch/report stop time; interactive runners may ignore it
+t_end = 10.0       # simulation stop time
+atol = 1e-6        # optional absolute solver tolerance
+rtol = 1e-6        # optional relative solver tolerance
 solver = "auto"    # auto | bdf | esdirk34 | trbdf2 | rk-like
 output = "results.html"
 mode = "realtime"  # optional pacing, see below
@@ -144,7 +148,7 @@ bfbs = ["/path/to/your_schema.bfbs"]
 root_type = "your.namespace.MotorOutput"
 
 [receive.route]
-"motors.m0" = { to = "stepper:omega_m1", scale = 1100.0 }
+"motors.m0" = { to = "model:omega_m1", scale = 1100.0 }
 "armed"     = { to = "local:armed" }
 
 [send]

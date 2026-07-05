@@ -2,27 +2,28 @@ use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use crate::{InteractiveStepper, SimOptions, SimSolverMode, SimulationDiagnosticError};
+#[cfg(feature = "runner")]
+use crate::SimulationSessionApi;
+use crate::{SimSolverMode, SimulationDiagnosticError};
 
 #[derive(Debug, Clone)]
-pub struct StepperState {
+pub struct SessionState {
     pub time: f64,
     pub values: IndexMap<String, f64>,
 }
 
-pub struct SimStepper {
-    inner: SimStepperInner,
+pub struct SimulationSession {
+    inner: SimulationSessionInner,
 }
 
-enum SimStepperInner {
-    Discrete(Box<crate::discrete_stepper::SimStepper>),
+enum SimulationSessionInner {
     #[cfg(feature = "solver-diffsol")]
-    Bdf(Box<crate::diffsol::SimStepper>),
+    Diffsol(Box<crate::diffsol::SimulationSession>),
     #[cfg(feature = "solver-rk45")]
-    RkLike(Box<crate::rk45::SimStepper>),
+    RkLike(Box<crate::rk45::SimulationSession>),
 }
 
-impl SimStepper {
+impl SimulationSession {
     pub fn new(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
@@ -35,21 +36,20 @@ impl SimStepper {
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
         match opts.solver_mode {
-            SimSolverMode::Auto => new_auto_stepper(dae_model, opts),
-            SimSolverMode::Bdf => new_bdf_stepper(dae_model, opts),
-            SimSolverMode::RkLike => new_rk_like_stepper(dae_model, opts),
+            SimSolverMode::Auto => new_auto_session(dae_model, opts),
+            SimSolverMode::Bdf => new_bdf_session(dae_model, opts),
+            SimSolverMode::RkLike => new_rk_like_session(dae_model, opts),
         }
     }
 
     pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.set_input(name, value),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper
+            SimulationSessionInner::Diffsol(session) => session
                 .set_input(name, value)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper
+            SimulationSessionInner::RkLike(session) => session
                 .set_input(name, value)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
@@ -57,13 +57,12 @@ impl SimStepper {
 
     pub fn reset(&mut self, t_start: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.reset(t_start),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper
+            SimulationSessionInner::Diffsol(session) => session
                 .reset(t_start)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper
+            SimulationSessionInner::RkLike(session) => session
                 .reset(t_start)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
@@ -76,69 +75,59 @@ impl SimStepper {
         Ok(())
     }
 
-    pub fn step(&mut self, dt: f64) -> Result<(), SimulationDiagnosticError> {
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.step(dt),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper
-                .step(dt)
+            SimulationSessionInner::Diffsol(session) => session
+                .advance_to(target_time)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper
-                .step(dt)
+            SimulationSessionInner::RkLike(session) => session
+                .advance_to(target_time)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
     }
 
     pub fn time(&self) -> f64 {
         match &self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.time(),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper.time(),
+            SimulationSessionInner::Diffsol(session) => session.time(),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper.time(),
+            SimulationSessionInner::RkLike(session) => session.time(),
         }
     }
 
     pub fn get(&self, name: &str) -> Result<Option<f64>, SimulationDiagnosticError> {
         match &self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.get(name),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper
+            SimulationSessionInner::Diffsol(session) => session
                 .get(name)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper
+            SimulationSessionInner::RkLike(session) => session
                 .get(name)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
     }
 
-    pub fn state(&self) -> Result<StepperState, SimulationDiagnosticError> {
+    pub fn state(&self) -> Result<SessionState, SimulationDiagnosticError> {
         match &self.inner {
-            SimStepperInner::Discrete(stepper) => {
-                let state = stepper.state()?;
-                Ok(StepperState {
-                    time: state.time,
-                    values: state.values,
-                })
-            }
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => {
-                let state = stepper
+            SimulationSessionInner::Diffsol(session) => {
+                let state = session
                     .state()
                     .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
-                Ok(StepperState {
+                Ok(SessionState {
                     time: state.time,
                     values: state.values,
                 })
             }
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => {
-                let state = stepper
+            SimulationSessionInner::RkLike(session) => {
+                let state = session
                     .state()
                     .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
-                Ok(StepperState {
+                Ok(SessionState {
                     time: state.time,
                     values: state.values,
                 })
@@ -148,31 +137,26 @@ impl SimStepper {
 
     pub fn input_names(&self) -> &[String] {
         match &self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.input_names(),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper.input_names(),
+            SimulationSessionInner::Diffsol(session) => session.input_names(),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper.input_names(),
+            SimulationSessionInner::RkLike(session) => session.input_names(),
         }
     }
 
     pub fn variable_names(&self) -> &[String] {
         match &self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.variable_names(),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper.variable_names(),
+            SimulationSessionInner::Diffsol(session) => session.variable_names(),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper.variable_names(),
+            SimulationSessionInner::RkLike(session) => session.variable_names(),
         }
     }
 }
 
-impl InteractiveStepper for SimStepper {
+#[cfg(feature = "runner")]
+impl SimulationSessionApi for SimulationSession {
     type Error = SimulationDiagnosticError;
-
-    fn new_from_dae(dae_model: &dae::Dae, opts: SimOptions) -> Result<Self, Self::Error> {
-        Self::new_with_diagnostics(dae_model, opts)
-    }
 
     fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
         Self::reset(self, t_start)
@@ -182,8 +166,8 @@ impl InteractiveStepper for SimStepper {
         Self::set_input(self, name, value)
     }
 
-    fn step(&mut self, dt: f64) -> Result<(), Self::Error> {
-        Self::step(self, dt)
+    fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
+        Self::advance_to(self, target_time)
     }
 
     fn time(&self) -> f64 {
@@ -194,42 +178,34 @@ impl InteractiveStepper for SimStepper {
         Self::get(self, name)
     }
 
-    fn input_names(&self) -> &[String] {
-        Self::input_names(self)
-    }
-
     fn values_for(&self, names: &[String]) -> Result<Option<IndexMap<String, f64>>, Self::Error> {
         match &self.inner {
-            SimStepperInner::Discrete(stepper) => stepper.values_for(names).map(Some),
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(stepper) => stepper
+            SimulationSessionInner::Diffsol(session) => session
                 .values_for(names)
                 .map(Some)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(stepper) => stepper
+            SimulationSessionInner::RkLike(session) => session
                 .values_for(names)
                 .map(Some)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
     }
 
-    fn max_runner_step_dt(&self) -> Option<f64> {
+    fn max_runner_advance_dt(&self) -> Option<f64> {
         match &self.inner {
-            SimStepperInner::Discrete(_) => None,
             #[cfg(feature = "solver-diffsol")]
-            SimStepperInner::Bdf(_) => Some(0.002),
+            SimulationSessionInner::Diffsol(session) => session.max_runner_advance_dt(),
             #[cfg(feature = "solver-rk45")]
-            SimStepperInner::RkLike(_) => None,
+            SimulationSessionInner::RkLike(_) => None,
         }
     }
 }
 
-/// Lower the DAE and apply simulation overrides exactly once. The interactive
-/// steppers share this result: the pure-discrete probe and the ODE backend it
-/// falls through to both consume the same solve model, so a model is never
-/// lowered twice per stepper construction.
-fn lower_for_interactive_stepper(
+/// Lower the DAE and apply simulation overrides exactly once before handing the
+/// solve model to the selected simulation solver backend.
+fn lower_for_simulation_session(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<solve::SolveModel, SimulationDiagnosticError> {
@@ -239,55 +215,46 @@ fn lower_for_interactive_stepper(
     Ok(solve_model)
 }
 
-fn discrete_stepper_from_solve_model(
-    solve_model: solve::SolveModel,
-) -> Result<SimStepper, SimulationDiagnosticError> {
-    let stepper = crate::discrete_stepper::SimStepper::from_solve_model(solve_model)?;
-    Ok(SimStepper {
-        inner: SimStepperInner::Discrete(Box::new(stepper)),
-    })
-}
-
-fn new_auto_stepper(
+fn new_auto_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
-) -> Result<SimStepper, SimulationDiagnosticError> {
-    let solve_model = lower_for_interactive_stepper(dae_model, &opts)?;
-    // A model with no continuous states integrates nothing: run it on the
-    // discrete stepper instead of spinning up an ODE solver.
-    if solve_model.state_scalar_count() == 0 {
-        return discrete_stepper_from_solve_model(solve_model);
-    }
+) -> Result<SimulationSession, SimulationDiagnosticError> {
+    let solve_model = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(feature = "solver-diffsol")]
     {
-        crate::diffsol::SimStepper::from_solve_model(solve_model, opts).map(|stepper| SimStepper {
-            inner: SimStepperInner::Bdf(Box::new(stepper)),
+        crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
+            SimulationSession {
+                inner: SimulationSessionInner::Diffsol(Box::new(session)),
+            }
         })
     }
     #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
     {
-        crate::rk45::SimStepper::from_solve_model(solve_model, opts).map(|stepper| SimStepper {
-            inner: SimStepperInner::RkLike(Box::new(stepper)),
+        crate::rk45::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
+            SimulationSession {
+                inner: SimulationSessionInner::RkLike(Box::new(session)),
+            }
         })
     }
     #[cfg(not(any(feature = "solver-diffsol", feature = "solver-rk45")))]
     {
         let _ = (solve_model, opts);
         Err(SimulationDiagnosticError::Solver(
-            "no interactive solver backend is enabled".to_string(),
+            "no simulation solver backend is enabled".to_string(),
         ))
     }
 }
 
-fn new_bdf_stepper(
+fn new_bdf_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
-) -> Result<SimStepper, SimulationDiagnosticError> {
+) -> Result<SimulationSession, SimulationDiagnosticError> {
     #[cfg(feature = "solver-diffsol")]
     {
-        crate::diffsol::SimStepper::new_with_diagnostics(dae_model, opts).map(|stepper| {
-            SimStepper {
-                inner: SimStepperInner::Bdf(Box::new(stepper)),
+        let solve_model = lower_for_simulation_session(dae_model, &opts)?;
+        crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
+            SimulationSession {
+                inner: SimulationSessionInner::Diffsol(Box::new(session)),
             }
         })
     }
@@ -300,18 +267,17 @@ fn new_bdf_stepper(
     }
 }
 
-fn new_rk_like_stepper(
+fn new_rk_like_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
-) -> Result<SimStepper, SimulationDiagnosticError> {
-    let solve_model = lower_for_interactive_stepper(dae_model, &opts)?;
-    if solve_model.state_scalar_count() == 0 {
-        return discrete_stepper_from_solve_model(solve_model);
-    }
+) -> Result<SimulationSession, SimulationDiagnosticError> {
+    let solve_model = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(feature = "solver-rk45")]
     {
-        crate::rk45::SimStepper::from_solve_model(solve_model, opts).map(|stepper| SimStepper {
-            inner: SimStepperInner::RkLike(Box::new(stepper)),
+        crate::rk45::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
+            SimulationSession {
+                inner: SimulationSessionInner::RkLike(Box::new(session)),
+            }
         })
     }
     #[cfg(not(feature = "solver-rk45"))]

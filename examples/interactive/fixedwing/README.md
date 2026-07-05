@@ -75,7 +75,7 @@ keyboard drives the aircraft when the viewer page has focus.
 ```
 input engine          rumoca sim                          Browser
   │                       │                                  │
-  │── sticks → stepper ─► │── step FixedWing (dt=10ms)
+  │── sticks → session ─► │── step FixedWing (dt=10ms)
   │   inputs              │   (plant + FBW controller in Modelica)
   │                       │                                  │
   │                       │── viewer JSON ─────── WS ──────► │

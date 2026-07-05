@@ -63,28 +63,28 @@ name = "Rover"
 
 [reset]
 on_signal = "reset"
-rebuild_stepper = true
+reset_session = true
 reset_locals = true
 
-[signals.stepper_inputs]
+[signals.model_inputs]
 steering = "local:steering"
 throttle = "local:throttle"
 
 [signals.viewer]
-delta = "stepper:delta"
+delta = "model:delta"
 frame = "runtime:frame_num"
-front_wheel_yaw = "stepper:front_wheel_yaw"
+front_wheel_yaw = "model:front_wheel_yaw"
 input_mode = "runtime:input_mode"
 steering = "local:steering"
-t = "stepper:time"
-theta = "stepper:theta"
+t = "model:time"
+theta = "model:theta"
 throttle = "local:throttle"
-v = "stepper:v"
+v = "model:v"
 wall_ms = "runtime:wall_ms"
-wheel_rpm = "stepper:wheel_rpm"
-x = "stepper:x"
-y = "stepper:y"
-yaw_rate = "stepper:yaw_rate"
+wheel_rpm = "model:wheel_rpm"
+x = "model:x"
+y = "model:y"
+yaw_rate = "model:yaw_rate"
 
 [sim]
 dt = 0.01

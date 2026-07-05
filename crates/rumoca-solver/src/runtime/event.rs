@@ -62,7 +62,7 @@ pub fn runtime_event_horizon(event: RuntimeEventStop, target: f64, horizon: f64)
 
 pub fn runtime_root_event_application_time(root_t: f64, target_t: f64) -> f64 {
     // A non-finite `target_t` (e.g. `f64::INFINITY` used by the interactive
-    // stepper as an "unbounded next sample" sentinel) must never be reported as
+    // session as an "unbounded next sample" sentinel) must never be reported as
     // the application time: `sample_time_match_with_tol(finite, INF)` is
     // spuriously true (its relative tolerance is itself infinite, so
     // `INF <= INF`), which would jump the event clock to infinity and NaN the

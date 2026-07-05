@@ -1350,8 +1350,10 @@ ctx.onFrame = (api) => {
 
     const SCENARIO_SOLVER_OPTIONS = [
         ['auto', 'Auto'],
-        ['rk-like', 'RK-like (explicit)'],
         ['bdf', 'BDF (stiff systems)'],
+        ['esdirk34', 'ESDIRK34 (implicit)'],
+        ['trbdf2', 'TR-BDF2 (implicit)'],
+        ['rk-like', 'RK-like (explicit)'],
     ];
     const SCENARIO_SIM_MODE_OPTIONS = [
         ['', 'Default'],
@@ -1543,7 +1545,7 @@ ctx.onFrame = (api) => {
                 kind: 'select',
                 value: scenarioFieldValue(config, ['sim', 'solver'], 'auto'),
                 options: SCENARIO_SOLVER_OPTIONS,
-                hint: 'Auto chooses a solver. RK-like is explicit; BDF is for stiff systems.',
+                hint: 'Auto chooses a solver. BDF, ESDIRK34, and TR-BDF2 use the implicit path; RK-like is explicit.',
             },
             {
                 section: 'sim',
@@ -1571,6 +1573,24 @@ ctx.onFrame = (api) => {
                 optional: true,
                 value: scenarioFieldValue(config, ['sim', 'dt']),
                 hint: 'Optional fixed step. Leave blank for automatic stepping.',
+            },
+            {
+                section: 'sim',
+                label: 'Absolute tolerance',
+                path: ['sim', 'atol'],
+                kind: 'optionalNumber',
+                optional: true,
+                value: scenarioFieldValue(config, ['sim', 'atol']),
+                hint: 'Optional absolute solver tolerance.',
+            },
+            {
+                section: 'sim',
+                label: 'Relative tolerance',
+                path: ['sim', 'rtol'],
+                kind: 'optionalNumber',
+                optional: true,
+                value: scenarioFieldValue(config, ['sim', 'rtol']),
+                hint: 'Optional relative solver tolerance.',
             },
             {
                 section: 'sim',
@@ -1740,7 +1760,7 @@ ctx.onFrame = (api) => {
                 || sortedObjectEntries(gamepad.axes).length
                 || sortedObjectEntries(gamepad.integrators).length
                 || sortedObjectEntries(gamepad.buttons).length
-                || sortedObjectEntries(signals.stepper_inputs).length),
+                || sortedObjectEntries(signals.model_inputs).length),
             locals: sortedObjectEntries(config && config.locals).map(([name, local]) => ({
                 name,
                 type: trimMaybeString(local && local.type) || 'float',
@@ -1779,7 +1799,7 @@ ctx.onFrame = (api) => {
                 debounceMs: button && button.debounce_ms !== undefined ? String(button.debounce_ms) : '',
                 precondition: trimMaybeString(button && button.precondition),
             })),
-            stepperInputs: sortedObjectEntries(signals.stepper_inputs).map(([name, source]) => ({
+            modelInputs: sortedObjectEntries(signals.model_inputs).map(([name, source]) => ({
                 name,
                 source: typeof source === 'string' ? source : JSON.stringify(source ?? ''),
             })),
@@ -1857,11 +1877,11 @@ ctx.onFrame = (api) => {
         const locals = inputMappings.locals.length;
         const keyboard = inputMappings.keyboardKeys.length + inputMappings.keyboardIntegrators.length;
         const gamepad = inputMappings.gamepadAxes.length + inputMappings.gamepadIntegrators.length + inputMappings.gamepadButtons.length;
-        const stepper = inputMappings.stepperInputs.length;
+        const modelInputCount = inputMappings.modelInputs.length;
         if (locals) parts.push(`${locals} local${locals === 1 ? '' : 's'}`);
         if (keyboard) parts.push(`${keyboard} keyboard`);
         if (gamepad) parts.push(`${gamepad} gamepad`);
-        if (stepper) parts.push(`${stepper} model input${stepper === 1 ? '' : 's'}`);
+        if (modelInputCount) parts.push(`${modelInputCount} model input${modelInputCount === 1 ? '' : 's'}`);
         return parts.length ? parts.join(' · ') : 'No routes configured';
     }
 
@@ -1907,7 +1927,7 @@ ctx.onFrame = (api) => {
         const gamepadAxisRows = inputMappings.gamepadAxes.map((row, index) => scenarioGamepadAxisRowMarkup(row, index)).join('');
         const gamepadIntegratorRows = inputMappings.gamepadIntegrators.map((row, index) => scenarioIntegratorRowMarkup(row, index, 'gamepad')).join('');
         const gamepadButtonRows = inputMappings.gamepadButtons.map((row, index) => scenarioGamepadButtonRowMarkup(row, index)).join('');
-        const stepperInputRows = inputMappings.stepperInputs.map((row, index) => scenarioStepperInputRowMarkup(row, index)).join('');
+        const modelInputRows = inputMappings.modelInputs.map((row, index) => scenarioModelInputRowMarkup(row, index)).join('');
         return `
       <section class="card" id="inputMappingsCard" data-scenario-section="input">
         <details open>
@@ -1994,12 +2014,12 @@ ctx.onFrame = (api) => {
             })}
             ${scenarioInputSubsectionMarkup({
                 title: 'Model Inputs',
-                summary: scenarioCountLabel(inputMappings.stepperInputs.length, 'model input'),
-                addButton: { attr: 'data-add-stepper-input', label: '+ Add Model Input' },
+                summary: scenarioCountLabel(inputMappings.modelInputs.length, 'model input'),
+                addButton: { attr: 'data-add-model-input', label: '+ Add Model Input' },
                 header: ['Model input', 'Source route'],
-                rowClass: 'stepper-input-row',
-                listAttr: 'data-stepper-input-list',
-                rows: stepperInputRows,
+                rowClass: 'model-input-row',
+                listAttr: 'data-model-input-list',
+                rows: modelInputRows,
                 emptyText: 'No Modelica inputs are connected to user input state.',
                 hint: 'Routes local/runtime values into Modelica input variables each step, for example throttle = local:throttle.',
             })}
@@ -2074,11 +2094,11 @@ ctx.onFrame = (api) => {
         </div>`;
     }
 
-    function scenarioStepperInputRowMarkup(row, index) {
+    function scenarioModelInputRowMarkup(row, index) {
         return `
-        <div class="mapping-row stepper-input-row" data-stepper-input-row="${index}">
-          <input data-stepper-field="name" value="${escapeHtml(row.name || '')}" placeholder="stick_throttle">
-          <input data-stepper-field="source" value="${escapeHtml(row.source || '')}" placeholder="local:throttle">
+        <div class="mapping-row model-input-row" data-model-input-row="${index}">
+          <input data-model-field="name" value="${escapeHtml(row.name || '')}" placeholder="stick_throttle">
+          <input data-model-field="source" value="${escapeHtml(row.source || '')}" placeholder="local:throttle">
           <button type="button" class="ghost icon-button" data-remove-mapping>-</button>
         </div>`;
     }
@@ -2371,7 +2391,7 @@ ctx.onFrame = (api) => {
     .gamepad-axis-row { grid-template-columns: minmax(100px, 1fr) minmax(120px, 1fr) minmax(100px, 1fr) minmax(80px, 0.7fr) auto auto; }
     .gamepad-button-row { grid-template-columns: minmax(90px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) repeat(4, minmax(90px, 1fr)) auto; }
     .integrator-row { grid-template-columns: minmax(100px, 1fr) minmax(130px, 1.2fr) minmax(100px, 1fr) repeat(4, minmax(80px, 0.8fr)) auto; }
-    .stepper-input-row { grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto; }
+    .model-input-row { grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto; }
     .check-field { display: inline-flex; align-items: center; gap: 6px; }
     .hint { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .readonly-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12px; }
@@ -2444,7 +2464,7 @@ ctx.onFrame = (api) => {
       .gamepad-axis-row,
       .gamepad-button-row,
       .integrator-row,
-      .stepper-input-row {
+      .model-input-row {
         grid-template-columns: 1fr;
       }
       .icon-button {
@@ -2891,12 +2911,12 @@ ctx.onFrame = (api) => {
       ].join('');
     }
 
-    function stepperInputRowMarkup(row, index) {
+    function modelInputRowMarkup(row, index) {
       const current = row || {};
       return [
-        '<div class="mapping-row stepper-input-row" data-stepper-input-row="' + index + '">',
-        '<input data-stepper-field="name" value="' + escapeText(current.name || '') + '" placeholder="stick_throttle">',
-        '<input data-stepper-field="source" value="' + escapeText(current.source || '') + '" placeholder="local:throttle">',
+        '<div class="mapping-row model-input-row" data-model-input-row="' + index + '">',
+        '<input data-model-field="name" value="' + escapeText(current.name || '') + '" placeholder="stick_throttle">',
+        '<input data-model-field="source" value="' + escapeText(current.source || '') + '" placeholder="local:throttle">',
         '<button type="button" class="ghost icon-button" data-remove-mapping>-</button>',
         '</div>',
       ].join('');
@@ -2999,11 +3019,11 @@ ctx.onFrame = (api) => {
     function validateSignalSource(value, label, el) {
       const source = cleanName(value, label, el);
       if (
-        !source.startsWith('stepper:')
+        !source.startsWith('model:')
         && !source.startsWith('local:')
         && !source.startsWith('runtime:')
       ) {
-        fail(label + ' must start with stepper:, local:, or runtime:.', el);
+        fail(label + ' must start with model:, local:, or runtime:.', el);
       }
       return source;
     }
@@ -3223,11 +3243,11 @@ ctx.onFrame = (api) => {
       return Object.keys(buttons).length ? buttons : undefined;
     }
 
-    function collectStepperInputs() {
+    function collectModelInputs() {
       const inputs = {};
-      for (const row of document.querySelectorAll('[data-stepper-input-row]')) {
-        const nameEl = row.querySelector('[data-stepper-field="name"]');
-        const sourceEl = row.querySelector('[data-stepper-field="source"]');
+      for (const row of document.querySelectorAll('[data-model-input-row]')) {
+        const nameEl = row.querySelector('[data-model-field="name"]');
+        const sourceEl = row.querySelector('[data-model-field="source"]');
         row.querySelectorAll('input').forEach((el) => el.classList.remove('invalid'));
         const name = cleanName(nameEl?.value, 'Model input name', nameEl);
         const source = parseSignalRouteValue(sourceEl?.value, sourceEl);
@@ -3240,7 +3260,7 @@ ctx.onFrame = (api) => {
       if (!document.getElementById('inputMappingsCard') || !inputMappingEnabled()) {
         return [
           { path: ['input'], value: undefined },
-          { path: ['signals', 'stepper_inputs'], value: undefined },
+          { path: ['signals', 'model_inputs'], value: undefined },
         ];
       }
       const keyboardKeys = collectKeyboardKeys();
@@ -3263,7 +3283,7 @@ ctx.onFrame = (api) => {
       return [
         { path: ['input'], value: input },
         { path: ['locals'], value: collectLocals() },
-        { path: ['signals', 'stepper_inputs'], value: collectStepperInputs() },
+        { path: ['signals', 'model_inputs'], value: collectModelInputs() },
       ];
     }
 
@@ -3432,10 +3452,10 @@ ctx.onFrame = (api) => {
         syncInputVisibility();
         return;
       }
-      if (event.target?.closest?.('[data-add-stepper-input]')) {
-        const list = document.querySelector('[data-stepper-input-list]');
-        const index = list?.querySelectorAll('[data-stepper-input-row]').length || 0;
-        list?.insertAdjacentHTML('beforeend', stepperInputRowMarkup({}, index));
+      if (event.target?.closest?.('[data-add-model-input]')) {
+        const list = document.querySelector('[data-model-input-list]');
+        const index = list?.querySelectorAll('[data-model-input-row]').length || 0;
+        list?.insertAdjacentHTML('beforeend', modelInputRowMarkup({}, index));
       }
       const clearParameter = event.target?.closest?.('[data-clear-parameter]');
       if (clearParameter) {

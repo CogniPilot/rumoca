@@ -2,8 +2,8 @@
 //!
 //! Per-frame orchestration (transports live in sibling crates):
 //!   1. poll input engine (config-driven gamepad/keyboard)
-//!   2. drain incoming UDP, apply unpacked values to stepper / locals
-//!   3. step physics
+//!   2. drain incoming UDP, apply unpacked values to session / locals
+//!   3. advance physics
 //!   4. build outgoing `SignalFrame` via signal mapper
 //!   5. pack + send UDP
 //!   6. build viewer JSON via signal mapper
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{InteractiveStepper, SimPacingMode};
+use crate::{SimPacingMode, SimulationSessionApi, stop_time_reached_with_tol};
 use anyhow::{Context, Result};
 use rumoca_codec::{PackCodec, UnpackCodec};
 use rumoca_input::{
@@ -202,15 +202,15 @@ impl Drop for TraceLogger {
 }
 
 /// Resolve a `debug_log.capture` field to an f64 using the same prefix
-/// scheme as signal mapper: `stepper:`, `local:` (supports `.idx`),
-/// `runtime:frame_num|wall_ms|input_connected|stepper_time`. Missing
+/// scheme as signal mapper: `model:`, `local:` (supports `.idx`),
+/// `runtime:frame_num|wall_ms|input_connected|model_time`. Missing
 fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>) -> Result<f64> {
-    if let Some(rest) = name.strip_prefix("stepper:") {
+    if let Some(rest) = name.strip_prefix("model:") {
         if rest == "time" {
-            return Ok(rt.stepper_time);
+            return Ok(rt.model_time);
         }
-        return (rt.stepper_get)(rest)?
-            .ok_or_else(|| anyhow::anyhow!("trace field stepper:{rest} did not resolve"));
+        return (rt.model_get)(rest)?
+            .ok_or_else(|| anyhow::anyhow!("trace field model:{rest} did not resolve"));
     }
     if let Some(rest) = name.strip_prefix("local:") {
         return engine
@@ -222,12 +222,12 @@ fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>
             "frame_num" => Ok(rt.frame_num as f64),
             "wall_ms" => Ok(rt.wall_ms),
             "input_connected" => Ok(f64::from(u8::from(rt.input_connected))),
-            "stepper_time" => Ok(rt.stepper_time),
+            "model_time" => Ok(rt.model_time),
             _ => Err(anyhow::anyhow!("unknown trace runtime field '{rest}'")),
         };
     }
     Err(anyhow::anyhow!(
-        "trace field '{name}' must use stepper:, local:, or runtime:"
+        "trace field '{name}' must use model:, local:, or runtime:"
     ))
 }
 
@@ -429,6 +429,7 @@ struct FrameCtx<'a> {
     external_interface: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
     debug: bool,
     dt: f64,
+    t_end: f64,
     mode: SimPacingMode,
     steps_per_packet: usize,
     lockstep_schedule: Option<LockstepSchedule>,
@@ -451,7 +452,7 @@ struct FrameState {
 struct LockstepSchedule {
     send_dt: f64,
     receive_dt: f64,
-    max_step_dt: f64,
+    max_advance_dt: f64,
 }
 
 impl LockstepSchedule {
@@ -459,7 +460,7 @@ impl LockstepSchedule {
         Self {
             send_dt: 1.0 / lockstep.send_rate_hz,
             receive_dt: 1.0 / lockstep.receive_rate_hz,
-            max_step_dt: lockstep.max_step_dt.unwrap_or(sim_dt),
+            max_advance_dt: lockstep.max_advance_dt.unwrap_or(sim_dt),
         }
     }
 }
@@ -471,18 +472,18 @@ pub struct SimLoopArgs<'a> {
     pub debug: bool,
 }
 
-struct StepperFrameSnapshot {
+struct SessionFrameSnapshot {
     values: Option<indexmap::IndexMap<String, f64>>,
 }
 
-impl StepperFrameSnapshot {
-    fn new(stepper: &impl InteractiveStepper, names: &[String]) -> Result<Self> {
+impl SessionFrameSnapshot {
+    fn new(session: &impl SimulationSessionApi, names: &[String]) -> Result<Self> {
         Ok(Self {
-            values: stepper.values_for(names)?,
+            values: session.values_for(names)?,
         })
     }
 
-    fn get(&self, stepper: &impl InteractiveStepper, name: &str) -> Result<Option<f64>> {
+    fn get(&self, session: &impl SimulationSessionApi, name: &str) -> Result<Option<f64>> {
         if let Some(value) = self
             .values
             .as_ref()
@@ -490,7 +491,7 @@ impl StepperFrameSnapshot {
         {
             return Ok(Some(value));
         }
-        stepper.get(name).map_err(Into::into)
+        session.get(name).map_err(Into::into)
     }
 }
 
@@ -526,22 +527,22 @@ fn log_pacing_status(
         && let Some(schedule) = lockstep_schedule
     {
         status_line(&format!(
-            "  Lockstep send: {:.3} Hz, receive barrier: {:.3} Hz, max step dt: {} s",
+            "  Lockstep send: {:.3} Hz, receive barrier: {:.3} Hz, max advance dt: {} s",
             1.0 / schedule.send_dt,
             1.0 / schedule.receive_dt,
-            schedule.max_step_dt
+            schedule.max_advance_dt
         ));
     } else if matches!(mode, SimPacingMode::Lockstep) && steps_per_packet > 1 {
         status_line(&format!(
-            "  Lockstep steps/packet: {steps_per_packet} ({} s simulated per packet)",
+            "  Lockstep advances/packet: {steps_per_packet} ({} s simulated per packet)",
             dt * steps_per_packet as f64
         ));
     }
 }
 
-pub fn run_sim_loop<S>(stepper: &mut S, args: SimLoopArgs<'_>) -> Result<()>
+pub(crate) fn run_sim_loop<S>(session: &mut S, args: SimLoopArgs<'_>) -> Result<()>
 where
-    S: InteractiveStepper,
+    S: SimulationSessionApi,
 {
     let SimLoopArgs {
         cfg,
@@ -629,6 +630,7 @@ where
         external_interface: &external_interface,
         debug,
         dt: cfg.sim.dt,
+        t_end: cfg.sim.t_end,
         mode,
         steps_per_packet,
         lockstep_schedule,
@@ -646,7 +648,7 @@ where
         next_lockstep_control_time: 0.0,
     };
     while let FrameControl::Continue =
-        ctx.run_one_frame(&mut state, stepper, &mut engine, &mut input_runtime)?
+        ctx.run_one_frame(&mut state, session, &mut engine, &mut input_runtime)?
     {}
 
     // Explicit stop: the signal-handler thread still holds an Arc clone of
@@ -755,7 +757,7 @@ impl FrameCtx<'_> {
     fn run_one_frame(
         &self,
         state: &mut FrameState,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
         engine: &mut InputEngine,
         input_runtime: &mut Devices,
     ) -> Result<FrameControl> {
@@ -778,6 +780,10 @@ impl FrameCtx<'_> {
             eprintln!("\n[sim] quit requested");
             return Ok(FrameControl::Break);
         }
+        if self.final_time_reached(session) {
+            eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
+            return Ok(FrameControl::Break);
+        }
 
         if matches!(self.mode, SimPacingMode::Lockstep)
             && let Some(schedule) = self.lockstep_schedule
@@ -785,20 +791,20 @@ impl FrameCtx<'_> {
             return self.run_scheduled_lockstep_frame(
                 schedule,
                 state,
-                stepper,
+                session,
                 engine,
                 input_runtime,
                 viewer_input,
             );
         }
 
-        // Pacing-specific receive + step gate.
+        // Pacing-specific receive + advance gate.
         match self.mode {
             SimPacingMode::AsFastAsPossible | SimPacingMode::Realtime => {
-                self.drain_udp(state, stepper, engine)?;
+                self.drain_udp(state, session, engine)?;
             }
             SimPacingMode::Lockstep => {
-                let transport_packet = self.wait_for_command(state, stepper, engine)?;
+                let transport_packet = self.wait_for_command(state, session, engine)?;
                 if !viewer_packet && !transport_packet {
                     // No input packet arrived — try again. Physics and input
                     // integrators stay paused (lockstep semantics).
@@ -812,25 +818,34 @@ impl FrameCtx<'_> {
         } else {
             1
         };
+        let planned_dt = self
+            .remaining_dt(session)
+            .min(self.dt * steps_this_frame as f64);
         let poll_dt = if matches!(self.mode, SimPacingMode::Lockstep | SimPacingMode::Realtime) {
-            self.dt * steps_this_frame as f64
+            planned_dt
         } else {
             let elapsed = state.last_poll.elapsed().as_secs_f64();
             state.last_poll = Instant::now();
             elapsed
         };
         input_runtime.poll_with_keyboard_events(engine, poll_dt, viewer_input.keys);
-        if let FrameControl::Break = self.handle_signals(engine, stepper)? {
+        if let FrameControl::Break = self.handle_signals(engine, session)? {
             return Ok(FrameControl::Break);
         }
-        self.apply_stepper_inputs(state, stepper, engine, input_runtime)?;
+        self.apply_model_inputs(state, session, engine, input_runtime)?;
+        let mut advances_done = 0_u64;
         for _ in 0..steps_this_frame {
-            step_substeps(stepper, self.dt)?;
+            if self.final_time_reached(session) {
+                break;
+            }
+            let target = (session.time() + self.dt).min(self.t_end);
+            advance_session_to(session, target)?;
+            advances_done += 1;
         }
 
-        self.emit_payloads(state, stepper, engine, input_runtime)?;
+        self.emit_payloads(state, session, engine, input_runtime)?;
 
-        self.emit_status(state, stepper);
+        self.emit_status(state, session);
 
         // Realtime pacing is an explicit mode. Lockstep is paced by input
         // arrival, and as-fast-as-possible intentionally never sleeps here.
@@ -841,7 +856,11 @@ impl FrameCtx<'_> {
                 thread::sleep(target - elapsed);
             }
         }
-        state.frame_num += steps_this_frame as u64;
+        state.frame_num += advances_done;
+        if self.final_time_reached(session) {
+            eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
+            return Ok(FrameControl::Break);
+        }
         Ok(FrameControl::Continue)
     }
 
@@ -849,7 +868,7 @@ impl FrameCtx<'_> {
         &self,
         schedule: LockstepSchedule,
         state: &mut FrameState,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
         engine: &mut InputEngine,
         input_runtime: &mut Devices,
         viewer_input: ViewerInputDrain,
@@ -860,73 +879,90 @@ impl FrameCtx<'_> {
         // realistic sim dt yet large enough to absorb that accumulation drift.
         const EPS: f64 = 1e-9;
 
-        let now = stepper.time();
+        let now = session.time();
         if !state.lockstep_schedule_initialized {
             state.lockstep_schedule_initialized = true;
             state.next_lockstep_control_time = now + schedule.receive_dt;
             state.next_lockstep_send_time = now + schedule.send_dt;
         }
 
-        let control_time = state.next_lockstep_control_time;
+        let control_time = state.next_lockstep_control_time.min(self.t_end);
         let poll_dt = (control_time - now).max(0.0);
         input_runtime.poll_with_keyboard_events(engine, poll_dt, viewer_input.keys);
-        if let FrameControl::Break = self.handle_signals(engine, stepper)? {
+        if let FrameControl::Break = self.handle_signals(engine, session)? {
             return Ok(FrameControl::Break);
         }
-        self.apply_stepper_inputs(state, stepper, engine, input_runtime)?;
+        self.apply_model_inputs(state, session, engine, input_runtime)?;
 
-        while state.next_lockstep_send_time < control_time - EPS {
-            let target = state.next_lockstep_send_time;
-            let step_dt = target - stepper.time();
-            if step_dt > EPS {
-                step_with_max_dt(stepper, step_dt, schedule.max_step_dt)?;
+        while state.next_lockstep_send_time <= control_time + EPS {
+            let target = state.next_lockstep_send_time.min(control_time);
+            let advance_dt = target - session.time();
+            if advance_dt > EPS {
+                advance_session_with_max_dt(session, advance_dt, schedule.max_advance_dt)?;
             }
-            self.emit_payloads(state, stepper, engine, input_runtime)?;
+            self.emit_payloads(state, session, engine, input_runtime)?;
             // In this scheduled path `frame_num` counts *sends* (one per emitted
             // payload), whereas the packet-paced path counts internal solver
             // steps. The viewer only needs a monotonic frame counter, so the
             // differing units are intentional.
             state.frame_num += 1;
-            self.emit_status(state, stepper);
+            self.emit_status(state, session);
             state.next_lockstep_send_time += schedule.send_dt;
         }
 
-        let remaining_dt = control_time - stepper.time();
+        let remaining_dt = control_time - session.time();
         if remaining_dt > EPS {
-            step_with_max_dt(stepper, remaining_dt, schedule.max_step_dt)?;
+            advance_session_with_max_dt(session, remaining_dt, schedule.max_advance_dt)?;
+            if self.final_time_reached(session) {
+                self.emit_payloads(state, session, engine, input_runtime)?;
+                self.emit_status(state, session);
+                eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
+                return Ok(FrameControl::Break);
+            }
+        } else if self.final_time_reached(session) {
+            eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
+            return Ok(FrameControl::Break);
         }
 
-        let transport_packet = self.wait_for_command(state, stepper, engine)?;
+        let transport_packet = self.wait_for_command(state, session, engine)?;
         if transport_packet {
             state.next_lockstep_control_time += schedule.receive_dt;
         }
         Ok(FrameControl::Continue)
     }
 
-    /// Apply configured local/runtime signal routes into model inputs before stepping.
-    fn apply_stepper_inputs(
+    fn final_time_reached(&self, session: &impl SimulationSessionApi) -> bool {
+        stop_time_reached_with_tol(session.time(), self.t_end)
+    }
+
+    fn remaining_dt(&self, session: &impl SimulationSessionApi) -> f64 {
+        (self.t_end - session.time()).max(0.0)
+    }
+
+    /// Apply configured local/runtime signal routes into model inputs before advancing.
+    fn apply_model_inputs(
         &self,
         state: &FrameState,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
         engine: &mut InputEngine,
         input_runtime: &Devices,
     ) -> Result<()> {
         let wall_ms = wall_ms_since_unix_epoch()?;
-        let stepper_time = stepper.time();
-        let stepper_get = |name: &str| stepper.get(name).map_err(Into::into);
+        let model_time = session.time();
+        let model_get = |name: &str| session.get(name).map_err(Into::into);
         let rt = RuntimeContext {
             frame_num: state.frame_num,
             wall_ms,
             input_connected: input_runtime.is_connected(),
             input_mode: input_runtime.mode(),
             input_message: engine.last_message(),
-            stepper_time,
-            stepper_get: &stepper_get,
+            model_time,
+            model_get: &model_get,
         };
-        for (name, val) in self.mapper.build_stepper_inputs(engine, &rt)? {
-            stepper
+        for (name, val) in self.mapper.build_model_inputs(engine, &rt)? {
+            session
                 .set_input(&name, val)
-                .with_context(|| format!("set stepper input '{name}'"))?;
+                .with_context(|| format!("set session input '{name}'"))?;
         }
         Ok(())
     }
@@ -936,23 +972,23 @@ impl FrameCtx<'_> {
     fn emit_payloads(
         &self,
         state: &mut FrameState,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
         engine: &mut InputEngine,
         input_runtime: &Devices,
     ) -> Result<()> {
         let wall_ms = wall_ms_since_unix_epoch()?;
         let (send_frame, json) = {
-            let stepper_time = stepper.time();
-            let snapshot = StepperFrameSnapshot::new(stepper, self.mapper.stepper_lookup_names())?;
-            let stepper_get = |name: &str| snapshot.get(stepper, name);
+            let model_time = session.time();
+            let snapshot = SessionFrameSnapshot::new(session, self.mapper.model_lookup_names())?;
+            let model_get = |name: &str| snapshot.get(session, name);
             let rt = RuntimeContext {
                 frame_num: state.frame_num,
                 wall_ms,
                 input_connected: input_runtime.is_connected(),
                 input_mode: input_runtime.mode(),
                 input_message: engine.last_message(),
-                stepper_time,
-                stepper_get: &stepper_get,
+                model_time,
+                model_get: &model_get,
             };
             let send_frame = self
                 .fb
@@ -970,11 +1006,11 @@ impl FrameCtx<'_> {
                 udp.send(&bytes);
             }
             if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.send_publish) {
-                zenoh.publish(message, &bytes);
+                zenoh.publish(message, &bytes)?;
             }
             state.send_count += 1;
         }
-        let json = self.with_runtime_transport_fields(json, state, stepper.time())?;
+        let json = self.with_runtime_transport_fields(json, state, session.time())?;
         let _ = self.state_tx.send(json);
         Ok(())
     }
@@ -983,7 +1019,7 @@ impl FrameCtx<'_> {
         &self,
         json: String,
         state: &FrameState,
-        stepper_time: f64,
+        model_time: f64,
     ) -> Result<String> {
         let mut value: JsonValue =
             serde_json::from_str(&json).context("parse viewer JSON for runtime fields")?;
@@ -992,14 +1028,14 @@ impl FrameCtx<'_> {
             .context("viewer JSON root must be an object")?;
         insert_u64(obj, "runtime_tx_count", state.send_count);
         insert_u64(obj, "runtime_rx_count", state.pkt_count);
-        if stepper_time > 0.0 {
+        if model_time > 0.0 {
             obj.insert(
                 "runtime_tx_actual_hz".to_string(),
-                JsonValue::from(state.send_count as f64 / stepper_time),
+                JsonValue::from(state.send_count as f64 / model_time),
             );
             obj.insert(
                 "runtime_rx_actual_hz".to_string(),
-                JsonValue::from(state.pkt_count as f64 / stepper_time),
+                JsonValue::from(state.pkt_count as f64 / model_time),
             );
         }
         if let Some(schedule) = self.lockstep_schedule {
@@ -1015,26 +1051,26 @@ impl FrameCtx<'_> {
         Ok(value.to_string())
     }
 
-    fn emit_status(&self, state: &FrameState, stepper: &impl InteractiveStepper) {
+    fn emit_status(&self, state: &FrameState, session: &impl SimulationSessionApi) {
         // Status line (~1 Hz). In lockstep the period is approximate because
         // frame rate depends on external input pacing.
         let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
         if state.frame_num.is_multiple_of(status_period) {
             eprint!(
                 "\r[sim] t={:.1}s frame={} pkts={}            ",
-                stepper.time(),
+                session.time(),
                 state.frame_num,
                 state.pkt_count
             );
         }
     }
 
-    /// Lockstep receive: consume one transport packet, apply to stepper/locals.
+    /// Lockstep receive: consume one transport packet, apply to session/locals.
     /// Returns `true` if a packet was consumed, `false` on timeout.
     fn wait_for_command(
         &self,
         state: &mut FrameState,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
         engine: &mut InputEngine,
     ) -> Result<bool> {
         let Some(fb) = self.fb else {
@@ -1046,7 +1082,7 @@ impl FrameCtx<'_> {
                 return Ok(false);
             };
             state.pkt_count += 1;
-            apply_fb_datagram(fb, &datagram, stepper, engine)?;
+            apply_fb_datagram(fb, &datagram, session, engine)?;
             return Ok(true);
         }
         let Some(udp) = &fb.udp else {
@@ -1058,16 +1094,16 @@ impl FrameCtx<'_> {
         state.pkt_count += 1;
         let datagram = &state.recv_buf[..n];
         if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_publish) {
-            zenoh.publish(message, datagram);
+            zenoh.publish(message, datagram)?;
         }
-        apply_fb_datagram(fb, datagram, stepper, engine)?;
+        apply_fb_datagram(fb, datagram, session, engine)?;
         Ok(true)
     }
 
     fn handle_signals(
         &self,
         engine: &mut InputEngine,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
     ) -> Result<FrameControl> {
         if engine.take_signal("quit") {
             eprintln!("\n[sim] quit requested");
@@ -1083,7 +1119,7 @@ impl FrameCtx<'_> {
             handle_reset(
                 reset_cfg,
                 engine,
-                stepper,
+                session,
                 ResetRuntime {
                     external_handle: self.external_interface,
                 },
@@ -1102,7 +1138,7 @@ impl FrameCtx<'_> {
     fn drain_udp(
         &self,
         state: &mut FrameState,
-        stepper: &mut impl InteractiveStepper,
+        session: &mut impl SimulationSessionApi,
         engine: &mut InputEngine,
     ) -> Result<()> {
         let Some(fb) = self.fb else {
@@ -1110,7 +1146,7 @@ impl FrameCtx<'_> {
         };
         let expected = fb.recv_expected;
         if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_subscribe) {
-            return drain_zenoh_subscribe(fb, zenoh, message, expected, state, stepper, engine);
+            return drain_zenoh_subscribe(fb, zenoh, message, expected, state, session, engine);
         }
         let Some(udp) = &fb.udp else {
             return Ok(());
@@ -1122,9 +1158,12 @@ impl FrameCtx<'_> {
                 return;
             }
             if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_publish) {
-                zenoh.publish(message, datagram);
+                if let Err(err) = zenoh.publish(message, datagram) {
+                    error = Some(err);
+                    return;
+                }
             }
-            error = apply_fb_datagram(fb, datagram, stepper, engine).err();
+            error = apply_fb_datagram(fb, datagram, session, engine).err();
         });
         if let Some(error) = error {
             return Err(error);
@@ -1133,7 +1172,7 @@ impl FrameCtx<'_> {
     }
 }
 
-/// Drain the Zenoh subscribe key, applying each datagram to the stepper. Split
+/// Drain the Zenoh subscribe key, applying each datagram to the session. Split
 /// out of `drain_udp` so the receive closure isn't nested under the transport
 /// match arm.
 fn drain_zenoh_subscribe(
@@ -1142,7 +1181,7 @@ fn drain_zenoh_subscribe(
     message: &str,
     expected: usize,
     state: &mut FrameState,
-    stepper: &mut impl InteractiveStepper,
+    session: &mut impl SimulationSessionApi,
     engine: &mut InputEngine,
 ) -> Result<()> {
     let mut error = None;
@@ -1151,7 +1190,7 @@ fn drain_zenoh_subscribe(
         if datagram.len() != expected || error.is_some() {
             return;
         }
-        error = apply_fb_datagram(fb, datagram, stepper, engine).err();
+        error = apply_fb_datagram(fb, datagram, session, engine).err();
     });
     if let Some(error) = error {
         return Err(error);
@@ -1241,36 +1280,36 @@ fn spawn_cleanup_thread(external_interface: Arc<Mutex<Option<ExternalInterfacePr
 fn apply_fb_datagram(
     fb: &FbTransport,
     datagram: &[u8],
-    stepper: &mut impl InteractiveStepper,
+    session: &mut impl SimulationSessionApi,
     engine: &mut InputEngine,
 ) -> Result<()> {
     if datagram.len() != fb.recv_expected {
         return Ok(());
     }
     let values = fb.unpack.unpack(datagram);
-    apply_received(&values, stepper, engine)
+    apply_received(&values, session, engine)
 }
 
-/// Apply a received SignalFrame to the stepper or locals based on the key
-/// prefix. Keys like `"stepper:omega_m1"` are applied to the stepper; keys
+/// Apply a received SignalFrame to the session or locals based on the key
+/// prefix. Keys like `"model:omega_m1"` are applied to the session; keys
 /// like `"local:armed"` go to the engine's locals; bare names default to
-/// the stepper for convenience.
+/// the session for convenience.
 fn apply_received(
     values: &rumoca_codec::SignalFrame,
-    stepper: &mut impl InteractiveStepper,
+    session: &mut impl SimulationSessionApi,
     engine: &mut InputEngine,
 ) -> Result<()> {
     for (key, val) in values.iter() {
-        if let Some(rest) = key.strip_prefix("stepper:") {
-            stepper
+        if let Some(rest) = key.strip_prefix("model:") {
+            session
                 .set_input(rest, val)
-                .with_context(|| format!("set received stepper input '{rest}'"))?;
+                .with_context(|| format!("set received session input '{rest}'"))?;
         } else if let Some(rest) = key.strip_prefix("local:") {
             engine.set_local(rest, val);
         } else {
-            stepper
+            session
                 .set_input(key, val)
-                .with_context(|| format!("set received stepper input '{key}'"))?;
+                .with_context(|| format!("set received session input '{key}'"))?;
         }
     }
     Ok(())
@@ -1283,11 +1322,11 @@ struct ResetRuntime<'a> {
 fn handle_reset<S>(
     reset_cfg: &ResetConfig,
     engine: &mut InputEngine,
-    stepper: &mut S,
+    session: &mut S,
     runtime: ResetRuntime<'_>,
 ) -> Result<()>
 where
-    S: InteractiveStepper,
+    S: SimulationSessionApi,
 {
     eprintln!("\n[reset] triggered");
     if reset_cfg.reset_locals {
@@ -1300,50 +1339,59 @@ where
     {
         eprintln!("[reset] external-interface restart failed: {e}");
     }
-    if reset_cfg.rebuild_stepper {
-        let reset_time = stepper.time();
-        stepper
+    if reset_cfg.reset_session {
+        let reset_time = session.time();
+        session
             .reset(reset_time)
-            .context("reset: stepper reset failed")?;
-        eprintln!("[reset] stepper reset");
+            .context("reset: session reset failed")?;
+        eprintln!("[reset] session reset");
     }
     Ok(())
 }
 
-// ── Step helper ────────────────────────────────────────────────────────────
+// ── Advance helper ─────────────────────────────────────────────────────────
 
-fn step_substeps(stepper: &mut impl InteractiveStepper, dt: f64) -> Result<()> {
-    let max_step_dt = stepper.max_runner_step_dt().unwrap_or(dt);
-    step_with_max_dt(stepper, dt, max_step_dt)
-}
-
-fn step_with_max_dt(
-    stepper: &mut impl InteractiveStepper,
-    dt: f64,
-    max_step_dt: f64,
-) -> Result<()> {
-    let target = stepper.time() + dt;
-    let step_dt = target - stepper.time();
-    if step_dt <= 0.0 {
+fn advance_session_to(session: &mut impl SimulationSessionApi, target: f64) -> Result<()> {
+    let dt = target - session.time();
+    if dt <= 0.0 {
         return Ok(());
     }
-    let max_sub_dt = stepper
-        .max_runner_step_dt()
-        .map(|stepper_dt| stepper_dt.min(max_step_dt))
-        .unwrap_or(max_step_dt)
-        .min(step_dt);
-    let n_steps = ((step_dt / max_sub_dt).ceil() as usize).max(1);
-    let sub_dt = step_dt / n_steps as f64;
+    let max_advance_dt = session.max_runner_advance_dt().unwrap_or(dt);
+    advance_session_with_max_dt(session, dt, max_advance_dt)
+}
+
+fn advance_session_with_max_dt(
+    session: &mut impl SimulationSessionApi,
+    dt: f64,
+    max_advance_dt: f64,
+) -> Result<()> {
+    let target = session.time() + dt;
+    let advance_dt = target - session.time();
+    if advance_dt <= 0.0 {
+        return Ok(());
+    }
+    let max_sub_dt = session
+        .max_runner_advance_dt()
+        .map(|session_dt| session_dt.min(max_advance_dt))
+        .unwrap_or(max_advance_dt)
+        .min(advance_dt);
+    let n_steps = ((advance_dt / max_sub_dt).ceil() as usize).max(1);
+    let sub_dt = advance_dt / n_steps as f64;
     for i in 0..n_steps {
-        if let Err(e) = stepper.step(sub_dt) {
+        let sub_target = if i + 1 == n_steps {
+            target
+        } else {
+            session.time() + sub_dt
+        };
+        if let Err(e) = session.advance_to(sub_target) {
             eprintln!(
-                "\r[sim] step {}/{n_steps} failed (sub_dt={sub_dt:.4}): {e}",
+                "\r[sim] advance {}/{n_steps} failed (sub_dt={sub_dt:.4}): {e}",
                 i + 1,
             );
             return Err(anyhow::anyhow!(
-                "simulation step {}/{n_steps} failed at t={:.9}: {e}",
+                "simulation advance {}/{n_steps} failed at t={:.9}: {e}",
                 i + 1,
-                stepper.time()
+                session.time()
             ));
         }
     }

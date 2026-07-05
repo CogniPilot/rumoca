@@ -152,7 +152,10 @@ separate concerns:
 
 - `[sim].mode` controls pacing only: `as_fast_as_possible`, `realtime`, or
   `lockstep`.
-- `[input]`, `[locals]`, `[derived]`, and `[signals.stepper_inputs]` enable
+- `[sim].solver`, `[sim].dt`, `[sim].t_end`, `[sim].atol`, and `[sim].rtol`
+  configure the single simulation integration session used by both batch and
+  interactive runs.
+- `[input]`, `[locals]`, `[derived]`, and `[signals.model_inputs]` enable
   live keyboard, gamepad, browser, or external input routing for the same
   regular `simulate` task. Input-enabled simulation is not a separate task or
   viewer mode.

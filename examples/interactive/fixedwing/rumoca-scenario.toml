@@ -144,59 +144,59 @@ views = []
 
 [reset]
 on_signal = "reset"
-rebuild_stepper = true
+reset_session = true
 reset_locals = true
 
 [rumoca]
 task = "simulate"
 version = "1"
 
-[signals.stepper_inputs]
+[signals.model_inputs]
 stick_pitch = "local:pitch_cmd"
 stick_roll = "local:roll_cmd"
 stick_throttle = "local:throttle"
 stick_yaw = "local:yaw_cmd"
 
-[signals.stepper_inputs.armed]
+[signals.model_inputs.armed]
 from = "local:armed"
 when_false = 0
 when_true = 1
 
 [signals.viewer]
-ail_rad = "stepper:ail_rad"
-airspeed = "stepper:airspeed"
-alpha = "stepper:alpha_deg"
+ail_rad = "model:ail_rad"
+airspeed = "model:airspeed"
+alpha = "model:alpha_deg"
 armed = "local:armed"
-elev_rad = "stepper:elev_rad"
+elev_rad = "model:elev_rad"
 frame = "runtime:frame_num"
 input_mode = "runtime:input_mode"
-px = "stepper:position[1]"
-py = "stepper:position[2]"
-pz = "stepper:position[3]"
-rud_rad = "stepper:rud_rad"
+px = "model:position[1]"
+py = "model:position[2]"
+pz = "model:position[3]"
+rud_rad = "model:rud_rad"
 stick_pitch = "local:pitch_cmd"
 stick_roll = "local:roll_cmd"
 stick_throttle = "local:throttle"
 stick_yaw = "local:yaw_cmd"
-t = "stepper:time"
-throttle = "stepper:thr_out"
+t = "model:time"
+throttle = "model:thr_out"
 wall_ms = "runtime:wall_ms"
 
 [signals.viewer.q0]
 default = 1
-from = "stepper:quat[1]"
+from = "model:quat[1]"
 
 [signals.viewer.q1]
 default = 0
-from = "stepper:quat[2]"
+from = "model:quat[2]"
 
 [signals.viewer.q2]
 default = 0
-from = "stepper:quat[3]"
+from = "model:quat[3]"
 
 [signals.viewer.q3]
 default = 0
-from = "stepper:quat[4]"
+from = "model:quat[4]"
 
 [sim]
 dt = 0.01
