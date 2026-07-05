@@ -395,7 +395,7 @@ fn equation_counts_for_balance(
     {
         return false;
     }
-    if is_vector_forwarding_alias(eq) {
+    if is_vector_forwarding_alias(eq, continuous_unknowns, component_defined_targets) {
         return false;
     }
     if eq.origin.starts_with("equation from ")

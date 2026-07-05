@@ -1,20 +1,28 @@
-use super::{BalanceSymbolSet, eq_binary_var_refs, is_connection_origin};
+use super::{BalanceSymbolSet, eq_binary_var_refs};
 use rumoca_ir_dae as dae;
 
-pub(super) fn is_vector_forwarding_alias(eq: &dae::Equation) -> bool {
+pub(super) fn is_vector_forwarding_alias(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+    component_defined_targets: &BalanceSymbolSet,
+) -> bool {
     if eq.scalar_count <= 1 {
         return false;
     }
-    if !(eq.origin.starts_with("binding equation for")
-        || is_connection_origin(eq.origin.as_str())
-        || eq.origin.starts_with("equation from "))
-    {
+    if !(eq.origin.starts_with("binding equation for") || eq.origin.starts_with("equation from ")) {
         return false;
     }
-    let Some((_lhs, rhs)) = eq_binary_lhs_rhs(&eq.rhs) else {
+    let Some((lhs, rhs)) = eq_binary_lhs_rhs(&eq.rhs) else {
         return false;
     };
-    expression_is_forwarded_value(rhs)
+    if !expression_is_forwarded_value(rhs) {
+        return false;
+    }
+    let rumoca_core::Expression::VarRef { name: lhs_name, .. } = lhs else {
+        return false;
+    };
+    !continuous_unknowns.matches_reference(lhs_name)
+        || component_defined_targets.matches_reference(lhs_name)
 }
 
 fn expression_is_forwarded_value(expr: &rumoca_core::Expression) -> bool {
