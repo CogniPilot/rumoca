@@ -1054,6 +1054,7 @@ pub(super) fn substitute_known_constants_in_flat(
             true,
         )?;
     }
+    recover_primitive_constructor_parameter_bindings(flat);
     substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals)?;
     substitute_assert_equations(
         &mut flat.initial_assert_equations,
@@ -1079,6 +1080,196 @@ pub(super) fn substitute_known_constants_in_flat(
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars)?;
     crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct PrimitiveParameterBindingCandidate {
+    scope: String,
+    min: Option<rumoca_core::Expression>,
+    max: Option<rumoca_core::Expression>,
+    binding: rumoca_core::Expression,
+}
+
+fn recover_primitive_constructor_parameter_bindings(flat: &mut flat::Model) {
+    let candidates = primitive_parameter_binding_candidates(flat);
+    if candidates.is_empty() {
+        return;
+    }
+
+    for eq in &mut flat.equations {
+        let scope = assignment_scope_from_residual(&eq.residual)
+            .unwrap_or_else(|| equation_origin_scope(&eq.origin));
+        let mut rewriter = PrimitiveConstructorBindingRecoverer {
+            scope: &scope,
+            candidates: &candidates,
+        };
+        eq.residual = rewriter.rewrite_expression(&eq.residual);
+    }
+    for eq in &mut flat.initial_equations {
+        let scope = assignment_scope_from_residual(&eq.residual)
+            .unwrap_or_else(|| equation_origin_scope(&eq.origin));
+        let mut rewriter = PrimitiveConstructorBindingRecoverer {
+            scope: &scope,
+            candidates: &candidates,
+        };
+        eq.residual = rewriter.rewrite_expression(&eq.residual);
+    }
+}
+
+fn primitive_parameter_binding_candidates(
+    flat: &flat::Model,
+) -> Vec<PrimitiveParameterBindingCandidate> {
+    flat.variables
+        .iter()
+        .filter_map(|(name, var)| {
+            let type_name = flat.variable_type_names.get(name)?;
+            if !rumoca_core::qualified_type_name_matches(type_name, "Integer")
+                || !matches!(
+                    var.variability,
+                    rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+                )
+                || !var.binding_from_modification
+            {
+                return None;
+            }
+            let binding = var.binding.clone()?;
+            Some(PrimitiveParameterBindingCandidate {
+                scope: parent_component_scope(var.name.as_str()),
+                min: var.min.clone(),
+                max: var.max.clone(),
+                binding,
+            })
+        })
+        .collect()
+}
+
+struct PrimitiveConstructorBindingRecoverer<'a> {
+    scope: &'a str,
+    candidates: &'a [PrimitiveParameterBindingCandidate],
+}
+
+impl ExpressionRewriter for PrimitiveConstructorBindingRecoverer<'_> {
+    fn walk_function_call_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let mut rewritten_args = self.rewrite_expressions(args);
+        if name.as_str() == "Clock"
+            && let Some(first_arg) = rewritten_args.first_mut()
+            && let Some(recovered) = self.recover_integer_constructor_argument(first_arg, span)
+        {
+            *first_arg = recovered;
+        }
+        rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: rewritten_args,
+            is_constructor,
+            span,
+        }
+    }
+}
+
+impl PrimitiveConstructorBindingRecoverer<'_> {
+    fn recover_integer_constructor_argument(
+        &self,
+        expr: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let bounds = primitive_integer_constructor_bounds(expr)?;
+        let mut matches = self.candidates.iter().filter(|candidate| {
+            candidate.scope == self.scope
+                && bounds
+                    .min
+                    .as_ref()
+                    .is_none_or(|min| candidate.min.as_ref() == Some(min))
+                && bounds
+                    .max
+                    .as_ref()
+                    .is_none_or(|max| candidate.max.as_ref() == Some(max))
+        });
+        let candidate = matches.next()?;
+        matches
+            .next()
+            .is_none()
+            .then(|| candidate.binding.clone().with_span(span))
+    }
+}
+
+struct PrimitiveConstructorBounds {
+    min: Option<rumoca_core::Expression>,
+    max: Option<rumoca_core::Expression>,
+}
+
+fn primitive_integer_constructor_bounds(
+    expr: &rumoca_core::Expression,
+) -> Option<PrimitiveConstructorBounds> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if name.as_str() != "Integer" || !*is_constructor || args.is_empty() {
+        return None;
+    }
+
+    let mut min = None;
+    let mut max = None;
+    for arg in args {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args: named_args,
+            ..
+        } = arg
+        else {
+            return None;
+        };
+        let attribute = name
+            .as_str()
+            .strip_prefix(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)?;
+        let value = named_args.first()?.clone();
+        if named_args.len() != 1 {
+            return None;
+        }
+        match attribute {
+            "min" => min = Some(value),
+            "max" => max = Some(value),
+            _ => return None,
+        }
+    }
+
+    Some(PrimitiveConstructorBounds { min, max })
+}
+
+fn assignment_scope_from_residual(expr: &rumoca_core::Expression) -> Option<String> {
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    assignment_scope_var_ref(lhs)
+        .or_else(|| assignment_scope_var_ref(rhs))
+        .map(|name| parent_component_scope(name.as_str()))
+        .filter(|scope| !scope.is_empty())
+}
+
+fn assignment_scope_var_ref(expr: &rumoca_core::Expression) -> Option<&rumoca_core::Reference> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(name),
+        _ => None,
+    }
 }
 
 fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
@@ -1962,17 +2153,17 @@ fn scalar_parameter_literal(
     span: rumoca_core::Span,
     ctx: &Context,
 ) -> Option<rumoca_core::Expression> {
+    if let Some(v) = ctx.parameter_values.get(key) {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(*v),
+            span,
+        });
+    }
     if let Some(v) = ctx.real_parameter_values.get(key)
         && v.is_finite()
     {
         return Some(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(*v),
-            span,
-        });
-    }
-    if let Some(v) = ctx.parameter_values.get(key) {
-        return Some(rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(*v),
             span,
         });
     }
@@ -2002,17 +2193,17 @@ fn evaluated_scalar_parameter_literal(
     span: rumoca_core::Span,
     ctx: &Context,
 ) -> Option<rumoca_core::Expression> {
+    if let Some(v) = ctx.parameter_values.get(key) {
+        return Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(*v),
+            span,
+        });
+    }
     if let Some(v) = ctx.real_parameter_values.get(key)
         && v.is_finite()
     {
         return Some(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(*v),
-            span,
-        });
-    }
-    if let Some(v) = ctx.parameter_values.get(key) {
-        return Some(rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(*v),
             span,
         });
     }

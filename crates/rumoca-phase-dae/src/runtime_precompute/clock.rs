@@ -695,6 +695,52 @@ fn eval_clock_scalar_from_var_ref(
     inferred
 }
 
+fn eval_clock_static_subscript(
+    subscript: &rumoca_core::Subscript,
+    constants: &HashMap<String, f64>,
+    sources: &SourceMap<'_>,
+    remaining_depth: usize,
+    visiting: &mut HashSet<String>,
+) -> Option<usize> {
+    let raw = match subscript {
+        rumoca_core::Subscript::Index { value, .. } => *value as f64,
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            eval_clock_scalar_child(expr, constants, sources, remaining_depth, visiting)?
+        }
+        rumoca_core::Subscript::Colon { .. } => return None,
+    };
+    let rounded = raw.round();
+    if !rounded.is_finite() || rounded < 1.0 || (raw - rounded).abs() > 1.0e-12 {
+        return None;
+    }
+    Some(rounded as usize)
+}
+
+fn eval_clock_array_index(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    constants: &HashMap<String, f64>,
+    sources: &SourceMap<'_>,
+    remaining_depth: usize,
+    visiting: &mut HashSet<String>,
+) -> Option<f64> {
+    let [subscript] = subscripts else {
+        return None;
+    };
+    let index =
+        eval_clock_static_subscript(subscript, constants, sources, remaining_depth, visiting)?;
+    let rumoca_core::Expression::Array {
+        elements,
+        is_matrix: false,
+        ..
+    } = base
+    else {
+        return None;
+    };
+    let element = elements.get(index.checked_sub(1)?)?;
+    eval_clock_scalar_child(element, constants, sources, remaining_depth, visiting)
+}
+
 fn eval_clock_scalar_with_sources(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
@@ -768,6 +814,22 @@ fn eval_clock_scalar_with_sources(
                 eval_clock_scalar_child(lhs, constants, sources, remaining_depth, visiting)?;
             Some(numerator / denominator)
         }
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Integer,
+            args,
+            ..
+        } => eval_clock_scalar_child(args.first()?, constants, sources, remaining_depth, visiting)
+            .map(f64::floor),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => eval_clock_array_index(
+            base,
+            subscripts,
+            constants,
+            sources,
+            remaining_depth,
+            visiting,
+        ),
         _ => None,
     }
 }

@@ -38,6 +38,13 @@ fn lit(value: f64) -> rumoca_core::Expression {
     }
 }
 
+fn int_lit(value: i64) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(value),
+        span: test_span(20, 24),
+    }
+}
+
 fn clock_call(interval: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Clock").into(),
@@ -1217,6 +1224,111 @@ fn test_runtime_precompute_collects_sample_start_interval_schedule() {
     assert_eq!(dae_model.clocks.schedules.len(), 1);
     assert!((dae_model.clocks.schedules[0].period_seconds - 0.1).abs() <= 1e-12);
     assert!((dae_model.clocks.schedules[0].phase_seconds - 0.2).abs() <= 1e-12);
+}
+
+#[test]
+fn test_runtime_precompute_collects_clock_schedule_from_static_indexed_resolution_table() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("s"),
+        dae::Variable::new(
+            rumoca_core::VarName::new("s"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        ),
+    );
+    let resolution_table = rumoca_core::Expression::Array {
+        elements: vec![
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Mul,
+                    lhs: Box::new(rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Mul,
+                        lhs: Box::new(int_lit(365)),
+                        rhs: Box::new(int_lit(24)),
+                        span: test_span(100, 105),
+                    }),
+                    rhs: Box::new(int_lit(60)),
+                    span: test_span(100, 108),
+                }),
+                rhs: Box::new(int_lit(60)),
+                span: test_span(100, 105),
+            },
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Mul,
+                    lhs: Box::new(int_lit(24)),
+                    rhs: Box::new(int_lit(60)),
+                    span: test_span(106, 110),
+                }),
+                rhs: Box::new(int_lit(60)),
+                span: test_span(106, 112),
+            },
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(int_lit(60)),
+                rhs: Box::new(int_lit(60)),
+                span: test_span(113, 118),
+            },
+            int_lit(60),
+            int_lit(1),
+            int_lit(1000),
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(int_lit(1000)),
+                rhs: Box::new(int_lit(1000)),
+                span: test_span(106, 115),
+            },
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Mul,
+                    lhs: Box::new(int_lit(1000)),
+                    rhs: Box::new(int_lit(1000)),
+                    span: test_span(119, 128),
+                }),
+                rhs: Box::new(int_lit(1000)),
+                span: test_span(119, 132),
+            },
+        ],
+        is_matrix: false,
+        span: test_span(90, 120),
+    };
+    let resolution = rumoca_core::Expression::Index {
+        base: Box::new(resolution_table),
+        subscripts: vec![rumoca_core::Subscript::expr(
+            Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Integer,
+                args: vec![int_lit(6)],
+                span: test_span(121, 131),
+            }),
+            test_span(121, 131),
+        )],
+        span: test_span(90, 132),
+    };
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::residual(
+            sub(
+                var("s"),
+                rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new("Clock").into(),
+                    args: vec![lit(1.0), resolution],
+                    is_constructor: false,
+                    span: test_span(80, 133),
+                },
+            ),
+            test_span(1, 2),
+            "indexed_resolution_clock_constructor",
+        ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert_eq!(dae_model.clocks.schedules.len(), 1);
+    assert!((dae_model.clocks.schedules[0].period_seconds - 0.001).abs() <= 1e-12);
+    assert!(dae_model.clocks.schedules[0].phase_seconds.abs() <= 1e-12);
 }
 
 #[test]

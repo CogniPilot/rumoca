@@ -57,6 +57,95 @@ fn spanned_var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+#[test]
+fn substitute_known_constants_prefers_integer_parameter_binding_over_stale_real_start() {
+    let mut ctx = Context::new();
+    ctx.parameter_values
+        .insert("periodicClock.factor".to_string(), 20);
+    ctx.real_parameter_values
+        .insert("periodicClock.factor".to_string(), 0.0);
+
+    let substituted = substitute_known_constants_expr(
+        spanned_var_ref("periodicClock.factor"),
+        &ctx,
+        &std::collections::HashSet::default(),
+        &std::collections::HashSet::default(),
+        "",
+    )
+    .unwrap();
+
+    assert_eq!(
+        substituted,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(20),
+            span: test_span(),
+        }
+    );
+}
+
+#[test]
+fn substitute_known_constants_recovers_clock_factor_binding_from_integer_constructor_bounds() {
+    let mut model = flat::Model::new();
+    let factor_name = rumoca_core::VarName::new("periodicClock.factor");
+    model.add_variable(
+        factor_name.clone(),
+        flat::Variable {
+            name: factor_name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(int_literal(20)),
+            binding_from_modification: true,
+            start: Some(int_literal(0)),
+            min: Some(int_literal(0)),
+            is_discrete_type: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model
+        .variable_type_names
+        .insert(factor_name, "Integer".to_string());
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref("periodicClock.c")),
+            rhs: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Clock"),
+                args: vec![
+                    rumoca_core::Expression::FunctionCall {
+                        name: rumoca_core::Reference::new("Integer"),
+                        args: vec![named_arg("min", int_literal(0))],
+                        is_constructor: true,
+                        span: test_span(),
+                    },
+                    var_ref("periodicClock.resolutionFactor"),
+                ],
+                is_constructor: true,
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "periodicClock.c".to_string(),
+        },
+    ));
+
+    substitute_known_constants_in_flat(&mut model, &Context::new()).unwrap();
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = rhs.as_ref() else {
+        panic!("expected Clock call");
+    };
+    assert!(matches!(
+        args[0],
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(20),
+            ..
+        }
+    ));
+}
+
 fn int_literal(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),

@@ -618,6 +618,7 @@ fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
         .iter()
         .chain(dae_model.variables.constants.iter())
         .chain(dae_model.variables.inputs.iter())
+        .chain(dae_model.variables.discrete_valued.iter())
         .filter_map(|(name, variable)| variable.start.as_ref().map(|start| (name, start)))
         .collect();
 

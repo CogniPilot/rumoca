@@ -399,15 +399,9 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         ) {
             continue;
         }
-        let binding =
-            comp.binding
-                .as_ref()
-                .or(if !matches!(comp.start, ast::Expression::Empty { .. }) {
-                    Some(&comp.start)
-                } else {
-                    None
-                });
-        let Some(expr) = binding else { continue };
+        let Some(expr) = comp.binding.as_ref() else {
+            continue;
+        };
         let type_name = comp.type_name.to_string();
         if !ctx.constant_values.contains_key(name)
             && let Some(val) = try_extract_record_array_constructor_constant(expr, ctx, "", name)
@@ -611,12 +605,11 @@ pub(crate) fn try_eval_const_real_with_scope(
         } => token.text.as_ref().parse::<i64>().ok().map(|v| v as f64),
         ast::Expression::ComponentReference(cr) => {
             let scope_path = QualifiedName::from_dotted(scope);
-            lookup_component_ref_with_scope(cr, &scope_path, &ctx.real_parameter_values).or_else(
-                || {
-                    lookup_component_ref_with_scope(cr, &scope_path, &ctx.parameter_values)
-                        .map(|v| v as f64)
-                },
-            )
+            lookup_component_ref_with_scope(cr, &scope_path, &ctx.parameter_values)
+                .map(|v| v as f64)
+                .or_else(|| {
+                    lookup_component_ref_with_scope(cr, &scope_path, &ctx.real_parameter_values)
+                })
         }
         ast::Expression::Unary {
             rhs,
@@ -802,17 +795,17 @@ fn try_eval_const_field_access_expr(
     if let Some(value) = lookup_constant_expr_with_scope(&name_text, scope, &ctx.constant_values) {
         return Some(value.with_span(span));
     }
+    if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.parameter_values) {
+        return Some(rumoca_core::Expression::Literal {
+            value: Literal::Integer(value),
+            span,
+        });
+    }
     if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.real_parameter_values)
         && value.is_finite()
     {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Real(value),
-            span,
-        });
-    }
-    if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.parameter_values) {
-        return Some(rumoca_core::Expression::Literal {
-            value: Literal::Integer(value),
             span,
         });
     }
@@ -1081,15 +1074,15 @@ pub(crate) fn try_eval_const_component_ref_expr(
     if component_ref_has_array_shape(&name, ctx, scope) {
         return None;
     }
-    if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.real_parameter_values) {
-        return Some(rumoca_core::Expression::Literal {
-            value: Literal::Real(v),
-            span: owner_span,
-        });
-    }
     if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Integer(v),
+            span: owner_span,
+        });
+    }
+    if let Some(v) = lookup_with_qualified_scope(&name, &scope_path, &ctx.real_parameter_values) {
+        return Some(rumoca_core::Expression::Literal {
+            value: Literal::Real(v),
             span: owner_span,
         });
     }
@@ -1143,15 +1136,15 @@ fn try_eval_resolved_const_ref(
     if lookup_with_scope(name, "", &ctx.array_dimensions).is_some_and(|dims| !dims.is_empty()) {
         return None;
     }
-    if let Some(v) = lookup_with_scope(name, "", &ctx.real_parameter_values) {
-        return Some(rumoca_core::Expression::Literal {
-            value: Literal::Real(v),
-            span: owner_span,
-        });
-    }
     if let Some(v) = lookup_with_scope(name, "", &ctx.parameter_values) {
         return Some(rumoca_core::Expression::Literal {
             value: Literal::Integer(v),
+            span: owner_span,
+        });
+    }
+    if let Some(v) = lookup_with_scope(name, "", &ctx.real_parameter_values) {
+        return Some(rumoca_core::Expression::Literal {
+            value: Literal::Real(v),
             span: owner_span,
         });
     }
