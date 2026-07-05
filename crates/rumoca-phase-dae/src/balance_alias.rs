@@ -54,8 +54,11 @@ pub(super) fn is_non_constraining_binding_alias(
     };
     let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
     let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
-    if !lhs_is_continuous_unknown || !rhs_is_continuous_unknown {
+    if !lhs_is_continuous_unknown {
         return true;
+    }
+    if !rhs_is_continuous_unknown {
+        return component_defined_targets.matches_reference(lhs);
     }
     component_defined_targets.matches_reference(lhs)
         && component_defined_targets.matches_reference(rhs)
@@ -238,6 +241,22 @@ mod tests {
         dae.continuous
             .equations
             .push(binary_eq("a", "b", "binding equation for a"));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_counts_binding_from_parameter_to_undefined_unknown() {
+        let mut dae = dae::Dae::default();
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("secret"), algebraic_var("secret"));
+        dae.variables
+            .parameters
+            .insert(rumoca_core::VarName::new("k"), algebraic_var("k"));
+        dae.continuous
+            .equations
+            .push(binary_eq("secret", "k", "binding equation for secret"));
 
         assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
     }

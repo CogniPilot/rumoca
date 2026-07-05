@@ -471,7 +471,8 @@ fn collect_component_defined_targets_for_balance(
 ) -> HashSet<rumoca_core::VarName> {
     let mut targets = HashSet::new();
     for eq in &dae_model.continuous.equations {
-        if is_connection_origin(eq.origin.as_str()) {
+        if is_connection_origin(eq.origin.as_str()) || eq.origin.starts_with("binding equation for")
+        {
             continue;
         }
         let unknown_refs = eq_binary_var_refs(&eq.rhs)
