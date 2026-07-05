@@ -220,7 +220,7 @@ pub(super) fn is_absent_lhs_component_alias(
 pub(super) fn is_non_constraining_binding_alias(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
-    output_names: &BalanceSymbolSet,
+    _output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     let refs = eq_binary_var_refs(&eq.rhs);
@@ -230,9 +230,6 @@ pub(super) fn is_non_constraining_binding_alias(
     let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
     let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
     let lhs_is_component_defined = component_defined_targets.matches_reference(lhs);
-    if eq.scalar_count > 1 && (output_names.matches_reference(lhs) || lhs_is_component_defined) {
-        return true;
-    }
     if !lhs_is_continuous_unknown {
         return true;
     }

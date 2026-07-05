@@ -173,17 +173,17 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
     // lowered B.1 rows by this phase, not counted as separate terms here.
     let algorithm_outputs = 0usize;
     let when_eq_scalar = 0usize;
-    let f_x_scalar = count_f_x_scalars_with_continuous_unknowns(dae_model);
+    let raw_f_x_scalar = count_f_x_scalars_with_continuous_unknowns(dae_model);
     let f_z_scalar = count_discrete_real_update_scalars(dae_model);
     let f_m_scalar = count_discrete_valued_update_scalars(dae_model)?;
     let f_c_scalar = count_condition_memory_equation_scalars(dae_model);
-    Ok(BalanceDetail {
+    let mut detail = BalanceDetail {
         state_unknowns,
         alg_unknowns,
         output_unknowns,
         discrete_real_unknowns,
         discrete_valued_unknowns,
-        f_x_scalar,
+        f_x_scalar: raw_f_x_scalar,
         f_z_scalar,
         f_m_scalar,
         f_c_scalar,
@@ -193,7 +193,15 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
         stream_interface_equation_count: dae_model.metadata.stream_interface_equation_count,
         overconstrained_interface_count: dae_model.metadata.overconstrained_interface_count,
         oc_break_edge_scalar_count: dae_model.metadata.oc_break_edge_scalar_count,
-    })
+    };
+    let surplus = balance_from_detail(&detail).max(0) as usize;
+    if surplus > 0 {
+        // Component-local vector aliases are non-constraining only when they
+        // explain an actual surplus; never spend them into a balance deficit.
+        let alias_surplus = count_surplus_component_alias_scalars(dae_model);
+        detail.f_x_scalar = detail.f_x_scalar.saturating_sub(alias_surplus.min(surplus));
+    }
+    Ok(detail)
 }
 
 /// Return `(effective_equations, unknowns)` for unbalanced error diagnostics.
@@ -478,14 +486,75 @@ fn is_redundant_connection_alias(
     let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
     let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
 
-    if eq.scalar_count > 1 && lhs_component_defined {
-        return true;
-    }
     if lhs_component_defined && rhs_component_defined {
         return true;
     }
     (lhs_component_defined && !rhs_is_continuous_unknown)
         || (rhs_component_defined && !lhs_is_continuous_unknown)
+}
+
+fn count_surplus_component_alias_scalars(dae_model: &dae::Dae) -> usize {
+    let continuous_unknowns = collect_continuous_unknown_names(dae_model);
+    let continuous_unknown_symbols = BalanceSymbolSet::new(dae_model, &continuous_unknowns);
+    let output_names = collect_output_names(dae_model);
+    let output_symbols = BalanceSymbolSet::new(dae_model, &output_names);
+    let component_defined_targets =
+        collect_component_defined_targets_for_balance(dae_model, &continuous_unknown_symbols);
+    let component_defined_symbols = BalanceSymbolSet::new(dae_model, &component_defined_targets);
+
+    dae_model
+        .continuous
+        .equations
+        .iter()
+        .filter(|eq| {
+            is_surplus_component_connection_alias(
+                eq,
+                &continuous_unknown_symbols,
+                &component_defined_symbols,
+            ) || is_surplus_component_binding_alias(
+                eq,
+                &continuous_unknown_symbols,
+                &output_symbols,
+                &component_defined_symbols,
+            )
+        })
+        .map(|eq| eq.scalar_count)
+        .sum()
+}
+
+fn is_surplus_component_connection_alias(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+    component_defined_targets: &BalanceSymbolSet,
+) -> bool {
+    if eq.scalar_count <= 1 || !is_connection_origin(eq.origin.as_str()) {
+        return false;
+    }
+    let refs = eq_binary_var_refs(&eq.rhs);
+    let [lhs, rhs] = refs.as_slice() else {
+        return false;
+    };
+    component_defined_targets.matches_reference(lhs)
+        && continuous_unknowns.matches_reference(rhs)
+        && !component_defined_targets.matches_reference(rhs)
+}
+
+fn is_surplus_component_binding_alias(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+    output_names: &BalanceSymbolSet,
+    component_defined_targets: &BalanceSymbolSet,
+) -> bool {
+    if eq.scalar_count <= 1 || !eq.origin.starts_with("binding equation for") {
+        return false;
+    }
+    let refs = eq_binary_var_refs(&eq.rhs);
+    let [lhs, rhs] = refs.as_slice() else {
+        return false;
+    };
+    continuous_unknowns.matches_reference(lhs)
+        && continuous_unknowns.matches_reference(rhs)
+        && (output_names.matches_reference(lhs) || component_defined_targets.matches_reference(lhs))
 }
 
 fn collect_component_defined_targets_for_balance(
@@ -1477,6 +1546,34 @@ mod tests {
         }
     }
 
+    fn binary_residual_eq_with_count(
+        lhs_name: &str,
+        rhs_name: &str,
+        origin: &str,
+        scalar_count: usize,
+    ) -> dae::Equation {
+        dae::Equation {
+            lhs: Some(rumoca_core::VarName::new(lhs_name).into()),
+            rhs: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new(lhs_name).into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }),
+                rhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new(rhs_name).into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }),
+                span: test_span(),
+            },
+            span: test_span(),
+            origin: origin.to_string(),
+            scalar_count,
+        }
+    }
+
     fn connection_assignment_with_rhs_index(
         lhs_name: &str,
         rhs_name: &str,
@@ -1535,6 +1632,14 @@ mod tests {
                 1,
                 2,
             ))
+        }
+    }
+
+    fn algebraic_vector_var(name: &str, size: i64) -> dae::Variable {
+        dae::Variable {
+            name: rumoca_core::VarName::new(name),
+            dims: vec![size],
+            ..rumoca_ir_dae::Variable::empty_with_span(test_span())
         }
     }
 
@@ -1936,6 +2041,43 @@ mod tests {
             .insert(rumoca_core::VarName::new("c"), discrete_var("c"));
         dae.conditions.equations.push(scalar_eq_with_lhs("c", 1));
         assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_spends_component_vector_aliases_only_against_surplus() {
+        let mut dae = dae::Dae::default();
+        for name in ["a", "b", "c"] {
+            dae.variables.algebraics.insert(
+                rumoca_core::VarName::new(name),
+                algebraic_vector_var(name, 3),
+            );
+        }
+        dae.continuous.equations.push(binary_residual_eq_with_count(
+            "a",
+            "source",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(dae::Equation {
+            scalar_count: 6,
+            ..scalar_eq_with_lhs("b", 6)
+        });
+        dae.continuous.equations.push(binary_residual_eq_with_count(
+            "a",
+            "c",
+            "connection equation: a = c",
+            3,
+        ));
+
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+
+        for name in ["d", "e"] {
+            dae.variables.algebraics.insert(
+                rumoca_core::VarName::new(name),
+                algebraic_vector_var(name, 3),
+            );
+        }
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -3);
     }
 
     #[test]
