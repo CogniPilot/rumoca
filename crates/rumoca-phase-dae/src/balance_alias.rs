@@ -22,9 +22,12 @@ pub(super) fn is_vector_forwarding_alias(
     let rumoca_core::Expression::VarRef { name: lhs_name, .. } = lhs else {
         return false;
     };
-    output_names.matches_reference(rhs_name)
-        || !continuous_unknowns.matches_reference(lhs_name)
-        || component_defined_targets.matches_reference(lhs_name)
+    let lhs_is_component_defined = component_defined_targets.matches_reference(lhs_name);
+    !continuous_unknowns.matches_reference(lhs_name)
+        || (lhs_is_component_defined
+            && (output_names.matches_reference(lhs_name)
+                || output_names.matches_reference(rhs_name)
+                || component_defined_targets.matches_reference(rhs_name)))
 }
 
 fn forwarded_value_ref(expr: &rumoca_core::Expression) -> Option<&rumoca_core::Reference> {
@@ -457,6 +460,46 @@ mod tests {
             "equation from adaptor",
             3,
         ));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_skips_component_defined_output_forwarding_from_input() {
+        let mut dae = dae::Dae::default();
+        dae.variables
+            .outputs
+            .insert(rumoca_core::VarName::new("y"), vector_output_var("y", 3));
+        dae.variables
+            .inputs
+            .insert(rumoca_core::VarName::new("u"), vector_algebraic_var("u", 3));
+
+        dae.continuous
+            .equations
+            .push(vector_binary_eq("y", "source", "component equation", 3));
+        dae.continuous
+            .equations
+            .push(vector_binary_eq("y", "u", "equation from replicator", 3));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_counts_output_projection_when_lhs_is_not_component_defined() {
+        let mut dae = dae::Dae::default();
+        dae.variables
+            .outputs
+            .insert(rumoca_core::VarName::new("y"), vector_output_var("y", 3));
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("x"), vector_algebraic_var("x", 3));
+
+        dae.continuous
+            .equations
+            .push(vector_binary_eq("x", "source", "component equation", 3));
+        dae.continuous
+            .equations
+            .push(vector_binary_eq("y", "x", "equation from plant", 3));
 
         assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
     }
