@@ -53,6 +53,11 @@ enum LocalSubscriptResolution {
     Values(Vec<Reg>),
 }
 
+struct IndexedSliceReference {
+    display_key: String,
+    group_key: ComponentReferenceKey,
+}
+
 fn is_modelica_array_constructor_function(name: &rumoca_core::Reference) -> bool {
     name.as_str() == "array"
 }
@@ -1589,23 +1594,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         let grouped = self.indexed_bindings.clone();
-        let (display_key, key) = if let Some(pre_key) = self.pre_mode_base_key(name.as_str()) {
-            let pre_group_key = ComponentReferenceKey::generated(pre_key.as_str());
-            if grouped.contains_key(&pre_group_key) {
-                (pre_key, pre_group_key)
-            } else {
-                let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
-                    return Ok(None);
-                };
-                (name.as_str().to_string(), key)
-            }
-        } else {
-            let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
-                return Ok(None);
-            };
-            (name.as_str().to_string(), key)
+        let Some(source) = self.indexed_slice_reference(&grouped, name, span)? else {
+            return Ok(None);
         };
-        let Some(meta) = self.indexed_meta_for_key(&key) else {
+        let Some(meta) = self.indexed_meta_for_key(&source.group_key) else {
             return Ok(None);
         };
         if meta.dims.is_empty() {
@@ -1616,10 +1608,11 @@ impl<'a> LowerBuilder<'a> {
         // sorted selections) instead of filtering the whole group: the
         // filter walk was quadratic in array size. Sorting per-dim
         // reproduces the previous index-sorted output order.
-        let entries = grouped.get(&key).ok_or_else(|| {
+        let entries = grouped.get(&source.group_key).ok_or_else(|| {
             LowerError::contract_violation(
                 format!(
-                    "indexed binding metadata for `{key:?}` has no corresponding binding group"
+                    "indexed binding metadata for `{:?}` has no corresponding binding group",
+                    source.group_key
                 ),
                 span,
             )
@@ -1641,12 +1634,36 @@ impl<'a> LowerBuilder<'a> {
             return Err(unsupported_at(
                 format!(
                     "array slice for `{}` selected no indexed solve-layout bindings",
-                    display_key
+                    source.display_key
                 ),
                 span,
             ));
         }
-        self.lower_indexed_entries_values(display_key.as_str(), &selected_entries, span)
+        self.lower_indexed_entries_values(source.display_key.as_str(), &selected_entries, span)
+    }
+
+    fn indexed_slice_reference(
+        &self,
+        grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Result<Option<IndexedSliceReference>, LowerError> {
+        if let Some(pre_key) = self.pre_mode_base_key(name.as_str()) {
+            let group_key = ComponentReferenceKey::generated(pre_key.as_str());
+            if grouped.contains_key(&group_key) {
+                return Ok(Some(IndexedSliceReference {
+                    display_key: pre_key,
+                    group_key,
+                }));
+            }
+        }
+        let Some(group_key) = indexed_key_for_reference(grouped, name, span)? else {
+            return Ok(None);
+        };
+        Ok(Some(IndexedSliceReference {
+            display_key: name.as_str().to_string(),
+            group_key,
+        }))
     }
 
     /// Resolve `name[subscripts]` against a function-scope (local) array
