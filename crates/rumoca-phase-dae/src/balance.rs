@@ -11,6 +11,10 @@ use indexmap::{IndexMap, IndexSet};
 use rumoca_core::DefId;
 use rumoca_ir_dae as dae;
 
+#[path = "balance_initial_closure.rs"]
+mod balance_initial_closure;
+pub use balance_initial_closure::InitialClosureBalanceDetail;
+
 pub type BalanceResult<T> = Result<T, BalanceError>;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -48,40 +52,6 @@ pub struct BalanceDetail {
     pub stream_interface_equation_count: usize,
     pub overconstrained_interface_count: i64,
     pub oc_break_edge_scalar_count: usize,
-}
-
-/// Balance detail after applying initialization-only deficit closure.
-///
-/// Modelica initialization has its own equation system: fixed starts and
-/// initial equations constrain otherwise free initial unknowns without making
-/// an overdetermined simulation DAE acceptable. This detail is therefore
-/// deficit-only: initial equations can close missing scalar equations, but they
-/// never mask surplus equations.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct InitialClosureBalanceDetail {
-    pub scalar_equations: usize,
-    pub scalar_unknowns: usize,
-    pub deficit_before: i64,
-    pub overconstrained_root_gauge_scalars: i64,
-    pub overconstrained_break_edge_scalars: i64,
-    pub initial_equation_scalars: i64,
-    pub initial_algorithm_scalars: i64,
-    pub closure_used: i64,
-    pub deficit_after: i64,
-}
-
-impl InitialClosureBalanceDetail {
-    pub fn scalar_equations_with_closure(&self) -> usize {
-        self.scalar_equations + self.closure_used as usize
-    }
-
-    pub fn balance_with_closure(&self) -> i64 {
-        self.scalar_equations_with_closure() as i64 - self.scalar_unknowns as i64
-    }
-
-    pub fn is_admissible(&self) -> bool {
-        self.balance_with_closure() == 0
-    }
 }
 
 impl BalanceDetail {
@@ -1593,16 +1563,19 @@ mod tests {
         let mut dae = dae_with_unknown_scalars(4);
         dae.continuous.equations.push(scalar_eq(2));
         dae.metadata.oc_break_edge_scalar_count = 2;
+        let detail = initial_closure_balance_detail(&dae).expect("valid DAE fixture");
 
-        let detail =
-            initial_closure_balance_detail(&dae).expect("valid DAE initial balance fixture");
-
-        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -2);
-        assert_eq!(detail.deficit_before, 2);
-        assert_eq!(detail.overconstrained_break_edge_scalars, 2);
-        assert_eq!(detail.closure_used, 2);
-        assert_eq!(detail.deficit_after, 0);
-        assert!(is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
+        assert_eq!(
+            (
+                balance(&dae).expect("valid DAE fixture"),
+                detail.deficit_before,
+                detail.overconstrained_break_edge_scalars,
+                detail.closure_used,
+                detail.deficit_after,
+                is_balanced_for_admission(&dae).expect("valid DAE fixture"),
+            ),
+            (-2, 2, 2, 2, 0, true)
+        );
     }
 
     #[test]
