@@ -495,6 +495,7 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
     }
 
     if decomposition_map.is_empty() {
+        project_overexpanded_function_calls(flat);
         return Ok(());
     }
 
@@ -590,7 +591,15 @@ fn project_overexpanded_function_calls(flat: &mut flat::Model) {
     if signatures.is_empty() {
         return;
     }
-    let mut rewriter = OverexpandedFunctionCallProjector { signatures };
+    let flat_variable_names = flat
+        .variables
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<HashSet<_>>();
+    let mut rewriter = OverexpandedFunctionCallProjector {
+        signatures,
+        flat_variable_names,
+    };
     for eq in &mut flat.equations {
         eq.residual = rewriter.rewrite_expression(&eq.residual);
     }
@@ -623,6 +632,7 @@ fn project_overexpanded_function_calls(flat: &mut flat::Model) {
 
 struct OverexpandedFunctionCallProjector {
     signatures: HashMap<String, Vec<rumoca_core::FunctionParam>>,
+    flat_variable_names: HashSet<String>,
 }
 
 impl ExpressionRewriter for OverexpandedFunctionCallProjector {
@@ -648,7 +658,13 @@ impl ExpressionRewriter for OverexpandedFunctionCallProjector {
         let args = self
             .signatures
             .get(name.as_str())
-            .and_then(|inputs| project_actuals_to_input_slots(&rewritten_args, inputs))
+            .and_then(|inputs| {
+                project_actuals_to_input_slots_with_known_vars(
+                    &rewritten_args,
+                    inputs,
+                    &self.flat_variable_names,
+                )
+            })
             .unwrap_or(rewritten_args);
         rumoca_core::Expression::FunctionCall {
             name: name.clone(),
@@ -661,23 +677,392 @@ impl ExpressionRewriter for OverexpandedFunctionCallProjector {
 
 impl StatementRewriter for OverexpandedFunctionCallProjector {}
 
+#[cfg(test)]
 fn project_actuals_to_input_slots(
     actuals: &[rumoca_core::Expression],
     inputs: &[rumoca_core::FunctionParam],
 ) -> Option<Vec<rumoca_core::Expression>> {
-    if actuals.len() <= inputs.len() || actuals.iter().any(is_named_function_arg_marker) {
+    project_actuals_to_input_slots_with_known_vars(actuals, inputs, &HashSet::new())
+}
+
+fn project_actuals_to_input_slots_with_known_vars(
+    actuals: &[rumoca_core::Expression],
+    inputs: &[rumoca_core::FunctionParam],
+    flat_variable_names: &HashSet<String>,
+) -> Option<Vec<rumoca_core::Expression>> {
+    if actuals.len() < inputs.len() || actuals.iter().any(is_named_function_arg_marker) {
         return None;
     }
-    project_field_access_actuals(actuals, inputs).or_else(|| {
-        let mut projected = Vec::new();
-        for input in inputs {
-            let actual = actuals
-                .iter()
-                .find(|actual| actual_leaf_matches_input(actual, &input.name))?;
-            projected.push(actual.clone());
+    project_mixed_decomposed_input_slots(actuals, inputs, flat_variable_names)
+        .or_else(|| project_field_access_actuals(actuals, inputs))
+        .or_else(|| {
+            let mut projected = Vec::new();
+            for input in inputs {
+                let actual = actuals
+                    .iter()
+                    .find(|actual| actual_leaf_matches_input(actual, &input.name))?;
+                projected.push(actual.clone());
+            }
+            Some(projected)
+        })
+}
+
+enum InputSlot<'a> {
+    Scalar(&'a rumoca_core::FunctionParam),
+    Decomposed(&'a [rumoca_core::FunctionParam]),
+}
+
+fn project_mixed_decomposed_input_slots(
+    actuals: &[rumoca_core::Expression],
+    inputs: &[rumoca_core::FunctionParam],
+    flat_variable_names: &HashSet<String>,
+) -> Option<Vec<rumoca_core::Expression>> {
+    let slots = decomposed_input_slots(inputs);
+    if !slots
+        .iter()
+        .any(|slot| matches!(slot, InputSlot::Decomposed(_)))
+    {
+        return None;
+    }
+
+    let mut projected = Vec::new();
+    let mut cursor = 0;
+    let mut used_prefixes = HashSet::<String>::new();
+    for slot in slots {
+        match slot {
+            InputSlot::Scalar(input) => {
+                if let Some(actual) = actuals.get(cursor) {
+                    projected.push(actual.clone());
+                    cursor += 1;
+                } else if input.default.is_some() {
+                    continue;
+                } else {
+                    return None;
+                }
+            }
+            InputSlot::Decomposed(fields) => {
+                let (prefix, fields, consumed) = project_actuals_to_decomposed_input_slot(
+                    &actuals[cursor..],
+                    fields,
+                    &used_prefixes,
+                    flat_variable_names,
+                )?;
+                projected.extend(fields);
+                cursor += consumed;
+                used_prefixes.insert(prefix);
+            }
         }
-        Some(projected)
+    }
+
+    (projected.len() <= inputs.len()
+        && inputs[projected.len()..]
+            .iter()
+            .all(|input| input.default.is_some()))
+    .then_some(projected)
+}
+
+fn decomposed_input_slots(inputs: &[rumoca_core::FunctionParam]) -> Vec<InputSlot<'_>> {
+    let mut slots = Vec::new();
+    let mut idx = 0;
+    while idx < inputs.len() {
+        let Some((prefix, _)) = decomposed_input_prefix_and_leaf(&inputs[idx].name) else {
+            slots.push(InputSlot::Scalar(&inputs[idx]));
+            idx += 1;
+            continue;
+        };
+
+        let mut end = idx + 1;
+        while end < inputs.len()
+            && decomposed_input_prefix_and_leaf(&inputs[end].name)
+                .is_some_and(|(candidate, _)| candidate == prefix)
+        {
+            end += 1;
+        }
+
+        if end - idx > 1 {
+            slots.push(InputSlot::Decomposed(&inputs[idx..end]));
+        } else {
+            slots.push(InputSlot::Scalar(&inputs[idx]));
+        }
+        idx = end;
+    }
+    slots
+}
+
+fn decomposed_input_prefix_and_leaf(input_name: &str) -> Option<(&str, &str)> {
+    let (prefix, leaf) = input_name.rsplit_once('_')?;
+    (!prefix.is_empty() && !leaf.is_empty()).then_some((prefix, leaf))
+}
+
+fn project_actuals_to_decomposed_input_slot(
+    actuals: &[rumoca_core::Expression],
+    fields: &[rumoca_core::FunctionParam],
+    used_prefixes: &HashSet<String>,
+    flat_variable_names: &HashSet<String>,
+) -> Option<(String, Vec<rumoca_core::Expression>, usize)> {
+    if let Some(projected) =
+        project_scalar_base_plus_tail_decomposed_slot(actuals, fields, flat_variable_names)
+    {
+        return Some(projected);
+    }
+
+    let blocks = actual_field_blocks(actuals, fields);
+    if let Some(selected) = blocks
+        .iter()
+        .find(|block| !used_prefixes.contains(&block.prefix) && block_has_all_fields(block, fields))
+        .or_else(|| {
+            blocks
+                .iter()
+                .find(|block| block_has_all_fields(block, fields))
+        })
+    {
+        let mut projected = Vec::new();
+        for field in fields {
+            let expected_leaf = decomposed_input_field_leaf(&field.name);
+            let (_, actual) = selected
+                .fields
+                .iter()
+                .find(|(actual_leaf, _)| function_field_names_match(expected_leaf, actual_leaf))?;
+            projected.push((*actual).clone());
+        }
+        return Some((selected.prefix.clone(), projected, selected.end));
+    }
+
+    project_positional_scalar_decomposed_slot(actuals, fields)
+}
+
+fn project_scalar_base_plus_tail_decomposed_slot(
+    actuals: &[rumoca_core::Expression],
+    fields: &[rumoca_core::FunctionParam],
+    flat_variable_names: &HashSet<String>,
+) -> Option<(String, Vec<rumoca_core::Expression>, usize)> {
+    if fields.len() < 2 || actuals.len() < (fields.len() * 2) - 1 {
+        return None;
+    }
+
+    let first_base = scalar_var_field_block_base(actuals.get(..fields.len())?, fields)?;
+    if !flat_variable_names.contains(&first_base.0) {
+        return None;
+    }
+
+    let tail_len = fields.len() - 1;
+    let tail = actuals.get(fields.len()..fields.len() + tail_len)?;
+    let mut projected = Vec::with_capacity(fields.len());
+    projected.push(first_base.1);
+    projected.extend(tail.iter().cloned());
+    Some((first_base.0, projected, fields.len() + tail_len))
+}
+
+fn scalar_var_field_block_base(
+    field_actuals: &[rumoca_core::Expression],
+    fields: &[rumoca_core::FunctionParam],
+) -> Option<(String, rumoca_core::Expression)> {
+    let mut base_name = None::<String>;
+    let mut base_expr = None::<rumoca_core::Expression>;
+    for (actual, field) in field_actuals.iter().zip(fields) {
+        let expected_leaf = decomposed_input_field_leaf(&field.name);
+        let (name, base) = scalar_var_field_base(actual, expected_leaf)?;
+        if base_name
+            .as_deref()
+            .is_some_and(|existing| existing != name.as_str())
+        {
+            return None;
+        }
+        base_name.get_or_insert(name);
+        base_expr.get_or_insert(base);
+    }
+    Some((base_name?, base_expr?))
+}
+
+fn scalar_var_field_base(
+    actual: &rumoca_core::Expression,
+    expected_leaf: &str,
+) -> Option<(String, rumoca_core::Expression)> {
+    match actual {
+        rumoca_core::Expression::FieldAccess {
+            base,
+            field: actual_field,
+            ..
+        } => {
+            if !function_field_names_match(expected_leaf, actual_field) {
+                return None;
+            }
+            let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if !subscripts.is_empty() {
+                return None;
+            }
+            Some((name.as_str().to_string(), base.as_ref().clone()))
+        }
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => {
+            if !subscripts.is_empty() {
+                return None;
+            }
+            let prefix = name
+                .as_str()
+                .strip_suffix(&format!(".{expected_leaf}"))
+                .or_else(|| name.as_str().strip_suffix(&format!("_{expected_leaf}")))?;
+            if prefix.is_empty() {
+                return None;
+            }
+            Some((prefix.to_string(), flat_var_ref_expression(prefix, *span)))
+        }
+        _ => None,
+    }
+}
+
+fn flat_var_ref_expression(name: &str, span: rumoca_core::Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            name.to_string(),
+            rumoca_core::ComponentReference::from_flat_segments(name, span, None),
+        ),
+        subscripts: vec![],
+        span,
+    }
+}
+
+fn project_positional_scalar_decomposed_slot(
+    actuals: &[rumoca_core::Expression],
+    fields: &[rumoca_core::FunctionParam],
+) -> Option<(String, Vec<rumoca_core::Expression>, usize)> {
+    if actuals.len() <= fields.len() {
+        return None;
+    }
+    let field_actuals = actuals.get(..fields.len())?;
+    if field_actuals
+        .iter()
+        .any(|actual| actual_leaf_name(actual).is_some())
+    {
+        return None;
+    }
+    Some((
+        format!("__positional_decomposed_{}", fields[0].name),
+        field_actuals.to_vec(),
+        fields.len(),
+    ))
+}
+
+struct ActualFieldBlock<'a> {
+    prefix: String,
+    end: usize,
+    fields: Vec<(String, &'a rumoca_core::Expression)>,
+}
+
+fn actual_field_blocks<'a>(
+    actuals: &'a [rumoca_core::Expression],
+    fields: &[rumoca_core::FunctionParam],
+) -> Vec<ActualFieldBlock<'a>> {
+    let mut blocks = Vec::new();
+    let mut idx = 0;
+    while idx < actuals.len() {
+        let Some((prefix, leaf)) = actual_record_field(&actuals[idx], fields) else {
+            idx += 1;
+            continue;
+        };
+        let mut block = ActualFieldBlock {
+            prefix,
+            end: idx + 1,
+            fields: vec![(leaf, &actuals[idx])],
+        };
+        idx += 1;
+        while idx < actuals.len() {
+            let Some((candidate_prefix, candidate_leaf)) =
+                actual_record_field(&actuals[idx], fields)
+            else {
+                break;
+            };
+            if candidate_prefix != block.prefix {
+                break;
+            }
+            block.fields.push((candidate_leaf, &actuals[idx]));
+            block.end = idx + 1;
+            idx += 1;
+        }
+        blocks.push(block);
+    }
+    blocks
+}
+
+fn actual_record_field(
+    actual: &rumoca_core::Expression,
+    fields: &[rumoca_core::FunctionParam],
+) -> Option<(String, String)> {
+    if let Some(field) = flattened_var_ref_field(actual, fields) {
+        return Some(field);
+    }
+    let rumoca_core::Expression::FieldAccess {
+        base,
+        field: actual_field,
+        ..
+    } = actual
+    else {
+        return None;
+    };
+    let expected_leaf = fields.iter().find_map(|field| {
+        let leaf = decomposed_input_field_leaf(&field.name);
+        function_field_names_match(leaf, actual_field).then_some(leaf)
+    })?;
+    let prefix =
+        expression_summary_for_projection(base).unwrap_or_else(|| format!("{:?}", base.as_ref()));
+    Some((prefix, expected_leaf.to_string()))
+}
+
+fn flattened_var_ref_field(
+    actual: &rumoca_core::Expression,
+    fields: &[rumoca_core::FunctionParam],
+) -> Option<(String, String)> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = actual
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    for field in fields {
+        let expected_leaf = decomposed_input_field_leaf(&field.name);
+        if let Some(prefix) = name.as_str().strip_suffix(&format!(".{expected_leaf}"))
+            && !prefix.is_empty()
+        {
+            return Some((prefix.to_string(), expected_leaf.to_string()));
+        }
+        if let Some(prefix) = name.as_str().strip_suffix(&format!("_{expected_leaf}"))
+            && !prefix.is_empty()
+        {
+            return Some((prefix.to_string(), expected_leaf.to_string()));
+        }
+    }
+    None
+}
+
+fn block_has_all_fields(
+    block: &ActualFieldBlock<'_>,
+    fields: &[rumoca_core::FunctionParam],
+) -> bool {
+    fields.iter().all(|field| {
+        let expected_leaf = decomposed_input_field_leaf(&field.name);
+        block
+            .fields
+            .iter()
+            .any(|(actual_leaf, _)| function_field_names_match(expected_leaf, actual_leaf))
     })
+}
+
+fn decomposed_input_field_leaf(input_name: &str) -> &str {
+    input_name
+        .rsplit_once('_')
+        .map(|(_, leaf)| leaf)
+        .unwrap_or(input_name)
 }
 
 fn is_named_function_arg_marker(arg: &rumoca_core::Expression) -> bool {
@@ -2081,6 +2466,21 @@ mod tests {
         }
     }
 
+    fn int_lit(value: i64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn field_access(base: rumoca_core::Expression, field: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field: field.to_string(),
+            span: test_span(),
+        }
+    }
+
     fn assignment_to(name: &str, value: rumoca_core::Expression) -> rumoca_core::Statement {
         rumoca_core::Statement::Assignment {
             comp: rumoca_core::ComponentReference {
@@ -2331,6 +2731,325 @@ mod tests {
         assert!(matches!(
             &args[1],
             rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec_b"
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_projects_mixed_scalar_and_decomposed_slots() {
+        let mut flat = flat::Model::new();
+
+        let mut function = rumoca_core::Function::new("Pkg.setSmoothState", Span::DUMMY);
+        for input in [
+            "x",
+            "state_a_p",
+            "state_a_T",
+            "state_a_X",
+            "state_b_p",
+            "state_b_T",
+            "state_b_X",
+            "x_small",
+        ] {
+            function.add_input(rumoca_core::FunctionParam::new(input, "Real", test_span()));
+        }
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        function.body.push(assignment_to("y", var_ref("x")));
+        let inputs = function.inputs.clone();
+        flat.add_function(function);
+
+        let call_args = vec![
+            var_ref("m_flow_ext"),
+            var_ref("state1.p"),
+            var_ref("state1.T"),
+            var_ref("state1.X"),
+            var_ref("state1.T"),
+            var_ref("state1.X"),
+            var_ref("state1.p"),
+            var_ref("state1.T"),
+            var_ref("state1.X"),
+            var_ref("state1.X"),
+            var_ref("state2.p"),
+            var_ref("state2.T"),
+            var_ref("state2.X"),
+            var_ref("state2.T"),
+            var_ref("state2.X"),
+            var_ref("x_small_actual"),
+        ];
+        assert_eq!(
+            project_actuals_to_input_slots(&call_args, &inputs)
+                .expect("overexpanded actuals should project")
+                .len(),
+            8
+        );
+
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.setSmoothState"),
+                args: call_args,
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        let arg_names = args
+            .iter()
+            .map(|arg| match arg {
+                rumoca_core::Expression::VarRef { name, .. } => name.as_str(),
+                _ => panic!("expected var ref"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arg_names,
+            vec![
+                "m_flow_ext",
+                "state1.p",
+                "state1.T",
+                "state1.X",
+                "state2.p",
+                "state2.T",
+                "state2.X",
+                "x_small_actual"
+            ]
+        );
+    }
+
+    #[test]
+    fn record_param_lowering_projects_field_access_decomposed_slot_with_scalar_tail() {
+        let mut flat = flat::Model::new();
+
+        let mut function = rumoca_core::Function::new("Pkg.brushVoltageDrop", Span::DUMMY);
+        for input in ["brushParameters_V", "brushParameters_ILinear", "i"] {
+            function.add_input(rumoca_core::FunctionParam::new(input, "Real", test_span()));
+        }
+        function.add_output(rumoca_core::FunctionParam::new("v", "Real", test_span()));
+        function.body.push(assignment_to("v", var_ref("i")));
+        let inputs = function.inputs.clone();
+        flat.add_function(function);
+
+        let call_args = vec![
+            field_access(int_lit(0), "V"),
+            field_access(int_lit(0), "ILinear"),
+            var_ref("computed_current"),
+            var_ref("dcpm.IaNominal"),
+        ];
+        assert_eq!(
+            project_actuals_to_input_slots(&call_args, &inputs)
+                .expect("overexpanded field-access actuals should project")
+                .len(),
+            3
+        );
+
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.brushVoltageDrop"),
+                args: call_args,
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 3);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::FieldAccess { field, .. } if field == "V"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::FieldAccess { field, .. } if field == "ILinear"
+        ));
+        assert!(matches!(
+            &args[2],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "computed_current"
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_projects_positional_scalar_decomposed_slot() {
+        let mut flat = flat::Model::new();
+
+        let mut function = rumoca_core::Function::new("Pkg.abs", Span::DUMMY);
+        for input in ["c_re", "c_im"] {
+            function.add_input(rumoca_core::FunctionParam::new(input, "Real", test_span()));
+        }
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        function.body.push(assignment_to("y", var_ref("c_re")));
+        let inputs = function.inputs.clone();
+        flat.add_function(function);
+
+        let call_args = vec![
+            int_lit(1),
+            int_lit(0),
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Complex"),
+                args: vec![int_lit(1), int_lit(0)],
+                is_constructor: true,
+                span: Span::DUMMY,
+            },
+        ];
+        assert_eq!(
+            project_actuals_to_input_slots(&call_args, &inputs)
+                .expect("overexpanded scalar actuals should project")
+                .len(),
+            2
+        );
+
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.abs"),
+                args: call_args,
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_projects_scalar_constructor_fields_without_fake_members() {
+        let mut flat = flat::Model::new();
+        flat.variables.insert(
+            VarName::new("P"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+        flat.variables.insert(
+            VarName::new("Q"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+
+        let mut function = rumoca_core::Function::new("Pkg.arg", Span::DUMMY);
+        for input in ["c_re", "c_im"] {
+            function.add_input(rumoca_core::FunctionParam::new(input, "Real", test_span()));
+        }
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        function.body.push(assignment_to("y", var_ref("c_re")));
+        flat.add_function(function);
+
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.arg"),
+                args: vec![
+                    field_access(var_ref("P"), "re"),
+                    field_access(var_ref("P"), "im"),
+                    var_ref("Q"),
+                ],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "P"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "Q"
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_projects_flattened_scalar_constructor_fields_with_default_tail() {
+        let mut flat = flat::Model::new();
+        flat.variables.insert(
+            VarName::new("voltageSource.P"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+        flat.variables.insert(
+            VarName::new("voltageSource.Q"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+
+        let mut function = rumoca_core::Function::new("Modelica.ComplexMath.arg", Span::DUMMY);
+        function.add_input(rumoca_core::FunctionParam::new("c_re", "Real", test_span()));
+        function.add_input(rumoca_core::FunctionParam::new("c_im", "Real", test_span()));
+        function.add_input(
+            rumoca_core::FunctionParam::new("phi0", "Real", test_span()).with_default(int_lit(0)),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("phi", "Real", test_span()));
+        function.body.push(assignment_to("phi", var_ref("c_re")));
+        flat.add_function(function);
+
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Modelica.ComplexMath.arg"),
+                args: vec![
+                    var_ref("voltageSource.P.re"),
+                    var_ref("voltageSource.P.im"),
+                    var_ref("voltageSource.Q"),
+                ],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "voltageSource.P"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "voltageSource.Q"
         ));
     }
 

@@ -499,11 +499,45 @@ pub(crate) fn infer_equation_scalar_count(
     let form_size = infer_equation_scalar_count_from_forms(residual, flat, prefix_counts);
     let varref_size = infer_scalar_count_from_varrefs(residual, flat, prefix_counts);
     match (form_size, varref_size) {
+        (Some(1), Some(varref))
+            if varref > 1 && has_top_level_record_constructor(residual, flat) =>
+        {
+            varref
+        }
         (Some(a), Some(b)) => a.min(b),
         (Some(a), None) => a,
         (None, Some(b)) => b,
         (None, None) => 1,
     }
+}
+
+fn has_top_level_record_constructor(residual: &Expression, flat: &Model) -> bool {
+    let Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = residual
+    else {
+        return false;
+    };
+    expression_is_record_constructor(lhs, flat) || expression_is_record_constructor(rhs, flat)
+}
+
+fn expression_is_record_constructor(expr: &Expression, flat: &Model) -> bool {
+    let Expression::FunctionCall {
+        name,
+        is_constructor,
+        ..
+    } = expr
+    else {
+        return false;
+    };
+    *is_constructor
+        || flat
+            .functions
+            .get(name.var_name())
+            .is_some_and(|function| function.is_constructor && function.inputs.len() > 1)
 }
 
 /// Infer scalar count by finding VarRefs in an expression and checking for record expansion.

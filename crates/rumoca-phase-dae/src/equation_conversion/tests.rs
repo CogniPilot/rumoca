@@ -44,6 +44,19 @@ fn call(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn binary(
+    op: rumoca_core::OpBinary,
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: fixture_span(),
+    }
+}
+
 #[test]
 fn identity_equation_detects_same_variable_residual() {
     let eq = flat::Equation {
@@ -226,6 +239,18 @@ fn add_converter_symmetrical_component_fields(flat_model: &mut flat::Model) {
         ),
     ] {
         let var = primitive_variable_with_parts(name, parts, def_id);
+        flat_model.variables.insert(var.name.clone(), var);
+    }
+}
+
+fn add_complex_scalar_fields(flat_model: &mut flat::Model, base: &str) {
+    for (field, def_id) in [
+        ("re", rumoca_core::DefId::new(201)),
+        ("im", rumoca_core::DefId::new(202)),
+    ] {
+        let name = format!("{base}.{field}");
+        let var =
+            primitive_variable_with_parts(&name, vec![(base, vec![]), (field, vec![])], def_id);
         flat_model.variables.insert(var.name.clone(), var);
     }
 }
@@ -472,6 +497,91 @@ fn test_record_field_equation_expands_parameter_array_selected_lhs() {
     assert_eq!(expanded.len(), 2);
     assert!(format!("{:?}", expanded[0].residual).contains("iSymmetricalComponent[2].re"));
     assert!(format!("{:?}", expanded[1].residual).contains("iSymmetricalComponent[2].im"));
+}
+
+#[test]
+fn test_record_field_equation_projects_complex_expression_fields() {
+    let mut flat_model = flat::Model::new();
+    add_complex_constructor(&mut flat_model);
+    add_complex_scalar_fields(&mut flat_model, "out");
+    add_complex_scalar_fields(&mut flat_model, "u");
+    flat_model.variables.insert(
+        rumoca_core::VarName::new("scale"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("scale"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(fixture_span())
+        },
+    );
+
+    let complex_bias = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("Complex").into(),
+        args: vec![integer_literal(1), integer_literal(2)],
+        is_constructor: true,
+        span: fixture_span(),
+    };
+    let rhs = binary(
+        rumoca_core::OpBinary::Add,
+        binary(rumoca_core::OpBinary::Mul, var_ref("scale"), var_ref("u")),
+        complex_bias,
+    );
+    let equation = flat::Equation::new(
+        residual(var_ref_with_parts("out", vec![("out", vec![])]), rhs),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "out".to_string(),
+        },
+    );
+
+    let expanded = expand_record_field_equation(&equation, &flat_model)
+        .unwrap()
+        .expect("complex record equation should expand into real and imaginary fields");
+
+    assert_eq!(expanded.len(), 2);
+    let re_residual = format!("{:?}", expanded[0].residual);
+    let im_residual = format!("{:?}", expanded[1].residual);
+    assert!(re_residual.contains("out.re"));
+    assert!(re_residual.contains("u.re"));
+    assert!(!re_residual.contains("FieldAccess"));
+    assert!(im_residual.contains("out.im"));
+    assert!(im_residual.contains("u.im"));
+    assert!(!im_residual.contains("FieldAccess"));
+}
+
+#[test]
+fn test_record_field_equation_projects_complex_division_fields() {
+    let mut flat_model = flat::Model::new();
+    add_complex_constructor(&mut flat_model);
+    for base in ["out", "u", "v"] {
+        add_complex_scalar_fields(&mut flat_model, base);
+    }
+
+    let equation = flat::Equation::new(
+        residual(
+            var_ref_with_parts("out", vec![("out", vec![])]),
+            binary(rumoca_core::OpBinary::Div, var_ref("u"), var_ref("v")),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "out".to_string(),
+        },
+    );
+
+    let expanded = expand_record_field_equation(&equation, &flat_model)
+        .unwrap()
+        .expect("complex division equation should expand into real and imaginary fields");
+
+    assert_eq!(expanded.len(), 2);
+    let re_residual = format!("{:?}", expanded[0].residual);
+    let im_residual = format!("{:?}", expanded[1].residual);
+    assert!(re_residual.contains("u.re"));
+    assert!(re_residual.contains("v.re"));
+    assert!(re_residual.contains("v.im"));
+    assert!(!re_residual.contains("FieldAccess"));
+    assert!(im_residual.contains("u.im"));
+    assert!(im_residual.contains("v.re"));
+    assert!(im_residual.contains("v.im"));
+    assert!(!im_residual.contains("FieldAccess"));
 }
 
 #[test]

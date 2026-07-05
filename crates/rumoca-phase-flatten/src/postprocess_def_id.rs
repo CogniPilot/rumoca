@@ -142,9 +142,21 @@ impl DefIdVarRefIndex {
                 }
             }
         }
+        let known_variable_names = flat
+            .variables
+            .keys()
+            .map(|name| name.as_str().to_string())
+            .collect::<HashSet<_>>();
         let aggregate_projection_refs = aggregate_projection_counts
             .into_iter()
-            .filter_map(|(projection, count)| (count > 1).then_some(projection))
+            .filter_map(|(projection, count)| {
+                (count > 1
+                    && aggregate_projection_needs_alias_protection(
+                        &projection,
+                        &known_variable_names,
+                    ))
+                .then_some(projection)
+            })
             .collect();
         Self {
             by_def_id,
@@ -251,6 +263,33 @@ pub(super) fn aggregate_projection_ref(name: &str) -> Option<String> {
 
     (depth == 0 && indices == 1 && !projection.is_empty() && projection != name)
         .then_some(projection)
+}
+
+pub(super) fn aggregate_projection_needs_alias_protection(
+    projection: &str,
+    known_variables: &HashSet<String>,
+) -> bool {
+    penultimate_field_collapse_path(projection)
+        .is_some_and(|alias| known_variables.contains(alias.as_str()))
+}
+
+fn penultimate_field_collapse_path(path: &str) -> Option<String> {
+    let (prefix, leaf) = rendered_path_last_segment(path)?;
+    let (base, _) = rendered_path_last_segment(prefix)?;
+    Some(format!("{base}.{leaf}"))
+}
+
+fn rendered_path_last_segment(path: &str) -> Option<(&str, &str)> {
+    let mut bracket_depth = 0usize;
+    for (idx, byte) in path.bytes().enumerate().rev() {
+        match byte {
+            b']' => bracket_depth += 1,
+            b'[' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => return Some((&path[..idx], &path[idx + 1..])),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn push_indexed_candidate(
@@ -576,5 +615,30 @@ mod tests {
             panic!("expected aggregate var ref to remain a var ref");
         };
         assert_eq!(name.as_str(), "vehicle.motor.omega");
+    }
+
+    #[test]
+    fn aggregate_projection_protection_requires_existing_penultimate_alias() {
+        let known_without_alias = HashSet::from([
+            "rootMeanSquareVoltage.product.u[1]".to_string(),
+            "rootMeanSquareVoltage.product.u[2]".to_string(),
+        ]);
+        assert!(
+            !aggregate_projection_needs_alias_protection(
+                "rootMeanSquareVoltage.product.u",
+                &known_without_alias,
+            ),
+            "ordinary array member projections must not suppress scalar/index collapse"
+        );
+
+        let known_with_alias = HashSet::from([
+            "vehicle.omega".to_string(),
+            "vehicle.motor[1].omega".to_string(),
+            "vehicle.motor[2].omega".to_string(),
+        ]);
+        assert!(
+            aggregate_projection_needs_alias_protection("vehicle.motor.omega", &known_with_alias,),
+            "array-member field projection must be protected when penultimate collapse would target a sibling leaf"
+        );
     }
 }

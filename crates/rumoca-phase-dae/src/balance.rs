@@ -63,6 +63,7 @@ pub struct InitialClosureBalanceDetail {
     pub scalar_unknowns: usize,
     pub deficit_before: i64,
     pub overconstrained_root_gauge_scalars: i64,
+    pub overconstrained_break_edge_scalars: i64,
     pub initial_equation_scalars: i64,
     pub initial_algorithm_scalars: i64,
     pub closure_used: i64,
@@ -245,15 +246,19 @@ fn initial_closure_balance_detail_from_counts(
     let initial_algorithm_scalars = 0;
     let overconstrained_root_gauge_scalars =
         dae_model.metadata.overconstrained_root_gauge_count as i64;
-    let closure_used =
-        (initial_equation_scalars + initial_algorithm_scalars + overconstrained_root_gauge_scalars)
-            .min(deficit_before);
+    let overconstrained_break_edge_scalars = dae_model.metadata.oc_break_edge_scalar_count as i64;
+    let closure_used = (initial_equation_scalars
+        + initial_algorithm_scalars
+        + overconstrained_root_gauge_scalars
+        + overconstrained_break_edge_scalars)
+        .min(deficit_before);
     let deficit_after = deficit_before - closure_used;
     InitialClosureBalanceDetail {
         scalar_equations: scalar_equations as usize,
         scalar_unknowns: scalar_unknowns as usize,
         deficit_before,
         overconstrained_root_gauge_scalars,
+        overconstrained_break_edge_scalars,
         initial_equation_scalars,
         initial_algorithm_scalars,
         closure_used,
@@ -1581,6 +1586,23 @@ mod tests {
         assert_eq!(detail.deficit_after, 1);
         assert!(!detail.is_admissible());
         assert!(!is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
+    }
+
+    #[test]
+    fn admission_uses_overconstrained_break_edges_as_deficit_closure() {
+        let mut dae = dae_with_unknown_scalars(4);
+        dae.continuous.equations.push(scalar_eq(2));
+        dae.metadata.oc_break_edge_scalar_count = 2;
+
+        let detail =
+            initial_closure_balance_detail(&dae).expect("valid DAE initial balance fixture");
+
+        assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -2);
+        assert_eq!(detail.deficit_before, 2);
+        assert_eq!(detail.overconstrained_break_edge_scalars, 2);
+        assert_eq!(detail.closure_used, 2);
+        assert_eq!(detail.deficit_after, 0);
+        assert!(is_balanced_for_admission(&dae).expect("valid DAE balance fixture"));
     }
 
     #[test]

@@ -16,15 +16,15 @@ pub(crate) fn flat_function_output_dims(func: &rumoca_core::Function) -> Option<
 
 /// Compute total scalar size of a function's outputs.
 pub(crate) fn flat_function_output_scalar_size(func: &rumoca_core::Function) -> usize {
+    if func.is_constructor && !func.inputs.is_empty() {
+        return func
+            .inputs
+            .iter()
+            .map(|input| compute_var_size(&input.dims).max(1))
+            .sum::<usize>()
+            .max(1);
+    }
     if func.outputs.is_empty() {
-        if func.is_constructor && !func.inputs.is_empty() {
-            return func
-                .inputs
-                .iter()
-                .map(|input| compute_var_size(&input.dims).max(1))
-                .sum::<usize>()
-                .max(1);
-        }
         return 1;
     }
     func.outputs
@@ -1198,6 +1198,71 @@ mod tests {
                     },
                 ],
                 is_constructor: true,
+                span: test_span(),
+            }),
+            span: test_span(),
+        };
+
+        let prefix_counts = build_prefix_counts(&flat);
+        assert_eq!(
+            infer_equation_scalar_count(&residual, &flat, &prefix_counts),
+            2
+        );
+    }
+
+    #[test]
+    fn record_constructor_residual_uses_scalarized_unknown_width() {
+        let mut flat = Model::new();
+        let mut complex = rumoca_core::Function::new("Complex", test_span());
+        complex.is_constructor = true;
+        complex.add_input(rumoca_core::FunctionParam::new("re", "Real", test_span()));
+        complex.add_input(rumoca_core::FunctionParam::new("im", "Real", test_span()));
+        complex.add_output(rumoca_core::FunctionParam::new(
+            "result",
+            "Complex",
+            test_span(),
+        ));
+        flat.add_function(complex);
+        for name in ["currentSensor.i.re", "currentSensor.i.im"] {
+            flat.add_variable(
+                VarName::new(name),
+                flat::Variable {
+                    name: VarName::new(name),
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        let residual = Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(Expression::FunctionCall {
+                name: VarName::new("Complex").into(),
+                args: vec![
+                    Expression::Literal {
+                        value: Literal::Integer(0),
+                        span: test_span(),
+                    },
+                    Expression::Literal {
+                        value: Literal::Integer(0),
+                        span: test_span(),
+                    },
+                ],
+                is_constructor: true,
+                span: test_span(),
+            }),
+            rhs: Box::new(Expression::Binary {
+                op: rumoca_core::OpBinary::Add,
+                lhs: Box::new(Expression::VarRef {
+                    name: VarName::new("currentSensor.i").into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }),
+                rhs: Box::new(Expression::VarRef {
+                    name: VarName::new("currentSensor.i").into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }),
                 span: test_span(),
             }),
             span: test_span(),

@@ -756,11 +756,250 @@ fn rhs_field_expression(
         return arg;
     }
 
+    if let Some(projected) =
+        project_complex_field_expression(rhs, field.name(), flat, equation_span)
+    {
+        return projected;
+    }
+
     let span = match rhs.span() {
         Some(span) => span,
         None => equation_span,
     };
     field.field_access(rhs.clone(), span)
+}
+
+fn project_complex_field_expression(
+    expr: &rumoca_core::Expression,
+    field: &str,
+    flat: &flat::Model,
+    context_span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
+    let (re, im) = complex_parts(expr, flat, context_span)?;
+    match field {
+        "re" => Some(re),
+        "im" => Some(im),
+        _ => None,
+    }
+}
+
+fn complex_parts(
+    expr: &rumoca_core::Expression,
+    flat: &flat::Model,
+    context_span: rumoca_core::Span,
+) -> Option<(rumoca_core::Expression, rumoca_core::Expression)> {
+    match expr {
+        rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } => {
+            if !flat
+                .functions
+                .get(name.var_name())
+                .is_some_and(|function| *is_constructor || function.is_constructor)
+            {
+                return None;
+            }
+            let fields = record_field_specs_for_call(name, *is_constructor, flat)?;
+            let re = constructor_arg_by_field_name(args, &fields, "re")
+                .unwrap_or_else(|| zero_literal(expr_or_context_span(expr, context_span)));
+            let im = constructor_arg_by_field_name(args, &fields, "im")
+                .unwrap_or_else(|| zero_literal(expr_or_context_span(expr, context_span)));
+            Some((re, im))
+        }
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } if subscripts.is_empty() => {
+            if let Some(parts) = aggregate_var_complex_parts(name.var_name(), flat, *span) {
+                return Some(parts);
+            }
+            flat.variables.get(name.var_name()).and_then(|variable| {
+                (variable.is_primitive && super::compute_var_size(&variable.dims) == 1)
+                    .then(|| (expr.clone(), zero_literal(*span)))
+            })
+        }
+        rumoca_core::Expression::Literal { span, .. } => Some((expr.clone(), zero_literal(*span))),
+        rumoca_core::Expression::Unary { op, rhs, span } => {
+            let (re, im) = complex_parts(rhs, flat, *span)?;
+            match op {
+                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some((re, im)),
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
+                    Some((unary_minus(re, *span), unary_minus(im, *span)))
+                }
+                _ => None,
+            }
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+            let (lhs_re, lhs_im) = complex_parts(lhs, flat, *span)?;
+            let (rhs_re, rhs_im) = complex_parts(rhs, flat, *span)?;
+            match op {
+                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some((
+                    binary_expr(op.clone(), lhs_re, rhs_re, *span),
+                    binary_expr(op.clone(), lhs_im, rhs_im, *span),
+                )),
+                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some((
+                    binary_expr(op.clone(), lhs_re, rhs_re, *span),
+                    binary_expr(op.clone(), lhs_im, rhs_im, *span),
+                )),
+                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => {
+                    let re = binary_expr(
+                        rumoca_core::OpBinary::Sub,
+                        binary_expr(
+                            rumoca_core::OpBinary::Mul,
+                            lhs_re.clone(),
+                            rhs_re.clone(),
+                            *span,
+                        ),
+                        binary_expr(
+                            rumoca_core::OpBinary::Mul,
+                            lhs_im.clone(),
+                            rhs_im.clone(),
+                            *span,
+                        ),
+                        *span,
+                    );
+                    let im = binary_expr(
+                        rumoca_core::OpBinary::Add,
+                        binary_expr(rumoca_core::OpBinary::Mul, lhs_re, rhs_im, *span),
+                        binary_expr(rumoca_core::OpBinary::Mul, lhs_im, rhs_re, *span),
+                        *span,
+                    );
+                    Some((re, im))
+                }
+                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
+                    let denominator = binary_expr(
+                        rumoca_core::OpBinary::Add,
+                        binary_expr(
+                            rumoca_core::OpBinary::Mul,
+                            rhs_re.clone(),
+                            rhs_re.clone(),
+                            *span,
+                        ),
+                        binary_expr(
+                            rumoca_core::OpBinary::Mul,
+                            rhs_im.clone(),
+                            rhs_im.clone(),
+                            *span,
+                        ),
+                        *span,
+                    );
+                    let re = binary_expr(
+                        rumoca_core::OpBinary::Div,
+                        binary_expr(
+                            rumoca_core::OpBinary::Add,
+                            binary_expr(
+                                rumoca_core::OpBinary::Mul,
+                                lhs_re.clone(),
+                                rhs_re.clone(),
+                                *span,
+                            ),
+                            binary_expr(
+                                rumoca_core::OpBinary::Mul,
+                                lhs_im.clone(),
+                                rhs_im.clone(),
+                                *span,
+                            ),
+                            *span,
+                        ),
+                        denominator.clone(),
+                        *span,
+                    );
+                    let im = binary_expr(
+                        rumoca_core::OpBinary::Div,
+                        binary_expr(
+                            rumoca_core::OpBinary::Sub,
+                            binary_expr(rumoca_core::OpBinary::Mul, lhs_im, rhs_re, *span),
+                            binary_expr(rumoca_core::OpBinary::Mul, lhs_re, rhs_im, *span),
+                            *span,
+                        ),
+                        denominator,
+                        *span,
+                    );
+                    Some((re, im))
+                }
+                _ => None,
+            }
+        }
+        rumoca_core::Expression::FieldAccess { span, .. } => {
+            Some((expr.clone(), zero_literal(*span)))
+        }
+        _ => None,
+    }
+}
+
+fn constructor_arg_by_field_name(
+    args: &[rumoca_core::Expression],
+    fields: &[RecordFieldSpec],
+    name: &str,
+) -> Option<rumoca_core::Expression> {
+    fields
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.name() == name)
+        .and_then(|(index, field)| constructor_field_arg(args, field, index))
+}
+
+fn aggregate_var_complex_parts(
+    name: &rumoca_core::VarName,
+    flat: &flat::Model,
+    span: rumoca_core::Span,
+) -> Option<(rumoca_core::Expression, rumoca_core::Expression)> {
+    let re_name = rumoca_core::VarName::new(format!("{}.re", name.as_str()));
+    let im_name = rumoca_core::VarName::new(format!("{}.im", name.as_str()));
+    let re_var = flat.variables.get(&re_name)?;
+    let im_var = flat.variables.get(&im_name)?;
+    Some((
+        rumoca_core::Expression::VarRef {
+            name: reference_for_variable(re_var),
+            subscripts: Vec::new(),
+            span,
+        },
+        rumoca_core::Expression::VarRef {
+            name: reference_for_variable(im_var),
+            subscripts: Vec::new(),
+            span,
+        },
+    ))
+}
+
+fn expr_or_context_span(
+    expr: &rumoca_core::Expression,
+    context_span: rumoca_core::Span,
+) -> rumoca_core::Span {
+    expr.span().unwrap_or(context_span)
+}
+
+fn zero_literal(span: rumoca_core::Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Real(0.0),
+        span,
+    }
+}
+
+fn unary_minus(expr: rumoca_core::Expression, span: rumoca_core::Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::Unary {
+        op: rumoca_core::OpUnary::Minus,
+        rhs: Box::new(expr),
+        span,
+    }
+}
+
+fn binary_expr(
+    op: rumoca_core::OpBinary,
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    }
 }
 
 fn reference_for_variable(field_var: &flat::Variable) -> rumoca_core::Reference {

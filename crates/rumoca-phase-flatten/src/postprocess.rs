@@ -2,7 +2,7 @@
 // substitution, annotations, and scoped parameter preservation. split plan:
 // move annotation substitution and scoped parameter rewrites into submodules.
 use super::*;
-use def_id::aggregate_projection_ref;
+use def_id::{aggregate_projection_needs_alias_protection, aggregate_projection_ref};
 use rumoca_core::{
     ExpressionRewriter, FallibleExpressionRewriter, FallibleStatementRewriter, StatementRewriter,
 };
@@ -552,9 +552,21 @@ impl KnownFlatVars {
                 (name.as_str().to_string(), var.component_ref.clone())
             })
             .collect();
+        let known_variable_names = flat
+            .variables
+            .keys()
+            .map(|name| name.as_str().to_string())
+            .collect::<HashSet<_>>();
         let aggregate_projection_refs = aggregate_projection_counts
             .into_iter()
-            .filter_map(|(projection, count)| (count > 1).then_some(projection))
+            .filter_map(|(projection, count)| {
+                (count > 1
+                    && aggregate_projection_needs_alias_protection(
+                        &projection,
+                        &known_variable_names,
+                    ))
+                .then_some(projection)
+            })
             .collect();
         Self {
             names,
