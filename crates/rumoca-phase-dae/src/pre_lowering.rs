@@ -422,6 +422,20 @@ fn resolve_pre_targets(
             target.source_name = target_name.clone();
             continue;
         }
+        if let Some((source_name, partition)) =
+            repeated_indexed_component_pre_target(dae, target_name)
+        {
+            if target.require_discrete {
+                validate_pre_target_partition(
+                    partition,
+                    &source_name,
+                    target.span,
+                    target.allow_continuous_target,
+                )?;
+            }
+            target.source_name = source_name;
+            continue;
+        }
         let index = scalarized_index.get_or_insert_with(|| build_scalarized_field_index(dae));
         if let Some(source_name) =
             singleton_scalarized_field_name(index, target_name, target.require_discrete)
@@ -438,6 +452,21 @@ fn resolve_pre_targets(
         ));
     }
     Ok(())
+}
+
+fn repeated_indexed_component_pre_target(
+    dae: &dae::Dae,
+    target_name: &rumoca_core::VarName,
+) -> Option<(rumoca_core::VarName, dae::DaeVariablePartition)> {
+    for candidate in
+        crate::path_utils::repeated_indexed_component_path_candidates(target_name.as_str())
+    {
+        let candidate = rumoca_core::VarName::new(candidate);
+        if let Some((partition, _)) = find_variable_partition(dae, &candidate) {
+            return Some((candidate, partition));
+        }
+    }
+    None
 }
 
 type ScalarizedFieldIndex =

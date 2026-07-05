@@ -35,6 +35,43 @@ pub(crate) fn resolve_known_path_suffix(
         .find(|candidate| known_names.contains(candidate))
 }
 
+pub(crate) fn repeated_indexed_component_path_candidates(path: &str) -> Vec<String> {
+    let parts = split_top_level_path_parts(path);
+    let mut candidates = Vec::new();
+    for index in 0..parts.len() {
+        let Some(bracket) = parts[index].find('[') else {
+            continue;
+        };
+        let repeated = &parts[index][..bracket];
+        if repeated.is_empty() {
+            continue;
+        }
+        let mut candidate = parts.clone();
+        candidate.insert(index, repeated.to_string());
+        candidates.push(candidate.join("."));
+    }
+    candidates
+}
+
+fn split_top_level_path_parts(path: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, ch) in path.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            '.' if depth == 0 => {
+                parts.push(path[start..index].to_string());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(path[start..].to_string());
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +170,18 @@ mod tests {
         assert_eq!(
             resolve_known_path_suffix("aimc.aimcData.statorCoreParameters.wRef", &known).as_deref(),
             Some("aimcData.statorCoreParameters.wRef")
+        );
+    }
+
+    #[test]
+    fn test_repeated_indexed_component_path_candidates_insert_repeated_segment() {
+        assert_eq!(
+            repeated_indexed_component_path_candidates("triac[1].thyristor1.off"),
+            vec!["triac.triac[1].thyristor1.off"]
+        );
+        assert_eq!(
+            repeated_indexed_component_path_candidates("imc.stator.resistor[1].v"),
+            vec!["imc.stator.resistor.resistor[1].v"]
         );
     }
 }

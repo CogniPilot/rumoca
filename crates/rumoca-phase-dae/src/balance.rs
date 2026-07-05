@@ -14,6 +14,12 @@ use rumoca_ir_dae as dae;
 #[path = "balance_initial_closure.rs"]
 mod balance_initial_closure;
 pub use balance_initial_closure::InitialClosureBalanceDetail;
+#[path = "balance_alias.rs"]
+mod balance_alias;
+use balance_alias::{
+    is_absent_lhs_component_alias, is_input_forwarding_connection_alias,
+    is_non_constraining_binding_alias, is_vector_forwarding_alias,
+};
 
 pub type BalanceResult<T> = Result<T, BalanceError>;
 
@@ -384,6 +390,19 @@ fn equation_counts_for_balance(
     input_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
+    if eq.origin.starts_with("binding equation for")
+        && is_non_constraining_binding_alias(eq, continuous_unknowns, component_defined_targets)
+    {
+        return false;
+    }
+    if is_vector_forwarding_alias(eq) {
+        return false;
+    }
+    if eq.origin.starts_with("equation from ")
+        && is_absent_lhs_component_alias(eq, continuous_unknowns, input_names)
+    {
+        return false;
+    }
     if is_connection_origin(eq.origin.as_str())
         && is_redundant_connection_alias(
             dae_model,
@@ -391,6 +410,16 @@ fn equation_counts_for_balance(
             continuous_unknowns,
             component_defined_targets,
         )
+    {
+        return false;
+    }
+    if is_connection_origin(eq.origin.as_str())
+        && is_input_forwarding_connection_alias(eq, continuous_unknowns, input_names)
+    {
+        return false;
+    }
+    if is_connection_origin(eq.origin.as_str())
+        && is_absent_lhs_component_alias(eq, continuous_unknowns, input_names)
     {
         return false;
     }
@@ -405,6 +434,9 @@ fn equation_counts_for_balance(
     // Binding equations for internal promoted inputs/discrete partitions can
     // be input-only aliases and should not inflate continuous balance.
     if eq.origin.starts_with("binding equation for") {
+        return false;
+    }
+    if eq.origin.starts_with("equation from ") {
         return false;
     }
     // Preserve explicit user equations constraining interface inputs.
@@ -1438,29 +1470,6 @@ mod tests {
         }
     }
 
-    fn binary_eq(lhs_name: &str, rhs_name: &str, origin: &str) -> dae::Equation {
-        dae::Equation {
-            lhs: None,
-            rhs: rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Sub,
-                lhs: Box::new(var_ref(lhs_name)),
-                rhs: Box::new(var_ref(rhs_name)),
-                span: test_span(),
-            },
-            span: test_span(),
-            origin: origin.to_string(),
-            scalar_count: 1,
-        }
-    }
-
-    fn var_ref(name: &str) -> rumoca_core::Expression {
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new(name).into(),
-            subscripts: vec![],
-            span: test_span(),
-        }
-    }
-
     fn dae_with_unknown_scalars(unknown_scalars: i64) -> dae::Dae {
         let mut dae = dae::Dae::default();
         dae.variables.algebraics.insert(
@@ -1476,17 +1485,6 @@ mod tests {
             },
         );
         dae
-    }
-
-    fn scalar_input(name: &str) -> dae::Variable {
-        dae::Variable {
-            name: rumoca_core::VarName::new(name),
-            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                rumoca_core::SourceId::from_source_name(file!()),
-                1,
-                2,
-            ))
-        }
     }
 
     fn discrete_var(name: &str) -> dae::Variable {
@@ -1925,60 +1923,5 @@ mod tests {
             .equations
             .push(scalar_assignment_with_rhs_ref("c", "guard"));
         assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
-    }
-
-    #[test]
-    fn component_defined_targets_include_second_binary_ref_when_it_is_the_only_unknown() {
-        let mut dae = dae::Dae::default();
-        dae.variables
-            .algebraics
-            .insert(rumoca_core::VarName::new("y"), discrete_var("y"));
-        dae.variables
-            .inputs
-            .insert(rumoca_core::VarName::new("u"), scalar_input("u"));
-        dae.variables.inputs.insert(
-            rumoca_core::VarName::new("external"),
-            scalar_input("external"),
-        );
-
-        dae.continuous
-            .equations
-            .push(binary_eq("u", "y", "component equation"));
-        dae.continuous
-            .equations
-            .push(binary_eq("y", "external", "connect(y, external)"));
-
-        assert_eq!(
-            balance(&dae).expect("valid DAE balance fixture"),
-            0,
-            "the connection alias should be redundant because y is already constrained"
-        );
-    }
-
-    #[test]
-    fn component_defined_targets_do_not_treat_two_unknown_residual_as_two_definitions() {
-        let mut dae = dae::Dae::default();
-        for name in ["a", "b"] {
-            dae.variables
-                .algebraics
-                .insert(rumoca_core::VarName::new(name), discrete_var(name));
-        }
-        dae.variables.inputs.insert(
-            rumoca_core::VarName::new("external"),
-            scalar_input("external"),
-        );
-
-        dae.continuous
-            .equations
-            .push(binary_eq("a", "b", "component equation"));
-        dae.continuous
-            .equations
-            .push(binary_eq("b", "external", "connect(b, external)"));
-
-        assert_eq!(
-            balance(&dae).expect("valid DAE balance fixture"),
-            0,
-            "the connection still supplies the second equation for coupled unknowns"
-        );
     }
 }

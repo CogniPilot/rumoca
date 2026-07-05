@@ -1652,6 +1652,152 @@ fn test_infer_equation_scalar_count_indexed_component_field_lhs_uses_field_width
 }
 
 #[test]
+fn test_infer_equation_scalar_count_repeated_indexed_component_leaf_is_scalar() {
+    let mut flat = Model::new();
+    for i in 1..=3 {
+        for field in ["Goff", "Ron", "s", "unitCurrent", "unitVoltage", "v"] {
+            let name = format!("triac.triac[{i}].thyristor1.{field}");
+            flat.add_variable(
+                VarName::new(name.clone()),
+                flat::Variable {
+                    name: VarName::new(name),
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(crate::test_support::test_span())
+                },
+            );
+        }
+    }
+
+    let indexed_component = Expression::FieldAccess {
+        base: Box::new(Expression::Index {
+            base: Box::new(Expression::VarRef {
+                name: VarName::new("triac").into(),
+                subscripts: vec![],
+                span: crate::test_support::test_span(),
+            }),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 1,
+                span: crate::test_support::test_span(),
+            }],
+            span: crate::test_support::test_span(),
+        }),
+        field: "thyristor1".to_string(),
+        span: crate::test_support::test_span(),
+    };
+    let lhs = Expression::FieldAccess {
+        base: Box::new(indexed_component.clone()),
+        field: "v".to_string(),
+        span: crate::test_support::test_span(),
+    };
+    let rhs = Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        lhs: Box::new(Expression::FieldAccess {
+            base: Box::new(indexed_component),
+            field: "s".to_string(),
+            span: crate::test_support::test_span(),
+        }),
+        rhs: Box::new(Expression::FieldAccess {
+            base: Box::new(Expression::FieldAccess {
+                base: Box::new(Expression::Index {
+                    base: Box::new(Expression::VarRef {
+                        name: VarName::new("triac").into(),
+                        subscripts: vec![],
+                        span: crate::test_support::test_span(),
+                    }),
+                    subscripts: vec![rumoca_core::Subscript::Index {
+                        value: 1,
+                        span: crate::test_support::test_span(),
+                    }],
+                    span: crate::test_support::test_span(),
+                }),
+                field: "thyristor1".to_string(),
+                span: crate::test_support::test_span(),
+            }),
+            field: "unitCurrent".to_string(),
+            span: crate::test_support::test_span(),
+        }),
+        span: crate::test_support::test_span(),
+    };
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: crate::test_support::test_span(),
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 1,
+        "scalar leaf equation on a repeated indexed component must not inherit the full component aggregate width"
+    );
+}
+
+#[test]
+fn test_infer_equation_scalar_count_repeated_indexed_connection_residual_is_scalar() {
+    let mut flat = Model::new();
+    for i in 1..=3 {
+        for field in ["p.i", "n.i"] {
+            let name = format!("triac.triac[{i}].thyristor1.{field}");
+            flat.add_variable(
+                VarName::new(name.clone()),
+                flat::Variable {
+                    name: VarName::new(name),
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(crate::test_support::test_span())
+                },
+            );
+        }
+    }
+
+    let pin_current = |pin: &str| Expression::FieldAccess {
+        base: Box::new(Expression::FieldAccess {
+            base: Box::new(Expression::FieldAccess {
+                base: Box::new(Expression::Index {
+                    base: Box::new(Expression::VarRef {
+                        name: VarName::new("triac").into(),
+                        subscripts: vec![],
+                        span: crate::test_support::test_span(),
+                    }),
+                    subscripts: vec![rumoca_core::Subscript::Index {
+                        value: 1,
+                        span: crate::test_support::test_span(),
+                    }],
+                    span: crate::test_support::test_span(),
+                }),
+                field: "thyristor1".to_string(),
+                span: crate::test_support::test_span(),
+            }),
+            field: pin.to_string(),
+            span: crate::test_support::test_span(),
+        }),
+        field: "i".to_string(),
+        span: crate::test_support::test_span(),
+    };
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            span: crate::test_support::test_span(),
+        }),
+        rhs: Box::new(Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(pin_current("p")),
+            rhs: Box::new(pin_current("n")),
+            span: crate::test_support::test_span(),
+        }),
+        span: crate::test_support::test_span(),
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 1,
+        "connection residual over scalar leaves must not inherit repeated component aggregate width"
+    );
+}
+
+#[test]
 fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
     let mut flat = Model::new();
 

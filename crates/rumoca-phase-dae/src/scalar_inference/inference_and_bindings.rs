@@ -267,6 +267,11 @@ fn extract_lhs_var_size_from_var_name(
         return Some(size);
     }
 
+    if let Some(size) = resolve_repeated_indexed_component_path_size(&var_name, flat, prefix_counts)
+    {
+        return Some(size);
+    }
+
     // Also try progressively stripping subscripts:
     // "port_a[1].T[1]" -> "port_a[1].T" -> "port_a.T"
     for base in subscript_fallback_chain(var_name.as_str()) {
@@ -561,6 +566,25 @@ fn resolve_singleton_indexed_lhs_path_size(
     prefix_counts: &FxHashMap<String, usize>,
 ) -> Option<usize> {
     for candidate in singleton_indexed_path_candidates(var_name.as_str()) {
+        let candidate_name = VarName::new(candidate.clone());
+        if let Some(var) = flat.variables.get(&candidate_name) {
+            return Some(compute_var_size(&var.dims));
+        }
+        if let Some(&count) = prefix_counts.get(candidate.as_str()) {
+            return Some(count);
+        }
+    }
+    None
+}
+
+fn resolve_repeated_indexed_component_path_size(
+    var_name: &VarName,
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    for candidate in
+        crate::path_utils::repeated_indexed_component_path_candidates(var_name.as_str())
+    {
         let candidate_name = VarName::new(candidate.clone());
         if let Some(var) = flat.variables.get(&candidate_name) {
             return Some(compute_var_size(&var.dims));

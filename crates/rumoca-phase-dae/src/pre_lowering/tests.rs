@@ -47,6 +47,23 @@ fn indexed_field_access(base_name: &str, index: i64, field: &str) -> rumoca_core
     }
 }
 
+fn repeated_indexed_component_field_pre_call(
+    base_name: &str,
+    index: i64,
+    component: &str,
+    field: &str,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Pre,
+        args: vec![rumoca_core::Expression::FieldAccess {
+            base: Box::new(indexed_field_access(base_name, index, component)),
+            field: field.to_string(),
+            span: test_span(45, 60 + component.len() + field.len()),
+        }],
+        span: test_span(20, 65 + base_name.len() + component.len() + field.len()),
+    }
+}
+
 fn integer_literal(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
@@ -683,6 +700,38 @@ fn test_lower_pre_rejects_missing_target_variable() -> Result<(), ToDaeError> {
         format!("{err}").contains("pre() target `missing`"),
         "expected missing pre target diagnostic, got {err:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn test_lower_pre_resolves_repeated_indexed_component_target() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("triac.triac[1].thyristor1.off"),
+        discrete_valued_var("triac.triac[1].thyristor1.off"),
+    );
+    dae.discrete.valued_updates.push(dae::Equation::residual(
+        repeated_indexed_component_field_pre_call("triac", 1, "thyristor1", "off"),
+        test_span(1, 2),
+        "repeated indexed component pre target".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+
+    assert!(
+        dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new(
+                "__pre__.triac.triac[1].thyristor1.off"
+            )),
+        "pre parameter should use the declared repeated component target"
+    );
+    match &dae.discrete.valued_updates[0].rhs {
+        rumoca_core::Expression::VarRef { name, .. } => {
+            assert_eq!(name.as_str(), "__pre__.triac.triac[1].thyristor1.off");
+        }
+        other => panic!("Expected VarRef, got {:?}", other),
+    }
     Ok(())
 }
 

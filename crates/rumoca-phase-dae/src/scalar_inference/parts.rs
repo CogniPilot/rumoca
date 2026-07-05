@@ -71,6 +71,14 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
             continue;
         }
 
+        if var_ref.subscripts.is_empty()
+            && let Some(size) = repeated_indexed_component_size(var_name, flat, prefix_counts)
+        {
+            any_found = true;
+            max_size = max_size.max(size);
+            continue;
+        }
+
         // Try progressively stripping embedded subscripts:
         // "a[1].b[2]" -> "a[1].b" -> "a.b"
         let fallback_chain = subscript_fallback_chain(var_name.as_str());
@@ -113,6 +121,30 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
             Some(0)
         }
     }
+}
+
+fn repeated_indexed_component_size(
+    var_name: &VarName,
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    crate::path_utils::repeated_indexed_component_path_candidates(var_name.as_str())
+        .into_iter()
+        .find_map(|candidate| {
+            repeated_indexed_component_candidate_size(&candidate, flat, prefix_counts)
+        })
+}
+
+fn repeated_indexed_component_candidate_size(
+    candidate: &str,
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    let candidate_name = VarName::new(candidate.to_string());
+    flat.variables
+        .get(&candidate_name)
+        .map(|var| compute_var_size(&var.dims))
+        .or_else(|| prefix_counts.get(candidate).copied())
 }
 
 struct VarRefCollectionVisitor<'a> {
@@ -158,6 +190,117 @@ impl rumoca_core::ExpressionVisitor for VarRefCollectionVisitor<'_> {
         }
         self.walk_function_call(name, args, is_constructor);
     }
+
+    fn visit_index(&mut self, base: &Expression, subscripts: &[Subscript]) {
+        if let Some(name) = render_index_path(base, subscripts) {
+            self.vars.push(CollectedVarRef {
+                name,
+                subscripts: Vec::new(),
+            });
+            return;
+        }
+        if let Expression::VarRef { name, .. } = base {
+            self.vars.push(CollectedVarRef {
+                name: name.var_name().clone(),
+                subscripts: subscripts.to_vec(),
+            });
+            return;
+        }
+        rumoca_core::ExpressionVisitor::visit_expression(self, base);
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_field_access(&mut self, base: &Expression, field: &str) {
+        if let Some(name) = render_field_path(base, field) {
+            self.vars.push(CollectedVarRef {
+                name,
+                subscripts: Vec::new(),
+            });
+            return;
+        }
+        rumoca_core::ExpressionVisitor::visit_expression(self, base);
+    }
+}
+
+fn render_index_path(base: &Expression, subscripts: &[Subscript]) -> Option<VarName> {
+    let mut out = render_expr_path(base)?.as_str().to_string();
+    out.push_str(&render_static_subscript_suffix(subscripts)?);
+    Some(VarName::new(out))
+}
+
+fn render_field_path(base: &Expression, field: &str) -> Option<VarName> {
+    let base = render_expr_path(base)?;
+    Some(VarName::new(format!("{}.{}", base.as_str(), field)))
+}
+
+enum Tail {
+    Field(String),
+    Subscripts(String),
+}
+
+fn render_expr_path(expr: &Expression) -> Option<VarName> {
+    let mut current = expr;
+    let mut tail = Vec::new();
+    loop {
+        match current {
+            Expression::VarRef {
+                name, subscripts, ..
+            } => {
+                let mut out = name.as_str().to_string();
+                out.push_str(&render_static_subscript_suffix(subscripts)?);
+                for part in tail.iter().rev() {
+                    append_tail_part(&mut out, part);
+                }
+                return Some(VarName::new(out));
+            }
+            Expression::Index {
+                base, subscripts, ..
+            } => {
+                tail.push(Tail::Subscripts(render_static_subscript_suffix(
+                    subscripts,
+                )?));
+                current = base;
+            }
+            Expression::FieldAccess { base, field, .. } => {
+                tail.push(Tail::Field(field.clone()));
+                current = base;
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn append_tail_part(out: &mut String, part: &Tail) {
+    match part {
+        Tail::Field(field) => {
+            out.push('.');
+            out.push_str(field);
+        }
+        Tail::Subscripts(subscripts) => out.push_str(subscripts),
+    }
+}
+
+fn render_static_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
+    let mut out = String::new();
+    for subscript in subscripts {
+        match subscript {
+            Subscript::Index { value, .. } => out.push_str(&format!("[{value}]")),
+            Subscript::Expr { expr, .. } => {
+                let Expression::Literal {
+                    value: Literal::Integer(value),
+                    ..
+                } = expr.as_ref()
+                else {
+                    return None;
+                };
+                out.push_str(&format!("[{value}]"));
+            }
+            Subscript::Colon { .. } => out.push_str("[:]"),
+        }
+    }
+    Some(out)
 }
 
 /// Collect VarRefs from an expression, skipping arguments to reduction builtins.
