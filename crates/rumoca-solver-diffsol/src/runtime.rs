@@ -1,6 +1,7 @@
 use super::*;
 use rumoca_eval_solve::{
     EventUpdateRowFilter, ProjectedEventUpdateInput, apply_discrete_slot_value,
+    apply_discrete_slot_values,
 };
 use rumoca_solver::{
     EventActionOutcome, EventPreMode, NoStateEventStep, NoStateOrchestrationBackend,
@@ -175,7 +176,7 @@ pub(crate) fn simulate_no_state_solve_ir(
 ) -> Result<SimResult, SimError> {
     let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
     let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
-    let mut runtime = initialize_no_state_runtime(model, opts, times.len())?;
+    let mut runtime = initialize_no_state_runtime(model, opts, times.len(), true)?;
     let tol = opts.atol.max(1.0e-10);
 
     run_no_state_output_schedule(
@@ -200,7 +201,7 @@ pub(crate) fn check_no_state_initialization(
     model: &solve::SolveModel,
     opts: &SimOptions,
 ) -> Result<(), SimError> {
-    initialize_no_state_runtime(model, opts, 1).map(|_| ())
+    initialize_no_state_runtime(model, opts, 1, true).map(|_| ())
 }
 
 pub(crate) fn advance_no_state_runtime_to(
@@ -219,6 +220,44 @@ pub(crate) fn advance_no_state_runtime_to(
         [target],
         tol,
     )
+}
+
+pub(crate) fn apply_no_state_deadline_tick(
+    model: &solve::SolveModel,
+    runtime: &mut NoStateRuntime,
+    target: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    runtime.current_t = target;
+    let values = runtime.runtime.eval_scalar_program_block(
+        &model.problem.discrete.rhs,
+        &runtime.current_y,
+        &runtime.params,
+        target,
+    )?;
+    apply_discrete_slot_values(
+        &model.problem.discrete.update_targets,
+        &values,
+        &mut runtime.current_y,
+        &mut runtime.params,
+        tol,
+    )?;
+    runtime.runtime.apply_runtime_assignments_once(
+        &mut runtime.current_y,
+        &mut runtime.params,
+        target,
+    )?;
+    settle_algebraics_and_relation_memory(
+        &runtime.runtime,
+        &runtime.equilibrium_model,
+        &mut runtime.current_y,
+        &mut runtime.params,
+        target,
+        0,
+        tol,
+    )?;
+    crate::commit_pre_params_after_event(model, &runtime.current_y, &mut runtime.params, tol);
+    Ok(())
 }
 
 pub(crate) struct DiffsolNoStateOrchestration<'a> {
@@ -281,6 +320,7 @@ fn apply_no_state_event_step(
     runtime: &mut NoStateRuntime,
     step: NoStateEventStep,
 ) -> Result<(), SimError> {
+    runtime.last_event_t = Some(step.event_time());
     runtime.current_t = if step.root_event {
         root_event_application_time(step.event_time(), step.target)
     } else {
@@ -389,6 +429,7 @@ pub(crate) struct NoStateRuntime {
     pub(crate) params: Vec<f64>,
     pub(crate) current_y: Vec<f64>,
     pub(crate) current_t: f64,
+    pub(crate) last_event_t: Option<f64>,
     pub(crate) data: Vec<Vec<f64>>,
     pub(crate) recorded_times: Vec<f64>,
     pub(crate) equilibrium_model: OdeModel,
@@ -437,6 +478,7 @@ pub(crate) fn initialize_no_state_runtime(
     model: &solve::SolveModel,
     opts: &SimOptions,
     output_count: usize,
+    apply_without_initial_event: bool,
 ) -> Result<NoStateRuntime, SimError> {
     let mut params = model.parameters.clone();
     let mut current_y = model.initial_y.clone();
@@ -468,7 +510,7 @@ pub(crate) fn initialize_no_state_runtime(
             event_pre_p: &event_pre_p,
             max_iters: EVENT_UPDATE_MAX_ITERS,
             dynamic_event,
-            apply_without_initial_event: true,
+            apply_without_initial_event,
         },
         |y, p, t| project_algebraics_and_detect_changes(&equilibrium_model, y, p, t, 0, tol),
     )?;
@@ -498,6 +540,7 @@ pub(crate) fn initialize_no_state_runtime(
         params,
         current_y,
         current_t,
+        last_event_t: None,
         data,
         recorded_times,
         equilibrium_model,

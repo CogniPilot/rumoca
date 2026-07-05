@@ -978,8 +978,10 @@ fn test_embedded_c_header_macros_use_allocated_symbols() {
     let mut bindings = indexmap::IndexMap::new();
     bindings.insert("a.b".to_string(), solve::scalar_slot_y(0));
     bindings.insert("a_b".to_string(), solve::scalar_slot_y(1));
-    let mut problem = solve::SolveProblem::default();
-    problem.layout = solve::VarLayout::from_parts(bindings, 2, 0);
+    let mut problem = solve::SolveProblem {
+        layout: solve::VarLayout::from_parts(bindings, 2, 0),
+        ..Default::default()
+    };
     problem.solve_layout.algebraic_scalar_count = 2;
     let renderer = solve_renderer::SolveTemplateRenderer::new_with_dae(
         &problem,
@@ -1030,8 +1032,10 @@ fn test_embedded_c_array_start_helpers_are_defined() {
     let mut bindings = indexmap::IndexMap::new();
     bindings.insert("x[1]".to_string(), solve::scalar_slot_y(0));
     bindings.insert("x[2]".to_string(), solve::scalar_slot_y(1));
-    let mut problem = solve::SolveProblem::default();
-    problem.layout = solve::VarLayout::from_parts(bindings, 2, 0);
+    let mut problem = solve::SolveProblem {
+        layout: solve::VarLayout::from_parts(bindings, 2, 0),
+        ..Default::default()
+    };
     problem.solve_layout.state_scalar_count = 2;
     let renderer = solve_renderer::SolveTemplateRenderer::new_with_dae(
         &problem,

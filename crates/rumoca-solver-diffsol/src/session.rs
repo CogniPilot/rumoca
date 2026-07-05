@@ -13,7 +13,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::runtime::{NoStateRuntime, advance_no_state_runtime_to, initialize_no_state_runtime};
+use crate::runtime::{
+    NoStateRuntime, advance_no_state_runtime_to, apply_no_state_deadline_tick,
+    initialize_no_state_runtime,
+};
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
     build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
@@ -170,7 +173,7 @@ impl RuntimeOnlyDriver {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
         validate_model(model)?;
-        let runtime = initialize_no_state_runtime(model, &opts, 1)?;
+        let runtime = initialize_no_state_runtime(model, &opts, 1, false)?;
         Ok(Self {
             _runtime_context: runtime_context,
             model: model.clone(),
@@ -203,14 +206,24 @@ impl RuntimeOnlyDriver {
             return Ok(());
         }
         let tol = self.opts.atol.max(1.0e-10);
-        advance_no_state_runtime_to(&self.model, &self.opts, &mut self.runtime, target_time, tol)
+        advance_no_state_runtime_to(&self.model, &self.opts, &mut self.runtime, target_time, tol)?;
+        let can_tick_at_target = self.runtime.current_t < target_time
+            || time_match_with_tol(self.runtime.current_t, target_time);
+        let event_at_target = self
+            .runtime
+            .last_event_t
+            .is_some_and(|event_t| time_match_with_tol(event_t, target_time));
+        if can_tick_at_target && !event_at_target {
+            apply_no_state_deadline_tick(&self.model, &mut self.runtime, target_time, tol)?;
+        }
+        Ok(())
     }
 
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         let mut opts = self.opts.clone();
         opts.t_start = t_start;
-        self.runtime = initialize_no_state_runtime(&self.model, &opts, 1)?;
+        self.runtime = initialize_no_state_runtime(&self.model, &opts, 1, false)?;
         self.opts = opts;
         Ok(())
     }
@@ -812,11 +825,7 @@ where
                 // this the projection and event reset run against a post-root
                 // state at the wrong time and the next solve diverges to NaN.
                 if t_root <= target || time_match_with_tol(t_root, target) {
-                    let event_t = if time_match_with_tol(t_root, target) {
-                        target
-                    } else {
-                        t_root
-                    };
+                    let event_t = root_event_time_for_target(t_root, target);
                     solver
                         .state_mut_back(event_t)
                         .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
@@ -832,6 +841,14 @@ where
             }
             Err(err) => return Err(err),
         }
+    }
+}
+
+fn root_event_time_for_target(root_t: f64, target_t: f64) -> f64 {
+    if time_match_with_tol(root_t, target_t) {
+        target_t
+    } else {
+        root_t
     }
 }
 

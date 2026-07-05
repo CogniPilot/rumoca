@@ -1157,11 +1157,11 @@ impl FrameCtx<'_> {
             if datagram.len() != expected || error.is_some() {
                 return;
             }
-            if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_publish) {
-                if let Err(err) = zenoh.publish(message, datagram) {
-                    error = Some(err);
-                    return;
-                }
+            if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.receive_publish)
+                && let Err(err) = zenoh.publish(message, datagram)
+            {
+                error = Some(err);
+                return;
             }
             error = apply_fb_datagram(fb, datagram, session, engine).err();
         });
