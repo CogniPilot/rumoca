@@ -305,11 +305,14 @@ impl<'a> BalanceSymbolSet<'a> {
     }
 
     fn matches_reference(&self, reference: &rumoca_core::Reference) -> bool {
-        self.names.contains(reference.var_name())
-            || self.prefixes.contains(reference.var_name())
+        self.matches_name(reference.var_name())
             || reference
                 .target_def_id()
                 .is_some_and(|def_id| self.matches_def_id(def_id))
+    }
+
+    fn matches_name(&self, name: &rumoca_core::VarName) -> bool {
+        self.names.contains(name) || self.prefixes.contains(name)
     }
 
     fn matches_variable(&self, name: &rumoca_core::VarName, variable: &dae::Variable) -> bool {
