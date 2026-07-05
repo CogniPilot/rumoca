@@ -1,13 +1,16 @@
 use anyhow::{Context, Result, ensure};
+use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::VerifyMslParityArgs;
 
-const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
+const MSL_QUALITY_BASELINE_ASSET_URL_FALLBACK: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
 const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
+const MSL_QUALITY_BASELINE_RELEASE_TAG: &str = "msl-quality-baseline";
+const MSL_QUALITY_BASELINE_ASSET_NAME: &str = "msl_quality_baseline.json";
 
 pub(super) fn resolve_msl_quality_baseline(
     root: &Path,
@@ -71,11 +74,12 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> PathBuf {
 
 fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
     let output_path = downloaded_msl_quality_baseline_path(root);
+    let asset_url = msl_quality_baseline_asset_url();
     println!(
         "MSL quality baseline: downloading latest promoted asset from {}",
-        MSL_QUALITY_BASELINE_ASSET_URL
+        asset_url
     );
-    let response = match ureq::get(MSL_QUALITY_BASELINE_ASSET_URL).call() {
+    let response = match ureq::get(&asset_url).call() {
         Ok(response) => response,
         Err(error) => {
             eprintln!(
@@ -117,9 +121,46 @@ fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(output_path))
 }
 
+fn msl_quality_baseline_asset_url() -> String {
+    match current_github_repo_url() {
+        Some(repo_url) => format!(
+            "{repo_url}/releases/download/{MSL_QUALITY_BASELINE_RELEASE_TAG}/{MSL_QUALITY_BASELINE_ASSET_NAME}"
+        ),
+        None => MSL_QUALITY_BASELINE_ASSET_URL_FALLBACK.to_string(),
+    }
+}
+
+fn current_github_repo_url() -> Option<String> {
+    current_github_repo_url_from(
+        env::var("GITHUB_SERVER_URL").ok().as_deref(),
+        env::var("GITHUB_REPOSITORY").ok().as_deref(),
+    )
+}
+
+fn current_github_repo_url_from(
+    server_url: Option<&str>,
+    repository: Option<&str>,
+) -> Option<String> {
+    let repository = repository?.trim();
+    if repository.is_empty() {
+        return None;
+    }
+
+    let server_url = server_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .unwrap_or("https://github.com");
+    Some(format!(
+        "{}/{}",
+        server_url.trim_end_matches('/'),
+        repository.trim_matches('/')
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::VerifyMslParityArgs;
+    use super::*;
     use std::path::PathBuf;
 
     #[test]
@@ -148,5 +189,33 @@ mod tests {
             ..VerifyMslParityArgs::default()
         };
         assert!(!short_run.uses_baseline_relative_quality_gate());
+    }
+
+    #[test]
+    fn current_github_repo_url_uses_actions_repository() {
+        assert_eq!(
+            current_github_repo_url_from(Some("https://github.com/"), Some("climamind/rumoca")),
+            Some("https://github.com/climamind/rumoca".to_string())
+        );
+    }
+
+    #[test]
+    fn current_github_repo_url_defaults_to_github_server_url() {
+        assert_eq!(
+            current_github_repo_url_from(None, Some("climamind/rumoca")),
+            Some("https://github.com/climamind/rumoca".to_string())
+        );
+    }
+
+    #[test]
+    fn current_github_repo_url_ignores_missing_repository() {
+        assert_eq!(
+            current_github_repo_url_from(Some("https://github.com"), None),
+            None
+        );
+        assert_eq!(
+            current_github_repo_url_from(Some("https://github.com"), Some("")),
+            None
+        );
     }
 }

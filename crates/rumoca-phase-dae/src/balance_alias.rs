@@ -4,6 +4,7 @@ use rumoca_ir_dae as dae;
 pub(super) fn is_vector_forwarding_alias(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
+    output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     if eq.scalar_count <= 1 {
@@ -15,27 +16,31 @@ pub(super) fn is_vector_forwarding_alias(
     let Some((lhs, rhs)) = eq_binary_lhs_rhs(&eq.rhs) else {
         return false;
     };
-    if !expression_is_forwarded_value(rhs) {
+    let Some(rhs_name) = forwarded_value_ref(rhs) else {
         return false;
-    }
+    };
     let rumoca_core::Expression::VarRef { name: lhs_name, .. } = lhs else {
         return false;
     };
-    !continuous_unknowns.matches_reference(lhs_name)
+    output_names.matches_reference(rhs_name)
+        || !continuous_unknowns.matches_reference(lhs_name)
         || component_defined_targets.matches_reference(lhs_name)
 }
 
-fn expression_is_forwarded_value(expr: &rumoca_core::Expression) -> bool {
+fn forwarded_value_ref(expr: &rumoca_core::Expression) -> Option<&rumoca_core::Reference> {
     match expr {
-        rumoca_core::Expression::VarRef { .. } => true,
+        rumoca_core::Expression::VarRef { name, .. } => Some(name),
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Fill,
             args,
             ..
-        } => args
-            .first()
-            .is_some_and(|arg| matches!(arg, rumoca_core::Expression::VarRef { .. })),
-        _ => false,
+        } => {
+            let rumoca_core::Expression::VarRef { name, .. } = args.first()? else {
+                return None;
+            };
+            Some(name)
+        }
+        _ => None,
     }
 }
 
@@ -54,6 +59,7 @@ pub(super) fn is_absent_lhs_component_alias(
 pub(super) fn is_non_constraining_binding_alias(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
+    output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     let refs = eq_binary_var_refs(&eq.rhs);
@@ -62,14 +68,17 @@ pub(super) fn is_non_constraining_binding_alias(
     };
     let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
     let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
+    let lhs_is_component_defined = component_defined_targets.matches_reference(lhs);
+    if eq.scalar_count > 1 && (output_names.matches_reference(lhs) || lhs_is_component_defined) {
+        return true;
+    }
     if !lhs_is_continuous_unknown {
         return true;
     }
     if !rhs_is_continuous_unknown {
-        return component_defined_targets.matches_reference(lhs);
+        return lhs_is_component_defined;
     }
-    component_defined_targets.matches_reference(lhs)
-        && component_defined_targets.matches_reference(rhs)
+    lhs_is_component_defined && component_defined_targets.matches_reference(rhs)
 }
 
 pub(super) fn is_input_forwarding_connection_alias(
@@ -213,6 +222,13 @@ mod tests {
         }
     }
 
+    fn vector_output_var(name: &str, size: i64) -> dae::Variable {
+        dae::Variable {
+            dims: vec![size],
+            ..algebraic_var(name)
+        }
+    }
+
     fn balance_value(dae: &dae::Dae) -> BalanceResult<i64> {
         balance(dae)
     }
@@ -265,6 +281,74 @@ mod tests {
         dae.continuous
             .equations
             .push(binary_eq("secret", "k", "binding equation for secret"));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_skips_binding_alias_from_output_projection_when_lhs_is_defined() {
+        let mut dae = dae::Dae::default();
+        dae.variables.outputs.insert(
+            rumoca_core::VarName::new("driver"),
+            vector_output_var("driver", 3),
+        );
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("alias"),
+            vector_algebraic_var("alias", 3),
+        );
+
+        dae.continuous.equations.push(vector_binary_eq(
+            "driver",
+            "source",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "alias",
+            "external",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "alias",
+            "driver",
+            "binding equation for alias",
+            3,
+        ));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_skips_vector_binding_alias_to_public_output_projection() {
+        let mut dae = dae::Dae::default();
+        dae.variables.outputs.insert(
+            rumoca_core::VarName::new("public"),
+            vector_output_var("public", 3),
+        );
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("internal"),
+            vector_algebraic_var("internal", 3),
+        );
+
+        dae.continuous.equations.push(vector_binary_eq(
+            "internal",
+            "source",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "public",
+            "external",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "public",
+            "internal",
+            "binding equation for public",
+            3,
+        ));
 
         assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
     }
@@ -337,6 +421,92 @@ mod tests {
             "filled",
             "source",
             "equation from replicator",
+            3,
+        ));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_skips_vector_forwarding_from_output_projection() {
+        let mut dae = dae::Dae::default();
+        dae.variables.outputs.insert(
+            rumoca_core::VarName::new("driver"),
+            vector_output_var("driver", 3),
+        );
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("alias"),
+            vector_algebraic_var("alias", 3),
+        );
+
+        dae.continuous.equations.push(vector_binary_eq(
+            "driver",
+            "source",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "alias",
+            "external",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "alias",
+            "driver",
+            "equation from adaptor",
+            3,
+        ));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_counts_vector_pass_through_from_non_output_driver() {
+        let mut dae = dae::Dae::default();
+        dae.variables
+            .outputs
+            .insert(rumoca_core::VarName::new("y"), vector_output_var("y", 3));
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("u"), vector_algebraic_var("u", 3));
+
+        dae.continuous
+            .equations
+            .push(vector_binary_eq("u", "source", "component equation", 3));
+        dae.continuous
+            .equations
+            .push(vector_binary_eq("y", "u", "equation from passThrough", 3));
+
+        assert_eq!(balance_value(&dae).expect("valid DAE balance fixture"), 0);
+    }
+
+    #[test]
+    fn balance_skips_connection_alias_between_component_defined_vectors() {
+        let mut dae = dae::Dae::default();
+        for name in ["sensor.v", "adaptor.v"] {
+            dae.variables.algebraics.insert(
+                rumoca_core::VarName::new(name),
+                vector_algebraic_var(name, 3),
+            );
+        }
+
+        dae.continuous.equations.push(vector_binary_eq(
+            "sensor.v",
+            "sensorSource",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "adaptor.v",
+            "adaptorSource",
+            "component equation",
+            3,
+        ));
+        dae.continuous.equations.push(vector_binary_eq(
+            "sensor.v",
+            "adaptor.v",
+            "connection equation: sensor.v = adaptor.v",
             3,
         ));
 

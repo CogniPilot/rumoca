@@ -363,6 +363,8 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
     let input_names = collect_input_names(dae_model);
     let continuous_unknown_symbols = BalanceSymbolSet::new(dae_model, &continuous_unknowns);
     let input_symbols = BalanceSymbolSet::new(dae_model, &input_names);
+    let output_names = collect_output_names(dae_model);
+    let output_symbols = BalanceSymbolSet::new(dae_model, &output_names);
     let component_defined_targets =
         collect_component_defined_targets_for_balance(dae_model, &continuous_unknown_symbols);
     let component_defined_symbols = BalanceSymbolSet::new(dae_model, &component_defined_targets);
@@ -376,6 +378,7 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
                 eq,
                 &continuous_unknown_symbols,
                 &input_symbols,
+                &output_symbols,
                 &component_defined_symbols,
             )
         })
@@ -388,14 +391,25 @@ fn equation_counts_for_balance(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
     input_names: &BalanceSymbolSet,
+    output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     if eq.origin.starts_with("binding equation for")
-        && is_non_constraining_binding_alias(eq, continuous_unknowns, component_defined_targets)
+        && is_non_constraining_binding_alias(
+            eq,
+            continuous_unknowns,
+            output_names,
+            component_defined_targets,
+        )
     {
         return false;
     }
-    if is_vector_forwarding_alias(eq, continuous_unknowns, component_defined_targets) {
+    if is_vector_forwarding_alias(
+        eq,
+        continuous_unknowns,
+        output_names,
+        component_defined_targets,
+    ) {
         return false;
     }
     if eq.origin.starts_with("equation from ")
@@ -461,6 +475,12 @@ fn is_redundant_connection_alias(
     let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
     let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
 
+    if eq.scalar_count > 1 && lhs_component_defined {
+        return true;
+    }
+    if lhs_component_defined && rhs_component_defined {
+        return true;
+    }
     (lhs_component_defined && !rhs_is_continuous_unknown)
         || (rhs_component_defined && !lhs_is_continuous_unknown)
 }
@@ -499,6 +519,10 @@ fn collect_continuous_unknown_names(dae_model: &dae::Dae) -> HashSet<rumoca_core
 
 fn collect_input_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::VarName> {
     dae_model.variables.inputs.keys().cloned().collect()
+}
+
+fn collect_output_names(dae_model: &dae::Dae) -> HashSet<rumoca_core::VarName> {
+    dae_model.variables.outputs.keys().cloned().collect()
 }
 
 fn count_discrete_real_update_scalars(dae_model: &dae::Dae) -> usize {
