@@ -50,6 +50,33 @@ fn reaches_source_alias_chain(
     false
 }
 
+fn range_subscript(end_name: &str) -> Subscript {
+    Subscript::generated_expr(
+        Box::new(Expression::Range {
+            start: Box::new(Expression::Literal {
+                value: Literal::Integer(1),
+                span: test_span(),
+            }),
+            step: None,
+            end: Box::new(Expression::VarRef {
+                name: VarName::new(end_name).into(),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            span: test_span(),
+        }),
+        test_span(),
+    )
+}
+
+fn target_range_ref(target: &str) -> Expression {
+    Expression::VarRef {
+        name: VarName::new(target).into(),
+        subscripts: vec![range_subscript("n")],
+        span: test_span(),
+    }
+}
+
 #[test]
 fn lower_algorithm_uses_statement_span_for_main_assignment_equations() {
     let algorithm_span = Span::new(
@@ -530,6 +557,78 @@ fn lower_for_statement_assignments_rejects_dummy_owner_span() {
     .expect_err("dummy owner span should fail fast");
 
     assert_eq!(err, "ForLoopMissingSpan");
+}
+
+#[test]
+fn rewrite_discrete_self_refs_to_pre_preserves_subscripted_target_slice() -> Result<(), ToDaeError>
+{
+    let rewritten = rewrite_discrete_self_refs_to_pre(
+        &target_range_ref("buffer"),
+        &VarName::new("buffer"),
+        test_span(),
+    )?;
+
+    match rewritten {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Pre,
+            args,
+            ..
+        } => match args.as_slice() {
+            [
+                Expression::VarRef {
+                    name, subscripts, ..
+                },
+            ] => {
+                assert_eq!(name.as_str(), "buffer");
+                assert!(matches!(
+                    subscripts.as_slice(),
+                    [Subscript::Expr { expr, .. }]
+                        if matches!(
+                            expr.as_ref(),
+                            Expression::Range { end, .. }
+                                if matches!(
+                                    end.as_ref(),
+                                    Expression::VarRef { name, .. }
+                                        if name.as_str() == "n"
+                                )
+                        )
+                ));
+            }
+            other => panic!("expected pre(buffer[1:n]) argument, got {other:?}"),
+        },
+        other => panic!("expected pre(buffer[1:n]), got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn rewrite_discrete_self_refs_to_pre_keeps_previous_operand_unchanged() -> Result<(), ToDaeError> {
+    let previous_slice = Expression::FunctionCall {
+        name: VarName::new("previous").into(),
+        args: vec![target_range_ref("buffer")],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let rewritten =
+        rewrite_discrete_self_refs_to_pre(&previous_slice, &VarName::new("buffer"), test_span())?;
+
+    match rewritten {
+        Expression::FunctionCall { name, args, .. } => {
+            assert_eq!(name.as_str(), "previous");
+            assert!(matches!(
+                args.as_slice(),
+                [Expression::VarRef {
+                    name, subscripts, ..
+                }] if name.as_str() == "buffer" && matches!(
+                    subscripts.as_slice(),
+                    [Subscript::Expr { .. }]
+                )
+            ));
+        }
+        other => panic!("expected previous(buffer[1:n]), got {other:?}"),
+    }
+    Ok(())
 }
 
 #[test]

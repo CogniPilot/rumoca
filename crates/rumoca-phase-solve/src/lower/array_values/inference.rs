@@ -714,11 +714,12 @@ impl<'a> LowerBuilder<'a> {
         let counts = self.slice_selection_counts(subscripts, shape, scope, Some(span))?;
         let mut dims =
             array_vec_with_capacity(counts.len(), "inferred slice dimension count", span)?;
-        for count in counts {
-            if count > 1 {
+        for (subscript, count) in subscripts.iter().zip(counts.iter().copied()) {
+            if subscript_preserves_array_rank(subscript) {
                 dims.push(count);
             }
         }
+        dims.extend(counts.iter().skip(subscripts.len()).copied());
         Ok(Some(dims))
     }
 

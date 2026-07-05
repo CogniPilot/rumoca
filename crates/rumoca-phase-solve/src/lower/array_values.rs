@@ -1589,8 +1589,21 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         let grouped = self.indexed_bindings.clone();
-        let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
-            return Ok(None);
+        let (display_key, key) = if let Some(pre_key) = self.pre_mode_base_key(name.as_str()) {
+            let pre_group_key = ComponentReferenceKey::generated(pre_key.as_str());
+            if grouped.contains_key(&pre_group_key) {
+                (pre_key, pre_group_key)
+            } else {
+                let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
+                    return Ok(None);
+                };
+                (name.as_str().to_string(), key)
+            }
+        } else {
+            let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
+                return Ok(None);
+            };
+            (name.as_str().to_string(), key)
         };
         let Some(meta) = self.indexed_meta_for_key(&key) else {
             return Ok(None);
@@ -1628,12 +1641,12 @@ impl<'a> LowerBuilder<'a> {
             return Err(unsupported_at(
                 format!(
                     "array slice for `{}` selected no indexed solve-layout bindings",
-                    name.as_str()
+                    display_key
                 ),
                 span,
             ));
         }
-        self.lower_indexed_entries_values(name.as_str(), &selected_entries, span)
+        self.lower_indexed_entries_values(display_key.as_str(), &selected_entries, span)
     }
 
     /// Resolve `name[subscripts]` against a function-scope (local) array

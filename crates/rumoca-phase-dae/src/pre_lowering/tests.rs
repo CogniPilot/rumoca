@@ -32,6 +32,28 @@ fn previous_call(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn previous_range_call(name: &str, end: &str) -> rumoca_core::Expression {
+    let span = test_span(30, 40 + name.len());
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("previous").into(),
+        args: vec![rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new(name).into(),
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(rumoca_core::Expression::Range {
+                    start: Box::new(integer_literal(1)),
+                    step: None,
+                    end: Box::new(var_ref(end)),
+                    span,
+                }),
+                span,
+            )],
+            span,
+        }],
+        is_constructor: false,
+        span,
+    }
+}
+
 fn indexed_field_access(base_name: &str, index: i64, field: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::Index {
@@ -541,6 +563,49 @@ fn test_lower_pre_allocates_previous_parameter_without_rewriting_call() -> Resul
         other => {
             panic!("previous(v) should lower to an explicit __pre__ parameter, got {other:?}")
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_lower_pre_preserves_previous_range_slice_subscript() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    let mut buffer = discrete_valued_var("buffer");
+    buffer.dims = vec![5];
+    dae.variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("buffer"), buffer);
+    dae.discrete.real_updates.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("target"),
+        previous_range_call("buffer", "n"),
+        test_span(1, 2),
+        "target = previous(buffer[1:n])",
+    ));
+
+    lower_pre_operator(&mut dae)?;
+
+    let pre_param = &dae.variables.parameters[&rumoca_core::VarName::new("__pre__.buffer")];
+    assert_eq!(pre_param.dims, vec![5]);
+    match &dae.discrete.real_updates[0].rhs {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert_eq!(name.as_str(), "__pre__.buffer");
+            assert!(matches!(
+                subscripts.as_slice(),
+                [rumoca_core::Subscript::Expr { expr, .. }]
+                    if matches!(
+                        expr.as_ref(),
+                        rumoca_core::Expression::Range { end, .. }
+                            if matches!(
+                                end.as_ref(),
+                                rumoca_core::Expression::VarRef { name, .. }
+                                    if name.as_str() == "n"
+                            )
+                    )
+            ));
+        }
+        other => panic!("Expected range-sliced pre VarRef, got {other:?}"),
     }
     Ok(())
 }

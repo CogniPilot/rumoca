@@ -313,26 +313,32 @@ pub(super) fn inferred_subscripted_dims(
     for (dim_index, subscript) in subscripts.iter().enumerate() {
         let dim = base_dims[dim_index];
         match subscript {
-            rumoca_core::Subscript::Colon { .. } if dim > 1 => {
+            rumoca_core::Subscript::Colon { .. } => {
                 dims.push(dim);
             }
             rumoca_core::Subscript::Expr { expr, span }
                 if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
             {
                 let len = builder.slice_expr_indices(expr, dim, scope, *span)?.len();
-                if len > 1 {
-                    dims.push(len);
-                }
+                dims.push(len);
             }
             _ => {}
         }
     }
     for &dim in &base_dims[subscripts.len()..] {
-        if dim > 1 {
-            dims.push(dim);
-        }
+        dims.push(dim);
     }
     Ok(dims)
+}
+
+pub(super) fn subscript_preserves_array_rank(subscript: &rumoca_core::Subscript) -> bool {
+    match subscript {
+        rumoca_core::Subscript::Colon { .. } => true,
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn infer_array_literal_dims(
