@@ -963,6 +963,105 @@ fn test_embedded_c_templates_render_solve_ir() {
 }
 
 #[test]
+fn test_embedded_c_header_macros_use_allocated_symbols() {
+    let mut dae = dae::Dae::new();
+    for name in ["a.b", "a_b"] {
+        dae.variables.algebraics.insert(
+            name.into(),
+            rumoca_ir_dae::Variable {
+                name: name.into(),
+                ..rumoca_ir_dae::Variable::empty_with_span(fixture_span())
+            },
+        );
+    }
+
+    let mut bindings = indexmap::IndexMap::new();
+    bindings.insert("a.b".to_string(), solve::scalar_slot_y(0));
+    bindings.insert("a_b".to_string(), solve::scalar_slot_y(1));
+    let mut problem = solve::SolveProblem {
+        layout: solve::VarLayout::from_parts(bindings, 2, 0),
+        ..Default::default()
+    };
+    problem.solve_layout.algebraic_scalar_count = 2;
+    let renderer = solve_renderer::SolveTemplateRenderer::new_with_dae(
+        &problem,
+        &solve::SolveArtifacts::default(),
+        dae,
+    )
+    .unwrap();
+
+    let header = renderer
+        .render_with_name(builtin_template("embedded-c", "model.h.jinja"), "M")
+        .unwrap();
+
+    assert!(
+        header.contains("#define M_Y_b 0  /* algebraic a.b */"),
+        "dotted name should use its collision-free allocated symbol:\n{header}"
+    );
+    assert!(
+        header.contains("#define M_Y_a_b 1  /* algebraic a_b */"),
+        "plain sanitized name should remain available for the real source name:\n{header}"
+    );
+    assert_eq!(
+        header.matches("#define M_Y_a_b").count(),
+        1,
+        "header macro names must not collide:\n{header}"
+    );
+}
+
+#[test]
+fn test_embedded_c_array_start_helpers_are_defined() {
+    let mut dae = dae::Dae::new();
+    dae.variables.states.insert(
+        "x".into(),
+        rumoca_ir_dae::Variable {
+            name: "x".into(),
+            dims: vec![2],
+            start: Some(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Zeros,
+                args: vec![rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..rumoca_ir_dae::Variable::empty_with_span(fixture_span())
+        },
+    );
+
+    let mut bindings = indexmap::IndexMap::new();
+    bindings.insert("x[1]".to_string(), solve::scalar_slot_y(0));
+    bindings.insert("x[2]".to_string(), solve::scalar_slot_y(1));
+    let mut problem = solve::SolveProblem {
+        layout: solve::VarLayout::from_parts(bindings, 2, 0),
+        ..Default::default()
+    };
+    problem.solve_layout.state_scalar_count = 2;
+    let renderer = solve_renderer::SolveTemplateRenderer::new_with_dae(
+        &problem,
+        &solve::SolveArtifacts::default(),
+        dae,
+    )
+    .unwrap();
+
+    let header = renderer
+        .render_with_name(builtin_template("embedded-c", "model.h.jinja"), "M")
+        .unwrap();
+    let source = renderer
+        .render_with_name(builtin_template("embedded-c", "model.c.jinja"), "M")
+        .unwrap();
+
+    assert!(
+        header.contains("#define REAL_C(x) ((real_t)(x))"),
+        "embedded-C header should define helper macros emitted by expression rendering:\n{header}"
+    );
+    assert!(
+        source.contains("REAL_C(0.0)"),
+        "zeros(...) array starts should still render through the shared expression path:\n{source}"
+    );
+}
+
+#[test]
 fn test_julia_mtk_template_empty_dae() {
     let dae = dae::Dae::new();
     let result =

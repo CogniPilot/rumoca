@@ -53,6 +53,11 @@ enum LocalSubscriptResolution {
     Values(Vec<Reg>),
 }
 
+struct IndexedSliceReference {
+    display_key: String,
+    group_key: ComponentReferenceKey,
+}
+
 fn is_modelica_array_constructor_function(name: &rumoca_core::Reference) -> bool {
     name.as_str() == "array"
 }
@@ -252,6 +257,24 @@ fn single_usize_vec(
     let mut values = array_vec_with_capacity(1, context, span)?;
     values.push(value);
     Ok(values)
+}
+
+/// True when a full-rank subscript list selects one scalar element (no `:` and
+/// no range). Partial scalar subscript lists preserve trailing dimensions
+/// (`A[i]` for a matrix is a row slice), so they must stay on the slice path.
+fn subscripts_select_single_element(
+    subscripts: &[rumoca_core::Subscript],
+    source_rank: Option<usize>,
+) -> bool {
+    !subscripts.is_empty()
+        && source_rank == Some(subscripts.len())
+        && subscripts.iter().all(|subscript| match subscript {
+            rumoca_core::Subscript::Colon { .. } => false,
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                !matches!(&**expr, rumoca_core::Expression::Range { .. })
+            }
+            _ => true,
+        })
 }
 
 fn collect_indexed_record_field_keys(
@@ -1520,6 +1543,16 @@ impl<'a> LowerBuilder<'a> {
             Some(span) => span,
             None => self.required_reference_or_context_span(name, "array slice lowering")?,
         };
+        // A full-rank single-element selection (no `:`/range) yields one scalar
+        // element. Route it through the scalar VarRef path, which supports
+        // runtime (non-constant) subscripts via indexed loads. Partial scalar
+        // selections keep trailing dimensions and must stay on the slice path.
+        let source_rank = self.layout.shape(name.as_str()).map(<[usize]>::len);
+        if subscripts_select_single_element(subscripts, source_rank) {
+            return Ok(vec![
+                self.lower_var_ref(name, subscripts, span, scope, call_depth)?,
+            ]);
+        }
         if let Some(values) =
             self.lower_indexed_reference_slice_values(name, subscripts, span, scope)?
         {
@@ -1561,10 +1594,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         let grouped = self.indexed_bindings.clone();
-        let Some(key) = indexed_key_for_reference(&grouped, name, span)? else {
+        let Some(source) = self.indexed_slice_reference(&grouped, name, span)? else {
             return Ok(None);
         };
-        let Some(meta) = self.indexed_meta_for_key(&key) else {
+        let Some(meta) = self.indexed_meta_for_key(&source.group_key) else {
             return Ok(None);
         };
         if meta.dims.is_empty() {
@@ -1575,10 +1608,11 @@ impl<'a> LowerBuilder<'a> {
         // sorted selections) instead of filtering the whole group: the
         // filter walk was quadratic in array size. Sorting per-dim
         // reproduces the previous index-sorted output order.
-        let entries = grouped.get(&key).ok_or_else(|| {
+        let entries = grouped.get(&source.group_key).ok_or_else(|| {
             LowerError::contract_violation(
                 format!(
-                    "indexed binding metadata for `{key:?}` has no corresponding binding group"
+                    "indexed binding metadata for `{:?}` has no corresponding binding group",
+                    source.group_key
                 ),
                 span,
             )
@@ -1600,12 +1634,36 @@ impl<'a> LowerBuilder<'a> {
             return Err(unsupported_at(
                 format!(
                     "array slice for `{}` selected no indexed solve-layout bindings",
-                    name.as_str()
+                    source.display_key
                 ),
                 span,
             ));
         }
-        self.lower_indexed_entries_values(name.as_str(), &selected_entries, span)
+        self.lower_indexed_entries_values(source.display_key.as_str(), &selected_entries, span)
+    }
+
+    fn indexed_slice_reference(
+        &self,
+        grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Result<Option<IndexedSliceReference>, LowerError> {
+        if let Some(pre_key) = self.pre_mode_base_key(name.as_str()) {
+            let group_key = ComponentReferenceKey::generated(pre_key.as_str());
+            if grouped.contains_key(&group_key) {
+                return Ok(Some(IndexedSliceReference {
+                    display_key: pre_key,
+                    group_key,
+                }));
+            }
+        }
+        let Some(group_key) = indexed_key_for_reference(grouped, name, span)? else {
+            return Ok(None);
+        };
+        Ok(Some(IndexedSliceReference {
+            display_key: name.as_str().to_string(),
+            group_key,
+        }))
     }
 
     /// Resolve `name[subscripts]` against a function-scope (local) array

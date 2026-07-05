@@ -9,6 +9,8 @@ Compile: cc -O2 -Wall -c {{ out_dir }}/{{ model_name }}.c"""
 
 [capabilities]
 scalar_fallback = true
+# The template does not yet implement the solver runtime's full event/pre-mode
+# contract, so eventful models must stay behind the generic capability gate.
 events = false
 runtime_events = false
 forward_ad = false

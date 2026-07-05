@@ -6,21 +6,38 @@ use diffsol::{OdeSolverMethod, VectorHost};
 use indexmap::IndexMap;
 use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
 use rumoca_ir_solve as solve;
-use rumoca_solver::{SimOptions, event_solver_step_cap, runtime_root_event_application_time};
+use rumoca_solver::{
+    SimOptions, event_solver_step_cap, runtime_root_event_application_time, time_match_with_tol,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::runtime::{
+    NoStateRuntime, advance_no_state_runtime_to, apply_no_state_deadline_tick,
+    initialize_no_state_runtime,
+};
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
     build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
-    settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
+    settle_algebraics_and_relation_memory, solver_call, validate_model, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
 type ResetFn = Box<dyn FnMut(f64, &BdfResetSnapshot) -> Result<(), SimError>>;
+const SESSION_ADVANCE_EVENT_LIMIT: usize = 256;
 
-pub struct SimStepper {
+pub struct SimulationSession {
+    inner: SimulationSessionInner,
+    t_end: f64,
+}
+
+enum SimulationSessionInner {
+    Bdf(Box<BdfSession>),
+    RuntimeOnly(Box<RuntimeOnlyDriver>),
+}
+
+struct BdfSession {
     _runtime_context: solve_eval::SimulationContext,
     step_fn: StepFn,
     time_fn: Box<dyn Fn() -> f64>,
@@ -48,11 +65,247 @@ struct StepAdvance {
     hit_root: bool,
 }
 
-impl SimStepper {
-    // SPEC_0021: Exception - constructor wires Diffsol problem lifetime,
-    // closures, reset behavior, and runtime input state as one owned stepper.
-    #[allow(clippy::too_many_lines)]
+struct RuntimeOnlyDriver {
+    _runtime_context: solve_eval::SimulationContext,
+    model: solve::SolveModel,
+    opts: SimOptions,
+    runtime: NoStateRuntime,
+    input_values: IndexMap<String, f64>,
+}
+
+impl SimulationSession {
     pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
+        let t_end = opts.t_end;
+        let inner = if model.state_scalar_count() == 0 {
+            SimulationSessionInner::RuntimeOnly(Box::new(RuntimeOnlyDriver::new(model, opts)?))
+        } else {
+            SimulationSessionInner::Bdf(Box::new(BdfSession::new(model, opts)?))
+        };
+        Ok(Self { inner, t_end })
+    }
+
+    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::Bdf(session) => session.set_input(name, value),
+            SimulationSessionInner::RuntimeOnly(session) => session.set_input(name, value),
+        }
+    }
+
+    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::Bdf(session) => session.set_inputs(inputs),
+            SimulationSessionInner::RuntimeOnly(session) => session.set_inputs(inputs),
+        }
+    }
+
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        let target_time = target_time.min(self.t_end);
+        match &mut self.inner {
+            SimulationSessionInner::Bdf(session) => session.advance_to(target_time),
+            SimulationSessionInner::RuntimeOnly(session) => session.advance_to(target_time),
+        }
+    }
+
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::Bdf(session) => session.reset(t_start),
+            SimulationSessionInner::RuntimeOnly(session) => session.reset(t_start),
+        }
+    }
+
+    pub fn time(&self) -> f64 {
+        match &self.inner {
+            SimulationSessionInner::Bdf(session) => session.time(),
+            SimulationSessionInner::RuntimeOnly(session) => session.time(),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+        match &self.inner {
+            SimulationSessionInner::Bdf(session) => session.get(name),
+            SimulationSessionInner::RuntimeOnly(session) => session.get(name),
+        }
+    }
+
+    pub fn state(&self) -> Result<SessionState, SimError> {
+        match &self.inner {
+            SimulationSessionInner::Bdf(session) => session.state(),
+            SimulationSessionInner::RuntimeOnly(session) => session.state(),
+        }
+    }
+
+    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        match &self.inner {
+            SimulationSessionInner::Bdf(session) => session.values_for(names),
+            SimulationSessionInner::RuntimeOnly(session) => session.values_for(names),
+        }
+    }
+
+    pub fn input_names(&self) -> &[String] {
+        match &self.inner {
+            SimulationSessionInner::Bdf(session) => session.input_names(),
+            SimulationSessionInner::RuntimeOnly(session) => session.input_names(),
+        }
+    }
+
+    pub fn variable_names(&self) -> &[String] {
+        match &self.inner {
+            SimulationSessionInner::Bdf(session) => session.variable_names(),
+            SimulationSessionInner::RuntimeOnly(session) => session.variable_names(),
+        }
+    }
+
+    pub fn max_runner_advance_dt(&self) -> Option<f64> {
+        match &self.inner {
+            SimulationSessionInner::Bdf(_) => Some(0.002),
+            SimulationSessionInner::RuntimeOnly(_) => None,
+        }
+    }
+}
+
+impl RuntimeOnlyDriver {
+    fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
+        if model.state_scalar_count() != 0 {
+            return Err(SimError::SolverError(
+                "no-state session requires a model with zero continuous states".to_string(),
+            ));
+        }
+        let runtime_context = solve_eval::SimulationContext::new();
+        runtime_context.hydrate_solve_model(model);
+        validate_model(model)?;
+        let runtime = initialize_no_state_runtime(model, &opts, 1, false)?;
+        Ok(Self {
+            _runtime_context: runtime_context,
+            model: model.clone(),
+            opts,
+            runtime,
+            input_values: IndexMap::new(),
+        })
+    }
+
+    fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+        let Some(param_idx) = self.model.problem.solve_layout.input_parameter_index(name) else {
+            return Err(SimError::SolverError(format!("unknown input '{name}'")));
+        };
+        self.input_values.insert(name.to_string(), value);
+        if let Some(slot) = self.runtime.params.get_mut(param_idx) {
+            *slot = value;
+        }
+        Ok(())
+    }
+
+    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+        for (name, value) in inputs {
+            self.set_input(name, *value)?;
+        }
+        Ok(())
+    }
+
+    fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        if target_time <= self.runtime.current_t {
+            return Ok(());
+        }
+        let tol = self.opts.atol.max(1.0e-10);
+        advance_no_state_runtime_to(&self.model, &self.opts, &mut self.runtime, target_time, tol)?;
+        let can_tick_at_target = self.runtime.current_t < target_time
+            || time_match_with_tol(self.runtime.current_t, target_time);
+        let event_at_target = self
+            .runtime
+            .last_event_t
+            .is_some_and(|event_t| time_match_with_tol(event_t, target_time));
+        if can_tick_at_target && !event_at_target {
+            apply_no_state_deadline_tick(&self.model, &mut self.runtime, target_time, tol)?;
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.input_values.clear();
+        let mut opts = self.opts.clone();
+        opts.t_start = t_start;
+        self.runtime = initialize_no_state_runtime(&self.model, &opts, 1, false)?;
+        self.opts = opts;
+        Ok(())
+    }
+
+    fn time(&self) -> f64 {
+        self.runtime.current_t
+    }
+
+    fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+        if let Some(value) = self.input_values.get(name).copied() {
+            return Ok(Some(value));
+        }
+        let Some(idx) = self
+            .model
+            .visible_names
+            .iter()
+            .position(|visible| visible == name)
+        else {
+            return Ok(None);
+        };
+        let values = self.runtime.runtime.visible_values(
+            &self.runtime.current_y,
+            &self.runtime.params,
+            self.runtime.current_t,
+        )?;
+        values.get(idx).copied().map(Some).ok_or_else(|| {
+            SimError::RuntimeContract {
+                reason: format!(
+                    "visible value '{name}' resolved to index {idx}, but runtime returned {} values",
+                    values.len()
+                ),
+            }
+        })
+    }
+
+    fn state(&self) -> Result<SessionState, SimError> {
+        Ok(SessionState {
+            time: self.time(),
+            values: self.session_visible_values()?,
+        })
+    }
+
+    fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        let visible_values = self.session_visible_values()?;
+        let mut values = IndexMap::with_capacity(names.len());
+        for name in names {
+            if let Some(value) = visible_values.get(name).copied() {
+                values.insert(name.clone(), value);
+            }
+        }
+        Ok(values)
+    }
+
+    fn input_names(&self) -> &[String] {
+        self.model.problem.solve_layout.input_scalar_names()
+    }
+
+    fn variable_names(&self) -> &[String] {
+        &self.model.visible_names
+    }
+
+    fn session_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
+        let visible_values = self.runtime.runtime.visible_values(
+            &self.runtime.current_y,
+            &self.runtime.params,
+            self.runtime.current_t,
+        )?;
+        let mut values = collect_visible_values(&self.model.visible_names, visible_values)?;
+        values.extend(
+            self.input_values
+                .iter()
+                .map(|(name, value)| (name.clone(), *value)),
+        );
+        Ok(values)
+    }
+}
+
+impl BdfSession {
+    // SPEC_0021: Exception - constructor wires Diffsol problem lifetime,
+    // closures, reset behavior, and runtime input state as one owned session.
+    #[allow(clippy::too_many_lines)]
+    fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
         let runtime = SolveRuntime::new(model)?;
@@ -195,7 +448,7 @@ impl SimStepper {
         })
     }
 
-    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+    fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
         let Some(param_idx) = self
             .runtime
             .model
@@ -215,38 +468,47 @@ impl SimStepper {
         Ok(())
     }
 
-    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
         for (name, value) in inputs {
             self.set_input(name, *value)?;
         }
         Ok(())
     }
 
-    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
-        if self.inputs_dirty {
-            (self.refresh_input_fn)()?;
-            self.inputs_dirty = false;
-        }
-        let advance = (self.step_fn)(dt)?;
-        if advance.hit_root {
+    fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        for _ in 0..SESSION_ADVANCE_EVENT_LIMIT {
+            let current_time = self.time();
+            if target_time <= current_time {
+                return Ok(());
+            }
+            if self.inputs_dirty {
+                (self.refresh_input_fn)()?;
+                self.inputs_dirty = false;
+            }
+            let advance = (self.step_fn)(target_time - current_time)?;
+            if !advance.hit_root {
+                return Ok(());
+            }
             (self.project_fn)()?;
-            let reset_time = runtime_root_event_application_time(self.time(), f64::INFINITY);
+            let reset_time = runtime_root_event_application_time(self.time(), target_time);
             (self.event_reset_fn)(reset_time)?;
         }
-        Ok(())
+        Err(SimError::SolverError(format!(
+            "event processing did not settle before t={target_time}"
+        )))
     }
 
-    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+    fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.inputs_dirty = false;
         (self.reset_fn)(t_start, &self.reset_snapshot)
     }
 
-    pub fn time(&self) -> f64 {
+    fn time(&self) -> f64 {
         (self.time_fn)()
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+    fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
             return Ok(Some(value));
         }
@@ -274,19 +536,19 @@ impl SimStepper {
         })
     }
 
-    pub fn state(&self) -> Result<StepperState, SimError> {
+    fn state(&self) -> Result<SessionState, SimError> {
         let y = (self.y_fn)();
         let params = self.runtime_params.borrow();
-        Ok(StepperState {
+        Ok(SessionState {
             time: self.time(),
-            values: self.stepper_visible_values(&y, params.as_slice())?,
+            values: self.session_visible_values(&y, params.as_slice())?,
         })
     }
 
-    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+    fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
         let y = (self.y_fn)();
         let params = self.runtime_params.borrow();
-        let visible_values = self.stepper_visible_values(&y, params.as_slice())?;
+        let visible_values = self.session_visible_values(&y, params.as_slice())?;
         let mut values = IndexMap::with_capacity(names.len());
         for name in names {
             if let Some(value) = visible_values.get(name).copied() {
@@ -296,15 +558,15 @@ impl SimStepper {
         Ok(values)
     }
 
-    pub fn input_names(&self) -> &[String] {
+    fn input_names(&self) -> &[String] {
         self.runtime.model.problem.solve_layout.input_scalar_names()
     }
 
-    pub fn variable_names(&self) -> &[String] {
+    fn variable_names(&self) -> &[String] {
         &self.runtime.model.visible_names
     }
 
-    fn stepper_visible_values(
+    fn session_visible_values(
         &self,
         y: &[f64],
         params: &[f64],
@@ -375,7 +637,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct StepperState {
+pub struct SessionState {
     pub time: f64,
     pub values: IndexMap<String, f64>,
 }
@@ -453,7 +715,7 @@ where
     let state_count = model.state_scalar_count();
     let tol = opts.atol.max(1.0e-10);
     Ok(Box::new(move || {
-        project_stepper_algebraics(
+        project_session_algebraics(
             &solver,
             &event_model,
             &runtime,
@@ -465,7 +727,7 @@ where
     }))
 }
 
-fn project_stepper_algebraics<Eqn, S>(
+fn project_session_algebraics<Eqn, S>(
     solver: &Rc<RefCell<S>>,
     _solve_model: &solve::SolveModel,
     runtime: &SolveRuntime,
@@ -540,7 +802,7 @@ where
     // the step and rewinding into the just-completed step keeps the natural step
     // size, which is exactly what the batch dense-output path does
     // (`advance_output_interval` / `state_mut_back` in `lib.rs`) and why the
-    // batch path completes the full horizon where the interactive stepper used
+    // batch path completes the full horizon where the simulation session used
     // to collapse.
     loop {
         if solver.state().t >= target {
@@ -562,9 +824,10 @@ where
                 // what the batch path does in `handle_root_crossing`. Without
                 // this the projection and event reset run against a post-root
                 // state at the wrong time and the next solve diverges to NaN.
-                if t_root <= target {
+                if t_root <= target || time_match_with_tol(t_root, target) {
+                    let event_t = root_event_time_for_target(t_root, target);
                     solver
-                        .state_mut_back(t_root)
+                        .state_mut_back(event_t)
                         .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
                     return Ok(StepAdvance { hit_root: true });
                 }
@@ -578,6 +841,14 @@ where
             }
             Err(err) => return Err(err),
         }
+    }
+}
+
+fn root_event_time_for_target(root_t: f64, target_t: f64) -> f64 {
+    if time_match_with_tol(root_t, target_t) {
+        target_t
+    } else {
+        root_t
     }
 }
 
@@ -595,10 +866,15 @@ mod tests {
         };
     }
 
+    fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
+        let target = session.time() + dt;
+        session.advance_to(target).expect(context);
+    }
+
     #[test]
     fn set_input_updates_solve_ir_parameter_tail() {
         let model = single_input_integrator();
-        let mut stepper = SimStepper::new(
+        let mut session = SimulationSession::new(
             &model,
             SimOptions {
                 rtol: 1.0e-8,
@@ -607,14 +883,14 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("stepper should build");
+        .expect("session should build");
 
-        stepper.set_input("u", 2.0).expect("input should exist");
-        stepper.step(0.05).expect("step should integrate");
+        session.set_input("u", 2.0).expect("input should exist");
+        advance_by(&mut session, 0.05, "session should integrate");
 
-        let x = stepper
+        let x = session
             .get("x")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("x should be visible");
         assert!((x - 0.1).abs() <= 1.0e-4, "x={x}");
     }
@@ -622,7 +898,7 @@ mod tests {
     #[test]
     fn changed_input_refreshes_bdf_history() {
         let model = single_input_integrator();
-        let mut stepper = SimStepper::new(
+        let mut session = SimulationSession::new(
             &model,
             SimOptions {
                 rtol: 1.0e-8,
@@ -631,16 +907,16 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("stepper should build");
+        .expect("session should build");
 
-        stepper.set_input("u", 1.0).expect("input should exist");
-        stepper.step(0.05).expect("first input segment should step");
-        stepper.set_input("u", 2.0).expect("input should update");
-        stepper.step(0.05).expect("changed input should step");
+        session.set_input("u", 1.0).expect("input should exist");
+        advance_by(&mut session, 0.05, "first input segment should advance");
+        session.set_input("u", 2.0).expect("input should update");
+        advance_by(&mut session, 0.05, "changed input should advance");
 
-        let x = stepper
+        let x = session
             .get("x")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("x should be visible");
         assert!((x - 0.15).abs() <= 1.0e-4, "x={x}");
     }
@@ -648,7 +924,7 @@ mod tests {
     #[test]
     fn zero_input_equilibrium_advances_without_bdf_underflow() {
         let model = single_input_integrator();
-        let mut stepper = SimStepper::new(
+        let mut session = SimulationSession::new(
             &model,
             SimOptions {
                 rtol: 1.0e-8,
@@ -657,26 +933,55 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("stepper should build");
+        .expect("session should build");
 
         for _ in 0..16 {
-            stepper
-                .step(2.0e-3)
-                .expect("zero-input equilibrium should advance");
+            advance_by(
+                &mut session,
+                2.0e-3,
+                "zero-input equilibrium should advance",
+            );
         }
 
-        assert!((stepper.time() - 0.032).abs() <= 1.0e-12);
-        let x = stepper
+        assert!((session.time() - 0.032).abs() <= 1.0e-12);
+        let x = session
             .get("x")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("x should be visible");
         assert!(x.abs() <= 1.0e-12, "x={x}");
     }
 
     #[test]
-    fn bdf_stepper_reset_restores_cached_initial_state() {
+    fn advance_to_clamps_to_sim_options_end_time() {
         let model = single_input_integrator();
-        let mut stepper = SimStepper::new(
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                t_end: 0.05,
+                rtol: 1.0e-8,
+                atol: 1.0e-10,
+                dt: Some(1.0e-3),
+                ..Default::default()
+            },
+        )
+        .expect("session should build");
+
+        session.set_input("u", 1.0).expect("input should exist");
+        session
+            .advance_to(0.1)
+            .expect("advance past final time should clamp");
+
+        assert!(
+            (session.time() - 0.05).abs() <= 1.0e-12,
+            "session should stop at t_end, got t={}",
+            session.time()
+        );
+    }
+
+    #[test]
+    fn bdf_session_reset_restores_cached_initial_state() {
+        let model = single_input_integrator();
+        let mut session = SimulationSession::new(
             &model,
             SimOptions {
                 rtol: 1.0e-8,
@@ -685,37 +990,37 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("stepper should build");
+        .expect("session should build");
 
-        stepper.set_input("u", 2.0).expect("input should exist");
-        stepper.step(0.05).expect("stepper should advance");
-        let advanced_x = stepper
+        session.set_input("u", 2.0).expect("input should exist");
+        advance_by(&mut session, 0.05, "session should advance");
+        let advanced_x = session
             .get("x")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("x should be visible");
         assert!(advanced_x > 0.05);
 
-        stepper
+        session
             .reset(7.25)
             .expect("reset should restore cached initial state");
 
-        assert!((stepper.time() - 7.25).abs() <= 1.0e-12);
-        let reset_x = stepper
+        assert!((session.time() - 7.25).abs() <= 1.0e-12);
+        let reset_x = session
             .get("x")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("x should be visible");
         assert!(reset_x.abs() <= 1.0e-12);
         assert_eq!(
-            stepper.get("u").expect("stepper read should succeed"),
+            session.get("u").expect("session read should succeed"),
             None,
             "reset should clear stale input overrides"
         );
     }
 
     #[test]
-    fn step_updates_relation_memory_before_projecting_algebraics() {
+    fn advance_updates_relation_memory_before_projecting_algebraics() {
         let model = falling_contact_probe();
-        let mut stepper = SimStepper::new(
+        let mut session = SimulationSession::new(
             &model,
             SimOptions {
                 rtol: 1.0e-8,
@@ -724,23 +1029,88 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("stepper should build");
+        .expect("session should build");
 
-        stepper.step(0.2).expect("first step should reach relation");
-        stepper
-            .step(0.05)
-            .expect("second step should settle relation");
+        advance_by(&mut session, 0.2, "first advance should reach relation");
+        advance_by(&mut session, 0.05, "second advance should settle relation");
 
-        let z = stepper
+        let z = session
             .get("z")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("z should be visible");
-        let force = stepper
+        let force = session
             .get("force")
-            .expect("stepper read should succeed")
+            .expect("session read should succeed")
             .expect("force should be visible");
         assert!(z < 0.0, "z={z}");
         assert!((force - 42.0).abs() <= 1.0e-8, "force={force}");
+    }
+
+    #[test]
+    fn root_at_advance_deadline_does_not_overshoot_target() {
+        let model = falling_contact_probe();
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                rtol: 1.0e-8,
+                atol: 1.0e-10,
+                dt: Some(1.0e-3),
+                ..Default::default()
+            },
+        )
+        .expect("session should build");
+
+        session
+            .advance_to(0.1)
+            .expect("root exactly at requested target should advance");
+
+        assert!(
+            (session.time() - 0.1).abs() <= 1.0e-12,
+            "advance_to must stop at the requested deadline, got t={}",
+            session.time()
+        );
+        assert_eq!(session.get("force").unwrap(), Some(0.0));
+
+        session
+            .advance_to(0.101)
+            .expect("next advance should process the event right-limit");
+
+        assert_eq!(session.get("force").unwrap(), Some(42.0));
+    }
+
+    #[test]
+    fn simulation_session_advances_zero_state_model_through_solver_runtime() {
+        let mut model = solve::SolveModel::default();
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.parameters = vec![7.0];
+        model.visible_names = vec!["m".to_string()];
+
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                t_start: 0.0,
+                t_end: 1.0,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .expect("zero-state session should build");
+
+        assert_eq!(session.variable_names(), ["m"]);
+        assert_eq!(session.get("m").unwrap(), Some(7.0));
+
+        advance_by(&mut session, 0.1, "advance should update no-state runtime");
+
+        assert!((session.time() - 0.1).abs() <= 1.0e-12);
+        assert_eq!(session.state().unwrap().values["m"], 7.0);
+
+        session
+            .reset(2.5)
+            .expect("reset should rebuild no-state runtime");
+
+        assert!((session.time() - 2.5).abs() <= 1.0e-12);
+        assert_eq!(session.get("m").unwrap(), Some(7.0));
     }
 
     fn single_input_integrator() -> solve::SolveModel {

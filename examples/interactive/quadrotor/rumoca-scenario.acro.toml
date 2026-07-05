@@ -152,14 +152,14 @@ views = []
 
 [reset]
 on_signal = "reset"
-rebuild_stepper = true
+reset_session = true
 reset_locals = true
 
 [rumoca]
 task = "simulate"
 version = "1"
 
-[signals.stepper_inputs]
+[signals.model_inputs]
 armed = { from = "local:armed", when_false = 0, when_true = 1 }
 stick_pitch = "local:pitch_cmd"
 stick_roll = "local:roll_cmd"
@@ -167,38 +167,38 @@ stick_throttle = "local:throttle"
 stick_yaw = "local:yaw_cmd"
 
 [signals.viewer]
-accel_x = "stepper:accel[1]"
-accel_y = "stepper:accel[2]"
-accel_z = "stepper:accel[3]"
+accel_x = "model:accel[1]"
+accel_y = "model:accel[2]"
+accel_z = "model:accel[3]"
 armed = "local:armed"
 frame = "runtime:frame_num"
-gyro_x = "stepper:gyro[1]"
-gyro_y = "stepper:gyro[2]"
-gyro_z = "stepper:gyro[3]"
+gyro_x = "model:gyro[1]"
+gyro_y = "model:gyro[2]"
+gyro_z = "model:gyro[3]"
 input_mode = "runtime:input_mode"
-omega_m1 = "stepper:omega_m[1]"
-omega_m2 = "stepper:omega_m[2]"
-omega_m3 = "stepper:omega_m[3]"
-omega_m4 = "stepper:omega_m[4]"
-px = "stepper:position[1]"
-py = "stepper:position[2]"
-pz = "stepper:position[3]"
-q1 = "stepper:quat[2]"
-q2 = "stepper:quat[3]"
-q3 = "stepper:quat[4]"
+omega_m1 = "model:omega_m[1]"
+omega_m2 = "model:omega_m[2]"
+omega_m3 = "model:omega_m[3]"
+omega_m4 = "model:omega_m[4]"
+px = "model:position[1]"
+py = "model:position[2]"
+pz = "model:position[3]"
+q1 = "model:quat[2]"
+q2 = "model:quat[3]"
+q3 = "model:quat[4]"
 stick_pitch = "local:pitch_cmd"
 stick_roll = "local:roll_cmd"
 stick_throttle = "local:throttle"
 stick_yaw = "local:yaw_cmd"
-t = "stepper:time"
-vx = "stepper:velocity[1]"
-vy = "stepper:velocity[2]"
-vz = "stepper:velocity[3]"
+t = "model:time"
+vx = "model:velocity[1]"
+vy = "model:velocity[2]"
+vz = "model:velocity[3]"
 wall_ms = "runtime:wall_ms"
 
 [signals.viewer.q0]
 default = 1
-from = "stepper:quat[1]"
+from = "model:quat[1]"
 
 [sim]
 dt = 0.01

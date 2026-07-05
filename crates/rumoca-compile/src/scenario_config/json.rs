@@ -19,6 +19,8 @@ pub fn simulation_settings_to_json(settings: &EffectiveSimulationConfig) -> Valu
         "solver": settings.solver,
         "tEnd": settings.t_end,
         "dt": settings.dt,
+        "atol": settings.atol,
+        "rtol": settings.rtol,
         "outputDir": settings.output_dir,
         "sourceRootPaths": settings.source_root_paths,
     })
@@ -30,6 +32,8 @@ pub fn simulation_preset_to_json(preset: &EffectiveSimulationPreset) -> Value {
         "solver": preset.solver,
         "tEnd": preset.t_end,
         "dt": preset.dt,
+        "atol": preset.atol,
+        "rtol": preset.rtol,
         "outputDir": preset.output_dir,
         "sourceRootOverrides": preset.source_root_overrides,
     })
@@ -85,6 +89,8 @@ pub fn parse_fallback_simulation(value: Option<&Value>) -> Option<EffectiveSimul
         .filter(|v| v.is_finite() && *v > 0.0)
         .unwrap_or(10.0);
     let dt = normalize_dt_opt(obj.get("dt").and_then(Value::as_f64));
+    let atol = normalize_dt_opt(obj.get("atol").and_then(Value::as_f64));
+    let rtol = normalize_dt_opt(obj.get("rtol").and_then(Value::as_f64));
     let output_dir = obj
         .get("outputDir")
         .and_then(Value::as_str)
@@ -95,6 +101,8 @@ pub fn parse_fallback_simulation(value: Option<&Value>) -> Option<EffectiveSimul
         solver,
         t_end,
         dt,
+        atol,
+        rtol,
         output_dir,
         source_root_paths,
     })
@@ -111,6 +119,8 @@ pub fn simulation_override_from_json(value: &Value) -> Option<SimulationModelOve
             .map(str::to_string),
         t_end: obj.get("tEnd").and_then(Value::as_f64),
         dt: obj.get("dt").and_then(Value::as_f64),
+        atol: obj.get("atol").and_then(Value::as_f64),
+        rtol: obj.get("rtol").and_then(Value::as_f64),
         output_dir: obj
             .get("outputDir")
             .and_then(Value::as_str)

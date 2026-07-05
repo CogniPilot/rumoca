@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::thread;
 
 use crate::runner::config::SimulationConfig;
-use crate::{SimOptions, SimSolverMode, SimStepper, SimulationDiagnosticError};
+use crate::{
+    DiffsolMethod, SimOptions, SimSolverMode, SimulationDiagnosticError, SimulationSession,
+};
 use anyhow::{Context, Result};
 use rumoca_compile::compile::{DaeCompilationResult, Session, SourceRootKind};
 use rumoca_compile::source_roots::{
@@ -84,6 +86,12 @@ pub struct SimArgs {
     pub config: SimulationConfig,
     /// Solver selected by CLI override or `[sim].solver`.
     pub solver_mode: SimSolverMode,
+    /// Original solver label, used for BDF-family method selection.
+    pub solver_label: String,
+    /// Optional absolute tolerance selected by CLI or `[sim].atol`.
+    pub atol: Option<f64>,
+    /// Optional relative tolerance selected by CLI or `[sim].rtol`.
+    pub rtol: Option<f64>,
     /// HTTP server port.
     pub http_port: u16,
     /// WebSocket viz port.
@@ -180,25 +188,29 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
     )?;
 
     let solver_mode = interactive_solver_mode(args.solver_mode);
-    let mut stepper = SimStepper::new_with_diagnostics(
-        result.dae.as_ref(),
-        SimOptions {
-            rtol: 1e-3,
-            atol: 1e-3,
-            dt: Some(args.config.sim.dt),
-            solver_mode,
-            pacing_mode: args.config.effective_pacing_mode(),
-            ..Default::default()
-        },
-    )
-    .map_err(|error| {
-        RunnerError::simulation_diagnostic(
-            "Failed to create simulation stepper",
-            error,
-            result.source_map.clone(),
-        )
-    })?;
-    eprintln!("  Inputs: {:?}", stepper.input_names());
+    let mut sim_options = SimOptions {
+        t_end: args.config.sim.t_end,
+        dt: Some(args.config.sim.dt),
+        solver_mode,
+        diffsol_method: diffsol_method_for_solver_label(&args.solver_label),
+        pacing_mode: args.config.effective_pacing_mode(),
+        ..Default::default()
+    };
+    if let Some(atol) = args.atol {
+        sim_options.atol = atol;
+    }
+    if let Some(rtol) = args.rtol {
+        sim_options.rtol = rtol;
+    }
+    let mut session = SimulationSession::new_with_diagnostics(result.dae.as_ref(), sim_options)
+        .map_err(|error| {
+            RunnerError::simulation_diagnostic(
+                "Failed to create simulation session",
+                error,
+                result.source_map.clone(),
+            )
+        })?;
+    eprintln!("  Inputs: {:?}", session.input_names());
 
     // Start HTTP viewer server in background
     let http_port = args.http_port;
@@ -229,7 +241,7 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
 
     // Run main sim loop (blocks)
     Ok(executor::run_sim_loop(
-        &mut stepper,
+        &mut session,
         executor::SimLoopArgs {
             cfg: &args.config,
             http_port: args.http_port,
@@ -241,6 +253,10 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
 
 fn interactive_solver_mode(requested: SimSolverMode) -> SimSolverMode {
     requested
+}
+
+fn diffsol_method_for_solver_label(solver_label: &str) -> DiffsolMethod {
+    DiffsolMethod::from_external_name(solver_label).unwrap_or_default()
 }
 
 fn solver_mode_label(mode: SimSolverMode) -> &'static str {

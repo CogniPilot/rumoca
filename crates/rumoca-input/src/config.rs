@@ -163,11 +163,11 @@ pub struct SignalsConfig {
     pub send: HashMap<String, SignalSpec>,
     #[serde(default)]
     pub viewer: HashMap<String, SignalSpec>,
-    /// Signals applied directly to the stepper each frame. Used in
+    /// Signals applied directly to the model each frame. Used in
     /// standalone mode (no external interface) to drive model inputs from local
-    /// state (e.g. gamepad → stepper input).
+    /// state (e.g. gamepad → model input).
     #[serde(default)]
-    pub stepper_inputs: HashMap<String, SignalSpec>,
+    pub model_inputs: HashMap<String, SignalSpec>,
 }
 
 /// How a single signal value is produced.
@@ -175,7 +175,7 @@ pub struct SignalsConfig {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum SignalSpec {
-    /// `"stepper:name"` / `"local:name"` / `"runtime:name"` / `"local:rc.2"`
+    /// `"model:name"` / `"local:name"` / `"runtime:name"` / `"local:rc.2"`
     Ref(String),
     /// `{ from = "...", when_true = X, when_false = Y }`
     Conditional {

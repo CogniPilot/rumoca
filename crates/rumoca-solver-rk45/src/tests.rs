@@ -11,6 +11,11 @@ macro_rules! fixture_span {
     };
 }
 
+fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
+    let target = session.time() + dt;
+    session.advance_to(target).expect(context);
+}
+
 #[test]
 fn combine_stage_rejects_short_stage_vectors() {
     let err = combine_stage(&[1.0, 2.0], 0.1, &[(&[3.0], 1.0)])
@@ -491,7 +496,7 @@ fn runtime_contract_step_until_advances_rk45_backend() {
 }
 
 #[test]
-fn rk45_stepper_reset_restores_cached_initial_state() {
+fn rk45_session_reset_restores_cached_initial_state() {
     let mut model = single_state_model(vec![vec![
         LinearOp::LoadP { dst: 0, index: 0 },
         LinearOp::StoreOutput { src: 0 },
@@ -499,7 +504,7 @@ fn rk45_stepper_reset_restores_cached_initial_state() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
     model.parameters = vec![0.0];
-    let mut stepper = SimStepper::new(
+    let mut session = SimulationSession::new(
         &model,
         SimOptions {
             solver_mode: SimSolverMode::RkLike,
@@ -507,37 +512,69 @@ fn rk45_stepper_reset_restores_cached_initial_state() {
             ..Default::default()
         },
     )
-    .expect("stepper should build");
+    .expect("session should build");
 
-    stepper.set_input("u", 4.0).expect("input should exist");
-    stepper.step(0.1).expect("stepper should advance");
-    let advanced_x = stepper
+    session.set_input("u", 4.0).expect("input should exist");
+    advance_by(&mut session, 0.1, "session should advance");
+    let advanced_x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
     assert!(advanced_x > 1.1);
 
-    stepper
+    session
         .reset(12.5)
         .expect("reset should restore cached initial state");
 
-    assert!((stepper.time() - 12.5).abs() <= 1.0e-12);
-    let reset_x = stepper
+    assert!((session.time() - 12.5).abs() <= 1.0e-12);
+    let reset_x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
     assert!((reset_x - 1.0).abs() <= 1.0e-12);
     assert_eq!(
-        stepper.get("u").expect("stepper read should succeed"),
+        session.get("u").expect("session read should succeed"),
         None,
         "reset should clear stale input overrides"
     );
 }
 
 #[test]
-fn rk45_stepper_uses_adaptive_event_integration_for_stiff_contact() {
+fn rk45_session_advance_to_clamps_to_sim_options_end_time() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+    model.parameters = vec![0.0];
+    let mut session = SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.05,
+            solver_mode: SimSolverMode::RkLike,
+            dt: Some(0.01),
+            ..Default::default()
+        },
+    )
+    .expect("session should build");
+
+    session.set_input("u", 4.0).expect("input should exist");
+    session
+        .advance_to(0.1)
+        .expect("advance past final time should clamp");
+
+    assert!(
+        (session.time() - 0.05).abs() <= 1.0e-12,
+        "session should stop at t_end, got t={}",
+        session.time()
+    );
+}
+
+#[test]
+fn rk45_session_uses_adaptive_event_integration_for_stiff_contact() {
     let model = stiff_contact_model();
-    let mut stepper = SimStepper::new(
+    let mut session = SimulationSession::new(
         &model,
         SimOptions {
             solver_mode: SimSolverMode::RkLike,
@@ -545,72 +582,73 @@ fn rk45_stepper_uses_adaptive_event_integration_for_stiff_contact() {
             ..Default::default()
         },
     )
-    .expect("stiff contact stepper should initialize");
+    .expect("stiff contact session should initialize");
 
     for _ in 0..50 {
-        stepper.step(0.02).expect("stepper should advance");
+        advance_by(&mut session, 0.02, "session should advance");
     }
 
-    let x = stepper
+    let x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
-    let contact = stepper
+    let contact = session
         .get("contact")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("contact should be visible");
     assert!(
         x > -0.01 && x < 0.03,
-        "adaptive stepper should settle near the contact surface without frame-step penetration; x={x}"
+        "adaptive session should settle near the contact surface without frame-step penetration; x={x}"
     );
     assert_eq!(contact, 1.0);
 }
 
 #[test]
-fn rk45_stepper_redetects_contact_after_thrust_liftoff() {
+fn rk45_session_redetects_contact_after_thrust_liftoff() {
     let model = stiff_contact_model();
-    let mut stepper = SimStepper::new(
+    let mut session = SimulationSession::new(
         &model,
         SimOptions {
             solver_mode: SimSolverMode::RkLike,
             dt: Some(0.02),
+            t_end: 6.0,
             ..Default::default()
         },
     )
-    .expect("stiff contact stepper should initialize");
+    .expect("stiff contact session should initialize");
 
     for _ in 0..50 {
-        stepper.step(0.02).expect("initial settle should advance");
+        advance_by(&mut session, 0.02, "initial settle should advance");
     }
-    stepper
+    session
         .set_input("thrust", 40.0)
         .expect("thrust input should exist");
     for _ in 0..10 {
-        stepper.step(0.02).expect("liftoff should advance");
+        advance_by(&mut session, 0.02, "liftoff should advance");
     }
-    let lifted_x = stepper
+    let lifted_x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
     assert!(
         lifted_x > 0.05,
         "thrust phase should lift the mass above the contact surface; x={lifted_x}"
     );
 
-    stepper
+    session
         .set_input("thrust", 0.0)
         .expect("thrust input should update");
     for _ in 0..180 {
-        stepper.step(0.02).expect("descent should advance");
+        advance_by(&mut session, 0.02, "descent should advance");
     }
 
-    let x = stepper
+    let x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
-    let contact = stepper
+    let contact = session
         .get("contact")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("contact should be visible");
     assert!(
         x > -0.02 && x < 0.04,

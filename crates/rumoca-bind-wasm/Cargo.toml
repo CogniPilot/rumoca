@@ -49,7 +49,7 @@ full-web = ["sim-rk45"]
 sim-wasm = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-diffsol"]
 sim-rk45 = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-rk45"]
-stepper-diffsol = ["sim-diffsol"]
+session-diffsol = ["sim-diffsol"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 
 [lints]

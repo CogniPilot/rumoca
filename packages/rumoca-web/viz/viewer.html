@@ -70,6 +70,8 @@
     <span class="label">hud:</span> <span class="val" id="v-hud-visible">OFF</span><br>
     <span class="label">ws:</span> <span class="val" id="v-ws-state">pending</span>
     <span class="label">hz:</span> <span class="val" id="v-wsHz">—</span><br>
+    <span class="label">tx:</span> <span class="val" id="v-txHz">—</span>
+    <span class="label">rx:</span> <span class="val" id="v-rxHz">—</span><br>
     <span class="label">msgs:</span> <span class="val" id="v-msgs">0</span>
     <span class="label">frames:</span> <span class="val" id="v-frames">0</span>
     <span id="debug-hud"><br><span class="label">render:</span> <span class="val" id="v-fps">—</span> fps</span>
@@ -806,6 +808,18 @@ function animate() {
   }
   document.getElementById("v-fps").textContent = renderFps.toFixed(0);
   document.getElementById("v-wsHz").textContent = wsHz.toFixed(0);
+  const fmtTransportHz = (actual, target) => {
+    const a = Number(actual);
+    const t = Number(target);
+    if (Number.isFinite(t) && t > 0 && Number.isFinite(a) && a >= 0) {
+      return `${a.toFixed(0)}/${t.toFixed(0)}`;
+    }
+    if (Number.isFinite(a) && a >= 0) return a.toFixed(0);
+    if (Number.isFinite(t) && t > 0) return `—/${t.toFixed(0)}`;
+    return "—";
+  };
+  document.getElementById("v-txHz").textContent = fmtTransportHz(s.runtime_tx_actual_hz, s.runtime_tx_target_hz);
+  document.getElementById("v-rxHz").textContent = fmtTransportHz(s.runtime_rx_actual_hz, s.runtime_rx_target_hz);
   const inputMode = s.input_mode ?? "keyboard";
   document.getElementById("v-input").textContent = inputMode;
   document.getElementById("ctrl-keyboard").style.display = inputMode === "keyboard" ? "" : "none";

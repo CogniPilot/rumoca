@@ -230,10 +230,10 @@ default — they rebuild lazily behind dependency fingerprints.
 Rationale: the warm-restore goal is to skip rebuilding front-end and resolved
 dependency inputs on reopen, not to serialize the full downstream pipeline.
 
-### 12. Runtime, Backend, Stepper, And Visualization Layering
+### 12. Runtime, Backend, Simulation Session, And Visualization Layering
 
 ```
-compiler/session → DAE structural → solve-IR lowering → runtime contracts → solver backend → stepper → reporting → visualization
+compiler/session → DAE structural → solve-IR lowering → runtime contracts → solver backend → simulation session → reporting → visualization
 ```
 
 | Rule | Owner | Why |
@@ -249,7 +249,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
 | Simulation facade/runner | `rumoca-sim` | Composes solvers/reporting/viz behind features |
-| Interactive stepper APIs | separate from runtime contracts | Stepper is one runtime mode, not THE runtime |
+| Simulation session APIs | separate from runtime contracts | Simulation sessions are the interactive runtime surface |
 | Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
 | Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |

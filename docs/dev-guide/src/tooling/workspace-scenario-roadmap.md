@@ -173,7 +173,7 @@ Current status:
   simulation plus input routing in the scenario, with the external 3D scene as
   presentation rather than a distinct scenario kind. The Rust book live widget
   now has the browser side of that path as well: input-enabled/realtime
-  scenarios load the shared web interactive runtime, compile a WASM stepper with
+  scenarios load the shared web interactive runtime, compile a WASM session with
   staged workspace/source-root context, route keyboard/gamepad/local inputs into
   Modelica inputs, and run the scenario's 3D scene inline instead of falling
   back to batch plots or a native-only viewer. Interactive capture, HUD/camera
@@ -181,12 +181,12 @@ Current status:
   mdBook, VS Code, and the playground consume the same control semantics instead
   of rebuilding them per host. Simulation speed and user input are separate
   scenario concepts: `[sim].mode` controls pacing, `[input]` opts into the
-  input-capable stepper/viewer path, and viewer mode only chooses presentation.
+  input-capable session/viewer path, and viewer mode only chooses presentation.
   The playground interactive-result editor now uses the same runtime failure
   reporting path as the shared runner: source-root loading, scene
   initialization, startup rendering, and animation-frame errors update the tab
   status and flow into the shared Errors panel instead of leaving `.input`
-  editor tabs stuck at "compiling stepper".
+  editor tabs stuck at "compiling session".
 - Phase 5 has a packaging/runtime baseline: `xtask` owns Rust orchestration and
   web asset freshness checks, while npm-owned package scripts may run npm,
   refresh stale web dependencies, and rebuild shared web assets before copying

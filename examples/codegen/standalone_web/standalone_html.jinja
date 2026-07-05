@@ -1920,7 +1920,7 @@ function Model() {
     const useIrk4 = selectedIntegrator === 'irk4' || selectedIntegrator === 'gauss_legendre_irk4'
     const useRk4 = selectedIntegrator === 'rk4'
     const useRk45 = selectedIntegrator === 'rk45' || selectedIntegrator === 'dopri54'
-    const stepperName = useIrk4 ? 'irk4' : useRk4 ? 'rk4' : useRk45 ? 'rk45' : 'sdirk2'
+    const integratorName = useIrk4 ? 'irk4' : useRk4 ? 'rk4' : useRk45 ? 'rk45' : 'sdirk2'
     const captureFailureState = Boolean(
       solverOptions.captureFailureState ?? opts.captureFailureState ?? false,
     )
@@ -2521,7 +2521,7 @@ function Model() {
         c = advanced.cNext
         xDotPrev = advanced.xDotNext
       } catch (e) {
-        stopReason = `${stepperName}Step_failed`
+        stopReason = `${integratorName}Step_failed`
         stopError = (e && e.message) || String(e)
         stopStack = e && e.stack ? String(e.stack) : null
         const missingSymbol = /([A-Za-z_$][A-Za-z0-9_$]*) is not defined/.exec(String(stopError))
@@ -2556,7 +2556,7 @@ function Model() {
             conditionNames: conditionNames.slice(),
           }
         }
-        log(`${stepperName.toUpperCase()} step failed at t=${t}`, {
+        log(`${integratorName.toUpperCase()} step failed at t=${t}`, {
           error: (e && e.message) || String(e),
           stack: e && e.stack,
         })

@@ -54,7 +54,7 @@ pub fn lower_for_simulation_with_overrides(
 /// dependent stale) — so an override is never silently dropped or silently
 /// wrong. Solver-independent: operates only on the neutral [`solve::SolveModel`].
 ///
-/// Exposed `pub(crate)` so the prepared-simulation and interactive-stepper entry
+/// Exposed `pub(crate)` so the prepared-simulation and interactive-session entry
 /// points apply overrides identically to the one-shot `simulate` path — an
 /// override set in `SimOptions` is honored on every entry, never silently
 /// ignored.

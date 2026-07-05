@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::source_root_api::sync_workspace_sources_with_cache_root_for_tests;
 
 mod lsp_diagnostics_tests;
+mod scenario_config_tests;
 mod simulation_runtime_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
@@ -484,6 +485,57 @@ fn test_compile_to_json_valid_model() {
             .unwrap_or_default(),
         2
     );
+}
+
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscript() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model DiscreteController
+      input Real u;
+      parameter Real table[2] = {2.0, 4.0};
+      discrete output Real y(start = 0.0);
+      discrete Integer k(start = 1);
+    protected
+      discrete Real prev(start = 0.0);
+    algorithm
+      if pre(k) == 1 then
+        prev := 0.0;
+      else
+        prev := table[pre(k) - 1];
+      end if;
+      y := u + prev;
+      k := if pre(k) >= 2 then 1 else pre(k) + 1;
+    end DiscreteController;
+    "#;
+
+    let mut session = Session::default();
+    session.update_document("input.mo", source);
+    let result = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("DiscreteController")
+        .expect("pure discrete model should compile");
+    let mut session = rumoca_sim::SimulationSession::new_with_diagnostics(
+        &result.dae,
+        rumoca_sim::SimOptions::default(),
+    )
+    .expect("pure discrete session should build");
+    session.set_input("u", 1.5).expect("set input u");
+    session
+        .advance_to(session.time() + 0.02)
+        .expect("first discrete tick");
+    assert_eq!(session.time(), 0.02);
+    assert_eq!(session.get("y").expect("read y"), Some(1.5));
+
+    session.set_input("u", 2.0).expect("set input u");
+    session
+        .advance_to(session.time() + 0.02)
+        .expect("second discrete tick");
+    assert_eq!(session.get("y").expect("read y"), Some(4.0));
+
+    clear_source_root_cache().expect("clear source-root cache");
 }
 
 #[test]

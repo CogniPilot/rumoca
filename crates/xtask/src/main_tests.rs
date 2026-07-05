@@ -920,7 +920,7 @@ fn generated_completions_include_repo_graph_crates_flags_and_repo_msl_commands()
     assert!(script.contains("install-vscode-smoke-prereqs"));
     assert!(script.contains("--install-prereqs"));
     assert!(script.contains("--format"));
-    assert!(script.contains("xtask__repo__msl"));
+    assert!(script.contains("graph msl cmm"));
     assert!(script.contains("promote-quality-baseline"));
     assert!(script.contains("--baseline"));
 }

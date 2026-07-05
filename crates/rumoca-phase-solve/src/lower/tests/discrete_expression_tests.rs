@@ -913,30 +913,74 @@ fn lower_discrete_rhs_expands_previous_range_slice_in_array_if_expression() {
     assert_eq!(third, Some(6.0));
 }
 
+#[test]
+fn lower_discrete_rhs_preserves_singleton_previous_range_slice_rank_for_cat() {
+    let dae_model = previous_range_slice_array_if_model_with_n(1, 2);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows =
+        lower_discrete_rhs(&dae_model, &layout).expect("singleton range slice branch should lower");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "u", 4.0);
+    set_p_value(&layout, &mut p, "u_buffer[1]", 5.0);
+
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(actual, vec![4.0, 5.0]);
+}
+
+#[test]
+fn lower_discrete_rhs_slices_previous_indexed_pre_array_in_fir_cat() {
+    let dae_model = fir_previous_slice_array_if_model();
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_discrete_rhs(&dae_model, &layout)
+        .expect("previous pre-array range slice branch should lower");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "FIR2.u", 10.0);
+    for (index, value) in [1.0, 2.0, 3.0, 4.0].into_iter().enumerate() {
+        set_p_value(
+            &layout,
+            &mut p,
+            &format!("__pre__.FIR2.u_buffer[{}]", index + 1),
+            value,
+        );
+    }
+
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
+
+    assert_eq!(rows.len(), 5);
+    assert_eq!(actual, vec![10.0, 1.0, 2.0, 3.0, 4.0]);
+}
+
 fn previous_range_slice_array_if_model() -> dae::Dae {
+    previous_range_slice_array_if_model_with_n(2, 3)
+}
+
+fn previous_range_slice_array_if_model_with_n(n: i64, array_len: usize) -> dae::Dae {
     let mut dae_model = dae::Dae::default();
-    insert_previous_range_slice_variables(&mut dae_model);
+    insert_previous_range_slice_variables(&mut dae_model, n, array_len);
     let previous_slice = previous_range_slice_expr();
     dae_model.discrete.real_updates.push(dae::Equation {
         lhs: Some(rumoca_core::VarName::new("y").into()),
-        rhs: previous_range_slice_branch_expr(previous_slice),
+        rhs: previous_range_slice_branch_expr(previous_slice, array_len),
         span: lower_test_span(),
         // MLS §10.5 and §16.4: array subscripts may select ranges, and
         // previous(v[1:n]) preserves the selected array shape element-wise.
         origin: "previous range slice branch".to_string(),
-        scalar_count: 3,
+        scalar_count: array_len,
     });
 
     dae_model
 }
 
-fn insert_previous_range_slice_variables(dae_model: &mut dae::Dae) {
+fn insert_previous_range_slice_variables(dae_model: &mut dae::Dae, n: i64, array_len: usize) {
+    let array_dim = i64::try_from(array_len).expect("test array length fits i64");
     dae_model.variables.parameters.insert(
         rumoca_core::VarName::new("n"),
         dae::Variable {
             name: rumoca_core::VarName::new("n"),
             start: Some(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(2),
+                value: rumoca_core::Literal::Integer(n),
                 span: lower_test_span(),
             }),
             is_tunable: false,
@@ -953,12 +997,12 @@ fn insert_previous_range_slice_variables(dae_model: &mut dae::Dae) {
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
     dae_model.variables.discrete_reals.insert(
         rumoca_core::VarName::new("u_buffer"),
-        source_array_var("u_buffer", &[3]),
+        source_array_var("u_buffer", &[array_dim]),
     );
-    dae_model
-        .variables
-        .discrete_reals
-        .insert(rumoca_core::VarName::new("y"), source_array_var("y", &[3]));
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("y"),
+        source_array_var("y", &[array_dim]),
+    );
 }
 
 fn previous_range_slice_expr() -> rumoca_core::Expression {
@@ -988,6 +1032,7 @@ fn previous_range_slice_expr() -> rumoca_core::Expression {
 
 fn previous_range_slice_branch_expr(
     previous_slice: rumoca_core::Expression,
+    array_len: usize,
 ) -> rumoca_core::Expression {
     let span = lower_test_span();
     rumoca_core::Expression::If {
@@ -997,7 +1042,7 @@ fn previous_range_slice_branch_expr(
                 span,
             },
             rumoca_core::Expression::Array {
-                elements: vec![real_lit(9.0), real_lit(9.0), real_lit(9.0)],
+                elements: (0..array_len).map(|_| real_lit(9.0)).collect(),
                 is_matrix: false,
                 span,
             },
@@ -1019,6 +1064,120 @@ fn previous_range_slice_branch_expr(
             span,
         }),
         span,
+    }
+}
+
+fn fir_previous_slice_array_if_model() -> dae::Dae {
+    let mut dae_model = dae::Dae::default();
+    insert_fir_previous_slice_variables(&mut dae_model);
+    let previous_slice = previous_component_range_slice_expr("FIR2.u_buffer", "FIR2.n");
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("FIR2.u_buffer").into()),
+        rhs: fir_previous_slice_branch_expr(previous_slice),
+        span: lower_test_span(),
+        // MSL Clocked.RealSignals.Periodic.FIRbyCoefficients: previous()
+        // must slice the previous-value buffer before concatenation.
+        origin: "FIR previous range slice branch".to_string(),
+        scalar_count: 5,
+    });
+    dae_model
+}
+
+fn insert_fir_previous_slice_variables(dae_model: &mut dae::Dae) {
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("FIR2.n"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("FIR2.n"),
+            start: Some(int_lit(4)),
+            is_tunable: false,
+            ..dae::Variable::new(rumoca_core::VarName::new("FIR2.n"), lower_test_span())
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("FIR2.cBufStart"),
+        source_array_var("FIR2.cBufStart", &[4]),
+    );
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("FIR2.u"),
+        source_scalar_var("FIR2.u"),
+    );
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("FIR2.u_buffer"),
+        source_array_var("FIR2.u_buffer", &[5]),
+    );
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("FIR2.first"),
+        source_scalar_var("FIR2.first"),
+    );
+    insert_pre_parameter(dae_model, "FIR2.u_buffer", &[5]);
+    insert_pre_parameter(dae_model, "FIR2.first", &[]);
+}
+
+fn previous_component_range_slice_expr(buffer_name: &str, n_name: &str) -> rumoca_core::Expression {
+    let span = lower_test_span();
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("previous").into(),
+        args: vec![rumoca_core::Expression::VarRef {
+            name: source_ref(buffer_name),
+            subscripts: vec![rumoca_core::Subscript::generated_expr(
+                Box::new(rumoca_core::Expression::Range {
+                    start: Box::new(int_lit(1)),
+                    step: None,
+                    end: Box::new(source_var(n_name)),
+                    span,
+                }),
+                span,
+            )],
+            span,
+        }],
+        is_constructor: false,
+        span,
+    }
+}
+
+fn fir_previous_slice_branch_expr(
+    previous_slice: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    let span = lower_test_span();
+    let u = source_var("FIR2.u");
+    rumoca_core::Expression::If {
+        branches: vec![(
+            previous_scalar_expr("FIR2.first"),
+            cat1_expr(vec![
+                singleton_array_expr(u.clone()),
+                mul(u.clone(), source_var("FIR2.cBufStart")),
+            ]),
+        )],
+        else_branch: Box::new(cat1_expr(vec![singleton_array_expr(u), previous_slice])),
+        span,
+    }
+}
+
+fn previous_scalar_expr(name: &str) -> rumoca_core::Expression {
+    let span = lower_test_span();
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("previous").into(),
+        args: vec![source_var(name)],
+        is_constructor: false,
+        span,
+    }
+}
+
+fn singleton_array_expr(expr: rumoca_core::Expression) -> rumoca_core::Expression {
+    rumoca_core::Expression::Array {
+        elements: vec![expr],
+        is_matrix: false,
+        span: lower_test_span(),
+    }
+}
+
+fn cat1_expr(mut operands: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+    let mut args = vec![int_lit(1)];
+    args.append(&mut operands);
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Cat,
+        args,
+        span: lower_test_span(),
     }
 }
 

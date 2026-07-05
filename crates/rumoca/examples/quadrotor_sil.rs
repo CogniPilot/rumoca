@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use rumoca_sim::web::three_js;
-use rumoca_sim::{SimOptions, SimStepper};
+use rumoca_sim::{SimOptions, SimulationSession};
 use tungstenite::{Message, accept};
 
 const HTTP_PORT: u16 = 8080;
@@ -259,7 +259,7 @@ pub struct SensorOutput {
 }
 
 pub struct QuadrotorSil {
-    stepper: SimStepper,
+    session: SimulationSession,
     model_source: String,
 }
 
@@ -268,7 +268,7 @@ impl QuadrotorSil {
         let source = MODEL_SOURCE.to_string();
         let compiler = rumoca::Compiler::new().model("QuadrotorSIL");
         let result = compiler.compile_str(&source, "QuadrotorSIL.mo")?;
-        let stepper = SimStepper::new(
+        let session = SimulationSession::new(
             &result.dae,
             SimOptions {
                 rtol: 1e-4,
@@ -277,7 +277,7 @@ impl QuadrotorSil {
             },
         )?;
         Ok(Self {
-            stepper,
+            session,
             model_source: source,
         })
     }
@@ -288,18 +288,19 @@ impl QuadrotorSil {
         motor_rpms: [f64; 4],
         clock_sec: f64,
     ) -> anyhow::Result<SensorOutput> {
-        let _ = self.stepper.set_input("omega_m1", motor_rpms[0]);
-        let _ = self.stepper.set_input("omega_m2", motor_rpms[1]);
-        let _ = self.stepper.set_input("omega_m3", motor_rpms[2]);
-        let _ = self.stepper.set_input("omega_m4", motor_rpms[3]);
+        let _ = self.session.set_input("omega_m1", motor_rpms[0]);
+        let _ = self.session.set_input("omega_m2", motor_rpms[1]);
+        let _ = self.session.set_input("omega_m3", motor_rpms[2]);
+        let _ = self.session.set_input("omega_m4", motor_rpms[3]);
 
-        let current_time = self.stepper.time();
+        let current_time = self.session.time();
         let dt = clock_sec - current_time;
         if dt > 0.0 {
             let n_steps = ((dt / MAX_SUB_DT).ceil() as usize).max(1);
             let sub_dt = dt / n_steps as f64;
             for _ in 0..n_steps {
-                self.stepper.step(sub_dt)?;
+                let target = self.session.time() + sub_dt;
+                self.session.advance_to(target)?;
             }
         }
         self.read_sensors()
@@ -307,12 +308,12 @@ impl QuadrotorSil {
 
     pub fn read_sensors(&self) -> anyhow::Result<SensorOutput> {
         let get = |name: &str| -> anyhow::Result<f64> {
-            self.stepper
+            self.session
                 .get(name)?
-                .ok_or_else(|| anyhow::anyhow!("stepper variable '{name}' is not visible"))
+                .ok_or_else(|| anyhow::anyhow!("session variable '{name}' is not visible"))
         };
         Ok(SensorOutput {
-            clock_sec: self.stepper.time(),
+            clock_sec: self.session.time(),
             accel: [get("accel_x")?, get("accel_y")?, get("accel_z")?],
             gyro: [get("gyro_x")?, get("gyro_y")?, get("gyro_z")?],
             mag: [get("mag_x")?, get("mag_y")?, get("mag_z")?],
@@ -324,13 +325,13 @@ impl QuadrotorSil {
 
     pub fn state_json(&self, mode: &str) -> anyhow::Result<String> {
         let get = |name: &str| -> anyhow::Result<f64> {
-            self.stepper
+            self.session
                 .get(name)?
-                .ok_or_else(|| anyhow::anyhow!("stepper variable '{name}' is not visible"))
+                .ok_or_else(|| anyhow::anyhow!("session variable '{name}' is not visible"))
         };
         let value = serde_json::json!({
             "mode": mode,
-            "t": self.stepper.time(),
+            "t": self.session.time(),
             "px": get("px")?, "py": get("py")?, "pz": get("pz")?,
             "vx": get("vx")?, "vy": get("vy")?, "vz": get("vz")?,
             "q0": get("q0")?,
@@ -351,7 +352,7 @@ impl QuadrotorSil {
     pub fn reset(&mut self) -> anyhow::Result<()> {
         let compiler = rumoca::Compiler::new().model("QuadrotorSIL");
         let result = compiler.compile_str(&self.model_source, "QuadrotorSIL.mo")?;
-        self.stepper = SimStepper::new(
+        self.session = SimulationSession::new(
             &result.dae,
             SimOptions {
                 rtol: 1e-4,
@@ -363,7 +364,7 @@ impl QuadrotorSil {
     }
 
     pub fn time(&self) -> f64 {
-        self.stepper.time()
+        self.session.time()
     }
 
     /// Convert SensorOutput to a cerebri flight_snapshot flatbuffer.
@@ -686,7 +687,7 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("Compiling QuadrotorSIL model...");
     let mut sil = QuadrotorSil::new()?;
-    eprintln!("Inputs: {:?}", sil.stepper.input_names());
+    eprintln!("Inputs: {:?}", sil.session.input_names());
 
     let omega_hover = hover_omega();
     eprintln!(

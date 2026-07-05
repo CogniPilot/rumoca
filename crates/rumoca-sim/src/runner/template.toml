@@ -44,7 +44,9 @@ name = "MyClosedLoopVehicle"
 # ── Simulation ────────────────────────────────────────────────────────────
 [sim]
 dt = 0.01          # simulation timestep in seconds
-t_end = 10.0       # batch/report stop time; interactive runners may ignore this
+t_end = 10.0       # simulation stop time
+atol = 1e-6        # optional absolute solver tolerance
+rtol = 1e-6        # optional relative solver tolerance
 solver = "auto"    # auto | bdf | rk-like
 output = "results.html"
 mode = "realtime"  # Optional runner pacing:
@@ -52,6 +54,17 @@ mode = "realtime"  # Optional runner pacing:
                    #   "realtime"            — zero-order-hold inputs and sleep to wall-clock dt.
                    #   "lockstep"            — wait for each external packet before stepping.
                    # Defaults to "lockstep" with external coupling and "realtime" standalone.
+steps_per_packet = 1
+                   # Lockstep only: advance this many dt steps after each packet.
+                   # Use e.g. 4 for a 25 Hz controller with a 100 Hz plant dt.
+
+# Optional multirate lockstep scheduler. When present, this supersedes
+# steps_per_packet: the runner streams [send] at send_rate_hz and waits for one
+# [receive] packet at each receive_rate_hz barrier before advancing further.
+# [lockstep]
+# send_rate_hz = 240
+# receive_rate_hz = 50
+# max_advance_dt = 0.002
 
 # ── Transports ────────────────────────────────────────────────────────────
 # HTTP + WebSocket always needed for the viewer.
@@ -67,14 +80,25 @@ scene = "my_scene.js"  # relative to this scenario
 # [transport.udp]
 # listen = "0.0.0.0:4244"
 # send   = "127.0.0.1:4242"
+#
+# [transport.zenoh]
+# mode = "peer"
+# endpoint = "tcp/192.168.10.50:7447" # optional router/peer to connect to
+#
+# [publish]
+# sim_input = "synapse/sim_input"
+# motor_output = "synapse/motor_output"
+#
+# [subscribe]
+# motor_output = "synapse/motor_output"
 
 # [external_interface]
 # command = "/path/to/external-process"
 
 # ── External interface coupling (optional, all-or-nothing) ────────────────
 # Provide all three — [schema], [receive], [send] — to couple via FlatBuffer
-# over UDP. Omit all three for standalone mode (gamepad drives stepper
-# directly via [signals.stepper_inputs]).
+# over UDP. Omit all three for standalone mode (gamepad drives model
+# directly via [signals.model_inputs]).
 #
 # [schema]
 # bfbs = ["/path/to/your_schema.bfbs"]
@@ -83,7 +107,7 @@ scene = "my_scene.js"  # relative to this scenario
 # root_type = "your.namespace.MotorOutput"
 #
 # [receive.route]
-# "motors.m0" = { to = "stepper:omega_m1", scale = 1100.0 }
+# "motors.m0" = { to = "model:omega_m1", scale = 1100.0 }
 # "armed"     = { to = "local:armed" }
 #
 # [send]
@@ -150,8 +174,8 @@ mode = "auto"
 
 # ── Signals ───────────────────────────────────────────────────────────────
 # Sources for signal values:
-#   "stepper:name"              — read from the compiled model
-#   "stepper:time"              — simulation time
+#   "model:name"              — read from the compiled model
+#   "model:time"              — simulation time
 #   "local:name" / "local:rc.2" — engine-managed locals (with array index)
 #   "runtime:frame_num"         — integer frame counter
 #   "runtime:wall_ms"           — wall-clock ms since epoch
@@ -159,40 +183,40 @@ mode = "auto"
 #   "runtime:input_mode"        — "gamepad" | "keyboard"
 #
 # Value forms:
-#   "stepper:foo"                                    — plain ref
-#   { from = "stepper:foo", default = 1.0 }          — fallback if missing
+#   "model:foo"                                    — plain ref
+#   { from = "model:foo", default = 1.0 }          — fallback if missing
 #   { from = "bool_local", when_true = X, when_false = Y }  — branch
 #   { const = 1.0 }                                  — constant
 [signals]
 
-# [signals.stepper_inputs]
+# [signals.model_inputs]
 # Standalone mode uses this to drive model inputs directly from locals
-# (no external-interface round trip). Keys are stepper input names.
-# [signals.stepper_inputs]
+# (no external-interface round trip). Keys are model input names.
+# [signals.model_inputs]
 # throttle = "local:throttle"
 
 # [signals.send]
 # Required only if [schema]/[receive]/[send] are configured. Each key
 # populates a named slot in the outgoing SignalFrame.
 # [signals.send]
-# gyro_x = "stepper:gyro_x"
+# gyro_x = "model:gyro_x"
 # imu_valid = { const = 1.0 }
 
 # [signals.viewer]
 # What the browser viewer receives as JSON each frame.
 [signals.viewer]
-t     = "stepper:time"
+t     = "model:time"
 frame = "runtime:frame_num"
-# px = "stepper:px"
-# py = "stepper:py"
-# pz = "stepper:pz"
+# px = "model:px"
+# py = "model:py"
+# pz = "model:pz"
 
 # ── Reset behavior ────────────────────────────────────────────────────────
 # Fires when the named signal is emitted (e.g. from the "reset" keybinding).
 [reset]
 on_signal         = "reset"
 reset_locals      = true
-rebuild_stepper   = true
+reset_session   = true
 restart_external_interface = false
 
 # ── Viewer presentation ───────────────────────────────────────────────────

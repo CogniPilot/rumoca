@@ -13,9 +13,9 @@ mod gpu_api;
 mod scenario_config_api;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
-pub mod source_root_api;
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
-mod stepper_api;
+mod simulation_session_api;
+pub mod source_root_api;
 mod workspace_config_api;
 
 use std::{
@@ -70,6 +70,8 @@ use crate::simulation_api::{
     model_parameter_metadata_with_workspace_sources_impl, simulate_model_impl,
     simulate_model_with_source_roots_impl, simulate_model_with_workspace_sources_impl,
 };
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+pub use crate::simulation_session_api::WasmSimulationSession;
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots,
     compile_check_with_source_roots_with_options, compile_with_source_roots,
@@ -79,8 +81,6 @@ pub use crate::source_root_api::{
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_workspace_sources,
 };
-#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
-pub use crate::stepper_api::WasmStepper;
 pub use crate::workspace_config_api::workspace_effective_source_roots;
 
 fn checked_vec_with_capacity<T>(capacity: usize, kind: &'static str) -> Result<Vec<T>, JsValue> {

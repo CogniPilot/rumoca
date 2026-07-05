@@ -6,8 +6,8 @@
 //!   - a JSON object for the browser viewer (preserves int/bool/float)
 //!
 //! Sources resolvable in signal specs:
-//!   - `stepper:time`                       → `stepper_time` argument
-//!   - `stepper:<name>`                     → `stepper_get(name)`
+//!   - `model:time`                       → `model_time` argument
+//!   - `model:<name>`                     → `model_get(name)`
 //!   - `local:<name>` / `local:<name>.<idx>`→ input engine locals
 //!   - `runtime:frame_num` / `wall_ms`      → `RuntimeContext`
 //!   - `runtime:input_connected` (bool)     → `RuntimeContext`
@@ -33,9 +33,9 @@ pub struct RuntimeContext<'a> {
     pub input_connected: bool,
     pub input_mode: InputMode,
     pub input_message: Option<&'a str>,
-    pub stepper_time: f64,
-    /// Read a named stepper variable. Return `Ok(None)` if unknown.
-    pub stepper_get: &'a dyn Fn(&str) -> Result<Option<f64>>,
+    pub model_time: f64,
+    /// Read a named model variable. Return `Ok(None)` if unknown.
+    pub model_get: &'a dyn Fn(&str) -> Result<Option<f64>>,
 }
 
 #[derive(Debug)]
@@ -43,16 +43,16 @@ pub struct SignalMapper {
     /// Order-preserving (matches config order for deterministic JSON output).
     send: Vec<(String, CompiledSpec)>,
     viewer: Vec<(String, CompiledSpec)>,
-    stepper_inputs: Vec<(String, CompiledSpec)>,
-    stepper_lookup_names: Vec<String>,
+    model_inputs: Vec<(String, CompiledSpec)>,
+    model_lookup_names: Vec<String>,
 }
 
 // ── Compiled source representation ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 enum ValueSource {
-    StepperTime,
-    StepperVar(String),
+    ModelTime,
+    ModelVar(String),
     LocalFloat(Path),
     LocalInt(Path),
     LocalBool(Path),
@@ -84,14 +84,13 @@ impl SignalMapper {
     pub fn new(cfg: &SignalsConfig, locals: &HashMap<String, LocalDef>) -> Result<Self> {
         let send = compile_section(&cfg.send, locals, "signals.send")?;
         let viewer = compile_section(&cfg.viewer, locals, "signals.viewer")?;
-        let stepper_inputs =
-            compile_section(&cfg.stepper_inputs, locals, "signals.stepper_inputs")?;
-        let stepper_lookup_names = collect_stepper_lookup_names([&send, &viewer, &stepper_inputs]);
+        let model_inputs = compile_section(&cfg.model_inputs, locals, "signals.model_inputs")?;
+        let model_lookup_names = collect_model_lookup_names([&send, &viewer, &model_inputs]);
         Ok(Self {
             send,
             viewer,
-            stepper_inputs,
-            stepper_lookup_names,
+            model_inputs,
+            model_lookup_names,
         })
     }
 
@@ -118,15 +117,15 @@ impl SignalMapper {
         Ok(JsonValue::Object(obj).to_string())
     }
 
-    /// Resolve `[signals.stepper_inputs]` into `(stepper_input_name, value)`
-    /// pairs. The sim loop calls `stepper.set_input` with each pair. Used in
+    /// Resolve `[signals.model_inputs]` into `(model_input_name, value)`
+    /// pairs. The sim loop calls `model.set_input` with each pair. Used in
     /// standalone mode (no external interface) to drive model inputs from locals.
-    pub fn build_stepper_inputs(
+    pub fn build_model_inputs(
         &self,
         engine: &InputEngine,
         rt: &RuntimeContext<'_>,
     ) -> Result<Vec<(String, f64)>> {
-        self.stepper_inputs
+        self.model_inputs
             .iter()
             .map(|(key, spec)| {
                 let value = eval(key, spec, engine, rt)?;
@@ -135,8 +134,8 @@ impl SignalMapper {
             .collect()
     }
 
-    pub fn stepper_lookup_names(&self) -> &[String] {
-        &self.stepper_lookup_names
+    pub fn model_lookup_names(&self) -> &[String] {
+        &self.model_lookup_names
     }
 }
 
@@ -202,11 +201,11 @@ fn parse_source(
     ctx: &str,
     key: &str,
 ) -> Result<ValueSource> {
-    if let Some(rest) = s.strip_prefix("stepper:") {
+    if let Some(rest) = s.strip_prefix("model:") {
         if rest == "time" {
-            return Ok(ValueSource::StepperTime);
+            return Ok(ValueSource::ModelTime);
         }
-        return Ok(ValueSource::StepperVar(rest.to_string()));
+        return Ok(ValueSource::ModelVar(rest.to_string()));
     }
     if let Some(rest) = s.strip_prefix("local:") {
         let path = Path::parse(rest);
@@ -260,7 +259,7 @@ fn parse_source(
         });
     }
     bail!(
-        "{}.{}: reference '{}' must use a `stepper:`, `local:`, or `runtime:` prefix",
+        "{}.{}: reference '{}' must use a `model:`, `local:`, or `runtime:` prefix",
         ctx,
         key,
         s
@@ -274,29 +273,29 @@ fn source_is_bool_compatible(source: &ValueSource) -> bool {
     )
 }
 
-fn collect_stepper_lookup_names<'a>(
+fn collect_model_lookup_names<'a>(
     sections: impl IntoIterator<Item = &'a Vec<(String, CompiledSpec)>>,
 ) -> Vec<String> {
     let mut names = BTreeSet::new();
     for section in sections {
         for (_, spec) in section {
-            collect_spec_stepper_names(spec, &mut names);
+            collect_spec_model_names(spec, &mut names);
         }
     }
     names.into_iter().collect()
 }
 
-fn collect_spec_stepper_names(spec: &CompiledSpec, names: &mut BTreeSet<String>) {
+fn collect_spec_model_names(spec: &CompiledSpec, names: &mut BTreeSet<String>) {
     match spec {
-        CompiledSpec::Direct(source) => collect_source_stepper_name(source, names),
-        CompiledSpec::WithDefault { source, .. } => collect_source_stepper_name(source, names),
-        CompiledSpec::Conditional { source, .. } => collect_source_stepper_name(source, names),
+        CompiledSpec::Direct(source) => collect_source_model_name(source, names),
+        CompiledSpec::WithDefault { source, .. } => collect_source_model_name(source, names),
+        CompiledSpec::Conditional { source, .. } => collect_source_model_name(source, names),
         CompiledSpec::Const(_) => {}
     }
 }
 
-fn collect_source_stepper_name(source: &ValueSource, names: &mut BTreeSet<String>) {
-    if let ValueSource::StepperVar(name) = source {
+fn collect_source_model_name(source: &ValueSource, names: &mut BTreeSet<String>) {
+    if let ValueSource::ModelVar(name) = source {
         names.insert(name.clone());
     }
 }
@@ -353,8 +352,8 @@ fn resolve_source(
     rt: &RuntimeContext<'_>,
 ) -> Result<Option<JsonValue>> {
     match source {
-        ValueSource::StepperTime => Ok(Some(JsonValue::from(rt.stepper_time))),
-        ValueSource::StepperVar(name) => Ok((rt.stepper_get)(name)?.map(JsonValue::from)),
+        ValueSource::ModelTime => Ok(Some(JsonValue::from(rt.model_time))),
+        ValueSource::ModelVar(name) => Ok((rt.model_get)(name)?.map(JsonValue::from)),
         ValueSource::LocalFloat(p) => Ok(engine.get(&fmt_path(p)).map(JsonValue::from)),
         ValueSource::LocalInt(p) => Ok(engine.get(&fmt_path(p)).map(|f| JsonValue::from(f as i64))),
         ValueSource::LocalBool(p) => Ok(engine.get_bool(&fmt_path(p)).map(JsonValue::from)),
@@ -437,8 +436,8 @@ default = 0.0
 type = "float"
 
 [signals.send]
-accel_z = "stepper:accel[3]"
-gyro_x = "stepper:gyro[1]"
+accel_z = "model:accel[3]"
+gyro_x = "model:gyro[1]"
 imu_valid = { const = 1.0 }
 rc_2 = "local:rc.2"
 rc_link_quality = { from = "runtime:input_connected", when_false = 0.0, when_true = 255.0 }
@@ -448,9 +447,9 @@ rc_valid = { from = "runtime:input_connected", when_false = 0.0, when_true = 1.0
 armed = "local:armed"
 frame = "runtime:frame_num"
 input_mode = "runtime:input_mode"
-q0 = { from = "stepper:quat[1]", default = 1.0 }
+q0 = { from = "model:quat[1]", default = 1.0 }
 rc_throttle = "local:rc.2"
-t = "stepper:time"
+t = "model:time"
 "#;
 
     fn build_engine(cfg: &Bundle) -> InputEngine {
@@ -461,13 +460,13 @@ t = "stepper:time"
         InputEngine::from_parts_for_test(defaults, compiled)
     }
 
-    fn stepper_get_fn(map: &HashMap<String, f64>) -> impl Fn(&str) -> Result<Option<f64>> + '_ {
+    fn model_get_fn(map: &HashMap<String, f64>) -> impl Fn(&str) -> Result<Option<f64>> + '_ {
         move |name: &str| Ok(map.get(name).copied())
     }
 
     fn make_rt<'a>(
         time: f64,
-        stepper_get: &'a dyn Fn(&str) -> Result<Option<f64>>,
+        model_get: &'a dyn Fn(&str) -> Result<Option<f64>>,
     ) -> RuntimeContext<'a> {
         RuntimeContext {
             frame_num: 42,
@@ -475,18 +474,18 @@ t = "stepper:time"
             input_connected: true,
             input_mode: InputMode::Gamepad,
             input_message: None,
-            stepper_time: time,
-            stepper_get,
+            model_time: time,
+            model_get,
         }
     }
 
     #[test]
-    fn send_frame_uses_stepper_and_local_refs() {
+    fn send_frame_uses_model_and_local_refs() {
         let cfg = load_cfg();
         let mut engine = build_engine(&cfg);
         engine.apply_derive_for_test(); // initialize rc.0..rc.4
 
-        let stepper_vars: HashMap<String, f64> = [
+        let model_vars: HashMap<String, f64> = [
             ("gyro[1]", 0.1),
             ("gyro[2]", 0.2),
             ("gyro[3]", 0.3),
@@ -497,7 +496,7 @@ t = "stepper:time"
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        let get = stepper_get_fn(&stepper_vars);
+        let get = model_get_fn(&model_vars);
         let rt = make_rt(0.5, &get);
 
         let mapper =
@@ -520,7 +519,7 @@ t = "stepper:time"
         let cfg = load_cfg();
         let mut engine = build_engine(&cfg);
         engine.apply_derive_for_test();
-        let stepper_vars: HashMap<String, f64> = [
+        let model_vars: HashMap<String, f64> = [
             ("gyro[1]", 0.1),
             ("gyro[2]", 0.2),
             ("gyro[3]", 0.3),
@@ -531,7 +530,7 @@ t = "stepper:time"
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        let get = stepper_get_fn(&stepper_vars);
+        let get = model_get_fn(&model_vars);
         let mut rt = make_rt(0.0, &get);
         rt.input_connected = false;
 
@@ -547,10 +546,10 @@ t = "stepper:time"
         let mut engine = build_engine(&cfg);
         engine.apply_derive_for_test();
 
-        let mut stepper_vars: HashMap<String, f64> = HashMap::new();
-        stepper_vars.insert("quat[1]".into(), 0.987);
-        stepper_vars.insert("position[1]".into(), 1.5);
-        let get = stepper_get_fn(&stepper_vars);
+        let mut model_vars: HashMap<String, f64> = HashMap::new();
+        model_vars.insert("quat[1]".into(), 0.987);
+        model_vars.insert("position[1]".into(), 1.5);
+        let get = model_get_fn(&model_vars);
         let rt = make_rt(1.25, &get);
 
         let mapper = SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).unwrap();
@@ -567,14 +566,14 @@ t = "stepper:time"
 
     #[test]
     fn viewer_with_default_uses_default_when_source_missing() {
-        // q0 has { from = "stepper:q0", default = 1.0 }. With no q0 in the
-        // stepper map, the default should kick in.
+        // q0 has { from = "model:q0", default = 1.0 }. With no q0 in the
+        // model map, the default should kick in.
         let cfg = load_cfg();
         let mut engine = build_engine(&cfg);
         engine.apply_derive_for_test();
 
-        let stepper_vars: HashMap<String, f64> = HashMap::new();
-        let get = stepper_get_fn(&stepper_vars);
+        let model_vars: HashMap<String, f64> = HashMap::new();
+        let get = model_get_fn(&model_vars);
         let rt = make_rt(0.0, &get);
 
         let mapper = SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).unwrap();
@@ -591,7 +590,7 @@ t = "stepper:time"
         let sig = SignalsConfig {
             send,
             viewer: HashMap::new(),
-            stepper_inputs: HashMap::new(),
+            model_inputs: HashMap::new(),
         };
         let err = SignalMapper::new(&sig, &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("not declared"), "got: {err}");
@@ -605,7 +604,7 @@ t = "stepper:time"
         let sig = SignalsConfig {
             send: HashMap::new(),
             viewer,
-            stepper_inputs: HashMap::new(),
+            model_inputs: HashMap::new(),
         };
         let err = SignalMapper::new(&sig, &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("unknown runtime"), "got: {err}");
@@ -619,7 +618,7 @@ t = "stepper:time"
         let sig = SignalsConfig {
             send,
             viewer: HashMap::new(),
-            stepper_inputs: HashMap::new(),
+            model_inputs: HashMap::new(),
         };
         let err = SignalMapper::new(&sig, &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("prefix"), "got: {err}");
