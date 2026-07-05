@@ -18,7 +18,8 @@ pub use balance_initial_closure::InitialClosureBalanceDetail;
 mod balance_alias;
 use balance_alias::{
     is_absent_lhs_component_alias, is_input_forwarding_connection_alias,
-    is_non_constraining_binding_alias, is_vector_forwarding_alias,
+    is_non_constraining_binding_alias, is_surplus_component_vector_forwarding_alias,
+    is_vector_forwarding_alias,
 };
 
 pub type BalanceResult<T> = Result<T, BalanceError>;
@@ -516,6 +517,11 @@ fn count_surplus_component_alias_scalars(dae_model: &dae::Dae) -> usize {
                 &continuous_unknown_symbols,
                 &output_symbols,
                 &component_defined_symbols,
+            ) || is_surplus_component_vector_forwarding_alias(
+                eq,
+                &continuous_unknown_symbols,
+                &output_symbols,
+                &component_defined_symbols,
             )
         })
         .map(|eq| eq.scalar_count)
@@ -525,7 +531,7 @@ fn count_surplus_component_alias_scalars(dae_model: &dae::Dae) -> usize {
 fn is_surplus_component_connection_alias(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
-    component_defined_targets: &BalanceSymbolSet,
+    _component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     if eq.scalar_count <= 1 || !is_connection_origin(eq.origin.as_str()) {
         return false;
@@ -534,9 +540,7 @@ fn is_surplus_component_connection_alias(
     let [lhs, rhs] = refs.as_slice() else {
         return false;
     };
-    component_defined_targets.matches_reference(lhs)
-        && continuous_unknowns.matches_reference(rhs)
-        && !component_defined_targets.matches_reference(rhs)
+    continuous_unknowns.matches_reference(lhs) && continuous_unknowns.matches_reference(rhs)
 }
 
 fn is_surplus_component_binding_alias(
@@ -545,7 +549,9 @@ fn is_surplus_component_binding_alias(
     output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
-    if eq.scalar_count <= 1 || !eq.origin.starts_with("binding equation for") {
+    if !eq.origin.starts_with("binding equation for")
+        || (eq.scalar_count <= 1 && !eq.origin.contains(" [scalarized "))
+    {
         return false;
     }
     let refs = eq_binary_var_refs(&eq.rhs);

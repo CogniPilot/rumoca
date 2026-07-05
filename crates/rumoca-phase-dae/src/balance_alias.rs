@@ -4,8 +4,8 @@ use rumoca_ir_dae as dae;
 pub(super) fn is_vector_forwarding_alias(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
-    output_names: &BalanceSymbolSet,
-    component_defined_targets: &BalanceSymbolSet,
+    _output_names: &BalanceSymbolSet,
+    _component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     if eq.scalar_count <= 1 {
         let Some((lhs, rhs)) = eq_binary_lhs_rhs(&eq.rhs) else {
@@ -22,21 +22,36 @@ pub(super) fn is_vector_forwarding_alias(
         return false;
     };
     if matches!(lhs, rumoca_core::Expression::FieldAccess { .. }) {
-        return true;
+        return !lhs_matches_symbols(lhs, continuous_unknowns);
     }
-    let Some(rhs_name) = forwarded_value_ref(rhs) else {
+    if forwarded_value_ref(rhs).is_none() {
         return false;
-    };
+    }
     if !lhs_is_forwarding_target(lhs) {
         return false;
     }
-    let lhs_is_component_defined = lhs_matches_symbols(lhs, component_defined_targets);
-    let lhs_is_continuous_unknown = lhs_matches_symbols(lhs, continuous_unknowns);
-    !lhs_is_continuous_unknown
-        || (lhs_is_component_defined
-            && (lhs_matches_symbols(lhs, output_names)
-                || output_names.matches_reference(rhs_name)
-                || component_defined_targets.matches_reference(rhs_name)))
+    !lhs_matches_symbols(lhs, continuous_unknowns)
+}
+
+pub(super) fn is_surplus_component_vector_forwarding_alias(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+    _output_names: &BalanceSymbolSet,
+    _component_defined_targets: &BalanceSymbolSet,
+) -> bool {
+    if (eq.scalar_count <= 1 && !eq.origin.contains(" [scalarized "))
+        || !(eq.origin.starts_with("binding equation for")
+            || eq.origin.starts_with("equation from "))
+    {
+        return false;
+    }
+    let Some((lhs, rhs)) = eq_binary_lhs_rhs(&eq.rhs) else {
+        return false;
+    };
+    if forwarded_value_ref(rhs).is_none() {
+        return false;
+    }
+    lhs_is_forwarding_target(lhs) && lhs_matches_symbols(lhs, continuous_unknowns)
 }
 
 fn lhs_is_forwarding_target(expr: &rumoca_core::Expression) -> bool {
