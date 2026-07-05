@@ -677,6 +677,25 @@ impl<'a> LowerBuilder<'a> {
         if matches!(function, rumoca_core::BuiltinFunction::Size) {
             return self.eval_compile_time_size(args, span, const_scope);
         }
+        match function {
+            rumoca_core::BuiltinFunction::Min if args.len() == 1 => {
+                return self.eval_compile_time_array_reduction(
+                    &args[0],
+                    const_scope,
+                    f64::min,
+                    "min",
+                );
+            }
+            rumoca_core::BuiltinFunction::Max if args.len() == 1 => {
+                return self.eval_compile_time_array_reduction(
+                    &args[0],
+                    const_scope,
+                    f64::max,
+                    "max",
+                );
+            }
+            _ => {}
+        }
         let arg0 = eval_builtin_arg(self, args, 0, const_scope)?;
         match function {
             rumoca_core::BuiltinFunction::Abs => Ok(arg0.abs()),
@@ -687,10 +706,26 @@ impl<'a> LowerBuilder<'a> {
             }
             rumoca_core::BuiltinFunction::Ceil => Ok(arg0.ceil()),
             rumoca_core::BuiltinFunction::Min => {
+                if args.len() == 1 {
+                    return self.eval_compile_time_array_reduction(
+                        &args[0],
+                        const_scope,
+                        f64::min,
+                        "min",
+                    );
+                }
                 let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
                 Ok(arg0.min(arg1))
             }
             rumoca_core::BuiltinFunction::Max => {
+                if args.len() == 1 {
+                    return self.eval_compile_time_array_reduction(
+                        &args[0],
+                        const_scope,
+                        f64::max,
+                        "max",
+                    );
+                }
                 let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
                 Ok(arg0.max(arg1))
             }
@@ -740,6 +775,46 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
+    fn eval_compile_time_array_reduction(
+        &self,
+        expr: &rumoca_core::Expression,
+        const_scope: &IndexMap<String, f64>,
+        op: fn(f64, f64) -> f64,
+        name: &'static str,
+    ) -> Result<f64, LowerError> {
+        let mut values = Vec::new();
+        self.collect_compile_time_array_scalars(expr, const_scope, &mut values)?;
+        let mut iter = values.into_iter();
+        let Some(first) = iter.next() else {
+            return Err(unsupported_at(
+                format!("{name}() requires a non-empty array argument"),
+                self.statement_expr_span(expr)?,
+            ));
+        };
+        Ok(iter.fold(first, op))
+    }
+
+    fn collect_compile_time_array_scalars(
+        &self,
+        expr: &rumoca_core::Expression,
+        const_scope: &IndexMap<String, f64>,
+        values: &mut Vec<f64>,
+    ) -> Result<(), LowerError> {
+        match expr {
+            rumoca_core::Expression::Array { elements, .. }
+            | rumoca_core::Expression::Tuple { elements, .. } => {
+                for element in elements {
+                    self.collect_compile_time_array_scalars(element, const_scope, values)?;
+                }
+                Ok(())
+            }
+            _ => {
+                values.push(self.eval_compile_time_expr(expr, const_scope)?);
+                Ok(())
+            }
+        }
+    }
+
     pub(super) fn eval_compile_time_size(
         &self,
         args: &[rumoca_core::Expression],
@@ -757,6 +832,25 @@ impl<'a> LowerBuilder<'a> {
         let Some(expr) = args.first() else {
             return Err(unsupported_at("size() requires an array expression", span));
         };
+        if let rumoca_core::Expression::Range {
+            start,
+            step,
+            end,
+            span: range_span,
+        } = expr
+        {
+            if dim == 1 {
+                let values = self.eval_compile_time_range_values(
+                    start,
+                    step.as_deref(),
+                    end,
+                    *range_span,
+                    const_scope,
+                    "size range dimension",
+                )?;
+                return Ok(values.len() as f64);
+            }
+        }
         let rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } = expr

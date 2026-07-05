@@ -1633,6 +1633,13 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {
         return Ok(runtime_vector_dims(elements.len()));
     }
+    if let rumoca_core::Expression::Range {
+        start, step, end, ..
+    } = expr
+    {
+        let values = try_eval_range_values::<T>(start, step.as_deref(), end, env)?;
+        return Ok(vec![values.len()]);
+    }
     if let rumoca_core::Expression::FieldAccess { base, field, .. } = expr
         && let rumoca_core::Expression::FunctionCall { name, args, .. } = base.as_ref()
         && !env.functions.contains_key(name.as_str())

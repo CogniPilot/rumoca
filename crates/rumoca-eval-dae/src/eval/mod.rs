@@ -1256,6 +1256,12 @@ fn string_valued_function_call_name(name: &rumoca_core::VarName) -> bool {
 pub fn can_broadcast_start_value(expr: &rumoca_core::Expression, env: &VarEnv<f64>) -> bool {
     match expr {
         rumoca_core::Expression::Literal { .. } => true,
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. }
+            if elements.len() == 1 =>
+        {
+            can_broadcast_start_value(&elements[0], env)
+        }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() && env.enum_literal_ordinals.contains_key(name.as_str()) => true,
@@ -1265,10 +1271,21 @@ pub fn can_broadcast_start_value(expr: &rumoca_core::Expression, env: &VarEnv<f6
             else_branch,
             ..
         } => {
-            branches
-                .iter()
-                .all(|(_, value)| can_broadcast_start_value(value, env))
-                && can_broadcast_start_value(else_branch, env)
+            for (condition, value) in branches {
+                match eval_expr::<f64>(condition, env) {
+                    Ok(selected) if selected != 0.0 => {
+                        return can_broadcast_start_value(value, env);
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        return branches
+                            .iter()
+                            .all(|(_, value)| can_broadcast_start_value(value, env))
+                            && can_broadcast_start_value(else_branch, env);
+                    }
+                }
+            }
+            can_broadcast_start_value(else_branch, env)
         }
         _ => false,
     }

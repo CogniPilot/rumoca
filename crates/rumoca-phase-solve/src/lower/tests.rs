@@ -501,6 +501,92 @@ fn size_builtin_rejects_unspanned_base_without_fabricating_span() {
 }
 
 #[test]
+fn size_builtin_lowers_compile_time_builtin_array_dimension() {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = super::LowerBuilder::new(&layout, &functions);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_lower_tests_source_32.mo"),
+        4,
+        24,
+    );
+    let fill = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(0.0),
+                span,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                span,
+            },
+        ],
+        span,
+    };
+
+    let reg = builder
+        .lower_size_builtin(&[fill, int_lit(2)], span, &Scope::new(), 0)
+        .expect("size(fill(...), 2) should lower from compile-time shape");
+
+    assert_eq!(reg, 0);
+    assert!(matches!(
+        builder.ops.as_slice(),
+        [LinearOp::Const { dst: 0, value }] if (*value - 2.0).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn scalar_type_constructor_lowers_start_attribute_value() {
+    let span = lower_test_span();
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("SI.Time").into(),
+        args: vec![
+            named_arg("min", real_lit(f64::MIN_POSITIVE)),
+            named_arg("start", real_lit(1.0)),
+        ],
+        is_constructor: true,
+        span,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
+        .expect("scalar type constructor with start attribute should lower");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn scalar_type_constructor_in_multiplication_infers_scalar_shape() {
+    let span = lower_test_span();
+    let constructor = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("SI.Time").into(),
+        args: vec![
+            named_arg("min", real_lit(f64::MIN_POSITIVE)),
+            named_arg("start", real_lit(1.0)),
+        ],
+        is_constructor: true,
+        span,
+    };
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        lhs: Box::new(constructor),
+        rhs: Box::new(real_lit(2.0)),
+        span,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
+        .expect("scalar type constructor should infer scalar dimensions before multiplication");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 2.0).abs() < 1e-12);
+}
+
+#[test]
 fn size_from_dims_rejects_register_allocation_overflow_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();

@@ -49,6 +49,10 @@ impl<'a> LowerBuilder<'a> {
                     self.infer_expr_dims(element, scope)
                 })?
             }
+            rumoca_core::Expression::FunctionCall {
+                is_constructor: true,
+                ..
+            } => Vec::new(),
             rumoca_core::Expression::FunctionCall { name, span, .. } => {
                 self.infer_function_call_output_dims(name, *span)?
             }
@@ -67,8 +71,7 @@ impl<'a> LowerBuilder<'a> {
                 step,
                 end,
                 span,
-            } => lower_static_range_values(start, step.as_deref(), end, *span)?
-                .map_or_else(Vec::new, |values| vector_dims(values.len())),
+            } => self.infer_range_dims(start, step.as_deref(), end, *span)?,
             rumoca_core::Expression::If {
                 branches,
                 else_branch,
@@ -111,6 +114,29 @@ impl<'a> LowerBuilder<'a> {
             return Some(Vec::new());
         }
         None
+    }
+
+    fn infer_range_dims(
+        &self,
+        start: &rumoca_core::Expression,
+        step: Option<&rumoca_core::Expression>,
+        end: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<usize>, LowerError> {
+        if let Some(values) = lower_static_range_values(start, step, end, span)? {
+            return Ok(vector_dims(values.len()));
+        }
+        match self.eval_compile_time_range_values(
+            start,
+            step,
+            end,
+            span,
+            &self.local_const_bindings,
+            "range dimension inference",
+        ) {
+            Ok(values) => Ok(vector_dims(values.len())),
+            Err(_) => Ok(Vec::new()),
+        }
     }
 
     fn infer_tuple_flat_dims(
@@ -1005,7 +1031,7 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    pub(super) fn eval_compile_time_range_values(
+    pub(in crate::lower) fn eval_compile_time_range_values(
         &self,
         start: &rumoca_core::Expression,
         step: Option<&rumoca_core::Expression>,
@@ -1362,6 +1388,106 @@ mod tests {
                 .infer_expr_dims(&scalar_index, &Scope::new())
                 .expect("scalar index dims should infer"),
             Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn range_dims_use_compile_time_size_expression_end() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("range_size_end.mo"),
+            10,
+            40,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let builder = lower_builder(&layout, &functions);
+        let fill = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![
+                literal_i64(0, span),
+                literal_i64(0, span),
+                literal_i64(2, span),
+            ],
+            span,
+        };
+        let size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![fill, literal_i64(2, span)],
+            span,
+        };
+        let range = rumoca_core::Expression::Range {
+            start: Box::new(literal_i64(2, span)),
+            step: None,
+            end: Box::new(size.clone()),
+            span,
+        };
+
+        assert_eq!(
+            builder
+                .eval_compile_time_range_values(
+                    &literal_i64(2, span),
+                    None,
+                    &size,
+                    span,
+                    &IndexMap::new(),
+                    "range dimension inference",
+                )
+                .expect("compile-time size range values should evaluate"),
+            vec![2]
+        );
+        let range_size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![range, literal_i64(1, span)],
+            span,
+        };
+        assert_eq!(
+            builder
+                .eval_compile_time_expr(&range_size, &IndexMap::new())
+                .expect("size of compile-time range should evaluate"),
+            1.0
+        );
+        let literal_size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![
+                rumoca_core::Expression::Array {
+                    elements: vec![literal_i64(0, span)],
+                    is_matrix: false,
+                    span,
+                },
+                literal_i64(1, span),
+            ],
+            span,
+        };
+        let max_size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Max,
+            args: vec![rumoca_core::Expression::Array {
+                elements: vec![
+                    rumoca_core::Expression::Array {
+                        elements: vec![range_size],
+                        is_matrix: true,
+                        span,
+                    },
+                    rumoca_core::Expression::Array {
+                        elements: vec![literal_size],
+                        is_matrix: true,
+                        span,
+                    },
+                ],
+                is_matrix: true,
+                span,
+            }],
+            span,
+        };
+        let ones = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Ones,
+            args: vec![max_size],
+            span,
+        };
+        assert_eq!(
+            builder
+                .infer_expr_dims(&ones, &Scope::new())
+                .expect("ones(size(range, 1)) dims should infer"),
+            vec![1]
         );
     }
 

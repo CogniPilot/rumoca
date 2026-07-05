@@ -982,6 +982,13 @@ fn reg_vec_with_capacity(
 mod tests {
     use super::*;
 
+    fn literal_i64(value: i64, span: rumoca_core::Span) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span,
+        }
+    }
+
     #[test]
     fn array_like_builtin_lowering_rejects_non_array_dispatch_with_span() {
         let span = rumoca_core::Span::from_offsets(
@@ -1136,6 +1143,87 @@ mod tests {
             err.reason(),
             "invalid IR contract: zeros() requires at least one dimension argument"
         );
+    }
+
+    #[test]
+    fn ones_lowers_compile_time_max_of_size_range_dimension() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("ones_size_range.mo"),
+            10,
+            40,
+        );
+        let layout = VarLayout::default();
+        let functions = IndexMap::new();
+        let mut builder = LowerBuilder::new(&layout, &functions);
+        let fill = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![
+                literal_i64(0, span),
+                literal_i64(0, span),
+                literal_i64(2, span),
+            ],
+            span,
+        };
+        let range_end = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![fill, literal_i64(2, span)],
+            span,
+        };
+        let range = rumoca_core::Expression::Range {
+            start: Box::new(literal_i64(2, span)),
+            step: None,
+            end: Box::new(range_end),
+            span,
+        };
+        let range_size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![range, literal_i64(1, span)],
+            span,
+        };
+        let literal_size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![
+                rumoca_core::Expression::Array {
+                    elements: vec![literal_i64(0, span)],
+                    is_matrix: false,
+                    span,
+                },
+                literal_i64(1, span),
+            ],
+            span,
+        };
+        let max_size = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Max,
+            args: vec![rumoca_core::Expression::Array {
+                elements: vec![
+                    rumoca_core::Expression::Array {
+                        elements: vec![range_size],
+                        is_matrix: true,
+                        span,
+                    },
+                    rumoca_core::Expression::Array {
+                        elements: vec![literal_size],
+                        is_matrix: true,
+                        span,
+                    },
+                ],
+                is_matrix: true,
+                span,
+            }],
+            span,
+        };
+
+        let values = builder
+            .lower_known_builtin_array_like_values(
+                rumoca_core::BuiltinFunction::Ones,
+                &[max_size],
+                &Scope::new(),
+                0,
+                span,
+            )
+            .expect("ones(max(size(range), size(array))) should lower");
+
+        assert_eq!(values.len(), 1);
     }
 
     #[test]

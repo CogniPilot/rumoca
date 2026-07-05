@@ -349,6 +349,85 @@ fn dae_record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
 }
 
 #[test]
+fn dae_record_param_lowering_keeps_external_object_inputs_opaque() {
+    let span = test_span(1);
+    let mut dae = Dae::default();
+
+    let mut external_constructor = rumoca_core::Function::new("Pkg.ExternalTable", span);
+    external_constructor.is_constructor = true;
+    external_constructor.add_input(rumoca_core::FunctionParam::new("table", "Real", span));
+    external_constructor.add_input(rumoca_core::FunctionParam::new("fileName", "String", span));
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.ExternalTable"), external_constructor);
+
+    let mut record_typed_user = rumoca_core::Function::new("Pkg.recordUser", span);
+    record_typed_user.add_input(
+        rumoca_core::FunctionParam::new("recordish", "Pkg.ExternalTable", span)
+            .with_type_class(ClassType::Record),
+    );
+    record_typed_user.add_output(rumoca_core::FunctionParam::new("y", "Real", span));
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.recordUser"), record_typed_user);
+
+    let mut external_user = rumoca_core::Function::new("Pkg.getTableValue", span);
+    external_user.add_input(
+        rumoca_core::FunctionParam::new("tableID", "Pkg.ExternalTable", span)
+            .with_type_class(ClassType::Class),
+    );
+    external_user.add_input(rumoca_core::FunctionParam::new("column", "Integer", span));
+    external_user.add_output(rumoca_core::FunctionParam::new("y", "Real", span));
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.getTableValue"), external_user);
+
+    dae.continuous.equations.push(rumoca_ir_dae::Equation {
+        lhs: Some(VarName::new("x").into()),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: VarName::new("Pkg.getTableValue").into(),
+            args: vec![
+                var_ref("integerTable.combiTimeTable.tableID", span),
+                rumoca_core::Expression::Literal {
+                    value: Literal::Integer(1),
+                    span,
+                },
+            ],
+            is_constructor: false,
+            span,
+        },
+        span,
+        origin: "test".to_string(),
+        scalar_count: 1,
+    });
+
+    lower_record_function_params_dae(&mut dae).expect("record params lower");
+
+    let external_user = dae
+        .symbols
+        .functions
+        .get(&VarName::new("Pkg.getTableValue"))
+        .expect("external-object function remains");
+    let input_names = external_user
+        .inputs
+        .iter()
+        .map(|input| input.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(input_names, vec!["tableID", "column"]);
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.continuous.equations[0].rhs
+    else {
+        panic!("expected external-object function call");
+    };
+    assert_eq!(args.len(), 2);
+    assert!(matches!(
+        &args[0],
+        rumoca_core::Expression::VarRef { name, span: arg_span, .. }
+            if name.as_str() == "integerTable.combiTimeTable.tableID" && *arg_span == span
+    ));
+}
+
+#[test]
 fn dae_record_param_lowering_infers_fields_from_already_lowered_body() {
     let mut dae = Dae::default();
     let mut function = function_with_record_input();

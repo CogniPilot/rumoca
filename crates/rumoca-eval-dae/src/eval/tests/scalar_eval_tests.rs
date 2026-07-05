@@ -239,6 +239,17 @@ fn test_eval_if_false() {
 }
 
 #[test]
+fn broadcast_start_value_uses_selected_if_branch() {
+    let expr = rumoca_core::Expression::If {
+        branches: vec![(bool_lit(false), arr(vec![lit(1.0), lit(2.0)], false))],
+        else_branch: Box::new(arr(vec![lit(0.0)], false)),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert!(can_broadcast_start_value(&expr, &VarEnv::new()));
+}
+
+#[test]
 fn test_checked_eval_field_access_projects_selected_if_branch() {
     let mut record_ctor = rumoca_core::Function::new("Pkg.Record", rumoca_core::Span::DUMMY);
     record_ctor.add_input(rumoca_core::FunctionParam::new(

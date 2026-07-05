@@ -51,6 +51,18 @@ pub fn eval_const_expr_with<F>(expr: &Expression, lookup: &F) -> Option<ConstVal
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
 {
+    eval_const_expr_with_shape(expr, lookup, &|_| None)
+}
+
+pub fn eval_const_expr_with_shape<F, S>(
+    expr: &Expression,
+    lookup: &F,
+    shape_lookup: &S,
+) -> Option<ConstValue>
+where
+    F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
+{
     match expr {
         Expression::Literal {
             value: Literal::Integer(value),
@@ -87,17 +99,19 @@ where
             lookup(name, &merged)
         }
         Expression::Unary { op, rhs, .. } => {
-            let rhs = eval_const_expr_with(rhs, lookup)?;
+            let rhs = eval_const_expr_with_shape(rhs, lookup, shape_lookup)?;
             eval_unary_const(op, rhs)
         }
         Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = eval_const_expr_with(lhs, lookup)?;
-            let rhs = eval_const_expr_with(rhs, lookup)?;
+            let lhs = eval_const_expr_with_shape(lhs, lookup, shape_lookup)?;
+            let rhs = eval_const_expr_with_shape(rhs, lookup, shape_lookup)?;
             eval_binary_const(op, lhs, rhs)
         }
-        Expression::BuiltinCall { function, args, .. } => eval_builtin(*function, args, lookup),
+        Expression::BuiltinCall { function, args, .. } => {
+            eval_builtin(*function, args, lookup, shape_lookup)
+        }
         Expression::FunctionCall { name, args, .. } => {
-            eval_named_function(name.last_segment(), args, lookup)
+            eval_named_function(name.last_segment(), args, lookup, shape_lookup)
         }
         Expression::If {
             branches,
@@ -105,11 +119,11 @@ where
             ..
         } => {
             for (cond, then_expr) in branches {
-                if eval_const_expr_with(cond, lookup)?.as_bool()? {
-                    return eval_const_expr_with(then_expr, lookup);
+                if eval_const_expr_with_shape(cond, lookup, shape_lookup)?.as_bool()? {
+                    return eval_const_expr_with_shape(then_expr, lookup, shape_lookup);
                 }
             }
-            eval_const_expr_with(else_branch, lookup)
+            eval_const_expr_with_shape(else_branch, lookup, shape_lookup)
         }
         _ => None,
     }
@@ -120,6 +134,18 @@ where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
 {
     eval_const_expr_with(expr, lookup)?.as_real()
+}
+
+pub fn eval_scalar_const_expr_with_shape<F, S>(
+    expr: &Expression,
+    lookup: &F,
+    shape_lookup: &S,
+) -> Option<f64>
+where
+    F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
+{
+    eval_const_expr_with_shape(expr, lookup, shape_lookup)?.as_real()
 }
 
 pub fn eval_scalar_const_expr(expr: &Expression, constants: &HashMap<String, f64>) -> Option<f64> {
@@ -171,25 +197,32 @@ fn eval_binary_const(op: &OpBinary, lhs: ConstValue, rhs: ConstValue) -> Option<
     }
 }
 
-fn eval_builtin<F>(function: BuiltinFunction, args: &[Expression], lookup: &F) -> Option<ConstValue>
+fn eval_builtin<F, S>(
+    function: BuiltinFunction,
+    args: &[Expression],
+    lookup: &F,
+    shape_lookup: &S,
+) -> Option<ConstValue>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
 {
     let arg = |i: usize| {
         args.get(i)
-            .and_then(|expr| eval_scalar_const_expr_with(expr, lookup))
+            .and_then(|expr| eval_scalar_const_expr_with_shape(expr, lookup, shape_lookup))
     };
 
     match function {
-        BuiltinFunction::NoEvent => eval_const_expr_with(args.first()?, lookup),
+        BuiltinFunction::NoEvent => eval_const_expr_with_shape(args.first()?, lookup, shape_lookup),
         BuiltinFunction::Smooth => args
             .get(1)
-            .and_then(|expr| eval_const_expr_with(expr, lookup))
+            .and_then(|expr| eval_const_expr_with_shape(expr, lookup, shape_lookup))
             .or_else(|| {
                 args.first()
-                    .and_then(|expr| eval_const_expr_with(expr, lookup))
+                    .and_then(|expr| eval_const_expr_with_shape(expr, lookup, shape_lookup))
             }),
         BuiltinFunction::Integer => arg(0).map(f64::floor).map(ConstValue::Real),
+        BuiltinFunction::Size => eval_size(args, lookup, shape_lookup).map(ConstValue::Real),
         _ => arg(0)
             .and_then(|lhs| {
                 apply_scalar_unary_math(function, lhs)
@@ -199,52 +232,151 @@ where
     }
 }
 
-fn eval_named_function<F>(short_name: &str, args: &[Expression], lookup: &F) -> Option<ConstValue>
+fn eval_named_function<F, S>(
+    short_name: &str,
+    args: &[Expression],
+    lookup: &F,
+    shape_lookup: &S,
+) -> Option<ConstValue>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
 {
     if short_name == "substring" {
-        return eval_substring(args, lookup).map(ConstValue::String);
+        return eval_substring(args, lookup, shape_lookup).map(ConstValue::String);
     }
     if short_name == "ln" {
-        return eval_builtin(BuiltinFunction::Log, args, lookup);
+        return eval_builtin(BuiltinFunction::Log, args, lookup, shape_lookup);
     }
     let function = BuiltinFunction::from_name(short_name)?;
-    eval_builtin(function, args, lookup)
+    eval_builtin(function, args, lookup, shape_lookup)
 }
 
-fn numeric_arg<F>(args: &[Expression], lookup: &F, index: usize) -> Option<f64>
+fn eval_size<F, S>(args: &[Expression], lookup: &F, shape_lookup: &S) -> Option<f64>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
 {
-    eval_const_expr_with(args.get(index)?, lookup)?.as_real()
+    let array = args.first()?;
+    let dim = integer_arg(args, lookup, shape_lookup, 1)?;
+    let dims = expr_dims(array, shape_lookup)?;
+    let value = *dims.get(dim.checked_sub(1)?)?;
+    (value >= 0).then_some(value as f64)
 }
 
-fn integer_arg<F>(args: &[Expression], lookup: &F, index: usize) -> Option<usize>
+fn expr_dims<S>(expr: &Expression, shape_lookup: &S) -> Option<Vec<i64>>
+where
+    S: Fn(&str) -> Option<Vec<i64>>,
+{
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if !subscripts.is_empty() {
+                return None;
+            }
+            reference_shape_lookup(name, shape_lookup)
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let mut dims = expr_dims(base, shape_lookup)?;
+            if subscripts.len() > dims.len() {
+                return None;
+            }
+            dims.drain(0..subscripts.len());
+            Some(dims)
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let base = expr_path(base)?;
+            shape_lookup(&format!("{base}.{field}"))
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            Some(vec![i64::try_from(elements.len()).ok()?])
+        }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+            ..
+        } => args.first().and_then(|arg| expr_dims(arg, shape_lookup)),
+        _ => None,
+    }
+}
+
+fn reference_shape_lookup<S>(name: &Reference, shape_lookup: &S) -> Option<Vec<i64>>
+where
+    S: Fn(&str) -> Option<Vec<i64>>,
+{
+    if let Some(component_ref) = name.component_ref()
+        && let Some(dims) = shape_lookup(&component_ref.to_string())
+    {
+        return Some(dims);
+    }
+    shape_lookup(name.as_str())
+}
+
+fn expr_path(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(
+            name.component_ref()
+                .map(|component_ref| component_ref.to_string())
+                .unwrap_or_else(|| name.as_str().to_string()),
+        ),
+        Expression::FieldAccess { base, field, .. } => {
+            Some(format!("{}.{}", expr_path(base)?, field))
+        }
+        _ => None,
+    }
+}
+
+fn numeric_arg<F, S>(args: &[Expression], lookup: &F, shape_lookup: &S, index: usize) -> Option<f64>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
 {
-    let value = numeric_arg(args, lookup, index)?;
+    eval_const_expr_with_shape(args.get(index)?, lookup, shape_lookup)?.as_real()
+}
+
+fn integer_arg<F, S>(
+    args: &[Expression],
+    lookup: &F,
+    shape_lookup: &S,
+    index: usize,
+) -> Option<usize>
+where
+    F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
+{
+    let value = numeric_arg(args, lookup, shape_lookup, index)?;
     (value.fract().abs() <= 1.0e-12 && value >= 1.0).then_some(value as usize)
 }
 
-fn string_arg<F>(args: &[Expression], lookup: &F, index: usize) -> Option<String>
+fn string_arg<F, S>(
+    args: &[Expression],
+    lookup: &F,
+    shape_lookup: &S,
+    index: usize,
+) -> Option<String>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
 {
-    match eval_const_expr_with(args.get(index)?, lookup)? {
+    match eval_const_expr_with_shape(args.get(index)?, lookup, shape_lookup)? {
         ConstValue::String(value) => Some(value),
         _ => None,
     }
 }
 
-fn eval_substring<F>(args: &[Expression], lookup: &F) -> Option<String>
+fn eval_substring<F, S>(args: &[Expression], lookup: &F, shape_lookup: &S) -> Option<String>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+    S: Fn(&str) -> Option<Vec<i64>>,
 {
-    let input = string_arg(args, lookup, 0)?;
-    let start = integer_arg(args, lookup, 1)?;
-    let stop = integer_arg(args, lookup, 2)?;
+    let input = string_arg(args, lookup, shape_lookup, 0)?;
+    let start = integer_arg(args, lookup, shape_lookup, 1)?;
+    let stop = integer_arg(args, lookup, shape_lookup, 2)?;
     if stop < start {
         return Some(String::new());
     }
@@ -271,4 +403,45 @@ fn scalar_to_bool(value: f64) -> Option<bool> {
 
 fn scalar_almost_eq(lhs: f64, rhs: f64) -> bool {
     (lhs - rhs).abs() <= 1.0e-12 * (1.0 + lhs.abs().max(rhs.abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{Span, VarName};
+
+    fn span() -> Span {
+        Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+    }
+
+    fn int(value: i64) -> Expression {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            span: span(),
+        }
+    }
+
+    fn var(name: &str) -> Expression {
+        Expression::VarRef {
+            name: VarName::new(name).into(),
+            subscripts: vec![],
+            span: span(),
+        }
+    }
+
+    #[test]
+    fn scalar_const_eval_supports_size_with_shape_lookup() {
+        let expr = Expression::BuiltinCall {
+            function: BuiltinFunction::Size,
+            args: vec![var("table"), int(1)],
+            span: span(),
+        };
+
+        let value = eval_scalar_const_expr_with_shape(&expr, &|_, _| None, &|name| match name {
+            "table" => Some(vec![4, 2]),
+            _ => None,
+        });
+
+        assert_eq!(value, Some(4.0));
+    }
 }

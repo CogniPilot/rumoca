@@ -137,7 +137,7 @@ fn insert_external_table_handle_bindings(
 ) -> Result<(), LowerError> {
     seed_compile_time_start_values(dae_model, eval_env);
     for table_id_name in &dae_model.metadata.nonnumeric_variable_names {
-        if !table_id_name.ends_with(".tableID") || bindings.contains_key(table_id_name.as_str()) {
+        if !table_id_name.ends_with(".tableID") {
             continue;
         }
         let Some(prefix) = table_id_name.strip_suffix(".tableID") else {
@@ -1172,6 +1172,57 @@ mod tests {
             table_data[0].data.len() > 1,
             "BooleanTable handle must not register an empty table: {table_data:?}"
         );
+    }
+
+    #[test]
+    fn metadata_external_table_handle_overrides_default_empty_table_id() {
+        let mut dae_model = dae::Dae::default();
+        let default_empty_constructor = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("ExternalCombiTimeTable"),
+            args: vec![
+                string("NoName"),
+                string("NoName"),
+                matrix(Vec::new()),
+                real(0.0),
+                array(vec![integer(2)]),
+            ],
+            is_constructor: false,
+            span: compile_time_test_span(),
+        };
+        insert_parameter_start(
+            &mut dae_model,
+            "block.table.tableID",
+            default_empty_constructor,
+            false,
+            &[],
+        );
+        insert_external_time_table_record_fields(
+            &mut dae_model,
+            "block.table",
+            matrix(vec![
+                array(vec![real(0.0), real(1.0)]),
+                array(vec![real(1.0), real(2.0)]),
+            ]),
+            &[2, 2],
+        );
+        dae_model
+            .metadata
+            .nonnumeric_variable_names
+            .push("block.table.tableID".to_string());
+        insert_time_table_enum_ordinals(&mut dae_model);
+
+        let (bindings, env) = structural_bindings_with_eval_env(&dae_model)
+            .expect("metadata table handle should override stale default tableID");
+        let table_id = *bindings
+            .get("block.table.tableID")
+            .expect("tableID binding");
+        let table_data = rumoca_eval_dae::all_external_table_data_in_env(&env);
+        let selected = table_data
+            .iter()
+            .find(|table| table.id as f64 == table_id)
+            .expect("selected table data should be registered");
+
+        assert_eq!(selected.data.len(), 2, "selected table must be non-empty");
     }
 
     #[test]

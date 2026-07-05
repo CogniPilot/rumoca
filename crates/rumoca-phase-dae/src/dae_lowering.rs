@@ -246,6 +246,9 @@ fn record_fields_for_input(
     record_fields_by_type: &HashMap<String, Vec<String>>,
     inferred_fields_by_function: &HashMap<String, FieldUseMap>,
 ) -> Vec<String> {
+    if input.type_class == Some(rumoca_core::ClassType::Class) {
+        return Vec::new();
+    }
     record_fields_by_type
         .get(&input.type_name)
         .into_iter()
@@ -1075,6 +1078,209 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         false,
     )?;
     Ok(())
+}
+
+pub(crate) fn sync_materialized_structured_equation_templates(
+    dae: &mut Dae,
+) -> Result<(), ToDaeError> {
+    sync_structured_partition_templates(
+        &dae.continuous.structured_equations,
+        &mut dae.continuous.equations,
+    )?;
+    sync_structured_partition_templates(
+        &dae.initialization.structured_equations,
+        &mut dae.initialization.equations,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn repair_external_table_event_handles(dae: &mut Dae) {
+    let table_ids = dae
+        .metadata
+        .nonnumeric_variable_names
+        .iter()
+        .filter(|name| name.ends_with(".tableID"))
+        .cloned()
+        .collect::<HashSet<_>>();
+    repair_external_table_event_handles_in_equations(&mut dae.discrete.real_updates, &table_ids);
+    repair_external_table_event_handles_in_equations(&mut dae.discrete.valued_updates, &table_ids);
+    repair_external_table_event_handles_in_equations(&mut dae.conditions.equations, &table_ids);
+}
+
+fn repair_external_table_event_handles_in_equations(
+    equations: &mut [dae::Equation],
+    table_ids: &HashSet<String>,
+) {
+    for equation in equations {
+        let Some(prefix) = equation
+            .lhs
+            .as_ref()
+            .and_then(|lhs| external_table_event_prefix(lhs.as_str()))
+        else {
+            continue;
+        };
+        let table_id_name = format!("{prefix}.tableID");
+        if !table_ids.contains(&table_id_name) {
+            continue;
+        }
+        equation.rhs = ExternalTableEventHandleRepair {
+            table_id_name: &table_id_name,
+            span: equation.span,
+        }
+        .rewrite_expression(&equation.rhs);
+    }
+}
+
+fn external_table_event_prefix(name: &str) -> Option<&str> {
+    name.strip_suffix(".nextTimeEventScaled")
+        .or_else(|| name.strip_suffix(".nextTimeEvent"))
+}
+
+struct ExternalTableEventHandleRepair<'a> {
+    table_id_name: &'a str,
+    span: rumoca_core::Span,
+}
+
+impl ExpressionRewriter for ExternalTableEventHandleRepair<'_> {
+    fn walk_function_call_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let mut args = self.rewrite_expressions(args);
+        if name.last_segment() == "getNextTimeEvent"
+            && args
+                .first()
+                .is_some_and(external_table_constructor_call_dae)
+        {
+            let arg_span = args
+                .first()
+                .and_then(rumoca_core::Expression::span)
+                .unwrap_or(self.span);
+            args[0] = rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::generated(self.table_id_name.to_string()),
+                subscripts: Vec::new(),
+                span: arg_span,
+            };
+        }
+        rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args,
+            is_constructor,
+            span,
+        }
+    }
+}
+
+fn external_table_constructor_call_dae(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: true,
+            ..
+        } if matches!(
+            name.last_segment(),
+            "ExternalCombiTimeTable" | "ExternalCombiTable1D"
+        )
+    )
+}
+
+fn sync_structured_partition_templates(
+    families: &[dae::StructuredEquationFamily],
+    equations: &mut [dae::Equation],
+) -> Result<(), ToDaeError> {
+    for family in families {
+        if !family.interiors_materialized {
+            continue;
+        }
+        let Some(template) = family.template.as_ref() else {
+            continue;
+        };
+        if template.body.is_empty()
+            || !family
+                .equation_counts
+                .iter()
+                .all(|count| *count == template.body.len())
+        {
+            continue;
+        }
+        let tuples = family.domain.index_tuples().map_err(|err| {
+            ToDaeError::runtime_metadata_violation_at(
+                format!("invalid structured equation domain: {err}"),
+                family.span,
+            )
+        })?;
+        for (iteration, tuple) in tuples.iter().enumerate() {
+            let mut binder_values = HashMap::new();
+            for (binder, value) in family.domain.binders.iter().zip(tuple.iter().copied()) {
+                binder_values.insert(binder.display_name.clone(), value);
+            }
+            let row_base = family
+                .first_equation_index
+                .checked_add(iteration.checked_mul(template.body.len()).ok_or_else(|| {
+                    ToDaeError::runtime_metadata_violation_at(
+                        "structured equation row index overflows".to_string(),
+                        family.span,
+                    )
+                })?)
+                .ok_or_else(|| {
+                    ToDaeError::runtime_metadata_violation_at(
+                        "structured equation row index overflows".to_string(),
+                        family.span,
+                    )
+                })?;
+            for (position, body) in template.body.iter().enumerate() {
+                let Some(equation) = equations.get_mut(row_base + position) else {
+                    return Err(ToDaeError::runtime_metadata_violation_at(
+                        "structured equation template points past materialized equations"
+                            .to_string(),
+                        family.span,
+                    ));
+                };
+                equation.rhs = StructuredBinderSubstitution {
+                    values: &binder_values,
+                    span: family.span,
+                }
+                .rewrite_expression(body);
+                equation.scalar_count = 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct StructuredBinderSubstitution<'a> {
+    values: &'a HashMap<String, i64>,
+    span: rumoca_core::Span,
+}
+
+impl ExpressionRewriter for StructuredBinderSubstitution<'_> {
+    fn walk_var_ref_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if subscripts.is_empty()
+            && let Some(value) = self
+                .values
+                .get(name.as_str())
+                .or_else(|| self.values.get(name.last_segment()))
+        {
+            return rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(*value),
+                span: if span.is_dummy() { self.span } else { span },
+            };
+        }
+        rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: self.rewrite_subscripts(subscripts),
+            span,
+        }
+    }
 }
 
 /// Build the set of all variable names known to the DAE.

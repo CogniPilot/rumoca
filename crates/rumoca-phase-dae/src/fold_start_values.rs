@@ -9,7 +9,7 @@
 use crate::errors::ToDaeError;
 use rumoca_core::ExpressionVisitor;
 use rumoca_core::{Expression, Span, VarName};
-use rumoca_eval_dae::constant::{ConstValue, eval_const_expr_with};
+use rumoca_eval_dae::constant::{ConstValue, eval_const_expr_with_shape};
 use rumoca_ir_dae::{Dae, DaeVariableMutVisitor, DaeVariablePartition, DaeVisitor, Variable};
 use std::collections::HashMap;
 
@@ -19,6 +19,7 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeEr
     // Phase 1: build a name→value map from constants, enum ordinals, and
     // parameter start expressions (fixed-point iteration).
     let mut values: HashMap<String, ConstValue> = HashMap::new();
+    let dims = rumoca_eval_dae::collect_var_dims(dae);
 
     // Seed with enum literal ordinals
     for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
@@ -41,7 +42,7 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeEr
             if values.contains_key(name.as_str()) {
                 continue;
             }
-            if let Some(value) = eval_start_const_expr(expr, &values)
+            if let Some(value) = eval_start_const_expr(expr, &values, &dims)
                 && value.is_finite()
             {
                 values.insert(name.to_string(), value);
@@ -116,19 +117,22 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeEr
             if is_parameter
                 && start_references_parameter(start, &param_names)
                 && !expr_depends_on_string_value(start, &values)
+                && !expr_is_shape_only(start)
             {
                 return;
             }
             let Some(val) = values.get(var.name.as_str()).cloned() else {
                 return;
             };
-            let mut refs: Vec<VarName> = Vec::new();
-            start.collect_var_refs(&mut refs);
-            consumed_params.extend(
-                refs.iter()
-                    .map(|name| name.as_str().to_string())
-                    .filter(|name| param_names.contains(name)),
-            );
+            if !expr_is_shape_only(start) {
+                let mut refs: Vec<VarName> = Vec::new();
+                start.collect_var_refs(&mut refs);
+                consumed_params.extend(
+                    refs.iter()
+                        .map(|name| name.as_str().to_string())
+                        .filter(|name| param_names.contains(name)),
+                );
+            }
             let span = match folded_start_span(var, start) {
                 Ok(span) => span,
                 Err(err) => {
@@ -211,6 +215,32 @@ fn start_references_parameter(
     refs.iter().any(|name| param_names.contains(name.as_str()))
 }
 
+fn expr_is_shape_only(expr: &Expression) -> bool {
+    match expr {
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args,
+            ..
+        } => args.len() >= 2,
+        Expression::FunctionCall { name, args, .. } if name.last_segment() == "size" => {
+            args.len() >= 2
+        }
+        Expression::Unary { rhs, .. } => expr_is_shape_only(rhs),
+        Expression::Binary { lhs, rhs, .. } => expr_is_shape_only(lhs) && expr_is_shape_only(rhs),
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .all(|(cond, branch)| expr_is_shape_only(cond) && expr_is_shape_only(branch))
+                && expr_is_shape_only(else_branch)
+        }
+        _ => false,
+    }
+}
+
 fn is_self_start_reference(name: &rumoca_core::Reference, var: &Variable) -> bool {
     match (name.component_ref(), var.component_ref.as_ref()) {
         (Some(name_ref), Some(var_ref)) => component_refs_same_target(name_ref, var_ref),
@@ -279,21 +309,26 @@ where
 fn eval_start_const_expr(
     expr: &Expression,
     env: &HashMap<String, ConstValue>,
+    dims: &indexmap::IndexMap<String, Vec<i64>>,
 ) -> Option<ConstValue> {
-    eval_const_expr_with(expr, &|name, subscripts| {
-        if !subscripts.is_empty() {
-            return None;
-        }
-        for key in reference_lookup_names(name) {
-            if let Some(value) = env.get(key.as_str()).cloned().or_else(|| {
-                rumoca_ir_dae::component_base_name(key.as_str())
-                    .and_then(|base| env.get(&base).cloned())
-            }) {
-                return Some(value);
+    eval_const_expr_with_shape(
+        expr,
+        &|name, subscripts| {
+            if !subscripts.is_empty() {
+                return None;
             }
-        }
-        None
-    })
+            for key in reference_lookup_names(name) {
+                if let Some(value) = env.get(key.as_str()).cloned().or_else(|| {
+                    rumoca_ir_dae::component_base_name(key.as_str())
+                        .and_then(|base| env.get(&base).cloned())
+                }) {
+                    return Some(value);
+                }
+            }
+            None
+        },
+        &|name| dims.get(name).cloned(),
+    )
 }
 
 fn reference_lookup_names(name: &rumoca_core::Reference) -> Vec<String> {
@@ -847,6 +882,38 @@ mod tests {
                 .and_then(Expression::span),
             Some(span)
         );
+    }
+
+    #[test]
+    fn folds_parameter_start_size_from_dae_variable_dims() {
+        let mut dae = Dae::new();
+        let mut table = parameter("table", real(0.0));
+        table.dims = vec![3, 2];
+        dae.variables
+            .parameters
+            .insert(VarName::new("table"), table);
+        dae.variables.parameters.insert(
+            VarName::new("nout"),
+            parameter(
+                "nout",
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Size,
+                    args: vec![var("table"), integer(1)],
+                    span: test_span(30, 45),
+                },
+            ),
+        );
+
+        fold_start_values_to_literals(&mut dae)
+            .unwrap_or_else(|err| panic!("start folding should succeed: {err}"));
+
+        assert!(matches!(
+            dae.variables.parameters[&VarName::new("nout")].start,
+            Some(Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            }) if (value - 3.0).abs() <= 1.0e-12
+        ));
     }
 
     #[test]

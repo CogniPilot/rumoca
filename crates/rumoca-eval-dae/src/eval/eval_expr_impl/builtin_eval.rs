@@ -260,6 +260,7 @@ pub(in crate::eval) fn eval_builtin<T: SimFloat>(
         rumoca_core::BuiltinFunction::Ceil => Ok(eval_builtin_arg(args, 0, env)?.ceil()),
         rumoca_core::BuiltinFunction::Min => eval_builtin_min(args, env),
         rumoca_core::BuiltinFunction::Max => eval_builtin_max(args, env),
+        rumoca_core::BuiltinFunction::Size => eval_builtin_size(args, env),
         rumoca_core::BuiltinFunction::Div => try_eval_div_mod_rem(args, env, DivKind::Div),
         rumoca_core::BuiltinFunction::Mod => try_eval_div_mod_rem(args, env, DivKind::Mod),
         rumoca_core::BuiltinFunction::Rem => try_eval_div_mod_rem(args, env, DivKind::Rem),
@@ -276,6 +277,31 @@ pub(in crate::eval) fn eval_builtin<T: SimFloat>(
 
         _ => eval_builtin_math_and_event(function, args, env),
     }
+}
+
+fn eval_builtin_size<T: SimFloat>(
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Result<T, EvalError> {
+    let array_arg = require_builtin_arg(args, 0)?;
+    let dim = eval_builtin_arg(args, 1, env)?.real();
+    if dim.fract().abs() > 1.0e-12 || dim < 1.0 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "size dimension",
+        });
+    }
+    let dim_index = (dim as usize)
+        .checked_sub(1)
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "size dimension",
+        })?;
+    let dims = try_infer_runtime_expr_dims(array_arg, env)?;
+    let value = dims
+        .get(dim_index)
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "size dimension",
+        })?;
+    Ok(T::from_f64(*value as f64))
 }
 
 fn try_eval_der<T: SimFloat>(

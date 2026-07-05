@@ -413,6 +413,19 @@ fn finalize_lowered_dae(
         dae_lowering::scalarize_phantom_vector_equations(dae)
     })?;
 
+    run_todae_phase(todae_subphase_timing, "sync_structured_templates", || {
+        dae_lowering::sync_materialized_structured_equation_templates(dae)
+    })?;
+
+    run_todae_phase(
+        todae_subphase_timing,
+        "repair_external_table_events",
+        || {
+            dae_lowering::repair_external_table_event_handles(dae);
+            Ok::<(), ToDaeError>(())
+        },
+    )?;
+
     // Fold symbolic start-value expressions to literal constants where
     // possible. Safe as an always-on pass: start values are init-time
     // metadata, not user-observable at runtime.

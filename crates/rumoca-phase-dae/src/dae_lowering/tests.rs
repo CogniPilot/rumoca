@@ -1014,6 +1014,130 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
 }
 
 #[test]
+fn sync_structured_templates_replaces_stale_materialized_external_table_arg() {
+    let mut dae = Dae::new();
+    let span = test_span();
+    let stale_constructor = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Blocks.Types.ExternalCombiTimeTable"),
+        args: vec![rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![int_lit(0), int_lit(0), int_lit(2)],
+            span,
+        }],
+        is_constructor: true,
+        span,
+    };
+    let stale_residual = sub(
+        var_ref("integerTable.combiTimeTable.y"),
+        function_call(
+            "Modelica.Blocks.Tables.Internal.getTimeTableValueNoDer",
+            vec![stale_constructor, int_lit(1), var_ref("time")],
+        ),
+    );
+    dae.continuous.equations.push(dae::Equation::residual(
+        stale_residual,
+        span,
+        "materialized",
+    ));
+
+    let canonical_residual = sub(
+        var_ref("integerTable.combiTimeTable.y"),
+        function_call(
+            "Modelica.Blocks.Tables.Internal.getTimeTableValueNoDer",
+            vec![
+                var_ref("integerTable.combiTimeTable.tableID"),
+                var_ref("i"),
+                var_ref("time"),
+            ],
+        ),
+    );
+    dae.continuous
+        .structured_equations
+        .push(dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 1,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equation_counts: vec![1],
+            span,
+            origin: "equation from integerTable.combiTimeTable".to_string(),
+            regular: None,
+            template: Some(rumoca_core::ComprehensionTemplate {
+                body: vec![canonical_residual],
+            }),
+            interiors_materialized: true,
+        });
+
+    sync_materialized_structured_equation_templates(&mut dae)
+        .expect("structured template sync should succeed");
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &dae.continuous.equations[0].rhs else {
+        panic!("expected residual subtraction");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = rhs.as_ref() else {
+        panic!("expected table lookup call");
+    };
+    assert!(matches!(
+        &args[0],
+        rumoca_core::Expression::VarRef { name, .. }
+            if name.as_str() == "integerTable.combiTimeTable.tableID"
+    ));
+    assert!(matches!(
+        &args[1],
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn repair_external_table_events_uses_component_table_id_handle() {
+    let mut dae = Dae::new();
+    let span = test_span();
+    dae.metadata
+        .nonnumeric_variable_names
+        .push("integerTable.combiTimeTable.tableID".to_string());
+    let stale_constructor = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Blocks.Types.ExternalCombiTimeTable"),
+        args: vec![rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![int_lit(0), int_lit(0), int_lit(2)],
+            span,
+        }],
+        is_constructor: true,
+        span,
+    };
+    dae.discrete.real_updates.push(dae::Equation::explicit(
+        rumoca_core::Reference::new("integerTable.combiTimeTable.nextTimeEventScaled"),
+        function_call(
+            "Modelica.Blocks.Tables.Internal.getNextTimeEvent",
+            vec![stale_constructor, var_ref("time")],
+        ),
+        span,
+        "guarded when equation assignment",
+    ));
+
+    repair_external_table_event_handles(&mut dae);
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.discrete.real_updates[0].rhs
+    else {
+        panic!("expected getNextTimeEvent call");
+    };
+    assert!(matches!(
+        &args[0],
+        rumoca_core::Expression::VarRef { name, .. }
+            if name.as_str() == "integerTable.combiTimeTable.tableID"
+    ));
+}
+
+#[test]
 fn test_scalarize_leaves_scalar_equations_unchanged() {
     let mut dae = Dae::new();
 

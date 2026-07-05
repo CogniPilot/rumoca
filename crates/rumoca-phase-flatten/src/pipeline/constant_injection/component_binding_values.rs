@@ -16,10 +16,6 @@ pub(crate) fn collect_component_binding_values(
         }
         let qualified_name = instance_data.qualified_name.to_flat_string();
 
-        if eval_ctx.get(&qualified_name).is_some() {
-            continue;
-        }
-
         if let Some(binding) = &instance_data.binding {
             let flat_binding = qualify_expression(binding, &QualifiedName::new())?;
             if let Ok(value) = rumoca_eval_flat::constant::eval_expr(&flat_binding, eval_ctx) {

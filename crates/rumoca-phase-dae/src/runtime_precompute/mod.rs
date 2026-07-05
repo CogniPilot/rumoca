@@ -534,12 +534,13 @@ fn collect_array_elements_scalar_entries(
     name: &rumoca_core::VarName,
     elements: &[rumoca_core::Expression],
     values: &HashMap<String, f64>,
+    dims: &indexmap::IndexMap<String, Vec<i64>>,
 ) -> Vec<(String, f64)> {
     elements
         .iter()
         .enumerate()
         .filter_map(|(index, element)| {
-            eval_scalar_const_expr(element, values).map(|value| {
+            eval_scalar_const_expr_with_dims(element, values, dims).map(|value| {
                 (
                     dae::format_subscript_key(name.as_str(), &[index + 1]),
                     value,
@@ -554,16 +555,17 @@ fn collect_range_scalar_entries(
     step: Option<&rumoca_core::Expression>,
     end: &rumoca_core::Expression,
     values: &HashMap<String, f64>,
+    dims: &indexmap::IndexMap<String, Vec<i64>>,
 ) -> Vec<(String, f64)> {
-    let Some(mut current) = eval_scalar_const_expr(start, values) else {
+    let Some(mut current) = eval_scalar_const_expr_with_dims(start, values, dims) else {
         return Vec::new();
     };
-    let Some(end_value) = eval_scalar_const_expr(end, values) else {
+    let Some(end_value) = eval_scalar_const_expr_with_dims(end, values, dims) else {
         return Vec::new();
     };
     let step_value = match step {
         Some(expr) => {
-            let Some(value) = eval_scalar_const_expr(expr, values) else {
+            let Some(value) = eval_scalar_const_expr_with_dims(expr, values, dims) else {
                 return Vec::new();
             };
             value
@@ -595,20 +597,22 @@ fn collect_array_scalar_entries(
     name: &rumoca_core::VarName,
     start: &rumoca_core::Expression,
     values: &HashMap<String, f64>,
+    dims: &indexmap::IndexMap<String, Vec<i64>>,
 ) -> Vec<(String, f64)> {
     match start {
         rumoca_core::Expression::Array { elements, .. }
         | rumoca_core::Expression::Tuple { elements, .. } => {
-            collect_array_elements_scalar_entries(name, elements, values)
+            collect_array_elements_scalar_entries(name, elements, values, dims)
         }
         rumoca_core::Expression::Range {
             start, step, end, ..
-        } => collect_range_scalar_entries(name, start, step.as_deref(), end, values),
+        } => collect_range_scalar_entries(name, start, step.as_deref(), end, values, dims),
         _ => Vec::new(),
     }
 }
 fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
     let mut values = HashMap::new();
+    let dims = rumoca_eval_dae::collect_var_dims(dae_model);
     for (literal, ordinal) in &dae_model.symbols.enum_literal_ordinals {
         values.insert(literal.clone(), *ordinal as f64);
     }
@@ -626,10 +630,11 @@ fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
     for _ in 0..max_passes {
         let mut changed = false;
         for (name, start) in &bindings {
-            if let Some(value) = eval_scalar_const_expr(start, &values) {
+            if let Some(value) = eval_scalar_const_expr_with_dims(start, &values, &dims) {
                 changed |= insert_compile_time_scalar(&mut values, name.as_str(), value);
             }
-            for (indexed_name, indexed_value) in collect_array_scalar_entries(name, start, &values)
+            for (indexed_name, indexed_value) in
+                collect_array_scalar_entries(name, start, &values, &dims)
             {
                 changed |= insert_compile_time_scalar(&mut values, &indexed_name, indexed_value);
             }
@@ -748,6 +753,28 @@ fn eval_scalar_const_expr(
             .and_then(|key| constants.get(&key).copied())
             .map(rumoca_eval_dae::constant::ConstValue::Real)
     })
+}
+
+fn eval_scalar_const_expr_with_dims(
+    expr: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+    dims: &indexmap::IndexMap<String, Vec<i64>>,
+) -> Option<f64> {
+    rumoca_eval_dae::constant::eval_scalar_const_expr_with_shape(
+        expr,
+        &|name, subscripts| {
+            if subscripts.is_empty() {
+                return constants
+                    .get(name.as_str())
+                    .copied()
+                    .map(rumoca_eval_dae::constant::ConstValue::Real);
+            }
+            clock::canonical_var_ref_key(name, subscripts, constants)
+                .and_then(|key| constants.get(&key).copied())
+                .map(rumoca_eval_dae::constant::ConstValue::Real)
+        },
+        &|name| dims.get(name).cloned(),
+    )
 }
 fn extract_time_event_instant(
     cond: &rumoca_core::Expression,

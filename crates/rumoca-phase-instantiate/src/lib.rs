@@ -1739,9 +1739,11 @@ fn prepare_component_binding_info(
             binding_source = display_binding_source.clone();
         }
         if start_from_declaration_binding {
-            attrs.start = Some(resolved_binding.clone());
+            attrs.start = Some(declaration_binding.clone());
+            binding = Some(declaration_binding.clone());
+        } else {
+            binding = Some(resolved_binding);
         }
-        binding = Some(resolved_binding);
     }
     Ok(ComponentBindingInfo {
         attrs,

@@ -1030,37 +1030,65 @@ pub(super) fn substitute_known_constants_in_flat(
         .keys()
         .map(|name| name.as_str().to_string())
         .collect();
+    let var_dims: rustc_hash::FxHashMap<String, Vec<i64>> = flat
+        .variables
+        .iter()
+        .filter_map(|(name, var)| {
+            (!var.dims.is_empty()).then(|| (name.as_str().to_string(), var.dims.clone()))
+        })
+        .collect();
+    let var_values: rustc_hash::FxHashMap<String, rumoca_core::Expression> = flat
+        .variables
+        .iter()
+        .filter_map(|(name, var)| {
+            var.binding
+                .as_ref()
+                .or(var.start.as_ref())
+                .map(|expr| (name.as_str().to_string(), expr.clone()))
+        })
+        .collect();
     let no_locals: HashSet<String> = HashSet::new();
 
     for eq in &mut flat.equations {
         let scope = equation_origin_scope(&eq.origin);
-        eq.residual = substitute_known_constants_expr_with_options(
+        eq.residual = substitute_known_constants_expr_with_options_and_dims(
             eq.residual.clone(),
             ctx,
             &live_vars,
             &no_locals,
             &scope,
             true,
+            Some(&var_dims),
         )?;
     }
     for eq in &mut flat.initial_equations {
         let scope = equation_origin_scope(&eq.origin);
-        eq.residual = substitute_known_constants_expr_with_options(
+        eq.residual = substitute_known_constants_expr_with_options_and_dims(
             eq.residual.clone(),
             ctx,
             &live_vars,
             &no_locals,
             &scope,
             true,
+            Some(&var_dims),
         )?;
     }
     recover_primitive_constructor_parameter_bindings(flat);
-    substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals)?;
+    substitute_assert_equations(
+        &mut flat.assert_equations,
+        ctx,
+        &live_vars,
+        &no_locals,
+        &var_dims,
+        &var_values,
+    )?;
     substitute_assert_equations(
         &mut flat.initial_assert_equations,
         ctx,
         &live_vars,
         &no_locals,
+        &var_dims,
+        &var_values,
     )?;
     for when_clause in &mut flat.when_clauses {
         when_clause.condition = substitute_known_constants_expr(
@@ -1076,7 +1104,7 @@ pub(super) fn substitute_known_constants_in_flat(
     }
     substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;
     substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals)?;
-    substitute_variable_annotations(flat, ctx, &live_vars, &no_locals)?;
+    substitute_variable_annotations(flat, ctx, &live_vars, &no_locals, &var_dims)?;
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars)?;
     crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
     Ok(())
@@ -1298,32 +1326,40 @@ fn substitute_assert_equations(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+    var_values: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
 ) -> Result<(), FlattenError> {
     for assert_eq in equations {
         let scope = equation_origin_scope(&assert_eq.origin);
-        assert_eq.condition = substitute_known_constants_expr_with_options(
+        assert_eq.condition = substitute_known_constants_expr_with_options_dims_and_values(
             assert_eq.condition.clone(),
             ctx,
             live_vars,
             locals,
             &scope,
             true,
+            var_dims,
+            var_values,
         )?;
-        assert_eq.message = substitute_known_constants_expr_with_options(
+        assert_eq.message = substitute_known_constants_expr_with_options_dims_and_values(
             assert_eq.message.clone(),
             ctx,
             live_vars,
             locals,
             &scope,
             true,
+            var_dims,
+            var_values,
         )?;
-        substitute_opt_expr_with_options(
+        substitute_opt_expr_with_options_dims_and_values(
             &mut assert_eq.level,
             ctx,
             live_vars,
             locals,
             &scope,
             true,
+            var_dims,
+            var_values,
         )?;
     }
     Ok(())
@@ -1348,24 +1384,183 @@ fn substitute_variable_annotations(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
 ) -> Result<(), FlattenError> {
     for (name, var) in &mut flat.variables {
         let scope = parent_component_scope(var.name.as_str());
         if !is_runtime_parameter_modifier_binding(var)
             || binding_references_class_constant(var.binding.as_ref(), ctx)
         {
-            substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope)?;
+            substitute_opt_expr_with_dims(
+                &mut var.binding,
+                ctx,
+                live_vars,
+                locals,
+                &scope,
+                var_dims,
+            )?;
         }
-        substitute_opt_expr_with_options(&mut var.start, ctx, live_vars, locals, &scope, true)?;
-        substitute_opt_expr_with_options(&mut var.min, ctx, live_vars, locals, &scope, true)?;
-        substitute_opt_expr_with_options(&mut var.max, ctx, live_vars, locals, &scope, true)?;
-        substitute_opt_expr_with_options(&mut var.nominal, ctx, live_vars, locals, &scope, true)?;
+        substitute_opt_expr_with_options_and_dims(
+            &mut var.start,
+            ctx,
+            live_vars,
+            locals,
+            &scope,
+            true,
+            var_dims,
+        )?;
+        substitute_opt_expr_with_options_and_dims(
+            &mut var.min,
+            ctx,
+            live_vars,
+            locals,
+            &scope,
+            true,
+            var_dims,
+        )?;
+        substitute_opt_expr_with_options_and_dims(
+            &mut var.max,
+            ctx,
+            live_vars,
+            locals,
+            &scope,
+            true,
+            var_dims,
+        )?;
+        substitute_opt_expr_with_options_and_dims(
+            &mut var.nominal,
+            ctx,
+            live_vars,
+            locals,
+            &scope,
+            true,
+            var_dims,
+        )?;
+        reconcile_constructor_extents_with_declared_dims(var);
         if variable_is_string_type(var, flat.variable_type_names.get(name)) {
             recover_string_literal_opt_expr(&mut var.binding, &scope);
             recover_string_literal_opt_expr(&mut var.start, &scope);
         }
     }
     Ok(())
+}
+
+fn reconcile_constructor_extents_with_declared_dims(var: &mut flat::Variable) {
+    if var.dims.is_empty()
+        || !matches!(
+            var.variability,
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+        )
+    {
+        return;
+    }
+    reconcile_constructor_extent_expr(&mut var.binding, &var.dims);
+    reconcile_constructor_extent_expr(&mut var.start, &var.dims);
+}
+
+fn reconcile_constructor_extent_expr(
+    expr: &mut Option<rumoca_core::Expression>,
+    dims: &[i64],
+) -> Option<()> {
+    reconcile_constructor_extent_in_value_expr(expr.as_mut()?, dims)
+}
+
+fn reconcile_constructor_extent_in_value_expr(
+    expr: &mut rumoca_core::Expression,
+    dims: &[i64],
+) -> Option<()> {
+    match expr {
+        rumoca_core::Expression::BuiltinCall { .. } => {
+            reconcile_constructor_extent_call(expr, dims)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            let mut changed = false;
+            for (_condition, value) in branches {
+                changed |= reconcile_constructor_extent_in_value_expr(value, dims).is_some();
+            }
+            changed |= reconcile_constructor_extent_in_value_expr(else_branch, dims).is_some();
+            changed.then_some(())
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            let lhs_changed = reconcile_constructor_extent_in_value_expr(lhs, dims).is_some();
+            let rhs_changed = reconcile_constructor_extent_in_value_expr(rhs, dims).is_some();
+            (lhs_changed || rhs_changed).then_some(())
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            reconcile_constructor_extent_in_value_expr(rhs, dims)
+        }
+        _ => None,
+    }
+}
+
+fn reconcile_constructor_extent_call(
+    expr: &mut rumoca_core::Expression,
+    dims: &[i64],
+) -> Option<()> {
+    let target_dims = dims
+        .iter()
+        .copied()
+        .map(|dim| usize::try_from(dim).ok())
+        .collect::<Option<Vec<_>>>()?;
+    if target_dims.is_empty() {
+        return None;
+    }
+    let target_len = target_dims.iter().product::<usize>();
+    if target_len == 0 {
+        return None;
+    }
+    let rumoca_core::Expression::BuiltinCall {
+        function,
+        args,
+        span,
+    } = expr
+    else {
+        unreachable!("constructor extent reconciliation is only called for builtin calls");
+    };
+    let offset = match function {
+        rumoca_core::BuiltinFunction::Fill => 1,
+        rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones => 0,
+        _ => return None,
+    };
+    if args.len() < offset + 1 {
+        return None;
+    }
+    if let Some(current_dims) = args[offset..]
+        .iter()
+        .map(literal_usize)
+        .collect::<Option<Vec<_>>>()
+    {
+        let current_len = current_dims.iter().product::<usize>();
+        if current_len == target_len || current_len != 0 {
+            return None;
+        }
+    }
+    let mut rewritten = args[..offset].to_vec();
+    rewritten.extend(
+        target_dims
+            .into_iter()
+            .map(|dim| rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(dim as i64),
+                span: *span,
+            }),
+    );
+    *args = rewritten;
+    Some(())
+}
+
+fn literal_usize(expr: &rumoca_core::Expression) -> Option<usize> {
+    let rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(value),
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    usize::try_from(*value).ok()
 }
 
 fn is_runtime_parameter_modifier_binding(var: &flat::Variable) -> bool {
@@ -1534,6 +1729,17 @@ fn substitute_opt_expr(
     substitute_opt_expr_with_options(expr, ctx, live_vars, locals, scope, false)
 }
 
+fn substitute_opt_expr_with_dims(
+    expr: &mut Option<rumoca_core::Expression>,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+) -> Result<(), FlattenError> {
+    substitute_opt_expr_with_options_and_dims(expr, ctx, live_vars, locals, scope, false, var_dims)
+}
+
 fn substitute_opt_expr_with_options(
     expr: &mut Option<rumoca_core::Expression>,
     ctx: &Context,
@@ -1550,6 +1756,54 @@ fn substitute_opt_expr_with_options(
             locals,
             scope,
             prefer_scoped_parameters,
+        )?;
+    }
+    Ok(())
+}
+
+fn substitute_opt_expr_with_options_and_dims(
+    expr: &mut Option<rumoca_core::Expression>,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    prefer_scoped_parameters: bool,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+) -> Result<(), FlattenError> {
+    if let Some(expr) = expr {
+        *expr = substitute_known_constants_expr_with_options_and_dims(
+            expr.clone(),
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+            Some(var_dims),
+        )?;
+    }
+    Ok(())
+}
+
+fn substitute_opt_expr_with_options_dims_and_values(
+    expr: &mut Option<rumoca_core::Expression>,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    prefer_scoped_parameters: bool,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+    var_values: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
+) -> Result<(), FlattenError> {
+    if let Some(expr) = expr {
+        *expr = substitute_known_constants_expr_with_options_dims_and_values(
+            expr.clone(),
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+            var_dims,
+            var_values,
         )?;
     }
     Ok(())
@@ -1573,6 +1827,26 @@ fn substitute_known_constants_expr_with_options(
     scope: &str,
     prefer_scoped_parameters: bool,
 ) -> Result<rumoca_core::Expression, FlattenError> {
+    substitute_known_constants_expr_with_options_and_dims(
+        expr,
+        ctx,
+        live_vars,
+        locals,
+        scope,
+        prefer_scoped_parameters,
+        None,
+    )
+}
+
+fn substitute_known_constants_expr_with_options_and_dims(
+    expr: rumoca_core::Expression,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    prefer_scoped_parameters: bool,
+    var_dims: Option<&rustc_hash::FxHashMap<String, Vec<i64>>>,
+) -> Result<rumoca_core::Expression, FlattenError> {
     KnownConstantSubstituter {
         env: ConstantSubstitutionEnv {
             ctx,
@@ -1580,6 +1854,32 @@ fn substitute_known_constants_expr_with_options(
             locals,
             scope,
             prefer_scoped_parameters,
+            var_dims,
+            var_values: None,
+        },
+    }
+    .rewrite_expression(&expr)
+}
+
+fn substitute_known_constants_expr_with_options_dims_and_values(
+    expr: rumoca_core::Expression,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    prefer_scoped_parameters: bool,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+    var_values: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    KnownConstantSubstituter {
+        env: ConstantSubstitutionEnv {
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters,
+            var_dims: Some(var_dims),
+            var_values: Some(var_values),
         },
     }
     .rewrite_expression(&expr)
@@ -1596,6 +1896,8 @@ struct ConstantSubstitutionEnv<'a> {
     locals: &'a HashSet<String>,
     scope: &'a str,
     prefer_scoped_parameters: bool,
+    var_dims: Option<&'a rustc_hash::FxHashMap<String, Vec<i64>>>,
+    var_values: Option<&'a rustc_hash::FxHashMap<String, rumoca_core::Expression>>,
 }
 
 impl<'a> ConstantSubstitutionEnv<'a> {
@@ -1606,6 +1908,8 @@ impl<'a> ConstantSubstitutionEnv<'a> {
             locals: self.locals,
             scope,
             prefer_scoped_parameters: self.prefer_scoped_parameters,
+            var_dims: self.var_dims,
+            var_values: self.var_values,
         }
     }
 }
@@ -1626,6 +1930,16 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
             rumoca_core::Expression::FieldAccess { base, field, span } => {
                 self.rewrite_field_access(base, field, *span)
             }
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Size,
+                args,
+                span,
+            } => {
+                if let Some(size_expr) = self.rewrite_size_from_declared_dims(args, *span) {
+                    return Ok(size_expr);
+                }
+                self.walk_expression(expr)
+            }
             other => self.walk_expression(other),
         }
     }
@@ -1645,6 +1959,32 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
 }
 
 impl KnownConstantSubstituter<'_> {
+    fn rewrite_size_from_declared_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let [base, dim] = args else {
+            return None;
+        };
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = base
+        else {
+            return None;
+        };
+        if !subscripts.is_empty() {
+            return None;
+        }
+        let dim = literal_integer(dim)?;
+        let dim_idx = usize::try_from(dim.checked_sub(1)?).ok()?;
+        let value = *declared_dims_for_reference(name.as_str(), self.env)?.get(dim_idx)?;
+        Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span,
+        })
+    }
+
     fn rewrite_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1742,6 +2082,23 @@ impl KnownConstantSubstituter<'_> {
             span,
         })
     }
+}
+
+fn declared_dims_for_reference<'a>(
+    key: &str,
+    env: ConstantSubstitutionEnv<'a>,
+) -> Option<&'a Vec<i64>> {
+    let var_dims = env.var_dims?;
+    if let Some(dims) = var_dims.get(key) {
+        return Some(dims);
+    }
+    if !env.scope.is_empty() && !key.contains('.') {
+        let scoped_key = format!("{}.{}", env.scope, key);
+        if let Some(dims) = var_dims.get(scoped_key.as_str()) {
+            return Some(dims);
+        }
+    }
+    None
 }
 
 fn resolve_indexed_constant_field_access(
@@ -1915,6 +2272,9 @@ fn substitute_scalar_var_ref(
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
+    if let Some(expr) = substitute_flat_variable_value_ref(key, span, env)? {
+        return Ok(Some(expr));
+    }
     if env.live_vars.contains(key) {
         if parameter_is_non_structural(key, env) {
             return Ok(None);
@@ -1978,6 +2338,30 @@ fn substitute_scalar_var_ref(
     }
 
     substitute_alias_resolved_scalar_var_ref(key, span, env)
+}
+
+fn substitute_flat_variable_value_ref(
+    key: &str,
+    span: rumoca_core::Span,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let Some(var_values) = env.var_values else {
+        return Ok(None);
+    };
+    for candidate in scoped_lookup_candidates(key, env.scope) {
+        let Some(value) = var_values.get(&candidate) else {
+            continue;
+        };
+        if reference_key_has_array_shape(&candidate, env.ctx, env.scope)
+            && !constant_expr_preserves_array_shape(value)
+        {
+            continue;
+        }
+        return Ok(Some(substitute_resolved_constant_expr(
+            &candidate, value, span, env,
+        )?));
+    }
+    Ok(None)
 }
 
 fn parameter_is_non_structural(key: &str, env: ConstantSubstitutionEnv<'_>) -> bool {
@@ -2123,13 +2507,22 @@ fn substitute_resolved_constant_expr(
     } else {
         &declaration_scope
     };
-    substitute_known_constants_expr_with_options(
-        expr.clone().with_span(span),
+    let mut expr = expr.clone().with_span(span);
+    if let Some(var_dims) = env.var_dims
+        && let Some(dims) = var_dims.get(key)
+    {
+        let mut maybe_expr = Some(expr);
+        reconcile_constructor_extent_expr(&mut maybe_expr, dims);
+        expr = maybe_expr.expect("reconciled expression should remain present");
+    }
+    substitute_known_constants_expr_with_options_and_dims(
+        expr,
         env.ctx,
         env.live_vars,
         env.locals,
         scope,
         env.prefer_scoped_parameters,
+        env.var_dims,
     )
 }
 
@@ -2625,6 +3018,8 @@ fn substitute_known_constants_statement(
             locals,
             scope,
             prefer_scoped_parameters: false,
+            var_dims: None,
+            var_values: None,
         },
     }
     .rewrite_statement(statement)?;

@@ -319,6 +319,9 @@ impl<'a> LowerBuilder<'a> {
         if !inferred_dims.is_empty() && inferred_dims.iter().all(|dim| *dim > 0) {
             return self.lower_size_from_dims(&inferred_dims, args, base_span, scope, call_depth);
         }
+        if let Ok(value) = self.eval_compile_time_size(args, span, &self.local_const_bindings) {
+            return self.emit_const_at(value, base_span);
+        }
 
         let base_key =
             dynamic_binding_base_key(base_expr).map_err(|err| err.with_fallback_span(base_span))?;

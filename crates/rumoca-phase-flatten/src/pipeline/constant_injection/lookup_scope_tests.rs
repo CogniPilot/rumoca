@@ -302,6 +302,32 @@ fn component_binding_collection_uses_only_structural_components() {
 }
 
 #[test]
+fn modified_structural_binding_overrides_existing_default_value() {
+    let mut overlay = InstanceOverlay::new();
+    overlay.add_component(InstanceData {
+        instance_id: InstanceId::new(1),
+        qualified_name: QualifiedName::from_dotted("sum.nu"),
+        variability: Variability::Parameter(Token::default()),
+        binding: Some(int_expr(2)),
+        binding_from_modification: true,
+        is_discrete_type: true,
+        ..InstanceData::default()
+    });
+    let mut eval_ctx = rumoca_eval_flat::constant::EvalContext::default();
+    eval_ctx.add_parameter(
+        "sum.nu".to_string(),
+        rumoca_eval_flat::constant::Value::Integer(0),
+    );
+
+    collect_component_binding_values(&overlay, &mut eval_ctx).unwrap();
+
+    assert_eq!(
+        eval_ctx.get("sum.nu"),
+        Some(&rumoca_eval_flat::constant::Value::Integer(2))
+    );
+}
+
+#[test]
 fn const_flat_expr_accepts_enum_literal_component_ref() {
     let expr = ast::Expression::ComponentReference(comp_ref(
         "Modelica.Electrical.Digital.Interfaces.Logic.'U'",

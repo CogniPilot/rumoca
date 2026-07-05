@@ -1751,6 +1751,27 @@ fn test_build_env_accepts_zero_length_fill_sized_by_string_fill() {
 }
 
 #[test]
+fn test_eval_size_of_single_value_range_with_fill_bound() {
+    let env = VarEnv::<f64>::new();
+    let fill = builtin(
+        rumoca_core::BuiltinFunction::Fill,
+        vec![lit(0.0), int_lit(0), int_lit(2)],
+    );
+    let range = rumoca_core::Expression::Range {
+        start: Box::new(int_lit(2)),
+        step: None,
+        end: Box::new(builtin(
+            rumoca_core::BuiltinFunction::Size,
+            vec![fill, int_lit(2)],
+        )),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let size = builtin(rumoca_core::BuiltinFunction::Size, vec![range, int_lit(1)]);
+
+    assert_eq!(eval_expr::<f64>(&size, &env), Ok(1.0));
+}
+
+#[test]
 fn test_build_env_defaults_empty_external_table_bound_start() {
     let mut dae = rumoca_ir_dae::Dae::default();
     let mut x = rumoca_ir_dae::Variable::new(

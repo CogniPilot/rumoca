@@ -1034,6 +1034,14 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(values);
         }
+        if is_constructor
+            && self.lookup_function(name).is_none()
+            && let Some(reg) = self.lower_scalar_type_constructor_array_value(
+                name, args, call_span, scope, call_depth,
+            )?
+        {
+            return Ok(vec![reg]);
+        }
         if self.is_record_constructor_call(name, is_constructor) {
             return self.lower_record_constructor_values(
                 name,
@@ -1051,6 +1059,25 @@ impl<'a> LowerBuilder<'a> {
         let mut values = array_vec_with_capacity(1, "function fallback value count", call_span)?;
         values.push(self.lower_expr(fallback, scope, call_depth)?);
         Ok(values)
+    }
+
+    fn lower_scalar_type_constructor_array_value(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let (named_args, positional_args) =
+            function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
+        named_args
+            .get("start")
+            .copied()
+            .or_else(|| positional_args.first().copied())
+            .map(|expr| self.lower_expr(expr, scope, call_depth + 1))
+            .transpose()
+            .map_err(|err| err.with_fallback_span(span))
     }
 
     pub(super) fn lower_multiplication_expr(

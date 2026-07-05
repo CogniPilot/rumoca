@@ -146,11 +146,133 @@ fn substitute_known_constants_recovers_clock_factor_binding_from_integer_constru
     ));
 }
 
+#[test]
+fn substitute_known_constants_reconciles_zero_fill_extent_with_declared_dims() {
+    let mut model = flat::Model::new();
+    let name = rumoca_core::VarName::new("sum.k");
+    let stale_fill = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![int_literal(1), int_literal(0)],
+        span: test_span(),
+    };
+    model.add_variable(
+        name.clone(),
+        flat::Variable {
+            name: name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(stale_fill.clone()),
+            start: Some(stale_fill.clone()),
+            dims: vec![2],
+            is_discrete_type: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref("sum.y")),
+            rhs: Box::new(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(var_ref("sum.k")),
+                rhs: Box::new(var_ref("sum.u")),
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "sum.y".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert(name.as_str().to_string(), stale_fill.clone());
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let var = model.variables.get(&name).expect("variable should remain");
+    for expr in [var.binding.as_ref(), var.start.as_ref()] {
+        let Some(rumoca_core::Expression::BuiltinCall { args, .. }) = expr else {
+            panic!("expected fill expression");
+        };
+        assert_eq!(literal_integer_value(&args[1]), Some(2));
+    }
+    let rumoca_core::Expression::Binary { rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    let rumoca_core::Expression::Binary { lhs, .. } = rhs.as_ref() else {
+        panic!("expected substituted multiplication");
+    };
+    let rumoca_core::Expression::BuiltinCall { args, .. } = lhs.as_ref() else {
+        panic!("expected substituted fill expression");
+    };
+    assert_eq!(literal_integer_value(&args[1]), Some(2));
+}
+
+#[test]
+fn substitute_known_constants_uses_declared_dims_for_size_before_stale_start() {
+    let mut model = flat::Model::new();
+    let columns = rumoca_core::VarName::new("lossTable.columns");
+    let stale_columns_start = rumoca_core::Expression::Range {
+        start: Box::new(int_literal(2)),
+        step: None,
+        end: Box::new(int_literal(2)),
+        span: test_span(),
+    };
+    model.add_variable(
+        columns.clone(),
+        flat::Variable {
+            name: columns.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            start: Some(stale_columns_start.clone()),
+            dims: vec![2],
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref("y")),
+            rhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Size,
+                args: vec![var_ref("lossTable.columns"), int_literal(1)],
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "lossTable".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert(columns.as_str().to_string(), stale_columns_start);
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    assert_eq!(literal_integer_value(rhs), Some(2));
+}
+
 fn int_literal(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
         span: rumoca_core::Span::DUMMY,
     }
+}
+
+fn literal_integer_value(expr: &rumoca_core::Expression) -> Option<i64> {
+    let rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(value),
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    Some(*value)
 }
 
 fn string_literal(value: &str) -> rumoca_core::Expression {

@@ -752,7 +752,10 @@ where
     }
 
     fn prefer_exact_output_steps(&self) -> bool {
-        self.mode == DiffsolMode::StateOnly && !model_is_event_free(self.model)
+        // The shared driver already stops at runtime event boundaries. Forcing
+        // BDF to land on every output sample compresses its multistep history on
+        // dense output grids and can collapse otherwise smooth state-only runs.
+        false
     }
 
     fn project_algebraics(
@@ -1102,18 +1105,6 @@ fn visible_values(
         },
     )
     .map_err(|err| SimError::SolveIr(err.to_string()))
-}
-
-/// True when the model has no discontinuities (zero-crossing roots, scheduled
-/// time events, or discrete `when` updates), so the BDF solution is smooth and
-/// safe to dense-output / interpolate at arbitrary times.
-fn model_is_event_free(model: &solve::SolveModel) -> bool {
-    let events = &model.problem.events;
-    let discrete = &model.problem.discrete;
-    events.root_conditions.is_empty()
-        && events.scheduled_time_events.is_empty()
-        && discrete.update_targets.is_empty()
-        && discrete.runtime_assignment_targets.is_empty()
 }
 
 fn trace_bdf_step_failure(

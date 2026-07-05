@@ -17,11 +17,13 @@ impl<'a> LowerBuilder<'a> {
             if let Some(expr) = named_args
                 .get("re")
                 .copied()
+                .or_else(|| named_args.get("start").copied())
                 .or_else(|| positional_args.first().copied())
             {
                 // Modelica.Complex and other scalar record constructors use
                 // declared field order; numeric scalar contexts read the first
-                // field unless a projection selects another component.
+                // field unless a projection selects another component. Scalar
+                // type constructors may carry only attributes such as start.
                 return self.lower_expr(expr, caller_scope, call_depth + 1);
             }
             if let Some(default_expr) = self
