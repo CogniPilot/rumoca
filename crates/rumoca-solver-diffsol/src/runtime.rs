@@ -509,15 +509,17 @@ pub(crate) fn initialize_no_state_runtime(
     )?;
     event_action_outcome_to_result(outcome.action, outcome.final_t)?;
     current_t = outcome.final_t;
-    refresh_observation_rows_and_relation_memory(
-        model,
-        &runtime,
-        &equilibrium_model,
-        &mut current_y,
-        &mut params,
-        current_t,
-        tol,
-    )?;
+    if apply_without_initial_event || !outcome.observations.is_empty() {
+        refresh_observation_rows_and_relation_memory(
+            model,
+            &runtime,
+            &equilibrium_model,
+            &mut current_y,
+            &mut params,
+            current_t,
+            tol,
+        )?;
+    }
     commit_pre_params_after_event(model, &current_y, &mut params, tol);
     let mut data = vec![Vec::with_capacity(output_count); model.visible_names.len()];
     let mut recorded_times = Vec::with_capacity(output_count);
