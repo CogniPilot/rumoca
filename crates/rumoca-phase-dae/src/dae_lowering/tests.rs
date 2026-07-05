@@ -478,6 +478,43 @@ fn test_scalarize_phantom_vector_equations_preserves_event_assignment_lhs() {
 }
 
 #[test]
+fn test_scalarize_discrete_residual_vector_equations_recovers_explicit_assignments() {
+    let mut dae = Dae::new();
+    let mut target = dae::Variable::new(rumoca_core::VarName::new("target"), test_span());
+    target.dims = vec![2];
+    dae.variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("target"), target);
+
+    for k in 1..=2 {
+        let name = format!("source[{k}]");
+        dae.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(&name),
+            dae::Variable::new(rumoca_core::VarName::new(&name), test_span()),
+        );
+    }
+
+    dae.discrete.valued_updates.push(dae::Equation::residual(
+        sub(var_ref("target"), var_ref("source")),
+        test_span(),
+        "discrete valued residual assignment",
+    ));
+    dae.discrete.valued_updates[0].scalar_count = 2;
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.discrete.valued_updates.len(), 2);
+    for (k, eq) in dae.discrete.valued_updates.iter().enumerate() {
+        assert_eq!(
+            eq.lhs.as_ref().map(|lhs| lhs.as_str()),
+            Some(format!("target[{}]", k + 1).as_str())
+        );
+        let names = all_var_names(&eq.rhs);
+        assert_eq!(names, vec![format!("source[{}]", k + 1)]);
+    }
+}
+
+#[test]
 fn scalarize_phantom_vector_equations_reports_missing_function_shape_with_call_span() {
     let mut dae = Dae::new();
     for k in 1..=2 {

@@ -11,9 +11,6 @@ use std::collections::HashMap;
 mod record_alias;
 use record_alias::*;
 pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ctx: &Context) {
-    if ctx.record_aliases.is_empty() {
-        return;
-    }
     let known_variables: HashSet<String> = flat.variables.keys().map(ToString::to_string).collect();
     for var in flat.variables.values_mut() {
         let owner = rumoca_core::ComponentPath::from_flat_path(var.name.as_str());
@@ -1965,8 +1962,7 @@ fn scalar_parameter_literal(
     span: rumoca_core::Span,
     ctx: &Context,
 ) -> Option<rumoca_core::Expression> {
-    if ctx.structural_params.contains(key)
-        && let Some(v) = ctx.real_parameter_values.get(key)
+    if let Some(v) = ctx.real_parameter_values.get(key)
         && v.is_finite()
     {
         return Some(rumoca_core::Expression::Literal {

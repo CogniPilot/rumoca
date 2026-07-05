@@ -2130,6 +2130,7 @@ mod tests {
                 true,
             )
             .expect("prepared FMI2 C render should succeed");
+        let rendered = rendered.replace("\r\n", "\n");
 
         assert!(
             rendered.contains("p = root;\n    m->p[1] = p;  /* binding child.p */"),
@@ -2180,6 +2181,7 @@ mod tests {
                 true,
             )
             .expect("prepared FMI2 modelDescription render should succeed");
+        let rendered = rendered.replace("\r\n", "\n");
 
         assert!(
             rendered.contains(r#"name="root" valueReference="2" causality="parameter" variability="fixed" initial="exact">
@@ -2227,6 +2229,7 @@ mod tests {
                 true,
             )
             .expect("prepared FMI2 C render should succeed");
+        let rendered = rendered.replace("\r\n", "\n");
 
         assert!(
             rendered.contains(

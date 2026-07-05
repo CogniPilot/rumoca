@@ -114,6 +114,7 @@ impl ExpressionRewriter for RecordAliasCanonicalizer<'_> {
     ) -> rumoca_core::Expression {
         let rewritten_name = if subscripts.is_empty() {
             record_alias_rewrite_name(name.as_str(), self.ctx, self.known_variables, self.owner)
+                .or_else(|| decomposed_record_field_candidate(name.as_str(), self.known_variables))
                 .map(rumoca_core::Reference::new)
                 .unwrap_or_else(|| name.clone())
         } else {
@@ -223,6 +224,32 @@ fn owner_projected_record_field_candidate(
         return None;
     }
     known_variables.contains(&candidate).then_some(candidate)
+}
+
+fn decomposed_record_field_candidate(
+    name: &str,
+    known_variables: &HashSet<String>,
+) -> Option<String> {
+    let path = rumoca_core::ComponentPath::from_flat_path(name);
+    let parts = path.parts();
+    if parts.len() < 2 || known_variables.contains(name) {
+        return None;
+    }
+    let field = parts.last()?;
+    let base = path.prefix(parts.len() - 1)?;
+    let candidate = base
+        .parent()
+        .unwrap_or_else(rumoca_core::ComponentPath::root)
+        .join(&rumoca_core::ComponentPath::from_flat_path(field))
+        .to_flat_string();
+    if candidate == name || !known_variables.contains(&candidate) {
+        return None;
+    }
+    let base_prefix = format!("{}.", base);
+    known_variables
+        .iter()
+        .any(|known| known.starts_with(&base_prefix))
+        .then_some(candidate)
 }
 
 fn record_alias_candidate(

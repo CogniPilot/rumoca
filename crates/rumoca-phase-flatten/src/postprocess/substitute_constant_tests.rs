@@ -147,6 +147,38 @@ fn substitutes_qualified_real_class_constant_inside_builtin_array_binding() {
 }
 
 #[test]
+fn substitutes_well_known_real_class_constant_in_equations() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "x");
+    model.add_equation(flat::Equation::new(
+        spanned_var_ref("ModelicaServices.Machine.eps"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    let mut ctx = Context::new();
+    ctx.class_constant_keys
+        .insert("ModelicaServices.Machine.eps".to_string());
+    ctx.real_parameter_values
+        .insert("ModelicaServices.Machine.eps".to_string(), f64::EPSILON);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    assert!(
+        matches!(
+            model.equations[0].residual,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(_),
+                ..
+            }
+        ),
+        "class constant should be substituted in equation residuals: {:?}",
+        model.equations[0].residual
+    );
+}
+
+#[test]
 fn substitute_known_constants_preserves_named_arg_marker_for_record_constructor_value() {
     let mut model = flat::Model::new();
     model.add_equation(flat::Equation::new(

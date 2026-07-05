@@ -549,9 +549,7 @@ fn is_surplus_component_binding_alias(
     output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
-    if !eq.origin.starts_with("binding equation for")
-        || (eq.scalar_count <= 1 && !eq.origin.contains(" [scalarized "))
-    {
+    if !eq.origin.starts_with("binding equation for") {
         return false;
     }
     let refs = eq_binary_var_refs(&eq.rhs);

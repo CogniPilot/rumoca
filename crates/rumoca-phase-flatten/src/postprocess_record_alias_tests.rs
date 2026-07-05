@@ -568,11 +568,7 @@ fn record_alias_canonicalization_projects_owner_record_field_without_direct_alia
             ..flat::Variable::empty_with_span(test_span())
         },
     );
-    let mut ctx = Context::new();
-    ctx.record_aliases.insert(
-        rumoca_core::ComponentPath::from_flat_path("other.alias"),
-        rumoca_core::ComponentPath::from_flat_path("other.target"),
-    );
+    let ctx = Context::new();
 
     canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
 
@@ -628,6 +624,40 @@ fn record_alias_canonicalization_projects_nested_owner_record_leaf() {
         panic!("expected nested owner projection to collapse");
     };
     assert_eq!(name.as_str(), "bank.per[1].Q");
+}
+
+#[test]
+fn record_alias_canonicalization_projects_decomposed_record_field_to_sibling_leaf() {
+    let mut model = flat::Model::new();
+    for name in ["h", "state.phase"] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+    model.add_equation(flat::Equation::new(
+        var_ref("state.h"),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    let mut ctx = Context::new();
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("other.alias"),
+        rumoca_core::ComponentPath::from_flat_path("other.target"),
+    );
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+
+    let rumoca_core::Expression::VarRef { name, .. } = &model.equations[0].residual else {
+        panic!("expected projected var ref");
+    };
+    assert_eq!(name.as_str(), "h");
 }
 
 #[test]

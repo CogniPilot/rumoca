@@ -164,6 +164,13 @@ fn algebraic_vector_var(name: &str, size: i64) -> dae::Variable {
     }
 }
 
+fn algebraic_var(name: &str) -> dae::Variable {
+    dae::Variable {
+        name: rumoca_core::VarName::new(name),
+        ..rumoca_ir_dae::Variable::empty_with_span(test_span())
+    }
+}
+
 #[test]
 fn test_balance_clamps_overconstrained_interface_to_deficit() {
     let mut dae = dae_with_unknown_scalars(4);
@@ -679,6 +686,46 @@ fn balance_spends_scalarized_vector_bindings_only_against_surplus() {
         );
     }
     assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -3);
+}
+
+#[test]
+fn balance_spends_scalar_component_binding_aliases_only_against_surplus() {
+    let mut dae = dae::Dae::default();
+    dae.variables
+        .outputs
+        .insert(rumoca_core::VarName::new("alias"), algebraic_var("alias"));
+    for name in ["source", "extra"] {
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), algebraic_var(name));
+    }
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "source",
+        "source_driver",
+        "component equation",
+        1,
+    ));
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "extra",
+        "extra_driver",
+        "component equation",
+        2,
+    ));
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "alias",
+        "source",
+        "binding equation for alias",
+        1,
+    ));
+
+    assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+
+    for name in ["d", "e"] {
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), algebraic_var(name));
+    }
+    assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -1);
 }
 
 #[test]

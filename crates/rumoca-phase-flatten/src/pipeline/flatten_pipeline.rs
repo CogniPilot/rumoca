@@ -1004,6 +1004,7 @@ pub(crate) fn finalize_flat_model(
     functions::canonicalize_collected_function_calls(flat);
     functions::lower_record_function_params(flat)?;
     mark_record_constructor_calls(flat, tree);
+    substitute_known_constants_in_flat(flat, ctx)?;
     canonicalize_varrefs_via_record_aliases(flat, ctx);
     resolve_nested_constructor_field_access_bindings(flat);
     collapse_index_refs_to_known_varrefs(flat);

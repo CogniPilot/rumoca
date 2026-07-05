@@ -1035,6 +1035,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
+        false,
     )?;
     rumoca_ir_dae::remap_structured_families_after_expansion(
         &mut dae.continuous.structured_equations,
@@ -1045,6 +1046,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
+        false,
     )?;
     rumoca_ir_dae::remap_structured_families_after_expansion(
         &mut dae.initialization.structured_equations,
@@ -1056,18 +1058,21 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
+        true,
     )?;
     scalarize_equation_list(
         &mut dae.discrete.valued_updates,
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
+        true,
     )?;
     scalarize_equation_list(
         &mut dae.conditions.equations,
         &phantom_map,
         &array_dims,
         &dae.symbols.functions,
+        false,
     )?;
     Ok(())
 }
@@ -1389,9 +1394,7 @@ fn expr_has_record_array_member_slice(expr: &rumoca_core::Expression) -> bool {
                 rumoca_core::Expression::Index {
                     subscripts,
                     ..
-                } if subscripts.iter().any(|subscript| {
-                    matches!(subscript, rumoca_core::Subscript::Colon { .. })
-                })
+                } if subscripts.iter().any(subscript_is_record_array_member_slice)
             ) || expr_has_record_array_member_slice(base)
         }
         rumoca_core::Expression::Binary { lhs, rhs, .. } => {
@@ -1652,12 +1655,9 @@ fn scalarize_record_array_member_slice_at(
     else {
         return Ok(None);
     };
-    if !matches!(
-        subscripts.as_slice(),
-        [rumoca_core::Subscript::Colon { .. }]
-    ) {
+    let [subscript] = subscripts.as_slice() else {
         return Ok(None);
-    }
+    };
     let rumoca_core::Expression::VarRef {
         name,
         subscripts: ref_subscripts,
@@ -1676,7 +1676,7 @@ fn scalarize_record_array_member_slice_at(
     let Some(part) = element_ref.parts.last_mut() else {
         return Ok(None);
     };
-    let index = one_based_scalar_index(k, span, "DAE record-array member slice subscript")?;
+    let index = record_array_member_slice_index(subscript, k, span)?;
     part.subs = vec![generated_index_subscript(
         index,
         span,
@@ -1692,6 +1692,36 @@ fn scalarize_record_array_member_slice_at(
         subscripts: Vec::new(),
         span,
     }))
+}
+
+fn subscript_is_record_array_member_slice(subscript: &rumoca_core::Subscript) -> bool {
+    matches!(subscript, rumoca_core::Subscript::Colon { .. })
+        || matches!(
+            subscript,
+            rumoca_core::Subscript::Expr { expr, .. }
+                if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+        )
+}
+
+fn record_array_member_slice_index(
+    subscript: &rumoca_core::Subscript,
+    k: usize,
+    span: rumoca_core::Span,
+) -> Result<i64, ToDaeError> {
+    match subscript {
+        rumoca_core::Subscript::Colon { .. } => {
+            one_based_scalar_index(k, span, "DAE record-array member slice subscript")
+        }
+        rumoca_core::Subscript::Expr { expr, .. } => scalarized_comprehension_index_value(expr, k)
+            .ok_or_else(|| {
+                ToDaeError::runtime_metadata_violation(
+                    "record-array member slice requires a literal range subscript".to_string(),
+                )
+            }),
+        rumoca_core::Subscript::Index { .. } => Err(ToDaeError::runtime_metadata_violation(
+            "record-array member slice requires a range subscript".to_string(),
+        )),
+    }
 }
 
 fn scalarize_array_comprehension_at(
@@ -2250,6 +2280,7 @@ fn scalarize_equation_list(
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    recover_discrete_assignments: bool,
 ) -> Result<Vec<(usize, usize)>, ToDaeError> {
     let mut new_equations = Vec::with_capacity(equations.len());
     let mut spans = Vec::with_capacity(equations.len());
@@ -2270,6 +2301,7 @@ fn scalarize_equation_list(
                     origin,
                     phantom_map,
                     array_dims,
+                    recover_discrete_assignments,
                 )?);
             }
         } else if phantom_width == Some(1) {
@@ -2297,8 +2329,14 @@ fn scalarized_equation_at(
     origin: String,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
+    recover_discrete_assignments: bool,
 ) -> Result<dae::Equation, ToDaeError> {
     let Some(lhs) = &eq.lhs else {
+        if recover_discrete_assignments
+            && let Some((lhs, rhs)) = residual_assignment_parts(scalar_rhs.clone())?
+        {
+            return Ok(dae::Equation::explicit(lhs, rhs, eq.span, origin));
+        }
         return Ok(dae::Equation::residual(scalar_rhs, eq.span, origin));
     };
     Ok(dae::Equation::explicit(
@@ -2307,6 +2345,99 @@ fn scalarized_equation_at(
         eq.span,
         origin,
     ))
+}
+
+fn residual_assignment_parts(
+    expr: rumoca_core::Expression,
+) -> Result<Option<(rumoca_core::Reference, rumoca_core::Expression)>, ToDaeError> {
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+    let Some(lhs) = assignment_target_reference(*lhs)? else {
+        return Ok(None);
+    };
+    Ok(Some((lhs, *rhs)))
+}
+
+fn assignment_target_reference(
+    expr: rumoca_core::Expression,
+) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if subscripts.is_empty() {
+                return Ok(Some(name));
+            }
+            if let Some(mut component_ref) = name.component_ref().cloned() {
+                let Some(part) = component_ref.parts.last_mut() else {
+                    return Ok(None);
+                };
+                part.subs.extend(subscripts);
+                return Ok(Some(rumoca_core::Reference::from_component_reference(
+                    component_ref,
+                )));
+            }
+            let Some(rendered) = render_literal_subscripted_reference(name.as_str(), &subscripts)
+            else {
+                return Ok(None);
+            };
+            if name.is_generated() {
+                Ok(Some(rumoca_core::Reference::generated(rendered)))
+            } else {
+                Ok(Some(rumoca_core::Reference::new(rendered)))
+            }
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let Some(base) = assignment_target_reference(*base)? else {
+                return Ok(None);
+            };
+            Ok(Some(base.with_appended_field(&field)))
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Some(mut base) = assignment_target_reference(*base)? else {
+                return Ok(None);
+            };
+            for subscript in subscripts {
+                let rumoca_core::Subscript::Index { value, span } = subscript else {
+                    return Ok(None);
+                };
+                base = base.with_appended_index(
+                    value,
+                    span.require_provenance("DAE assignment target index")
+                        .map_err(|error| {
+                            ToDaeError::runtime_metadata_violation(error.to_string())
+                        })?,
+                );
+            }
+            Ok(Some(base))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn render_literal_subscripted_reference(
+    base: &str,
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<String> {
+    let mut rendered = base.to_string();
+    for subscript in subscripts {
+        let rumoca_core::Subscript::Index { value, .. } = subscript else {
+            return None;
+        };
+        rendered.push('[');
+        rendered.push_str(&value.to_string());
+        rendered.push(']');
+    }
+    Some(rendered)
 }
 
 fn scalarize_lhs_name_at(
