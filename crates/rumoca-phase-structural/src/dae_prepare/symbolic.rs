@@ -601,11 +601,19 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 if expression_is_zero_value(&d_base) {
                     return Some(real_literal(0.0, *span));
                 }
-                Some(Expression::Index {
-                    base: Box::new(d_base),
-                    subscripts: subscripts.clone(),
-                    span: *span,
-                })
+                let Some(base_dims) = expression_dims(&d_base, self.dae) else {
+                    return Some(Expression::Index {
+                        base: Box::new(d_base),
+                        subscripts: subscripts.clone(),
+                        span: *span,
+                    });
+                };
+                if base_dims.is_empty() {
+                    return Some(d_base);
+                }
+                let indices = static_subscript_indices(subscripts)?;
+                let flat_index = flat_index_from_indices(&base_dims, &indices)?;
+                project_flat_index_with_span(&d_base, &base_dims, flat_index, Some(*span))
             }
             Expression::FunctionCall {
                 name,
@@ -778,17 +786,7 @@ fn simplify_symbolic_derivative(expr: Expression) -> Expression {
             base,
             subscripts,
             span,
-        } => {
-            let base = simplify_symbolic_derivative(*base);
-            if expression_is_zero_value(&base) {
-                return real_literal(0.0, span);
-            }
-            Expression::Index {
-                base: Box::new(base),
-                subscripts,
-                span,
-            }
-        }
+        } => simplify_symbolic_derivative_index(*base, subscripts, span),
         Expression::BuiltinCall {
             function,
             args,
@@ -821,6 +819,25 @@ fn simplify_symbolic_derivative(expr: Expression) -> Expression {
             span,
         },
         _ => expr,
+    }
+}
+
+fn simplify_symbolic_derivative_index(
+    base: Expression,
+    subscripts: Vec<Subscript>,
+    span: Span,
+) -> Expression {
+    let base = simplify_symbolic_derivative(base);
+    if expression_is_zero_value(&base) {
+        return real_literal(0.0, span);
+    }
+    if syntactically_scalar_for_projection(&base) {
+        return base;
+    }
+    Expression::Index {
+        base: Box::new(base),
+        subscripts,
+        span,
     }
 }
 
@@ -1079,6 +1096,17 @@ pub(super) fn expression_dims(expr: &Expression, dae: &Dae) -> Option<Vec<i64>> 
                 _ => None,
             }
         }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base_dims = expression_dims(base, dae)?;
+            let indices = static_subscript_indices(subscripts)?;
+            if base_dims.len() == indices.len() {
+                flat_index_from_indices(&base_dims, &indices)?;
+                return Some(Vec::new());
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -1170,6 +1198,9 @@ pub(super) fn project_flat_index_with_span(
     flat_index: usize,
     fallback_span: Option<Span>,
 ) -> Option<Expression> {
+    if syntactically_scalar_for_projection(expr) {
+        return Some(expr.clone());
+    }
     match expr {
         Expression::VarRef {
             name,
@@ -1257,6 +1288,29 @@ pub(super) fn project_flat_index_with_span(
                 span,
             })
         }
+    }
+}
+
+fn syntactically_scalar_for_projection(expr: &Expression) -> bool {
+    match expr {
+        Expression::Literal { .. } => true,
+        Expression::VarRef { subscripts, .. } => !subscripts.is_empty(),
+        Expression::Index { .. } => true,
+        Expression::Unary { rhs, .. } => syntactically_scalar_for_projection(rhs),
+        Expression::Binary { lhs, rhs, .. } => {
+            syntactically_scalar_for_projection(lhs) && syntactically_scalar_for_projection(rhs)
+        }
+        Expression::BuiltinCall {
+            function:
+                BuiltinFunction::Sin
+                | BuiltinFunction::Cos
+                | BuiltinFunction::Sqrt
+                | BuiltinFunction::Max
+                | BuiltinFunction::Min,
+            args,
+            ..
+        } => args.iter().all(syntactically_scalar_for_projection),
+        _ => false,
     }
 }
 
@@ -1500,6 +1554,20 @@ mod tests {
         }
     }
 
+    fn var_ref_idx(name: &str, idx: i64, span: Span) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: vec![Subscript::Index { value: idx, span }],
+            span,
+        }
+    }
+
+    fn test_variable(name: &str, dims: Vec<i64>) -> Variable {
+        let mut variable = Variable::new(VarName::new(name), test_span());
+        variable.dims = dims;
+        variable
+    }
+
     fn has_single_index_with_span(expr: &Expression, expected_span: Span) -> bool {
         let Expression::VarRef { subscripts, .. } = expr else {
             return false;
@@ -1545,6 +1613,57 @@ mod tests {
                         && has_single_index_with_span(rhs.as_ref(), span)
             ),
             "projected binary should index both operands with the source span"
+        );
+    }
+
+    #[test]
+    fn symbolic_derivative_projects_indexed_vector_without_indexing_scalar_factor() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("omega"), test_variable("omega", vec![3]));
+        dae.variables
+            .algebraics
+            .insert(VarName::new("M_body"), test_variable("M_body", vec![3]));
+
+        let mut der_map = HashMap::new();
+        der_map.insert(
+            "omega".to_string(),
+            Expression::Array {
+                elements: vec![
+                    var_ref_idx("M_body", 1, span),
+                    var_ref_idx("M_body", 2, span),
+                    var_ref_idx("M_body", 3, span),
+                ],
+                is_matrix: false,
+                span,
+            },
+        );
+        let expr = Expression::Index {
+            base: Box::new(Expression::Binary {
+                op: OpBinary::MulElem,
+                lhs: Box::new(real_literal(-0.02, span)),
+                rhs: Box::new(var_ref("omega", span)),
+                span,
+            }),
+            subscripts: vec![Subscript::Index { value: 3, span }],
+            span,
+        };
+
+        let derivative =
+            symbolic_time_derivative(&expr, &dae, &der_map).expect("vector index derivative");
+
+        assert!(
+            matches!(
+                &derivative,
+                Expression::Binary { lhs, rhs, .. }
+                    if matches!(lhs.as_ref(), Expression::Literal { value: Literal::Real(value), .. } if *value == -0.02)
+                        && matches!(rhs.as_ref(), Expression::VarRef { name, subscripts, .. }
+                            if name.as_str() == "M_body"
+                                && matches!(subscripts.as_slice(), [Subscript::Index { value: 3, .. }]))
+            ),
+            "derivative should be -0.02 * M_body[3], got {derivative:?}"
         );
     }
 }

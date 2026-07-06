@@ -11,7 +11,6 @@ mod structural_standard;
 mod tests;
 use helpers::*;
 pub(super) use selection_helpers::*;
-
 const MAX_STATIC_RANGE_VALUES: usize = 100_000;
 
 pub(in crate::lower) struct ArrayComprehensionLowerCtx<'a> {
@@ -21,7 +20,6 @@ pub(in crate::lower) struct ArrayComprehensionLowerCtx<'a> {
     const_scope: &'a mut IndexMap<String, f64>,
     call_depth: usize,
 }
-
 #[derive(Clone)]
 pub(super) struct ArrayOperand {
     pub(super) values: Vec<Reg>,

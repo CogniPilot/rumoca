@@ -2069,6 +2069,8 @@ fn constrained_dummy_derivative_plan(
 #[cfg(test)]
 mod dae_prepare_demotion_tests;
 #[cfg(test)]
+mod direct_demotion_piecewise_tests;
+#[cfg(test)]
 mod matrix_state_derivative_tests;
 
 /// Pin parameters whose compile-time values the constrained-dummy reduction

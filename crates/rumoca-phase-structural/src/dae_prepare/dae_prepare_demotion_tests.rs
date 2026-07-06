@@ -706,69 +706,6 @@ fn test_constrained_dummy_state_names_skip_self_integrating_output_transform() {
 }
 
 #[test]
-fn test_demote_direct_assigned_states_extracts_piecewise_trajectory_definition() {
-    let mut dae = Dae::new();
-    dae.variables
-        .states
-        .insert(VarName::new("s"), test_variable("s"));
-    dae.variables
-        .states
-        .insert(VarName::new("sd"), test_variable("sd"));
-    dae.variables
-        .algebraics
-        .insert(VarName::new("sdd"), test_variable("sdd"));
-    dae.variables
-        .outputs
-        .insert(VarName::new("q"), test_variable("q"));
-    dae.variables
-        .outputs
-        .insert(VarName::new("qd"), test_variable("qd"));
-
-    dae.continuous.equations.push(eq(Expression::If {
-        branches: vec![(lt(var("time"), real(1.0)), sub(var("s"), real(0.0)))],
-        else_branch: Box::new(sub(
-            Expression::If {
-                branches: vec![(
-                    lt(var("time"), real(2.0)),
-                    sub(var("s"), mul(real(0.5), var("time"))),
-                )],
-                else_branch: Box::new(sub(var("s"), var("time"))),
-                span: Span::DUMMY,
-            },
-            real(0.0),
-        )),
-        span: Span::DUMMY,
-    }));
-    dae.continuous.equations.push(eq(sub(var("sd"), der("s"))));
-    dae.continuous
-        .equations
-        .push(eq(sub(var("sdd"), der("sd"))));
-    dae.continuous
-        .equations
-        .push(eq(sub(var("q"), add(real(10.0), mul(real(2.0), var("s"))))));
-    dae.continuous
-        .equations
-        .push(eq(sub(var("qd"), mul(real(2.0), var("sd")))));
-
-    let demoted =
-        demote_direct_assigned_states(&mut dae).expect("piecewise direct trajectory should demote");
-
-    assert_eq!(demoted, 2);
-    assert!(dae.variables.states.is_empty());
-    assert!(dae.variables.algebraics.contains_key(&VarName::new("s")));
-    assert!(dae.variables.algebraics.contains_key(&VarName::new("sd")));
-    assert!(dae.variables.algebraics.contains_key(&VarName::new("sdd")));
-    assert!(
-        dae.continuous
-            .equations
-            .iter()
-            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("s"))
-                && !expr_contains_der_of(&eq.rhs, &VarName::new("sd"))),
-        "demotion should replace the derivative chain with symbolic trajectory derivatives"
-    );
-}
-
-#[test]
 fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_closure() {
     let mut dae = Dae::new();
     dae.variables

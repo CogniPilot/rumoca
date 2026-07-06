@@ -651,6 +651,9 @@ pub fn index_reduce_missing_state_derivatives_once(
                 {
                     return None;
                 }
+                if is_non_state_direct_definition(dae, eq) {
+                    return None;
+                }
                 if is_indexed_state_component_alias_definition(eq, state_name) {
                     return None;
                 }
@@ -740,6 +743,34 @@ fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
                 if name.var_name() == alg_name && subscripts.is_empty()
         )
     })
+}
+
+fn is_non_state_direct_definition(dae: &Dae, eq: &Equation) -> bool {
+    let Expression::Binary { op, lhs, rhs, .. } = &eq.rhs else {
+        return false;
+    };
+    if !matches!(op, OpBinary::Sub) {
+        return false;
+    }
+    expression_defines_non_state_unknown(dae, lhs) || expression_defines_non_state_unknown(dae, rhs)
+}
+
+fn expression_defines_non_state_unknown(dae: &Dae, expr: &Expression) -> bool {
+    let Some(name) = expression_exact_name(expr) else {
+        return false;
+    };
+    dae.variables
+        .algebraics
+        .keys()
+        .chain(dae.variables.outputs.keys())
+        .any(|unknown| exact_name_matches_unknown_or_component(&name, unknown))
+}
+
+fn exact_name_matches_unknown_or_component(exact_name: &str, unknown: &VarName) -> bool {
+    exact_name == unknown.as_str()
+        || exact_name
+            .strip_prefix(unknown.as_str())
+            .is_some_and(|suffix| suffix.starts_with('['))
 }
 
 fn is_indexed_state_component_alias_definition(eq: &Equation, state_name: &VarName) -> bool {
@@ -977,6 +1008,20 @@ mod tests {
         }
     }
 
+    fn indexed_var_ref(name: &str, index: i64, span: Span) -> Expression {
+        Expression::VarRef {
+            name: Reference::from_var_name(VarName::new(name)),
+            subscripts: vec![Subscript::Index { value: index, span }],
+            span,
+        }
+    }
+
+    fn test_variable(name: &str, dims: Vec<i64>) -> Variable {
+        let mut variable = Variable::new(VarName::new(name), test_span());
+        variable.dims = dims;
+        variable
+    }
+
     #[test]
     fn normalize_ode_equation_sign_uses_equation_span() {
         let span = test_span();
@@ -1014,5 +1059,40 @@ mod tests {
             panic!("expected normalized unary minus");
         };
         assert_eq!(actual, span);
+    }
+
+    #[test]
+    fn index_reduction_skips_indexed_algebraic_component_definition() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("x"), test_variable("x", vec![2]));
+        dae.variables
+            .algebraics
+            .insert(VarName::new("y"), test_variable("y", vec![2]));
+        let rhs = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(indexed_var_ref("y", 2, span)),
+            rhs: Box::new(Expression::Binary {
+                op: OpBinary::Mul,
+                lhs: Box::new(Expression::Literal {
+                    value: Literal::Real(3.0),
+                    span,
+                }),
+                rhs: Box::new(indexed_var_ref("x", 2, span)),
+                span,
+            }),
+            span,
+        };
+        dae.continuous
+            .equations
+            .push(Equation::residual(rhs.clone(), span, "test"));
+
+        let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+            .expect("index reduction should evaluate candidates");
+
+        assert_eq!(changed, 0);
+        assert_eq!(dae.continuous.equations[0].rhs, rhs);
     }
 }
