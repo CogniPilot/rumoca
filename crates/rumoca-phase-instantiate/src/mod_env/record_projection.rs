@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_ir_ast::visitor::ExpressionTransformer;
 use std::sync::Arc;
 
 /// Propagate a record binding to scalar field bindings.
@@ -50,7 +51,15 @@ pub(crate) fn propagate_record_binding_to_fields(
             components,
             ctx.mod_env(),
             field_name,
-        );
+        )
+        .or_else(|| {
+            same_type_alias_projected_field_default(
+                binding_expr,
+                components,
+                ctx.mod_env(),
+                field_name,
+            )
+        });
         if field_binding.is_none()
             && should_preserve_same_type_alias_field_default(
                 binding_expr,
@@ -86,6 +95,53 @@ pub(crate) fn propagate_record_binding_to_fields(
         );
     }
     Ok(())
+}
+
+fn same_type_alias_projected_field_default(
+    binding_expr: &ast::Expression,
+    effective_components: &IndexMap<String, ast::Component>,
+    mod_env: &ast::ModificationEnvironment,
+    field_name: &str,
+) -> Option<ast::Expression> {
+    let source_name = simple_record_alias_source_name(binding_expr)?;
+    let field_comp = effective_components.get(field_name)?;
+    let default_expr = field_comp.binding.as_ref().or_else(|| {
+        (!matches!(field_comp.start, ast::Expression::Empty { .. })).then_some(&field_comp.start)
+    })?;
+    let mut rewriter = SourceRecordFieldDefaultRewriter {
+        source_name,
+        effective_components,
+        mod_env,
+        rewrote_source_field: false,
+    };
+    let rewritten = rewriter.transform_expression(default_expr.clone());
+    rewriter.rewrote_source_field.then_some(rewritten)
+}
+
+struct SourceRecordFieldDefaultRewriter<'a> {
+    source_name: &'a str,
+    effective_components: &'a IndexMap<String, ast::Component>,
+    mod_env: &'a ast::ModificationEnvironment,
+    rewrote_source_field: bool,
+}
+
+impl ExpressionTransformer for SourceRecordFieldDefaultRewriter<'_> {
+    fn transform_component_reference(&mut self, cr: ast::ComponentReference) -> ast::Expression {
+        if cr.parts.len() == 1
+            && cr.parts[0].subs.is_none()
+            && self
+                .effective_components
+                .contains_key(cr.parts[0].ident.text.as_ref())
+        {
+            let source_field = ast::QualifiedName::from_ident(self.source_name)
+                .child(cr.parts[0].ident.text.as_ref());
+            if let Some(value) = self.mod_env.active.get(&source_field) {
+                self.rewrote_source_field = true;
+                return value.value.clone();
+            }
+        }
+        ast::Expression::ComponentReference(self.transform_component_ref_inner(cr))
+    }
 }
 
 fn should_preserve_same_type_alias_field_default(
@@ -165,7 +221,7 @@ fn same_type_alias_explicit_field_binding(
         .active
         .iter()
         .find(|(key, _)| **key == source_field)
-        .map(|(_, value)| value.source.clone().unwrap_or_else(|| value.value.clone()))
+        .map(|(_, value)| value.value.clone())
 }
 
 fn record_alias_source_explicitly_binds_field(

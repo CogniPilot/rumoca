@@ -722,7 +722,49 @@ fn resolve_modification_expr_with_depth(
         );
     }
 
+    if mode == ModificationResolveMode::DeclarationBinding
+        && let Some(resolved_ref) =
+            resolve_structural_declaration_ref_expr(expr, effective_components)
+    {
+        return resolve_modification_expr_with_depth(
+            &resolved_ref,
+            mod_env,
+            effective_components,
+            tree,
+            allow_string_eval,
+            mode,
+            depth + 1,
+        );
+    }
+
     Ok(expr.clone())
+}
+
+fn resolve_structural_declaration_ref_expr(
+    expr: &ast::Expression,
+    effective_components: &IndexMap<String, ast::Component>,
+) -> Option<ast::Expression> {
+    let ast::Expression::ComponentReference(comp_ref) = expr else {
+        return None;
+    };
+    if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
+        return None;
+    }
+
+    let name = comp_ref.parts[0].ident.text.as_ref();
+    let component = effective_components.get(name)?;
+    if !matches!(
+        component.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    ) && !component.is_structural
+    {
+        return None;
+    }
+    component
+        .binding
+        .as_ref()
+        .filter(|binding| *binding != expr)
+        .cloned()
 }
 
 fn resolve_single_part_ref_expr(

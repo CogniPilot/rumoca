@@ -1740,10 +1740,8 @@ fn prepare_component_binding_info(
         }
         if start_from_declaration_binding {
             attrs.start = Some(declaration_binding.clone());
-            binding = Some(declaration_binding.clone());
-        } else {
-            binding = Some(resolved_binding);
         }
+        binding = Some(resolved_binding);
     }
     Ok(ComponentBindingInfo {
         attrs,
