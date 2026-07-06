@@ -246,11 +246,7 @@ pub fn compare_model_traces(
         return Err(TraceCompareError::NoComparableSamples);
     }
 
-    channels.sort_by(|a, b| {
-        b.bounded_normalized_l1_error
-            .partial_cmp(&a.bounded_normalized_l1_error)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    channels.sort_by(compare_channel_deviation_desc);
 
     let compared_variables = channels.len();
     let samples_compared = channels.iter().map(|m| m.samples).sum::<usize>();
@@ -267,7 +263,7 @@ pub fn compare_model_traces(
         .iter()
         .map(|m| m.bounded_normalized_l1_error)
         .collect::<Vec<_>>();
-    channel_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    channel_scores.sort_by(f64::total_cmp);
     let bounded_normalized_l1_score = median_of_sorted(&channel_scores).unwrap_or(0.0);
     let channel_counts = count_channel_agreement_bands_default(
         channels
@@ -683,11 +679,11 @@ fn compare_channel(
         reference_range.max(NORMALIZATION_SCALE_EPS)
     };
     let normalized_l1_error = mean_abs_error / normalization_scale;
-    let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
+    let bounded_normalized_l1_error = bounded_normalized_error(normalized_l1_error);
     let initial_abs_error = initial_abs_error(&samples);
     let initial_bounded_normalized_error = initial_abs_error.map(|error| {
         let normalized = error / normalization_scale;
-        normalized / (1.0 + normalized)
+        bounded_normalized_error(normalized)
     });
     let shape = classify_channel_deviation_shape(
         &paired_samples,
@@ -712,6 +708,27 @@ fn compare_channel(
         initial_abs_error,
         initial_bounded_normalized_error,
     })
+}
+
+fn compare_channel_deviation_desc(
+    lhs: &ChannelDeviationMetric,
+    rhs: &ChannelDeviationMetric,
+) -> std::cmp::Ordering {
+    rhs.bounded_normalized_l1_error
+        .total_cmp(&lhs.bounded_normalized_l1_error)
+        .then_with(|| lhs.name.cmp(&rhs.name))
+}
+
+fn bounded_normalized_error(normalized: f64) -> f64 {
+    if !normalized.is_finite() {
+        return if normalized.is_sign_negative() {
+            0.0
+        } else {
+            1.0
+        };
+    }
+    let non_negative = normalized.max(0.0);
+    non_negative / (1.0 + non_negative)
 }
 
 fn initial_abs_error(samples: &[(f64, Option<f64>, Option<f64>)]) -> Option<f64> {
@@ -1101,6 +1118,30 @@ mod tests {
         assert!(metric.normalized_l1_error.is_finite());
         assert!(metric.normalized_l1_error > 1.0e10);
         assert!((metric.bounded_normalized_l1_error - 1.0).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn model_trace_compare_bounds_infinite_channel_error_without_sort_panic() {
+        let rumoca = trace(
+            "M",
+            vec![0.0, 1.0],
+            vec!["x", "y"],
+            vec![vec![f64::MAX, f64::MAX], vec![f64::MAX, f64::MAX]],
+        );
+        let omc = trace(
+            "M",
+            vec![0.0, 1.0],
+            vec!["x", "y"],
+            vec![vec![-f64::MAX, -f64::MAX], vec![0.0, 0.0]],
+        );
+
+        let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+
+        assert_eq!(metric.compared_variables, 2);
+        assert_eq!(metric.max_channel_bounded_normalized_l1, 1.0);
+        assert_eq!(metric.worst_variables[0].bounded_normalized_l1_error, 1.0);
+        assert_eq!(metric.worst_variables[0].name, "x");
+        assert_eq!(metric.worst_variables[1].name, "y");
     }
 
     #[test]
