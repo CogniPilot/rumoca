@@ -1033,9 +1033,8 @@ pub(super) fn substitute_known_constants_in_flat(
     let var_dims: rustc_hash::FxHashMap<String, Vec<i64>> = flat
         .variables
         .iter()
-        .filter_map(|(name, var)| {
-            (!var.dims.is_empty()).then(|| (name.as_str().to_string(), var.dims.clone()))
-        })
+        .filter(|(_, var)| !var.dims.is_empty())
+        .map(|(name, var)| (name.as_str().to_string(), var.dims.clone()))
         .collect();
     let var_values: rustc_hash::FxHashMap<String, rumoca_core::Expression> = flat
         .variables

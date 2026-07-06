@@ -1592,6 +1592,18 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<Vec<usize>, EvalError> {
+    if let Some(dims) = try_infer_runtime_expr_dims_fast(expr, env)? {
+        return Ok(dims);
+    }
+
+    let values = eval_array_like_values(expr, env)?;
+    try_infer_runtime_expr_dims_from_values(expr, values.len(), env)
+}
+
+fn try_infer_runtime_expr_dims_fast<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<usize>>, EvalError> {
     if let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = expr
@@ -1600,7 +1612,7 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     {
         let value_count = array_values_from_env_name_generic(name.as_str(), env)?
             .map_or(0, |values| values.len());
-        return infer_declared_or_value_dims(dims, value_count);
+        return infer_declared_or_value_dims(dims, value_count).map(Some);
     }
     if let rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Der,
@@ -1611,12 +1623,12 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         let arg = args
             .first()
             .ok_or(EvalError::UnsupportedExpression { kind: "der arity" })?;
-        return try_infer_runtime_expr_dims(arg, env);
+        return try_infer_runtime_expr_dims(arg, env).map(Some);
     }
     if let rumoca_core::Expression::BuiltinCall { function, args, .. } = expr
         && let Some(dims) = try_infer_constructor_dims(*function, args, env)?
     {
-        return Ok(dims);
+        return Ok(Some(dims));
     }
     if let rumoca_core::Expression::Array {
         elements,
@@ -1624,21 +1636,22 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         ..
     } = expr
     {
-        return if *is_matrix {
+        let dims = if *is_matrix {
             try_runtime_matrix_literal_dims(elements, env)
         } else {
             Ok(vec![elements.len()])
-        };
+        }?;
+        return Ok(Some(dims));
     }
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {
-        return Ok(runtime_vector_dims(elements.len()));
+        return Ok(Some(runtime_vector_dims(elements.len())));
     }
     if let rumoca_core::Expression::Range {
         start, step, end, ..
     } = expr
     {
         let values = try_eval_range_values::<T>(start, step.as_deref(), end, env)?;
-        return Ok(vec![values.len()]);
+        return Ok(Some(vec![values.len()]));
     }
     if let rumoca_core::Expression::FieldAccess { base, field, .. } = expr
         && let rumoca_core::Expression::FunctionCall { name, args, .. } = base.as_ref()
@@ -1650,52 +1663,60 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
             .ok_or(EvalError::UnsupportedExpression {
                 kind: "setState array field arity",
             })?;
-        return try_infer_runtime_expr_dims(arg, env);
+        return try_infer_runtime_expr_dims(arg, env).map(Some);
     }
+    Ok(None)
+}
 
-    let values = eval_array_like_values(expr, env)?;
-    let dims = match expr {
+fn try_infer_runtime_expr_dims_from_values<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    value_count: usize,
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => {
             if let Some(dims) = env.dims.get(name.as_str()) {
-                infer_declared_or_value_dims(dims, values.len())?
-            } else if values.len() <= 1 {
-                Vec::new()
+                infer_declared_or_value_dims(dims, value_count)
+            } else if value_count <= 1 {
+                Ok(Vec::new())
             } else {
-                declared_dims(name.as_str(), env)?
+                let dims = declared_dims(name.as_str(), env)?
                     .into_iter()
                     .map(|dim| {
                         usize::try_from(dim).map_err(|_| EvalError::UnsupportedExpression {
                             kind: "array dimensions",
                         })
                     })
-                    .collect::<Result<Vec<_>, _>>()?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(dims)
             }
         }
         rumoca_core::Expression::Array {
             elements,
             is_matrix: true,
             ..
-        } => try_runtime_matrix_literal_dims(elements, env)?,
+        } => try_runtime_matrix_literal_dims(elements, env),
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Cat,
             args,
             ..
-        } => try_infer_runtime_cat_dims(args, env)?,
+        } => try_infer_runtime_cat_dims(args, env),
         rumoca_core::Expression::FunctionCall {
             name,
             args,
             is_constructor: false,
             ..
-        } => function_call_runtime_dims(name, args, values.len(), env)?,
+        } => function_call_runtime_dims(name, args, value_count, env),
         rumoca_core::Expression::Array { .. }
         | rumoca_core::Expression::Tuple { .. }
         | rumoca_core::Expression::Range { .. }
-        | rumoca_core::Expression::ArrayComprehension { .. } => runtime_vector_dims(values.len()),
-        _ => runtime_vector_dims(values.len()),
-    };
-    Ok(dims)
+        | rumoca_core::Expression::ArrayComprehension { .. } => {
+            Ok(runtime_vector_dims(value_count))
+        }
+        _ => Ok(runtime_vector_dims(value_count)),
+    }
 }
 
 fn try_infer_constructor_dims<T: SimFloat>(

@@ -1207,49 +1207,68 @@ fn sync_structured_partition_templates(
         {
             continue;
         }
-        let tuples = family.domain.index_tuples().map_err(|err| {
-            ToDaeError::runtime_metadata_violation_at(
-                format!("invalid structured equation domain: {err}"),
-                family.span,
-            )
-        })?;
-        for (iteration, tuple) in tuples.iter().enumerate() {
-            let mut binder_values = HashMap::new();
-            for (binder, value) in family.domain.binders.iter().zip(tuple.iter().copied()) {
-                binder_values.insert(binder.display_name.clone(), value);
+        sync_structured_template_family(family, template, equations)?;
+    }
+    Ok(())
+}
+
+fn sync_structured_template_family(
+    family: &dae::StructuredEquationFamily,
+    template: &rumoca_core::ComprehensionTemplate,
+    equations: &mut [dae::Equation],
+) -> Result<(), ToDaeError> {
+    let tuples = family.domain.index_tuples().map_err(|err| {
+        ToDaeError::runtime_metadata_violation_at(
+            format!("invalid structured equation domain: {err}"),
+            family.span,
+        )
+    })?;
+    for (iteration, tuple) in tuples.iter().enumerate() {
+        let binder_values: HashMap<_, _> = family
+            .domain
+            .binders
+            .iter()
+            .zip(tuple.iter().copied())
+            .map(|(binder, value)| (binder.display_name.clone(), value))
+            .collect();
+        let row_base = structured_template_row_base(family, template, iteration)?;
+        for (position, body) in template.body.iter().enumerate() {
+            let Some(equation) = equations.get_mut(row_base + position) else {
+                return Err(ToDaeError::runtime_metadata_violation_at(
+                    "structured equation template points past materialized equations".to_string(),
+                    family.span,
+                ));
+            };
+            equation.rhs = StructuredBinderSubstitution {
+                values: &binder_values,
+                span: family.span,
             }
-            let row_base = family
-                .first_equation_index
-                .checked_add(iteration.checked_mul(template.body.len()).ok_or_else(|| {
-                    ToDaeError::runtime_metadata_violation_at(
-                        "structured equation row index overflows".to_string(),
-                        family.span,
-                    )
-                })?)
-                .ok_or_else(|| {
-                    ToDaeError::runtime_metadata_violation_at(
-                        "structured equation row index overflows".to_string(),
-                        family.span,
-                    )
-                })?;
-            for (position, body) in template.body.iter().enumerate() {
-                let Some(equation) = equations.get_mut(row_base + position) else {
-                    return Err(ToDaeError::runtime_metadata_violation_at(
-                        "structured equation template points past materialized equations"
-                            .to_string(),
-                        family.span,
-                    ));
-                };
-                equation.rhs = StructuredBinderSubstitution {
-                    values: &binder_values,
-                    span: family.span,
-                }
-                .rewrite_expression(body);
-                equation.scalar_count = 1;
-            }
+            .rewrite_expression(body);
+            equation.scalar_count = 1;
         }
     }
     Ok(())
+}
+
+fn structured_template_row_base(
+    family: &dae::StructuredEquationFamily,
+    template: &rumoca_core::ComprehensionTemplate,
+    iteration: usize,
+) -> Result<usize, ToDaeError> {
+    family
+        .first_equation_index
+        .checked_add(iteration.checked_mul(template.body.len()).ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation_at(
+                "structured equation row index overflows".to_string(),
+                family.span,
+            )
+        })?)
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation_at(
+                "structured equation row index overflows".to_string(),
+                family.span,
+            )
+        })
 }
 
 struct StructuredBinderSubstitution<'a> {

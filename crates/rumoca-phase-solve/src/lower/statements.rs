@@ -838,18 +838,17 @@ impl<'a> LowerBuilder<'a> {
             end,
             span: range_span,
         } = expr
+            && dim == 1
         {
-            if dim == 1 {
-                let values = self.eval_compile_time_range_values(
-                    start,
-                    step.as_deref(),
-                    end,
-                    *range_span,
-                    const_scope,
-                    "size range dimension",
-                )?;
-                return Ok(values.len() as f64);
-            }
+            let values = self.eval_compile_time_range_values(
+                start,
+                step.as_deref(),
+                end,
+                *range_span,
+                const_scope,
+                "size range dimension",
+            )?;
+            return Ok(values.len() as f64);
         }
         let rumoca_core::Expression::VarRef {
             name, subscripts, ..
