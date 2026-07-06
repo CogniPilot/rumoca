@@ -21,6 +21,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::manifest_context::algorithm_code_manifest::{StartValue, Variable as ManifestVariable};
+use rumoca_ir_dae::DaeSymbolTable;
 use rumoca_ir_galec::ast::{
     self as gast, Dimension, InterfaceKind, InterfaceVariable, ProtectedEntity, ProtectedKind,
     RefPart, Reference, ScalarType, Statement, VariableDeclaration,
@@ -136,6 +137,7 @@ fn declaration(
 pub(crate) fn build_startup(
     classification: &Classification<'_>,
     conditions: &ConditionTable<'_>,
+    functions: &DaeSymbolTable,
     starts: &HashMap<&str, &ManifestVariable>,
 ) -> Result<Vec<gast::Spanned<Statement>>, Vec<GalecTargetError>> {
     let mut statements = Vec::new();
@@ -167,7 +169,7 @@ pub(crate) fn build_startup(
             Err(error) => errors.push(error),
         }
     }
-    match build_recalibrate(classification, conditions) {
+    match build_recalibrate(classification, conditions, functions) {
         Ok(mut dependents) => statements.append(&mut dependents),
         Err(mut dependent_errors) => errors.append(&mut dependent_errors),
     }
@@ -183,12 +185,13 @@ pub(crate) fn build_startup(
 pub(crate) fn build_recalibrate(
     classification: &Classification<'_>,
     conditions: &ConditionTable<'_>,
+    functions: &DaeSymbolTable,
 ) -> Result<Vec<gast::Spanned<Statement>>, Vec<GalecTargetError>> {
     let dependents: Vec<&ClassifiedVariable<'_>> = listed(classification)
         .filter(|classified| classified.class == VariableClass::DependentParameter)
         .collect();
     let ordered = dependency_order(&dependents).map_err(|error| vec![error])?;
-    let mut lowerer = ExprLowerer::new(classification, conditions);
+    let mut lowerer = ExprLowerer::new(classification, conditions, functions);
     let mut statements = Vec::new();
     let mut errors = Vec::new();
     for classified in ordered {
@@ -623,6 +626,7 @@ mod tests {
         let typed = |expr| Typed {
             expr,
             ty: ScalarType::Real,
+            shape: Vec::new(),
         };
 
         let error = coerce_to(typed(gast::Expression::Real(0.5)), ScalarType::Integer, "n")

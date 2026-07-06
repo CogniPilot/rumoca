@@ -8,7 +8,8 @@
 //!
 //! | DAE evidence | GALEC class |
 //! |---|---|
-//! | causality `input` | `Input` |
+//! | root-level causality `input` | `Input` |
+//! | nested component input in `z`/`m` | `State` (parent-owned sampled component slot) |
 //! | causality `output` | `Output` |
 //! | `constants` map | `Constant` |
 //! | causality `parameter`, `is_tunable` | `TunableParameter` |
@@ -221,6 +222,11 @@ fn variable_class(
         return Ok(VariableClass::Constant);
     }
     let class = match (variable.causality, partition) {
+        (C::Input, P::DiscreteReal | P::DiscreteValued)
+            if is_nested_component_variable(variable) =>
+        {
+            Some(VariableClass::State)
+        }
         (C::Input, _) => Some(VariableClass::Input),
         (C::Output, _) => Some(VariableClass::Output),
         (C::Parameter, _) if variable.is_tunable => Some(VariableClass::TunableParameter),
@@ -243,6 +249,13 @@ fn variable_class(
         origin: origin_name(variable.origin),
         span: variable.source_span,
     })
+}
+
+fn is_nested_component_variable(variable: &Variable) -> bool {
+    variable
+        .component_ref
+        .as_ref()
+        .is_some_and(|reference| reference.parts.len() > 1)
 }
 
 /// Structural scalar-type resolution (module docs). Never consults start

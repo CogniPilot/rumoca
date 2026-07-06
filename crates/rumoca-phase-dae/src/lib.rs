@@ -35,6 +35,7 @@ mod equation_conversion;
 mod errors;
 mod fold_start_values;
 mod initial;
+mod inline_hidden_component_algebraics;
 mod name_resolution;
 mod overconstrained_interface;
 mod path_utils;
@@ -403,6 +404,13 @@ fn finalize_lowered_dae(
         sort_parameters_by_start_dependency(dae);
         Ok::<(), ToDaeError>(())
     })?;
+    run_todae_phase(
+        todae_subphase_timing,
+        "inline_hidden_component_algebraics",
+        || {
+            inline_hidden_component_algebraics::inline_hidden_component_algebraics(dae);
+        },
+    );
     run_todae_phase(todae_subphase_timing, "reference_metadata", || {
         attach_dae_reference_metadata(dae)
     })?;

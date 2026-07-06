@@ -27,4 +27,19 @@ void {{ function_prefix }}_startup({{ struct_name }} *self);
 void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
 void {{ function_prefix }}_dostep({{ struct_name }} *self);
 
+/* Project-neutral convenience wrappers for applications that want a stable
+ * eFMI-shaped call surface independent of the generated model prefix. */
+#ifndef EFMI_STATE_TYPE
+#  define EFMI_STATE_TYPE(model) model##State
+#endif
+#ifndef EFMI_INIT
+#  define EFMI_INIT(model, state) model##_startup(state)
+#endif
+#ifndef EFMI_RECALIBRATE
+#  define EFMI_RECALIBRATE(model, state) model##_recalibrate(state)
+#endif
+#ifndef EFMI_STEP
+#  define EFMI_STEP(model, state) model##_dostep(state)
+#endif
+
 #endif /* {{ include_guard }} */

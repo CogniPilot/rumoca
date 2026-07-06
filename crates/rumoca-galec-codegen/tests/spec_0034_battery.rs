@@ -25,7 +25,8 @@
 use std::collections::{HashMap, HashSet};
 
 use rumoca_core::{
-    BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Reference, Span, Subscript, VarName,
+    BuiltinFunction, ComponentReference, Expression, Function, FunctionParam, Literal, OpBinary,
+    OpUnary, Reference, Span, Statement, Subscript, VarName,
 };
 use rumoca_galec_codegen::input::ScalarTypeMap;
 use rumoca_galec_codegen::lower::emittable_builtin_targets;
@@ -37,7 +38,7 @@ use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::{
 use rumoca_galec_codegen::manifest_context::manifest_common::FileChecksum;
 use rumoca_galec_codegen::{
     AcManifestCtx, AlgorithmCodePackage, GalecInput, GalecOptions, GalecTargetError,
-    ManifestIdentity, assemble_manifest_with_identity, lower_to_algorithm_code,
+    ManifestIdentity, assemble_manifest_with_identity, c_template_context, lower_to_algorithm_code,
     render_algorithm_code,
 };
 use rumoca_ir_dae as dae;
@@ -119,9 +120,13 @@ fn builtin(function: BuiltinFunction, args: Vec<Expression>) -> Expression {
 }
 
 fn sample_call() -> Expression {
+    sample_call_with_period(var("samplePeriod"))
+}
+
+fn sample_call_with_period(period: Expression) -> Expression {
     Expression::FunctionCall {
         name: Reference::generated(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME),
-        args: vec![real(0.0), var("samplePeriod")],
+        args: vec![real(0.0), period],
         is_constructor: false,
         span: Span::DUMMY,
     }
@@ -157,7 +162,19 @@ fn add_state(model: &mut dae::Dae, name: &str) {
 /// The canonical guarded row: fires on the sample-tick when-edge of
 /// condition 1, holds `if Initial() then <target> else __pre__.<target>`.
 fn guarded_update(target: &str, body: Expression) -> dae::Equation {
-    let edge = binary(OpBinary::And, indexed("c", 1), not(indexed("__pre__.c", 1)));
+    guarded_update_on_condition(target, body, 1)
+}
+
+fn guarded_update_on_condition(
+    target: &str,
+    body: Expression,
+    condition_index: i64,
+) -> dae::Equation {
+    let edge = binary(
+        OpBinary::And,
+        indexed("c", condition_index),
+        not(indexed("__pre__.c", condition_index)),
+    );
     let hold = if_expr(
         vec![(builtin(BuiltinFunction::Initial, Vec::new()), var(target))],
         var(&format!("__pre__.{target}")),
@@ -350,17 +367,52 @@ mod rejected_constructs {
         );
     }
 
-    /// Two sample-tick conditions (one schedule) = multi-rate: rejected
-    /// with a stable feature id, not silently wired to one clock.
+    /// Duplicate sample-tick condition slots for the same sample call are one
+    /// eFMI clock, not multi-rate. This occurs when an inlined component and
+    /// its parent both use `sample(0, dt)`.
     #[test]
-    fn multi_rate_sample_conditions_rejected() {
+    fn duplicate_same_clock_sample_conditions_are_accepted() {
+        let mut model = model_with_body(var("u"));
+        if let Some(condition) = model.variables.discrete_valued.get_mut(&VarName::new("c")) {
+            condition.dims = vec![2];
+        }
+        let mut component_period = variable("pid.samplePeriod");
+        component_period.start = Some(real(1e-3));
+        model
+            .variables
+            .constants
+            .insert(component_period.name.clone(), component_period);
+        model.conditions.equations.push(dae::Equation {
+            lhs: Some(Reference::new("c[2]")),
+            rhs: sample_call_with_period(var("pid.samplePeriod")),
+            span: Span::DUMMY,
+            origin: "condition equation 2".to_owned(),
+            scalar_count: 1,
+        });
+        model.discrete.real_updates.clear();
+        model
+            .discrete
+            .real_updates
+            .push(guarded_update_on_condition("y", var("u"), 2));
+
+        let mut types = base_types();
+        types.insert(VarName::new("pid.samplePeriod"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("self.y := self.u;"), "{alg}");
+    }
+
+    /// Distinct sample-tick condition definitions are genuinely multi-rate
+    /// and remain rejected with a stable feature id.
+    #[test]
+    fn distinct_sample_conditions_are_multi_rate() {
         let mut model = model_with_body(var("u"));
         if let Some(condition) = model.variables.discrete_valued.get_mut(&VarName::new("c")) {
             condition.dims = vec![2];
         }
         model.conditions.equations.push(dae::Equation {
             lhs: Some(Reference::new("c[2]")),
-            rhs: sample_call(),
+            rhs: sample_call_with_period(real(2e-3)),
             span: Span::DUMMY,
             origin: "condition equation 2".to_owned(),
             scalar_count: 1,
@@ -560,7 +612,497 @@ mod builtin_parity {
 }
 
 // ---------------------------------------------------------------------
-// 3. Reserved names through rendering (GAL-015, T13, T2)
+// 3. GALEC array/vector projection regressions (GAL-026, T11)
+// ---------------------------------------------------------------------
+
+mod array_vector_regressions {
+    use super::*;
+
+    fn array(elements: Vec<Expression>) -> Expression {
+        Expression::Array {
+            elements,
+            is_matrix: false,
+            span: Span::DUMMY,
+        }
+    }
+
+    fn index(base: Expression, subscripts: Vec<Subscript>) -> Expression {
+        Expression::Index {
+            base: Box::new(base),
+            subscripts,
+            span: Span::DUMMY,
+        }
+    }
+
+    fn subscript_expr(expr: Expression) -> Subscript {
+        Subscript::expr(Box::new(expr), Span::DUMMY)
+    }
+
+    fn add_real_vector(model: &mut dae::Dae, name: &str, len: i64) {
+        let mut vector = variable(name);
+        vector.dims = vec![len];
+        vector.start = Some(real(0.0));
+        model
+            .variables
+            .discrete_reals
+            .insert(vector.name.clone(), vector);
+    }
+
+    fn add_real_matrix(model: &mut dae::Dae, name: &str, rows: i64, cols: i64) {
+        let mut matrix = variable(name);
+        matrix.dims = vec![rows, cols];
+        matrix.start = Some(real(0.0));
+        model
+            .variables
+            .discrete_reals
+            .insert(matrix.name.clone(), matrix);
+    }
+
+    fn vector_model(body: Expression) -> dae::Dae {
+        let mut model = model_with_body(body);
+        add_real_vector(&mut model, "a", 3);
+        add_real_vector(&mut model, "b", 3);
+        model
+    }
+
+    fn vector_target_model(body: Expression) -> dae::Dae {
+        let mut model = vector_model(body);
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![3];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![3];
+        model
+    }
+
+    fn add_waypoints(model: &mut dae::Dae) {
+        let mut waypoints = variable("waypoints");
+        waypoints.causality = dae::VariableCausality::Parameter;
+        waypoints.dims = vec![3, 2];
+        model
+            .variables
+            .parameters
+            .insert(waypoints.name.clone(), waypoints);
+    }
+
+    fn make_y_vector(model: &mut dae::Dae, len: i64) {
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![len];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![len];
+    }
+
+    #[test]
+    fn dynamic_array_subscript_lowers_to_static_index_selection() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                subscript_expr(var("__pre__.idx")),
+                Subscript::index(1, Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        });
+        add_waypoints(&mut model);
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        idx.min = Some(integer(1));
+        idx.max = Some(integer(3));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(
+            alg.contains("if self.'previous(idx)' == 1 then self.waypoints[1, 1]"),
+            "{alg}"
+        );
+        assert!(alg.contains("else self.waypoints[3, 1]"), "{alg}");
+        assert!(
+            !alg.contains("waypoints[self.'previous(idx)'"),
+            "runtime subscript must not be emitted into GALEC:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn dynamic_array_subscript_without_proven_bounds_is_rejected() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                subscript_expr(var("__pre__.idx")),
+                Subscript::index(1, Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        });
+        add_waypoints(&mut model);
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let errors = lower_err(&model, &types);
+        assert_unsupported(&errors, "dynamic-array-subscript-range");
+    }
+
+    #[test]
+    fn dynamic_array_subscript_with_out_of_range_bounds_is_rejected() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                subscript_expr(var("__pre__.idx")),
+                Subscript::index(1, Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        });
+        add_waypoints(&mut model);
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        idx.min = Some(integer(0));
+        idx.max = Some(integer(3));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let errors = lower_err(&model, &types);
+        assert_unsupported(&errors, "dynamic-array-subscript-range");
+    }
+
+    #[test]
+    fn array_slice_subscript_lowers_to_static_index_constructor() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                Subscript::index(2, Span::DUMMY),
+                Subscript::colon(Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        });
+        add_waypoints(&mut model);
+        make_y_vector(&mut model, 2);
+        let mut types = base_types();
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("self.waypoints[2, 1]"), "{alg}");
+        assert!(alg.contains("self.waypoints[2, 2]"), "{alg}");
+        assert!(
+            !alg.contains("waypoints[2, :"),
+            "GALEC must not receive slice syntax:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn dynamic_row_array_slice_uses_static_selection_per_element() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                subscript_expr(var("__pre__.idx")),
+                Subscript::colon(Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        });
+        add_waypoints(&mut model);
+        make_y_vector(&mut model, 2);
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        idx.min = Some(integer(1));
+        idx.max = Some(integer(3));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(
+            alg.contains("if self.'previous(idx)' == 1 then self.waypoints[1, 1]"),
+            "{alg}"
+        );
+        assert!(
+            alg.contains("if self.'previous(idx)' == 1 then self.waypoints[1, 2]"),
+            "{alg}"
+        );
+        assert!(alg.contains("else self.waypoints[3, 2]"), "{alg}");
+        assert!(
+            !alg.contains("waypoints[self.'previous(idx)'"),
+            "runtime subscript must not be emitted into GALEC:\n{alg}"
+        );
+        assert!(
+            !alg.contains("waypoints[self.'previous(idx)', :"),
+            "GALEC must not receive slice syntax:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn vector_constructor_inside_if_can_be_indexed_after_dae_scalarization() {
+        let vector_if = if_expr(
+            vec![(
+                binary(OpBinary::Eq, var("i1"), var("i2")),
+                array(vec![var("u"), var("x2"), real(3.0)]),
+            )],
+            array(vec![real(1.0), real(2.0), real(3.0)]),
+        );
+        let alg = render_algorithm_code(&lower(
+            &model_with_body(index(vector_if, vec![Subscript::index(2, Span::DUMMY)])),
+            &base_types(),
+        ))
+        .expect("renders");
+        assert!(
+            alg.contains("if self.i1 == self.i2 then self.x2 else 2.0"),
+            "{alg}"
+        );
+    }
+
+    #[test]
+    fn vector_subtraction_lowers_for_whole_array_and_scalarized_rows() {
+        let whole_package = lower(
+            &vector_target_model(binary(OpBinary::Sub, var("a"), var("b"))),
+            &base_types(),
+        );
+        let whole = render_algorithm_code(&whole_package).expect("whole vector render");
+        assert!(whole.contains("self.y := self.a - self.b;"), "{whole}");
+
+        let c_lines = production_c_lines(&whole_package);
+        assert!(
+            c_lines.contains("self->y[0]") && c_lines.contains("(self->a[0] - self->b[0])"),
+            "{c_lines}"
+        );
+        assert!(
+            !c_lines.contains("self->y ="),
+            "C arrays must be assigned element-wise:\n{c_lines}"
+        );
+
+        let scalarized = render_algorithm_code(&lower(
+            &vector_model(index(
+                binary(OpBinary::Sub, var("a"), var("b")),
+                vec![Subscript::index(2, Span::DUMMY)],
+            )),
+            &base_types(),
+        ))
+        .expect("scalarized vector render");
+        assert!(
+            scalarized.contains("self.y := self.a[2] - self.b[2];"),
+            "{scalarized}"
+        );
+    }
+
+    #[test]
+    fn vector_subtraction_lowers_for_dynamic_scalarized_loop_rows() {
+        let mut model = vector_model(index(
+            binary(OpBinary::Sub, var("a"), var("b")),
+            vec![subscript_expr(var("__pre__.idx"))],
+        ));
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        idx.min = Some(integer(1));
+        idx.max = Some(integer(3));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(
+            alg.contains("if self.'previous(idx)' == 1 then self.a[1]"),
+            "{alg}"
+        );
+        assert!(
+            alg.contains("if self.'previous(idx)' == 1 then self.b[1]"),
+            "{alg}"
+        );
+        assert!(
+            !alg.contains("(self.a - self.b)["),
+            "indexed vector arithmetic must be distributed before GALEC validation:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn constant_integer_subscript_folds_to_literal_static_index() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("pid_error"),
+            subscripts: vec![subscript_expr(var("pitchPid"))],
+            span: Span::DUMMY,
+        });
+        let mut pid_error = variable("pid_error");
+        pid_error.dims = vec![3];
+        pid_error.start = Some(real(0.0));
+        model
+            .variables
+            .discrete_reals
+            .insert(pid_error.name.clone(), pid_error);
+        let mut pitch_pid = variable("pitchPid");
+        pitch_pid.start = Some(integer(1));
+        model
+            .variables
+            .constants
+            .insert(pitch_pid.name.clone(), pitch_pid);
+        let mut types = base_types();
+        types.insert(VarName::new("pid_error"), ScalarType::Real);
+        types.insert(VarName::new("pitchPid"), ScalarType::Integer);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("self.pid_error[1]"), "{alg}");
+        assert!(
+            !alg.contains("pid_error[self.pitchPid"),
+            "constant index must be folded before GALEC validation:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn vector_dot_product_lowers_to_scalar_sum_not_array_multiply() {
+        let alg = render_algorithm_code(&lower(
+            &vector_model(binary(OpBinary::Mul, var("a"), var("b"))),
+            &base_types(),
+        ))
+        .expect("renders");
+        for term in [
+            "self.a[1] * self.b[1]",
+            "self.a[2] * self.b[2]",
+            "self.a[3] * self.b[3]",
+        ] {
+            assert!(alg.contains(term), "missing `{term}` in:\n{alg}");
+        }
+        assert!(!alg.contains("self.a * self.b"), "{alg}");
+    }
+
+    #[test]
+    fn non_vector_array_multiplication_is_rejected_not_elementwise() {
+        let mut model = model_with_body(binary(OpBinary::Mul, var("a"), var("b")));
+        add_real_matrix(&mut model, "a", 2, 2);
+        add_real_matrix(&mut model, "b", 2, 2);
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![2, 2];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![2, 2];
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+        types.insert(VarName::new("b"), ScalarType::Real);
+
+        let errors = lower_err(&model, &types);
+        assert_unsupported(&errors, "array-multiplication");
+    }
+
+    #[test]
+    fn vector_norm_lowers_dot_product_before_sqrt() {
+        let norm = builtin(
+            BuiltinFunction::Sqrt,
+            vec![binary(OpBinary::Mul, var("a"), var("a"))],
+        );
+        let alg =
+            render_algorithm_code(&lower(&vector_model(norm), &base_types())).expect("renders");
+        assert!(alg.contains("sqrt("), "{alg}");
+        assert!(alg.contains("self.a[1] * self.a[1]"), "{alg}");
+        assert!(alg.contains("self.a[3] * self.a[3]"), "{alg}");
+        assert!(!alg.contains("sqrt(self.a * self.a)"), "{alg}");
+    }
+
+    #[test]
+    fn pure_single_output_user_function_call_is_inlined() {
+        let mut model = model_with_body(Expression::FunctionCall {
+            name: Reference::new("norm3"),
+            args: vec![var("velocity")],
+            is_constructor: false,
+            span: Span::DUMMY,
+        });
+        add_real_vector(&mut model, "velocity", 3);
+        let mut norm3 = Function::new("norm3", Span::DUMMY);
+        norm3
+            .inputs
+            .push(FunctionParam::new("v", "Real", Span::DUMMY).with_dims(vec![3]));
+        norm3
+            .outputs
+            .push(FunctionParam::new("n", "Real", Span::DUMMY));
+        let square_sum = binary(
+            OpBinary::Add,
+            binary(OpBinary::Mul, indexed("v", 1), indexed("v", 1)),
+            binary(
+                OpBinary::Add,
+                binary(OpBinary::Mul, indexed("v", 2), indexed("v", 2)),
+                binary(OpBinary::Mul, indexed("v", 3), indexed("v", 3)),
+            ),
+        );
+        norm3.body.push(Statement::Assignment {
+            comp: ComponentReference::from_flat_segments("n", Span::DUMMY, None),
+            value: builtin(BuiltinFunction::Sqrt, vec![square_sum]),
+            span: Span::DUMMY,
+        });
+        model.symbols.functions.insert(norm3.name.clone(), norm3);
+        let mut types = base_types();
+        types.insert(VarName::new("velocity"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("sqrt("), "{alg}");
+        assert!(alg.contains("self.velocity[1] * self.velocity[1]"), "{alg}");
+        assert!(alg.contains("self.velocity[3] * self.velocity[3]"), "{alg}");
+        assert!(!alg.contains("norm3("), "{alg}");
+    }
+
+    fn production_c_lines(package: &AlgorithmCodePackage) -> String {
+        let context = c_template_context(package, "Battery").expect("C context");
+        ["startup", "recalibrate", "do_step"]
+            .into_iter()
+            .flat_map(|method| {
+                context["methods"][method]
+                    .as_array()
+                    .expect("method statements are an array")
+            })
+            .flat_map(|statement| {
+                statement["c_lines"]
+                    .as_array()
+                    .expect("statement c_lines are an array")
+            })
+            .map(|line| line.as_str().expect("C line is a string").to_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+// ---------------------------------------------------------------------
+// 4. Reserved names through rendering (GAL-015, T13, T2)
 // ---------------------------------------------------------------------
 
 mod reserved_names {

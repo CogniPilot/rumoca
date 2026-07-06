@@ -114,16 +114,33 @@ impl<'a> CPrinter<'a> {
                 // so copy its contiguous storage with `memcpy`. Both operands
                 // have equal dimensions (the GALEC type validator enforces it),
                 // so `sizeof(dst)` is the exact copy length.
-                Expression::Ref(source) if self.is_whole_array_target(target) => {
+                Expression::Ref(source)
+                    if self.is_whole_array_reference(target)
+                        && self.is_whole_array_reference(source) =>
+                {
                     let dst = self.reference(target)?;
                     let src = self.reference(source)?;
                     Ok(vec![format!("memcpy({dst}, {src}, sizeof({dst}));")])
                 }
-                scalar => Ok(vec![format!(
-                    "{} = {};",
-                    self.reference(target)?,
-                    self.expression(scalar)?
-                )]),
+                scalar => {
+                    if let Some(dimensions) = self.whole_array_dimensions(target) {
+                        let dimensions = dimensions.to_vec();
+                        let mut lines = Vec::new();
+                        self.array_expression_assignment(
+                            &self.reference(target)?,
+                            &dimensions,
+                            scalar,
+                            &mut Vec::new(),
+                            &mut lines,
+                        )?;
+                        return Ok(lines);
+                    }
+                    Ok(vec![format!(
+                        "{} = {};",
+                        self.reference(target)?,
+                        self.expression(scalar)?
+                    )])
+                }
             },
             Statement::MultiAssignment { .. } => {
                 Err(unsupported_statement("a multi-assignment statement"))
@@ -153,6 +170,186 @@ impl<'a> CPrinter<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `target[i][j]… = indexed(value);` lines for a whole-array expression
+    /// whose GALEC AST stays array-native but whose C expression must be scalar
+    /// at each assignment site.
+    fn array_expression_assignment(
+        &self,
+        target: &str,
+        dimensions: &[i64],
+        value: &Expression,
+        indices: &mut Vec<i64>,
+        lines: &mut Vec<String>,
+    ) -> Result<(), GalecTargetError> {
+        let Some((first, rest)) = dimensions.split_first() else {
+            let element = self.indexed_expression(value, indices)?;
+            lines.push(format!("{target} = {};", self.expression(&element)?));
+            return Ok(());
+        };
+        let size = usize::try_from(*first)
+            .ok()
+            .filter(|size| *size >= 1)
+            .ok_or_else(|| GalecTargetError::LoweringInternal {
+                detail: format!("C export saw non-positive array dimension {first}"),
+            })?;
+        for index in 0..size {
+            let path = format!("{target}[{index}]");
+            let one_based =
+                i64::try_from(index + 1).map_err(|_| GalecTargetError::LoweringInternal {
+                    detail: "C export array index exceeds i64".to_owned(),
+                })?;
+            indices.push(one_based);
+            self.array_expression_assignment(&path, rest, value, indices, lines)?;
+            indices.pop();
+        }
+        Ok(())
+    }
+
+    fn indexed_expression(
+        &self,
+        expression: &Expression,
+        indices: &[i64],
+    ) -> Result<Expression, GalecTargetError> {
+        if indices.is_empty() {
+            return Ok(expression.clone());
+        }
+        match expression {
+            Expression::Ref(reference) if self.is_whole_array_reference(reference) => Ok(
+                Expression::Ref(self.reference_with_static_subscripts(reference, indices)?),
+            ),
+            Expression::Ref(_) => Ok(expression.clone()),
+            Expression::Neg(reference) if self.is_whole_array_reference(reference) => Ok(
+                Expression::Neg(self.reference_with_static_subscripts(reference, indices)?),
+            ),
+            Expression::Neg(_) => Ok(expression.clone()),
+            Expression::Array(elements) => self.indexed_array_element(elements, indices),
+            Expression::If(if_expression) => Ok(Expression::If(IfExpression {
+                branches: if_expression
+                    .branches
+                    .iter()
+                    .map(|(condition, value)| {
+                        Ok((
+                            condition.clone(),
+                            self.index_value_if_array(value, indices)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, GalecTargetError>>()?,
+                else_value: Box::new(
+                    self.index_value_if_array(&if_expression.else_value, indices)?,
+                ),
+            })),
+            Expression::Paren(inner) if self.expression_needs_indexing(inner) => Ok(
+                Expression::Paren(Box::new(self.indexed_expression(inner, indices)?)),
+            ),
+            Expression::Binary { op, lhs, rhs } => Ok(Expression::Binary {
+                op: *op,
+                lhs: Box::new(self.index_value_if_array(lhs, indices)?),
+                rhs: Box::new(self.index_value_if_array(rhs, indices)?),
+            }),
+            Expression::Bool(_)
+            | Expression::Integer(_)
+            | Expression::Real(_)
+            | Expression::Call(_)
+            | Expression::Paren(_)
+            | Expression::Not(_)
+            | Expression::Size { .. } => Ok(expression.clone()),
+        }
+    }
+
+    fn index_value_if_array(
+        &self,
+        expression: &Expression,
+        indices: &[i64],
+    ) -> Result<Expression, GalecTargetError> {
+        if self.expression_needs_indexing(expression) {
+            self.indexed_expression(expression, indices)
+        } else {
+            Ok(expression.clone())
+        }
+    }
+
+    fn indexed_array_element(
+        &self,
+        elements: &[Expression],
+        indices: &[i64],
+    ) -> Result<Expression, GalecTargetError> {
+        let Some((first, rest)) = indices.split_first() else {
+            return Err(GalecTargetError::LoweringInternal {
+                detail: "C export array element selection called without indices".to_owned(),
+            });
+        };
+        let index = usize::try_from(*first)
+            .ok()
+            .filter(|index| *index >= 1 && *index <= elements.len())
+            .ok_or_else(|| GalecTargetError::LoweringInternal {
+                detail: format!(
+                    "C export array constructor index {first} is outside 1..{}",
+                    elements.len()
+                ),
+            })?;
+        let selected = &elements[index - 1];
+        if rest.is_empty() {
+            return Ok(selected.clone());
+        }
+        if matches!(selected, Expression::Array(_)) || self.expression_needs_indexing(selected) {
+            return self.indexed_expression(selected, rest);
+        }
+        Err(GalecTargetError::LoweringInternal {
+            detail: "C export array constructor rank does not match target dimensions".to_owned(),
+        })
+    }
+
+    fn expression_needs_indexing(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Ref(reference) | Expression::Neg(reference) => {
+                self.is_whole_array_reference(reference)
+            }
+            Expression::Array(_) => true,
+            Expression::If(if_expression) => {
+                if_expression
+                    .branches
+                    .iter()
+                    .any(|(_, value)| self.expression_needs_indexing(value))
+                    || self.expression_needs_indexing(&if_expression.else_value)
+            }
+            Expression::Paren(inner) | Expression::Not(inner) => {
+                self.expression_needs_indexing(inner)
+            }
+            Expression::Binary { lhs, rhs, .. } => {
+                self.expression_needs_indexing(lhs) || self.expression_needs_indexing(rhs)
+            }
+            Expression::Bool(_)
+            | Expression::Integer(_)
+            | Expression::Real(_)
+            | Expression::Call(_)
+            | Expression::Size { .. } => false,
+        }
+    }
+
+    fn reference_with_static_subscripts(
+        &self,
+        reference: &Reference,
+        indices: &[i64],
+    ) -> Result<Reference, GalecTargetError> {
+        let Reference::State(parts) = reference else {
+            return Err(GalecTargetError::LoweringInternal {
+                detail: "C export can only index whole-array state references".to_owned(),
+            });
+        };
+        let [part] = parts.as_slice() else {
+            return Err(GalecTargetError::LoweringInternal {
+                detail: "C export can only index single-part state references".to_owned(),
+            });
+        };
+        let mut part = part.clone();
+        part.subscripts = indices
+            .iter()
+            .copied()
+            .map(Expression::Integer)
+            .collect::<Vec<_>>();
+        Ok(Reference::State(vec![part]))
     }
 
     /// Print one expression as C, fully parenthesized (module docs).
@@ -262,18 +459,26 @@ impl<'a> CPrinter<'a> {
         })
     }
 
-    /// Whether `reference` is a whole-array assignment target: a single-part
-    /// `self.x` state reference with NO subscripts whose declaration is an
-    /// array. An indexed element target (`self.x[i]`) or a scalar returns
-    /// `false` (they assign element-wise / scalar with `=`).
-    fn is_whole_array_target(&self, reference: &Reference) -> bool {
+    /// Literal dimensions when `reference` is a whole-array state reference:
+    /// a single-part `self.x` reference with NO subscripts whose declaration is
+    /// an array. Indexed elements and scalars return `None`.
+    fn whole_array_dimensions(&self, reference: &Reference) -> Option<&[i64]> {
         let Reference::State(parts) = reference else {
-            return false;
+            return None;
         };
         let [part] = parts.as_slice() else {
-            return false;
+            return None;
         };
-        part.subscripts.is_empty() && self.names.is_array(&part.name)
+        if part.subscripts.is_empty() {
+            self.names.array_dimensions(&part.name)
+        } else {
+            None
+        }
+    }
+
+    /// Whether `reference` is a whole-array state reference.
+    fn is_whole_array_reference(&self, reference: &Reference) -> bool {
+        self.whole_array_dimensions(reference).is_some()
     }
 
     /// `self.x[i]` → `self->x[i-1]` struct member access on the block-state
@@ -369,20 +574,46 @@ fn unsupported_statement(construct: &'static str) -> GalecTargetError {
 mod tests {
     use super::*;
     use rumoca_ir_galec::ast::{
-        Block, ProtectedEntity, ProtectedKind, ScalarType, VariableDeclaration,
+        Block, Dimension, ProtectedEntity, ProtectedKind, ScalarType, VariableDeclaration,
     };
 
     fn table(names: &[&str]) -> CNameTable {
+        table_with_dims(
+            &names
+                .iter()
+                .map(|name| (*name, Vec::new()))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn array_table(names: &[(&str, &[i64])]) -> CNameTable {
+        table_with_dims(
+            &names
+                .iter()
+                .map(|(name, dims)| (*name, dims.to_vec()))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn table_with_dims(names: &[(&str, Vec<i64>)]) -> CNameTable {
         let mut block = Block::new(Name::ident("M"));
         block.protected = names
             .iter()
-            .map(|name| ProtectedEntity {
-                kind: ProtectedKind::State,
-                decl: VariableDeclaration::scalar(
+            .map(|(name, dims)| {
+                let mut decl = VariableDeclaration::scalar(
                     ScalarType::Real,
                     crate::mangle::galec_variable_name(name).unwrap(),
-                ),
-                start: None,
+                );
+                decl.dimensions = dims
+                    .iter()
+                    .copied()
+                    .map(|size| Dimension::Expr(Expression::Integer(size)))
+                    .collect();
+                ProtectedEntity {
+                    kind: ProtectedKind::State,
+                    decl,
+                    start: None,
+                }
             })
             .collect();
         CNameTable::build(&block).unwrap()
@@ -588,6 +819,42 @@ mod tests {
                 "self->x[0][1] = 2.0;",
                 "self->x[1][0] = 3.0;",
                 "self->x[1][1] = 4.0;",
+            ]
+        );
+    }
+
+    #[test]
+    fn whole_array_binary_assignments_expand_by_target_dimensions() {
+        let table = array_table(&[("y", &[3]), ("a", &[3]), ("b", &[3])]);
+        let statement = Statement::Assignment {
+            target: Reference::state(Name::ident("y")),
+            value: Expression::binary(BinaryOp::Sub, state("a"), state("b")),
+        };
+        assert_eq!(
+            CPrinter::new(&table).statement_lines(&statement).unwrap(),
+            vec![
+                "self->y[0] = (self->a[0] - self->b[0]);",
+                "self->y[1] = (self->a[1] - self->b[1]);",
+                "self->y[2] = (self->a[2] - self->b[2]);",
+            ]
+        );
+    }
+
+    #[test]
+    fn whole_array_if_assignments_index_branch_values() {
+        let table = array_table(&[("y", &[2]), ("a", &[2]), ("b", &[2]), ("c", &[])]);
+        let statement = Statement::Assignment {
+            target: Reference::state(Name::ident("y")),
+            value: Expression::If(IfExpression {
+                branches: vec![(state("c"), state("a"))],
+                else_value: Box::new(state("b")),
+            }),
+        };
+        assert_eq!(
+            CPrinter::new(&table).statement_lines(&statement).unwrap(),
+            vec![
+                "self->y[0] = (self->c ? self->a[0] : self->b[0]);",
+                "self->y[1] = (self->c ? self->a[1] : self->b[1]);",
             ]
         );
     }
