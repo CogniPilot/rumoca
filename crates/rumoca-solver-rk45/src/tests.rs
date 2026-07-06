@@ -12,8 +12,7 @@ macro_rules! fixture_span {
 }
 
 fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
-    let target = session.time() + dt;
-    session.advance_to(target).expect(context);
+    session.step(dt).expect(context);
 }
 
 #[test]
@@ -561,8 +560,8 @@ fn rk45_session_advance_to_clamps_to_sim_options_end_time() {
 
     session.set_input("u", 4.0).expect("input should exist");
     session
-        .advance_to(0.1)
-        .expect("advance past final time should clamp");
+        .step(0.1)
+        .expect("step past final time should clamp");
 
     assert!(
         (session.time() - 0.05).abs() <= 1.0e-12,

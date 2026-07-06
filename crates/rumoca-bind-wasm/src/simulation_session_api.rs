@@ -75,6 +75,13 @@ impl WasmSimulationSession {
             .map_err(|e| JsValue::from_str(&format!("Advance error: {e}")))
     }
 
+    /// Advance the simulation by a relative time step in seconds.
+    pub fn step(&mut self, dt: f64) -> Result<(), JsValue> {
+        self.session
+            .step(dt)
+            .map_err(|e| JsValue::from_str(&format!("Step error: {e}")))
+    }
+
     /// Get the current simulation time.
     pub fn time(&self) -> f64 {
         self.session.time()

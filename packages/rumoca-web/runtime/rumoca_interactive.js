@@ -1045,7 +1045,11 @@ export async function createInteractiveSimulation(options) {
     for (const [name, value] of buildModelInputs(config, input, session, runtime)) {
       session.set_input(name, finiteNumber(value, 0));
     }
-    session.advance_to(Math.min(session.time() + simDt, session.end_time()));
+    if (typeof session.step === 'function') {
+      session.step(simDt);
+    } else {
+      session.advance_to(Math.min(session.time() + simDt, session.end_time()));
+    }
     refreshViewerSignals();
     frameNum += 1;
     if (simulationFinished()) {

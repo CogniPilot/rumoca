@@ -523,16 +523,12 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
     )
     .expect("pure discrete session should build");
     session.set_input("u", 1.5).expect("set input u");
-    session
-        .advance_to(session.time() + 0.02)
-        .expect("first discrete tick");
+    session.step(0.02).expect("first discrete tick");
     assert_eq!(session.time(), 0.02);
     assert_eq!(session.get("y").expect("read y"), Some(1.5));
 
     session.set_input("u", 2.0).expect("set input u");
-    session
-        .advance_to(session.time() + 0.02)
-        .expect("second discrete tick");
+    session.step(0.02).expect("second discrete tick");
     assert_eq!(session.get("y").expect("read y"), Some(4.0));
 
     clear_source_root_cache().expect("clear source-root cache");
