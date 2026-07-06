@@ -51,6 +51,20 @@ pub(crate) fn lower_dae_for_simulation_with_param_overrides(
     lower_structured_dae_for_simulation(structurally_lowered, opts, param_overrides)
 }
 
+pub(crate) fn lower_dae_for_differentiation_with_param_overrides(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+    param_overrides: &std::collections::HashMap<String, f64>,
+) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
+    let structurally_lowered = structurally_lower_dae_for_simulation(dae_model, opts)?;
+    rumoca_phase_solve::lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides(
+        structurally_lowered.dae,
+        structurally_lowered.visible_expressions,
+        &structurally_lowered.metadata_dae,
+        param_overrides,
+    )
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SolveLoweringTimings {
     pub structural_dae_seconds: f64,

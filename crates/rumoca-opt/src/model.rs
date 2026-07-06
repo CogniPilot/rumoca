@@ -102,7 +102,9 @@ impl DifferentiableModel {
         sim_options: &SimOptions,
         opt_options: OptOptions,
     ) -> Result<Self, OptError> {
-        let solve_model = rumoca_sim::lower_for_simulation_with_overrides(dae_model, sim_options)?;
+        let solve_model =
+            rumoca_sim::lower_for_differentiation_with_overrides(dae_model, sim_options)?;
+        validate_sensitivity_artifacts(&solve_model)?;
         let state = solve_model.initial_y[..solve_model.state_scalar_count()].to_vec();
         let params = solve_model.parameters.clone();
         let parameters = collect_model_parameter_slots(&solve_model);
@@ -214,6 +216,37 @@ impl DifferentiableModel {
                 available: available_trainables(&self.parameters),
             })
     }
+}
+
+fn validate_sensitivity_artifacts(model: &solve::SolveModel) -> Result<(), OptError> {
+    if model.state_scalar_count() == 0 {
+        return Ok(());
+    }
+    if model
+        .artifacts
+        .continuous
+        .full_jacobian_v
+        .programs
+        .is_empty()
+    {
+        return Err(OptError::Lowering(
+            "differentiable lowering did not produce derivative sensitivity artifacts".to_string(),
+        ));
+    }
+    if model.solver_scalar_count() > model.state_scalar_count()
+        && model
+            .artifacts
+            .continuous
+            .implicit_jacobian_v_scalar
+            .programs
+            .is_empty()
+    {
+        return Err(OptError::Lowering(
+            "differentiable lowering did not produce algebraic projection sensitivity artifacts"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn available_trainables(parameters: &[TrainableParameter]) -> String {

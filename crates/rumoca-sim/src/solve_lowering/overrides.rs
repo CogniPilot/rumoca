@@ -22,19 +22,7 @@ pub fn lower_for_simulation_with_overrides(
     // override at parameter-set time. Non-tunable (structural) overrides are left
     // out of lowering so they cannot change sizing; `apply_simulation_overrides`
     // rejects them below with a clear "recompile" error.
-    let param_overrides: std::collections::HashMap<String, f64> = opts
-        .param_overrides
-        .iter()
-        .filter(|(name, _)| {
-            dae_model
-                .variables
-                .parameters
-                .iter()
-                .find(|(key, _)| key.as_str() == name)
-                .is_some_and(|(_, var)| var.is_tunable)
-        })
-        .map(|(name, value)| (name.clone(), *value))
-        .collect();
+    let param_overrides = tunable_param_overrides(dae_model, opts);
     let mut solve_model = super::entry::lower_dae_for_simulation_with_param_overrides(
         dae_model,
         opts,
@@ -45,6 +33,47 @@ pub fn lower_for_simulation_with_overrides(
     // already re-derived during lowering, so do not re-derive them again here.
     apply_simulation_overrides(&mut solve_model, dae_model, opts, false)?;
     Ok(solve_model)
+}
+
+/// Lower a DAE to a differentiable runtime solve model and apply the same
+/// tunable-parameter / state-start overrides as simulation lowering.
+///
+/// Unlike [`lower_for_simulation_with_overrides`], this entry point always
+/// requests full sensitivity artifacts. `SimOptions::solver_mode` chooses an
+/// integration backend for simulation, but optimization needs backend-neutral
+/// derivative programs even when callers prefer the value-only RK path for
+/// ordinary simulation.
+pub fn lower_for_differentiation_with_overrides(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<solve::SolveModel, SimulationDiagnosticError> {
+    let param_overrides = tunable_param_overrides(dae_model, opts);
+    let mut solve_model = super::entry::lower_dae_for_differentiation_with_param_overrides(
+        dae_model,
+        opts,
+        &param_overrides,
+    )
+    .map_err(SimulationDiagnosticError::SolveLowering)?;
+    apply_simulation_overrides(&mut solve_model, dae_model, opts, false)?;
+    Ok(solve_model)
+}
+
+fn tunable_param_overrides(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> std::collections::HashMap<String, f64> {
+    opts.param_overrides
+        .iter()
+        .filter(|(name, _)| {
+            dae_model
+                .variables
+                .parameters
+                .iter()
+                .find(|(key, _)| key.as_str() == name)
+                .is_some_and(|(_, var)| var.is_tunable)
+        })
+        .map(|(name, value)| (name.clone(), *value))
+        .collect()
 }
 
 /// Apply tunable parameter and state-start overrides to a freshly lowered solve

@@ -46,7 +46,9 @@ pub use structure_report::{
 
 pub(crate) use entry::lower_dae_for_simulation_with_stage_timing;
 pub(crate) use overrides::apply_simulation_overrides;
-pub use overrides::lower_for_simulation_with_overrides;
+pub use overrides::{
+    lower_for_differentiation_with_overrides, lower_for_simulation_with_overrides,
+};
 
 #[cfg(test)]
 mod tests;
