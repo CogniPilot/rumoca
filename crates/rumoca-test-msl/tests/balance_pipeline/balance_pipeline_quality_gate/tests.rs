@@ -208,6 +208,18 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
 }
 
 #[test]
+fn full_quality_gate_rejects_zero_simulation_attempts() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
+
+    let error = enforce_msl_quality_gate(&summary)
+        .expect_err("full quality gate must reject a zero-attempt simulation run");
+    let message = error.to_string();
+    assert!(message.contains("invalid full run"));
+    assert!(message.contains("0 simulations attempted for 2 selected simulation target(s)"));
+}
+
+#[test]
 fn current_quality_snapshot_marks_only_partial_runs() {
     let summary = valid_summary_template();
     let full = current_msl_quality_snapshot_json(&summary, None, false)

@@ -94,12 +94,14 @@
 
         # The MSL harness is a libtest binary (msl-full-test feature); build it
         # with `--no-run` and install the hashed test binary under a stable name.
+        # It also needs the per-model compile worker when run outside Cargo.
         msl-test-binary = craneLib.mkCargoDerivation (commonArgs // {
           inherit cargoArtifacts;
           pname = "rumoca-msl-test-binary";
           buildPhaseCargoCommand = ''
             cargo test --release --no-run \
               -p rumoca-test-msl --features msl-full-test --test msl_tests
+            cargo build --release -p rumoca-worker --bin rumoca-worker
           '';
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
           buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
@@ -109,6 +111,7 @@
               -name 'msl_tests-*' ! -name '*.d' -perm -u+x | head -1)
             test -n "$bin" || { echo "msl_tests test binary not found"; exit 1; }
             cp "$bin" $out/bin/msl_tests
+            cp target/release/rumoca-worker $out/bin/rumoca-worker
           '';
         });
         # xtask itself is NOT built here: after the light-xtask split it carries no

@@ -47,7 +47,7 @@ fn hidden_scalar_definitions(
     let mut definitions = HashMap::new();
     let mut duplicates = HashSet::new();
     for (index, equation) in dae.continuous.equations.iter().enumerate() {
-        if protected_indices.contains(&index) {
+        if equation.scalar_count != 1 || protected_indices.contains(&index) {
             continue;
         }
         let Some((target, rhs)) = residual_scalar_definition(&equation.rhs) else {
@@ -125,7 +125,8 @@ fn remove_inlined_definitions(
         .into_iter()
         .enumerate()
     {
-        let remove = !protected_indices.contains(&index)
+        let remove = equation.scalar_count == 1
+            && !protected_indices.contains(&index)
             && residual_scalar_definition(&equation.rhs)
                 .is_some_and(|(target, _)| targets.contains(target.as_str()));
         if remove {
@@ -301,5 +302,43 @@ fn references_scalar(expression: &Expression, wanted: &str) -> bool {
         }
         Expression::FieldAccess { base, .. } => references_scalar(base, wanted),
         Expression::Literal { .. } | Expression::Empty { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_residuals_are_not_treated_as_hidden_scalar_definitions() {
+        let mut dae = dae::Dae::default();
+        dae.continuous.equations.push(dae::Equation::residual_array(
+            sub(var_ref("comp.x"), var_ref("comp.y")),
+            Span::DUMMY,
+            "aggregate record equation",
+            2,
+        ));
+
+        inline_hidden_component_algebraics(&mut dae);
+
+        assert_eq!(dae.continuous.equations.len(), 1);
+        assert_eq!(dae.continuous.equations[0].scalar_count, 2);
+    }
+
+    fn sub(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn var_ref(name: &str) -> Expression {
+        Expression::VarRef {
+            name: Reference::from(name),
+            subscripts: Vec::new(),
+            span: Span::DUMMY,
+        }
     }
 }

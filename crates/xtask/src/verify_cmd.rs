@@ -129,6 +129,11 @@ pub(crate) struct VerifyMslParityArgs {
     /// `cargo test`, so no workspace compile + LTO in the consuming job.
     #[arg(long, value_name = "PATH")]
     prebuilt_test_binary: Option<PathBuf>,
+    /// Path to the prebuilt `rumoca-worker` binary the harness should spawn for
+    /// isolated per-model compile/lower runs. Required by CI prebuilt harnesses;
+    /// local `cargo test` resolves it through Cargo's normal test-binary env.
+    #[arg(long, value_name = "PATH", requires = "prebuilt_test_binary")]
+    prebuilt_model_worker: Option<PathBuf>,
     /// Path to the prebuilt `rumoca-sim-worker` binary the harness should spawn
     /// (used with `--prebuilt-test-binary` for the sim-running jobs; the harness
     /// resolves it via `CARGO_BIN_EXE_rumoca-sim-worker`). Not needed for the
@@ -1012,6 +1017,7 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
         run_prebuilt_msl_test(
             root,
             binary,
+            args.prebuilt_model_worker.as_deref(),
             args.prebuilt_sim_worker.as_deref(),
             test_target,
             &mut cargo_setup_steps,
@@ -1037,6 +1043,7 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
 fn run_prebuilt_msl_test(
     root: &Path,
     binary: &Path,
+    model_worker: Option<&Path>,
     sim_worker: Option<&Path>,
     test_target: &str,
     cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
@@ -1053,6 +1060,14 @@ fn run_prebuilt_msl_test(
         .arg("--nocapture")
         .env("RUST_BACKTRACE", "full")
         .current_dir(root);
+    if let Some(worker) = model_worker {
+        ensure!(
+            worker.is_file(),
+            "prebuilt rumoca-worker not found at {}",
+            worker.display()
+        );
+        run.env("CARGO_BIN_EXE_rumoca-worker", worker);
+    }
     if let Some(worker) = sim_worker {
         ensure!(
             worker.is_file(),

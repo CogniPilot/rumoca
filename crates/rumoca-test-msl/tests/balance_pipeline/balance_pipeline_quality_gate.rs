@@ -1674,12 +1674,18 @@ pub(super) fn msl_quality_gate_failure_message(
 }
 
 pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
-    if summary.sim_attempted == 0 {
-        println!("MSL quality gate: skipped for compile/balance-only run.");
-        return Ok(());
-    }
     if require_selected_targets_success() {
         return enforce_all_selected_targets_succeeded(summary);
+    }
+    if summary.sim_attempted == 0 {
+        if should_skip_msl_quality_gate() {
+            println!("MSL quality gate: skipped for compile/balance-only run.");
+            return Ok(());
+        }
+        return Err(io::Error::other(format!(
+            "MSL quality gate: invalid full run (0 simulations attempted for {} selected simulation target(s)); fix the MSL shard/worker setup before accepting this run",
+            summary.sim_target_models.len()
+        )));
     }
     if should_skip_msl_quality_gate() {
         println!(
