@@ -168,6 +168,13 @@ impl SimulationSession {
         self.inner.advance_to(target_time)
     }
 
+    pub(crate) fn step(&mut self, dt: f64) -> Result<(), SimError> {
+        if dt <= 0.0 {
+            return Ok(());
+        }
+        self.advance_to(self.time() + dt)
+    }
+
     pub(crate) fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.inner.reset(t_start)
     }

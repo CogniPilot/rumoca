@@ -88,6 +88,19 @@ impl SimulationSession {
         }
     }
 
+    pub fn step(&mut self, dt: f64) -> Result<(), SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .step(dt)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .step(dt)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+        }
+    }
+
     pub fn time(&self) -> f64 {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]

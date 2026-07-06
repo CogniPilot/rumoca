@@ -148,6 +148,13 @@ impl SimulationSession {
         advance_backend_to(&mut self.backend, target_time)
     }
 
+    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+        if dt <= 0.0 {
+            return Ok(());
+        }
+        self.advance_to(self.backend.time + dt)
+    }
+
     pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.backend
