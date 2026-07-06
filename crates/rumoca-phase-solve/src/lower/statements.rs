@@ -1733,7 +1733,14 @@ impl<'a> LowerBuilder<'a> {
         let constructor_inputs = if let Some(constructor) = self.lookup_function(name).cloned() {
             constructor.inputs
         } else if name.last_segment() == "Complex" {
-            let span = value.span().unwrap_or(rumoca_core::Span::DUMMY);
+            let span = value
+                .span()
+                .ok_or_else(|| LowerError::UnspannedContractViolation {
+                    reason: format!(
+                        "built-in Complex constructor `{}` requires source provenance for field binding",
+                        name.as_str()
+                    ),
+                })?;
             vec![
                 rumoca_core::FunctionParam::new("re", "Real", span),
                 rumoca_core::FunctionParam::new("im", "Real", span),
