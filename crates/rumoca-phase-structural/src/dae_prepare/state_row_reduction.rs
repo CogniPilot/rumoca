@@ -651,7 +651,7 @@ pub fn index_reduce_missing_state_derivatives_once(
                 {
                     return None;
                 }
-                if is_non_state_direct_definition(dae, eq) {
+                if is_non_state_direct_definition(dae, eq, idx, &defining_expr_index) {
                     return None;
                 }
                 if is_indexed_state_component_alias_definition(eq, state_name) {
@@ -745,25 +745,63 @@ fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
     })
 }
 
-fn is_non_state_direct_definition(dae: &Dae, eq: &Equation) -> bool {
+fn is_non_state_direct_definition(
+    dae: &Dae,
+    eq: &Equation,
+    equation_index: usize,
+    defining_expr_index: &DefiningExprIndex,
+) -> bool {
     let Expression::Binary { op, lhs, rhs, .. } = &eq.rhs else {
         return false;
     };
     if !matches!(op, OpBinary::Sub) {
         return false;
     }
-    expression_defines_non_state_unknown(dae, lhs) || expression_defines_non_state_unknown(dae, rhs)
+    [lhs.as_ref(), rhs.as_ref()]
+        .into_iter()
+        .filter_map(|expr| {
+            let exact_name = expression_non_state_unknown_exact_name(dae, expr)?;
+            let other = if std::ptr::eq(expr, lhs.as_ref()) {
+                rhs.as_ref()
+            } else {
+                lhs.as_ref()
+            };
+            Some((exact_name, other))
+        })
+        .any(|(exact_name, other)| {
+            !non_state_unknown_has_independent_definition(
+                defining_expr_index,
+                &exact_name,
+                equation_index,
+            ) || !expr_refs_only_parameters_constants_or_time(dae, other)
+        })
 }
 
-fn expression_defines_non_state_unknown(dae: &Dae, expr: &Expression) -> bool {
-    let Some(name) = expression_exact_name(expr) else {
-        return false;
-    };
+fn expression_non_state_unknown_exact_name(dae: &Dae, expr: &Expression) -> Option<String> {
+    let name = expression_exact_name(expr)?;
     dae.variables
         .algebraics
         .keys()
         .chain(dae.variables.outputs.keys())
         .any(|unknown| exact_name_matches_unknown_or_component(&name, unknown))
+        .then_some(name)
+}
+
+fn non_state_unknown_has_independent_definition(
+    defining_expr_index: &DefiningExprIndex,
+    exact_name: &str,
+    equation_index: usize,
+) -> bool {
+    let base_name = rumoca_core::parse_scalar_name(exact_name)
+        .map(|scalar| scalar.base)
+        .unwrap_or(exact_name);
+    [exact_name, base_name].into_iter().any(|name| {
+        defining_expr_index.get(name).is_some_and(|candidates| {
+            candidates
+                .iter()
+                .any(|candidate| candidate.equation_index != equation_index)
+        })
+    })
 }
 
 fn exact_name_matches_unknown_or_component(exact_name: &str, unknown: &VarName) -> bool {
