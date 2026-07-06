@@ -17,9 +17,21 @@ msl-full-test = []
 name = "rumoca-sim-worker"
 path = "src/bin/rumoca-sim-worker.rs"
 
+# MSL/OMC reference, parity, and profiling tooling (moved out of the `xtask`
+# crate so xtask carries no compiler deps). These bins link the compiler stack
+# this crate already depends on.
+[[bin]]
+name = "rumoca-msl-tools"
+path = "src/bin/rumoca-msl-tools.rs"
+
+[[bin]]
+name = "rumoca-msl-profile"
+path = "src/bin/rumoca-msl-profile.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+indexmap = { workspace = true }
 mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
@@ -27,17 +39,22 @@ rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
 rumoca-ir-solve = { workspace = true }
 rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation"] }
 rumoca-worker = { workspace = true }
+# Used by the MSL tooling moved from xtask (zmq: OMC worker pool; nix: process
+# signals; blake3/regex/walkdir/tempfile: caching, parsing, fs scans).
+blake3 = { workspace = true }
+nix = { version = "0.29", features = ["signal"] }
+regex = "1"
+tempfile = { workspace = true }
+walkdir = "2.5"
+zmq = "0.10"
 
 [dev-dependencies]
-walkdir = "2.5"
 ureq = "2.9"
 dirs = "5.0"
 rayon = { workspace = true }
 ntest = "0.9"
-tempfile = { workspace = true }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 flate2 = { workspace = true }
-indexmap = { workspace = true }
 tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

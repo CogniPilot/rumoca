@@ -62,19 +62,75 @@ pub(crate) fn run_workspace_docs(root: &Path) -> Result<()> {
     docs_cmd::check(root)
 }
 
+/// The two binding crates are excluded from the workspace test lane: they
+/// need special targets (wasm32 / a Python interpreter) and are covered by the
+/// dedicated playground/python jobs. This is the single source of truth shared
+/// by the plain-`cargo test`, doctest, and nextest-shard paths so the three
+/// can never drift apart.
+const WORKSPACE_TEST_EXCLUDES: &[&str] = &[
+    "--exclude",
+    "rumoca-bind-python",
+    "--exclude",
+    "rumoca-bind-wasm",
+];
+
 pub(crate) fn run_workspace_tests(root: &Path) -> Result<()> {
-    run_cargo(
-        root,
-        &[
-            "test",
-            "--workspace",
-            "--verbose",
-            "--exclude",
-            "rumoca-bind-python",
-            "--exclude",
-            "rumoca-bind-wasm",
-        ],
-    )
+    let mut args = vec!["test", "--workspace", "--verbose"];
+    args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
+    run_cargo(root, &args)
+}
+
+/// Doctests only. `cargo nextest` cannot run doctests, so the sharded CI lane
+/// pairs its nextest partitions with exactly one invocation of this to preserve
+/// the doctest coverage that plain `cargo test --workspace` provided.
+pub(crate) fn run_workspace_doctests(root: &Path) -> Result<()> {
+    let mut args = vec!["test", "--doc", "--workspace", "--verbose"];
+    args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
+    run_cargo(root, &args)
+}
+
+/// Run the workspace unit + integration tests under `cargo nextest`, sharded by
+/// `--partition count:<partition>` (e.g. "1/4"). Excludes mirror
+/// [`run_workspace_tests`]. Doctests are NOT included (nextest skips them) and
+/// must be run separately via [`run_workspace_doctests`].
+pub(crate) fn run_workspace_nextest_partition(root: &Path, partition: &str) -> Result<()> {
+    let partition_arg = format!("count:{partition}");
+    let mut args = vec!["nextest", "run", "--workspace", "--verbose"];
+    args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
+    args.push("--partition");
+    args.push(&partition_arg);
+    run_cargo(root, &args)
+}
+
+/// CLI options for `verify workspace`, co-located with the workspace-test
+/// runners they dispatch to. With no flags this runs the full workspace
+/// `cargo test` (unit + integration + doctests), exactly as before, so the
+/// verify-suite step (`cargo xtask verify workspace`) is unchanged. The flags
+/// let CI split that lane across parallel shards without duplicating the
+/// load-bearing crate-exclude list in YAML.
+#[derive(Debug, clap::Args, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceArgs {
+    /// Run only the unit + integration tests in this `count:M/N` nextest shard
+    /// (e.g. `--nextest-partition 1/4`). Doctests are excluded (nextest skips
+    /// them); pair with a single `--doc` run to keep doctest coverage.
+    #[arg(long, value_name = "M/N", conflicts_with = "doc")]
+    nextest_partition: Option<String>,
+    /// Run only the workspace doctests (`cargo test --doc`).
+    #[arg(long)]
+    doc: bool,
+}
+
+impl WorkspaceArgs {
+    /// Dispatch to the doctest-only, nextest-shard, or full-workspace path.
+    pub(crate) fn run(&self, root: &Path) -> Result<()> {
+        if self.doc {
+            run_workspace_doctests(root)
+        } else if let Some(partition) = self.nextest_partition.as_deref() {
+            run_workspace_nextest_partition(root, partition)
+        } else {
+            run_workspace_tests(root)
+        }
+    }
 }
 
 pub(crate) fn run_workspace_binary_build(root: &Path) -> Result<()> {

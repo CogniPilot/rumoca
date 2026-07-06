@@ -46,6 +46,7 @@ members = [
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
     "crates/rumoca-tool-galec-lsp",
+    "crates/rumoca-tool-docs",
     "crates/rumoca-lsp-position",
     "crates/xtask",
     # Bindings

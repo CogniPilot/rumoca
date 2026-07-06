@@ -1,4 +1,3 @@
-pub mod msl_tools;
 pub mod web_assets;
 
 #[path = "bin/rumoca-traversal-policy-check.rs"]

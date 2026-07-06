@@ -7,7 +7,6 @@ mod lsp_benchmark_cmd;
 #[cfg(test)]
 mod main_tests;
 mod modelica_dependency_cache;
-mod msl_flamegraph_cmd;
 mod playground_cmd;
 mod release_cmd;
 mod repo_cli_cmd;
@@ -15,9 +14,11 @@ mod review_packet_cmd;
 mod review_scan_cmd;
 mod static_server;
 mod test_cmd;
+mod util;
 mod verify_cmd;
 mod vscode_cmd;
 mod vscode_python_env;
+mod wasm_smoke;
 mod wasm_tooling;
 
 #[global_allocator]
@@ -33,7 +34,6 @@ use coverage_analysis::{
 use coverage_gate::CoverageGateArgs;
 use crate_dag_cmd::CrateDagArgs;
 use docs_cmd::DocsArgs;
-use rumoca_compile::compile::core::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::ffi::OsStr;
@@ -43,8 +43,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use verify_cmd::VerifyArgs;
 
-pub(crate) use xtask::msl_tools::common;
-use xtask::{msl_tools, web_assets};
+use xtask::web_assets;
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask")]
@@ -427,51 +426,11 @@ enum RepoGraphCommand {
 
 #[derive(Debug, Args, Clone)]
 struct RepoMslArgs {
-    #[command(subcommand)]
-    command: RepoMslCommand,
-}
-
-#[derive(Debug, Subcommand, Clone)]
-// Variants are grouped (and the `about:`/help wording is prefixed) so `cargo xtask repo
-// msl --help` reads as clusters you can navigate without external docs. clap
-// lists variants in declaration order; match arms are by name, so the order is
-// purely for help readability.
-enum RepoMslCommand {
-    // -- Generate OMC baselines (the reference data the gates compare against) --
-    /// Generate baseline: OMC simulation + rumoca-vs-OMC trace & compile-speed comparison
-    OmcSimulationReference(msl_tools::omc_simulation_reference::Args),
-
-    // -- Reports built from existing results (read-only analysis) --
-    /// Report: rank compile/balance/sim/trace failures to fix next
-    Triage(msl_tools::triage::Args),
-    /// Report: machine-readable rumoca-vs-OMC simulation parity failure buckets
-    ParityManifest(msl_tools::parity_manifest::Args),
-    /// Report: per-package MSL release compatibility summary
-    CompatibilityReport(msl_tools::compatibility_report::Args),
-    /// Report: diff rumoca balance output against the OMC reference
-    CompareBalance(msl_tools::compare_balance::Args),
-    /// Report: compare per-model phase/sim/trace transitions between two MSL result dirs
-    TransitionDiff(msl_tools::transition_diff::Args),
-    /// Report: assemble the MSL quality summary posted as the CI PR comment
-    PrComment(msl_tools::pr_comment::Args),
-
-    // -- Inspect one model (debug a single failure) --
-    /// One model: dump JSON IR from every compiler stage
-    DebugModel(msl_tools::debug_model::Args),
-    /// One model: regenerate OMC+rumoca traces and open the uPlot overlay
-    PlotCompare(msl_tools::plot_compare::Args),
-    /// One model: diff rumoca's BLT/coupled-block/tearing against OMC's
-    OmcStructure(msl_tools::omc_structure_diff::Args),
-    /// One model (or a triage bucket): re-run the focused parity pipeline
-    Rerun(msl_tools::rerun::Args),
-    /// One model: cargo-flamegraph profile of compile or simulation
-    Flamegraph(msl_flamegraph_cmd::MslFlamegraphArgs),
-
-    // -- Catalog & baseline maintenance --
-    /// Catalog MSL-shipped ModelicaTest cases by semantic feature area
-    ModelicaTestCatalog(msl_tools::modelica_test_catalog::Args),
-    /// Promote a quality snapshot to the checked-in fallback baseline JSON
-    PromoteQualityBaseline(msl_tools::promote_quality_baseline::Args),
+    /// Subcommand + arguments forwarded verbatim to the `rumoca-msl-tools` bin
+    /// (in `rumoca-test-msl`, which links the compiler). Run
+    /// `cargo xtask repo msl -- --help` to list its subcommands.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    forwarded: Vec<String>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -592,28 +551,9 @@ fn cmd_repo(args: RepoArgs) -> Result<()> {
         RepoCommand::Graph(args) => match args.command {
             RepoGraphCommand::Crates(args) => crate_dag_cmd::run(&repo_root(), args),
         },
-        RepoCommand::Msl(args) => match args.command {
-            RepoMslCommand::OmcSimulationReference(args) => {
-                msl_tools::omc_simulation_reference::run(args)
-            }
-            RepoMslCommand::Flamegraph(args) => msl_flamegraph_cmd::run(args, &repo_root()),
-            RepoMslCommand::CompareBalance(args) => msl_tools::compare_balance::run(args),
-            RepoMslCommand::TransitionDiff(args) => msl_tools::transition_diff::run(args),
-            RepoMslCommand::CompatibilityReport(args) => msl_tools::compatibility_report::run(args),
-            RepoMslCommand::ModelicaTestCatalog(args) => {
-                msl_tools::modelica_test_catalog::run(args)
-            }
-            RepoMslCommand::ParityManifest(args) => msl_tools::parity_manifest::run(args),
-            RepoMslCommand::Triage(args) => msl_tools::triage::run(args),
-            RepoMslCommand::Rerun(args) => msl_tools::rerun::run(args),
-            RepoMslCommand::DebugModel(args) => msl_tools::debug_model::run(args),
-            RepoMslCommand::PlotCompare(args) => msl_tools::plot_compare::run(args),
-            RepoMslCommand::OmcStructure(args) => msl_tools::omc_structure_diff::run(args),
-            RepoMslCommand::PrComment(args) => msl_tools::pr_comment::run(args),
-            RepoMslCommand::PromoteQualityBaseline(args) => {
-                msl_tools::promote_quality_baseline::run(args)
-            }
-        },
+        RepoCommand::Msl(args) => {
+            run_forwarded_tool("rumoca-test-msl", "rumoca-msl-tools", &args.forwarded)
+        }
         RepoCommand::Cmm(args) => modelica_dependency_cache::run_cmm_command(args, &repo_root()),
         RepoCommand::ModelicaDeps(args) => {
             modelica_dependency_cache::run_modelica_deps_command(args, &repo_root())
@@ -637,8 +577,47 @@ fn cmd_repo(args: RepoArgs) -> Result<()> {
 }
 
 fn repo_root() -> PathBuf {
-    let root = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    // Relocatable: a prebuilt (Nix/crane) xtask bakes the build-sandbox manifest
+    // dir, which is gone at runtime, so resolve the workspace root by walking up
+    // from the CWD to the `[workspace]` Cargo.toml. This also covers a normal
+    // `cargo xtask` (CWD is at/under the workspace root); it falls back to the
+    // compile-time manifest dir if the CWD isn't inside a rumoca workspace.
+    fn workspace_root_from_cwd() -> Option<PathBuf> {
+        let cwd = std::env::current_dir().ok()?;
+        cwd.ancestors()
+            .find(|dir| {
+                let manifest = dir.join("Cargo.toml");
+                manifest.is_file()
+                    && std::fs::read_to_string(&manifest)
+                        .map(|s| s.contains("[workspace]"))
+                        .unwrap_or(false)
+            })
+            .map(std::path::Path::to_path_buf)
+    }
+    let root = workspace_root_from_cwd()
+        .unwrap_or_else(|| util::workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR")));
     root.canonicalize().unwrap_or(root)
+}
+
+/// Shell out to a bin in a compiler-linked crate, forwarding args + stdio + exit
+/// status. This is how `xtask` stays free of any `rumoca-*` dependency: the heavy
+/// stack such a bin links compiles only when that bin is actually invoked, not on
+/// every `cargo xtask`. Runs `cargo run` from the workspace root; the profile
+/// matches a plain `cargo xtask` (debug), preserving the prior in-process behavior.
+pub(crate) fn run_forwarded_tool(package: &str, bin: &str, forwarded: &[String]) -> Result<()> {
+    // No `--quiet`: the first invocation compiles the heavy compiler stack this
+    // bin links (~minutes), and cargo's progress on stderr is what keeps that from
+    // looking like a hang. The tool's own stdout stays clean for piping.
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(repo_root())
+        .arg("run")
+        .arg("--package")
+        .arg(package)
+        .arg("--bin")
+        .arg(bin)
+        .arg("--")
+        .args(forwarded);
+    run_status(cmd)
 }
 
 fn is_windows() -> bool {

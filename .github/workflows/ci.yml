@@ -66,8 +66,43 @@ jobs:
   # ============================================================================
   # Rust Testing
   # ============================================================================
+  fmt:
+    name: Format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install rustfmt
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+            --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)" \
+            --component rustfmt
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # Architectural invariant, checked without compiling anything: `xtask` must
+      # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
+      # out; heavy compiler-linked work runs on demand via `cargo run -p <crate>`
+      # (rumoca-test-msl, rumoca-tool-docs). If a rumoca-* dep creeps back in,
+      # building any xtask bin again drags in the whole compiler/diffsol stack.
+      - name: Architecture — xtask stays dependency-light
+        run: |
+          deps=$(cargo tree -p xtask -e normal --prefix none | grep '^rumoca-' | sort -u || true)
+          if [ -n "$deps" ]; then
+            echo "::error::xtask must not depend on any rumoca-* crate, but it now pulls in:"
+            echo "$deps"
+            echo "Move the heavy code into a compiler-linked crate and shell out to it."
+            exit 1
+          fi
+          echo "OK: xtask has no rumoca-* dependencies"
+
   lint:
-    name: Lint & Format
+    name: Lint
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -85,6 +120,12 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)" --component rustfmt,clippy
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Rust cache (lint)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run lint gate
         run: cargo xtask verify lint
@@ -121,6 +162,48 @@ jobs:
           name: crate-dag
           path: target/crate-dag/workspace-crate-dag.dot
           if-no-files-found: error
+
+  # Reproducible build + clippy + fmt via the root crane+fenix flake, backed by
+  # the Cachix binary cache (rumoca.cachix.org). First run is cold and pushes
+  # the built closure; subsequent runs (and local `cachix use rumoca`) restore
+  # the prebuilt dependency closure + rumoca binary in seconds. Replaces the
+  # deprecated magic-nix-cache, which rate-limited the GitHub Actions cache API
+  # on a closure this size (roadmap M4 slice 2).
+  nix-checks:
+    name: Nix flake checks (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+          # Public cache: pulls need no auth; the token lets CI push new paths.
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Nix build the flake checks
+        # Build ONLY the flake `checks` (rumoca build, clippy, fmt). The heavy
+        # release PACKAGES (msl-test-binary, rumoca-sim-worker, rumoca-msl-tools)
+        # are built once by the dedicated `nix-build-msl` producer and consumed
+        # via Cachix; building them here too would double that ~release+LTO work.
+        #
+        # We deliberately do NOT run `nix flake check`: it eval-builds every output
+        # (re-building those packages), and its `--no-build` eval trips over the
+        # fenix toolchain `.drv` under the DeterminateSystems installer
+        # (`path '…rust-nightly.toml.drv' is not valid`). `nix build` realizes the
+        # toolchain, so building the checks directly is the reliable gate.
+        run: |
+          nix build --print-build-logs \
+            .#checks.x86_64-linux.rumoca \
+            .#checks.x86_64-linux.clippy \
+            .#checks.x86_64-linux.fmt
 
   test:
     name: Test (${{ matrix.os }})
@@ -184,14 +267,31 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
-      - name: Cache cargo
-        uses: actions/cache@v5
-        continue-on-error: true
+      - name: Rust cache (native)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: native-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Linux keeps the dependency target dir here (warm third-party deps);
+          # all OSes additionally run sccache (next steps) to cache the workspace
+          # crate compilations rust-cache drops. Windows/macOS keep rust-cache to
+          # the registry only so it never overlaps sccache on target/.
+          cache-targets: ${{ runner.os == 'Linux' }}
+
+      - name: Run sccache-cache
+        # sccache (GHA-cache backend) caches per-crate compilations INCLUDING the
+        # workspace crates that Swatinem rust-cache deliberately drops, so across
+        # runs each unchanged rumoca crate is a cache hit instead of a recompile.
+        # Enabling it on Linux too is what stops ubuntu recompiling all of rumoca
+        # every run (it previously had NO compiler cache — rust-cache keeps deps
+        # but not workspace crates). Relies on the global CARGO_INCREMENTAL=0.
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Enable sccache wrapper
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Cache MSL
         uses: actions/cache@v5
@@ -254,7 +354,7 @@ jobs:
       # `!cancelled()` keeps the test step running when the example smoke step
       # fails, so a smoke regression cannot hide test failures (the job still
       # fails on the smoke step).
-      - name: Run tests (Linux monitored)
+      - name: Run workspace tests (Linux monitored)
         if: runner.os == 'Linux' && !cancelled()
         env:
           REQUIRE_MSL_FMT_DRIFT: "1"
@@ -274,9 +374,12 @@ jobs:
           monitor &
           monitor_pid=$!
           trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          # Full workspace suite (unit + integration + doctests) in one job per OS.
+          # Not nextest-sharded: the suite isn't the CI pole (the MSL gate is), so
+          # sharding it buys no overall wall-clock, only jobs + runner cost.
           cargo xtask verify workspace
 
-      - name: Run tests
+      - name: Run workspace tests
         if: runner.os != 'Linux' && !cancelled()
         env:
           REQUIRE_MSL_FMT_DRIFT: "1"
@@ -293,6 +396,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      # The dev image's cargo home; rust-cache resolves $CARGO_HOME for both
+      # its restore and its (separate) post-job save, so set it job-wide.
+      CARGO_HOME: /opt/rumoca/cargo
     steps:
       - uses: actions/checkout@v5
         with:
@@ -304,14 +411,11 @@ jobs:
           apt-get update
           apt-get install -y libudev-dev
 
-      - name: Cache cargo
-        uses: actions/cache@v5
-        continue-on-error: true
+      - name: Rust cache (template-runtime)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            /opt/rumoca/cargo/registry
-            /opt/rumoca/cargo/git
-          key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: template-runtime
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # No-op once the dev image ships it (core-requirements.txt); kept so the
       # symforce runtime tests exercise the real package even on a stale image
@@ -342,10 +446,23 @@ jobs:
           rustup target add wasm32-unknown-unknown
           rustup component add rust-src
 
+      - name: Install wasm-pack (prebuilt)
+        # The gate's WASM smoke needs wasm-pack; installing the prebuilt binary
+        # here lets xtask's ensure_wasm_pack find it on PATH (it checks
+        # `wasm-pack --version` == 0.15.0) and skip its `cargo install wasm-pack`
+        # — a ~3min from-source build every run.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '20'
+          # Cache npm's download store keyed by the committed lockfiles so the
+          # `npm ci` in the VS Code + browser smokes reuses packages across runs.
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install Xvfb and system dependencies
         run: |
@@ -370,14 +487,22 @@ jobs:
           # when none is installed.
           "$browser" --version
 
-      - name: Cache cargo
+      - name: Rust cache (editor-msl)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: editor-msl
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The VS Code runtime smoke downloads a full VS Code build via
+      # @vscode/test-electron; the xtask resolves its cache to the source
+      # packages/vscode/.vscode-test (even though the smoke runs in a staged
+      # copy), so cache that dir to reuse the ~100MB electron download.
+      - name: Cache VS Code test electron
         uses: actions/cache@v5
         continue-on-error: true
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-editor-msl-${{ hashFiles('**/Cargo.lock') }}
+          path: packages/vscode/.vscode-test
+          key: ${{ runner.os }}-vscode-test-v1
 
       - name: Cache MSL
         uses: actions/cache@v5
@@ -445,17 +570,19 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup component add llvm-tools-preview
 
-      - name: Cache cargo
-        uses: actions/cache@v5
-        continue-on-error: true
+      - name: Rust cache (coverage / llvm-cov instrumented)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: coverage-llvmcov
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        # Prebuilt binary via taiki-e (like nextest) instead of `cargo install
+        # cargo-llvm-cov --locked`, which compiles it from source (~1min).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Build coverage helper
         run: cargo build --package xtask --bin xtask
@@ -508,13 +635,58 @@ jobs:
         run: |
           ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
-  msl-quality-gate:
-    name: MSL Quality Gate
+  # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane and push to
+  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead of
+  # each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
+  # per-crate cache can avoid — only build-once does. On an unchanged dep closure
+  # the crane `cargoArtifacts` layer is a Cachix hit; only the workspace crates
+  # rebuild here, once, for all consumers.
+  nix-build-msl:
+    name: Build MSL artifacts (Nix, once)
     runs-on: ubuntu-24.04
-    # The root-example MSL 4.1 baseline gate covers 575 models and also runs
-    # OMC parity. Keep enough slack for slower shared runners plus artifact
-    # upload/cleanup.
-    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+          # Public cache: consumer pulls need no auth; the token lets this
+          # producer push the freshly built closure. Absent on fork PRs, in which
+          # case consumers Cachix-miss and fall back to compiling — still correct.
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build + cache MSL artifacts
+        run: |
+          nix build --print-build-logs \
+            .#msl-test-binary .#rumoca-sim-worker .#rumoca-msl-tools
+
+  # ============================================================================
+  # MSL parity gate, sharded. The ~54min root-example parity run (575 models +
+  # OMC diff) is split into N round-robin shards over the slowest-first order
+  # (so the timeout tail spreads evenly); the msl-merge job then runs the
+  # baseline ratchet ONCE on the merged results. ModelicaTest is its own job.
+  #
+  # Each consumer restores the prebuilt msl_tests + rumoca-sim-worker from Cachix
+  # (needs: nix-build-msl) and runs them via `--prebuilt-test-binary` /
+  # `--prebuilt-sim-worker`, so no workspace compile/LTO happens here — only the
+  # light `cargo xtask` wrapper builds.
+  # ============================================================================
+  msl-shards:
+    name: MSL Quality Gate (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: nix-build-msl
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -531,19 +703,16 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Cache cargo
-        uses: actions/cache@v5
-        continue-on-error: true
+      - name: Rust cache (msl-gate)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: msl-gate
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
         uses: actions/cache@v5
         continue-on-error: true
-        id: msl-cache
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
           key: msl-v4.1.0-release-zip-layout-v2
@@ -566,12 +735,6 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
-      # Track the latest OpenModelica from the official Ubuntu apt repository
-      # (same channel developers install locally) instead of pinning .deb
-      # versions. The quality-gate context check compares the *numeric release*
-      # only (1.27.0~dev.beta.1 ≡ 1.27.0), so channel rebuilds don't trip the
-      # gate; an actual release bump fails loudly until the baseline is
-      # re-promoted from a CI artifact of the new version.
       - name: Install OpenModelica
         shell: bash
         run: |
@@ -579,17 +742,8 @@ jobs:
           omc_channel="stable"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            clang \
-            cmake \
-            curl \
-            gnupg \
-            libexpat1-dev \
-            liblapack-dev \
-            lsb-release \
-            unzip \
-            zip
+            build-essential ca-certificates clang cmake curl gnupg \
+            libexpat1-dev liblapack-dev lsb-release unzip zip
           curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
             | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
           echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
@@ -600,21 +754,92 @@ jobs:
 
       - name: Clean stale MSL results
         shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf target/msl/results
+        run: rm -rf target/msl/results
 
-      - name: Run full MSL quality gate
-        # Keep the full parity run conservative on standard GitHub-hosted
-        # runners. The promoted quality baseline is ratcheted from this CI
-        # worker context rather than from a larger local workstation.
-        run: >
-          cargo xtask verify msl-parity
-          --stage-parallelism 3
-          --sim-parallelism 3
-          --sim-worker-memory-mb 2048
-          --sim-total-memory-mb 6144
-          --monitor-interval-secs 10
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
+      - name: Restore prebuilt MSL binaries (Cachix)
+        run: |
+          nix build .#msl-test-binary --out-link result-msl-test
+          nix build .#rumoca-sim-worker --out-link result-sim-worker
+
+      - name: Run MSL parity shard ${{ matrix.shard }}/4
+        run: |
+          cargo xtask verify msl-parity \
+            --shard ${{ matrix.shard }}/4 \
+            --prebuilt-test-binary "$PWD/result-msl-test/bin/msl_tests" \
+            --prebuilt-sim-worker "$PWD/result-sim-worker/bin/rumoca-sim-worker" \
+            --stage-parallelism 3 \
+            --sim-parallelism 3 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144 \
+            --monitor-interval-secs 10
+
+      - name: Upload shard results
+        uses: actions/upload-artifact@v6
+        with:
+          name: shard-${{ matrix.shard }}
+          path: target/msl/results/msl_results.json
+          if-no-files-found: error
+
+  msl-merge:
+    name: MSL Quality Gate (merge + gate)
+    runs-on: ubuntu-24.04
+    needs: [nix-build-msl, msl-shards]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Rust cache (msl-gate)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msl-gate
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Download shard results
+        uses: actions/download-artifact@v6
+        with:
+          pattern: shard-*
+          path: target/msl/shards
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
+      - name: Restore prebuilt MSL binaries (Cachix)
+        run: |
+          nix build .#msl-test-binary --out-link result-msl-test
+          nix build .#rumoca-msl-tools --out-link result-msl-tools
+
+      - name: Merge shards + run quality gate
+        run: |
+          cargo xtask verify msl-parity \
+            --merge-shards target/msl/shards \
+            --prebuilt-test-binary "$PWD/result-msl-test/bin/msl_tests"
 
       - name: Generate MSL compatibility report
         if: always()
@@ -622,46 +847,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f target/msl/results/msl_results.json ]]; then
-            cargo xtask repo msl compatibility-report
+            ./result-msl-tools/bin/rumoca-msl-tools compatibility-report
           else
-            echo "Skipping MSL compatibility report; target/msl/results/msl_results.json was not produced."
+            echo "No merged target/msl/results/msl_results.json; skipping report."
           fi
-
-      - name: Prepare ModelicaTest sources
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf target/msl/modelicatest-source
-          git clone --depth 1 --branch v4.1.0 \
-            https://github.com/modelica/ModelicaStandardLibrary.git \
-            target/msl/modelicatest-source
-          rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
-          cp -a \
-            target/msl/modelicatest-source/ModelicaTest \
-            target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
-
-      - name: Run ModelicaTest semantic gate
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-          targets="crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json"
-          rm -rf target/msl/modelicatest-results
-          cargo xtask verify msl-parity \
-            --results-dir target/msl/modelicatest-results \
-            --sim-targets-file "$targets" \
-            --include-modelica-test \
-            --require-selected-targets-success \
-            --sim-set full \
-            --stage-parallelism 3 \
-            --sim-parallelism 3 \
-            --sim-worker-memory-mb 2048 \
-            --sim-total-memory-mb 6144
-          cargo xtask repo msl modelica-test-catalog \
-            --results target/msl/modelicatest-results/msl_results.json \
-            --out target/msl/results/modelica_test_catalog.md \
-            --json-out target/msl/results/modelica_test_catalog.json
 
       - name: Generate MSL PR summary comment
         if: always()
@@ -672,7 +861,7 @@ jobs:
           if [[ -f target/msl/baselines/msl_quality_baseline.json ]]; then
             baseline="target/msl/baselines/msl_quality_baseline.json"
           fi
-          cargo xtask repo msl pr-comment \
+          ./result-msl-tools/bin/rumoca-msl-tools pr-comment \
             --results-dir target/msl/results \
             --baseline "$baseline"
 
@@ -684,19 +873,113 @@ jobs:
           path: |
             target/msl/results/msl_quality_current.json
             target/msl/results/msl_package_pass_rates.md
-            target/msl/results/msl_package_pass_rates.json
-            target/msl/results/msl_package_trace_accuracy.md
-            target/msl/results/msl_package_trace_accuracy.json
             target/msl/results/mls_contract_coverage.md
-            target/msl/results/mls_contract_coverage.json
-            target/msl/results/mls_contract_coverage.txt
             target/msl/results/msl_pr_comment.md
             target/msl/results/msl_compatibility_report.md
             target/msl/results/msl_compatibility_report.json
-            target/msl/results/modelica_test_catalog.md
-            target/msl/results/modelica_test_catalog.json
+          if-no-files-found: warn
+
+  modelicatest-gate:
+    name: ModelicaTest Semantic Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Rust cache (msl-gate)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msl-gate
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cache MSL
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
+
+      - name: Install OpenModelica
+        shell: bash
+        run: |
+          set -euo pipefail
+          omc_channel="stable"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang cmake curl gnupg \
+            libexpat1-dev liblapack-dev lsb-release unzip zip
+          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
+            | sudo tee /etc/apt/sources.list.d/openmodelica.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends omc
+          omc --version
+
+      - name: Prepare ModelicaTest sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl/modelicatest-source
+          git clone --depth 1 --branch v4.1.0             https://github.com/modelica/ModelicaStandardLibrary.git             target/msl/modelicatest-source
+          rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
+          cp -a             target/msl/modelicatest-source/ModelicaTest             target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
+
+      # NOTE: ModelicaTest is intentionally NOT on the Nix build-once path. The
+      # prebuilt (nix, non-native-CPU) msl_tests binary hangs the sim/render queue
+      # on ModelicaTest.Blocks.MuxDemux (300s stage-timeout -> SIGABRT), a model
+      # the compiled binary sims in milliseconds. The 4 MSL shards + merge DO use
+      # build-once (they run the root-MSL model set, unaffected). Debugging the
+      # ModelicaTest prebuilt hang is a follow-up; until then this job compiles.
+      - name: Run ModelicaTest semantic gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets="crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json"
+          rm -rf target/msl/modelicatest-results
+          cargo xtask verify msl-parity --results-dir target/msl/modelicatest-results --sim-targets-file "$targets" --include-modelica-test --require-selected-targets-success --sim-set full --stage-parallelism 3 --sim-parallelism 3 --sim-worker-memory-mb 2048 --sim-total-memory-mb 6144
+          cargo xtask repo msl modelica-test-catalog --results target/msl/modelicatest-results/msl_results.json --out target/msl/modelicatest-results/modelica_test_catalog.md --json-out target/msl/modelicatest-results/modelica_test_catalog.json
+
+      - name: Upload ModelicaTest artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: modelicatest-report
+          path: |
             target/msl/modelicatest-results/msl_results.json
-            target/msl/modelicatest-results/msl_quality_current.json
+            target/msl/modelicatest-results/modelica_test_catalog.md
           if-no-files-found: warn
 
   # ============================================================================
@@ -720,6 +1003,12 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Rust cache (docs)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: docs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
@@ -760,14 +1049,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Cache cargo
-        uses: actions/cache@v5
-        continue-on-error: true
+      - name: Rust cache (vscode)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-vscode-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: vscode
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run VS Code extension CI gate
         run: cargo xtask vscode test
@@ -777,10 +1063,13 @@ jobs:
   # ============================================================================
   build-wasm:
     name: Build WASM
-    # Release artifacts are built on PRs (pre-merge validation) and on the
-    # release tag (the run that deploys). A direct main push doesn't rebuild,
-    # so a release commit's heavy build runs exactly once — on the tag.
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    # Release-only heavy job: builds the optimized npm packages, the mdBook
+    # docs, and the GitHub Pages artifact that deploy-pages/deploy consume.
+    # Runs only on the release tag. PRs get their WASM coverage from the
+    # lightweight `playground` job (the playground contract test used to live
+    # here). Nothing on a PR consumes this job's artifacts, so deferring the
+    # whole heavy build off PRs is safe.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -805,17 +1094,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Cache cargo
-        uses: actions/cache@v5
-        continue-on-error: true
+      - name: Rust cache (wasm)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run playground CI gate
-        run: cargo xtask playground test
+          shared-key: wasm
+          cache-on-failure: true
 
       - name: Build optimized npm packages
         # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
@@ -927,12 +1210,57 @@ jobs:
         uses: actions/deploy-pages@v4
 
   # ============================================================================
+  # PR playground / WASM contract (relocated out of the tag-only build-wasm)
+  # ============================================================================
+  playground:
+    name: Playground contract
+    # Relocated out of build-wasm so PRs keep the playground/WASM contract test
+    # without the heavy release build. Self-contained: builds the FullWeb wasm
+    # bundle and runs the native + Node smoke harnesses (no MSL/browser/GPU).
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Install Rust nightly with rust-src
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustup target add wasm32-unknown-unknown
+          rustup component add rust-src
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Rust cache (playground)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          cache-on-failure: true
+
+      - name: Run playground CI gate
+        run: cargo xtask playground test
+
+  # ============================================================================
   # Cross-platform Rust binary builds
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
-    # Built on PRs and on the release tag only (see Build WASM note).
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    # Release-only: cross-platform binary artifacts are consumed solely by the
+    # tag-time deploy job, so they are deferred off PRs (native build/test
+    # coverage on PRs comes from the `test` job). A PR that breaks a cross
+    # target is caught at tag time.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -993,6 +1321,13 @@ jobs:
           EOF
           echo "CC_${target_env_suffix}=musl-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_${target_env_upper}_LINKER=musl-gcc" >> $GITHUB_ENV
+
+      - name: Rust cache (release ${{ matrix.target }})
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release
+          key: ${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --bin rumoca --bin rumoca-lsp
@@ -1062,10 +1397,54 @@ jobs:
           name: ${{ matrix.lsp_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
 
+  pr-python-smoke:
+    name: Python binding smoke (PR)
+    # rumoca-bind-python is excluded from `verify workspace`, and its full wheel
+    # matrix (build-python-wheels) is tag-only, so on PRs this builds just the
+    # native linux-x86_64-gnu wheel and runs the binding smoke tests to keep the
+    # API/magic/export coverage pre-merge. The full 7-wheel matrix still runs on
+    # the release tag.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Build wheel (linux-x86_64-gnu)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64-unknown-linux-gnu
+          manylinux: auto
+          args: --release --out dist --manifest-path crates/rumoca-bind-python/Cargo.toml
+          before-script-linux: |
+            if command -v yum >/dev/null 2>&1; then yum install -y systemd-devel; fi
+            if command -v apk >/dev/null 2>&1; then apk add --no-cache eudev-dev; fi
+
+      - name: Smoke test installed wheel
+        shell: bash
+        run: |
+          # Mirror build-python-wheels' native smoke: install the notebook+data
+          # extras and run the four binding tests. maturin writes to ./dist.
+          WHEEL=$(ls dist/*.whl | head -1)
+          python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
+          python crates/rumoca-bind-python/tests/smoke_test.py
+          python crates/rumoca-bind-python/tests/api_test.py
+          python crates/rumoca-bind-python/tests/magic_test.py
+          python crates/rumoca-bind-python/tests/export_test.py
+
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
-    # Built on PRs and on the release tag only (see Build WASM note).
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    # Release-only: the full wheel matrix is consumed by the tag-time deploy, so
+    # it is deferred off PRs. Trade-off: rumoca-bind-python's smoke tests (which
+    # `verify workspace` excludes) now first run at tag time; revisit with a
+    # dedicated single-wheel PR smoke job if pre-merge binding coverage is wanted.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     # The natively-built/tested wheels (x86_64 glibc, macOS x2, Windows) gate the
     # PR; the cross-compiled aarch64 and musllinux targets are best-effort
@@ -1163,8 +1542,9 @@ jobs:
 
   build-python-sdist:
     name: Build Python sdist
-    # Built on PRs and on the release tag only (see Build WASM note).
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    # Release-only: the sdist (`maturin sdist`) is consumed solely by the
+    # tag-time deploy job, so it does not run on PRs.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1220,7 +1600,7 @@ jobs:
     # the second run fail on "Release.tag_name already exists". Tag-only means
     # the release/publish path runs exactly once.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
+    needs: [detect-release-tag, lint, test, coverage-gate, msl-merge, modelicatest-gate, docs, vscode, deploy-pages, playground, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

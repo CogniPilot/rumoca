@@ -326,13 +326,11 @@ fn resolve_sim_targets_file_path(path: PathBuf) -> PathBuf {
     if path.is_absolute() || path.is_file() {
         return path;
     }
-    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(&path);
+    let manifest_path = msl_crate_manifest_dir().join(&path);
     if manifest_path.is_file() {
         return manifest_path;
     }
-    let repo_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(&path);
+    let repo_path = msl_crate_manifest_dir().join("../..").join(&path);
     if repo_path.is_file() {
         return repo_path;
     }
@@ -357,7 +355,7 @@ fn env_var_bool(key: &str) -> bool {
 }
 
 fn committed_sim_targets_file() -> Option<PathBuf> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SIM_TARGETS_FILE_REL);
+    let path = msl_crate_manifest_dir().join(DEFAULT_SIM_TARGETS_FILE_REL);
     path.is_file().then_some(path)
 }
 
@@ -586,6 +584,43 @@ pub(super) fn sim_subset_exact_match_enabled() -> bool {
     parity_config().sim_match_exact.unwrap_or(false)
 }
 
+/// Round-robin shard `(m, n)` (1-based `m` in `1..=n`) from `--shard m/n`, or
+/// `None` for an un-sharded run. A bad pair (`m` out of range, `n == 0`) is
+/// treated as un-sharded rather than silently dropping every model.
+pub(super) fn sim_shard() -> Option<(usize, usize)> {
+    let config = parity_config();
+    match (config.shard_index, config.shard_count) {
+        (Some(index), Some(count)) if count >= 1 && index >= 1 && index <= count => {
+            Some((index, count))
+        }
+        _ => None,
+    }
+}
+
+/// Keep only this shard's stripe of `names`. `names` is already in slowest-first
+/// order, so dealing round-robin (`i % count == index - 1`) spreads a contiguous
+/// block of slow/timeout models evenly across shards instead of piling it into
+/// one shard.
+pub(super) fn apply_shard_stripe(
+    names: &mut Vec<String>,
+    shard_index: usize,
+    shard_count: usize,
+    phase: &str,
+) {
+    let before = names.len();
+    let mut retained = 0usize;
+    let mut position = 0usize;
+    names.retain(|_| {
+        let keep = position % shard_count == shard_index - 1;
+        position += 1;
+        if keep {
+            retained += 1;
+        }
+        keep
+    });
+    println!("{phase} shard {shard_index}/{shard_count}: {retained} of {before} models");
+}
+
 pub(super) fn msl_stage_parallelism() -> usize {
     if let Some(threads) = parity_config().stage_parallelism {
         return threads.max(1);
@@ -802,6 +837,14 @@ pub(super) fn select_compile_targets_for_focused_simulation(
         && !apply_prior_complexity_schedule(&mut names, "Compile")
     {
         apply_reachable_class_schedule(source_root, &mut names, "Compile");
+    }
+
+    // Shard AFTER the slowest-first schedule so the round-robin stripe spreads
+    // the slow/timeout tail evenly across shards. Each shard computes the same
+    // deterministic (source-root-derived) order, so the stripes tile the set
+    // with no overlap or gap.
+    if let Some((shard_index, shard_count)) = sim_shard() {
+        apply_shard_stripe(&mut names, shard_index, shard_count, "Compile");
     }
 
     if names.is_empty() {
@@ -1183,8 +1226,7 @@ mod tests {
             "ModelicaTest targets must remain in the separate CI target file"
         );
 
-        let modelica_test_file =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join(MODELICA_TEST_TARGETS_FILE_REL);
+        let modelica_test_file = msl_crate_manifest_dir().join(MODELICA_TEST_TARGETS_FILE_REL);
         let modelica_test_names =
             load_target_model_names(&modelica_test_file).expect("load ModelicaTest CI targets");
         assert!(!modelica_test_names.is_empty());

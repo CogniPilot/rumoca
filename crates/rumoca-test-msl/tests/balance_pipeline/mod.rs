@@ -6,6 +6,7 @@ mod balance_pipeline_config;
 mod balance_pipeline_core;
 mod balance_pipeline_debug_introspection;
 mod balance_pipeline_example_targets;
+mod balance_pipeline_merge;
 mod balance_pipeline_perf;
 mod balance_pipeline_quality_gate;
 mod balance_pipeline_render_sim;
