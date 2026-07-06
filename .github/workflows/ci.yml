@@ -1089,6 +1089,15 @@ jobs:
           rustup target add wasm32-unknown-unknown
           rustup component add rust-src
 
+      - name: Install wasm-pack (prebuilt)
+        # build.mjs invokes `wasm-pack` directly, so it must be on PATH. This
+        # release-only job never runs on PRs (it is gated to the release tag),
+        # so the gate job's wasm-pack install does not cover it — install the
+        # same pinned prebuilt binary here.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
