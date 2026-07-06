@@ -646,6 +646,58 @@ fn test_record_function_equation_matches_record_array_index_on_field_leaf() {
 }
 
 #[test]
+fn test_record_function_equation_matches_record_array_index_on_field_dims() {
+    let mut flat_model = flat::Model::new();
+    for (name, field, def_id) in [
+        ("controller.y.alpha", "alpha", rumoca_core::DefId::new(101)),
+        ("controller.y.beta", "beta", rumoca_core::DefId::new(102)),
+    ] {
+        let var = primitive_variable_with_dims_and_parts(
+            name,
+            vec![2],
+            vec![("controller", vec![]), ("y", vec![]), (field, vec![])],
+            def_id,
+        );
+        flat_model.variables.insert(var.name.clone(), var);
+    }
+    add_pair_constructor(&mut flat_model);
+    add_pair_record_function(&mut flat_model, "Records.makePair");
+
+    let equation = flat::Equation::new_array(
+        residual(
+            rumoca_core::Expression::Index {
+                base: Box::new(var_ref_with_parts(
+                    "controller.y",
+                    vec![("controller", vec![]), ("y", vec![])],
+                )),
+                subscripts: vec![rumoca_core::Subscript::generated_index(1, fixture_span())],
+                span: fixture_span(),
+            },
+            call("Records.makePair"),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "controller".to_string(),
+        },
+        1,
+    );
+
+    let expanded = expand_record_field_equation(&equation, &flat_model)
+        .unwrap()
+        .expect("record array element equation should match field variables with array dims");
+    assert_eq!(expanded.len(), 2);
+    assert_eq!(expanded[0].scalar_count, 1);
+    assert_eq!(expanded[1].scalar_count, 1);
+
+    let first = format!("{:?}", expanded[0].residual);
+    assert!(first.contains("controller.y.alpha"));
+    assert!(first.contains("Index"));
+    let second = format!("{:?}", expanded[1].residual);
+    assert!(second.contains("controller.y.beta"));
+    assert!(second.contains("Index"));
+}
+
+#[test]
 fn test_record_function_equation_matches_field_def_id_not_spelling() {
     let mut flat_model = flat::Model::new();
     let var = primitive_variable_with_parts(

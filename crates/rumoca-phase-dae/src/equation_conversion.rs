@@ -1113,10 +1113,21 @@ fn field_var_ref(field_var: &flat::Variable) -> rumoca_core::Expression {
 
 fn field_lhs_expression(
     field_vars: &[&flat::Variable],
+    selection_subscripts: Option<&[rumoca_core::Subscript]>,
     equation_span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     if let [field_var] = field_vars {
-        return field_var_ref(field_var);
+        let mut expr = field_var_ref(field_var);
+        if let Some(subscripts) = selection_subscripts
+            && !subscripts.is_empty()
+        {
+            expr = rumoca_core::Expression::Index {
+                base: Box::new(expr),
+                subscripts: subscripts.to_vec(),
+                span: equation_span,
+            };
+        }
+        return expr;
     }
     rumoca_core::Expression::Array {
         elements: field_vars
@@ -1136,8 +1147,24 @@ fn field_scalar_count(field_vars: &[&flat::Variable]) -> usize {
         .max(1)
 }
 
+fn selected_field_scalar_count(
+    field_vars: &[&flat::Variable],
+    selection_subscripts: Option<&[rumoca_core::Subscript]>,
+    flat: &flat::Model,
+) -> usize {
+    if let ([field_var], Some(subscripts)) = (field_vars, selection_subscripts)
+        && !subscripts.is_empty()
+        && let Some(size) =
+            super::compute_subscripted_size_with_context(&field_var.dims, subscripts, flat)
+    {
+        return size.max(1);
+    }
+    field_scalar_count(field_vars)
+}
+
 fn component_ref_matches_record_field(
     lhs_ref: &rumoca_core::ComponentReference,
+    field_var: &flat::Variable,
     field_ref: &rumoca_core::ComponentReference,
     field: &RecordFieldSpec,
     symbol_ancestry: &IndexMap<rumoca_core::DefId, Vec<rumoca_core::DefId>>,
@@ -1166,7 +1193,7 @@ fn component_ref_matches_record_field(
             }
             continue;
         }
-        if record_owner_subscripts_match(lhs_part, field_part, field_leaf, flat) {
+        if record_owner_subscripts_match(lhs_part, field_part, field_leaf, field_var, flat) {
             continue;
         }
         return false;
@@ -1200,7 +1227,8 @@ fn component_ref_is_record_field_child(
             }
             continue;
         }
-        if record_owner_subscripts_match(lhs_part, field_part, field_leaf, flat) {
+        if record_owner_subscripts_match_without_field_dims(lhs_part, field_part, field_leaf, flat)
+        {
             continue;
         }
         return false;
@@ -1209,6 +1237,33 @@ fn component_ref_is_record_field_child(
 }
 
 fn record_owner_subscripts_match(
+    lhs_part: &rumoca_core::ComponentRefPart,
+    field_owner_part: &rumoca_core::ComponentRefPart,
+    field_leaf: &rumoca_core::ComponentRefPart,
+    field_var: &flat::Variable,
+    flat: &flat::Model,
+) -> bool {
+    if lhs_part.subs.is_empty() {
+        return true;
+    }
+    if subscripts_match_semantically(&lhs_part.subs, &field_owner_part.subs) {
+        return true;
+    }
+    if subscripts_select_field_owner(&lhs_part.subs, &field_owner_part.subs, flat) {
+        return true;
+    }
+    if field_owner_part.subs.is_empty()
+        && subscript_prefix_matches(&field_leaf.subs, &lhs_part.subs)
+    {
+        return true;
+    }
+    field_owner_part.subs.is_empty()
+        && field_leaf.subs.is_empty()
+        && !field_var.dims.is_empty()
+        && lhs_part.subs.len() <= field_var.dims.len()
+}
+
+fn record_owner_subscripts_match_without_field_dims(
     lhs_part: &rumoca_core::ComponentRefPart,
     field_owner_part: &rumoca_core::ComponentRefPart,
     field_leaf: &rumoca_core::ComponentRefPart,
@@ -1493,6 +1548,7 @@ fn record_field_variables<'a>(
             let field_ref = field_var.component_ref.as_ref()?;
             component_ref_matches_record_field(
                 lhs_component_ref,
+                field_var,
                 field_ref,
                 field,
                 &flat.symbol_ancestry,
@@ -1507,6 +1563,31 @@ fn record_field_variables<'a>(
         .into_iter()
         .map(|(field_var, _)| field_var)
         .collect())
+}
+
+fn indexed_record_field_selection_subscripts<'a>(
+    lhs_name: &'a rumoca_core::Reference,
+    field_vars: &[&flat::Variable],
+) -> Option<&'a [rumoca_core::Subscript]> {
+    let [field_var] = field_vars else {
+        return None;
+    };
+    if field_var.dims.is_empty() {
+        return None;
+    }
+    let lhs_ref = lhs_name.component_ref()?;
+    let field_ref = field_var.component_ref.as_ref()?;
+    if field_ref.parts.len() != lhs_ref.parts.len() + 1 {
+        return None;
+    }
+    let leaf_index = lhs_ref.parts.len().checked_sub(1)?;
+    let lhs_leaf = &lhs_ref.parts[leaf_index];
+    let field_owner = &field_ref.parts[leaf_index];
+    let field_leaf = field_ref.parts.last()?;
+    if lhs_leaf.subs.is_empty() || !field_owner.subs.is_empty() || !field_leaf.subs.is_empty() {
+        return None;
+    }
+    Some(lhs_leaf.subs.as_slice())
 }
 
 fn record_field_expansion_error(
@@ -1652,10 +1733,12 @@ pub(crate) fn expand_record_field_equation(
             }
             return Err(record_field_expansion_error(&lhs_name, field, eq.span));
         }
-        let scalar_count = field_scalar_count(&field_vars);
+        let selection_subscripts =
+            indexed_record_field_selection_subscripts(&lhs_name, &field_vars);
+        let scalar_count = selected_field_scalar_count(&field_vars, selection_subscripts, flat);
         equations.push(flat::Equation::new_array(
             field_residual(
-                field_lhs_expression(&field_vars, eq.span),
+                field_lhs_expression(&field_vars, selection_subscripts, eq.span),
                 rhs_field_expression(rhs, field, index, flat, eq.span),
                 eq.span,
             ),

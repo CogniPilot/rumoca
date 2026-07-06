@@ -1854,6 +1854,57 @@ fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
 }
 
 #[test]
+fn test_infer_equation_scalar_count_record_array_element_uses_field_width() {
+    let mut flat = Model::new();
+
+    for name in ["tf.z.re", "tf.z.im"] {
+        flat.add_variable(
+            VarName::new(name),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: VarName::new(name),
+                dims: vec![2],
+                is_primitive: true,
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            }),
+        );
+    }
+
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(Expression::Index {
+            base: Box::new(Expression::VarRef {
+                name: VarName::new("tf.z").into(),
+                subscripts: vec![],
+                span: crate::test_support::test_span(),
+            }),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 1,
+                span: crate::test_support::test_span(),
+            }],
+            span: crate::test_support::test_span(),
+        }),
+        rhs: Box::new(Expression::FunctionCall {
+            name: VarName::new("Cpx").into(),
+            args: vec![],
+            is_constructor: true,
+            span: crate::test_support::test_span(),
+        }),
+        span: crate::test_support::test_span(),
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 2,
+        "a single record-array element assignment should count one scalar per primitive field"
+    );
+}
+
+#[test]
 fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size() {
     let mut flat = Model::new();
 
