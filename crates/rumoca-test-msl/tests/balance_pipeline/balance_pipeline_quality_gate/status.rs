@@ -151,7 +151,7 @@ pub(super) fn print_trace_gate_status(
     }
     if baseline.trace_accuracy_stats.is_some() {
         println!(
-            "MSL trace gate: skipped (missing {}). Run `cargo run -p xtask --bin rumoca-msl-tools -- omc-simulation-reference ...` to enforce trace baseline.",
+            "MSL trace gate: skipped (missing {}). Run `cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- omc-simulation-reference ...` to enforce trace baseline.",
             omc_simulation_reference_path().display()
         );
     }

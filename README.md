@@ -131,6 +131,11 @@ The goal is to make model package trees belong to the **models themselves**, not
 cargo build --workspace
 ```
 
+Alternatively, a reproducible [Nix](https://nixos.org) flake lives at the repo
+root (`flake.nix`): `nix develop` drops you into a shell with the exact pinned
+toolchain plus Node/Python, `nix build` produces the `rumoca` CLI, and
+`nix flake check` runs the same build + clippy + rustfmt gate CI uses.
+
 ### Common commands
 
 ```bash

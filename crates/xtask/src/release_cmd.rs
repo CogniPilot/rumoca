@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::util;
 use anyhow::{Context, Result, ensure};
-use rumoca_compile::compile::core as rumoca_core;
 
 use crate::ReleaseArgs;
 
@@ -254,7 +254,7 @@ fn replace_json_version_line(text: &str, version: &str) -> Option<String> {
 }
 
 fn validate_semver(version: &str) -> Result<()> {
-    let parts = rumoca_core::split_path_with_indices(version);
+    let parts = util::split_path_with_indices(version);
     ensure!(
         parts.len() == 3 && parts.iter().all(|part| part.parse::<u64>().is_ok()),
         "invalid version format: {version} (expected X.Y.Z)"

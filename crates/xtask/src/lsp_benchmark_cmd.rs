@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
-use crate::{exe_name, run_status_quiet, verify_cmd, vscode_cmd};
+use crate::{exe_name, run_status_quiet, vscode_cmd, wasm_smoke};
 
 mod msl_completion;
 mod render;
@@ -1182,7 +1182,7 @@ fn run_wasm_runtime_smoke(
     report_dir: &Path,
     require_runtimes: bool,
 ) -> Result<RuntimeSmokeReport> {
-    if !verify_cmd::can_launch_wasm_browser_msl_smoke() {
+    if !wasm_smoke::can_launch_wasm_browser_msl_smoke() {
         ensure_editor_runtime_optional(
             "WASM runtime smoke",
             "requires node plus a Chromium-compatible browser",
@@ -1194,7 +1194,7 @@ fn run_wasm_runtime_smoke(
         ));
     }
     let summary =
-        verify_cmd::run_wasm_browser_msl_smoke_report(root, msl_archive_root, report_dir)?;
+        wasm_smoke::run_wasm_browser_msl_smoke_report(root, msl_archive_root, report_dir)?;
     Ok(build_wasm_runtime_report(&summary))
 }
 
@@ -1317,7 +1317,7 @@ fn vscode_completion_stage_detail(
     )
 }
 
-fn build_wasm_runtime_report(summary: &verify_cmd::WasmSmokeSummary) -> RuntimeSmokeReport {
+fn build_wasm_runtime_report(summary: &wasm_smoke::WasmSmokeSummary) -> RuntimeSmokeReport {
     let warm_stage = summary.warm_stage_timings.as_ref();
     RuntimeSmokeReport {
         area: "WASM runtime smoke".to_string(),

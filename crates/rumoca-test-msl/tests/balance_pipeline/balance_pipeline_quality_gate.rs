@@ -1765,6 +1765,11 @@ pub(super) fn should_skip_msl_quality_gate() -> bool {
         || !sim_subset_patterns().is_empty()
         || sim_subset_limit().is_some()
         || sim_set_mode() != SimSetMode::Full
+        // A shard sees only its stripe of the model set, so the aggregate
+        // baseline ratchet + sim-ok floor are meaningless here; the fan-in job
+        // runs the gate once on the merged results. Also stamps the snapshot
+        // partial:true, which promote-quality-baseline correctly refuses.
+        || sim_shard().is_some()
 }
 
 pub(super) fn assert_valid_msl_summary(summary: &MslSummary) {

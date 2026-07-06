@@ -1,5 +1,5 @@
+use crate::util;
 use anyhow::{Context, Result, ensure};
-use rumoca_compile::compile::core as rumoca_core;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -65,7 +65,7 @@ fn lockfile_wasm_bindgen_versions(root: &Path) -> Result<Vec<String>> {
 }
 
 fn parse_semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = rumoca_core::split_path_with_indices(version).into_iter();
+    let mut parts = util::split_path_with_indices(version).into_iter();
     let major = parts.next()?.parse::<u64>().ok()?;
     let minor = parts.next()?.parse::<u64>().ok()?;
     let patch = parts.next()?.parse::<u64>().ok()?;

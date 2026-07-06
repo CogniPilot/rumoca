@@ -3,10 +3,9 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{Cursor, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -15,8 +14,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::{
-    command_exists, exe_name, lsp_benchmark_cmd, modelica_dependency_cache, msl_flamegraph_cmd,
-    run_status, run_status_quiet, test_cmd, vscode_cmd,
+    lsp_benchmark_cmd, modelica_dependency_cache, run_forwarded_tool, run_status, test_cmd,
+    vscode_cmd, wasm_smoke,
 };
 
 mod msl_cargo_setup_timing;
@@ -113,6 +112,29 @@ pub(crate) struct VerifyMslParityArgs {
     /// Use the checked-in MSL quality baseline instead of downloading the latest promoted asset
     #[arg(long)]
     no_remote_quality_baseline: bool,
+    /// Run only shard `m` of `n` (`--shard m/n`, 1-based). The slowest-first
+    /// model set is striped round-robin across shards so the slow/timeout tail
+    /// spreads evenly. A shard skips the aggregate baseline ratchet (the fan-in
+    /// `repo msl merge-results` job runs the gate once on the merged results).
+    #[arg(long, value_name = "M/N")]
+    shard: Option<String>,
+    /// Fan-in mode: merge the shard partials under DIR (`shard-*/msl_results.json`)
+    /// into the full set and run the quality gate ONCE on the merged results.
+    /// Used by the sharded MSL CI after all `--shard` jobs finish.
+    #[arg(long, value_name = "DIR", conflicts_with = "shard")]
+    merge_shards: Option<PathBuf>,
+    /// Run a prebuilt `msl_tests` libtest binary (built once by Nix/crane and
+    /// shared via Cachix) instead of recompiling the workspace. The gate does its
+    /// normal config/baseline setup, then executes this binary directly — no
+    /// `cargo test`, so no workspace compile + LTO in the consuming job.
+    #[arg(long, value_name = "PATH")]
+    prebuilt_test_binary: Option<PathBuf>,
+    /// Path to the prebuilt `rumoca-sim-worker` binary the harness should spawn
+    /// (used with `--prebuilt-test-binary` for the sim-running jobs; the harness
+    /// resolves it via `CARGO_BIN_EXE_rumoca-sim-worker`). Not needed for the
+    /// fan-in merge, which runs no simulations.
+    #[arg(long, value_name = "PATH", requires = "prebuilt_test_binary")]
+    prebuilt_sim_worker: Option<PathBuf>,
 }
 
 impl VerifyMslParityArgs {
@@ -175,7 +197,44 @@ impl VerifyMslParityArgs {
                 value.to_string_lossy().into_owned().into(),
             );
         }
+        // Validated by `parse_shard` (called on the run path before this), so a
+        // malformed `--shard` never reaches here as a silent no-op.
+        if let Ok(Some((index, count))) = self.parse_shard() {
+            config.insert("shard_index".into(), index.into());
+            config.insert("shard_count".into(), count.into());
+        }
+        if let Some(dir) = &self.merge_shards {
+            config.insert(
+                "merge_shards_dir".into(),
+                dir.to_string_lossy().into_owned().into(),
+            );
+        }
         serde_json::Value::Object(config)
+    }
+
+    /// Parse `--shard m/n` into a validated 1-based `(m, n)` pair, or `None` when
+    /// unset. Errors on a malformed pair so a typo never silently runs the full
+    /// set (or an empty shard).
+    pub(crate) fn parse_shard(&self) -> Result<Option<(usize, usize)>> {
+        let Some(raw) = self.shard.as_deref() else {
+            return Ok(None);
+        };
+        let (m, n) = raw
+            .split_once('/')
+            .with_context(|| format!("--shard must be 'm/n', got '{raw}'"))?;
+        let index: usize = m
+            .trim()
+            .parse()
+            .with_context(|| format!("--shard index 'm' must be a positive integer, got '{m}'"))?;
+        let count: usize = n
+            .trim()
+            .parse()
+            .with_context(|| format!("--shard count 'n' must be a positive integer, got '{n}'"))?;
+        anyhow::ensure!(
+            count >= 1 && index >= 1 && index <= count,
+            "--shard m/n requires 1 <= m <= n (n >= 1), got {index}/{count}"
+        );
+        Ok(Some((index, count)))
     }
 
     fn requires_selected_targets_success(&self) -> bool {
@@ -187,6 +246,11 @@ impl VerifyMslParityArgs {
 
     fn uses_baseline_relative_quality_gate(&self) -> bool {
         if self.requires_selected_targets_success() {
+            return false;
+        }
+        // A shard runs only its stripe, so it never enforces the aggregate
+        // baseline gate — the fan-in merge job does that once on the full set.
+        if self.shard.is_some() {
             return false;
         }
         if !matches!(self.target_scope.as_deref(), None | Some("root-examples")) {
@@ -227,7 +291,7 @@ pub(crate) enum VerifyCommand {
     /// Rust formatting, traversal policy, and clippy
     Lint,
     /// Workspace tests that mirror the main test matrix
-    Workspace,
+    Workspace(test_cmd::WorkspaceArgs),
     /// Environment-dependent example template runtime checks
     TemplateRuntimes,
     /// Fetch example Modelica library caches and compile example models
@@ -358,9 +422,6 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     },
 ];
 
-const WASM_SMOKE_SERVER_READY_PATH: &str = "/rumoca/";
-const WASM_SMOKE_SERVER_START_ATTEMPTS: usize = 3;
-const WASM_SMOKE_SERVER_START_TIMEOUT: Duration = Duration::from_secs(20);
 const MSL_RESOURCE_CPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 /// Floor on how often the *periodic* resource snapshot is printed. The monitor
 /// loop still wakes on the (smaller) configured interval so shutdown stays
@@ -393,7 +454,7 @@ impl VerifySuite {
 pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
-        VerifyCommand::Workspace => test_cmd::run_workspace_tests(root),
+        VerifyCommand::Workspace(args) => args.run(root),
         VerifyCommand::TemplateRuntimes => run_template_runtime_checks(root),
         VerifyCommand::Examples => run_examples_smoke(root),
         VerifyCommand::VscodeMsl(args) => run_vscode_editor_msl_smoke(root, args.install_prereqs),
@@ -494,18 +555,7 @@ fn run_msl_hotspot_flamegraphs(root: &Path) -> Result<()> {
         "Generating compile flamegraph for hottest model: {} ({:.2}s)",
         compile_model, compile_seconds
     );
-    msl_flamegraph_cmd::run(
-        msl_flamegraph_cmd::MslFlamegraphArgs {
-            model: compile_model.to_string(),
-            mode: msl_flamegraph_cmd::MslFlamegraphMode::Compile,
-            source_root: Some(source_root.clone()),
-            output: None,
-            freq: 99,
-            no_inline: false,
-            stop_time: None,
-        },
-        root,
-    )?;
+    run_flamegraph(compile_model, "compile", &source_root)?;
 
     let Some((sim_model, sim_seconds)) = hottest_sim_model(&summary) else {
         anyhow::bail!("latest MSL results did not contain per-model simulation timings");
@@ -514,17 +564,27 @@ fn run_msl_hotspot_flamegraphs(root: &Path) -> Result<()> {
         "Generating simulation flamegraph for hottest model: {} ({:.2}s)",
         sim_model, sim_seconds
     );
-    msl_flamegraph_cmd::run(
-        msl_flamegraph_cmd::MslFlamegraphArgs {
-            model: sim_model.to_string(),
-            mode: msl_flamegraph_cmd::MslFlamegraphMode::Simulate,
-            source_root: Some(source_root),
-            output: None,
-            freq: 99,
-            no_inline: false,
-            stop_time: None,
-        },
-        root,
+    run_flamegraph(sim_model, "simulate", &source_root)
+}
+
+/// Shell out to the moved `rumoca-msl-tools flamegraph` bin. The hotspot
+/// selection above stays light in `xtask`; only the compiler-linked flamegraph
+/// generation runs in `rumoca-test-msl`.
+fn run_flamegraph(model: &str, mode: &str, source_root: &Path) -> Result<()> {
+    run_forwarded_tool(
+        "rumoca-test-msl",
+        "rumoca-msl-tools",
+        &[
+            "flamegraph".to_string(),
+            "--model".to_string(),
+            model.to_string(),
+            "--mode".to_string(),
+            mode.to_string(),
+            "--source-root".to_string(),
+            source_root.to_string_lossy().into_owned(),
+            "--freq".to_string(),
+            "99".to_string(),
+        ],
     )
 }
 
@@ -625,7 +685,7 @@ fn run_vscode_editor_msl_smoke(root: &Path, install_prereqs: bool) -> Result<()>
 
 fn run_wasm_editor_msl_smoke(root: &Path) -> Result<()> {
     let msl_root = cached_msl_source_root(root)?;
-    run_wasm_browser_msl_smoke(root, &msl_root)
+    wasm_smoke::run_wasm_browser_msl_smoke(root, &msl_root)
 }
 
 fn run_verify_suite(root: &Path, suite: VerifySuite, early_exit: bool) -> Result<()> {
@@ -703,7 +763,7 @@ fn run_rum_step(root: &Path, step: &VerifyStep) -> Result<()> {
         step.label,
         step.args.join(" ")
     );
-    let xtask_exe = resolve_xtask_cli_executable(root)?;
+    let xtask_exe = wasm_smoke::resolve_xtask_cli_executable(root)?;
     let mut cmd = Command::new(xtask_exe);
     cmd.args(step.args).current_dir(root);
     run_status(cmd)
@@ -910,346 +970,6 @@ fn run_lsp_msl_completion_timings(
     )
 }
 
-pub(crate) fn can_launch_wasm_browser_msl_smoke() -> bool {
-    command_exists("node") && detect_browser_binary().is_ok() && can_bind_local_browser_port()
-}
-
-fn run_wasm_browser_msl_smoke(root: &Path, msl_root: &Path) -> Result<()> {
-    let output_dir = root.join("target/editor-msl-smoke");
-    let _ = run_wasm_browser_msl_smoke_report(root, msl_root, &output_dir)?;
-    Ok(())
-}
-
-pub(crate) fn run_wasm_browser_msl_smoke_report(
-    root: &Path,
-    msl_root: &Path,
-    output_dir: &Path,
-) -> Result<WasmSmokeSummary> {
-    prepare_wasm_browser_smoke_assets(root, msl_root)?;
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let (port, _child_guard) = start_wasm_smoke_server(root)?;
-
-    let wasm_dir = root.join("packages/playground");
-    ensure_wasm_browser_smoke_npm_dependencies(&wasm_dir)?;
-    let browser = detect_browser_binary()?;
-    let result_path = output_dir.join("wasm-browser-result.json");
-    let smoke_model = "SmokeHarness";
-    let smoke_url = format!(
-        "http://127.0.0.1:{port}/rumoca/?rumoca_smoke=1&smoke_model={smoke_model}&smoke_source_url=/target/editor-msl-smoke/SmokeHarness.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
-    );
-    let mut smoke = Command::new("node");
-    smoke
-        .arg("tests/run_browser_msl_smoke.mjs")
-        .arg("--browser-binary")
-        .arg(&browser)
-        .arg("--smoke-url")
-        .arg(&smoke_url)
-        .arg("--smoke-result")
-        .arg(&result_path)
-        .current_dir(&wasm_dir);
-    run_status_quiet(smoke)
-        .with_context(|| "failed to launch Playwright-driven playground smoke".to_string())?;
-    let callback = fs::read_to_string(&result_path)
-        .with_context(|| format!("failed to read wasm smoke result {}", result_path.display()))
-        .and_then(|raw| {
-            serde_json::from_str::<WasmSmokeCallback>(&raw)
-                .context("failed to parse wasm smoke result JSON")
-        })?;
-    anyhow::ensure!(
-        callback.status == "pass",
-        "wasm browser smoke reported '{}' with payload {}",
-        callback.status,
-        serde_json::to_string_pretty(&callback.payload)
-            .unwrap_or_else(|_| String::from("<unserializable>"))
-    );
-    Ok(callback.payload)
-}
-
-fn resolve_xtask_cli_executable(root: &Path) -> Result<PathBuf> {
-    let repo_debug_bin = root.join("target/debug").join(exe_name("xtask"));
-    if repo_debug_bin.is_file() {
-        return Ok(repo_debug_bin);
-    }
-    std::env::current_exe().context("failed to resolve current xtask executable")
-}
-
-fn ensure_wasm_browser_smoke_npm_dependencies(wasm_dir: &Path) -> Result<()> {
-    let playwright_package = wasm_dir.join("node_modules/playwright-core/package.json");
-    if playwright_package.is_file() {
-        return Ok(());
-    }
-
-    println!("Installing WASM browser smoke npm dependencies...");
-    let mut npm = Command::new("npm");
-    if wasm_dir.join("package-lock.json").is_file() {
-        npm.arg("ci");
-    } else {
-        npm.arg("install");
-    }
-    npm.current_dir(wasm_dir);
-    run_status(npm)
-}
-
-fn prepare_wasm_browser_smoke_assets(root: &Path, msl_root: &Path) -> Result<PathBuf> {
-    let smoke_dir = root.join("target/editor-msl-smoke");
-    if smoke_dir.exists() {
-        fs::remove_dir_all(&smoke_dir)
-            .with_context(|| format!("failed to remove {}", smoke_dir.display()))?;
-    }
-    let modelica_dir = smoke_dir.join("Modelica");
-    let services_dir = smoke_dir.join("ModelicaServices");
-    copy_dir_recursive(&msl_root.join("Modelica 4.1.0"), &modelica_dir)?;
-    copy_dir_recursive(&msl_root.join("ModelicaServices 4.1.0"), &services_dir)?;
-    fs::copy(msl_root.join("Complex.mo"), smoke_dir.join("Complex.mo"))
-        .with_context(|| "failed to stage Complex.mo for wasm smoke".to_string())?;
-    fs::write(smoke_dir.join("SmokeHarness.mo"), WASM_BROWSER_SMOKE_SOURCE)
-        .with_context(|| "failed to stage browser smoke source".to_string())?;
-
-    let mut zip = Command::new("zip");
-    zip.arg("-qr")
-        .arg("msl-slice.zip")
-        .arg("Modelica")
-        .arg("ModelicaServices")
-        .arg("Complex.mo")
-        .current_dir(&smoke_dir);
-    run_status(zip)?;
-
-    Ok(smoke_dir)
-}
-
-const WASM_BROWSER_SMOKE_SOURCE: &str = r#"model SmokeHarness
-  Modelica.Electrical.Analog.Sources.ConstantVoltage source(V=1);
-  Modelica.Electrical.Analog.Basic.Resistor resistor(R=1);
-  Modelica.Electrical.Analog.Basic.Ground ground;
-equation
-  connect(source.p, resistor.p);
-  connect(resistor.n, ground.p);
-  connect(source.n, ground.p);
-end SmokeHarness;
-"#;
-
-fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
-    anyhow::ensure!(
-        source.is_dir(),
-        "missing directory required for wasm smoke: {}",
-        source.display()
-    );
-    for entry in walkdir::WalkDir::new(source) {
-        let entry = entry
-            .with_context(|| format!("failed to walk source directory {}", source.display()))?;
-        let relative = entry.path().strip_prefix(source).with_context(|| {
-            format!(
-                "failed to strip source prefix {} from {}",
-                source.display(),
-                entry.path().display()
-            )
-        })?;
-        let target = dest.join(relative);
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&target)
-                .with_context(|| format!("failed to create {}", target.display()))?;
-            continue;
-        }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        fs::copy(entry.path(), &target).with_context(|| {
-            format!(
-                "failed to copy '{}' to '{}'",
-                entry.path().display(),
-                target.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-fn reserve_local_port() -> Result<u16> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).context("failed to bind local port")?;
-    let port = listener
-        .local_addr()
-        .context("failed to inspect reserved port")?
-        .port();
-    drop(listener);
-    Ok(port)
-}
-
-fn can_bind_local_browser_port() -> bool {
-    TcpListener::bind(("127.0.0.1", 0)).is_ok()
-}
-
-fn start_wasm_smoke_server(root: &Path) -> Result<(u16, ChildGuard)> {
-    let xtask_exe = resolve_xtask_cli_executable(root)?;
-    println!("Prebuilding WASM module for browser smoke...");
-    let mut build = Command::new(&xtask_exe);
-    build
-        .arg("playground")
-        .arg("build")
-        // Browser smoke validates the default editor/runtime flow on the
-        // non-threaded package (the build default, no --rayon).
-        .current_dir(root);
-    run_status(build).with_context(|| {
-        "failed to prebuild `cargo xtask playground build` for browser smoke".to_string()
-    })?;
-    let mut last_error = None;
-
-    for attempt in 1..=WASM_SMOKE_SERVER_START_ATTEMPTS {
-        let port = reserve_local_port()?;
-        let mut server = Command::new(&xtask_exe);
-        server
-            .arg("playground")
-            .arg("edit")
-            // The `playground build` above already produced the bundle; serve it
-            // as-is so the server binds the port promptly instead of repeating a
-            // ~2 min wasm-bindgen/wasm-opt rebuild that overruns the readiness
-            // window below.
-            .arg("--skip-build")
-            .arg("--port")
-            .arg(port.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .current_dir(root);
-        let child = server
-            .spawn()
-            .context("failed to launch `cargo xtask playground edit` for browser smoke")?;
-        let mut child_guard = ChildGuard::new(child);
-
-        match wait_for_http_ready(
-            &mut child_guard,
-            port,
-            WASM_SMOKE_SERVER_READY_PATH,
-            WASM_SMOKE_SERVER_START_TIMEOUT,
-        ) {
-            Ok(()) => return Ok((port, child_guard)),
-            Err(error) => last_error = Some(format!("attempt {attempt}: {error:#}")),
-        }
-    }
-
-    anyhow::bail!(
-        "failed to start wasm smoke server after {} attempts: {}",
-        WASM_SMOKE_SERVER_START_ATTEMPTS,
-        last_error.unwrap_or_else(|| "unknown startup failure".to_string())
-    )
-}
-
-fn wait_for_http_ready(
-    child_guard: &mut ChildGuard,
-    port: u16,
-    path: &str,
-    timeout: Duration,
-) -> Result<()> {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if http_get_ok(port, path) {
-            return Ok(());
-        }
-        if child_guard.has_exited()? {
-            anyhow::bail!(
-                "wasm smoke server exited before responding on http://127.0.0.1:{port}{path}"
-            );
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    anyhow::bail!("timed out waiting for wasm smoke server on http://127.0.0.1:{port}{path}")
-}
-
-fn http_get_ok(port: u16, path: &str) -> bool {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
-        return false;
-    };
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
-    }
-    let mut response = String::new();
-    if stream.read_to_string(&mut response).is_err() {
-        return false;
-    }
-    response.starts_with("HTTP/1.1 200")
-}
-
-fn detect_browser_binary() -> Result<String> {
-    ["google-chrome", "chromium", "chromium-browser"]
-        .into_iter()
-        .find(|program| {
-            Command::new(program)
-                .arg("--version")
-                .output()
-                .is_ok_and(|output| output.status.success())
-        })
-        .map(ToOwned::to_owned)
-        .context("missing browser for wasm smoke (expected google-chrome/chromium)")
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WasmSmokeSummary {
-    pub(crate) model_name: Option<String>,
-    pub(crate) source_root_count: Option<u64>,
-    pub(crate) status_text: Option<String>,
-    pub(crate) open_ms: Option<u64>,
-    pub(crate) code_lens_ms: Option<u64>,
-    pub(crate) code_lens_count: Option<u64>,
-    pub(crate) archive_load_ms: Option<u64>,
-    pub(crate) source_root_load_ms: Option<u64>,
-    pub(crate) source_root_load_completion_count: Option<u64>,
-    pub(crate) source_root_expected_completion_present: Option<bool>,
-    pub(crate) source_root_stage_timings: Option<vscode_cmd::VscodeStageTimingSummary>,
-    pub(crate) compile_ms: Option<u64>,
-    pub(crate) completion_ms: Option<u64>,
-    pub(crate) completion_count: Option<u64>,
-    pub(crate) expected_completion_present: Option<bool>,
-    pub(crate) cold_stage_timings: Option<vscode_cmd::VscodeStageTimingSummary>,
-    pub(crate) warm_completion_ms: Option<u64>,
-    pub(crate) warm_completion_count: Option<u64>,
-    pub(crate) warm_expected_completion_present: Option<bool>,
-    pub(crate) warm_stage_timings: Option<vscode_cmd::VscodeStageTimingSummary>,
-    pub(crate) hover_ms: Option<u64>,
-    pub(crate) hover_count: Option<u64>,
-    pub(crate) expected_hover_present: Option<bool>,
-    pub(crate) definition_ms: Option<u64>,
-    pub(crate) definition_count: Option<u64>,
-    pub(crate) expected_definition_present: Option<bool>,
-    pub(crate) cross_file_definition_present: Option<bool>,
-    pub(crate) error: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct WasmSmokeCallback {
-    status: String,
-    payload: WasmSmokeSummary,
-}
-
-struct ChildGuard {
-    child: Option<Child>,
-}
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self { child: Some(child) }
-    }
-
-    fn has_exited(&mut self) -> Result<bool> {
-        let Some(child) = self.child.as_mut() else {
-            return Ok(true);
-        };
-        Ok(child.try_wait()?.is_some())
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-}
-
 fn run_lint_policy_checks(root: &Path) -> Result<()> {
     let fmt_root = root.to_path_buf();
     let fmt_check = thread::spawn(move || test_cmd::run_workspace_fmt_check(&fmt_root));
@@ -1272,6 +992,8 @@ fn run_lint_job(root: &Path) -> Result<()> {
 }
 
 fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
+    // Fail fast on a malformed `--shard m/n` before any expensive setup.
+    args.parse_shard()?;
     let ci_env = MslCiEnvironment::from_args(root, args);
     ci_env.print_notice();
     ci_env.clean_stale_results()?;
@@ -1280,7 +1002,23 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     let _monitor = MslResourceMonitor::start(ci_env.clone());
     let mut cargo_setup_steps = Vec::new();
 
-    let result = run_msl_quality_gate_cargo_commands(root, &mut cargo_setup_steps);
+    let merge_only = args.merge_shards.is_some();
+    let test_target = if merge_only {
+        "balance_pipeline::balance_pipeline_merge::test_msl_merge_and_gate"
+    } else {
+        "balance_pipeline::balance_pipeline_core::test_msl_all"
+    };
+    let result = if let Some(binary) = args.prebuilt_test_binary.as_deref() {
+        run_prebuilt_msl_test(
+            root,
+            binary,
+            args.prebuilt_sim_worker.as_deref(),
+            test_target,
+            &mut cargo_setup_steps,
+        )
+    } else {
+        run_msl_quality_gate_cargo_commands(root, test_target, merge_only, &mut cargo_setup_steps)
+    };
     let write_result = write_msl_cargo_setup_timing_report(&ci_env.results_dir, &cargo_setup_steps);
     if result.is_ok() {
         write_result?;
@@ -1290,70 +1028,131 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     result
 }
 
+/// Run a specific libtest from a prebuilt `msl_tests` binary (built once by
+/// Nix/crane and shared via Cachix) instead of recompiling. The gate's config +
+/// baseline setup has already run, so this only executes the binary with the
+/// right test filter — no `cargo test`, hence no workspace compile + LTO in the
+/// consuming job. Sim-running gates spawn `rumoca-sim-worker`, which the harness
+/// resolves via `CARGO_BIN_EXE_rumoca-sim-worker`; point that at the prebuilt one.
+fn run_prebuilt_msl_test(
+    root: &Path,
+    binary: &Path,
+    sim_worker: Option<&Path>,
+    test_target: &str,
+    cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
+) -> Result<()> {
+    ensure!(
+        binary.is_file(),
+        "prebuilt msl_tests binary not found at {}",
+        binary.display()
+    );
+    let target_dir = cargo_target_dir(root);
+    let mut run = Command::new(binary);
+    run.arg(test_target)
+        .arg("--exact")
+        .arg("--nocapture")
+        .env("RUST_BACKTRACE", "full")
+        .current_dir(root);
+    if let Some(worker) = sim_worker {
+        ensure!(
+            worker.is_file(),
+            "prebuilt rumoca-sim-worker not found at {}",
+            worker.display()
+        );
+        run.env("CARGO_BIN_EXE_rumoca-sim-worker", worker);
+    }
+    run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "run prebuilt MSL test",
+            "run",
+            "rumoca-test-msl",
+            "prebuilt",
+            vec!["msl-full-test".to_string()],
+            &target_dir,
+        ),
+        run,
+    )
+}
+
 fn run_msl_quality_gate_cargo_commands(
     root: &Path,
+    test_target: &str,
+    merge_only: bool,
     cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
 ) -> Result<()> {
     let target_dir = cargo_target_dir(root);
-    let mut build_sim_worker = Command::new("cargo");
-    build_sim_worker
-        .arg("build")
-        .arg("--verbose")
-        .arg("--release")
-        .arg("--package")
-        .arg("rumoca-test-msl")
-        .arg("--bin")
-        .arg("rumoca-sim-worker")
-        .current_dir(root);
-    let result = run_msl_cargo_setup_step(
-        cargo_setup_steps,
-        MslCargoSetupStepMetadata::new(
-            "build rumoca-sim-worker",
-            "build",
-            "rumoca-test-msl",
-            "release",
-            Vec::new(),
-            &target_dir,
-        ),
-        build_sim_worker,
-    );
-    result?;
 
-    let mut build_msl_tools = Command::new("cargo");
-    build_msl_tools
-        .arg("build")
-        .arg("--verbose")
-        .arg("--release")
-        .arg("--package")
-        .arg("xtask")
-        .arg("--bin")
-        .arg("rumoca-msl-tools")
-        .current_dir(root);
-    let result = run_msl_cargo_setup_step(
-        cargo_setup_steps,
-        MslCargoSetupStepMetadata::new(
-            "build rumoca-msl-tools",
-            "build",
-            "xtask",
-            "release",
-            Vec::new(),
-            &target_dir,
-        ),
-        build_msl_tools,
-    );
-    result?;
+    // The merge-and-gate fan-in entry runs NO simulations: it loads the per-shard
+    // `msl_results.json`, concatenates them, and runs the quality ratchet on the
+    // merged aggregate. So it needs neither the release `rumoca-sim-worker` /
+    // `rumoca-msl-tools` binaries (only the sharded sim run spawns those) nor a
+    // release + LTO build of the harness. Building just the merge test in debug
+    // avoids a ~20min release recompile of the whole workspace in the fan-in job,
+    // which otherwise runs sequentially after the shards and inflates the gate.
+    if !merge_only {
+        let mut build_sim_worker = Command::new("cargo");
+        build_sim_worker
+            .arg("build")
+            .arg("--verbose")
+            .arg("--release")
+            .arg("--package")
+            .arg("rumoca-test-msl")
+            .arg("--bin")
+            .arg("rumoca-sim-worker")
+            .current_dir(root);
+        let result = run_msl_cargo_setup_step(
+            cargo_setup_steps,
+            MslCargoSetupStepMetadata::new(
+                "build rumoca-sim-worker",
+                "build",
+                "rumoca-test-msl",
+                "release",
+                Vec::new(),
+                &target_dir,
+            ),
+            build_sim_worker,
+        );
+        result?;
 
+        let mut build_msl_tools = Command::new("cargo");
+        build_msl_tools
+            .arg("build")
+            .arg("--verbose")
+            .arg("--release")
+            .arg("--package")
+            .arg("rumoca-test-msl")
+            .arg("--bin")
+            .arg("rumoca-msl-tools")
+            .current_dir(root);
+        let result = run_msl_cargo_setup_step(
+            cargo_setup_steps,
+            MslCargoSetupStepMetadata::new(
+                "build rumoca-msl-tools",
+                "build",
+                "rumoca-test-msl",
+                "release",
+                Vec::new(),
+                &target_dir,
+            ),
+            build_msl_tools,
+        );
+        result?;
+    }
+
+    let profile = if merge_only { "debug" } else { "release" };
     let mut gate = Command::new("cargo");
-    gate.arg("test")
-        .arg("--verbose")
-        .arg("--release")
-        .arg("--package")
+    gate.arg("test").arg("--verbose");
+    if !merge_only {
+        gate.arg("--release");
+    }
+    gate.arg("--package")
         .arg("rumoca-test-msl")
         .arg("--features")
         .arg("msl-full-test")
         .arg("--test")
         .arg("msl_tests")
-        .arg("balance_pipeline::balance_pipeline_core::test_msl_all")
+        .arg(test_target)
         .arg("--")
         .arg("--nocapture")
         .env("RUST_BACKTRACE", "full")
@@ -1361,10 +1160,14 @@ fn run_msl_quality_gate_cargo_commands(
     run_msl_cargo_setup_step(
         cargo_setup_steps,
         MslCargoSetupStepMetadata::new(
-            "run release MSL test",
+            if merge_only {
+                "run debug MSL merge test"
+            } else {
+                "run release MSL test"
+            },
             "test",
             "rumoca-test-msl",
-            "release",
+            profile,
             vec!["msl-full-test".to_string()],
             &target_dir,
         ),

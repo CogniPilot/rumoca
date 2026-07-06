@@ -103,7 +103,15 @@ impl MslPaths {
     }
 
     pub fn current() -> Self {
-        Self::from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
+        // Relocatable: a prebuilt (Nix/crane) binary's compile-time
+        // CARGO_MANIFEST_DIR points at the build sandbox (`/build/...`), which is
+        // gone at runtime. Resolve the crate manifest dir from the workspace root
+        // walked up from the CWD, so the report subcommands (compatibility-report,
+        // pr-comment, modelica-test-catalog) find `target/msl/...` in the consuming
+        // job's checkout rather than a nonexistent sandbox path. Falls back to the
+        // compile-time manifest dir for a normal in-tree run (same result).
+        let manifest_dir = crate::repo_root().join("crates/rumoca-test-msl");
+        Self::from_manifest_dir(&manifest_dir.to_string_lossy())
     }
 
     pub fn with_results_dir(mut self, results_dir: &Path) -> Self {

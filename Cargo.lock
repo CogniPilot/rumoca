@@ -4806,13 +4806,16 @@ name = "rumoca-test-msl"
 version = "0.9.9"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "dirs 5.0.1",
  "flate2",
  "indexmap 2.14.0",
  "mimalloc",
+ "nix 0.29.0",
  "ntest",
  "rayon",
+ "regex",
  "rumoca-compile",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
@@ -4834,6 +4837,20 @@ dependencies = [
  "ureq",
  "walkdir",
  "zip",
+ "zmq",
+]
+
+[[package]]
+name = "rumoca-tool-docs"
+version = "0.9.9"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "clap",
+ "flate2",
+ "mimalloc",
+ "rayon",
+ "rumoca-compile",
 ]
 
 [[package]]
@@ -7216,32 +7233,20 @@ name = "xtask"
 version = "0.9.9"
 dependencies = [
  "anyhow",
- "bincode",
  "blake3",
  "clap",
  "clap_complete",
- "dirs 5.0.1",
- "flate2",
- "indexmap 2.14.0",
  "lsp-types",
  "mimalloc",
- "nix 0.29.0",
- "rayon",
- "regex",
- "rumoca-compile",
- "rumoca-sim",
- "rumoca-worker",
  "serde",
  "serde_json",
  "sha2",
  "syn 2.0.118",
- "tar",
  "tempfile",
  "toml",
  "ureq",
  "walkdir",
  "zip",
- "zmq",
 ]
 
 [[package]]

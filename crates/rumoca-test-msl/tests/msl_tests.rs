@@ -54,7 +54,9 @@ const MSL_RELEASE_ZIP_URL: &str = "https://github.com/modelica/ModelicaStandardL
 const MSL_MODELICA_DIR_NAME: &str = "Modelica 4.1.0";
 
 fn get_msl_cache_dir() -> PathBuf {
-    let cache_dir = msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+    // Relocatable (resolves from the runtime workspace) so a prebuilt Nix binary
+    // finds target/msl in the real checkout, not the baked build sandbox.
+    let cache_dir = balance_pipeline::msl_cache_dir();
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }

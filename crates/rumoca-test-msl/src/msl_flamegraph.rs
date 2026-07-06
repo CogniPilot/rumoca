@@ -4,7 +4,8 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 use clap::{Args, ValueEnum};
 
-use crate::{command_exists, common, exe_name, run_status};
+use crate::msl_tools::common;
+use crate::proc::{command_exists, exe_name, run_status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum MslFlamegraphMode {
@@ -22,7 +23,7 @@ impl MslFlamegraphMode {
 }
 
 #[derive(Debug, Args, Clone)]
-pub(crate) struct MslFlamegraphArgs {
+pub struct MslFlamegraphArgs {
     /// Fully qualified model name to profile
     #[arg(long)]
     pub(crate) model: String,
@@ -126,7 +127,7 @@ fn build_flamegraph_command(
     flamegraph
 }
 
-pub(crate) fn run(args: MslFlamegraphArgs, repo_root: &Path) -> Result<()> {
+pub fn run(args: MslFlamegraphArgs, repo_root: &Path) -> Result<()> {
     ensure!(
         command_exists("flamegraph"),
         "flamegraph is not installed. Install cargo-flamegraph first."
