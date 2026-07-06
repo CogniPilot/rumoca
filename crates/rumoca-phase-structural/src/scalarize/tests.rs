@@ -1415,6 +1415,72 @@ fn scalarize_residual_column_slice_lhs_infers_targets_from_array_ir() {
 }
 
 #[test]
+fn scalarize_residual_index_column_slice_lhs_infers_targets_from_array_ir() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("M"), variable("M", &[3, 4]));
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("r"), variable("r", &[3, 4]));
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("f"), variable("f", &[3, 4]));
+    let column = |name: &str| Expression::Index {
+        base: Box::new(var(name)),
+        subscripts: vec![
+            Subscript::generated_colon(test_span()),
+            Subscript::generated_index(2, test_span()),
+        ],
+        span: test_span(),
+    };
+    dae_model.continuous.equations.push(Equation {
+        lhs: None,
+        rhs: sub_expr(column("M"), cross(column("r"), column("f"))),
+        span: test_span(),
+        origin: "index slice residual".to_string(),
+        scalar_count: 3,
+    });
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 3);
+    assert_eq!(
+        dae_model.continuous.equations[0].rhs,
+        sub_expr(
+            var_idx("M", &[1, 2]),
+            sub_expr(
+                mul_expr(var_idx("r", &[2, 2]), var_idx("f", &[3, 2])),
+                mul_expr(var_idx("r", &[3, 2]), var_idx("f", &[2, 2])),
+            ),
+        )
+    );
+    assert_eq!(
+        dae_model.continuous.equations[1].rhs,
+        sub_expr(
+            var_idx("M", &[2, 2]),
+            sub_expr(
+                mul_expr(var_idx("r", &[3, 2]), var_idx("f", &[1, 2])),
+                mul_expr(var_idx("r", &[1, 2]), var_idx("f", &[3, 2])),
+            ),
+        )
+    );
+    assert_eq!(
+        dae_model.continuous.equations[2].rhs,
+        sub_expr(
+            var_idx("M", &[3, 2]),
+            sub_expr(
+                mul_expr(var_idx("r", &[1, 2]), var_idx("f", &[2, 2])),
+                mul_expr(var_idx("r", &[2, 2]), var_idx("f", &[1, 2])),
+            ),
+        )
+    );
+}
+
+#[test]
 fn scalarize_matrix_vector_derivative_residual_uses_expression_shape() {
     let mut dae_model = dae::Dae::default();
     dae_model

@@ -1098,6 +1098,73 @@ fn sync_structured_templates_replaces_stale_materialized_external_table_arg() {
 }
 
 #[test]
+fn sync_structured_templates_preserves_vector_equation_scalar_count() {
+    let mut dae = Dae::new();
+    let span = test_span();
+    dae.continuous.equations.push(dae::Equation::residual_array(
+        sub(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("leg_v_b").into(),
+                subscripts: vec![
+                    rumoca_core::Subscript::generated_colon(span),
+                    rumoca_core::Subscript::generated_index(1, span),
+                ],
+                span,
+            },
+            var_ref("v_b"),
+        ),
+        span,
+        "materialized vector column equation",
+        3,
+    ));
+
+    let template_residual = sub(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new("leg_v_b").into(),
+            subscripts: vec![
+                rumoca_core::Subscript::generated_colon(span),
+                rumoca_core::Subscript::Expr {
+                    expr: Box::new(var_ref("i")),
+                    span,
+                },
+            ],
+            span,
+        },
+        var_ref("v_b"),
+    );
+    dae.continuous
+        .structured_equations
+        .push(dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 1,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equation_counts: vec![1],
+            span,
+            origin: "equation from vector column loop".to_string(),
+            regular: None,
+            template: Some(rumoca_core::ComprehensionTemplate {
+                body: vec![template_residual],
+            }),
+            interiors_materialized: true,
+        });
+
+    sync_materialized_structured_equation_templates(&mut dae)
+        .expect("structured template sync should preserve vector equation metadata");
+
+    assert_eq!(
+        dae.continuous.equations[0].scalar_count, 3,
+        "template sync must not collapse vector-valued loop equations to scalar rows"
+    );
+}
+
+#[test]
 fn repair_external_table_events_uses_component_table_id_handle() {
     let mut dae = Dae::new();
     let span = test_span();

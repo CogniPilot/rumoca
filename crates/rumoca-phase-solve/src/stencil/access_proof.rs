@@ -108,6 +108,23 @@ where
             subscripts,
             span,
         } => collect_var_ref(name.as_str(), subscripts, *span, operands),
+        rumoca_core::Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return Ok(None);
+            };
+            let mut combined = base_subscripts.clone();
+            combined.extend(subscripts.iter().cloned());
+            collect_var_ref(name.as_str(), &combined, *span, operands)
+        }
         rumoca_core::Expression::Binary { lhs, rhs, .. } => {
             let Some(()) =
                 collect_structured_access_operands_result_inner(lhs, operands, collect_var_ref)?

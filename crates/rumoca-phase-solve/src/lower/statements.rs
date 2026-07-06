@@ -1730,14 +1730,22 @@ impl<'a> LowerBuilder<'a> {
         if !self.is_record_constructor_call(name, *is_constructor) {
             return Ok(());
         }
-        let Some(constructor) = self.lookup_function(name).cloned() else {
+        let constructor_inputs = if let Some(constructor) = self.lookup_function(name).cloned() {
+            constructor.inputs
+        } else if name.last_segment() == "Complex" {
+            let span = value.span().unwrap_or(rumoca_core::Span::DUMMY);
+            vec![
+                rumoca_core::FunctionParam::new("re", "Real", span),
+                rumoca_core::FunctionParam::new("im", "Real", span),
+            ]
+        } else {
             return Ok(());
         };
 
         let (named_args, positional_args) =
             super::function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
         let mut positional_idx = 0usize;
-        for input in &constructor.inputs {
+        for input in &constructor_inputs {
             let arg_expr = named_args.get(input.name.as_str()).copied().or_else(|| {
                 let positional = positional_args.get(positional_idx).copied();
                 positional_idx += usize::from(positional.is_some());
@@ -1810,6 +1818,7 @@ fn collect_record_constructor_fields(
     fields: &mut IndexSet<String>,
 ) {
     let rumoca_core::Expression::FunctionCall {
+        name,
         args,
         is_constructor: true,
         ..
@@ -1821,6 +1830,10 @@ fn collect_record_constructor_fields(
         if let Some((field, _)) = super::function_calls::decode_named_function_arg(arg) {
             fields.insert(field.to_string());
         }
+    }
+    if fields.is_empty() && name.last_segment() == "Complex" {
+        fields.insert("re".to_string());
+        fields.insert("im".to_string());
     }
 }
 

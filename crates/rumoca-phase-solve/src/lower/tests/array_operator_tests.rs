@@ -653,6 +653,78 @@ fn lower_residual_lowers_slice_of_scalarized_record_field_array() {
 }
 
 #[test]
+fn lower_residual_scalarizes_matrix_column_slice_with_vector_cross_rhs() {
+    let mut dae_model = dae::Dae::default();
+    for (name, dims) in [
+        ("leg_v_b", vec![3, 4]),
+        ("leg_r_b", vec![3, 4]),
+        ("v_b", vec![3]),
+        ("omega", vec![3]),
+    ] {
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable {
+                dims,
+                ..scalar_var(name)
+            },
+        );
+    }
+
+    let column = |name: &str| rumoca_core::Expression::Index {
+        base: Box::new(var(name)),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_colon(lower_test_span()),
+            rumoca_core::Subscript::generated_index(1, lower_test_span()),
+        ],
+        span: lower_test_span(),
+    };
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            column("leg_v_b"),
+            add(
+                var("v_b"),
+                builtin(
+                    rumoca_core::BuiltinFunction::Cross,
+                    vec![var("omega"), column("leg_r_b")],
+                ),
+            ),
+        ),
+        span: lower_test_span(),
+        origin: "matrix column vector kinematics residual".to_string(),
+        scalar_count: 3,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("matrix column slices should scalarize through vector RHS projection");
+    let mut y = vec![0.0; layout.y_scalars()];
+    for (name, value) in [
+        ("leg_v_b[1,1]", 20.0),
+        ("leg_v_b[2,1]", 30.0),
+        ("leg_v_b[3,1]", 40.0),
+        ("leg_r_b[1,1]", 1.0),
+        ("leg_r_b[2,1]", 2.0),
+        ("leg_r_b[3,1]", 3.0),
+        ("v_b[1]", 10.0),
+        ("v_b[2]", 11.0),
+        ("v_b[3]", 12.0),
+        ("omega[1]", 4.0),
+        ("omega[2]", 5.0),
+        ("omega[3]", 6.0),
+    ] {
+        set_y_value(&layout, &mut y, name, value);
+    }
+
+    let outputs = rows
+        .iter()
+        .map(|row| eval_linear_ops(row, &y, &[], 0.0).1.expect("row output"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(outputs, vec![7.0, 25.0, 25.0]);
+}
+
+#[test]
 fn lower_residual_lowers_scalarized_record_matrix_field() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.algebraics.insert(

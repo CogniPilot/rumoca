@@ -803,11 +803,23 @@ impl<'a> IndexProjectionContext<'a> {
                 base,
                 subscripts,
                 span,
-            } => Ok(Expression::Index {
-                base: Box::new(self.project(base)?),
-                subscripts: subscripts.clone(),
-                span: *span,
-            }),
+            } => {
+                if let Expression::VarRef {
+                    name,
+                    subscripts: base_subscripts,
+                    ..
+                } = base.as_ref()
+                    && base_subscripts.is_empty()
+                    && let Some(dims) = self.var_dims.get(name.as_str())
+                {
+                    return project_dimmed_var_ref(name, dims, subscripts, expr, self);
+                }
+                Ok(Expression::Index {
+                    base: Box::new(self.project(base)?),
+                    subscripts: subscripts.clone(),
+                    span: *span,
+                })
+            }
             Expression::FieldAccess { base, field, .. } => {
                 if let Some(projected) = self.project_record_array_member_slice(base, field)? {
                     return Ok(projected);
@@ -1418,22 +1430,17 @@ pub fn scalarization_var_ref_name(
 pub fn residual_lhs_target_name(expr: &Expression) -> Option<String> {
     let Expression::Binary {
         op: OpBinary::Sub,
-        lhs,
+        lhs: _,
         ..
     } = expr
     else {
         return None;
     };
-    if let Expression::VarRef {
-        name, subscripts, ..
-    } = lhs.as_ref()
-    {
-        return scalarization_var_ref_name(name, subscripts);
-    }
-    None
+    residual_lhs_var_ref(expr)
+        .and_then(|(name, subscripts)| scalarization_var_ref_name(name, &subscripts))
 }
 
-fn residual_lhs_var_ref(expr: &Expression) -> Option<(&Reference, &[Subscript])> {
+fn residual_lhs_var_ref(expr: &Expression) -> Option<(&Reference, Vec<Subscript>)> {
     let Expression::Binary {
         op: OpBinary::Sub,
         lhs,
@@ -1442,13 +1449,27 @@ fn residual_lhs_var_ref(expr: &Expression) -> Option<(&Reference, &[Subscript])>
     else {
         return None;
     };
-    if let Expression::VarRef {
-        name, subscripts, ..
-    } = lhs.as_ref()
-    {
-        return Some((name, subscripts));
+    match lhs.as_ref() {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => Some((name, subscripts.clone())),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            base_subscripts
+                .is_empty()
+                .then(|| (name, subscripts.clone()))
+        }
+        _ => None,
     }
-    None
 }
 
 fn residual_lhs_scalar_targets(
@@ -1467,7 +1488,8 @@ fn residual_lhs_scalar_targets(
         return Ok(Vec::new());
     }
 
-    let Some(projected_dims) = apply_subscripts_to_dims(dims, subscripts, structural_values) else {
+    let Some(projected_dims) = apply_subscripts_to_dims(dims, &subscripts, structural_values)
+    else {
         return Ok(Vec::new());
     };
     let scalar_count = output_scalar_count(&projected_dims, span)?;
@@ -1475,7 +1497,7 @@ fn residual_lhs_scalar_targets(
     let mut targets = Vec::new();
     for idx in 1..=scalar_count {
         let Some(projected_subscripts) =
-            project_subscripted_dims(dims, subscripts, idx, span, structural_values)?
+            project_subscripted_dims(dims, &subscripts, idx, span, structural_values)?
         else {
             continue;
         };

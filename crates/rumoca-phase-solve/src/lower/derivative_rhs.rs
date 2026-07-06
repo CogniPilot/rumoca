@@ -373,7 +373,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             continue;
         }
 
-        if let Some(group_len) = direct_vector_group_len(analysis, &processed, i) {
+        if let Some(group_len) = direct_vector_group_len(dae_model, analysis, &processed, i) {
             match lower_direct_row_group(analysis, i, group_len, &lowering_ctx) {
                 Ok(DirectRowGroupLowering::Scalar(row)) => {
                     flush_pending_derivative_programs(
@@ -1273,6 +1273,7 @@ fn shared_vector_rhs_base(expr: &rumoca_core::Expression) -> &rumoca_core::Expre
 }
 
 fn direct_vector_group_len(
+    dae_model: &dae::Dae,
     analysis: &DerivativeRhsAnalysis,
     processed: &[bool],
     start: usize,
@@ -1305,6 +1306,18 @@ fn direct_vector_group_len(
             return None;
         }
         let eq_idx = *analysis.direct_equations.get(&state.name)?;
+        if analysis.equations[eq_idx]
+            .dae_equation_index
+            .and_then(|equation_index| {
+                dae::structured_equation_slot(
+                    &dae_model.continuous.structured_equations,
+                    equation_index,
+                )
+            })
+            .is_some()
+        {
+            return None;
+        }
         if shared_vector_rhs_base(&analysis.equations[eq_idx].rhs) != head_base {
             return None;
         }

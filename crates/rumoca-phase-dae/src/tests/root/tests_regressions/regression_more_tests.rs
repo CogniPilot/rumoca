@@ -2065,6 +2065,63 @@ fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size()
 }
 
 #[test]
+fn test_infer_equation_scalar_count_matrix_column_slice_uses_preserved_dimension() {
+    let mut flat = Model::new();
+    for (name, dims) in [("vehicle.leg_v_b", vec![3, 4]), ("vehicle.v_b", vec![3])] {
+        flat.add_variable(
+            VarName::new(name),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: VarName::new(name),
+                dims,
+                is_primitive: true,
+                ..rumoca_ir_flat::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name(file!()),
+                    1,
+                    2,
+                ))
+            }),
+        );
+    }
+
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(Expression::Index {
+            base: Box::new(Expression::VarRef {
+                name: VarName::new("vehicle.leg_v_b").into(),
+                subscripts: vec![],
+                span: crate::test_support::test_span(),
+            }),
+            subscripts: vec![
+                rumoca_core::Subscript::Colon {
+                    span: crate::test_support::test_span(),
+                },
+                rumoca_core::Subscript::Expr {
+                    expr: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: crate::test_support::test_span(),
+                    }),
+                    span: crate::test_support::test_span(),
+                },
+            ],
+            span: crate::test_support::test_span(),
+        }),
+        rhs: Box::new(Expression::VarRef {
+            name: VarName::new("vehicle.v_b").into(),
+            subscripts: vec![],
+            span: crate::test_support::test_span(),
+        }),
+        span: crate::test_support::test_span(),
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 3,
+        "matrix column slices such as M[:, 1] should preserve the column height"
+    );
+}
+
+#[test]
 fn test_infer_equation_scalar_count_qualified_parameter_range_subscript() {
     let mut flat = Model::new();
     flat.add_variable(

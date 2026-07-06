@@ -1083,13 +1083,16 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
 pub(crate) fn sync_materialized_structured_equation_templates(
     dae: &mut Dae,
 ) -> Result<(), ToDaeError> {
+    let var_dims = build_dae_var_dims_map(dae);
     sync_structured_partition_templates(
         &dae.continuous.structured_equations,
         &mut dae.continuous.equations,
+        &var_dims,
     )?;
     sync_structured_partition_templates(
         &dae.initialization.structured_equations,
         &mut dae.initialization.equations,
+        &var_dims,
     )?;
     Ok(())
 }
@@ -1191,6 +1194,7 @@ fn external_table_constructor_call_dae(expr: &rumoca_core::Expression) -> bool {
 fn sync_structured_partition_templates(
     families: &[dae::StructuredEquationFamily],
     equations: &mut [dae::Equation],
+    var_dims: &HashMap<String, Vec<i64>>,
 ) -> Result<(), ToDaeError> {
     for family in families {
         if !family.interiors_materialized {
@@ -1207,7 +1211,7 @@ fn sync_structured_partition_templates(
         {
             continue;
         }
-        sync_structured_template_family(family, template, equations)?;
+        sync_structured_template_family(family, template, equations, var_dims)?;
     }
     Ok(())
 }
@@ -1216,6 +1220,7 @@ fn sync_structured_template_family(
     family: &dae::StructuredEquationFamily,
     template: &rumoca_core::ComprehensionTemplate,
     equations: &mut [dae::Equation],
+    var_dims: &HashMap<String, Vec<i64>>,
 ) -> Result<(), ToDaeError> {
     let tuples = family.domain.index_tuples().map_err(|err| {
         ToDaeError::runtime_metadata_violation_at(
@@ -1244,10 +1249,137 @@ fn sync_structured_template_family(
                 span: family.span,
             }
             .rewrite_expression(body);
-            equation.scalar_count = 1;
+            if let Some(scalar_count) =
+                structured_template_residual_scalar_count(&equation.rhs, var_dims)
+            {
+                equation.scalar_count = scalar_count;
+            }
         }
     }
     Ok(())
+}
+
+fn build_dae_var_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
+    let mut dims = HashMap::new();
+    for partition in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, variable) in partition {
+            dims.insert(name.as_str().to_string(), variable.dims.clone());
+        }
+    }
+    dims
+}
+
+fn structured_template_residual_scalar_count(
+    expr: &rumoca_core::Expression,
+    var_dims: &HashMap<String, Vec<i64>>,
+) -> Option<usize> {
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    expression_selected_scalar_count(lhs, var_dims)
+}
+
+fn expression_selected_scalar_count(
+    expr: &rumoca_core::Expression,
+    var_dims: &HashMap<String, Vec<i64>>,
+) -> Option<usize> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => var_ref_selected_scalar_count(name.as_str(), subscripts, var_dims),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if !base_subscripts.is_empty() {
+                return None;
+            }
+            var_ref_selected_scalar_count(name.as_str(), subscripts, var_dims)
+        }
+        rumoca_core::Expression::BuiltinCall { function, args, .. }
+            if matches!(function, rumoca_core::BuiltinFunction::Der) && args.len() == 1 =>
+        {
+            expression_selected_scalar_count(&args[0], var_dims)
+        }
+        _ => None,
+    }
+}
+
+fn var_ref_selected_scalar_count(
+    name: &str,
+    subscripts: &[rumoca_core::Subscript],
+    var_dims: &HashMap<String, Vec<i64>>,
+) -> Option<usize> {
+    let dims = var_dims.get(name)?;
+    if subscripts.is_empty() {
+        return Some(compute_var_size(dims));
+    }
+    projected_dims_for_subscripts(dims, subscripts).map(|dims| compute_var_size(&dims))
+}
+
+fn projected_dims_for_subscripts(
+    dims: &[i64],
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<Vec<i64>> {
+    let mut remaining = Vec::new();
+    let mut dim_idx = 0usize;
+    for subscript in subscripts {
+        if dim_idx >= dims.len() {
+            break;
+        }
+        match subscript {
+            rumoca_core::Subscript::Index { .. } => {
+                dim_idx += 1;
+            }
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                if subscript_expr_selects_vector(expr)? {
+                    return None;
+                }
+                dim_idx += 1;
+            }
+            rumoca_core::Subscript::Colon { .. } => {
+                remaining.push(dims[dim_idx]);
+                dim_idx += 1;
+            }
+        }
+    }
+    remaining.extend_from_slice(&dims[dim_idx..]);
+    Some(remaining)
+}
+
+fn subscript_expr_selects_vector(expr: &rumoca_core::Expression) -> Option<bool> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value:
+                rumoca_core::Literal::Integer(_)
+                | rumoca_core::Literal::Real(_)
+                | rumoca_core::Literal::Boolean(_),
+            ..
+        } => Some(false),
+        rumoca_core::Expression::Range { .. } | rumoca_core::Expression::Array { .. } => Some(true),
+        _ => None,
+    }
 }
 
 fn structured_template_row_base(

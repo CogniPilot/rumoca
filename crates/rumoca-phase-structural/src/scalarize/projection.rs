@@ -440,10 +440,7 @@ pub(super) fn project_rhs_for_scalar_target(
             ..
         } = rhs
             && matches!(op, OpBinary::Sub)
-            && let Expression::VarRef {
-                name, subscripts, ..
-            } = lhs.as_ref()
-            && scalarization_var_ref_name(name, subscripts)
+            && expression_scalarization_name(lhs.as_ref())
                 .as_deref()
                 .is_some_and(|lhs_row_name| lhs_row_name == lhs_name)
         {
@@ -473,6 +470,31 @@ pub(super) fn project_rhs_for_scalar_target(
     }
 
     projection.project_index(rhs, scalar_idx)
+}
+
+fn expression_scalarization_name(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => scalarization_var_ref_name(name, subscripts),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            base_subscripts
+                .is_empty()
+                .then(|| scalarization_var_ref_name(name, subscripts))
+                .flatten()
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn scalarized_equation_lhs(
