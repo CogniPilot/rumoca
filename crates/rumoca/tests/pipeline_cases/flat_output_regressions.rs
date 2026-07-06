@@ -262,12 +262,22 @@ end AssertEmission;
     )
     .expect("flat rendering should succeed");
 
+    let equation_idx = flat_code
+        .find("\nequation\n")
+        .expect("flat output should contain equation section");
+    let initial_idx = flat_code
+        .find("\ninitial equation\n")
+        .expect("flat output should contain initial equation section");
+    let equation_section = &flat_code[equation_idx..initial_idx];
+    let initial_section = &flat_code[initial_idx..];
     assert!(
-        flat_code.contains(r#"assert((k > 0), "k must stay positive");"#),
+        equation_section.contains(r#""k must stay positive""#)
+            && equation_section.contains("assert("),
         "expected equation-section assert in flat output, got:\n{flat_code}"
     );
     assert!(
-        flat_code.contains(r#"assert((k >= 0), "k must stay nonnegative");"#),
+        initial_section.contains(r#""k must stay nonnegative""#)
+            && initial_section.contains("assert("),
         "expected initial-equation assert in flat output, got:\n{flat_code}"
     );
 }
