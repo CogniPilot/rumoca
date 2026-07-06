@@ -116,6 +116,55 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
 }
 
 #[test]
+fn projection_refresh_rows_do_not_shadow_direct_assignment_rows() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "y".to_string()],
+                    ..Default::default()
+                },
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        assignment_residual_row(),
+                        non_assignment_targeted_residual_row(),
+                    ],
+                    "projection_shadow.mo",
+                )),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(1)),
+                    Some(solve::scalar_slot_y(1)),
+                ],
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![1],
+                        y_indices: vec![1],
+                        causal_steps: vec![solve::AlgebraicProjectionStep { row: 1, y_index: 1 }],
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let block =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("valid implicit RHS should prepare");
+
+    let plan = valid_algebraic_refresh_plan(&model, &block);
+
+    assert!(!plan.iterative);
+    assert_eq!(plan.rows.len(), 1);
+    assert_eq!(plan.rows[0].row_idx, 0);
+    assert_eq!(plan.rows[0].target_index, 1);
+}
+
+#[test]
 fn refresh_plan_accepts_scaled_affine_residual_target() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {

@@ -130,7 +130,7 @@ pub(crate) fn build_algebraic_refresh_plan(
         first_block_span(block.block()),
     )?;
     for row in projection_rows {
-        rows_by_target.insert(row.target_index, row);
+        rows_by_target.entry(row.target_index).or_insert(row);
     }
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
