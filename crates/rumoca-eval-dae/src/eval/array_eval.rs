@@ -1,3 +1,8 @@
+//! SPEC_0021 file-size exception: runtime array evaluation still shares shape
+//! inference, array constructors, and indexed value extraction. split plan:
+//! move runtime dimension inference and constructor-specific evaluators into
+//! focused `eval::array_*` submodules as their call sites stabilize.
+
 use super::*;
 use crate::eval::special::{
     eval_selected_runtime_special_array_output, resolve_runtime_special_target,

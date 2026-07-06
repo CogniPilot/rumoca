@@ -1322,9 +1322,13 @@ fn try_unroll_c_comprehension(
 /// since they access via pointer/array (unlike VarRef underscore subscripts
 /// which are 1-based naming).
 fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
-    let base = get_field(index, "base")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Index missing 'base' field"))?;
+    let base_value =
+        get_field(index, "base").map_err(|_| render_err("Index missing 'base' field"))?;
+    let base = render_expression(&base_value, cfg).map_err(|err| {
+        render_err(format!(
+            "Index base render failed: {err}; base: {base_value}"
+        ))
+    })?;
     let subs = get_field(index, "subscripts")
         .map_err(|_| render_err("Index missing 'subscripts' field"))?;
     let len = subs.len().unwrap_or(0);
@@ -1349,13 +1353,109 @@ fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
 
 /// Render a field access expression as `base.field`.
 fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
-    let base = get_field(fa, "base")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("FieldAccess missing 'base' field"))?;
+    if let Some(symbol) = render_indexed_field_symbol(fa, cfg)? {
+        return Ok(symbol);
+    }
+    let base_value =
+        get_field(fa, "base").map_err(|_| render_err("FieldAccess missing 'base' field"))?;
+    let base = render_expression(&base_value, cfg).map_err(|err| {
+        render_err(format!(
+            "FieldAccess base render failed: {err}; base: {base_value}"
+        ))
+    })?;
     let field = get_field(fa, "field")
         .map(|v| v.to_string())
         .map_err(|_| render_err("FieldAccess missing 'field'"))?;
     Ok(format!("{base}.{field}"))
+}
+
+fn render_indexed_field_symbol(
+    fa: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(base) = get_field(fa, "base") else {
+        return no_expr_render_match();
+    };
+    let Ok(index) = get_field(&base, "Index") else {
+        return no_expr_render_match();
+    };
+    let Ok(index_base) = get_field(&index, "base") else {
+        return no_expr_render_match();
+    };
+    let Ok(var_ref) = get_field(&index_base, "VarRef") else {
+        return no_expr_render_match();
+    };
+    let raw_name = render_name_field(&var_ref, "name", "indexed FieldAccess base")?;
+    let Ok(subscripts) = get_field(&index, "subscripts") else {
+        return no_expr_render_match();
+    };
+    let Some(len) = subscripts.len() else {
+        return no_expr_render_match();
+    };
+    let mut values = Vec::with_capacity(len);
+    for i in 0..len {
+        let sub = subscripts.get_item(&Value::from(i))?;
+        let Some(value) = static_subscript_value(&sub)? else {
+            return no_expr_render_match();
+        };
+        values.push(value.to_string());
+    }
+    let field = get_field(fa, "field")?.to_string();
+    let source_ref = format!("{raw_name}[{}].{field}", values.join(","));
+    Ok(super::lookup_symbol_value(
+        cfg.symbols.as_ref(),
+        &source_ref,
+    ))
+}
+
+fn static_subscript_value(sub: &Value) -> Result<Option<i64>, minijinja::Error> {
+    if let Ok(idx) = get_field(sub, "Index") {
+        return subscript_index_value(&idx).map(Some);
+    }
+    if let Ok(expr) = get_field(sub, "Expr") {
+        let expr = get_field(&expr, "expr").unwrap_or(expr);
+        return static_integer_expr_value(&expr);
+    }
+    no_expr_render_match()
+}
+
+fn static_integer_expr_value(expr: &Value) -> Result<Option<i64>, minijinja::Error> {
+    if let Ok(literal) = get_field(expr, "Literal") {
+        let literal_value = get_field(&literal, "value").unwrap_or(literal);
+        if let Ok(integer) = get_field(&literal_value, "Integer") {
+            return integer
+                .as_i64()
+                .ok_or_else(|| render_err("integer literal is not an i64"))
+                .map(Some);
+        }
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        return static_binary_integer_expr_value(&binary);
+    }
+    no_expr_render_match()
+}
+
+fn static_binary_integer_expr_value(binary: &Value) -> Result<Option<i64>, minijinja::Error> {
+    let lhs = get_field(binary, "lhs")?;
+    let rhs = get_field(binary, "rhs")?;
+    let Some(lhs) = static_integer_expr_value(&lhs)? else {
+        return no_expr_render_match();
+    };
+    let Some(rhs) = static_integer_expr_value(&rhs)? else {
+        return no_expr_render_match();
+    };
+    let op = get_field(binary, "op")?;
+    if is_variant(&op, "Add") || is_variant(&op, "AddElem") {
+        return Ok(Some(lhs + rhs));
+    }
+    if is_variant(&op, "Sub") || is_variant(&op, "SubElem") {
+        return Ok(Some(lhs - rhs));
+    }
+    no_expr_render_match()
+}
+
+fn no_expr_render_match<T>() -> Result<Option<T>, minijinja::Error> {
+    Ok(Option::None)
 }
 
 #[cfg(test)]
