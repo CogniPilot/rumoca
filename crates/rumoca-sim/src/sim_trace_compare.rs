@@ -653,12 +653,12 @@ fn compare_channel(
         let (Some(r0), Some(o0), Some(r1), Some(o1)) = (r0, o0, r1, o1) else {
             continue;
         };
-        let d0 = r0 - o0;
-        let d1 = r1 - o1;
-        let e0 = d0.abs();
-        let e1 = d1.abs();
+        let e0 = finite_abs_error(r0, o0);
+        let e1 = finite_abs_error(r1, o1);
 
-        integral_abs_error += 0.5 * (e0 + e1) * dt;
+        integral_abs_error = finite_non_negative_metric(
+            integral_abs_error + finite_non_negative_metric((0.5 * e0 + 0.5 * e1) * dt),
+        );
         integral_duration += dt;
         max_abs_error = max_abs_error.max(e0).max(e1);
         ref_samples.push(o0);
@@ -671,14 +671,15 @@ fn compare_channel(
         return None;
     }
 
-    let mean_abs_error = integral_abs_error / integral_duration;
+    let integral_abs_error = finite_non_negative_metric(integral_abs_error);
+    let mean_abs_error = finite_non_negative_metric(integral_abs_error / integral_duration);
     let reference_range = robust_reference_range(&ref_samples).unwrap_or(0.0);
     let normalization_scale = if use_step_hold {
         reference_range.max(1.0).max(NORMALIZATION_SCALE_EPS)
     } else {
         reference_range.max(NORMALIZATION_SCALE_EPS)
     };
-    let normalized_l1_error = mean_abs_error / normalization_scale;
+    let normalized_l1_error = finite_non_negative_metric(mean_abs_error / normalization_scale);
     let bounded_normalized_l1_error = bounded_normalized_error(normalized_l1_error);
     let initial_abs_error = initial_abs_error(&samples);
     let initial_bounded_normalized_error = initial_abs_error.map(|error| {
@@ -704,7 +705,7 @@ fn compare_channel(
         normalization_scale,
         normalized_l1_error,
         bounded_normalized_l1_error,
-        normalized_max_abs_error: max_abs_error / normalization_scale,
+        normalized_max_abs_error: finite_non_negative_metric(max_abs_error / normalization_scale),
         initial_abs_error,
         initial_bounded_normalized_error,
     })
@@ -731,13 +732,26 @@ fn bounded_normalized_error(normalized: f64) -> f64 {
     non_negative / (1.0 + non_negative)
 }
 
+fn finite_abs_error(lhs: f64, rhs: f64) -> f64 {
+    finite_non_negative_metric((lhs - rhs).abs())
+}
+
+fn finite_non_negative_metric(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else if value.is_sign_negative() {
+        0.0
+    } else {
+        f64::MAX
+    }
+}
+
 fn initial_abs_error(samples: &[(f64, Option<f64>, Option<f64>)]) -> Option<f64> {
     samples.iter().find_map(|(_, rumoca, omc)| {
         let (Some(rumoca), Some(omc)) = (*rumoca, *omc) else {
             return None;
         };
-        let error = (rumoca - omc).abs();
-        error.is_finite().then_some(error)
+        Some(finite_abs_error(rumoca, omc))
     })
 }
 
@@ -1142,6 +1156,19 @@ mod tests {
         assert_eq!(metric.worst_variables[0].bounded_normalized_l1_error, 1.0);
         assert_eq!(metric.worst_variables[0].name, "x");
         assert_eq!(metric.worst_variables[1].name, "y");
+        assert!(metric.worst_variables[0].integral_abs_error.is_finite());
+        assert!(metric.worst_variables[0].mean_abs_error.is_finite());
+        assert!(metric.worst_variables[0].normalized_l1_error.is_finite());
+        assert!(
+            metric.worst_variables[0]
+                .normalized_max_abs_error
+                .is_finite()
+        );
+
+        let encoded = serde_json::to_value(&metric).expect("serialize metric");
+        let decoded =
+            serde_json::from_value::<ModelDeviationMetric>(encoded).expect("deserialize metric");
+        assert_eq!(decoded.max_channel_bounded_normalized_l1, 1.0);
     }
 
     #[test]
