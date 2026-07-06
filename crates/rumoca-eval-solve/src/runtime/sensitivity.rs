@@ -487,7 +487,7 @@ impl SolveRuntime {
     /// which uses the complete `algebraic_refresh` plan so that *leaf* algebraics —
     /// ones that feed no state derivative, e.g. a pure output objective — also get
     /// their seed filled).
-    fn seed_refresh_with_plan(
+    pub(super) fn seed_refresh_with_plan(
         &self,
         plan: &RefreshPlan,
         lin: AlgebraicLinearization<'_>,
@@ -509,18 +509,61 @@ impl SolveRuntime {
         // Algebraic loop: Gauss–Seidel on the (linear) seed system, mirroring the
         // value iteration. Since the value refresh already converged at this
         // point, the seed iteration converges at the same rate.
-        for _ in 0..settle.max_iters.max(1) {
-            let mut max_delta = 0.0_f64;
-            for row in &plan.rows {
-                let before = seed[row.target_index];
-                self.seed_refresh_row(t, solver_y, params, seed, unit_seed, row)?;
-                max_delta = max_delta.max((seed[row.target_index] - before).abs());
-            }
+        let max_iters = settle.max_iters.max(1);
+        let mut final_delta = f64::INFINITY;
+        let mut final_target = None;
+        for _ in 0..max_iters {
+            let (max_delta, max_target) =
+                self.seed_refresh_iteration(plan, t, solver_y, params, seed, unit_seed)?;
             if max_delta <= settle.tol {
-                break;
+                return Ok(());
+            }
+            final_delta = max_delta;
+            final_target = max_target;
+        }
+        Err(self.seed_refresh_convergence_error(t, max_iters, final_delta, final_target, settle))
+    }
+
+    fn seed_refresh_iteration(
+        &self,
+        plan: &RefreshPlan,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        seed: &mut [f64],
+        unit_seed: &mut [f64],
+    ) -> Result<(f64, Option<usize>), RuntimeSolveError> {
+        let mut max_delta = 0.0_f64;
+        let mut max_target = None;
+        for row in &plan.rows {
+            let delta = self.seed_refresh_row_delta(t, solver_y, params, seed, unit_seed, row)?;
+            if delta > max_delta {
+                max_delta = delta;
+                max_target = Some(row.target_index);
             }
         }
-        Ok(())
+        Ok((max_delta, max_target))
+    }
+
+    fn seed_refresh_row_delta(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        seed: &mut [f64],
+        unit_seed: &mut [f64],
+        row: &AlgebraicRefreshRow,
+    ) -> Result<f64, RuntimeSolveError> {
+        let before = seed[row.target_index];
+        self.seed_refresh_row(t, solver_y, params, seed, unit_seed, row)?;
+        let delta = (seed[row.target_index] - before).abs();
+        if delta.is_finite() {
+            return Ok(delta);
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "algebraic forward-sensitivity refresh produced non-finite seed delta for {} at t={t}",
+            self.solver_name(row.target_index)
+        )))
     }
 
     /// Solve one residual row `g(y)=0` (which defines algebraic slot `target`) for
@@ -584,5 +627,21 @@ impl SolveRuntime {
                     row.row_idx, row.output_offset
                 ))
             })
+    }
+
+    fn seed_refresh_convergence_error(
+        &self,
+        t: f64,
+        max_iters: usize,
+        max_delta: f64,
+        target: Option<usize>,
+        settle: AlgebraicSettle,
+    ) -> RuntimeSolveError {
+        let target = target.map_or("<none>", |index| self.solver_name(index));
+        RuntimeSolveError::solve_ir(format!(
+            "algebraic forward-sensitivity refresh did not converge at t={t} after {max_iters} \
+             iterations; max_delta={max_delta:.6e}, tol={:.6e}, target={target}",
+            settle.tol
+        ))
     }
 }

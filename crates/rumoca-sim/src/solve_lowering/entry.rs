@@ -72,6 +72,7 @@ pub(crate) struct SolveLoweringTimings {
 }
 
 impl SolveLoweringTimings {
+    #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
     pub(crate) fn total_seconds(self) -> f64 {
         self.structural_dae_seconds + self.solve_ir_seconds
     }
@@ -80,6 +81,20 @@ impl SolveLoweringTimings {
 pub(crate) fn lower_dae_for_simulation_with_stage_timing(
     dae_model: &dae::Dae,
     opts: &SimOptions,
+    begin_stage: impl FnMut(&'static str),
+) -> Result<(solve::SolveModel, SolveLoweringTimings), rumoca_phase_solve::SolveModelLowerError> {
+    lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+        dae_model,
+        opts,
+        &std::collections::HashMap::new(),
+        begin_stage,
+    )
+}
+
+pub(crate) fn lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+    param_overrides: &std::collections::HashMap<String, f64>,
     mut begin_stage: impl FnMut(&'static str),
 ) -> Result<(solve::SolveModel, SolveLoweringTimings), rumoca_phase_solve::SolveModelLowerError> {
     let mut timings = SolveLoweringTimings::default();
@@ -87,9 +102,7 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
     begin_stage("ir_solve_direct");
     log_solve_lowering_start("solve_ir.lower_direct_dae_to_solve_model");
     let direct_start = stage_timer_start();
-    if let Some(solve_model) =
-        lower_direct_dae_for_simulation(dae_model, opts, &std::collections::HashMap::new())?
-    {
+    if let Some(solve_model) = lower_direct_dae_for_simulation(dae_model, opts, param_overrides)? {
         timings.solve_ir_seconds = stage_timer_elapsed_seconds(direct_start);
         log_solve_lowering_done("solve_ir.lower_direct_dae_to_solve_model", direct_start);
         trace_solve_model(&solve_model);
@@ -105,11 +118,8 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing(
     begin_stage("ir_solve");
     log_solve_lowering_start("solve_ir.lower_dae_to_solve_model");
     let solve_ir_start = stage_timer_start();
-    let solve_model = lower_structured_dae_for_simulation(
-        structurally_lowered,
-        opts,
-        &std::collections::HashMap::new(),
-    )?;
+    let solve_model =
+        lower_structured_dae_for_simulation(structurally_lowered, opts, param_overrides)?;
     timings.solve_ir_seconds = stage_timer_elapsed_seconds(solve_ir_start);
     log_solve_lowering_done("solve_ir.lower_dae_to_solve_model", solve_ir_start);
     trace_solve_model(&solve_model);

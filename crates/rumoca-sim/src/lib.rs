@@ -39,7 +39,6 @@ mod simulation_session_api;
 mod diffsol;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod solve_lowering;
 pub use build_timing::BuildSimulationTimings;
 #[cfg(feature = "solver-diffsol")]
@@ -57,7 +56,6 @@ pub(crate) use simulation_session_api::SimulationSessionApi;
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
 // report types are re-exported from there rather than as root cross-crate uses.
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
@@ -139,7 +137,10 @@ fn simulate_solve_model_rk45(
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-#[cfg(not(feature = "solver-rk45"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-rk45")
+))]
 fn simulate_solve_model_rk45(
     _model: &rumoca_ir_solve::SolveModel,
     _opts: &SimOptions,
@@ -158,7 +159,10 @@ fn simulate_solve_model_diffsol(
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-#[cfg(not(feature = "solver-diffsol"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-diffsol")
+))]
 fn simulate_solve_model_diffsol(
     _model: &rumoca_ir_solve::SolveModel,
     _opts: &SimOptions,
@@ -290,7 +294,10 @@ fn simulate_with_rk45_diagnostics(
     rk45::simulate_with_diagnostics(dae_model, opts)
 }
 
-#[cfg(not(feature = "solver-rk45"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-rk45")
+))]
 fn simulate_with_rk45_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
@@ -308,7 +315,10 @@ fn simulate_with_diffsol_diagnostics(
     diffsol::simulate_with_diagnostics(dae_model, opts)
 }
 
-#[cfg(not(feature = "solver-diffsol"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-diffsol")
+))]
 fn simulate_with_diffsol_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,

@@ -8,7 +8,7 @@
 use rumoca::Compiler;
 use rumoca_ir_solve::ScalarSlot;
 use rumoca_sim::{
-    SimOptions, lower_dae_for_simulation, lower_for_simulation_with_overrides,
+    SimOptions, build_simulation, lower_dae_for_simulation, lower_for_simulation_with_overrides,
     refresh_prepared_vectors,
 };
 
@@ -83,6 +83,13 @@ fn aoa_override_rederives_promoted_array_mask() {
             i + 1
         );
     }
+
+    let timed = build_simulation(&dae, &opts).expect("build prepared override path");
+    assert_eq!(
+        mask_param_values(timed.model()),
+        m_over,
+        "timed/prepared lowering must re-derive promoted masks the same way as one-shot lowering"
+    );
 }
 
 /// The WebGPU host (`update_gpu_parameters`) path: override-aware lowering followed

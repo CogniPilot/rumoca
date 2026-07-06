@@ -31,7 +31,7 @@ pub fn lower_for_simulation_with_overrides(
     .map_err(SimulationDiagnosticError::SolveLowering)?;
     // Validate overrides and apply state-start overrides. Parameter dependents were
     // already re-derived during lowering, so do not re-derive them again here.
-    apply_simulation_overrides(&mut solve_model, dae_model, opts, false)?;
+    apply_simulation_overrides(&mut solve_model, dae_model, opts)?;
     Ok(solve_model)
 }
 
@@ -54,11 +54,11 @@ pub fn lower_for_differentiation_with_overrides(
         &param_overrides,
     )
     .map_err(SimulationDiagnosticError::SolveLowering)?;
-    apply_simulation_overrides(&mut solve_model, dae_model, opts, false)?;
+    apply_simulation_overrides(&mut solve_model, dae_model, opts)?;
     Ok(solve_model)
 }
 
-fn tunable_param_overrides(
+pub(crate) fn tunable_param_overrides(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> std::collections::HashMap<String, f64> {
@@ -76,12 +76,11 @@ fn tunable_param_overrides(
         .collect()
 }
 
-/// Apply tunable parameter and state-start overrides to a freshly lowered solve
-/// model in place. Rejects any override that cannot be applied *correctly* —
-/// structural parameters (baked at lowering), folded parameters (no runtime
-/// slot), and depended-upon parameters (overriding the leaf would leave the
-/// dependent stale) — so an override is never silently dropped or silently
-/// wrong. Solver-independent: operates only on the neutral [`solve::SolveModel`].
+/// Validate tunable parameter overrides and apply explicit parameter / state
+/// start pins to a freshly lowered solve model in place. Dependent parameter
+/// values are re-derived before this point by override-aware lowering; this
+/// pass rejects structural parameters and folded parameters so an override is
+/// never silently dropped or applied to the wrong runtime slot.
 ///
 /// Exposed `pub(crate)` so the prepared-simulation and interactive-session entry
 /// points apply overrides identically to the one-shot `simulate` path — an
@@ -91,12 +90,10 @@ pub(crate) fn apply_simulation_overrides(
     solve_model: &mut solve::SolveModel,
     dae_model: &dae::Dae,
     opts: &SimOptions,
-    rederive_dependents: bool,
 ) -> Result<(), SimulationDiagnosticError> {
     let reject = |message: String| SimulationDiagnosticError::InvalidOverride { message };
 
     if !opts.param_overrides.is_empty() {
-        let mut pinned: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (name, value) in &opts.param_overrides {
             match dae_model
                 .variables
@@ -136,17 +133,6 @@ pub(crate) fn apply_simulation_overrides(
                 )));
             }
             solve_model.parameters[index] = *value;
-            pinned.insert(name.clone());
-        }
-        // Propagate the overrides to any parameters whose bindings depend on
-        // them (e.g. `parameter b = 2*a`), so a dependent is never left stale.
-        // A dependent whose binding can't be re-evaluated is rejected, not
-        // silently run with the folded value. Skipped when the caller already
-        // re-derived dependents during lowering (override-aware lowering handles
-        // array-valued dependents that this scalar post-pass cannot).
-        if rederive_dependents {
-            rumoca_phase_solve::propagate_parameter_overrides(dae_model, solve_model, &pinned)
-                .map_err(|error| reject(error.to_string()))?;
         }
     }
 

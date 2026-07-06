@@ -209,10 +209,7 @@ fn lower_for_simulation_session(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<solve::SolveModel, SimulationDiagnosticError> {
-    let mut solve_model = crate::solve_lowering::lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
-    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts, true)?;
-    Ok(solve_model)
+    crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
 }
 
 fn new_auto_session(

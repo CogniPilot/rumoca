@@ -1256,6 +1256,39 @@ fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
     );
 }
 
+#[test]
+fn seed_refresh_reports_linear_algebraic_loop_nonconvergence() {
+    let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model())
+        .expect("valid runtime should prepare");
+    let solver_y = [1.0, 2.0 / 15.0, 7.0 / 15.0];
+    let mut seed = [1.0, 0.0, 0.0];
+    let mut unit_seed = [0.0, 0.0, 0.0];
+
+    let error = runtime
+        .seed_refresh_with_plan(
+            &runtime.derivative_refresh,
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 1,
+                },
+            },
+            &solver_y,
+            &mut seed,
+            &mut unit_seed,
+        )
+        .expect_err("under-iterated seed refresh should report non-convergence");
+
+    assert!(
+        error
+            .to_string()
+            .contains("algebraic forward-sensitivity refresh did not converge"),
+        "{error}"
+    );
+}
+
 fn sum_row(load_lhs: solve::LinearOp, load_rhs: solve::LinearOp) -> Vec<solve::LinearOp> {
     // Both loads must target distinct destination registers; callers pass
     // `{ dst: 0, .. }` and `{ dst: 1, .. }`.

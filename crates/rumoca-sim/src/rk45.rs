@@ -8,7 +8,8 @@ use crate::BuildSimulationTimings;
 #[cfg(feature = "runner")]
 use crate::SimulationSessionApi;
 use crate::solve_lowering::{
-    SimulationDiagnosticError, lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing,
+    SimulationDiagnosticError, lower_dae_for_simulation_with_stage_timing_and_param_overrides,
+    tunable_param_overrides,
 };
 
 pub use rumoca_solver_rk45::SessionState;
@@ -50,12 +51,18 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         mut begin_stage: impl FnMut(&'static str),
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
+        let param_overrides = tunable_param_overrides(dae_model, &opts);
         let (mut solve_model, solve_timings) =
-            lower_dae_for_simulation_with_stage_timing(dae_model, &opts, &mut begin_stage)
-                .map_err(|err| SimError::SolveIr(err.to_string()))?;
+            lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+                dae_model,
+                &opts,
+                &param_overrides,
+                &mut begin_stage,
+            )
+            .map_err(|err| SimError::SolveIr(err.to_string()))?;
         begin_stage("sim_overrides");
         let override_apply_start = Instant::now();
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts, true)
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
             .map_err(|err| SimError::SolveIr(err.to_string()))?;
         let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
@@ -78,14 +85,8 @@ impl SimulationSession {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
-            .map_err(SimulationDiagnosticError::SolveLowering)?;
-        crate::solve_lowering::apply_simulation_overrides(
-            &mut solve_model,
-            dae_model,
-            &opts,
-            true,
-        )?;
+        let solve_model =
+            crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, &opts)?;
         Self::from_solve_model(solve_model, opts)
     }
 

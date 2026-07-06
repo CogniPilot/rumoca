@@ -12,7 +12,7 @@ indexmap = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-sim = { workspace = true, features = ["native-solvers"] }
+rumoca-sim = { workspace = true, default-features = false }
 rumoca-solver = { workspace = true }
 thiserror = { workspace = true }
 

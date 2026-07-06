@@ -24,6 +24,27 @@ equation
 end OverflowGradient;
 "#;
 
+const ARRAY_TRAINABLES: &str = r#"
+model ArrayTrainables
+  parameter Integer n = 2;
+  parameter Real k[n] = {1.0, 2.0};
+  Real x(start = 1.0, fixed = true);
+equation
+  der(x) = k[1] * x + k[2];
+end ArrayTrainables;
+"#;
+
+const PARAMETER_DEPENDENCY: &str = r#"
+model ParameterDependency
+  parameter Real a = 1.0;
+  parameter Real b = 2.0 * a;
+  parameter Real c = 3.0;
+  Real x(start = 1.0, fixed = true);
+equation
+  der(x) = b * x + c;
+end ParameterDependency;
+"#;
+
 fn linear_model() -> DifferentiableModel {
     linear_model_with_options(&SimOptions::default())
 }
@@ -112,6 +133,53 @@ fn reverse_rhs_mse_rejects_non_finite_gradient() {
             ..
         }
     ));
+}
+
+#[test]
+fn trainable_discovery_uses_independent_dae_parameters() {
+    let result = Compiler::new()
+        .model("ParameterDependency")
+        .compile_str(PARAMETER_DEPENDENCY, "ParameterDependency.mo")
+        .expect("ParameterDependency should compile");
+    let model = DifferentiableModel::from_dae_default(&result.dae, &SimOptions::default())
+        .expect("ParameterDependency should prepare for optimization");
+
+    let names = model
+        .parameter_slots()
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, ["c"]);
+    assert!(matches!(
+        TrainableSet::by_names(&model, &["a"]),
+        Err(OptError::UnknownTrainable { .. })
+    ));
+    assert!(matches!(
+        TrainableSet::by_names(&model, &["b"]),
+        Err(OptError::UnknownTrainable { .. })
+    ));
+}
+
+#[test]
+fn trainable_discovery_exposes_array_parameter_scalars() {
+    let result = Compiler::new()
+        .model("ArrayTrainables")
+        .compile_str(ARRAY_TRAINABLES, "ArrayTrainables.mo")
+        .expect("ArrayTrainables should compile");
+    let model = DifferentiableModel::from_dae_default(&result.dae, &SimOptions::default())
+        .expect("ArrayTrainables should prepare for optimization");
+
+    let names = model
+        .parameter_slots()
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, ["k[1]", "k[2]"]);
+    let trainables =
+        TrainableSet::by_names(&model, &["k[1]", "k[2]"]).expect("array scalar trainables");
+    assert_eq!(trainables.len(), 2);
 }
 
 #[test]
