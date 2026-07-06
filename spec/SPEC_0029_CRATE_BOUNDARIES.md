@@ -12,8 +12,7 @@ its reading list; illegal coupling should fail before review.
 
 ### 1. Bounded Context Per Task
 
-Each crate's `Cargo.toml` defines exactly what it can see. Read that dependency
-set before editing the crate.
+`Cargo.toml` defines what each crate can see. Read dependencies before editing.
 
 ### 2. Strict DAG Dependency Graph
 
@@ -291,8 +290,7 @@ APIs MUST affect runtime behavior, not only metadata.
 
 ## Dependency Tiers
 
-The workspace crates are organized into six tiers. Dependencies flow strictly
-downward.
+Workspace crates use six tiers. Dependencies flow downward.
 
 ```
 Tier 6 — Binary & bindings: rumoca, bind-python, bind-wasm, contracts
