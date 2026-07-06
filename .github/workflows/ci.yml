@@ -1143,23 +1143,15 @@ jobs:
           fi
           echo "Using pkg subdir: $PKG_SUBDIR"
 
+          # Deploy the WASM package exactly as build.mjs assembled it — the same
+          # tree that ships to npm: core wasm + every runtime module + the lazy
+          # diffsol/galec addons + package.json + snippets. Copying the whole
+          # directory is drift-proof. A per-file allowlist here previously
+          # dropped rumoca_galec.js (a top-level import of rumoca_runtime.js) and
+          # the galec addon when the GALEC docs widget landed, 404ing the runtime
+          # module and breaking every live example on the published site.
           mkdir -p "gh-pages/pkg/$PKG_SUBDIR"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_runtime.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_interactive.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/modelica_language.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_gpu.js" "gh-pages/pkg/$PKG_SUBDIR/"
-          # Lazy diffsol addon (driver + its separate relaxed-SIMD module), so
-          # the live examples can run stiff solves on supporting browsers.
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm_diffsol.js" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_bind_wasm_diffsol_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp "packages/rumoca/dist/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
-          cp "packages/rumoca/dist/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
-          cp -r "packages/rumoca/dist/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp -a "packages/rumoca/dist/$PKG_SUBDIR/." "gh-pages/pkg/$PKG_SUBDIR/"
 
           mkdir -p gh-pages/assets/brand
           cp assets/brand/rumoca.svg gh-pages/assets/brand/
