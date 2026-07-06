@@ -276,8 +276,11 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
             if let Some(prt) = deferred_root {
                 pending_root_t = Some(prt);
             }
+            let event_stop_reached =
+                event_stop.is_some() && sample_time_match_with_tol(*state.current_t, stop_time);
             if let Some(event) = event_stop
-                && sample_time_match_with_tol(*state.current_t, stop_time)
+                && event_stop_reached
+                && !hit_root
             {
                 apply_scheduled_time_event(
                     make_ctx(),
@@ -294,6 +297,8 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
                         data: state.data,
                     },
                 )?;
+            }
+            if event_stop_reached {
                 stop_schedule.advance_past(*state.current_t);
             }
             if !hit_root && event_stop.is_none() {
@@ -644,7 +649,7 @@ fn advance_to_target_once<St: SolverStepper + ?Sized>(
     deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
     if event_stop.is_some() {
-        return advance_to_scheduled_stop(ctx, state, target, stepper);
+        return advance_to_scheduled_stop(ctx, state, target, stepper, deferred_root);
     }
     advance_output_interval(ctx, state, target, stepper, deferred_root)
 }
@@ -654,52 +659,15 @@ fn advance_to_scheduled_stop<St: SolverStepper + ?Sized>(
     state: AdvanceState<'_>,
     target: f64,
     stepper: &mut St,
+    deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
-    if stepper.time() > target {
-        stepper.state_mut_back(target)?;
-    }
-    if sample_time_match_with_tol(stepper.time(), target) {
-        *state.current_t = target;
-        state
-            .params
-            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        let native = stepper.native_y();
-        write_full_y(stepper, &native, target, state.current_y, state.params)?;
-        return Ok(false);
-    }
-    stepper.set_stop_time(target)?;
-    loop {
-        let outcome = match stepper.step() {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                stepper.trace_step_failure(
-                    state.current_y,
-                    state.params,
-                    *state.current_t,
-                    stepper.time(),
-                    &e.to_string(),
-                );
-                return Err(e);
-            }
-        };
-        match outcome {
-            StepOutcome::Stop => {
-                let stop_t = stepper.time();
-                *state.current_t = stop_t;
-                state
-                    .params
-                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                let native = stepper.native_y();
-                write_full_y(stepper, &native, stop_t, state.current_y, state.params)?;
-                return Ok(false);
-            }
-            StepOutcome::Internal => continue,
-            StepOutcome::Root { t_root } => {
-                trace_step_event("scheduled-root", stepper.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, stepper);
-            }
-        }
-    }
+    // Time-event boundaries are left limits of a continuous trajectory. Let the
+    // adaptive solver keep its natural BDF history, interpolate the left-limit
+    // state at `target`, and reset after the discrete event. Pinning a BDF
+    // `tstop` here can leave a stale stop if a root is detected at the same
+    // instant, causing the next post-event step to reject "stop time == current
+    // time".
+    advance_output_interval(ctx, state, target, stepper, deferred_root)
 }
 
 fn advance_output_interval<St: SolverStepper + ?Sized>(
