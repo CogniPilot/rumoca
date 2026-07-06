@@ -217,6 +217,9 @@ fn simulate_with_states(
     };
     record_initial_samples(
         &mut samples,
+        runtime.as_ref(),
+        equilibrium_model,
+        opts.atol.max(1.0e-10),
         SamplePoint {
             y: &current_y,
             params: &params,
@@ -460,6 +463,9 @@ fn simulate_state_only_bdf(
     };
     record_initial_samples(
         &mut samples,
+        runtime.as_ref(),
+        equilibrium_model,
+        opts.atol.max(1.0e-10),
         SamplePoint {
             y: &current_y,
             params: &params,
@@ -879,6 +885,9 @@ pub(crate) fn record_sample_if_new(
 
 fn record_initial_samples(
     recorder: &mut SampleRecorder<'_>,
+    runtime: &SolveRuntime,
+    equilibrium_model: &OdeModel,
+    tol: f64,
     current: SamplePoint<'_>,
     observations: &[solve_eval::InitialEventObservation],
 ) -> Result<(), SimError> {
@@ -886,13 +895,69 @@ fn record_initial_samples(
         return record_sample_if_new(recorder, current);
     }
     for observation in observations {
-        record_sample_if_new(
+        record_prepared_observation_sample(
             recorder,
+            runtime,
+            equilibrium_model,
+            tol,
             SamplePoint {
                 y: &observation.y,
                 params: &observation.p,
                 t: observation.t,
             },
+        )?;
+    }
+    Ok(())
+}
+
+fn record_prepared_observation_sample(
+    recorder: &mut SampleRecorder<'_>,
+    runtime: &SolveRuntime,
+    equilibrium_model: &OdeModel,
+    tol: f64,
+    sample: SamplePoint<'_>,
+) -> Result<(), SimError> {
+    let mut y = sample.y.to_vec();
+    let mut p = sample.params.to_vec();
+    refresh_observation_rows_and_relation_memory(
+        recorder.model,
+        runtime,
+        equilibrium_model,
+        &mut y,
+        &mut p,
+        sample.t,
+        tol,
+    )?;
+    record_sample_if_new(
+        recorder,
+        SamplePoint {
+            y: &y,
+            params: &p,
+            t: sample.t,
+        },
+    )
+}
+
+fn refresh_observation_rows_and_relation_memory(
+    model: &solve::SolveModel,
+    runtime: &SolveRuntime,
+    equilibrium_model: &OdeModel,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    let state_count = model.state_scalar_count();
+    settle_algebraics_and_relation_memory(runtime, equilibrium_model, y, p, t, state_count, tol)?;
+    if refresh_observation_discrete_rows(model, &equilibrium_model.runtime_state, y, p, t, tol)? {
+        settle_algebraics_and_relation_memory(
+            runtime,
+            equilibrium_model,
+            y,
+            p,
+            t,
+            state_count,
+            tol,
         )?;
     }
     Ok(())

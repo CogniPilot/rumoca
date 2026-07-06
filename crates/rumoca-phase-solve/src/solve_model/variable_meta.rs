@@ -13,6 +13,9 @@ pub(super) fn event_discontinuous_scalar_names(
     dae_model: &dae::Dae,
 ) -> Result<IndexSet<String>, SolveModelLowerError> {
     let event_discrete_names = event_discrete_scalar_names(dae_model)?;
+    if event_discrete_names.is_empty() && !continuous_equations_have_event_seed(dae_model) {
+        return Ok(IndexSet::new());
+    }
     let event_discrete_bases = base_name_index(&event_discrete_names);
     let mut definitions = continuous_definition_expressions(dae_model)?;
     let mut event_discontinuous = IndexSet::new();
@@ -53,6 +56,66 @@ pub(super) fn event_discontinuous_scalar_names(
             return Ok(event_discontinuous);
         }
         definitions.retain(|name, _| !event_discontinuous.contains(name));
+    }
+}
+
+fn continuous_equations_have_event_seed(dae_model: &dae::Dae) -> bool {
+    dae_model.continuous.equations.iter().any(|eq| {
+        let mut checker = IntrinsicEventSeedChecker {
+            found: false,
+            no_event_depth: 0,
+        };
+        checker.visit_expression(&eq.rhs);
+        checker.found
+    })
+}
+
+struct IntrinsicEventSeedChecker {
+    found: bool,
+    no_event_depth: usize,
+}
+
+impl ExpressionVisitor for IntrinsicEventSeedChecker {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::NoEvent {
+            self.no_event_depth += 1;
+            for arg in args {
+                self.visit_expression(arg);
+            }
+            self.no_event_depth -= 1;
+            return;
+        }
+        if self.no_event_depth == 0 && builtin_creates_event_seed(function) {
+            self.found = true;
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_binary(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) {
+        if self.no_event_depth == 0 && binary_creates_event_seed(op) {
+            self.found = true;
+            return;
+        }
+        self.visit_expression(lhs);
+        self.visit_expression(rhs);
     }
 }
 
@@ -313,18 +376,7 @@ impl ExpressionVisitor for EventDiscontinuityChecker<'_> {
             self.no_event_depth -= 1;
             return;
         }
-        if self.no_event_depth == 0
-            && matches!(
-                function,
-                rumoca_core::BuiltinFunction::Div
-                    | rumoca_core::BuiltinFunction::Mod
-                    | rumoca_core::BuiltinFunction::Rem
-                    | rumoca_core::BuiltinFunction::Ceil
-                    | rumoca_core::BuiltinFunction::Floor
-                    | rumoca_core::BuiltinFunction::Integer
-                    | rumoca_core::BuiltinFunction::Delay
-            )
-        {
+        if self.no_event_depth == 0 && builtin_creates_event_seed(function) {
             self.found = true;
             return;
         }
@@ -339,21 +391,36 @@ impl ExpressionVisitor for EventDiscontinuityChecker<'_> {
         lhs: &rumoca_core::Expression,
         rhs: &rumoca_core::Expression,
     ) {
-        if self.no_event_depth == 0
-            && matches!(
-                op,
-                rumoca_core::OpBinary::Ge
-                    | rumoca_core::OpBinary::Gt
-                    | rumoca_core::OpBinary::Le
-                    | rumoca_core::OpBinary::Lt
-            )
-        {
+        if self.no_event_depth == 0 && binary_creates_event_seed(op) {
             self.found = true;
             return;
         }
         self.visit_expression(lhs);
         self.visit_expression(rhs);
     }
+}
+
+fn builtin_creates_event_seed(function: &rumoca_core::BuiltinFunction) -> bool {
+    matches!(
+        function,
+        rumoca_core::BuiltinFunction::Div
+            | rumoca_core::BuiltinFunction::Mod
+            | rumoca_core::BuiltinFunction::Rem
+            | rumoca_core::BuiltinFunction::Ceil
+            | rumoca_core::BuiltinFunction::Floor
+            | rumoca_core::BuiltinFunction::Integer
+            | rumoca_core::BuiltinFunction::Delay
+    )
+}
+
+fn binary_creates_event_seed(op: &rumoca_core::OpBinary) -> bool {
+    matches!(
+        op,
+        rumoca_core::OpBinary::Ge
+            | rumoca_core::OpBinary::Gt
+            | rumoca_core::OpBinary::Le
+            | rumoca_core::OpBinary::Lt
+    )
 }
 
 fn event_dependency_ref_names(

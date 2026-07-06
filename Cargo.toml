@@ -33,6 +33,7 @@ members = [
     "crates/rumoca-input-keyboard",
     "crates/rumoca-solver",
     "crates/rumoca-sim",
+    "crates/rumoca-opt",
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
     "crates/rumoca-phase-typecheck",
@@ -104,6 +105,7 @@ rumoca-input-gamepad = { path = "crates/rumoca-input-gamepad" }
 rumoca-input-keyboard = { path = "crates/rumoca-input-keyboard" }
 rumoca-solver = { path = "crates/rumoca-solver" }
 rumoca-sim = { path = "crates/rumoca-sim", default-features = false }
+rumoca-opt = { path = "crates/rumoca-opt" }
 rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }

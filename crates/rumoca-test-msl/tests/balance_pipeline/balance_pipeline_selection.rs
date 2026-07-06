@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::BTreeSet;
+use indexmap::IndexSet;
 
 // =============================================================================
 // Focused simulation target selection and subset controls
@@ -623,7 +623,7 @@ fn detected_physical_parallelism() -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 fn detect_linux_physical_cores() -> Option<usize> {
-    let mut cores = BTreeSet::new();
+    let mut cores = IndexSet::new();
     for entry in std::fs::read_dir("/sys/devices/system/cpu").ok()? {
         let entry = entry.ok()?;
         let cpu_name = entry.file_name();

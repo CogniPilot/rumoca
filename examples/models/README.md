@@ -10,6 +10,10 @@ at the model it needs.
 - `GalecCounter.mo`: fixed-sample discrete model used by the GALEC/eFMI
   codegen example.
 - `KalmanFilterStepTest.mo`: MSL-backed Kalman filter step test.
+- `NeuralLatentOscillator.mo`: larger latent Neural ODE with learned decoder.
+- `NeuralODEBackprop.mo`: native backpropagation training demonstration.
+- `NeuralODETensor.mo`: tensor-shaped spiral Neural ODE with matrix-vector layers.
+- `NeuralPredatorPrey.mo`: tensor-shaped predator-prey Neural ODE.
 - `PIDMSL.mo`: MSL-backed PID example.
 - `SwitchedRLC.mo`: local switched RLC model.
 - `SwitchedRLC_MSL.mo`: MSL-backed switched RLC model.

@@ -226,32 +226,48 @@ impl<'a> LowerBuilder<'a> {
                 let arg = required_array_builtin_arg(args, function, 1, call_span)?;
                 self.lower_array_like_values(arg, scope, call_depth)
             }
-            function if let Some(op) = unary_array_builtin_op(&function) => {
-                let arg = required_array_builtin_arg(args, function, 0, call_span)?;
-                let span = expression_or_call_span(arg, call_span);
-                let values = self.lower_array_like_values(arg, scope, call_depth)?;
-                let mut lowered = Vec::new();
-                let context = format!("{} array value count", function.name());
-                reserve_reg_capacity(&mut lowered, values.len(), &context, Some(span))?;
-                for value in values {
-                    lowered.push(self.emit_unary_at(op, value, span)?);
-                }
-                Ok(lowered)
-            }
             rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => {
                 let arg = required_array_builtin_arg(args, function, 0, call_span)?;
                 self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
             }
-            _ => Err(array_builtin_contract_error(
-                format!(
-                    "{} does not have array-like builtin lowering",
-                    function.name()
-                ),
-                args.first()
-                    .and_then(rumoca_core::Expression::span)
-                    .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
-            )),
+            _ => {
+                if let Some(op) = unary_array_builtin_op(&function) {
+                    return self.lower_unary_builtin_array_like_values(
+                        function, op, args, scope, call_depth, call_span,
+                    );
+                }
+                Err(array_builtin_contract_error(
+                    format!(
+                        "{} does not have array-like builtin lowering",
+                        function.name()
+                    ),
+                    args.first()
+                        .and_then(rumoca_core::Expression::span)
+                        .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
+                ))
+            }
         }
+    }
+
+    fn lower_unary_builtin_array_like_values(
+        &mut self,
+        function: rumoca_core::BuiltinFunction,
+        op: UnaryOp,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+        call_span: rumoca_core::Span,
+    ) -> Result<Vec<Reg>, LowerError> {
+        let arg = required_array_builtin_arg(args, function, 0, call_span)?;
+        let span = expression_or_call_span(arg, call_span);
+        let values = self.lower_array_like_values(arg, scope, call_depth)?;
+        let mut lowered = Vec::new();
+        let context = format!("{} array value count", function.name());
+        reserve_reg_capacity(&mut lowered, values.len(), &context, Some(span))?;
+        for value in values {
+            lowered.push(self.emit_unary_at(op, value, span)?);
+        }
+        Ok(lowered)
     }
 
     fn lower_der_array_like_values(

@@ -1,0 +1,36 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "../models/NeuralODETensor.mo"
+name = "NeuralODETensor"
+
+[viewer]
+mode = "results_panel"
+
+[sim]
+solver = "rk-like"
+dt = 0.02
+t_end = 8.0
+
+[[plot.views]]
+id = "states_time"
+title = "States vs Time"
+type = "timeseries"
+x = "time"
+y = ["x[1]", "x[2]", "radius"]
+
+[[plot.views]]
+id = "rhs_time"
+title = "Neural Spiral RHS vs Time"
+type = "timeseries"
+x = "time"
+y = ["dx[1]", "dx[2]"]
+
+[[plot.views]]
+id = "phase_portrait"
+title = "Phase Portrait"
+type = "scatter"
+x = "x[1]"
+y = ["x[2]"]

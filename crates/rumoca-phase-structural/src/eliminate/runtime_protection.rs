@@ -203,7 +203,7 @@ pub(super) fn assignment_target_name(expr: &Expression) -> Option<VarName> {
     None
 }
 
-fn assignment_var_ref_name(
+pub(super) fn assignment_var_ref_name(
     name: &VarName,
     subscripts: &[rumoca_core::Subscript],
 ) -> Option<VarName> {

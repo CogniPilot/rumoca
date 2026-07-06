@@ -2,8 +2,8 @@ use rumoca_compile::{Session, compile::CompilationResult};
 use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_metrics_value, build_simulation_payload, build_tunable_parameter_meta,
-    lower_dae_for_simulation, refresh_prepared_vectors, simulate_dae_with_diagnostics,
-    simulate_solve_model,
+    lower_dae_for_simulation, lower_for_simulation_with_overrides, refresh_prepared_vectors,
+    simulate_dae_with_diagnostics, simulate_solve_model,
 };
 use wasm_bindgen::JsValue;
 
@@ -212,7 +212,9 @@ fn lower_solve_model_with_overrides(
     opts: &SimOptions,
     parameter_overrides: &[(String, f64)],
 ) -> Result<rumoca_ir_solve::SolveModel, JsValue> {
-    let mut solve_model = lower_dae_for_simulation(&result.dae, opts)
+    let mut override_opts = opts.clone();
+    override_opts.param_overrides = parameter_overrides.to_vec();
+    let mut solve_model = lower_for_simulation_with_overrides(&result.dae, &override_opts)
         .map_err(|e| JsValue::from_str(&format!("solve lowering error: {e}")))?;
     if !parameter_overrides.is_empty() {
         let (initial_y, parameters) =

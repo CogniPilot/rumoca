@@ -327,6 +327,23 @@ pub(in crate::lower) fn scalarized_rhs_expressions_with_owner(
     {
         return Ok(elements);
     }
+    if preserve_indexed_tensor_product_rhs(
+        expr,
+        target,
+        expected,
+        dae_model,
+        structural_bindings,
+        span,
+    )? {
+        return indexed_rhs_expressions(
+            expr,
+            target,
+            expected,
+            dae_model,
+            structural_bindings,
+            span,
+        );
+    }
     if expected == 1 {
         return single_expression_vec(expr.clone(), "scalarized RHS expression count", span);
     }
@@ -339,6 +356,32 @@ pub(in crate::lower) fn scalarized_rhs_expressions_with_owner(
         return Ok(values);
     }
     indexed_rhs_expressions(expr, target, expected, dae_model, structural_bindings, span)
+}
+
+fn preserve_indexed_tensor_product_rhs(
+    expr: &rumoca_core::Expression,
+    target: &rumoca_core::Expression,
+    expected: usize,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    owner_span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
+    let rumoca_core::Expression::Binary { op, .. } = expr else {
+        return Ok(false);
+    };
+    if !is_mul(op) || expected <= 1 {
+        return Ok(false);
+    }
+    let expr_dims = expression_result_dims(expr, dae_model, structural_bindings, owner_span)?;
+    if expr_dims.is_empty()
+        || checked_usize_scalar_count(&expr_dims, "tensor product RHS shape", owner_span)?
+            != expected
+    {
+        return Ok(false);
+    }
+    let target_dims =
+        derivative_target_result_dims(target, dae_model, structural_bindings, owner_span)?;
+    Ok(target_dims == expr_dims)
 }
 
 pub(in crate::lower) fn scalarized_coefficient_expressions(

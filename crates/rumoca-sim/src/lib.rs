@@ -26,7 +26,9 @@ pub use rumoca_solver::{
     trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
+mod build_timing;
 pub mod bulk;
+pub mod row_eval_trace;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod simulation_session;
@@ -37,14 +39,13 @@ mod simulation_session_api;
 mod diffsol;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod solve_lowering;
+pub use build_timing::BuildSimulationTimings;
 #[cfg(feature = "solver-diffsol")]
 pub use diffsol::{
-    BuildSimulationTimings, PreparedSimulation, SimError, build_simulation,
-    build_simulation_with_stage_timing, build_simulation_with_stage_timing_and_solve_model,
-    check_initialization, check_prepared_initialization, run_prepared_simulation, simulate,
-    simulate_dae,
+    PreparedSimulation, SimError, build_simulation, build_simulation_with_stage_timing,
+    build_simulation_with_stage_timing_and_solve_model, check_initialization,
+    check_prepared_initialization, run_prepared_simulation, simulate, simulate_dae,
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
@@ -55,14 +56,14 @@ pub(crate) use simulation_session_api::SimulationSessionApi;
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
 // report types are re-exported from there rather than as root cross-crate uses.
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
     SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
     StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
     diagnose_structural_singularity, eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation,
-    lower_dae_for_simulation, lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
+    lower_dae_for_simulation, lower_for_differentiation_with_overrides,
+    lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
     state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
     steady_state_objective_gradient_for_dae, steady_state_parameter_sensitivity_for_dae,
     structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
@@ -136,7 +137,10 @@ fn simulate_solve_model_rk45(
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-#[cfg(not(feature = "solver-rk45"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-rk45")
+))]
 fn simulate_solve_model_rk45(
     _model: &rumoca_ir_solve::SolveModel,
     _opts: &SimOptions,
@@ -155,7 +159,10 @@ fn simulate_solve_model_diffsol(
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-#[cfg(not(feature = "solver-diffsol"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-diffsol")
+))]
 fn simulate_solve_model_diffsol(
     _model: &rumoca_ir_solve::SolveModel,
     _opts: &SimOptions,
@@ -287,7 +294,10 @@ fn simulate_with_rk45_diagnostics(
     rk45::simulate_with_diagnostics(dae_model, opts)
 }
 
-#[cfg(not(feature = "solver-rk45"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-rk45")
+))]
 fn simulate_with_rk45_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
@@ -305,7 +315,10 @@ fn simulate_with_diffsol_diagnostics(
     diffsol::simulate_with_diagnostics(dae_model, opts)
 }
 
-#[cfg(not(feature = "solver-diffsol"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-diffsol")
+))]
 fn simulate_with_diffsol_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
