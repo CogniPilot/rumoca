@@ -10,6 +10,9 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 - Improved MSL correctness and performance, including the SwitchedRLC fix, binary sim-worker IPC, per-model compile isolation, and deterministic v4.1.0 staging.
 - Sharpened the editor and LSP experience with separate interactive/strict work lanes, binary library caching, and cleaner import diagnostics.
 - Restructured the developer CLI around target-first `cargo xtask` commands and moved CI onto the prebuilt dev container image.
+- Added an eFMI/GALEC Algorithm Code export path (`--target galec`) that emits schema-valid eFMU and eFMI Production Code containers, with a dedicated GALEC (`.alg`) language server wired into VS Code and an embedded-C equivalence harness.
+- Added neural-ODE and optimization support and unified the simulation session integration across the CLI, LSP, and wasm surfaces.
+- Continued improving MSL trace parity and performance with an event-driven baseline ratchet published as a release asset, and cut CI time by sharding the MSL gate behind a build-once Nix path.
 
 ## 0.8.x
 
