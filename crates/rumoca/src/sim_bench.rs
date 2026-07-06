@@ -167,7 +167,7 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
             .map_err(|err| anyhow::anyhow!("warmup simulation failed: {err}"))?;
     }
 
-    rumoca_sim::reset_solve_row_eval_trace();
+    rumoca_sim::row_eval_trace::reset();
     let mut run_seconds = Vec::with_capacity(args.iterations);
     let mut last_points = 0;
     let mut last_final_time = None;
@@ -181,7 +181,7 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
         last_points = summary.points;
         last_final_time = summary.final_time;
     }
-    rumoca_sim::trace_solve_row_eval_snapshot("sim-bench");
+    rumoca_sim::row_eval_trace::snapshot("sim-bench");
 
     let hot_total_seconds = run_seconds.iter().sum::<f64>();
     let hot_average_seconds = hot_total_seconds / args.iterations as f64;
