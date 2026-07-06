@@ -360,6 +360,30 @@ fn lower_runtime_visible_outputs(
     Ok((visible_names, visible_value_rows, variable_meta))
 }
 
+fn prepare_structural_derivative_states(
+    dae_model: &mut dae::Dae,
+) -> Result<(), SolveModelLowerError> {
+    rumoca_phase_structural::dae_prepare::demote_direct_assigned_states(dae_model)
+        .map_err(|source| SolveModelLowerError::Structural { source })?;
+    rumoca_phase_structural::dae_prepare::reduce_constrained_dummy_derivatives(dae_model)
+        .map_err(|source| SolveModelLowerError::Structural { source })?;
+    Ok(())
+}
+
+fn runtime_visible_expressions(
+    dae_model: &dae::Dae,
+    visible_expressions: Option<Vec<VisibleExpression>>,
+    profile: SolveModelLoweringProfile,
+) -> Result<Vec<VisibleExpression>, SolveModelLowerError> {
+    if !profile.needs_runtime_support() {
+        return Ok(Vec::new());
+    }
+    match visible_expressions {
+        Some(visible_expressions) => Ok(visible_expressions),
+        None => visible_expressions_for_dae(dae_model).map_err(SolveModelLowerError::Lower),
+    }
+}
+
 fn lower_dae_to_solve_model_inner(
     mut dae_model: dae::Dae,
     visible_expressions: Option<Vec<VisibleExpression>>,
@@ -368,14 +392,11 @@ fn lower_dae_to_solve_model_inner(
     param_overrides: &HashMap<String, f64>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
     let timer = crate::timing::stage_start();
-    let visible_expressions = if profile.needs_runtime_support() {
-        match visible_expressions {
-            Some(visible_expressions) => visible_expressions,
-            None => visible_expressions_for_dae(&dae_model).map_err(SolveModelLowerError::Lower)?,
-        }
-    } else {
-        Vec::new()
-    };
+    prepare_structural_derivative_states(&mut dae_model)?;
+    crate::timing::log_stage("model.prepare_structural_derivative_states", timer);
+    let timer = crate::timing::stage_start();
+    let visible_expressions =
+        runtime_visible_expressions(&dae_model, visible_expressions, profile)?;
     crate::timing::log_stage("model.visible_expressions", timer);
     let state_count = scalar_count(dae_model.variables.states.values())?;
     let eval_runtime = Arc::new(EvalRuntimeState::default());

@@ -1184,11 +1184,13 @@ impl ExpressionRewriter for PrimitiveConstructorBindingRecoverer<'_> {
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
         let mut rewritten_args = self.rewrite_expressions(args);
-        if name.as_str() == "Clock"
-            && let Some(first_arg) = rewritten_args.first_mut()
-            && let Some(recovered) = self.recover_integer_constructor_argument(first_arg, span)
+        for index in primitive_constructor_binding_arg_indices(name.as_str(), rewritten_args.len())
         {
-            *first_arg = recovered;
+            if let Some(arg) = rewritten_args.get_mut(*index)
+                && let Some(recovered) = self.recover_integer_constructor_argument(arg, span)
+            {
+                *arg = recovered;
+            }
         }
         rumoca_core::Expression::FunctionCall {
             name: name.clone(),
@@ -1196,6 +1198,15 @@ impl ExpressionRewriter for PrimitiveConstructorBindingRecoverer<'_> {
             is_constructor,
             span,
         }
+    }
+}
+
+fn primitive_constructor_binding_arg_indices(name: &str, arg_len: usize) -> &'static [usize] {
+    match name {
+        "Clock" if arg_len >= 1 => &[0],
+        "subSample" | "superSample" if arg_len >= 2 => &[1],
+        "shiftSample" | "backSample" if arg_len >= 3 => &[1, 2],
+        _ => &[],
     }
 }
 

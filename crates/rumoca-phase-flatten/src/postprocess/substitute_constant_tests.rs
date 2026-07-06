@@ -147,6 +147,69 @@ fn substitute_known_constants_recovers_clock_factor_binding_from_integer_constru
 }
 
 #[test]
+fn substitute_known_constants_recovers_subsample_factor_binding_from_integer_constructor_bounds() {
+    let mut model = flat::Model::new();
+    let factor_name = rumoca_core::VarName::new("subSample1.factor");
+    model.add_variable(
+        factor_name.clone(),
+        flat::Variable {
+            name: factor_name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(int_literal(5)),
+            binding_from_modification: true,
+            start: Some(int_literal(0)),
+            min: Some(int_literal(1)),
+            is_discrete_type: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model
+        .variable_type_names
+        .insert(factor_name, "Integer".to_string());
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref("subSample1.y")),
+            rhs: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("subSample"),
+                args: vec![
+                    var_ref("subSample1.u"),
+                    rumoca_core::Expression::FunctionCall {
+                        name: rumoca_core::Reference::new("Integer"),
+                        args: vec![named_arg("min", int_literal(1))],
+                        is_constructor: true,
+                        span: test_span(),
+                    },
+                ],
+                is_constructor: false,
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "subSample1".to_string(),
+        },
+    ));
+
+    substitute_known_constants_in_flat(&mut model, &Context::new()).unwrap();
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = rhs.as_ref() else {
+        panic!("expected subSample call");
+    };
+    assert!(matches!(
+        args[1],
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(5),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn substitute_known_constants_reconciles_zero_fill_extent_with_declared_dims() {
     let mut model = flat::Model::new();
     let name = rumoca_core::VarName::new("sum.k");

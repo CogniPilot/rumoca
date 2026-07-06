@@ -12,6 +12,10 @@ fn is_der_of_state(expr: &Expression, state_name: &VarName) -> bool {
 }
 
 fn make_binary(op: OpBinary, lhs: Expression, rhs: Expression, span: Span) -> Expression {
+    simplify_binary(op, lhs, rhs, span)
+}
+
+fn make_binary_raw(op: OpBinary, lhs: Expression, rhs: Expression, span: Span) -> Expression {
     Expression::Binary {
         op,
         lhs: Box::new(lhs),
@@ -21,6 +25,10 @@ fn make_binary(op: OpBinary, lhs: Expression, rhs: Expression, span: Span) -> Ex
 }
 
 fn make_unary(op: OpUnary, rhs: Expression, span: Span) -> Expression {
+    simplify_unary(op, rhs, span)
+}
+
+fn make_unary_raw(op: OpUnary, rhs: Expression, span: Span) -> Expression {
     Expression::Unary {
         op,
         rhs: Box::new(rhs),
@@ -32,6 +40,20 @@ fn real_literal(value: f64, span: Span) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
         span,
+    }
+}
+
+fn literal_f64(expr: &Expression) -> Option<f64> {
+    match expr {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            ..
+        } => Some(*value as f64),
+        Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } => Some(*value),
+        _ => None,
     }
 }
 
@@ -250,6 +272,12 @@ impl<'a> SymbolicDerivativeContext<'a> {
         }
         let arg = args.first()?;
         let d_arg = self.differentiate(arg, active_functions)?;
+        if expression_is_zero_value(&d_arg) {
+            return match function {
+                BuiltinFunction::Max | BuiltinFunction::Min => Some(real_literal(0.0, span)),
+                _ => Some(d_arg),
+            };
+        }
         match function {
             BuiltinFunction::Transpose => Some(Expression::BuiltinCall {
                 function: BuiltinFunction::Transpose,
@@ -276,6 +304,21 @@ impl<'a> SymbolicDerivativeContext<'a> {
                         span,
                     },
                     d_arg,
+                    span,
+                ),
+                span,
+            )),
+            BuiltinFunction::Sqrt => Some(make_binary(
+                OpBinary::Div,
+                d_arg,
+                make_binary(
+                    OpBinary::Mul,
+                    real_literal(2.0, span),
+                    Expression::BuiltinCall {
+                        function: BuiltinFunction::Sqrt,
+                        args: vec![arg.clone()],
+                        span,
+                    },
                     span,
                 ),
                 span,
@@ -383,6 +426,29 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 let numer = make_binary(OpBinary::Sub, da_b, a_db, span);
                 let denom = make_binary(OpBinary::Mul, rhs.clone(), rhs.clone(), span);
                 Some(make_binary(OpBinary::Div, numer, denom, span))
+            }
+            OpBinary::Exp | OpBinary::ExpElem => {
+                let exponent = literal_f64(rhs)?;
+                if exponent == 0.0 {
+                    return Some(real_literal(0.0, span));
+                }
+                if exponent == 1.0 {
+                    return self.differentiate(lhs, active_functions);
+                }
+                let power = make_binary(
+                    op.clone(),
+                    lhs.clone(),
+                    real_literal(exponent - 1.0, span),
+                    span,
+                );
+                let scaled_power =
+                    make_binary(OpBinary::Mul, real_literal(exponent, span), power, span);
+                Some(make_binary(
+                    OpBinary::Mul,
+                    scaled_power,
+                    self.differentiate(lhs, active_functions)?,
+                    span,
+                ))
             }
             _ => None,
         }
@@ -526,6 +592,21 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 is_matrix: *is_matrix,
                 span: *span,
             }),
+            Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => {
+                let d_base = self.differentiate(base, active_functions)?;
+                if expression_is_zero_value(&d_base) {
+                    return Some(real_literal(0.0, *span));
+                }
+                Some(Expression::Index {
+                    base: Box::new(d_base),
+                    subscripts: subscripts.clone(),
+                    span: *span,
+                })
+            }
             Expression::FunctionCall {
                 name,
                 args,
@@ -601,12 +682,256 @@ pub(super) fn symbolic_time_derivative(
     dae: &Dae,
     der_map: &HashMap<String, Expression>,
 ) -> Option<Expression> {
-    SymbolicDerivativeContext {
+    let derivative = SymbolicDerivativeContext {
         dae,
         der_map,
         der_order: std::cell::Cell::new(0),
     }
-    .differentiate(expr, &mut Vec::new())
+    .differentiate(expr, &mut Vec::new())?;
+    Some(simplify_symbolic_derivative(derivative))
+}
+
+fn expression_is_zero_value(expr: &Expression) -> bool {
+    match expr {
+        Expression::Unary {
+            op: OpUnary::Minus | OpUnary::DotMinus | OpUnary::Plus | OpUnary::DotPlus,
+            rhs,
+            ..
+        } => expression_is_zero_value(rhs),
+        Expression::Binary { op, lhs, rhs, .. } => match op {
+            OpBinary::Add | OpBinary::AddElem | OpBinary::Sub | OpBinary::SubElem => {
+                expression_is_zero_value(lhs) && expression_is_zero_value(rhs)
+            }
+            OpBinary::Mul | OpBinary::MulElem => {
+                expression_is_zero_value(lhs) || expression_is_zero_value(rhs)
+            }
+            OpBinary::Div | OpBinary::DivElem => expression_is_zero_value(lhs),
+            _ => false,
+        },
+        Expression::Literal {
+            value: Literal::Integer(0),
+            ..
+        } => true,
+        Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } => *value == 0.0,
+        Expression::Array { elements, .. } => elements.iter().all(expression_is_zero_value),
+        Expression::Index { base, .. } => expression_is_zero_value(base),
+        _ => false,
+    }
+}
+
+fn simplify_symbolic_derivative(expr: Expression) -> Expression {
+    match expr {
+        Expression::Binary { op, lhs, rhs, span } => simplify_binary(
+            op,
+            simplify_symbolic_derivative(*lhs),
+            simplify_symbolic_derivative(*rhs),
+            span,
+        ),
+        Expression::Unary { op, rhs, span } => {
+            simplify_unary(op, simplify_symbolic_derivative(*rhs), span)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => {
+            let branches = branches
+                .into_iter()
+                .map(|(cond, value)| (cond, simplify_symbolic_derivative(value)))
+                .collect::<Vec<_>>();
+            let else_branch = simplify_symbolic_derivative(*else_branch);
+            if expression_is_zero_value(&else_branch)
+                && branches
+                    .iter()
+                    .all(|(_, value)| expression_is_zero_value(value))
+            {
+                return real_literal(0.0, span);
+            }
+            if branches.iter().all(|(_, value)| value == &else_branch) {
+                return else_branch;
+            }
+            Expression::If {
+                branches,
+                else_branch: Box::new(else_branch),
+                span,
+            }
+        }
+        Expression::Array {
+            elements,
+            is_matrix,
+            span,
+        } => {
+            let elements = elements
+                .into_iter()
+                .map(simplify_symbolic_derivative)
+                .collect::<Vec<_>>();
+            Expression::Array {
+                elements,
+                is_matrix,
+                span,
+            }
+        }
+        Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            let base = simplify_symbolic_derivative(*base);
+            if expression_is_zero_value(&base) {
+                return real_literal(0.0, span);
+            }
+            Expression::Index {
+                base: Box::new(base),
+                subscripts,
+                span,
+            }
+        }
+        Expression::BuiltinCall {
+            function,
+            args,
+            span,
+        } => {
+            let args = args
+                .into_iter()
+                .map(simplify_symbolic_derivative)
+                .collect::<Vec<_>>();
+            if matches!(function, BuiltinFunction::Max | BuiltinFunction::Min)
+                && args.iter().all(expression_is_zero_value)
+            {
+                return real_literal(0.0, span);
+            }
+            Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            }
+        }
+        Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } => Expression::FunctionCall {
+            name,
+            args: args.into_iter().map(simplify_symbolic_derivative).collect(),
+            is_constructor,
+            span,
+        },
+        _ => expr,
+    }
+}
+
+fn simplify_binary(op: OpBinary, lhs: Expression, rhs: Expression, span: Span) -> Expression {
+    match op {
+        OpBinary::Add | OpBinary::AddElem => {
+            if expression_is_zero_value(&lhs) {
+                return rhs;
+            }
+            if expression_is_zero_value(&rhs) {
+                return lhs;
+            }
+        }
+        OpBinary::Sub | OpBinary::SubElem => {
+            if expression_is_zero_value(&rhs) {
+                return lhs;
+            }
+            if expression_is_zero_value(&lhs) {
+                return make_unary(OpUnary::Minus, rhs, span);
+            }
+        }
+        OpBinary::Mul | OpBinary::MulElem => {
+            if expression_is_zero_value(&lhs) || expression_is_zero_value(&rhs) {
+                return real_literal(0.0, span);
+            }
+            if expression_is_one_value(&lhs) {
+                return rhs;
+            }
+            if expression_is_one_value(&rhs) {
+                return lhs;
+            }
+        }
+        OpBinary::Div | OpBinary::DivElem => {
+            if expression_is_zero_value(&lhs) {
+                return real_literal(0.0, span);
+            }
+            if expression_is_one_value(&rhs) {
+                return lhs;
+            }
+        }
+        OpBinary::Exp | OpBinary::ExpElem => {
+            if expression_is_one_value(&rhs) {
+                return lhs;
+            }
+            if expression_is_zero_value(&rhs) {
+                return real_literal(1.0, span);
+            }
+        }
+        _ => {}
+    }
+    if let (Some(lhs), Some(rhs)) = (literal_f64(&lhs), literal_f64(&rhs))
+        && let Some(value) = fold_numeric_binary(&op, lhs, rhs)
+    {
+        return real_literal(value, span);
+    }
+    make_binary_raw(op, lhs, rhs, span)
+}
+
+fn simplify_unary(op: OpUnary, rhs: Expression, span: Span) -> Expression {
+    match op {
+        OpUnary::Plus | OpUnary::DotPlus => return rhs,
+        OpUnary::Minus | OpUnary::DotMinus => {
+            if expression_is_zero_value(&rhs) {
+                return real_literal(0.0, span);
+            }
+            if let Some(value) = literal_f64(&rhs) {
+                return real_literal(-value, span);
+            }
+            if let Expression::Unary {
+                op: OpUnary::Minus | OpUnary::DotMinus,
+                rhs,
+                ..
+            } = rhs
+            {
+                return *rhs;
+            }
+        }
+        _ => {}
+    }
+    make_unary_raw(op, rhs, span)
+}
+
+fn expression_is_one_value(expr: &Expression) -> bool {
+    match expr {
+        Expression::Unary {
+            op: OpUnary::Plus | OpUnary::DotPlus,
+            rhs,
+            ..
+        } => expression_is_one_value(rhs),
+        Expression::Literal {
+            value: Literal::Integer(1),
+            ..
+        } => true,
+        Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } => *value == 1.0,
+        _ => false,
+    }
+}
+
+fn fold_numeric_binary(op: &OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
+    match op {
+        OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
+        OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
+        OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
+        OpBinary::Div | OpBinary::DivElem if rhs != 0.0 => Some(lhs / rhs),
+        OpBinary::Exp | OpBinary::ExpElem if !(lhs == 0.0 && rhs == 0.0) => Some(lhs.powf(rhs)),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
 }
 
 fn function_output_expression(

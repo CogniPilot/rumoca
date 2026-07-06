@@ -65,6 +65,12 @@ pub(super) fn equation_defining_expr_for_unknown(
         }
         return Some(eq.rhs.clone());
     }
+    if let Some(defining_expr) = extract_unknown_defining_expr(&eq.rhs, unknown_name, eq.span) {
+        if expression_contains_any_der_call(&defining_expr) {
+            return None;
+        }
+        return Some(defining_expr);
+    }
     if let Some((coef, remainder)) = split_linear_target(&eq.rhs, unknown_name, eq.span) {
         let defining_expr = match coef {
             1 => sub_expr(zero_expr(eq.span), remainder, eq.span),
@@ -264,8 +270,8 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_unsliced_vector_ref += 1;
         return Ok(None);
     }
-    if state_non_derivative_reference_row_count(round.dae, &state_name) > 1
-        && !expr_refs_only_parameters_constants_or_time(round.dae, &defining_expr)
+    if !expr_refs_only_parameters_constants_or_time(round.dae, &defining_expr)
+        && !extra_state_value_refs_are_non_state_definitions(round, &state_name, eq_index)
     {
         counters.n_skip_extra_state_refs += 1;
         return Ok(None);
@@ -337,14 +343,36 @@ fn defining_expr_state_derivatives_are_demotable(
     ))
 }
 
-fn state_non_derivative_reference_row_count(dae: &Dae, state_name: &VarName) -> usize {
-    dae.continuous
+fn extra_state_value_refs_are_non_state_definitions(
+    round: &DirectDemotionRound<'_>,
+    state_name: &VarName,
+    candidate_eq_index: usize,
+) -> bool {
+    round
+        .dae
+        .continuous
         .equations
         .iter()
-        .filter(|row| {
-            expr_contains_var(&row.rhs, state_name) && !expr_contains_der_of(&row.rhs, state_name)
+        .enumerate()
+        .filter(|(index, row)| {
+            *index != candidate_eq_index
+                && expr_contains_var(&row.rhs, state_name)
+                && !expr_contains_der_of(&row.rhs, state_name)
         })
-        .count()
+        .all(|(_, row)| row_defines_non_state_unknown_reading_state(row, round, state_name))
+}
+
+fn row_defines_non_state_unknown_reading_state(
+    row: &Equation,
+    round: &DirectDemotionRound<'_>,
+    state_name: &VarName,
+) -> bool {
+    collect_rhs_var_refs(&row.rhs).into_iter().any(|ref_name| {
+        ref_name != *state_name
+            && round.non_state_unknown_names.contains(ref_name.as_str())
+            && equation_defining_expr_for_unknown(row, &ref_name)
+                .is_some_and(|expr| expr_contains_var(&expr, state_name))
+    })
 }
 
 /// `der(z)` links inside a defining expression are demotable only when `z`'s

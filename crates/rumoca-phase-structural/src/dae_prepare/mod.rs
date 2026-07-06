@@ -182,13 +182,51 @@ fn split_linear_target(
 }
 
 fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression> {
-    let Expression::Binary { op, lhs, rhs, .. } = &eq.rhs else {
+    extract_unknown_defining_expr(&eq.rhs, alg_name, eq.span)
+}
+
+fn extract_unknown_defining_expr(
+    residual: &Expression,
+    alg_name: &VarName,
+    context_span: Span,
+) -> Option<Expression> {
+    let Expression::Binary { op, lhs, rhs, .. } = residual else {
+        if let Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } = residual
+        {
+            return extract_unknown_defining_expr(rhs, alg_name, context_span);
+        }
+        if let Expression::If {
+            branches,
+            else_branch,
+            span,
+        } = residual
+        {
+            let mut defining_branches = Vec::with_capacity(branches.len());
+            for (condition, branch_expr) in branches {
+                defining_branches.push((
+                    condition.clone(),
+                    extract_unknown_defining_expr(branch_expr, alg_name, context_span)?,
+                ));
+            }
+            return Some(Expression::If {
+                branches: defining_branches,
+                else_branch: Box::new(extract_unknown_defining_expr(
+                    else_branch,
+                    alg_name,
+                    context_span,
+                )?),
+                span: *span,
+            });
+        }
         return None;
     };
     if !matches!(op, OpBinary::Sub) {
         return None;
     }
-
     let is_var = |e: &Expression| -> bool {
         matches!(e, Expression::VarRef { name, subscripts, .. }
             if name.var_name() == alg_name && subscripts.is_empty())
@@ -202,6 +240,12 @@ fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression
     if is_var(rhs) {
         return Some(*lhs.clone());
     }
+    if expression_is_zero_literal(rhs) {
+        return extract_unknown_defining_expr(lhs, alg_name, context_span);
+    }
+    if expression_is_zero_literal(lhs) {
+        return extract_unknown_defining_expr(rhs, alg_name, context_span);
+    }
 
     let lhs_has = expr_contains_var(lhs, alg_name);
     let rhs_has = expr_contains_var(rhs, alg_name);
@@ -210,25 +254,25 @@ fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression
     }
     if lhs_has && let Some(coeff) = extract_scaled_target(lhs, alg_name) {
         // (coeff*x) - rhs = 0  =>  x = rhs/coeff
-        return Some(div_expr(*rhs.clone(), coeff, eq.span));
+        return Some(div_expr(*rhs.clone(), coeff, context_span));
     }
     if rhs_has && let Some(coeff) = extract_scaled_target(rhs, alg_name) {
         // lhs - (coeff*x) = 0  =>  x = lhs/coeff
-        return Some(div_expr(*lhs.clone(), coeff, eq.span));
+        return Some(div_expr(*lhs.clone(), coeff, context_span));
     }
-    if lhs_has && let Some((coef, lhs_rem)) = split_linear_target(lhs, alg_name, eq.span) {
+    if lhs_has && let Some((coef, lhs_rem)) = split_linear_target(lhs, alg_name, context_span) {
         // (coef*x + lhs_rem) - rhs = 0  =>  x = (rhs - lhs_rem)/coef
         return Some(match coef {
-            1 => sub_expr(*rhs.clone(), lhs_rem, eq.span),
-            -1 => sub_expr(lhs_rem, *rhs.clone(), eq.span),
+            1 => sub_expr(*rhs.clone(), lhs_rem, context_span),
+            -1 => sub_expr(lhs_rem, *rhs.clone(), context_span),
             _ => return None,
         });
     }
-    if rhs_has && let Some((coef, rhs_rem)) = split_linear_target(rhs, alg_name, eq.span) {
+    if rhs_has && let Some((coef, rhs_rem)) = split_linear_target(rhs, alg_name, context_span) {
         // lhs - (coef*x + rhs_rem) = 0  =>  x = (lhs - rhs_rem)/coef
         return Some(match coef {
-            1 => sub_expr(*lhs.clone(), rhs_rem, eq.span),
-            -1 => sub_expr(rhs_rem, *lhs.clone(), eq.span),
+            1 => sub_expr(*lhs.clone(), rhs_rem, context_span),
+            -1 => sub_expr(rhs_rem, *lhs.clone(), context_span),
             _ => return None,
         });
     }
@@ -1534,6 +1578,12 @@ fn extract_state_direct_assignment(
             {
                 return Some((name.var_name().clone(), *lhs.clone()));
             }
+            if expression_is_zero_literal(rhs) {
+                return extract_state_direct_assignment(lhs, state_name_set);
+            }
+            if expression_is_zero_literal(lhs) {
+                return extract_state_direct_assignment(rhs, state_name_set);
+            }
             None
         }
         Expression::Unary {
@@ -1541,7 +1591,55 @@ fn extract_state_direct_assignment(
             rhs,
             ..
         } => extract_state_direct_assignment(rhs, state_name_set),
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => {
+            let mut state_name: Option<VarName> = None;
+            let mut defining_branches = Vec::with_capacity(branches.len());
+            for (condition, branch_expr) in branches {
+                let (branch_state, branch_defining_expr) =
+                    extract_state_direct_assignment(branch_expr, state_name_set)?;
+                if state_name
+                    .as_ref()
+                    .is_some_and(|name| name != &branch_state)
+                {
+                    return None;
+                }
+                state_name.get_or_insert(branch_state);
+                defining_branches.push((condition.clone(), branch_defining_expr));
+            }
+            let (else_state, else_defining_expr) =
+                extract_state_direct_assignment(else_branch, state_name_set)?;
+            if state_name.as_ref().is_some_and(|name| name != &else_state) {
+                return None;
+            }
+            let state_name = state_name.unwrap_or(else_state);
+            Some((
+                state_name,
+                Expression::If {
+                    branches: defining_branches,
+                    else_branch: Box::new(else_defining_expr),
+                    span: *span,
+                },
+            ))
+        }
         _ => None,
+    }
+}
+
+fn expression_is_zero_literal(expr: &Expression) -> bool {
+    match expr {
+        Expression::Literal {
+            value: Literal::Integer(0),
+            ..
+        } => true,
+        Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } => *value == 0.0,
+        _ => false,
     }
 }
 

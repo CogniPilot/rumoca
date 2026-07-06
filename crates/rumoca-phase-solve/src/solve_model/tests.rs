@@ -828,6 +828,48 @@ fn lower_keeps_algebraic_binding_needed_by_derivative_rhs() {
 }
 
 #[test]
+fn lower_reduces_constrained_dummy_derivative_chain_before_solve_layout() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert("s".into(), scalar_var("s"));
+    dae_model
+        .variables
+        .states
+        .insert("sd".into(), scalar_var("sd"));
+    dae_model
+        .variables
+        .algebraics
+        .insert("sdd".into(), scalar_var("sdd"));
+
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(var("s"), var("time")),
+        solve_model_test_span(),
+        "analytic position trajectory",
+    ));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(var("sd"), der(var("s"))),
+        solve_model_test_span(),
+        "velocity dummy derivative",
+    ));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(var("sdd"), der(var("sd"))),
+        solve_model_test_span(),
+        "acceleration dummy derivative",
+    ));
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("constrained derivative chain should lower without structural singularity");
+
+    assert_eq!(prepared.problem.solve_layout.state_scalar_count(), 0);
+    assert!(
+        prepared.problem.layout.binding("sdd").is_some(),
+        "demoted derivative alias remains available as an algebraic value"
+    );
+}
+
+#[test]
 fn lower_replaces_nonfinite_start_guess_with_type_default() {
     let mut dae_model = dae::Dae::default();
     let mut v = scalar_var("v");

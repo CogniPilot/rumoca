@@ -1254,6 +1254,20 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Vec::new());
         }
         if !rhs.is_scalar() {
+            if lhs.values.len() == 1 && rhs.values.len() == 1 {
+                let mut values = crate::lower_vec_with_capacity(
+                    1,
+                    "singleton array division value count",
+                    span,
+                )?;
+                values.push(self.emit_binary_at(
+                    BinaryOp::Div,
+                    lhs.values[0],
+                    rhs.values[0],
+                    span,
+                )?);
+                return Ok(values);
+            }
             return Err(unsupported_at(
                 // MLS §10.6.5: ordinary division is only array divided by
                 // scalar. Element-wise division is represented by `./`.

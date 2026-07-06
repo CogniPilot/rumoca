@@ -303,6 +303,42 @@ fn lower_residual_reports_array_division_denominator_shape_with_operation_span()
 }
 
 #[test]
+fn lower_expression_reduces_singleton_array_division_inside_max_abs() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("p_deltaq"),
+        array_var("p_deltaq", &[1]),
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("p_qd_max"),
+        array_var("p_qd_max", &[1]),
+    );
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = builtin(
+        rumoca_core::BuiltinFunction::Max,
+        vec![builtin(
+            rumoca_core::BuiltinFunction::Abs,
+            vec![rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Div,
+                lhs: Box::new(var("p_deltaq")),
+                rhs: Box::new(var("p_qd_max")),
+                span: lower_test_span(),
+            }],
+        )],
+    );
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("singleton array division should lower as a scalar quotient");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "p_deltaq[1]", -10.0);
+    set_p_value(&layout, &mut p, "p_qd_max[1]", 4.0);
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 2.5);
+}
+
+#[test]
 fn lower_residual_projects_scalarized_record_refs_in_array_row() {
     let mut dae_model = dae::Dae::default();
     for name in ["a.re", "a.im", "b.re", "b.im"] {
