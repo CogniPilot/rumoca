@@ -1170,6 +1170,101 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
     model
 }
 
+fn shapeless_linear_algebraic_loop_state_model() -> solve::SolveModel {
+    use solve::ComputeBlock;
+    use solve::LinearOp::{LoadSeed, LoadY, StoreOutput};
+    let load_y: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadY { dst, index };
+    let load_seed: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadSeed { dst, index };
+    let mut model = linear_algebraic_loop_state_model();
+    // Same solution as the residual-row fixture, but each algebraic row is a
+    // shapeless target-value row:
+    //   a = (x - b)/4, b = (2x - a)/4.
+    // Value refresh residualizes these as `raw - target`; seed refresh must
+    // differentiate that same residual, including the `-seed[target]` term.
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            affine2_sub(load_y, 0.25, 0, 0.25, 2),
+            affine2_sub(load_y, 0.5, 0, 0.25, 1),
+        ],
+        "shapeless_loop_implicit.mo",
+    ));
+    model.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(
+        vec![
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            affine2_sub(load_seed, 0.25, 0, 0.25, 2),
+            affine2_sub(load_seed, 0.5, 0, 0.25, 1),
+        ],
+        "shapeless_loop_implicit_jvp.mo",
+    );
+    model
+}
+
+fn parameterized_shapeless_algebraic_loop_state_model() -> solve::SolveModel {
+    use solve::ComputeBlock;
+    use solve::LinearOp::{LoadSeed, LoadY, StoreOutput};
+    let mut model = shapeless_linear_algebraic_loop_state_model();
+    model.problem.layout = solve::VarLayout::from_parts(
+        indexmap::IndexMap::from([
+            ("x".to_string(), solve::scalar_slot_y(0)),
+            ("a".to_string(), solve::scalar_slot_y(1)),
+            ("b".to_string(), solve::scalar_slot_y(2)),
+            ("p".to_string(), solve::scalar_slot_p(0)),
+        ]),
+        3,
+        1,
+    );
+    model.parameters = vec![10.0];
+    // Parameterized target-value loop:
+    //   a = (x + p - b)/4, b = (2x + 2p - a)/4,
+    // so der = a + b = 3/5 * (x + p) and d(der)/dp = 3/5.
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            shapeless_param_row(0.25, 0.25, 2),
+            shapeless_param_row(0.5, 0.5, 1),
+        ],
+        "shapeless_param_loop_implicit.mo",
+    ));
+    model.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(
+        vec![
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            shapeless_param_jvp_row(0.25, 0.25, 2),
+            shapeless_param_jvp_row(0.5, 0.5, 1),
+        ],
+        "shapeless_param_loop_implicit_jvp.mo",
+    );
+    model
+}
+
+fn singular_algebraic_loop_state_model() -> solve::SolveModel {
+    use solve::ComputeBlock;
+    use solve::LinearOp::{LoadSeed, LoadY, StoreOutput};
+    let load_y: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadY { dst, index };
+    let load_seed: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadSeed { dst, index };
+    let mut model = linear_algebraic_loop_state_model();
+    // Singular 2x2 algebraic block: r_a = a + b - x,
+    // r_b = 2a + 2b - 2x. The value point can be consistent, but the algebraic
+    // seed matrix has dependent rows and must not be accepted as a valid gradient.
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            affine3(load_y, 1.0, 1, 1.0, 2, 1.0, 0),
+            affine3(load_y, 2.0, 1, 2.0, 2, 2.0, 0),
+        ],
+        "singular_loop_implicit.mo",
+    ));
+    model.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(
+        vec![
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            affine3(load_seed, 1.0, 1, 1.0, 2, 1.0, 0),
+            affine3(load_seed, 2.0, 1, 2.0, 2, 2.0, 0),
+        ],
+        "singular_loop_implicit_jvp.mo",
+    );
+    model
+}
+
 /// Build an affine residual/JVP row `k1*L(i1) + k2*L(i2) - k3*L(i3)`, where `L`
 /// is the load constructor (`LoadY` for the value rows, `LoadSeed` for the JVP).
 fn affine3(
@@ -1224,6 +1319,192 @@ fn affine3(
     ]
 }
 
+fn affine2_sub(
+    load: fn(u32, usize) -> solve::LinearOp,
+    k1: f64,
+    i1: usize,
+    k2: f64,
+    i2: usize,
+) -> Vec<solve::LinearOp> {
+    use solve::BinaryOp::{Mul, Sub};
+    use solve::LinearOp::{Binary, Const, StoreOutput};
+    vec![
+        Const { dst: 0, value: k1 },
+        load(1, i1),
+        Binary {
+            dst: 2,
+            op: Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        Const { dst: 3, value: 0.0 },
+        Binary {
+            dst: 4,
+            op: solve::BinaryOp::Add,
+            lhs: 2,
+            rhs: 3,
+        },
+        Const { dst: 5, value: k2 },
+        load(6, i2),
+        Binary {
+            dst: 7,
+            op: Mul,
+            lhs: 5,
+            rhs: 6,
+        },
+        Const { dst: 8, value: 0.0 },
+        Binary {
+            dst: 9,
+            op: solve::BinaryOp::Add,
+            lhs: 7,
+            rhs: 8,
+        },
+        Binary {
+            dst: 10,
+            op: Sub,
+            lhs: 4,
+            rhs: 9,
+        },
+        StoreOutput { src: 10 },
+    ]
+}
+
+fn shapeless_param_row(x_scale: f64, p_scale: f64, feedback_index: usize) -> Vec<solve::LinearOp> {
+    use solve::BinaryOp::{Add, Mul, Sub};
+    use solve::LinearOp::{Binary, Const, LoadP, LoadY, StoreOutput};
+    vec![
+        Const {
+            dst: 0,
+            value: x_scale,
+        },
+        LoadY { dst: 1, index: 0 },
+        Binary {
+            dst: 2,
+            op: Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        Const {
+            dst: 3,
+            value: p_scale,
+        },
+        LoadP { dst: 4, index: 0 },
+        Binary {
+            dst: 5,
+            op: Mul,
+            lhs: 3,
+            rhs: 4,
+        },
+        Binary {
+            dst: 6,
+            op: Add,
+            lhs: 2,
+            rhs: 5,
+        },
+        Const {
+            dst: 7,
+            value: 0.25,
+        },
+        LoadY {
+            dst: 8,
+            index: feedback_index,
+        },
+        Binary {
+            dst: 9,
+            op: Mul,
+            lhs: 7,
+            rhs: 8,
+        },
+        Const {
+            dst: 10,
+            value: 0.0,
+        },
+        Binary {
+            dst: 11,
+            op: Add,
+            lhs: 9,
+            rhs: 10,
+        },
+        Binary {
+            dst: 12,
+            op: Sub,
+            lhs: 6,
+            rhs: 11,
+        },
+        StoreOutput { src: 12 },
+    ]
+}
+
+fn shapeless_param_jvp_row(
+    x_scale: f64,
+    p_scale: f64,
+    feedback_index: usize,
+) -> Vec<solve::LinearOp> {
+    use solve::BinaryOp::{Add, Mul, Sub};
+    use solve::LinearOp::{Binary, Const, LoadSeed, StoreOutput};
+    vec![
+        Const {
+            dst: 0,
+            value: x_scale,
+        },
+        LoadSeed { dst: 1, index: 0 },
+        Binary {
+            dst: 2,
+            op: Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        Const {
+            dst: 3,
+            value: p_scale,
+        },
+        LoadSeed { dst: 4, index: 3 },
+        Binary {
+            dst: 5,
+            op: Mul,
+            lhs: 3,
+            rhs: 4,
+        },
+        Binary {
+            dst: 6,
+            op: Add,
+            lhs: 2,
+            rhs: 5,
+        },
+        Const {
+            dst: 7,
+            value: 0.25,
+        },
+        LoadSeed {
+            dst: 8,
+            index: feedback_index,
+        },
+        Binary {
+            dst: 9,
+            op: Mul,
+            lhs: 7,
+            rhs: 8,
+        },
+        Const {
+            dst: 10,
+            value: 0.0,
+        },
+        Binary {
+            dst: 11,
+            op: Add,
+            lhs: 9,
+            rhs: 10,
+        },
+        Binary {
+            dst: 12,
+            op: Sub,
+            lhs: 6,
+            rhs: 11,
+        },
+        StoreOutput { src: 12 },
+    ]
+}
+
 #[test]
 fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
     let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model())
@@ -1240,7 +1521,7 @@ fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
                 params: &[],
                 settle: AlgebraicSettle {
                     tol: 1.0e-12,
-                    max_iters: 64,
+                    max_iters: 1,
                 },
             },
             &[1.0],
@@ -1257,11 +1538,147 @@ fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
 }
 
 #[test]
-fn seed_refresh_reports_linear_algebraic_loop_nonconvergence() {
+fn state_jacobian_resolves_shapeless_algebraic_loop_sensitivity() {
+    let runtime = SolveRuntime::new(&shapeless_linear_algebraic_loop_state_model())
+        .expect("valid runtime should prepare");
+    assert!(
+        runtime.derivative_refresh.iterative,
+        "the mutually-dependent shapeless algebraic loop should refresh iteratively"
+    );
+    let mut out = [0.0_f64];
+    runtime
+        .eval_state_jacobian_v_ad_into(
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 1,
+                },
+            },
+            &[1.0],
+            &[1.0],
+            &mut out,
+        )
+        .expect("shapeless looped-projection state Jacobian should evaluate");
+
+    assert!(
+        (out[0] - 0.6).abs() <= 1.0e-9,
+        "expected total state Jacobian 0.6 through the shapeless loop, got {}",
+        out[0]
+    );
+}
+
+#[test]
+fn seed_refresh_directly_solves_coupled_algebraic_loop() {
     let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model())
         .expect("valid runtime should prepare");
     let solver_y = [1.0, 2.0 / 15.0, 7.0 / 15.0];
     let mut seed = [1.0, 0.0, 0.0];
+    let mut unit_seed = [0.0, 0.0, 0.0];
+
+    runtime
+        .seed_refresh_with_plan(
+            &runtime.derivative_refresh,
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 1,
+                },
+            },
+            &solver_y,
+            &mut seed,
+            &mut unit_seed,
+        )
+        .expect("direct seed refresh should not depend on fixed-point iterations");
+
+    assert!(
+        (seed[1] - 2.0 / 15.0).abs() <= 1.0e-12,
+        "unexpected seed for a: {}",
+        seed[1]
+    );
+    assert!(
+        (seed[2] - 7.0 / 15.0).abs() <= 1.0e-12,
+        "unexpected seed for b: {}",
+        seed[2]
+    );
+}
+
+#[test]
+fn seed_refresh_directly_solves_shapeless_coupled_algebraic_loop() {
+    let runtime = SolveRuntime::new(&shapeless_linear_algebraic_loop_state_model())
+        .expect("valid runtime should prepare");
+    let solver_y = [1.0, 2.0 / 15.0, 7.0 / 15.0];
+    let mut seed = [1.0, 0.0, 0.0];
+    let mut unit_seed = [0.0, 0.0, 0.0];
+
+    runtime
+        .seed_refresh_with_plan(
+            &runtime.derivative_refresh,
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 1,
+                },
+            },
+            &solver_y,
+            &mut seed,
+            &mut unit_seed,
+        )
+        .expect("direct seed refresh should residualize shapeless target-value rows");
+
+    assert!(
+        (seed[1] - 2.0 / 15.0).abs() <= 1.0e-12,
+        "unexpected seed for a: {}",
+        seed[1]
+    );
+    assert!(
+        (seed[2] - 7.0 / 15.0).abs() <= 1.0e-12,
+        "unexpected seed for b: {}",
+        seed[2]
+    );
+}
+
+#[test]
+fn full_jacobian_resolves_shapeless_loop_parameter_seed() {
+    let runtime = SolveRuntime::new(&parameterized_shapeless_algebraic_loop_state_model())
+        .expect("valid runtime should prepare");
+    let mut out = [0.0_f64];
+    let seed = [0.0, 0.0, 0.0, 1.0];
+    runtime
+        .eval_full_jacobian_v_ad_into(
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[10.0],
+                settle: AlgebraicSettle {
+                    tol: 1.0e-12,
+                    max_iters: 1,
+                },
+            },
+            &[2.0],
+            &seed,
+            &mut out,
+        )
+        .expect("parameter-seeded shapeless loop Jacobian should evaluate");
+
+    assert!(
+        (out[0] - 0.6).abs() <= 1.0e-9,
+        "expected d(der)/dp = 0.6 through the shapeless loop, got {}",
+        out[0]
+    );
+}
+
+#[test]
+fn seed_refresh_reports_singular_coupled_algebraic_loop() {
+    let runtime = SolveRuntime::new(&singular_algebraic_loop_state_model())
+        .expect("valid runtime should prepare");
+    let solver_y = [1.0, 0.5, 0.5];
+    let mut seed = [1.0, 9.0, -4.0];
+    let original_seed = seed;
     let mut unit_seed = [0.0, 0.0, 0.0];
 
     let error = runtime
@@ -1279,13 +1696,17 @@ fn seed_refresh_reports_linear_algebraic_loop_nonconvergence() {
             &mut seed,
             &mut unit_seed,
         )
-        .expect_err("under-iterated seed refresh should report non-convergence");
+        .expect_err("singular seed system should report an invalid gradient");
 
     assert!(
         error
             .to_string()
-            .contains("algebraic forward-sensitivity refresh did not converge"),
+            .contains("algebraic forward-sensitivity linear solve is singular"),
         "{error}"
+    );
+    assert_eq!(
+        seed, original_seed,
+        "failed seed refresh should restore the caller's seed buffer"
     );
 }
 

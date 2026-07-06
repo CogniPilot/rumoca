@@ -624,25 +624,34 @@ impl SolveRuntime {
                 t,
                 self.row_eval_context(),
             )?;
-        match row.assignment_target {
-            // `raw - current_target` is only valid when the row evaluates to the
-            // target's *value* (an expression in the other unknowns). A row that
-            // reads its own target is already a residual in it — e.g. a flow-sum
-            // `... + own + ... = 0` whose `raw` is affine in `own` with a +1
-            // coefficient. Subtracting `own` there cancels that dependence and
-            // leaves a residual with zero slope, so the linear solve reports the
-            // target as undeterminable. Use the bare residual in that case (same
-            // as assignment-shape rows), which Newton-solves correctly.
-            Some(own)
-                if !self
-                    .implicit_scalar_rhs
-                    .row_has_assignment_shape(row.row_idx)
-                    && !self.implicit_scalar_rhs.row_reads_y(row.row_idx, own) =>
-            {
-                Ok(raw - solver_y[own])
-            }
-            _ => Ok(raw),
+        if let Some(target) = self.refresh_row_subtracted_target_index(row) {
+            return Ok(raw - solver_y[target]);
         }
+        Ok(raw)
+    }
+
+    /// Target slot subtracted from raw row output when a shapeless row evaluates
+    /// an implicit target value instead of a residual. The seed/JVP refresh uses
+    /// the same predicate so value projection and sensitivity projection solve
+    /// the same residual.
+    fn refresh_row_subtracted_target_index(&self, row: &AlgebraicRefreshRow) -> Option<usize> {
+        let own = row.assignment_target?;
+        // `raw - current_target` is only valid when the row evaluates to the
+        // target's *value* (an expression in the other unknowns). A row that
+        // reads its own target is already a residual in it — e.g. a flow-sum
+        // `... + own + ... = 0` whose `raw` is affine in `own` with a +1
+        // coefficient. Subtracting `own` there cancels that dependence and
+        // leaves a residual with zero slope, so the linear solve reports the
+        // target as undeterminable. Use the bare residual in that case (same
+        // as assignment-shape rows), which Newton-solves correctly.
+        if !self
+            .implicit_scalar_rhs
+            .row_has_assignment_shape(row.row_idx)
+            && !self.implicit_scalar_rhs.row_reads_y(row.row_idx, own)
+        {
+            return Some(own);
+        }
+        None
     }
 
     fn solve_refresh_residual_row(
@@ -1917,8 +1926,8 @@ pub struct AlgebraicLinearization<'a> {
     pub settle: AlgebraicSettle,
 }
 
-/// Diagonal magnitude below which a residual row is treated as not constraining
-/// its own target slot (a structural zero on the seed diagonal).
+/// Diagonal magnitude below which a seed residual row is treated as singular for
+/// its paired target slot, matching the value refresh's residual-slope check.
 const SEED_DIAGONAL_EPS: f64 = 1.0e-12;
 
 fn validate_derivative_output_len(
