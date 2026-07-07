@@ -299,18 +299,18 @@ where
         *state.t = t;
     }
     fresh_state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    cap_fresh_step_size::<Eqn, S>(&mut fresh_state, h_cap);
     solver.set_state(fresh_state);
-    cap_solver_step_size(solver, h_cap);
     Ok(())
 }
 
-fn cap_solver_step_size<'a, Eqn, S>(solver: &mut S, h_cap: f64)
+fn cap_fresh_step_size<'a, Eqn, S>(state: &mut S::State, h_cap: f64)
 where
     Eqn: OdeEquations<T = f64> + 'a,
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    let state = solver.state_mut();
+    let state = state.as_mut();
     if *state.h > h_cap {
         *state.h = h_cap;
     }

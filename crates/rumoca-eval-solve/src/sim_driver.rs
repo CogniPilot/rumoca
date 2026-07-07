@@ -788,10 +788,24 @@ fn handle_root_crossing<St: SolverStepper + ?Sized>(
 ) -> Result<bool, SimDriverError> {
     // A zero-crossing is a single-apply event: pin to the root, bracket the
     // continuous state across [root_t, right_t], apply at the right limit, and
-    // settle — all via the backend-neutral kernels (shared with the scheduled
-    // path and every backend through the stepper callbacks).
+    // settle. Backends that keep their internal step at the accepted step end
+    // (diffsol BDF) use this pinning to expose the physical root state before
+    // the event path rebuilds the backend after the discrete update.
     let tol = ctx.opts.atol.max(1.0e-10);
-    stepper.state_mut_back(t_root)?;
+    let solver_t = stepper.time();
+    let pin_t = if t_root > solver_t {
+        let root_pin_tol = tol * (1.0 + t_root.abs().max(solver_t.abs()));
+        if (t_root - solver_t).abs() <= root_pin_tol {
+            solver_t
+        } else {
+            return Err(SimDriverError::Backend(format!(
+                "root time {t_root:.12} is after backend time {solver_t:.12}"
+            )));
+        }
+    } else {
+        t_root
+    };
+    stepper.state_mut_back(pin_t)?;
     let root_t = stepper.time();
     let native_at_root = stepper.native_y();
     let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
