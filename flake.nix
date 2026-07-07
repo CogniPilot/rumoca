@@ -78,30 +78,24 @@
           buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
         });
 
-        # Release-mode artifacts for the MSL parity gate, built ONCE here so the
-        # shard / merge / ModelicaTest jobs consume them via Cachix instead of
-        # each re-compiling + re-LTO'ing the workspace (LTO is a link-time cost no
-        # per-crate cache can avoid — only build-once can). Both reuse
-        # cargoArtifacts so only the workspace crates compile, deps are cached.
-        rumoca-sim-worker = craneLib.buildPackage (commonArgs // {
+        # Release-mode artifacts for the MSL parity gate, built as one Cargo
+        # graph so the shard / merge consumers restore them via Cachix instead
+        # of recompiling + re-LTO'ing the workspace. A single derivation keeps
+        # rumoca-worker, rumoca-sim-worker, rumoca-msl-tools, and the libtest
+        # harness in one target directory; separate derivations rebuild the same
+        # workspace crates and made rumoca-worker a serial extra build.
+        msl-artifacts = craneLib.mkCargoDerivation (commonArgs // {
           inherit cargoArtifacts;
-          pname = "rumoca-sim-worker";
-          doCheck = false;
-          cargoExtraArgs = "-p rumoca-test-msl --bin rumoca-sim-worker";
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
-          buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
-        });
-
-        # The MSL harness is a libtest binary (msl-full-test feature); build it
-        # with `--no-run` and install the hashed test binary under a stable name.
-        # It also needs the per-model compile worker when run outside Cargo.
-        msl-test-binary = craneLib.mkCargoDerivation (commonArgs // {
-          inherit cargoArtifacts;
-          pname = "rumoca-msl-test-binary";
+          pname = "rumoca-msl-artifacts";
           buildPhaseCargoCommand = ''
-            cargo test --release --no-run \
-              -p rumoca-test-msl --features msl-full-test --test msl_tests
-            cargo build --release -p rumoca-worker --bin rumoca-worker
+            cargo build --release \
+              -p rumoca-worker \
+              -p rumoca-test-msl \
+              --features rumoca-test-msl/msl-full-test \
+              --bin rumoca-worker \
+              --bin rumoca-sim-worker \
+              --bin rumoca-msl-tools \
+              --test msl_tests
           '';
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
           buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
@@ -112,22 +106,17 @@
             test -n "$bin" || { echo "msl_tests test binary not found"; exit 1; }
             cp "$bin" $out/bin/msl_tests
             cp target/release/rumoca-worker $out/bin/rumoca-worker
+            cp target/release/rumoca-sim-worker $out/bin/rumoca-sim-worker
+            cp target/release/rumoca-msl-tools $out/bin/rumoca-msl-tools
           '';
         });
         # xtask itself is NOT built here: after the light-xtask split it carries no
         # compiler deps and compiles per-job in seconds, so build-once buys nothing.
-        # The MSL merge/ModelicaTest jobs DO run the `repo msl` reporting subcommands
-        # (compatibility-report, modelica-test-catalog); those live in the
-        # compiler-linked `rumoca-msl-tools` bin, so build it once here and have
-        # those jobs invoke the prebuilt binary instead of recompiling the stack.
-        rumoca-msl-tools = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
-          pname = "rumoca-msl-tools";
-          doCheck = false;
-          cargoExtraArgs = "-p rumoca-test-msl --bin rumoca-msl-tools";
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
-          buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
-        });
+        # The MSL merge job runs `repo msl` reporting through the
+        # compiler-linked `rumoca-msl-tools` bin, so the MSL artifact bundle
+        # includes it and the merge job invokes the prebuilt binary instead of
+        # recompiling the stack. ModelicaTest still uses the local fallback until
+        # its prebuilt hang is fixed.
       in {
         packages = {
           default = rumoca;
@@ -135,7 +124,7 @@
           # rumoca already builds `--bin rumoca-lsp`; alias so the LSP gate can
           # `nix build .#rumoca-lsp` and read result/bin/rumoca-lsp.
           rumoca-lsp = rumoca;
-          inherit rumoca-sim-worker msl-test-binary rumoca-msl-tools;
+          msl-artifacts = msl-artifacts;
         };
 
         checks = {

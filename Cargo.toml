@@ -217,11 +217,10 @@ opt-level = 3
 [profile.release.build-override]
 opt-level = 3
 
-# Compiler-throughput tuning: thin LTO + single codegen unit measurably speed
-# the hot compile/simulate paths; build-time cost is acceptable for release.
+# Keep thin LTO for release runtime quality, but leave codegen units at Cargo's
+# default so CI can use parallel codegen.
 [profile.release]
 lto = "thin"
-codegen-units = 1
 
 # Speed up parser-heavy runtime in normal debug builds.
 [profile.dev.package.rumoca-phase-parse]

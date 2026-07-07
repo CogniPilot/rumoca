@@ -188,11 +188,12 @@ jobs:
           # Public cache: pulls need no auth; the token lets CI push new paths.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Nix build the flake checks
-        # Build ONLY the flake `checks` (rumoca build, clippy, fmt). The heavy
-        # release PACKAGES (msl-test-binary, rumoca-sim-worker, rumoca-msl-tools)
-        # are built once by the dedicated `nix-build-msl` producer and consumed
-        # via Cachix; building them here too would double that ~release+LTO work.
+      - name: Nix build the flake package check
+        # Build ONLY the reproducible package check. Format and clippy are owned
+        # by the standalone Format/Lint jobs, and the heavy release MSL artifact
+        # bundle is built once by the dedicated `nix-build-msl` producer and
+        # consumed via Cachix; building any of that here too would duplicate
+        # release+LTO work.
         #
         # We deliberately do NOT run `nix flake check`: it eval-builds every output
         # (re-building those packages), and its `--no-build` eval trips over the
@@ -200,10 +201,7 @@ jobs:
         # (`path '…rust-nightly.toml.drv' is not valid`). `nix build` realizes the
         # toolchain, so building the checks directly is the reliable gate.
         run: |
-          nix build --print-build-logs \
-            .#checks.x86_64-linux.rumoca \
-            .#checks.x86_64-linux.clippy \
-            .#checks.x86_64-linux.fmt
+          nix build --print-build-logs .#checks.x86_64-linux.rumoca
 
   test:
     name: Test (${{ matrix.os }})
@@ -416,6 +414,7 @@ jobs:
         with:
           shared-key: template-runtime
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
 
       # No-op once the dev image ships it (core-requirements.txt); kept so the
       # symforce runtime tests exercise the real package even on a stale image
@@ -636,11 +635,11 @@ jobs:
           ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane and push to
-  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead of
-  # each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
-  # per-crate cache can avoid — only build-once does. On an unchanged dep closure
-  # the crane `cargoArtifacts` layer is a Cachix hit; only the workspace crates
-  # rebuild here, once, for all consumers.
+  # Cachix, so the shard / merge consumers restore them instead of each
+  # recompiling + re-LTO'ing the workspace. LTO is a link-time cost no per-crate
+  # cache can avoid — only build-once does. On an unchanged dep closure the crane
+  # `cargoArtifacts` layer is a Cachix hit; only the workspace crates rebuild
+  # here, once, for all consumers.
   nix-build-msl:
     name: Build MSL artifacts (Nix, once)
     runs-on: ubuntu-24.04
@@ -664,8 +663,7 @@ jobs:
 
       - name: Build + cache MSL artifacts
         run: |
-          nix build --print-build-logs \
-            .#msl-test-binary .#rumoca-sim-worker .#rumoca-msl-tools
+          nix build --print-build-logs .#msl-artifacts
 
   # ============================================================================
   # MSL parity gate, sharded. The ~54min root-example parity run (575 models +
@@ -673,8 +671,8 @@ jobs:
   # (so the timeout tail spreads evenly); the msl-merge job then runs the
   # baseline ratchet ONCE on the merged results. ModelicaTest is its own job.
   #
-  # Each consumer restores the prebuilt msl_tests + rumoca-sim-worker from Cachix
-  # (needs: nix-build-msl) and runs them via `--prebuilt-test-binary` /
+  # Each consumer restores the prebuilt MSL artifact bundle from Cachix (needs:
+  # nix-build-msl) and runs it via `--prebuilt-test-binary` /
   # `--prebuilt-sim-worker`, so no workspace compile/LTO happens here — only the
   # light `cargo xtask` wrapper builds.
   # ============================================================================
@@ -766,16 +764,15 @@ jobs:
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
-          nix build .#msl-test-binary --out-link result-msl-test
-          nix build .#rumoca-sim-worker --out-link result-sim-worker
+          nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
           cargo xtask verify msl-parity \
             --shard ${{ matrix.shard }}/4 \
-            --prebuilt-test-binary "$PWD/result-msl-test/bin/msl_tests" \
-            --prebuilt-model-worker "$PWD/result-msl-test/bin/rumoca-worker" \
-            --prebuilt-sim-worker "$PWD/result-sim-worker/bin/rumoca-sim-worker" \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
             --stage-parallelism 3 \
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
@@ -836,14 +833,13 @@ jobs:
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
-          nix build .#msl-test-binary --out-link result-msl-test
-          nix build .#rumoca-msl-tools --out-link result-msl-tools
+          nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Merge shards + run quality gate
         run: |
           cargo xtask verify msl-parity \
             --merge-shards target/msl/shards \
-            --prebuilt-test-binary "$PWD/result-msl-test/bin/msl_tests"
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
 
       - name: Generate MSL compatibility report
         if: always()
@@ -851,7 +847,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f target/msl/results/msl_results.json ]]; then
-            ./result-msl-tools/bin/rumoca-msl-tools compatibility-report
+            ./result-msl-artifacts/bin/rumoca-msl-tools compatibility-report
           else
             echo "No merged target/msl/results/msl_results.json; skipping report."
           fi
@@ -865,7 +861,7 @@ jobs:
           if [[ -f target/msl/baselines/msl_quality_baseline.json ]]; then
             baseline="target/msl/baselines/msl_quality_baseline.json"
           fi
-          ./result-msl-tools/bin/rumoca-msl-tools pr-comment \
+          ./result-msl-artifacts/bin/rumoca-msl-tools pr-comment \
             --results-dir target/msl/results \
             --baseline "$baseline"
 
@@ -1223,6 +1219,7 @@ jobs:
         with:
           shared-key: docs
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
@@ -1268,6 +1265,7 @@ jobs:
         with:
           shared-key: vscode
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
 
       - name: Run VS Code extension CI gate
         run: cargo xtask vscode test
@@ -1322,6 +1320,7 @@ jobs:
         with:
           shared-key: wasm
           cache-on-failure: true
+          cache-targets: false
 
       - name: Build optimized npm packages
         # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
@@ -1461,6 +1460,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: wasm
+          cache-targets: false
           cache-on-failure: true
 
       - name: Run playground CI gate
