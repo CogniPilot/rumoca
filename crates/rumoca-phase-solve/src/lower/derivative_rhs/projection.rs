@@ -3,7 +3,7 @@
 // proof and row assembly into focused projection submodules.
 
 use crate::lower::{
-    function_calls::external_table_intrinsic_kind,
+    function_calls::{external_table_intrinsic_kind, split_named_and_positional_call_args},
     helpers::{
         format_i64_dims, format_usize_dims, is_stream_passthrough_intrinsic, positive_i64_index,
     },
@@ -840,7 +840,143 @@ fn project_function_call_scalar(
         ctx.structural_bindings,
         span,
     )?;
-    Ok(values.and_then(|values| values.get(ctx.flat_index).cloned()))
+    if let Some(value) = values.and_then(|values| values.get(ctx.flat_index).cloned()) {
+        return Ok(Some(value));
+    }
+    project_vectorized_scalar_function_call(expr, ctx, span)
+}
+
+fn project_vectorized_scalar_function_call(
+    expr: &rumoca_core::Expression,
+    ctx: &ProjectionContext<'_>,
+    span: rumoca_core::Span,
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+    let Some(function) = ctx.dae_model.symbols.functions.get(name.var_name()) else {
+        return Ok(None);
+    };
+    let [output] = function.outputs.as_slice() else {
+        return Ok(None);
+    };
+    if !output.dims.is_empty() {
+        return Ok(None);
+    }
+    let (named_args, positional_args) = split_named_and_positional_call_args(name.as_str(), args)?;
+    let lane_dims =
+        checked_usize_dims_to_i64(ctx.dims, "vectorized function lane dimension", span)?;
+    let lane_indices =
+        dae::flat_index_to_subscripts(&lane_dims, ctx.flat_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "vectorized scalar function flat index {} is outside lane dimensions {}",
+                    ctx.flat_index,
+                    format_usize_dims(ctx.dims)
+                ),
+                span,
+            )
+        })?;
+    let mut projected_args = derivative_vec_with_capacity(
+        function.inputs.len(),
+        "vectorized scalar function projected argument count",
+        span,
+    )?;
+    let mut positional_idx = 0usize;
+    let mut projected_any = false;
+    for input in &function.inputs {
+        let actual = if let Some(actual) = named_args.get(input.name.as_str()) {
+            *actual
+        } else if let Some(actual) = positional_args.get(positional_idx).copied() {
+            positional_idx += 1;
+            actual
+        } else if let Some(default) = input.default.as_ref() {
+            default
+        } else {
+            return Ok(None);
+        };
+        let Some((projected, did_project)) =
+            project_vectorized_function_actual(actual, input.dims.len(), &lane_indices, ctx, span)?
+        else {
+            return Ok(None);
+        };
+        projected_any |= did_project;
+        projected_args.push(projected);
+    }
+    if !projected_any {
+        return Ok(None);
+    }
+    Ok(Some(rumoca_core::Expression::FunctionCall {
+        name: name.clone(),
+        args: projected_args,
+        is_constructor: false,
+        span,
+    }))
+}
+
+fn project_vectorized_function_actual(
+    actual: &rumoca_core::Expression,
+    formal_rank: usize,
+    lane_indices: &[usize],
+    ctx: &ProjectionContext<'_>,
+    span: rumoca_core::Span,
+) -> Result<Option<(rumoca_core::Expression, bool)>, LowerError> {
+    let actual_dims = expression_result_dims(actual, ctx.dae_model, ctx.structural_bindings, span)?;
+    if actual_dims.is_empty() || actual_dims.len() == formal_rank {
+        return Ok(Some((actual.clone(), false)));
+    }
+    if formal_rank == 0 && actual_dims == ctx.dims {
+        let Some(projected) = project_expression_scalar_with_owner(
+            actual,
+            ctx.dims,
+            ctx.flat_index,
+            ctx.dae_model,
+            ctx.structural_bindings,
+            span,
+        )?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some((projected, true)));
+    }
+    if actual_dims.len() != ctx.dims.len() + formal_rank
+        || actual_dims[..ctx.dims.len()] != *ctx.dims
+    {
+        return Ok(None);
+    }
+    let mut subscripts = derivative_vec_with_capacity(
+        actual_dims.len(),
+        "vectorized function argument subscript count",
+        span,
+    )?;
+    for index in lane_indices {
+        let index = checked_usize_to_i64(*index, "vectorized function lane index", span)?;
+        subscripts.push(rumoca_core::Subscript::try_generated_index(
+            index,
+            span,
+            "vectorized function lane index",
+        )?);
+    }
+    for _ in 0..formal_rank {
+        subscripts.push(rumoca_core::Subscript::try_generated_colon(
+            span,
+            "vectorized function formal slice",
+        )?);
+    }
+    Ok(Some((
+        rumoca_core::Expression::Index {
+            base: Box::new(actual.clone()),
+            subscripts,
+            span,
+        },
+        true,
+    )))
 }
 
 fn project_cross_scalar(
@@ -1440,11 +1576,14 @@ pub(in crate::lower) fn builtin_size_args_dims(
     let span = projection_first_expr_or_owner_span(args, owner_span)?;
     let mut dims = derivative_vec_with_capacity(args.len(), "size() dimension count", span)?;
     for arg in args {
-        dims.push(super::super::compile_time_index_expr_with_owner(
-            arg,
-            structural_bindings,
-            span,
-        )?);
+        dims.push(
+            super::super::compile_time_non_negative_dimension_expr_with_owner(
+                arg,
+                structural_bindings,
+                span,
+                "builtin array dimension",
+            )?,
+        );
     }
     Ok(dims)
 }

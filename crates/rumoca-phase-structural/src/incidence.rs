@@ -133,11 +133,21 @@ fn is_scalarized_aggregate_variable_unknown(dae: &dae::Dae, unknown: &UnknownId)
         return false;
     };
     let base = rumoca_core::VarName::new(scalar.base);
-    dae.variables
+    if dae
+        .variables
         .algebraics
         .get(&base)
         .or_else(|| dae.variables.outputs.get(&base))
         .is_some_and(|var| var.size() > 1)
+    {
+        return true;
+    }
+
+    dae.variables
+        .algebraics
+        .get(name)
+        .or_else(|| dae.variables.outputs.get(name))
+        .is_some()
 }
 
 /// Debug-only invariant guarding the P3 family-native lowering contract: every
@@ -887,24 +897,7 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
     }
 
     fn visit_field_access(&mut self, base: &rumoca_core::Expression, field: &str) {
-        if let Some((name, subscripts)) = indexed_field_access_var_ref_key(base, field) {
-            let reference = rumoca_core::Reference::new(&name);
-            let resolved = self
-                .constants
-                .map(|constants| {
-                    self.resolver.resolve_var_ref_all_with_constants(
-                        &reference,
-                        &subscripts,
-                        constants,
-                    )
-                })
-                .unwrap_or_else(|| self.resolver.resolve_var_ref_all(&reference, &subscripts));
-            for idx in resolved {
-                self.cols.insert(idx);
-            }
-            for subscript in &subscripts {
-                self.visit_subscript(subscript);
-            }
+        if self.collect_indexed_field_access_unknowns(base, field) {
             return;
         }
         self.visit_projected_field_expression(base, field);
@@ -925,8 +918,18 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
 }
 
 impl ExpressionUnknownCollector<'_> {
-    fn visit_projected_field_expression(&mut self, expr: &rumoca_core::Expression, field: &str) {
-        if let Some((name, subscripts)) = indexed_field_access_var_ref_key(expr, field) {
+    fn collect_indexed_field_access_unknowns(
+        &mut self,
+        base: &rumoca_core::Expression,
+        field: &str,
+    ) -> bool {
+        let Some((candidates, traversal_subscripts)) =
+            indexed_field_access_var_ref_keys(base, field)
+        else {
+            return false;
+        };
+
+        for (name, subscripts) in candidates {
             let reference = rumoca_core::Reference::new(&name);
             let resolved = self
                 .constants
@@ -938,12 +941,22 @@ impl ExpressionUnknownCollector<'_> {
                     )
                 })
                 .unwrap_or_else(|| self.resolver.resolve_var_ref_all(&reference, &subscripts));
+            if resolved.is_empty() {
+                continue;
+            }
             for idx in resolved {
                 self.cols.insert(idx);
             }
-            for subscript in &subscripts {
-                self.visit_subscript(subscript);
-            }
+            break;
+        }
+        for subscript in &traversal_subscripts {
+            self.visit_subscript(subscript);
+        }
+        true
+    }
+
+    fn visit_projected_field_expression(&mut self, expr: &rumoca_core::Expression, field: &str) {
+        if self.collect_indexed_field_access_unknowns(expr, field) {
             return;
         }
 
@@ -1274,14 +1287,20 @@ fn scalar_almost_eq(lhs: f64, rhs: f64) -> bool {
     (lhs - rhs).abs() <= 1.0e-12 * (1.0 + lhs.abs().max(rhs.abs()))
 }
 
-fn indexed_field_access_var_ref_key(
+type IndexedFieldCandidate = (String, Vec<rumoca_core::Subscript>);
+type IndexedFieldAccessKeys = (Vec<IndexedFieldCandidate>, Vec<rumoca_core::Subscript>);
+
+fn indexed_field_access_var_ref_keys(
     base: &rumoca_core::Expression,
     field: &str,
-) -> Option<(String, Vec<rumoca_core::Subscript>)> {
+) -> Option<IndexedFieldAccessKeys> {
     match base {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } => Some((format!("{}.{}", name.as_str(), field), subscripts.clone())),
+        } => Some((
+            vec![(format!("{}.{}", name.as_str(), field), subscripts.clone())],
+            subscripts.clone(),
+        )),
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
@@ -1296,7 +1315,12 @@ fn indexed_field_access_var_ref_key(
             let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
             combined.extend_from_slice(base_subscripts);
             combined.extend_from_slice(subscripts);
-            Some((format!("{}.{}", name.as_str(), field), combined))
+            let mut candidates = Vec::new();
+            candidates.push((format!("{}.{}", name.as_str(), field), combined.clone()));
+            if let Some(indexed_base) = canonical_var_ref_key(name, &combined) {
+                candidates.push((format!("{indexed_base}.{field}"), Vec::new()));
+            }
+            Some((candidates, combined))
         }
         _ => None,
     }
@@ -1620,6 +1644,22 @@ mod tests {
     }
 
     #[test]
+    fn test_build_solver_sparsity_triplets_resolves_array_element_record_fields() {
+        let mut dae = dae::Dae::new();
+
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("mediums[2].Xi"),
+            dae::Variable::new(rumoca_core::VarName::new("mediums[2].Xi"), test_span()),
+        );
+        dae.continuous
+            .equations
+            .push(eq(sub(field(index(var("mediums"), 2), "Xi"), lit(0.0))));
+
+        let triplets = build_solver_sparsity_triplets(&dae);
+        assert_eq!(triplets, vec![(0, 0)]);
+    }
+
+    #[test]
     fn field_projection_over_binary_collects_projected_scalar_fields() {
         let resolver = ScalarUnknownResolver::from_entries([
             ("a".to_string(), 0),
@@ -1754,6 +1794,35 @@ mod tests {
 
     fn set(values: &[usize]) -> HashSet<usize> {
         values.iter().copied().collect()
+    }
+
+    fn dae_var(name: &str, dims: Vec<i64>) -> dae::Variable {
+        let mut var = dae::Variable::new(rumoca_core::VarName::new(name), test_span());
+        var.dims = dims;
+        var
+    }
+
+    #[test]
+    fn prunes_zero_degree_exact_scalarized_aggregate_element_unknowns() {
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("ductOut.statesFM[3].X[2]"),
+            dae_var("ductOut.statesFM[3].X[2]", Vec::new()),
+        );
+
+        let mut eq_unknowns = vec![HashSet::new()];
+        let (names, spans) = prune_zero_degree_scalarized_aggregate_variables(
+            &dae,
+            &mut eq_unknowns,
+            vec![UnknownId::Variable(rumoca_core::VarName::new(
+                "ductOut.statesFM[3].X[2]",
+            ))],
+            vec![Some(test_span())],
+        );
+
+        assert!(names.is_empty());
+        assert!(spans.is_empty());
+        assert!(eq_unknowns[0].is_empty());
     }
 
     #[test]

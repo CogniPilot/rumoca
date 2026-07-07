@@ -794,6 +794,8 @@ impl DaeReferenceScope {
         let mut variables = IndexMap::new();
         let mut variables_by_def_id = IndexMap::new();
         let mut aggregate_prefixes = IndexMap::new();
+        let mut aggregate_prefix_def_ids = IndexMap::new();
+        let mut next_aggregate_def_id = next_component_ref_def_id(dae);
         Self::insert_partition(&mut variables, &dae.variables.states);
         Self::insert_partition(&mut variables, &dae.variables.algebraics);
         Self::insert_partition(&mut variables, &dae.variables.inputs);
@@ -814,7 +816,12 @@ impl DaeReferenceScope {
             }
         }
         for metadata in variables.values() {
-            Self::insert_aggregate_prefixes(&mut aggregate_prefixes, metadata);
+            Self::insert_aggregate_prefixes(
+                &mut aggregate_prefixes,
+                &mut aggregate_prefix_def_ids,
+                &mut next_aggregate_def_id,
+                metadata,
+            );
         }
         Self {
             variables,
@@ -842,6 +849,8 @@ impl DaeReferenceScope {
 
     fn insert_aggregate_prefixes(
         aggregate_prefixes: &mut IndexMap<rumoca_core::VarName, DaeReferenceMetadata>,
+        aggregate_prefix_def_ids: &mut IndexMap<rumoca_core::VarName, rumoca_core::DefId>,
+        next_def_id: &mut u32,
         metadata: &DaeReferenceMetadata,
     ) {
         let Some(component_ref) = metadata.component_ref.as_ref() else {
@@ -859,7 +868,13 @@ impl DaeReferenceScope {
                 local: component_ref.local,
                 span: component_ref.span,
                 parts: prefix_parts.to_vec(),
-                def_id: None,
+                def_id: Some(Self::aggregate_prefix_def_id(
+                    aggregate_prefix_def_ids,
+                    next_def_id,
+                    component_ref.local,
+                    component_ref.span,
+                    prefix_parts,
+                )),
             };
             let key = prefix.to_var_name();
             aggregate_prefixes
@@ -869,14 +884,13 @@ impl DaeReferenceScope {
                     origin: dae::VariableOrigin::Generated,
                     source_span: metadata.source_span,
                 });
-            if prefix_parts
-                .last()
-                .is_some_and(|part| !part.subs.is_empty())
-            {
-                let array_prefix = Self::array_prefix_without_terminal_subscripts(
+            if prefix_parts.iter().any(|part| !part.subs.is_empty()) {
+                let array_prefix = Self::array_prefix_without_subscripts(
                     component_ref.local,
                     component_ref.span,
                     prefix_parts,
+                    aggregate_prefix_def_ids,
+                    next_def_id,
                 );
                 let key = array_prefix.to_var_name();
                 aggregate_prefixes
@@ -890,10 +904,12 @@ impl DaeReferenceScope {
         }
     }
 
-    fn array_prefix_without_terminal_subscripts(
+    fn array_prefix_without_subscripts(
         local: bool,
         span: rumoca_core::Span,
         prefix_parts: &[rumoca_core::ComponentRefPart],
+        aggregate_prefix_def_ids: &mut IndexMap<rumoca_core::VarName, rumoca_core::DefId>,
+        next_def_id: &mut u32,
     ) -> rumoca_core::ComponentReference {
         let mut array_prefix = rumoca_core::ComponentReference {
             local,
@@ -901,10 +917,45 @@ impl DaeReferenceScope {
             parts: prefix_parts.to_vec(),
             def_id: None,
         };
-        if let Some(part) = array_prefix.parts.last_mut() {
+        for part in &mut array_prefix.parts {
             part.subs.clear();
         }
+        let key = array_prefix.to_var_name();
+        array_prefix.def_id = Some(Self::aggregate_prefix_def_id_for_key(
+            aggregate_prefix_def_ids,
+            next_def_id,
+            key,
+        ));
         array_prefix
+    }
+
+    fn aggregate_prefix_def_id(
+        aggregate_prefix_def_ids: &mut IndexMap<rumoca_core::VarName, rumoca_core::DefId>,
+        next_def_id: &mut u32,
+        local: bool,
+        span: rumoca_core::Span,
+        prefix_parts: &[rumoca_core::ComponentRefPart],
+    ) -> rumoca_core::DefId {
+        let key = rumoca_core::ComponentReference {
+            local,
+            span,
+            parts: prefix_parts.to_vec(),
+            def_id: None,
+        }
+        .to_var_name();
+        Self::aggregate_prefix_def_id_for_key(aggregate_prefix_def_ids, next_def_id, key)
+    }
+
+    fn aggregate_prefix_def_id_for_key(
+        aggregate_prefix_def_ids: &mut IndexMap<rumoca_core::VarName, rumoca_core::DefId>,
+        next_def_id: &mut u32,
+        key: rumoca_core::VarName,
+    ) -> rumoca_core::DefId {
+        *aggregate_prefix_def_ids.entry(key).or_insert_with(|| {
+            let def_id = rumoca_core::DefId::new(*next_def_id);
+            *next_def_id = next_def_id.saturating_add(1);
+            def_id
+        })
     }
 
     fn reference_for(
@@ -1899,6 +1950,122 @@ mod tests {
         assert_eq!(component_ref.parts.len(), 2);
         assert_eq!(component_ref.parts[0].ident, "mp");
         assert_eq!(component_ref.parts[1].ident, "modelcard");
+    }
+
+    #[test]
+    fn dae_metadata_attachment_assigns_def_id_to_aggregate_prefix_reference() {
+        let field_name = rumoca_core::VarName::new("ductOut.mediums[1].T");
+        let span = test_span(68, 75);
+        let mut field_ref = rumoca_core::component_reference_from_flat_name(&field_name, span)
+            .expect("test reference should parse static subscripts");
+        field_ref.def_id = Some(rumoca_core::DefId::new(140));
+        let aggregate_ref =
+            rumoca_core::ComponentReference::from_flat_segments("ductOut.mediums", span, None);
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            field_name.clone(),
+            dae::Variable {
+                name: field_name,
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::Array {
+                elements: vec![
+                    rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::with_component_reference(
+                            "ductOut.mediums",
+                            aggregate_ref.clone(),
+                        ),
+                        subscripts: Vec::new(),
+                        span,
+                    },
+                    rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::with_component_reference(
+                            "ductOut.mediums",
+                            aggregate_ref,
+                        ),
+                        subscripts: Vec::new(),
+                        span,
+                    },
+                ],
+                is_matrix: false,
+                span,
+            },
+            span,
+            origin: "test".to_string(),
+            scalar_count: 2,
+        });
+
+        attach_dae_reference_metadata(&mut dae).expect("aggregate prefix should resolve");
+
+        let rumoca_core::Expression::Array { elements, .. } = &dae.continuous.equations[0].rhs
+        else {
+            panic!("expected array expression");
+        };
+        let def_ids = elements
+            .iter()
+            .map(|element| match element {
+                rumoca_core::Expression::VarRef { name, .. } => {
+                    name.target_def_id().expect("aggregate prefix needs def-id")
+                }
+                _ => panic!("expected aggregate prefix reference"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(def_ids[0], def_ids[1]);
+        assert_ne!(def_ids[0], rumoca_core::DefId::new(140));
+    }
+
+    #[test]
+    fn dae_metadata_attachment_assigns_def_id_to_unsubscripted_nested_array_prefix() {
+        let field_name = rumoca_core::VarName::new("ductOut.mediums[1].state.X");
+        let span = test_span(69, 76);
+        let mut field_ref = rumoca_core::component_reference_from_flat_name(&field_name, span)
+            .expect("test reference should parse static subscripts");
+        field_ref.def_id = Some(rumoca_core::DefId::new(141));
+        let nested_prefix_ref = rumoca_core::ComponentReference::from_flat_segments(
+            "ductOut.mediums.state",
+            span,
+            None,
+        );
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            field_name.clone(),
+            dae::Variable {
+                name: field_name,
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "ductOut.mediums.state",
+                    nested_prefix_ref,
+                ),
+                subscripts: Vec::new(),
+                span,
+            },
+            span,
+            origin: "test".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae)
+            .expect("nested unsubscripted array prefix should resolve");
+
+        let rumoca_core::Expression::VarRef { name, .. } = &dae.continuous.equations[0].rhs else {
+            panic!("expected variable reference");
+        };
+        let def_id = name
+            .target_def_id()
+            .expect("nested aggregate prefix needs def-id");
+        assert_ne!(def_id, rumoca_core::DefId::new(141));
     }
 
     #[test]

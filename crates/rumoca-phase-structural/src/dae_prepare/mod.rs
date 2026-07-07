@@ -42,8 +42,8 @@ use connection_alias::connection_component_fixed_defining_expr;
 mod symbolic;
 use symbolic::{
     array_expr_from_flat_values, build_der_value_map, expand_der_in_expr_full, expression_dims,
-    flat_index_from_indices, project_flat_index_with_span, static_subscript_indices,
-    symbolic_time_derivative, truncate_debug, try_extract_der_value,
+    field_access_candidate_var_names, flat_index_from_indices, project_flat_index_with_span,
+    static_subscript_indices, symbolic_time_derivative, truncate_debug, try_extract_der_value,
 };
 mod row_shape;
 use row_shape::{dae_variable_size, required_dae_variable_size, residual_scalar_width};
@@ -54,11 +54,13 @@ pub use dummy_state_metadata::{
 };
 mod direct_demotion;
 mod state_row_reduction;
-pub use direct_demotion::demote_direct_assigned_states;
 use direct_demotion::{
     collect_non_state_continuous_unknown_names, equation_defining_expr_for_unknown,
     expr_refs_only_parameters_constants_or_time, expression_contains_any_der_call,
     is_connection_equation_origin,
+};
+pub use direct_demotion::{
+    demote_direct_assigned_states, demote_direct_assigned_states_with_boundary_substitutions,
 };
 use state_row_reduction::expression_exact_name;
 pub use state_row_reduction::{
@@ -124,8 +126,8 @@ fn extract_scaled_target(expr: &Expression, target: &VarName) -> Option<Expressi
     if !matches!(op, OpBinary::Mul | OpBinary::MulElem) {
         return None;
     }
-    let lhs_is_target = matches!(lhs.as_ref(), Expression::VarRef { name, subscripts, .. } if name.var_name() == target && subscripts.is_empty());
-    let rhs_is_target = matches!(rhs.as_ref(), Expression::VarRef { name, subscripts, .. } if name.var_name() == target && subscripts.is_empty());
+    let lhs_is_target = expr_refers_to_var(lhs, target);
+    let rhs_is_target = expr_refers_to_var(rhs, target);
     if lhs_is_target && !expr_contains_var(rhs, target) {
         return Some(*rhs.clone());
     }
@@ -227,10 +229,7 @@ fn extract_unknown_defining_expr(
     if !matches!(op, OpBinary::Sub) {
         return None;
     }
-    let is_var = |e: &Expression| -> bool {
-        matches!(e, Expression::VarRef { name, subscripts, .. }
-            if name.var_name() == alg_name && subscripts.is_empty())
-    };
+    let is_var = |e: &Expression| -> bool { expr_refers_to_var(e, alg_name) };
 
     // 0 = var - expr → var = expr → return expr
     if is_var(lhs) {
@@ -304,7 +303,66 @@ fn push_indexed_defining_expr(
 fn collect_rhs_var_refs(expr: &Expression) -> IndexSet<VarName> {
     let mut refs = IndexSet::new();
     expr.collect_var_refs(&mut refs);
+    FieldAccessVarRefCollector { refs: &mut refs }.visit_expression(expr);
     refs
+}
+
+struct FieldAccessVarRefCollector<'a> {
+    refs: &'a mut IndexSet<VarName>,
+}
+
+impl ExpressionVisitor for FieldAccessVarRefCollector<'_> {
+    fn visit_var_ref(&mut self, name: &Reference, subscripts: &[Subscript]) {
+        self.refs.insert(name.var_name().clone());
+        if let Some(indices) = static_subscript_indices(subscripts)
+            && !indices.is_empty()
+        {
+            let index_text = indices
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            self.refs
+                .insert(VarName::new(format!("{}[{}]", name.as_str(), index_text)));
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_index(&mut self, base: &Expression, subscripts: &[Subscript]) {
+        if let Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            ..
+        } = base
+        {
+            let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+            combined.extend_from_slice(base_subscripts);
+            combined.extend_from_slice(subscripts);
+            if let Some(indices) = static_subscript_indices(&combined)
+                && !indices.is_empty()
+            {
+                let index_text = indices
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.refs
+                    .insert(VarName::new(format!("{}[{}]", name.as_str(), index_text)));
+            }
+        }
+        self.visit_expression(base);
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_field_access(&mut self, base: &Expression, field: &str) {
+        self.refs
+            .extend(field_access_candidate_var_names(base, field));
+        self.visit_expression(base);
+    }
 }
 
 fn collect_residual_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
@@ -351,84 +409,6 @@ fn defining_expr_candidates<'a>(
         .flat_map(|candidates| candidates.iter().map(|candidate| &candidate.expr))
 }
 
-fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable> {
-    dae.variables
-        .states
-        .get(name)
-        .or_else(|| dae.variables.algebraics.get(name))
-        .or_else(|| dae.variables.outputs.get(name))
-        .or_else(|| dae.variables.inputs.get(name))
-}
-
-fn insert_symbolic_derivative_fallback(
-    dae: &Dae,
-    map: &mut HashMap<String, Expression>,
-    name: &VarName,
-) -> Result<(), StructuralError> {
-    let Some(variable) = continuous_variable(dae, name) else {
-        return Ok(());
-    };
-    match map.entry(name.as_str().to_string()) {
-        Entry::Occupied(_) => {}
-        Entry::Vacant(entry) => {
-            entry.insert(symbolic_der_var_ref_for_variable(variable)?);
-        }
-    }
-    Ok(())
-}
-
-fn resolve_derivatives_for_expr(
-    dae: &Dae,
-    defining_expr_index: &DefiningExprIndex,
-    map: &mut HashMap<String, Expression>,
-    expr: &Expression,
-    visiting: &mut HashSet<String>,
-) -> Result<(), StructuralError> {
-    for ref_name in collect_rhs_var_refs(expr) {
-        resolve_derivative_for_var(dae, defining_expr_index, map, &ref_name, visiting)?;
-    }
-    Ok(())
-}
-
-fn resolve_derivative_for_var(
-    dae: &Dae,
-    defining_expr_index: &DefiningExprIndex,
-    map: &mut HashMap<String, Expression>,
-    name: &VarName,
-    visiting: &mut HashSet<String>,
-) -> Result<(), StructuralError> {
-    if name.as_str() == "time"
-        || dae.variables.parameters.contains_key(name)
-        || dae.variables.constants.contains_key(name)
-        || map.contains_key(name.as_str())
-    {
-        return Ok(());
-    }
-
-    if dae.variables.states.contains_key(name) {
-        return insert_symbolic_derivative_fallback(dae, map, name);
-    }
-
-    if !visiting.insert(name.as_str().to_string()) {
-        return insert_symbolic_derivative_fallback(dae, map, name);
-    }
-
-    for defining_expr in defining_expr_candidates(defining_expr_index, name) {
-        resolve_derivatives_for_expr(dae, defining_expr_index, map, defining_expr, visiting)?;
-        let derivative = symbolic_time_derivative(defining_expr, dae, map);
-        if let Some(derivative) = derivative
-            && !expr_contains_der_of(&derivative, name)
-        {
-            map.insert(name.as_str().to_string(), derivative);
-            visiting.remove(name.as_str());
-            return Ok(());
-        }
-    }
-
-    visiting.remove(name.as_str());
-    insert_symbolic_derivative_fallback(dae, map, name)
-}
-
 fn build_relaxed_derivative_map_for_exprs(
     dae: &Dae,
     seed_exprs: &[Expression],
@@ -443,10 +423,6 @@ fn build_relaxed_derivative_map_for_exprs_with_index(
     seed_exprs: &[Expression],
 ) -> Result<HashMap<String, Expression>, StructuralError> {
     let mut map = build_der_value_map(dae);
-    let mut visiting = HashSet::new();
-    for expr in seed_exprs {
-        resolve_derivatives_for_expr(dae, defining_expr_index, &mut map, expr, &mut visiting)?;
-    }
     let candidate_names =
         collect_seeded_relaxation_candidates(dae, defining_expr_index, seed_exprs);
     relax_algebraic_derivative_map_to_fixed_point(
@@ -504,6 +480,12 @@ fn relax_algebraic_derivative_map_to_fixed_point(
     replace_existing: bool,
 ) {
     let resolvable = candidate_names.len();
+    let state_name_set = dae
+        .variables
+        .states
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<HashSet<_>>();
     for _ in 0..resolvable.max(1) {
         let mut changed = false;
         for alg_name in candidate_names {
@@ -515,13 +497,14 @@ fn relax_algebraic_derivative_map_to_fixed_point(
                 continue;
             }
             let derivative = defining_expr_candidates(defining_expr_index, alg_name)
-                .find_map(|expr| symbolic_time_derivative(expr, dae, der_map));
+                .filter_map(|expr| symbolic_time_derivative(expr, dae, der_map))
+                .find(|derivative| {
+                    !expr_contains_der_of(derivative, alg_name)
+                        && !expr_contains_unrelaxed_derivative(derivative, dae, &state_name_set)
+                });
             let Some(derivative) = derivative else {
                 continue;
             };
-            if expr_contains_der_of(&derivative, alg_name) {
-                continue;
-            }
             if der_map.get(alg_name.as_str()) == Some(&derivative) {
                 continue;
             }
@@ -532,6 +515,74 @@ fn relax_algebraic_derivative_map_to_fixed_point(
             break;
         }
     }
+}
+
+fn expr_contains_unrelaxed_derivative(
+    expr: &Expression,
+    dae: &Dae,
+    state_name_set: &HashSet<String>,
+) -> bool {
+    let mut checker = UnrelaxedDerivativeChecker {
+        dae,
+        state_name_set,
+        found: false,
+    };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+struct UnrelaxedDerivativeChecker<'a> {
+    dae: &'a Dae,
+    state_name_set: &'a HashSet<String>,
+    found: bool,
+}
+
+impl ExpressionVisitor for UnrelaxedDerivativeChecker<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+        if *function == BuiltinFunction::Der {
+            self.found =
+                der_arg_is_not_state_or_preferred_algebraic(args, self.dae, self.state_name_set);
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+}
+
+fn der_arg_is_not_state_or_preferred_algebraic(
+    args: &[Expression],
+    dae: &Dae,
+    state_name_set: &HashSet<String>,
+) -> bool {
+    if args.len() != 1 {
+        return true;
+    }
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = &args[0]
+    else {
+        return true;
+    };
+    if !subscripts.is_empty() {
+        return true;
+    }
+    if state_name_set.contains(name.as_str()) {
+        return false;
+    }
+    !dae.variables
+        .algebraics
+        .get(name.var_name())
+        .is_some_and(|var| {
+            state_select_rank(var.state_select)
+                >= state_select_rank(rumoca_core::StateSelect::Prefer)
+        })
 }
 
 fn is_symbolic_derivative_of_var(expr: &Expression, name: &VarName) -> bool {
@@ -1854,6 +1905,7 @@ impl ExpressionRewriter for DerSubstitutionRewriter<'_> {
 struct DirectStateDemotionPlan {
     state_name: VarName,
     der_expr: Expression,
+    promote_der_algebraics: Vec<VarName>,
 }
 
 #[derive(Default)]
@@ -2063,6 +2115,7 @@ fn constrained_dummy_derivative_plan(
     Some(DirectStateDemotionPlan {
         state_name: state_name.clone(),
         der_expr,
+        promote_der_algebraics: Vec::new(),
     })
 }
 

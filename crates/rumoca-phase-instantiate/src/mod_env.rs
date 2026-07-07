@@ -694,8 +694,12 @@ fn resolve_modification_expr_with_depth(
         ));
     }
 
-    // Try to evaluate as an integer (common for array dimension parameters).
-    if let Some(value) = try_eval_integer_expr(&eval_ctx, expr) {
+    // Try to evaluate modifier expressions as integers (common for array
+    // dimension parameters). Declaration bindings keep their expression shape
+    // so flattening can resolve unqualified names in the owning instance scope.
+    if mode == ModificationResolveMode::Modifier
+        && let Some(value) = try_eval_integer_expr(&eval_ctx, expr)
+    {
         return Ok(ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
             token: rumoca_core::Token {

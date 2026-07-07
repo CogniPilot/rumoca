@@ -91,6 +91,76 @@ fn lower_expression_lowers_vector_vector_multiply_as_scalar_product() {
 }
 
 #[test]
+fn lower_expression_broadcasts_dynamic_scalar_literal_projection_as_array_operand() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("i"), scalar_var("i"));
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("v"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("v")
+        },
+    );
+
+    let literal_projection = rumoca_core::Expression::Index {
+        base: Box::new(real_lit(4.0)),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(var("i")),
+            span,
+        }],
+        span,
+    };
+    let expr = source_builtin(
+        rumoca_core::BuiltinFunction::Sum,
+        vec![mul(literal_projection, var("v"))],
+    );
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("dynamic scalar literal projection should remain a scalar array operand");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "i", 2.0);
+    set_p_value(&layout, &mut p, "v[1]", 3.0);
+    set_p_value(&layout, &mut p, "v[2]", 5.0);
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 32.0);
+}
+
+#[test]
+fn lower_expression_lowers_singleton_array_power_as_elementwise_pow() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable {
+            dims: vec![1],
+            ..scalar_var("x")
+        },
+    );
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Exp,
+        lhs: Box::new(var("x")),
+        rhs: Box::new(real_lit(2.0)),
+        span: lower_test_span(),
+    };
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("singleton array power should lower as elementwise pow");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "x[1]", 3.0);
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 9.0);
+}
+
+#[test]
 fn lower_expression_projects_complex_vector_dot_from_scalarized_record_fields() {
     let mut dae_model = dae::Dae::default();
     for name in ["powerSensor.sum.k[1].re", "powerSensor.sum.k[1].im"] {
@@ -244,7 +314,7 @@ fn lower_expression_reports_non_scalar_multiply_shape_error_with_operation_span(
     assert!(
         err.reason().contains(
             "non-scalar multiplication result with width 2 is unsupported in scalar context \
-             (lhs_shape=[2], rhs_shape=[2, 2], result_shape=[2])"
+             (lhs_shape=[2], lhs_values=2, rhs_shape=[2, 2], rhs_values=4, result_shape=[2])"
         ),
         "{err:?}"
     );

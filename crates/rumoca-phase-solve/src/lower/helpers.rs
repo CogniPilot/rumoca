@@ -450,7 +450,13 @@ pub(super) fn resolve_array_dims_for_value_count(
     context: &'static str,
     span: rumoca_core::Span,
 ) -> Result<Vec<i64>, LowerError> {
-    let unknown_count = dims.iter().filter(|dim| **dim <= 0).count();
+    if let Some(dim) = dims.iter().find(|dim| **dim < 0) {
+        return Err(LowerError::contract_violation(
+            format!("{context} has negative dimension in declared shape {dims:?}: {dim}"),
+            span,
+        ));
+    }
+    let unknown_count = dims.iter().filter(|dim| **dim == 0).count();
     if dims.is_empty() || unknown_count != 1 || value_count == 0 {
         return copy_i64_dims(dims, context, span);
     }
@@ -737,6 +743,9 @@ pub(super) fn lower_static_index_expr_with_owner(
             index_expr_owner_span(expr, owner_span, "static subscript expression")?,
         )?));
     }
+    if matches!(expr, rumoca_core::Expression::VarRef { .. }) {
+        return Ok(None);
+    }
 
     Err(unsupported_at(
         "subscript expression did not evaluate to a positive integer",
@@ -961,6 +970,31 @@ pub(super) fn compile_time_index_expr_with_owner(
     ))
 }
 
+pub(super) fn compile_time_non_negative_dimension_expr_with_owner(
+    expr: &rumoca_core::Expression,
+    const_scope: &IndexMap<String, f64>,
+    owner_span: rumoca_core::Span,
+    context: &str,
+) -> Result<usize, LowerError> {
+    let raw = compile_time_index_raw_with_owner(expr, const_scope, owner_span)?;
+    let rounded = raw.round();
+    let span = index_expr_owner_span(expr, owner_span, "compile-time dimension expression")?;
+    if rounded.is_finite() && rounded >= 0.0 && (rounded - raw).abs() < f64::EPSILON {
+        if rounded < usize::MAX as f64 {
+            // Bounds and integrality are checked above; Rust has no TryFrom<f64>.
+            return Ok(rounded as usize);
+        }
+        return Err(LowerError::contract_violation(
+            format!("{context} {rounded} exceeds host index range"),
+            span,
+        ));
+    }
+    Err(unsupported_at(
+        format!("{context} must be non-negative"),
+        span,
+    ))
+}
+
 pub(in crate::lower) fn positive_i64_index(
     value: i64,
     span: rumoca_core::Span,
@@ -1084,18 +1118,16 @@ fn compile_time_index_builtin(
     const_scope: &IndexMap<String, f64>,
     span: rumoca_core::Span,
 ) -> Result<f64, LowerError> {
-    let Some(arg) = args.first() else {
-        return Err(unsupported_at(
-            "compile-time subscript builtin requires an argument",
-            span,
-        ));
-    };
-    let value = compile_time_index_raw_with_owner(arg, const_scope, span)?;
     match function {
         rumoca_core::BuiltinFunction::Floor | rumoca_core::BuiltinFunction::Integer => {
+            let value = compile_time_unary_numeric_builtin_arg(args, const_scope, span)?;
             Ok(value.floor())
         }
-        rumoca_core::BuiltinFunction::Ceil => Ok(value.ceil()),
+        rumoca_core::BuiltinFunction::Ceil => {
+            let value = compile_time_unary_numeric_builtin_arg(args, const_scope, span)?;
+            Ok(value.ceil())
+        }
+        rumoca_core::BuiltinFunction::Size => compile_time_size_builtin(args, const_scope, span),
         _ => Err(unsupported_at(
             format!(
                 "builtin `{}` is unsupported in compile-time subscript expression",
@@ -1103,6 +1135,87 @@ fn compile_time_index_builtin(
             ),
             span,
         )),
+    }
+}
+
+fn compile_time_unary_numeric_builtin_arg(
+    args: &[rumoca_core::Expression],
+    const_scope: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<f64, LowerError> {
+    let Some(arg) = args.first() else {
+        return Err(unsupported_at(
+            "compile-time subscript builtin requires an argument",
+            span,
+        ));
+    };
+    compile_time_index_raw_with_owner(arg, const_scope, span)
+}
+
+fn compile_time_size_builtin(
+    args: &[rumoca_core::Expression],
+    const_scope: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<f64, LowerError> {
+    let [array, dim] = args else {
+        return Err(unsupported_at(
+            "size() in compile-time subscript expression requires array and dimension arguments",
+            span,
+        ));
+    };
+    let dim = compile_time_index_expr_with_owner(dim, const_scope, span)?;
+    let Some(zero_based_dim) = dim.checked_sub(1) else {
+        return Err(unsupported_at("size dimension must be positive", span));
+    };
+    if let Some(shape) = literal_array_shape(array) {
+        return shape
+            .get(zero_based_dim)
+            .copied()
+            .map(|value| value as f64)
+            .ok_or_else(|| {
+                unsupported_at(
+                    format!("size dimension {dim} exceeds array rank {}", shape.len()),
+                    array.span().unwrap_or(span),
+                )
+            });
+    }
+    if let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = array
+        && subscripts.is_empty()
+        && let Some(value) = const_scope.get(&super::size_binding_key(name.as_str(), dim))
+    {
+        return Ok(*value);
+    }
+    Err(unsupported_at(
+        "size() requires a compile-time array shape",
+        array.span().unwrap_or(span),
+    ))
+}
+
+fn literal_array_shape(expr: &rumoca_core::Expression) -> Option<Vec<usize>> {
+    match expr {
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: false,
+            ..
+        } => Some(vec![elements.len()]),
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: true,
+            ..
+        } => {
+            let rows = elements.len();
+            let cols = elements
+                .first()
+                .and_then(|row| match row {
+                    rumoca_core::Expression::Array { elements, .. } => Some(elements.len()),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            Some(vec![rows, cols])
+        }
+        _ => None,
     }
 }
 

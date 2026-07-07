@@ -201,6 +201,21 @@ fn validate_function_call_expr<T: SimFloat>(
     if let Some(result) = validate_external_table_call(name, args, env) {
         return result;
     }
+    if name
+        .as_str()
+        .starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+        && args.iter().any(|arg| {
+            matches!(
+                arg,
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::String(_),
+                    ..
+                }
+            )
+        })
+    {
+        return Ok(());
+    }
     if is_constructor || name.as_str() == "Complex" {
         return validate_expr_slice_checked(args, env);
     }
@@ -257,9 +272,7 @@ fn validate_literal(lit: &rumoca_core::Literal) -> Result<(), EvalError> {
         rumoca_core::Literal::Real(_)
         | rumoca_core::Literal::Integer(_)
         | rumoca_core::Literal::Boolean(_) => Ok(()),
-        rumoca_core::Literal::String(_) => Err(EvalError::UnsupportedExpression {
-            kind: "string literal",
-        }),
+        rumoca_core::Literal::String(_) => Ok(()),
     }
 }
 
@@ -268,6 +281,15 @@ fn validate_expr_slice_checked<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Result<(), EvalError> {
     for arg in args {
+        if matches!(
+            arg,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(_),
+                ..
+            } | rumoca_core::Expression::Array { .. }
+        ) {
+            continue;
+        }
         validate_expr(arg, env)?;
     }
     Ok(())

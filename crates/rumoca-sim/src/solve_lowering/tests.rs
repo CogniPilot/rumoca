@@ -73,6 +73,56 @@ fn simulation_structural_lowering_reports_blt_singularity() {
 }
 
 #[test]
+fn simulation_structural_lowering_drops_nonnumeric_continuous_metadata_rows() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        VarName::new("p"),
+        dae::Variable::new(VarName::new("p"), fixture_span()),
+    );
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(Expression::Literal {
+                value: rumoca_core::Literal::String("Air".to_string()),
+                span: fixture_span(),
+            }),
+            rhs: Box::new(var("p")),
+            span: fixture_span(),
+        },
+        span: fixture_span(),
+        origin: "medium metadata".to_string(),
+        scalar_count: 1,
+    });
+
+    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("nonnumeric metadata rows should not enter structural matching");
+
+    assert!(lowered.dae.continuous.equations.is_empty());
+}
+
+#[test]
+fn simulation_structural_lowering_drops_named_arg_record_metadata_rows() {
+    let mut dae = dae::Dae::new();
+    dae.variables.algebraics.insert(
+        VarName::new("p"),
+        dae::Variable::new(VarName::new("p"), fixture_span()),
+    );
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: mul(named_arg("MM", vec![var("p")]), int(2)),
+        span: fixture_span(),
+        origin: "medium record metadata".to_string(),
+        scalar_count: 1,
+    });
+
+    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("record metadata rows should not enter structural matching");
+
+    assert!(lowered.dae.continuous.equations.is_empty());
+}
+
+#[test]
 fn metadata_attachment_lower_error_preserves_dae_source_span() {
     let span = sim_source_span(9, 21, 34);
     let err = metadata_attachment_lower_error(
@@ -773,6 +823,19 @@ fn call(name: &str, args: Vec<Expression>) -> Expression {
         name: reference(name),
         args,
         is_constructor: false,
+        span: fixture_span(),
+    }
+}
+
+fn named_arg(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::FunctionCall {
+        name: rumoca_core::Reference::from(format!(
+            "{}{}",
+            rumoca_core::NAMED_FUNCTION_ARG_PREFIX,
+            name
+        )),
+        args,
+        is_constructor: true,
         span: fixture_span(),
     }
 }

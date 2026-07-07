@@ -27,6 +27,7 @@ fn structural_bindings_with_eval_env(
     insert_constant_variables(&mut bindings, dae_model, &shapes, &mut eval_env)?;
     seed_compile_time_start_values(dae_model, &mut eval_env);
     insert_structural_parameters(&mut bindings, dae_model, &shapes, &mut eval_env)?;
+    insert_static_initial_assignments(&mut bindings, dae_model);
     insert_external_table_handle_bindings(&mut bindings, dae_model, &shapes, &mut eval_env)?;
     Ok((bindings, eval_env))
 }
@@ -165,6 +166,160 @@ fn insert_external_table_handle_bindings(
         eval_env.set(table_id_name, table_id);
     }
     Ok(())
+}
+
+fn insert_static_initial_assignments(bindings: &mut IndexMap<String, f64>, dae_model: &dae::Dae) {
+    for _ in 0..dae_model.initialization.equations.len().max(1) {
+        let before = bindings.len();
+        for equation in &dae_model.initialization.equations {
+            let Some(lhs) = equation.lhs.as_ref() else {
+                continue;
+            };
+            if !initial_assignment_target_is_structural(lhs.as_str(), &dae_model.variables) {
+                continue;
+            }
+            let Ok(value) = eval_static_initial_numeric(&equation.rhs, bindings) else {
+                continue;
+            };
+            bindings.insert(lhs.as_str().to_string(), value);
+        }
+        if bindings.len() == before {
+            break;
+        }
+    }
+}
+
+fn initial_assignment_target_is_structural(name: &str, variables: &dae::DaeVariables) -> bool {
+    let var_name = rumoca_core::VarName::new(name);
+    [
+        variables.parameters.get(&var_name),
+        variables.constants.get(&var_name),
+        variables.discrete_valued.get(&var_name),
+        variables.discrete_reals.get(&var_name),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|variable| !variable.is_tunable)
+}
+
+fn eval_static_initial_numeric(
+    expr: &rumoca_core::Expression,
+    bindings: &IndexMap<String, f64>,
+) -> Result<f64, ()> {
+    match expr {
+        rumoca_core::Expression::Literal { value, .. } => match value {
+            rumoca_core::Literal::Real(value) => Ok(*value),
+            rumoca_core::Literal::Integer(value) => Ok(*value as f64),
+            rumoca_core::Literal::Boolean(value) => Ok(if *value { 1.0 } else { 0.0 }),
+            rumoca_core::Literal::String(_) => Err(()),
+        },
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => bindings.get(name.as_str()).copied().ok_or(()),
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            let value = eval_static_initial_numeric(rhs, bindings)?;
+            match op {
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Ok(-value),
+                rumoca_core::OpUnary::Plus
+                | rumoca_core::OpUnary::DotPlus
+                | rumoca_core::OpUnary::Empty => Ok(value),
+                rumoca_core::OpUnary::Not => Ok(if value == 0.0 { 1.0 } else { 0.0 }),
+            }
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = eval_static_initial_numeric(lhs, bindings)?;
+            let rhs = eval_static_initial_numeric(rhs, bindings)?;
+            match op {
+                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Ok(lhs + rhs),
+                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Ok(lhs - rhs),
+                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Ok(lhs * rhs),
+                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => Ok(lhs / rhs),
+                rumoca_core::OpBinary::Eq => Ok(if (lhs - rhs).abs() < f64::EPSILON {
+                    1.0
+                } else {
+                    0.0
+                }),
+                rumoca_core::OpBinary::Neq => Ok(if (lhs - rhs).abs() >= f64::EPSILON {
+                    1.0
+                } else {
+                    0.0
+                }),
+                rumoca_core::OpBinary::Lt => Ok(if lhs < rhs { 1.0 } else { 0.0 }),
+                rumoca_core::OpBinary::Le => Ok(if lhs <= rhs { 1.0 } else { 0.0 }),
+                rumoca_core::OpBinary::Gt => Ok(if lhs > rhs { 1.0 } else { 0.0 }),
+                rumoca_core::OpBinary::Ge => Ok(if lhs >= rhs { 1.0 } else { 0.0 }),
+                rumoca_core::OpBinary::And => Ok(if lhs != 0.0 && rhs != 0.0 { 1.0 } else { 0.0 }),
+                rumoca_core::OpBinary::Or => Ok(if lhs != 0.0 || rhs != 0.0 { 1.0 } else { 0.0 }),
+                _ => Err(()),
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                if eval_static_initial_numeric(condition, bindings)? != 0.0 {
+                    return eval_static_initial_numeric(value, bindings);
+                }
+            }
+            eval_static_initial_numeric(else_branch, bindings)
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if matches!(
+                name.as_str(),
+                "Modelica.Utilities.Strings.isEqual" | "Strings.isEqual" | "isEqual"
+            ) =>
+        {
+            let left = args.first().ok_or(())?;
+            let right = args.get(1).ok_or(())?;
+            Ok(
+                if eval_static_initial_string(left, bindings)?
+                    == eval_static_initial_string(right, bindings)?
+                {
+                    1.0
+                } else {
+                    0.0
+                },
+            )
+        }
+        _ => Err(()),
+    }
+}
+
+fn eval_static_initial_string(
+    expr: &rumoca_core::Expression,
+    bindings: &IndexMap<String, f64>,
+) -> Result<String, ()> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value),
+            ..
+        } => Ok(value.clone()),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let [subscript] = subscripts.as_slice() else {
+                return Err(());
+            };
+            let index = match subscript {
+                rumoca_core::Subscript::Index { value, .. } if *value > 0 => *value as usize,
+                rumoca_core::Subscript::Expr { expr, .. } => {
+                    let value = eval_static_initial_numeric(expr, bindings)?;
+                    if value.fract().abs() > f64::EPSILON || value <= 0.0 {
+                        return Err(());
+                    }
+                    value as usize
+                }
+                _ => return Err(()),
+            };
+            let rumoca_core::Expression::Array { elements, .. } = base.as_ref() else {
+                return Err(());
+            };
+            eval_static_initial_string(elements.get(index - 1).ok_or(())?, bindings)
+        }
+        _ => Err(()),
+    }
 }
 
 fn seed_compile_time_start_values(
@@ -608,6 +763,15 @@ fn eval_size(
     shapes: &IndexMap<String, Vec<i64>>,
     eval_env: &mut rumoca_eval_dae::VarEnv<f64>,
 ) -> Option<Vec<f64>> {
+    if let Some(dims) = literal_array_shape(args.first()?) {
+        let Some(dim_expr) = args.get(1) else {
+            return Some(dims.into_iter().map(|dim| dim as f64).collect());
+        };
+        let dim = positive_usize_from_f64(eval_scalar(dim_expr, bindings, shapes, eval_env)?)?;
+        return dims
+            .get(dim.checked_sub(1)?)
+            .map(|value| vec![*value as f64]);
+    }
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = args.first()?
@@ -626,6 +790,33 @@ fn eval_size(
     let dim = positive_usize_from_f64(eval_scalar(dim_expr, bindings, shapes, eval_env)?)?;
     dims.get(dim.checked_sub(1)?)
         .map(|value| vec![*value as f64])
+}
+
+fn literal_array_shape(expr: &rumoca_core::Expression) -> Option<Vec<usize>> {
+    match expr {
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: false,
+            ..
+        }
+        | rumoca_core::Expression::Tuple { elements, .. } => Some(vec![elements.len()]),
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix: true,
+            ..
+        } => {
+            let first_row = elements.first()?;
+            let rumoca_core::Expression::Array {
+                elements: row_elements,
+                ..
+            } = first_row
+            else {
+                return Some(vec![elements.len()]);
+            };
+            Some(vec![elements.len(), row_elements.len()])
+        }
+        _ => None,
+    }
 }
 
 fn eval_min_max(
@@ -1325,6 +1516,17 @@ mod tests {
         assert_eq!(
             eval_size(&args, &IndexMap::new(), &shapes, &mut eval_env),
             None
+        );
+    }
+
+    #[test]
+    fn eval_size_reads_string_literal_array_shape_without_numeric_values() {
+        let args = vec![array(vec![string("water"), string("air")]), integer(1)];
+        let mut eval_env = rumoca_eval_dae::VarEnv::new();
+
+        assert_eq!(
+            eval_size(&args, &IndexMap::new(), &IndexMap::new(), &mut eval_env),
+            Some(vec![2.0])
         );
     }
 

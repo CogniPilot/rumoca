@@ -34,7 +34,7 @@ pub(super) fn scalar_literal_projection(
             reason: "literal scalar projection requires source span".to_string(),
         })?;
     let Some(indices) = static_subscript_indices_with_owner(subscripts, span)? else {
-        return Ok(false);
+        return Ok(true);
     };
     Ok(indices.first().is_some_and(|index| *index > 0))
 }

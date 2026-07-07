@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: demotion tests keep matrix-state, alias, and
+//! derivative ownership regressions together. split plan: split by demotion
+//! category once the DAE prepare APIs settle.
+
 use super::*;
 use indexmap::IndexSet;
 use rumoca_core::Span;
@@ -51,6 +55,22 @@ fn var_sub(name: &str, subscript: Expression) -> Expression {
             rumoca_core::Span::DUMMY,
         )],
         span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn index_expr(base: Expression, idx: i64) -> Expression {
+    Expression::Index {
+        base: Box::new(base),
+        subscripts: vec![Subscript::generated_index(idx, Span::DUMMY)],
+        span: Span::DUMMY,
+    }
+}
+
+fn field_expr(base: Expression, field: &str) -> Expression {
+    Expression::FieldAccess {
+        base: Box::new(base),
+        field: field.to_string(),
+        span: Span::DUMMY,
     }
 }
 
@@ -165,6 +185,10 @@ fn call_with_span(name: &str, args: Vec<Expression>, span: Span) -> Expression {
         is_constructor: false,
         span,
     }
+}
+
+fn function_param(name: &str) -> rumoca_core::FunctionParam {
+    rumoca_core::FunctionParam::new(name, "Real", Span::DUMMY)
 }
 
 fn der(name: &str) -> Expression {
@@ -482,6 +506,42 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
     );
     assert!(dae.variables.states.contains_key(&VarName::new("x")));
     assert!(dae.variables.states.contains_key(&VarName::new("v")));
+}
+
+#[test]
+fn test_demote_direct_assigned_states_allows_state_free_algebraic_closure() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("a"), test_variable("a"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("v"), test_variable("v"));
+
+    dae.continuous.equations.push(eq(sub(var("x"), var("a"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("a"), var("time"))));
+    dae.continuous.equations.push(eq(sub(der("x"), var("v"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(
+        demoted, 1,
+        "a state-free algebraic closure can define a dummy trajectory state"
+    );
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x"))),
+        "demotion must rewrite derivative uses of the demoted state"
+    );
 }
 
 #[test]
@@ -1279,6 +1339,68 @@ fn test_demote_direct_assigned_array_state_projects_indexed_derivative_reads() {
 }
 
 #[test]
+fn test_demote_direct_assigned_array_state_from_structured_scalar_slots() {
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), x);
+    let mut v = test_variable("v");
+    v.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("v"), v);
+
+    let span = test_span();
+    dae.continuous
+        .equations
+        .push(eq(sub(var("x"), var_with_span("time", span))));
+    dae.continuous.equations.push(eq(sub(
+        var("x"),
+        Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var_with_span("time", span)),
+            rhs: Box::new(var_with_span("time", span)),
+            span,
+        },
+    )));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 1), var_idx("v", 1))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 2), var_idx("v", 2))));
+    dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        first_equation_index: 0,
+        equation_counts: vec![1, 1],
+        span: test_span(),
+        origin: "structured aggregate assignment".to_string(),
+        regular: None,
+        template: None,
+        interiors_materialized: true,
+    }];
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("x"))),
+        "structured scalar slots should be assembled into an array derivative replacement"
+    );
+}
+
+#[test]
 fn test_seeded_relaxed_derivative_map_resolves_algebraic_alias_derivative() {
     let mut dae = Dae::new();
     dae.variables
@@ -1298,6 +1420,117 @@ fn test_seeded_relaxed_derivative_map_resolves_algebraic_alias_derivative() {
         .expect("seeded relaxed derivative map should build");
 
     assert_eq!(der_map.get("i"), Some(&var("u")));
+}
+
+#[test]
+fn test_collect_rhs_var_refs_preserves_static_index_before_field_access() {
+    let refs = collect_rhs_var_refs(&field_expr(index_expr(var("mediums"), 1), "d"));
+
+    assert!(
+        refs.contains(&VarName::new("mediums[1].d")),
+        "FieldAccess(Index(mediums, 1), d) must expose the scalar record-field reference"
+    );
+    assert!(
+        refs.contains(&VarName::new("mediums[1]")),
+        "the indexed record reference is also needed for alias-definition closure"
+    );
+}
+
+#[test]
+fn test_extract_unknown_defining_expr_solves_scaled_record_field_target() {
+    let target = VarName::new("mediums[1].Xi");
+    let residual = sub(
+        var("mXi"),
+        mul(var("m"), field_expr(index_expr(var("mediums"), 1), "Xi")),
+    );
+
+    let defining_expr = extract_unknown_defining_expr(&residual, &target, Span::DUMMY)
+        .expect("scaled record-field target should be solved from residual");
+
+    assert_eq!(defining_expr, div(var("mXi"), var("m")));
+}
+
+#[test]
+fn test_symbolic_derivative_keeps_preferred_algebraic_derivative_candidate() {
+    let mut dae = Dae::new();
+    let mut p = test_variable("p");
+    p.state_select = rumoca_core::StateSelect::Prefer;
+    dae.variables.algebraics.insert(VarName::new("p"), p);
+
+    let derivative = symbolic_time_derivative(&var("p"), &dae, &build_der_value_map(&dae))
+        .expect("preferred algebraics are valid state-selection derivative candidates");
+
+    assert!(
+        matches!(
+            derivative,
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args,
+                ..
+            } if matches!(
+                args.as_slice(),
+                [Expression::VarRef { name, subscripts, .. }]
+                    if name.as_str() == "p" && subscripts.is_empty()
+            )
+        ),
+        "preferred algebraics should remain as der(p) candidates"
+    );
+}
+
+#[test]
+fn test_symbolic_derivative_rejects_default_algebraic_without_derivative_map() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("h"), test_variable("h"));
+
+    assert!(
+        symbolic_time_derivative(&var("h"), &dae, &build_der_value_map(&dae)).is_none(),
+        "default algebraics must not be silently promoted to state derivatives"
+    );
+}
+
+#[test]
+fn test_symbolic_derivative_prefers_function_derivative_annotation() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("x"), var("xdot"))));
+
+    let mut function = rumoca_core::Function::new("f", Span::DUMMY);
+    function.inputs.push(function_param("x"));
+    function.outputs.push(function_param("y"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference::from_flat_segments("y", Span::DUMMY, None),
+        value: mul(var("x"), var("x")),
+        span: Span::DUMMY,
+    });
+    function
+        .derivatives
+        .push(rumoca_core::DerivativeAnnotation {
+            derivative_function: "f_der".to_string(),
+            order: 1,
+            zero_derivative: Vec::new(),
+            no_derivative: Vec::new(),
+        });
+    dae.symbols.functions.insert(VarName::new("f"), function);
+    dae.symbols.functions.insert(
+        VarName::new("f_der"),
+        rumoca_core::Function::new("f_der", Span::DUMMY),
+    );
+
+    let derivative =
+        symbolic_time_derivative(&call("f", vec![var("x")]), &dae, &build_der_value_map(&dae))
+            .expect("function call should differentiate through annotation");
+
+    let Expression::FunctionCall { name, args, .. } = derivative else {
+        panic!("expected derivative function call");
+    };
+    assert_eq!(name.as_str(), "f_der");
+    assert_eq!(args, vec![var("x"), var("xdot")]);
 }
 
 #[test]

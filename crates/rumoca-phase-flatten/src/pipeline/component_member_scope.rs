@@ -47,7 +47,11 @@ impl ComponentMemberScopes {
         let mut roots = indexmap::IndexSet::new();
         collect_expression_component_roots(expr, &mut roots);
         for root in roots {
-            if scoped_imports.contains_key(root.as_str()) || self.has_member(scope, &root) {
+            if self.has_member(scope, &root) {
+                scoped_imports.remove(root.as_str());
+                continue;
+            }
+            if scoped_imports.contains_key(root.as_str()) {
                 continue;
             }
             if let Some(parent_name) = self.nearest_parent_name_with_member(scope, &root) {
@@ -205,4 +209,47 @@ fn collect_instance_member_shadowed_import_aliases(
         shadowed,
     };
     let _ = collector.visit_expression(expr);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn cref_expr(name: &str) -> ast::Expression {
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: rumoca_core::Token {
+                    text: Arc::from(name),
+                    ..rumoca_core::Token::default()
+                },
+                subs: None,
+            }],
+            def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+
+    #[test]
+    fn current_scope_member_shadows_existing_import_alias() {
+        let mut scopes = ComponentMemberScopes::default();
+        scopes.insert_component_member_path(&rumoca_core::ComponentPath::from_flat_path(
+            "pipe.flowModel.n",
+        ));
+
+        let mut imports = qualify::ImportMap::default();
+        imports.insert("n".to_string(), "pipe.n".to_string());
+
+        let scoped = scopes.scoped_component_imports(
+            &cref_expr("n"),
+            &QualifiedName::from_dotted("pipe.flowModel"),
+            &imports,
+        );
+
+        assert!(
+            !scoped.contains_key("n"),
+            "current component member must shadow outer declaration import"
+        );
+    }
 }

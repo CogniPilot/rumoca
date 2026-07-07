@@ -1391,6 +1391,76 @@ fn test_eval_function_dynamic_vector_input_binds_expression_shape() {
 }
 
 #[test]
+fn test_eval_record_constructor_input_skips_string_and_binds_array_field() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+
+    let mut state = Function::new("Pkg.State", rumoca_core::Span::DUMMY);
+    state.is_constructor = true;
+    state.add_input(FunctionParam::new(
+        "p",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    state.add_input(
+        FunctionParam::new("X", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![2]),
+    );
+    state.add_input(FunctionParam::new(
+        "mediumName",
+        "String",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    funcs.insert("Pkg.State".to_string(), state);
+
+    let mut metric = Function::new("Pkg.metric", rumoca_core::Span::DUMMY);
+    metric.add_input(
+        FunctionParam::new(
+            "st",
+            "State",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record),
+    );
+    metric.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(binop(
+                rumoca_core::OpBinary::Add,
+                var("st.p"),
+                indexed_var("st.X", &[2]),
+            )),
+    );
+    metric.body = vec![Statement::Empty {
+        span: rumoca_core::Span::DUMMY,
+    }];
+    funcs.insert("Pkg.metric".to_string(), metric);
+    env.functions = Arc::new(funcs);
+
+    let state_arg = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.State"),
+        args: vec![
+            named_ctor_arg("p", lit(101325.0)),
+            named_ctor_arg("X", arr(vec![lit(0.42), lit(0.58)], false)),
+            named_ctor_arg(
+                "mediumName",
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::String("MoistAir".to_string()),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ),
+        ],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert!(
+        (eval_expr::<f64>(&fn_call("Pkg.metric", vec![state_arg]), &env).unwrap() - 101325.58)
+            .abs()
+            < 1e-9
+    );
+}
+
+#[test]
 fn test_eval_array_values_cross_product() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([

@@ -1,3 +1,4 @@
+use super::scalar_shape::var_ref_is_scalar_after_subscripts;
 use super::{
     Dae, Expression, StructuralError, VarName, collect_var_ref_nodes,
     exact_reference_expr_name_in_dae,
@@ -56,6 +57,33 @@ pub(super) fn expr_contains_indexed_multiscalar_ref(
                 }
             }
             Ok(DaeVariableShape::StructuredAggregate) => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
+pub(super) fn expr_contains_indexed_multiscalar_slice_ref(
+    expr: &Expression,
+    dae: &Dae,
+) -> Result<bool, StructuralError> {
+    let mut refs = Vec::new();
+    collect_var_ref_nodes(expr, &mut refs);
+    for (name, subscripts) in refs {
+        if subscripts.is_empty() || name.as_str() == "time" {
+            continue;
+        }
+        if !reference_touches_continuous_unknown(dae, name.var_name()) {
+            continue;
+        }
+        let Some(reference_span) = name
+            .span()
+            .or_else(|| subscripts.first().map(rumoca_core::Subscript::span))
+            .filter(|span| !span.is_dummy())
+        else {
+            return Ok(true);
+        };
+        if !var_ref_is_scalar_after_subscripts(&name, &subscripts, reference_span, dae)? {
+            return Ok(true);
         }
     }
     Ok(false)

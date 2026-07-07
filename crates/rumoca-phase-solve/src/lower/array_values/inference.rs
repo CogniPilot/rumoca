@@ -42,6 +42,11 @@ impl<'a> LowerBuilder<'a> {
             } if is_synchronous_array_like_intrinsic(name.as_str()) => {
                 self.infer_expr_dims(required_arg(args, name.as_str(), *span)?, scope)?
             }
+            rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } if is_stream_passthrough_intrinsic(name.as_str()) => {
+                self.infer_expr_dims(required_arg(args, name.as_str(), *span)?, scope)?
+            }
             rumoca_core::Expression::FunctionCall { name, args, .. }
                 if is_modelica_array_constructor_function(name) =>
             {
@@ -359,6 +364,9 @@ impl<'a> LowerBuilder<'a> {
                 return Ok(meta.dims.clone());
             }
         }
+        if let Some(dims) = self.infer_record_array_aggregate_dims_from_dae_variables(name)? {
+            return Ok(dims);
+        }
         if let Some(variable) = self
             .dae_variables
             .and_then(|variables| dae_variable(variables, name.var_name()))
@@ -376,11 +384,64 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(Vec::new());
         }
+        if let Some(reference) = self.singleton_record_array_field_reference(name)
+            && let Some(variable) = self
+                .dae_variables
+                .and_then(|variables| dae_variable(variables, reference.var_name()))
+        {
+            return concrete_i64_dims(
+                &variable.dims,
+                reference.as_str(),
+                "singleton record-array field dimensions",
+                span,
+            );
+        }
         let name_path = self.scope_key_from_reference(name, span)?;
         if let Some(values) = scoped_indexed_binding_values(scope, &name_path, span)? {
             return Ok(vector_dims(values.len()));
         }
         Ok(Vec::new())
+    }
+
+    fn infer_record_array_aggregate_dims_from_dae_variables(
+        &self,
+        name: &rumoca_core::Reference,
+    ) -> Result<Option<Vec<usize>>, LowerError> {
+        let Some(base_ref) = name.component_ref() else {
+            return Ok(None);
+        };
+        if base_ref.parts.is_empty()
+            || base_ref
+                .parts
+                .last()
+                .is_some_and(|part| !part.subs.is_empty())
+        {
+            return Ok(None);
+        }
+        let Some(variables) = self.dae_variables else {
+            return Ok(None);
+        };
+        let mut extent = 0usize;
+        for variable in variables
+            .states
+            .values()
+            .chain(variables.algebraics.values())
+            .chain(variables.inputs.values())
+            .chain(variables.outputs.values())
+            .chain(variables.parameters.values())
+            .chain(variables.constants.values())
+            .chain(variables.discrete_reals.values())
+            .chain(variables.discrete_valued.values())
+        {
+            let Some(candidate_ref) = variable.component_ref.as_ref() else {
+                continue;
+            };
+            let Some(index) = record_array_prefix_index(base_ref, candidate_ref)? else {
+                continue;
+            };
+            extent = extent.max(index);
+        }
+        Ok((extent > 0).then(|| vector_dims(extent)))
     }
 
     fn infer_required_subscripted_var_ref_dims(
@@ -843,6 +904,9 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
     ) -> Result<Vec<usize>, LowerError> {
         let owner_span = Self::non_dummy_span(span).or_else(|| base.span());
+        if scalar_literal_projection(base, subscripts, owner_span)? {
+            return Ok(Vec::new());
+        }
         if let Ok(base_name) = dynamic_binding_base_key(base)
             && let Some(dims) =
                 self.infer_slice_dims(base_name.as_str(), subscripts, scope, owner_span)?
@@ -901,6 +965,7 @@ impl<'a> LowerBuilder<'a> {
             )
     }
 
+    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn compile_time_subscript_indices(
         &self,
         subscripts: &[rumoca_core::Subscript],
@@ -926,11 +991,19 @@ impl<'a> LowerBuilder<'a> {
                     if !matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
                         && self.expr_can_eval_compile_time(expr, const_scope) =>
                 {
-                    indices.push(self.eval_compile_time_positive_index(
+                    match self.eval_compile_time_positive_index(
                         expr,
                         const_scope,
                         "array subscript",
-                    )?);
+                    ) {
+                        Ok(index) => indices.push(index),
+                        Err(_)
+                            if matches!(expr.as_ref(), rumoca_core::Expression::VarRef { .. }) =>
+                        {
+                            return Ok(None);
+                        }
+                        Err(err) => return Err(err),
+                    }
                 }
                 rumoca_core::Subscript::Expr { .. } | rumoca_core::Subscript::Colon { .. } => {
                     return Ok(None);
@@ -1145,8 +1218,60 @@ impl<'a> LowerBuilder<'a> {
             | Op::DivElem
             | Op::ExpElem => broadcast_shape(&lhs_dims, &rhs_dims, span)?,
             Op::Div if rhs_dims.is_empty() => lhs_dims,
+            Op::Div if lhs_dims.is_empty() => rhs_dims,
             _ => Vec::new(),
         })
+    }
+}
+
+fn record_array_prefix_index(
+    base_ref: &rumoca_core::ComponentReference,
+    candidate_ref: &rumoca_core::ComponentReference,
+) -> Result<Option<usize>, LowerError> {
+    let prefix_len = base_ref.parts.len();
+    if candidate_ref.parts.len() <= prefix_len {
+        return Ok(None);
+    }
+    if candidate_ref.local != base_ref.local {
+        return Ok(None);
+    }
+    let mut index = None;
+    for (base, candidate) in base_ref
+        .parts
+        .iter()
+        .zip(candidate_ref.parts[..prefix_len].iter())
+    {
+        if base.ident != candidate.ident || !base.subs.is_empty() {
+            return Ok(None);
+        }
+        match candidate.subs.as_slice() {
+            [] => {}
+            [subscript] if index.is_none() => {
+                index = Some(static_positive_subscript_index(subscript)?);
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(index)
+}
+
+fn static_positive_subscript_index(
+    subscript: &rumoca_core::Subscript,
+) -> Result<usize, LowerError> {
+    match subscript {
+        rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+            crate::lower::helpers::positive_i64_index(*value, *span)
+        }
+        rumoca_core::Subscript::Index { span, .. } => Err(unsupported_at(
+            "non-positive record-array aggregate index is unsupported",
+            *span,
+        )),
+        rumoca_core::Subscript::Colon { span } | rumoca_core::Subscript::Expr { span, .. } => {
+            Err(unsupported_at(
+                "dynamic record-array aggregate index is unsupported in shape inference",
+                *span,
+            ))
+        }
     }
 }
 

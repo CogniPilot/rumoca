@@ -50,9 +50,10 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
         "String" => eval_string_convert(args, span),
 
         // Array comparison functions (MLS library functions used for structural parameters)
-        "isEqual" | "Modelica.Math.Vectors.isEqual" | "Modelica.Math.Matrices.isEqual" => {
-            eval_is_equal(args, span)
-        }
+        "isEqual"
+        | "Modelica.Math.Vectors.isEqual"
+        | "Modelica.Math.Matrices.isEqual"
+        | "Modelica.Utilities.Strings.isEqual" => eval_is_equal(args, span),
 
         _ => Err(EvalError::unknown_function(name, span)),
     }
@@ -117,6 +118,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "isEqual"
             | "Modelica.Math.Vectors.isEqual"
             | "Modelica.Math.Matrices.isEqual"
+            | "Modelica.Utilities.Strings.isEqual"
     )
 }
 

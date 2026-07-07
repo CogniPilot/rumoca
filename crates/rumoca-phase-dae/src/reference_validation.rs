@@ -156,7 +156,7 @@ fn validate_constructor_field_selection(
                     .collect();
                 short_matches.sort();
                 crate::log_todae_debug(format!(
-                    "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_matches:?} total_functions={}",
+                    "TODAE missing constructor selection={} args_len={} short_matches={short_matches:?} total_functions={}",
                     selected_name,
                     args.len(),
                     candidates.len()
@@ -188,7 +188,7 @@ fn validate_constructor_field_selection(
                     .collect();
                 available_fields.sort();
                 crate::log_todae_debug(format!(
-                    "DEBUG TODAE constructor field missing selection={} available={available_fields:?}",
+                    "TODAE constructor field missing selection={} available={available_fields:?}",
                     selected_name
                 ));
             }

@@ -87,6 +87,11 @@ fn scan_boundary_equation(
         return Ok(());
     }
     let has_state_derivative = expr_contains_der_of_any(&eq_rhs, ctx.state_derivative_matcher);
+    let indexed_multiscalar_slice_equation =
+        expr_contains_indexed_multiscalar_slice_ref(&eq_rhs, ctx.dae)?;
+    if indexed_multiscalar_slice_equation {
+        return Ok(());
+    }
     if let Some((var_name, solution)) = aggregate_alias_for_elimination(
         ctx.dae,
         &eq_rhs,
@@ -118,7 +123,9 @@ fn scan_boundary_equation(
         && expr_contains_indexed_multiscalar_ref(&eq_rhs, ctx.dae)?;
     let can_eliminate_pairwise_flow_alias = equation.origin.starts_with("flow sum equation:")
         && can_eliminate_pairwise_flow_alias(ctx.dae, &eq_rhs, &live);
-    if indexed_flow_equation && !can_eliminate_pairwise_flow_alias {
+    if (indexed_flow_equation || indexed_multiscalar_slice_equation)
+        && !can_eliminate_pairwise_flow_alias
+    {
         return Ok(());
     }
     let choice_ctx = EliminationChoiceContext {

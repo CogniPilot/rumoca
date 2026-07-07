@@ -128,6 +128,17 @@ fn lower_event_action_message_parts(
             parts.push(solve::SolveEventMessagePart::Text(value.clone()));
             Ok(())
         }
+        Expression::Index { .. } => {
+            if let Some(value) = static_string_message_value(message) {
+                parts.push(solve::SolveEventMessagePart::Text(value));
+                return Ok(());
+            }
+            Err(LowerError::UnsupportedAt {
+                reason: "unsupported assert/terminate message expression for Solve IR".to_string(),
+                contexts: Vec::new(),
+                span,
+            })
+        }
         Expression::Binary {
             op: OpBinary::Add,
             lhs,
@@ -152,6 +163,33 @@ fn lower_event_action_message_parts(
             contexts: Vec::new(),
             span,
         }),
+    }
+}
+
+fn static_string_message_value(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Literal {
+            value: Literal::String(value),
+            ..
+        } => Some(value.clone()),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let [subscript] = subscripts.as_slice() else {
+                return None;
+            };
+            let index = match subscript {
+                rumoca_core::Subscript::Index { value, .. } if *value > 0 => {
+                    usize::try_from(*value).ok()?
+                }
+                _ => return None,
+            };
+            let Expression::Array { elements, .. } = base.as_ref() else {
+                return None;
+            };
+            static_string_message_value(elements.get(index - 1)?)
+        }
+        _ => None,
     }
 }
 

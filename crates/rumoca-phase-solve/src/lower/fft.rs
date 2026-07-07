@@ -189,6 +189,27 @@ impl<'a> LowerBuilder<'a> {
             };
             return self.eval_compile_time_expr(value, const_scope);
         }
+        if matches!(
+            name.as_str(),
+            "Modelica.Utilities.Strings.isEqual" | "Strings.isEqual" | "isEqual"
+        ) {
+            let left = args.first().ok_or_else(|| {
+                unsupported_at(
+                    "Modelica.Utilities.Strings.isEqual requires a left string argument",
+                    span,
+                )
+            })?;
+            let right = args.get(1).ok_or_else(|| {
+                unsupported_at(
+                    "Modelica.Utilities.Strings.isEqual requires a right string argument",
+                    span,
+                )
+            })?;
+            return Ok(bool_to_f64(
+                self.eval_compile_time_string(left, const_scope)?
+                    == self.eval_compile_time_string(right, const_scope)?,
+            ));
+        }
         if name.last_segment() != "realFFTsamplePoints" {
             return Err(unsupported_at(
                 "unsupported expression in for-loop range",

@@ -49,7 +49,10 @@ use boundary_scan::{BoundaryScanCtx, BoundaryScanState, scan_boundary_equations}
 use connection_policy::should_skip_connection_equation;
 use diagnostics::trace_singular_reduced_rows;
 use direct_definition_index::DirectDefinitionIndex;
-use flow_policy::{expr_contains_indexed_multiscalar_ref, is_flow_equation_origin};
+use flow_policy::{
+    expr_contains_indexed_multiscalar_ref, expr_contains_indexed_multiscalar_slice_ref,
+    is_flow_equation_origin,
+};
 use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_contains_unknown};
 use profiling::{eliminate_profile_enabled, log_eliminate_profile};
 use runtime_known::singular_rows_are_runtime_known_assignments;
@@ -76,7 +79,10 @@ use unknown_index::{
 };
 
 use crate::variable_scope::{DaeVariableScope, DaeVariableShape, scalar_count_from_dims};
-use crate::{BltBlock, EquationRef, StructuralError, UnknownId, sort_dae};
+use crate::{
+    BltBlock, EquationRef, StructuralError, UnknownId, build_blt_from_incidence,
+    maximum_regular_subsystem, sort_dae,
+};
 
 use rumoca_core::ExpressionVisitor;
 #[cfg(test)]
@@ -196,11 +202,14 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         Ok(sorted) => Some(sorted.blocks.clone()),
         Err(StructuralError::EmptySystem) => None,
         Err(err) if singular_rows_are_runtime_known_assignments(&sort_input, &err) => None,
-        Err(err) => {
-            trace_singular_reduced_rows(trace, &sort_input, &err);
-            blt_error = Some(err);
-            None
-        }
+        Err(err) => match regular_blt_blocks_for_fully_matched_rows(&sort_input, &err)? {
+            Some(blocks) => Some(blocks),
+            None => {
+                trace_singular_reduced_rows(trace, &sort_input, &err);
+                blt_error = Some(err);
+                None
+            }
+        },
     };
     log_eliminate_profile(
         profile,
@@ -245,6 +254,79 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
     Ok(result)
 }
 
+fn regular_blt_blocks_for_fully_matched_rows(
+    dae: &Dae,
+    error: &StructuralError,
+) -> Result<Option<Vec<BltBlock>>, StructuralError> {
+    let StructuralError::Singular {
+        n_equations,
+        n_unknowns,
+        n_matched,
+        unmatched_equations,
+        unmatched_unknowns,
+        ..
+    } = error
+    else {
+        return Ok(None);
+    };
+    if n_matched != n_equations || !unmatched_equations.is_empty() || n_unknowns <= n_equations {
+        return Ok(None);
+    }
+    for unknown in unmatched_unknowns {
+        if !regular_subsystem_extra_unknown_is_direct_component_helper(dae, unknown)? {
+            return Ok(None);
+        }
+    }
+    let incidence = crate::incidence::build_incidence(dae);
+    let regular = maximum_regular_subsystem(&incidence)?;
+    if !regular.dropped_equations.is_empty() || regular.dropped_unknowns.is_empty() {
+        return Ok(None);
+    }
+    build_blt_from_incidence(&regular.incidence).map(Some)
+}
+
+fn regular_subsystem_extra_unknown_is_direct_component_helper(
+    dae: &Dae,
+    unknown: &str,
+) -> Result<bool, StructuralError> {
+    let var_name = VarName::new(unknown);
+    let is_scalarized_element = is_scalarized_element_of_aggregate(dae, &var_name)?;
+    let component_path_len = rumoca_core::ComponentPath::from_flat_path(unknown).len();
+    let is_nested_component = component_path_len > 1;
+    if output_partition_contains_unknown(dae, &var_name) {
+        return Ok(true);
+    }
+    if !is_scalarized_element && component_path_len > 2 {
+        return Ok(true);
+    }
+    if !is_scalarized_element && !is_nested_component {
+        return Ok(false);
+    }
+    if is_scalarized_element {
+        return Ok(true);
+    }
+    direct_non_connection_definition_for_unknown(dae, &var_name)
+}
+
+fn direct_non_connection_definition_for_unknown(
+    dae: &Dae,
+    var_name: &VarName,
+) -> Result<bool, StructuralError> {
+    for (eq_idx, equation) in dae.continuous.equations.iter().enumerate() {
+        if equation.origin.starts_with("connection equation:") {
+            continue;
+        }
+        if !has_direct_assignment_form(dae, &equation.rhs, var_name) {
+            continue;
+        }
+        if !can_use_equation_for_elimination(dae, eq_idx) {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub fn resolve_boundary_equations_to_fixpoint(
     dae: &mut Dae,
 ) -> Result<EliminationResult, StructuralError> {
@@ -280,7 +362,11 @@ fn resolve_boundary_and_direct_demotions_to_fixpoint(
         result.substitutions.extend(pass.substitutions);
 
         let p_demote = maybe_start_timer_if(profile);
-        let demoted = crate::dae_prepare::demote_direct_assigned_states(dae)?;
+        let demoted =
+            crate::dae_prepare::demote_direct_assigned_states_with_boundary_substitutions(
+                dae,
+                &result.substitutions,
+            )?;
         log_eliminate_profile(profile, "boundary_direct_demotion", p_demote, demoted);
         total_demoted += demoted;
         if eliminated == 0 && demoted == 0 {
@@ -1015,9 +1101,84 @@ fn is_assignment_target(dae: &Dae, expr: &Expression, candidate: &VarName) -> bo
     match expr {
         Expression::VarRef {
             name, subscripts, ..
-        } => var_ref_matches_unknown(name, subscripts, candidate),
+        } => {
+            var_ref_matches_unknown(name, subscripts, candidate)
+                || assignment_slice_target_contains_scalarized_candidate(
+                    name, subscripts, candidate,
+                )
+                || assignment_target_is_singleton_projection(dae, name, subscripts, candidate)
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            if let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            {
+                let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+                combined.extend_from_slice(base_subscripts);
+                combined.extend_from_slice(subscripts);
+                var_ref_matches_unknown(name, &combined, candidate)
+                    || assignment_slice_target_contains_scalarized_candidate(
+                        name, &combined, candidate,
+                    )
+                    || assignment_target_is_singleton_projection(dae, name, &combined, candidate)
+            } else {
+                false
+            }
+        }
         _ => false,
     }
+}
+
+fn assignment_slice_target_contains_scalarized_candidate(
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
+    candidate: &VarName,
+) -> bool {
+    let Some(scalar) = rumoca_core::parse_scalar_name(candidate.as_str()) else {
+        return false;
+    };
+    if name.as_str() != scalar.base || subscripts.len() != scalar.indices.len() {
+        return false;
+    }
+    subscripts
+        .iter()
+        .zip(scalar.indices.iter())
+        .all(|(subscript, candidate_index)| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => value == candidate_index,
+            rumoca_core::Subscript::Colon { .. } => true,
+            rumoca_core::Subscript::Expr { .. } => false,
+        })
+}
+
+fn assignment_target_is_singleton_projection(
+    dae: &Dae,
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
+    candidate: &VarName,
+) -> bool {
+    if let Some((base, indices)) = scalar_var_ref_key_from_reference(name)
+        && base.as_str() == candidate.as_str()
+        && indices.iter().all(|index| *index == 1)
+        && DaeVariableScope::new(dae)
+            .exact(candidate)
+            .is_some_and(|var| var.dims.iter().all(|dim| *dim == 1))
+    {
+        return true;
+    }
+    if subscripts.is_empty() || name.as_str() != candidate.as_str() {
+        return false;
+    }
+    let Some(var) = DaeVariableScope::new(dae).exact(candidate) else {
+        return false;
+    };
+    var.dims.iter().all(|dim| *dim == 1)
+        && subscripts
+            .iter()
+            .all(|subscript| matches!(positive_usize_subscript(subscript), Some(1)))
 }
 
 fn scalarized_element_has_non_connection_use(dae: &Dae, candidate: &VarName) -> bool {
@@ -1606,6 +1767,7 @@ pub(super) fn substitution_for_var(
     expr: Expression,
 ) -> Result<Substitution, StructuralError> {
     let scope = DaeVariableScope::new(dae);
+    let expr = project_scalarized_unknown_solution(&var_name, expr);
     Ok(Substitution {
         var_dims: scope.dims(&var_name)?,
         replacement_dims: replacement_expr_dims(dae, &expr)?,
@@ -1617,6 +1779,30 @@ pub(super) fn substitution_for_var(
         var_name,
         expr,
     })
+}
+
+fn project_scalarized_unknown_solution(var_name: &VarName, expr: Expression) -> Expression {
+    let Some(scalar_name) = rumoca_core::parse_scalar_name(var_name.as_str()) else {
+        return expr;
+    };
+    let Some(span) = expr.span() else {
+        return expr;
+    };
+    let Ok(subscripts) = scalar_name
+        .indices
+        .iter()
+        .map(|index| {
+            rumoca_core::Subscript::try_generated_index(
+                *index,
+                span,
+                "scalarized unknown solution projection",
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return expr;
+    };
+    project_replacement_expr_with_subscripts(&expr, &subscripts, span).unwrap_or(expr)
 }
 
 fn replacement_expr_dims(dae: &Dae, expr: &Expression) -> Result<Vec<i64>, StructuralError> {
@@ -1766,19 +1952,26 @@ fn scalar_blt_solution(
         return Ok(None);
     };
     let var_name = raw_var_name.clone();
-    if !can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns)? {
-        return Ok(None);
-    }
-
     let eq_idx = equation.0;
     let is_output = output_partition_contains_unknown(dae, &var_name);
     let has_state_derivative = equation_has_state_derivative(dae, eq_idx, state_derivative_matcher);
+    if !can_eliminate_scalar_unknown(
+        dae,
+        &var_name,
+        runtime_protected_unknowns,
+        has_state_derivative,
+    )? {
+        return Ok(None);
+    }
     if has_state_derivative && !is_output {
         return Ok(None);
     }
 
     let eq_rhs =
         apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions)?;
+    if expr_contains_indexed_multiscalar_slice_ref(&eq_rhs, dae)? {
+        return Ok(None);
+    }
     if is_flow_equation_origin(&dae.continuous.equations[eq_idx].origin)
         && expr_contains_indexed_multiscalar_ref(&eq_rhs, dae)?
     {
@@ -1796,6 +1989,9 @@ fn scalar_blt_solution(
     let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
         return Ok(None);
     };
+    if scalar_blt_solution_would_break_aggregate_element(dae, &var_name, &solution)? {
+        return Ok(None);
+    }
     if is_output
         && !is_trivial_alias_in_dae(dae, &solution)
         && !is_internal_component_output(dae, &var_name)
@@ -1841,13 +2037,33 @@ fn can_eliminate_scalar_unknown(
     dae: &Dae,
     var_name: &VarName,
     runtime_protected_unknowns: &IndexSet<String>,
+    has_state_derivative: bool,
 ) -> Result<bool, StructuralError> {
+    if is_runtime_protected_unknown(var_name, runtime_protected_unknowns)
+        || unknown_is_fixed(dae, var_name)
+        || dae.variables.states.contains_key(var_name)
+        || dae_var_size(dae, var_name)? != 1
+    {
+        return Ok(false);
+    }
+    if !is_scalarized_element_of_aggregate(dae, var_name)? {
+        return Ok(true);
+    }
+    Ok(!has_state_derivative && scalarized_element_has_non_connection_use(dae, var_name))
+}
+
+pub(super) fn scalar_blt_solution_would_break_aggregate_element(
+    dae: &Dae,
+    var_name: &VarName,
+    solution: &Expression,
+) -> Result<bool, StructuralError> {
+    if !is_scalarized_element_of_aggregate(dae, var_name)? {
+        return Ok(false);
+    }
     Ok(
-        !is_runtime_protected_unknown(var_name, runtime_protected_unknowns)
-            && !unknown_is_fixed(dae, var_name)
-            && !dae.variables.states.contains_key(var_name)
-            && !is_scalarized_element_of_aggregate(dae, var_name)?
-            && dae_var_size(dae, var_name)? == 1,
+        scalarized_element_has_derivative_equation_use(dae, var_name)
+            && (scalarized_aggregate_base_rank(dae, var_name)?.is_some_and(|rank| rank > 1)
+                || solution_references_algebraic_or_output_unknown(dae, solution)),
     )
 }
 
@@ -2570,12 +2786,243 @@ fn index_replacement_expr_with_subscripts(
                 span,
             }
         }
-        _ => Expression::Index {
-            base: Box::new(replacement.clone()),
-            subscripts: subscripts.to_vec(),
+        _ => project_replacement_expr_with_subscripts(replacement, subscripts, span)
+            .unwrap_or_else(|| Expression::Index {
+                base: Box::new(replacement.clone()),
+                subscripts: subscripts.to_vec(),
+                span,
+            }),
+    })
+}
+
+fn project_replacement_expr_with_subscripts(
+    replacement: &Expression,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Option<Expression> {
+    let (first, rest) = subscripts.split_first()?;
+    match first {
+        rumoca_core::Subscript::Index { value, .. } => {
+            project_replacement_expr_index(replacement, *value, rest, span)
+        }
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            if let Some(value) = literal_integer_value(expr) {
+                project_replacement_expr_index(replacement, value, rest, span)
+            } else {
+                project_replacement_expr_symbolic_index(replacement, expr, rest, span)
+            }
+        }
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+fn project_replacement_expr_index(
+    replacement: &Expression,
+    one_based_index: i64,
+    rest: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Option<Expression> {
+    match replacement {
+        Expression::Array { elements, .. } => {
+            let zero_based = usize::try_from(one_based_index.checked_sub(1)?).ok()?;
+            let element = elements.get(zero_based)?.clone().with_span(span);
+            if rest.is_empty() {
+                Some(element)
+            } else {
+                project_replacement_expr_with_subscripts(&element, rest, span)
+            }
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            if filter.is_some() || indices.len() != 1 {
+                return None;
+            }
+            let value = comprehension_index_value(&indices[0].range, one_based_index)?;
+            let selected =
+                substitute_comprehension_index_literal(expr, &indices[0].name, value, span);
+            if rest.is_empty() {
+                Some(selected)
+            } else {
+                project_replacement_expr_with_subscripts(&selected, rest, span)
+            }
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs_selected = project_replacement_expr_index(lhs, one_based_index, rest, span);
+            let rhs_selected = project_replacement_expr_index(rhs, one_based_index, rest, span);
+            project_binary_selection(op.clone(), lhs, rhs, lhs_selected, rhs_selected, span)
+        }
+        _ => None,
+    }
+}
+
+fn project_replacement_expr_symbolic_index(
+    replacement: &Expression,
+    index: &Expression,
+    rest: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Option<Expression> {
+    match replacement {
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            if filter.is_some() || indices.len() != 1 {
+                return None;
+            }
+            let selected = substitute_comprehension_index_expr(expr, &indices[0].name, index, span);
+            if rest.is_empty() {
+                Some(selected)
+            } else {
+                project_replacement_expr_with_subscripts(&selected, rest, span)
+            }
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs_selected = project_replacement_expr_symbolic_index(lhs, index, rest, span);
+            let rhs_selected = project_replacement_expr_symbolic_index(rhs, index, rest, span);
+            project_binary_selection(op.clone(), lhs, rhs, lhs_selected, rhs_selected, span)
+        }
+        _ => None,
+    }
+}
+
+fn project_binary_selection(
+    op: OpBinary,
+    lhs: &Expression,
+    rhs: &Expression,
+    lhs_selected: Option<Expression>,
+    rhs_selected: Option<Expression>,
+    span: rumoca_core::Span,
+) -> Option<Expression> {
+    match (lhs_selected, rhs_selected) {
+        (Some(lhs), Some(rhs)) => Some(Expression::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        }),
+        (Some(lhs), None) => Some(Expression::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs.clone().with_span(span)),
+            span,
+        }),
+        (None, Some(rhs)) => Some(Expression::Binary {
+            op,
+            lhs: Box::new(lhs.clone().with_span(span)),
+            rhs: Box::new(rhs),
+            span,
+        }),
+        (None, None) => None,
+    }
+}
+
+fn comprehension_index_value(range: &Expression, one_based_index: i64) -> Option<i64> {
+    let Expression::Range {
+        start, step, end, ..
+    } = range
+    else {
+        return None;
+    };
+    let start = literal_integer_value(start)?;
+    let step = match step.as_deref() {
+        Some(step) => literal_integer_value(step)?,
+        None => 1,
+    };
+    let value = start + (one_based_index.checked_sub(1)?) * step;
+    let end = literal_integer_value(end)?;
+    ((step > 0 && value <= end) || (step < 0 && value >= end) || (step == 0 && value == start))
+        .then_some(value)
+}
+
+fn literal_integer_value(expr: &Expression) -> Option<i64> {
+    match expr {
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        _ => None,
+    }
+}
+
+fn substitute_comprehension_index_literal(
+    expr: &Expression,
+    name: &str,
+    value: i64,
+    span: rumoca_core::Span,
+) -> Expression {
+    substitute_comprehension_index_expr(
+        expr,
+        name,
+        &Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
             span,
         },
-    })
+        span,
+    )
+}
+
+fn substitute_comprehension_index_expr(
+    expr: &Expression,
+    name: &str,
+    replacement: &Expression,
+    span: rumoca_core::Span,
+) -> Expression {
+    struct Substituter<'a> {
+        name: &'a str,
+        replacement: &'a Expression,
+        span: rumoca_core::Span,
+    }
+
+    impl rumoca_core::ExpressionRewriter for Substituter<'_> {
+        fn walk_var_ref_expression(
+            &mut self,
+            name: &Reference,
+            subscripts: &[rumoca_core::Subscript],
+            span: rumoca_core::Span,
+        ) -> Expression {
+            if name.as_str() == self.name && subscripts.is_empty() {
+                return self.replacement.clone().with_span(self.span);
+            }
+            Expression::VarRef {
+                name: name.clone(),
+                subscripts: self.rewrite_subscripts(subscripts),
+                span,
+            }
+        }
+
+        fn walk_array_comprehension_expression(
+            &mut self,
+            expr: &Expression,
+            indices: &[rumoca_core::ComprehensionIndex],
+            filter: Option<&Expression>,
+            span: rumoca_core::Span,
+        ) -> Expression {
+            if indices.iter().any(|index| index.name == self.name) {
+                return Expression::ArrayComprehension {
+                    expr: Box::new(expr.clone()),
+                    indices: indices.to_vec(),
+                    filter: filter.cloned().map(Box::new),
+                    span,
+                };
+            }
+            rumoca_core::ExpressionRewriter::walk_array_comprehension_expression(
+                self, expr, indices, filter, span,
+            )
+        }
+    }
+
+    let mut substituter = Substituter {
+        name,
+        replacement,
+        span,
+    };
+    substituter.rewrite_expression(expr)
 }
 
 fn projection_owner_span(
@@ -2735,6 +3182,26 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
                     .transpose()?,
                 span: *span,
             }),
+            Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => {
+                if let Expression::VarRef {
+                    name,
+                    subscripts: base_subscripts,
+                    ..
+                } = base.as_ref()
+                    && self.indexed_var_ref_matches_substitution(name, base_subscripts, subscripts)
+                {
+                    let mut combined_subscripts =
+                        Vec::with_capacity(base_subscripts.len() + subscripts.len());
+                    combined_subscripts.extend_from_slice(base_subscripts);
+                    combined_subscripts.extend_from_slice(subscripts);
+                    return self.rewrite_var_ref_expression(name, &combined_subscripts, *span);
+                }
+                self.walk_expression(expr)
+            }
             _ => self.walk_expression(expr),
         }
     }
@@ -2767,6 +3234,31 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
         } else {
             self.walk_var_ref_expression(name, subscripts, span)
         }
+    }
+}
+
+impl SubstituteVarRewriter<'_> {
+    fn indexed_var_ref_matches_substitution(
+        &self,
+        name: &Reference,
+        base_subscripts: &[rumoca_core::Subscript],
+        subscripts: &[rumoca_core::Subscript],
+    ) -> bool {
+        let mut combined_subscripts = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+        combined_subscripts.extend_from_slice(base_subscripts);
+        combined_subscripts.extend_from_slice(subscripts);
+        aggregate_subscript_ref_matches_var(name, &combined_subscripts, self.substitution)
+            || var_ref_matches_unknown_for_substitution(
+                name,
+                &combined_subscripts,
+                self.substitution,
+            )
+            || embedded_alias_indices_for_substitution(
+                name,
+                &combined_subscripts,
+                self.substitution,
+            )
+            .is_some()
     }
 }
 

@@ -645,8 +645,40 @@ fn der_arg_static_subscript_indices(
     subscripts: &[rumoca_core::Subscript],
     fallback_span: rumoca_core::Span,
 ) -> Result<Option<Vec<usize>>, LowerError> {
-    super::super::static_subscript_indices_with_owner(subscripts, fallback_span)
-        .map_err(|err| err.with_fallback_span(der_arg_subscript_span(subscripts, fallback_span)))
+    let span = der_arg_subscript_span(subscripts, fallback_span);
+    let mut indices = derivative_vec_with_capacity(
+        subscripts.len(),
+        "derivative argument subscript index count",
+        span,
+    )?;
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+                indices.push(super::super::positive_i64_index(
+                    *value,
+                    super::super::span_or_owner(*span, fallback_span),
+                )?);
+            }
+            rumoca_core::Subscript::Expr { expr, span } => {
+                let Some(index) = super::super::lower_static_index_expr_with_owner(
+                    expr,
+                    super::super::span_or_owner(*span, fallback_span),
+                )?
+                else {
+                    return Ok(None);
+                };
+                indices.push(index);
+            }
+            rumoca_core::Subscript::Colon { .. } => return Ok(None),
+            _ => {
+                return Err(super::super::unsupported_at(
+                    "non-positive subscript is unsupported",
+                    super::super::span_or_owner(subscript.span(), fallback_span),
+                ));
+            }
+        }
+    }
+    Ok(Some(indices))
 }
 
 fn der_arg_subscript_span(
@@ -998,6 +1030,27 @@ mod tests {
             .expect_err("invalid der() subscript should fail");
         assert_eq!(err.source_span(), Some(subscript_span));
         assert!(err.reason().contains("non-positive subscript"));
+    }
+
+    #[test]
+    fn der_state_name_declines_slice_subscript() -> Result<(), LowerError> {
+        let expr = der(
+            var_ref(
+                "x",
+                vec![
+                    rumoca_core::Subscript::Index {
+                        value: 1,
+                        span: span(3, 4),
+                    },
+                    rumoca_core::Subscript::Colon { span: span(5, 6) },
+                ],
+                span(1, 6),
+            ),
+            span(0, 7),
+        );
+
+        assert!(der_state_name(&expr, &HashSet::from(["x[1,1]".to_string()]))?.is_none());
+        Ok(())
     }
 
     #[test]

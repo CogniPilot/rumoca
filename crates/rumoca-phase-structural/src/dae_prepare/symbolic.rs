@@ -368,7 +368,26 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 span,
             });
         }
-        self.der_map.get(name.as_str()).cloned()
+        if let Some(derivative) = self.der_map.get(name.as_str()) {
+            return Some(derivative.clone());
+        }
+        if self.dae.variables.states.contains_key(name)
+            || self.dae.variables.algebraics.get(name).is_some_and(|var| {
+                state_select_rank(var.state_select)
+                    >= state_select_rank(rumoca_core::StateSelect::Prefer)
+            })
+        {
+            return Some(Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![Expression::VarRef {
+                    name: rumoca_core::Reference::from_var_name(name.clone()),
+                    subscripts: Vec::new(),
+                    span,
+                }],
+                span,
+            });
+        }
+        None
     }
 
     fn differentiate_binary(
@@ -535,6 +554,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         name: &VarName,
         args: &[Expression],
         is_constructor: bool,
+        span: Span,
         active_functions: &mut Vec<VarName>,
     ) -> Option<Expression> {
         if is_constructor {
@@ -547,6 +567,11 @@ impl<'a> SymbolicDerivativeContext<'a> {
         if !function.pure || function.external.is_some() || function.outputs.len() != 1 {
             return None;
         }
+        if let Some(derivative_call) =
+            self.differentiate_function_call_with_annotation(function, args, span, active_functions)
+        {
+            return Some(derivative_call);
+        }
         active_functions.push(name.clone());
         let Some(output_expr) = function_output_expression(function, args) else {
             active_functions.pop();
@@ -555,6 +580,73 @@ impl<'a> SymbolicDerivativeContext<'a> {
         let derivative = self.differentiate(&output_expr, active_functions);
         active_functions.pop();
         derivative
+    }
+
+    fn differentiate_function_call_with_annotation(
+        &self,
+        function: &rumoca_core::Function,
+        args: &[Expression],
+        span: Span,
+        active_functions: &mut Vec<VarName>,
+    ) -> Option<Expression> {
+        let annotation = function
+            .derivatives
+            .iter()
+            .find(|annotation| annotation.order == 1)?;
+        let derivative_name =
+            self.resolve_derivative_function_name(&annotation.derivative_function)?;
+        let (named, positional) = split_named_and_positional_args(args)?;
+        let mut positional_idx = 0usize;
+        let mut actuals = Vec::with_capacity(function.inputs.len());
+        for input in &function.inputs {
+            let actual = named.get(input.name.as_str()).cloned().or_else(|| {
+                let actual = positional.get(positional_idx).cloned();
+                positional_idx += usize::from(actual.is_some());
+                actual
+            });
+            actuals.push(actual.or_else(|| input.default.clone())?);
+        }
+
+        let mut derivative_args = actuals.clone();
+        for (input, actual) in function.inputs.iter().zip(actuals.iter()) {
+            if annotation
+                .no_derivative
+                .iter()
+                .any(|name| name == &input.name)
+            {
+                continue;
+            }
+            let derivative = if annotation
+                .zero_derivative
+                .iter()
+                .any(|name| name == &input.name)
+            {
+                real_literal(0.0, actual.span().unwrap_or(span))
+            } else {
+                self.differentiate(actual, active_functions)?
+            };
+            derivative_args.push(derivative);
+        }
+
+        Some(Expression::FunctionCall {
+            name: rumoca_core::Reference::from_var_name(derivative_name),
+            args: derivative_args,
+            is_constructor: false,
+            span,
+        })
+    }
+
+    fn resolve_derivative_function_name(&self, derivative_function: &str) -> Option<VarName> {
+        let exact = VarName::new(derivative_function.to_string());
+        if self.dae.symbols.functions.contains_key(&exact) {
+            return Some(exact);
+        }
+        self.dae
+            .symbols
+            .functions
+            .keys()
+            .find(|name| name.as_str().ends_with(derivative_function))
+            .cloned()
     }
 
     fn differentiate(
@@ -615,15 +707,27 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 let flat_index = flat_index_from_indices(&base_dims, &indices)?;
                 project_flat_index_with_span(&d_base, &base_dims, flat_index, Some(*span))
             }
+            Expression::FieldAccess { base, field, span } => {
+                if let Some(name) = self.canonical_field_access_var_name(base, field) {
+                    return self.differentiate_variable(&name, &[], *span);
+                }
+                if let Some(projected) =
+                    self.project_field_expression(base, field, active_functions)
+                {
+                    return self.differentiate(&projected, active_functions);
+                }
+                None
+            }
             Expression::FunctionCall {
                 name,
                 args,
                 is_constructor,
-                ..
+                span,
             } => self.differentiate_function_call(
                 name.var_name(),
                 args,
                 *is_constructor,
+                *span,
                 active_functions,
             ),
             Expression::BuiltinCall {
@@ -682,6 +786,150 @@ impl<'a> SymbolicDerivativeContext<'a> {
             inner => self.differentiate(inner, active_functions)?,
         };
         self.differentiate(&first_derivative, active_functions)
+    }
+
+    fn canonical_field_access_var_name(&self, base: &Expression, field: &str) -> Option<VarName> {
+        field_access_candidate_var_names(base, field)
+            .into_iter()
+            .find(|name| self.variable_or_derivative_exists(name))
+    }
+
+    fn variable_or_derivative_exists(&self, name: &VarName) -> bool {
+        self.der_map.contains_key(name.as_str())
+            || self.dae.variables.states.contains_key(name)
+            || self.dae.variables.algebraics.contains_key(name)
+            || self.dae.variables.outputs.contains_key(name)
+            || self.dae.variables.parameters.contains_key(name)
+            || self.dae.variables.constants.contains_key(name)
+    }
+
+    fn project_field_expression(
+        &self,
+        expr: &Expression,
+        field: &str,
+        active_functions: &mut Vec<VarName>,
+    ) -> Option<Expression> {
+        match expr {
+            Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => {
+                let projected_branches = branches
+                    .iter()
+                    .map(|(cond, value)| {
+                        Some((
+                            cond.clone(),
+                            self.project_field_expression(value, field, active_functions)?,
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Expression::If {
+                    branches: projected_branches,
+                    else_branch: Box::new(self.project_field_expression(
+                        else_branch,
+                        field,
+                        active_functions,
+                    )?),
+                    span: *span,
+                })
+            }
+            Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                ..
+            } if *is_constructor => self.project_constructor_field(name.var_name(), args, field),
+            Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                ..
+            } => {
+                if *is_constructor
+                    || active_functions
+                        .iter()
+                        .any(|active| active == name.var_name())
+                {
+                    return None;
+                }
+                let function = self.dae.symbols.functions.get(name.var_name())?;
+                if !function.pure || function.external.is_some() || function.outputs.len() != 1 {
+                    return None;
+                }
+                active_functions.push(name.var_name().clone());
+                let output_expr = function_output_expression(function, args);
+                let projected = output_expr.and_then(|output_expr| {
+                    self.project_field_expression(&output_expr, field, active_functions)
+                });
+                active_functions.pop();
+                projected
+            }
+            _ => None,
+        }
+    }
+
+    fn project_constructor_field(
+        &self,
+        constructor_name: &VarName,
+        args: &[Expression],
+        field: &str,
+    ) -> Option<Expression> {
+        let constructor = self.dae.symbols.functions.get(constructor_name)?;
+        if !constructor.is_constructor {
+            return None;
+        }
+        constructor
+            .inputs
+            .iter()
+            .position(|input| input.name.as_str() == field)
+            .and_then(|idx| args.get(idx).cloned())
+    }
+}
+
+pub(super) fn field_access_candidate_var_names(base: &Expression, field: &str) -> Vec<VarName> {
+    let Some((base_name, subscripts)) = field_access_base_var_ref(base) else {
+        return Vec::new();
+    };
+    let Some(indices) = static_subscript_indices(&subscripts) else {
+        return Vec::new();
+    };
+    if indices.is_empty() {
+        return vec![VarName::new(format!("{}.{}", base_name.as_str(), field))];
+    }
+    let index_text = indices
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    vec![
+        VarName::new(format!("{}[{}].{}", base_name.as_str(), index_text, field)),
+        VarName::new(format!("{}.{}[{}]", base_name.as_str(), field, index_text)),
+    ]
+}
+
+fn field_access_base_var_ref(base: &Expression) -> Option<(VarName, Vec<Subscript>)> {
+    match base {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => Some((name.var_name().clone(), subscripts.clone())),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+            combined.extend_from_slice(base_subscripts);
+            combined.extend_from_slice(subscripts);
+            Some((name.var_name().clone(), combined))
+        }
+        _ => None,
     }
 }
 

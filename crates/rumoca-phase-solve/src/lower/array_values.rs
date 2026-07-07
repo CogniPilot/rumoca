@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: array value lowering still coordinates array
+//! literals, comprehensions, slices, and structured assignments. split plan:
+//! move array literal projection and dynamic selection dispatch into submodules.
+
 use super::*;
 
 mod builtins;
@@ -1050,6 +1054,11 @@ impl<'a> LowerBuilder<'a> {
             );
         }
         if let Some(values) =
+            self.lower_projected_function_call_array_values(fallback, call_span, scope, call_depth)?
+        {
+            return Ok(values);
+        }
+        if let Some(values) =
             self.lower_user_function_call_array_values(name, args, call_span, scope, call_depth)?
         {
             return Ok(values);
@@ -1057,6 +1066,131 @@ impl<'a> LowerBuilder<'a> {
         let mut values = array_vec_with_capacity(1, "function fallback value count", call_span)?;
         values.push(self.lower_expr(fallback, scope, call_depth)?);
         Ok(values)
+    }
+
+    #[allow(clippy::excessive_nesting)]
+    fn lower_projected_function_call_array_values(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let Some(dae_variables) = self.dae_variables else {
+            return Ok(None);
+        };
+        let mut dae_model = dae::Dae {
+            variables: dae_variables.clone(),
+            ..Default::default()
+        };
+        dae_model.symbols.functions = self.functions.clone();
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = expr
+        else {
+            return Ok(None);
+        };
+        let Some(dims) = self.vectorized_scalar_function_call_dims(name, args, scope, span)? else {
+            return Ok(None);
+        };
+        let count = checked_shape_size(&dims, "projected function call shape", span)?;
+        let mut values =
+            array_vec_with_capacity(count, "projected function call value count", span)?;
+        for flat_index in 0..count {
+            let mut projected_args = array_vec_with_capacity(
+                args.len(),
+                "projected function call argument count",
+                span,
+            )?;
+            for arg in args {
+                let arg_dims = self.infer_expr_dims(arg, scope)?;
+                let (projection_dims, projection_index) =
+                    if arg_dims.as_slice() == [1] && dims.as_slice() != [1] {
+                        (arg_dims.as_slice(), 0)
+                    } else {
+                        (dims.as_slice(), flat_index)
+                    };
+                let Some(projected_arg) = derivative_rhs::project_expression_scalar(
+                    arg,
+                    projection_dims,
+                    projection_index,
+                    &dae_model,
+                    &self.structural_bindings,
+                    span,
+                )?
+                else {
+                    return Ok(None);
+                };
+                projected_args.push(projected_arg);
+            }
+            let scalar_call = rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args: projected_args,
+                is_constructor: false,
+                span,
+            };
+            values.push(self.lower_expr(&scalar_call, scope, call_depth + 1)?);
+        }
+        Ok(Some(values))
+    }
+
+    fn vectorized_scalar_function_call_dims(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<usize>>, LowerError> {
+        let Some(function) = self.lookup_function(name) else {
+            return Ok(None);
+        };
+        if function.outputs.is_empty() {
+            return Ok(None);
+        }
+        let (named, positional) =
+            function_calls::split_named_and_positional_call_args(function.name.as_str(), args)?;
+        let mut positional_idx = 0usize;
+        let mut dims: Option<Vec<usize>> = None;
+        for input in &function.inputs {
+            let actual = named.get(input.name.as_str()).copied().or_else(|| {
+                function_calls::next_positional_function_input_arg(
+                    input,
+                    &positional,
+                    &mut positional_idx,
+                )
+            });
+            let Some(actual) = actual else {
+                continue;
+            };
+            if !input.dims.is_empty() {
+                continue;
+            }
+            let actual_dims = self.infer_expr_dims(actual, scope)?;
+            if actual_dims.is_empty() {
+                continue;
+            }
+            match &dims {
+                Some(_) if actual_dims.as_slice() == [1] => {}
+                Some(existing) if existing.as_slice() == [1] => dims = Some(actual_dims),
+                Some(existing) if existing != &actual_dims => {
+                    return Err(LowerError::contract_violation(
+                        format!(
+                            "vectorized scalar function `{}` has actual dimensions {}, expected {}",
+                            function.name,
+                            format_usize_dims(&actual_dims),
+                            format_usize_dims(existing),
+                        ),
+                        actual.span().unwrap_or(span),
+                    ));
+                }
+                Some(_) => {}
+                None => dims = Some(actual_dims),
+            }
+        }
+        Ok(dims)
     }
 
     fn lower_scalar_type_constructor_array_value(
@@ -1086,6 +1220,15 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
+        let lhs_scalar_call =
+            self.scalar_output_function_call_in_scalar_product(lhs, rhs, scope)?;
+        let rhs_scalar_call =
+            self.scalar_output_function_call_in_scalar_product(rhs, lhs, scope)?;
+        if lhs_scalar_call || rhs_scalar_call {
+            let l = self.lower_expr(lhs, scope, call_depth)?;
+            let r = self.lower_expr(rhs, scope, call_depth)?;
+            return self.lower_binary(rumoca_core::OpBinary::Mul, l, r, span);
+        }
         let lhs = self
             .lower_array_operand(lhs, scope, call_depth)
             .map_err(|err| err.with_fallback_span(span))?;
@@ -1098,16 +1241,46 @@ impl<'a> LowerBuilder<'a> {
         match result.values.as_slice() {
             [value] => Ok(*value),
             values => Err(unsupported_at(
-                format!(
-                    "non-scalar multiplication result with width {} is unsupported in scalar context (lhs_shape={}, rhs_shape={}, result_shape={})",
-                    values.len(),
-                    format_usize_dims(&lhs.dims),
-                    format_usize_dims(&rhs.dims),
-                    format_usize_dims(&result.dims),
-                ),
+                {
+                    format!(
+                        "non-scalar multiplication result with width {} is unsupported in scalar context (lhs_shape={}, lhs_values={}, rhs_shape={}, rhs_values={}, result_shape={})",
+                        values.len(),
+                        format_usize_dims(&lhs.dims),
+                        lhs.values.len(),
+                        format_usize_dims(&rhs.dims),
+                        rhs.values.len(),
+                        format_usize_dims(&result.dims),
+                    )
+                },
                 span,
             )),
         }
+    }
+
+    fn scalar_output_function_call_in_scalar_product(
+        &self,
+        candidate: &rumoca_core::Expression,
+        other: &rumoca_core::Expression,
+        scope: &Scope,
+    ) -> Result<bool, LowerError> {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: false,
+            ..
+        } = candidate
+        else {
+            return Ok(false);
+        };
+        let Some(function) = self.lookup_function(name) else {
+            return Ok(false);
+        };
+        let [output] = function.outputs.as_slice() else {
+            return Ok(false);
+        };
+        if !output.dims.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.infer_expr_dims(other, scope)?.is_empty())
     }
 
     fn lower_binary_array_like_values(
@@ -1130,14 +1303,22 @@ impl<'a> LowerBuilder<'a> {
                 scope,
                 call_depth,
             ),
-            Op::Sub | Op::SubElem => self.lower_elementwise_binary_values(
-                BinaryOp::Sub,
-                lhs,
-                rhs,
-                span,
-                scope,
-                call_depth,
-            ),
+            Op::Sub | Op::SubElem => {
+                if let Some(values) = self
+                    .lower_projected_function_residual_values(lhs, rhs, span, scope, call_depth)?
+                {
+                    Ok(values)
+                } else {
+                    self.lower_elementwise_binary_values(
+                        BinaryOp::Sub,
+                        lhs,
+                        rhs,
+                        span,
+                        scope,
+                        call_depth,
+                    )
+                }
+            }
             Op::MulElem => self.lower_elementwise_binary_values(
                 BinaryOp::Mul,
                 lhs,
@@ -1146,7 +1327,7 @@ impl<'a> LowerBuilder<'a> {
                 scope,
                 call_depth,
             ),
-            Op::DivElem | Op::ExpElem => {
+            Op::DivElem | Op::Exp | Op::ExpElem => {
                 let bin = if matches!(op, Op::DivElem) {
                     BinaryOp::Div
                 } else {
@@ -1160,7 +1341,7 @@ impl<'a> LowerBuilder<'a> {
                 let rhs = self.lower_array_operand(rhs, scope, call_depth)?;
                 Ok(self.multiply_array_operands(&lhs, &rhs, span)?.values)
             }
-            Op::Exp | Op::And | Op::Or | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Neq => {
+            Op::And | Op::Or | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Neq => {
                 let lhs = self.lower_array_operand(lhs, scope, call_depth)?;
                 let rhs = self.lower_array_operand(rhs, scope, call_depth)?;
                 if lhs.is_scalar() && rhs.is_scalar() {
@@ -1182,6 +1363,48 @@ impl<'a> LowerBuilder<'a> {
             )),
         };
         result.map_err(|err| err.with_fallback_span(span))
+    }
+
+    fn lower_projected_function_residual_values(
+        &mut self,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let Some(dae_variables) = self.dae_variables else {
+            return Ok(None);
+        };
+        let mut dae_model = dae::Dae {
+            variables: dae_variables.clone(),
+            ..Default::default()
+        };
+        dae_model.symbols.functions = self.functions.clone();
+        let residual = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs.clone()),
+            rhs: Box::new(rhs.clone()),
+            span,
+        };
+        let Some(expressions) = derivative_rhs::function_projected_residuals_with_owner(
+            &residual,
+            &dae_model,
+            self.structural_bindings.as_ref(),
+            span,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut values = array_vec_with_capacity(
+            expressions.len(),
+            "projected function residual scalar count",
+            span,
+        )?;
+        for expression in expressions {
+            values.push(self.lower_expr(&expression, scope, call_depth + 1)?);
+        }
+        Ok(Some(values))
     }
 
     fn lower_elementwise_binary_values(
@@ -1235,6 +1458,7 @@ impl<'a> LowerBuilder<'a> {
         self.lower_array_operand(expr, scope, call_depth)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn lower_division_array_values(
         &mut self,
         lhs: &rumoca_core::Expression,
@@ -1252,6 +1476,17 @@ impl<'a> LowerBuilder<'a> {
             return Ok(Vec::new());
         }
         if !rhs.is_scalar() {
+            if lhs.is_scalar() {
+                let mut values = crate::lower_vec_with_capacity(
+                    rhs.values.len(),
+                    "scalar-array division value count",
+                    span,
+                )?;
+                for value in rhs.values.iter().copied() {
+                    values.push(self.emit_binary_at(BinaryOp::Div, lhs.values[0], value, span)?);
+                }
+                return Ok(values);
+            }
             if lhs.values.len() == 1 && rhs.values.len() == 1 {
                 let mut values = crate::lower_vec_with_capacity(
                     1,
@@ -1312,6 +1547,11 @@ impl<'a> LowerBuilder<'a> {
             self.infer_expr_dims(arg, scope)?
         } else {
             self.infer_expr_dims(expr, scope)?
+        };
+        let dims = if (dims.is_empty() && values.len() > 1) || dims.contains(&0) {
+            vector_dims(values.len())
+        } else {
+            dims
         };
         if !dims.is_empty() {
             let Some(span) = owner_span else {
@@ -1834,6 +2074,13 @@ impl<'a> LowerBuilder<'a> {
             }
             return Ok(LocalSubscriptResolution::NotLocal);
         };
+        if dims.iter().any(|dim| *dim < 0) {
+            let shape = format_i64_dims(&dims);
+            return Err(unsupported_at(
+                format!("subscripted local array `{key}` has negative dimensions {shape}"),
+                span,
+            ));
+        };
         let Some(bindings) = scope.indexed_entries(&key_path) else {
             if let Some(indices) = self.compile_time_subscript_indices(subscripts, span)? {
                 return Err(LowerError::MissingBinding {
@@ -1842,13 +2089,6 @@ impl<'a> LowerBuilder<'a> {
             }
             return Err(unsupported_at(
                 format!("subscripted local array `{key}` has no assigned elements"),
-                span,
-            ));
-        };
-        if dims.iter().any(|dim| *dim < 0) {
-            let shape = format_i64_dims(&dims);
-            return Err(unsupported_at(
-                format!("subscripted local array `{key}` has negative dimensions {shape}"),
                 span,
             ));
         };
@@ -1958,7 +2198,15 @@ impl<'a> LowerBuilder<'a> {
         if scalar_literal_projection(base, subscripts, owner_span)? {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
         }
-        let base_key = dynamic_binding_base_key(base)?;
+        let base_key = match dynamic_binding_base_key(base) {
+            Ok(base_key) => base_key,
+            Err(LowerError::DynamicBindingBase { .. }) => {
+                return Ok(vec![
+                    self.lower_index(base, subscripts, owner_span, scope, call_depth)?,
+                ]);
+            }
+            Err(err) => return Err(err),
+        };
         let span = required_expr_span_from_subscripts_or_base(
             subscripts,
             base,

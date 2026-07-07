@@ -7,7 +7,9 @@ use rumoca_solver::SimOptions;
 
 use super::diagnostics::SimulationDiagnosticError;
 use super::expr_util::equation_lhs_prefix;
-use super::structural_lowering::prepare_dae_for_structural_analysis;
+use super::structural_lowering::{
+    prepare_dae_after_boundary_elimination, prepare_dae_for_structural_analysis,
+};
 
 fn prepare_dae_for_structure_report(
     prepared: &mut dae::Dae,
@@ -15,33 +17,20 @@ fn prepare_dae_for_structure_report(
 ) -> Result<(), SimulationDiagnosticError> {
     prepare_dae_for_structural_analysis(prepared, opts)
         .map_err(SimulationDiagnosticError::SolveLowering)?;
-    rumoca_phase_structural::eliminate::resolve_boundary_equations_to_fixpoint(prepared).map_err(
-        |error| {
-            SimulationDiagnosticError::Solver(format!(
-                "structural boundary preparation failed: {error}"
-            ))
-        },
-    )?;
-    rumoca_phase_structural::dae_prepare::demote_direct_assigned_states(prepared).map_err(
-        |error| {
-            SimulationDiagnosticError::Solver(format!(
-                "structural post-boundary direct demotion failed: {error}"
-            ))
-        },
-    )?;
-    rumoca_phase_structural::dae_prepare::reduce_constrained_dummy_derivatives(prepared).map_err(
-        |error| {
-            SimulationDiagnosticError::Solver(format!(
-                "structural post-boundary dummy reduction failed: {error}"
-            ))
-        },
-    )?;
-    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(prepared)
-        .map_err(|error| {
-            SimulationDiagnosticError::Solver(format!(
-                "structural post-boundary state cleanup failed: {error}"
-            ))
-        })?;
+    loop {
+        let boundary =
+            rumoca_phase_structural::eliminate::resolve_boundary_equations_to_fixpoint(prepared)
+                .map_err(|error| {
+                    SimulationDiagnosticError::Solver(format!(
+                        "structural boundary preparation failed: {error}"
+                    ))
+                })?;
+        let changed = prepare_dae_after_boundary_elimination(prepared, &boundary.substitutions)
+            .map_err(SimulationDiagnosticError::SolveLowering)?;
+        if boundary.n_eliminated == 0 && !changed {
+            break;
+        }
+    }
     Ok(())
 }
 

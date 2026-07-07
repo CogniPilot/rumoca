@@ -1829,39 +1829,14 @@ fn is_internal_balance_port_stream_alias_required(path: &str) -> bool {
     path.ends_with(".h_outflow") || path.ends_with(".C_outflow")
 }
 
-fn stream_alias_debug_matches(
+fn log_stream_alias_skip(
     _missing: &rumoca_core::VarName,
     _anchor: &rumoca_core::VarName,
-) -> bool {
-    false
-}
-
-fn log_stream_alias_skip(
-    missing: &rumoca_core::VarName,
-    anchor: &rumoca_core::VarName,
-    interface_stream_vars: &IndexSet<rumoca_core::VarName>,
+    _interface_stream_vars: &IndexSet<rumoca_core::VarName>,
 ) {
-    if !stream_alias_debug_matches(missing, anchor) {
-        return;
-    }
-    eprintln!(
-        "DEBUG STREAM_ALIAS skip missing={} anchor={} interface_count={}",
-        missing.as_str(),
-        anchor.as_str(),
-        interface_stream_vars.len()
-    );
 }
 
-fn log_stream_alias_emit(missing: &rumoca_core::VarName, anchor: &rumoca_core::VarName) {
-    if !stream_alias_debug_matches(missing, anchor) {
-        return;
-    }
-    eprintln!(
-        "DEBUG STREAM_ALIAS emit missing={} anchor={}",
-        missing.as_str(),
-        anchor.as_str()
-    );
-}
+fn log_stream_alias_emit(_missing: &rumoca_core::VarName, _anchor: &rumoca_core::VarName) {}
 
 /// Build connection sets from individual connections.
 ///

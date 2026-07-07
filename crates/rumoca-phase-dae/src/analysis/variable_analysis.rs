@@ -1285,7 +1285,7 @@ fn validate_field_access_functions(
                 let short_name = name.last_segment().to_string();
                 let total_functions = flat.functions.len();
                 crate::log_todae_debug(format!(
-                    "DEBUG TODAE missing constructor={} field={} short_name={} total_functions={}",
+                    "TODAE missing constructor={} field={} short_name={} total_functions={}",
                     name.as_str(),
                     field,
                     short_name,
@@ -1318,7 +1318,7 @@ fn validate_field_access_functions(
                     .collect();
                 available_fields.sort();
                 crate::log_todae_debug(format!(
-                    "DEBUG TODAE constructor field missing={} available={available_fields:?}",
+                    "TODAE constructor field missing={} available={available_fields:?}",
                     selected_name
                 ));
             }

@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: constant-substitution regressions still cover
+//! parameter bindings, scoped aliases, and static initial algorithms together.
+//! split plan: split tests by substitution source and static statement family.
+
 use super::*;
 use rumoca_core::Span;
 
@@ -81,6 +85,55 @@ fn substitute_known_constants_prefers_integer_parameter_binding_over_stale_real_
             span: test_span(),
         }
     );
+}
+
+#[test]
+fn substitute_known_constants_preserves_tunable_real_parameter_binding_in_equation() {
+    let mut model = flat::Model::new();
+    let a_name = rumoca_core::VarName::new("a");
+    model.add_variable(
+        a_name.clone(),
+        flat::Variable {
+            name: a_name,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: test_span(),
+            }),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("x"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("x"),
+            variability: rumoca_core::Variability::Continuous(rumoca_core::Token::default()),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(var_ref("a")),
+            rhs: Box::new(var_ref("x")),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::Binding {
+            variable: "x".to_string(),
+        },
+    ));
+
+    substitute_known_constants_in_flat(&mut model, &Context::new()).unwrap();
+
+    let rumoca_core::Expression::Binary { lhs, .. } = &model.equations[0].residual else {
+        panic!("expected product residual");
+    };
+    assert!(matches!(
+        lhs.as_ref(),
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "a" && subscripts.is_empty()
+    ));
 }
 
 #[test]
@@ -273,6 +326,104 @@ fn substitute_known_constants_reconciles_zero_fill_extent_with_declared_dims() {
 }
 
 #[test]
+fn substitute_known_constants_reconciles_equation_constructor_extent_with_lhs_dims() {
+    let mut model = flat::Model::new();
+    let lhs_name = rumoca_core::VarName::new("volume.portsData_diameter");
+    model.add_variable(
+        lhs_name.clone(),
+        flat::Variable {
+            name: lhs_name,
+            dims: vec![4],
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref("volume.portsData_diameter")),
+            rhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Zeros,
+                args: vec![int_literal(0)],
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "volume".to_string(),
+        },
+    ));
+
+    substitute_known_constants_in_flat(&mut model, &Context::new()).unwrap();
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    let rumoca_core::Expression::BuiltinCall { args, .. } = rhs.as_ref() else {
+        panic!("expected zeros expression");
+    };
+    assert_eq!(literal_integer_value(&args[0]), Some(4));
+}
+
+#[test]
+fn substitute_known_constants_uses_instance_parameter_bindings_in_component_equations() {
+    let mut model = flat::Model::new();
+    let n_name = rumoca_core::VarName::new("ductOut.flowModel.n");
+    model.add_variable(
+        n_name.clone(),
+        flat::Variable {
+            name: n_name,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(int_literal(4)),
+            binding_from_modification: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let m_name = rumoca_core::VarName::new("ductOut.flowModel.m");
+    model.add_variable(
+        m_name.clone(),
+        flat::Variable {
+            name: m_name,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var_ref("n")),
+                rhs: Box::new(int_literal(1)),
+                span: test_span(),
+            }),
+            binding_from_modification: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Zeros,
+                args: vec![var_ref("m")],
+                span: test_span(),
+            }),
+            rhs: Box::new(var_ref("ductOut.flowModel.Ib_flows")),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "ductOut.flowModel".to_string(),
+        },
+    ));
+
+    substitute_known_constants_in_flat(&mut model, &Context::new()).unwrap();
+
+    let rumoca_core::Expression::Binary { lhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual subtraction");
+    };
+    let rumoca_core::Expression::BuiltinCall { args, .. } = lhs.as_ref() else {
+        panic!("expected zeros expression");
+    };
+    assert_eq!(eval_test_integer_expr(&args[0]), Some(3));
+}
+
+#[test]
 fn substitute_known_constants_uses_declared_dims_for_size_before_stale_start() {
     let mut model = flat::Model::new();
     let columns = rumoca_core::VarName::new("lossTable.columns");
@@ -336,6 +487,128 @@ fn literal_integer_value(expr: &rumoca_core::Expression) -> Option<i64> {
         return None;
     };
     Some(*value)
+}
+
+fn eval_test_integer_expr(expr: &rumoca_core::Expression) -> Option<i64> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = eval_test_integer_expr(lhs)?;
+            let rhs = eval_test_integer_expr(rhs)?;
+            rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+        }
+        _ => None,
+    }
+}
+
+fn assert_ones_extent(expr: &rumoca_core::Expression, expected_extent: i64) {
+    let rumoca_core::Expression::BuiltinCall { function, args, .. } = expr else {
+        panic!("expected builtin call, got {expr:?}");
+    };
+    assert_eq!(*function, rumoca_core::BuiltinFunction::Ones);
+    assert_eq!(args.len(), 1);
+    assert_eq!(eval_test_integer_expr(&args[0]), Some(expected_extent));
+}
+
+fn assert_indexed_var_ref(
+    expr: &rumoca_core::Expression,
+    expected_name: &str,
+    expected_index: i64,
+) {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        panic!("expected indexed varref `{expected_name}`, got {expr:?}");
+    };
+    assert_eq!(name.as_str(), expected_name);
+    assert!(matches!(
+        subscripts.as_slice(),
+        [rumoca_core::Subscript::Expr { expr, .. }]
+            if literal_integer_value(expr) == Some(expected_index)
+    ));
+}
+
+#[test]
+fn variable_binding_substitution_uses_flat_binding_before_stale_context_value() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "pipe.n");
+    add_primitive_variable(&mut model, "pipe.flowModel.n");
+    add_primitive_variable(&mut model, "pipe.flowModel.Res_turbulent_internal");
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("pipe.n"))
+        .expect("variable should exist")
+        .binding = Some(int_literal(2));
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("pipe.flowModel.n"))
+        .expect("variable should exist")
+        .binding = Some(rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(int_literal(3)),
+        rhs: Box::new(int_literal(1)),
+        span: rumoca_core::Span::DUMMY,
+    });
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new(
+            "pipe.flowModel.Res_turbulent_internal",
+        ))
+        .expect("variable should exist")
+        .binding = Some(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Ones,
+        args: vec![rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref("pipe.flowModel.n")),
+            rhs: Box::new(int_literal(1)),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    });
+
+    let mut ctx = Context::new();
+    ctx.parameter_values
+        .insert("pipe.flowModel.n".to_string(), 2);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new(
+            "pipe.flowModel.Res_turbulent_internal",
+        ))
+        .expect("variable should exist")
+        .binding
+        .as_ref()
+        .expect("binding should remain");
+    assert_ones_extent(binding, 3);
+}
+
+fn assert_symbolically_indexed_var_ref(
+    expr: &rumoca_core::Expression,
+    expected_name: &str,
+    expected_index_name: &str,
+) {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        panic!("expected indexed varref `{expected_name}`, got {expr:?}");
+    };
+    assert_eq!(name.as_str(), expected_name);
+    assert!(matches!(
+        subscripts.as_slice(),
+        [rumoca_core::Subscript::Expr { expr, .. }]
+            if matches!(
+                expr.as_ref(),
+                rumoca_core::Expression::VarRef { name, subscripts, .. }
+                    if name.as_str() == expected_index_name && subscripts.is_empty()
+            )
+    ));
 }
 
 fn string_literal(value: &str) -> rumoca_core::Expression {
@@ -1199,6 +1472,78 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
 }
 
 #[test]
+fn substitutes_positional_record_constructor_field_projection() {
+    let mut model = flat::Model::new();
+    let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    function.add_input(
+        rumoca_core::FunctionParam::new("u", "Real", test_span())
+            .with_default(var_ref("GasData.Air.R")),
+    );
+    model.add_function(function);
+
+    let mut constructor = rumoca_core::Function::new("DataRecord", Span::DUMMY);
+    constructor.is_constructor = true;
+    constructor.add_input(rumoca_core::FunctionParam::new(
+        "name",
+        "String",
+        test_span(),
+    ));
+    constructor.add_input(rumoca_core::FunctionParam::new("R", "Real", test_span()));
+
+    let mut ctx = Context::new();
+    ctx.functions
+        .insert("DataRecord".to_string(), constructor.clone());
+    let record = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("DataRecord"),
+        args: vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("Air".to_string()),
+                span: Span::DUMMY,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(287.0),
+                span: Span::DUMMY,
+            },
+        ],
+        is_constructor: true,
+        span: Span::DUMMY,
+    };
+    ctx.constant_values
+        .insert("GasData.Air".to_string(), record.clone());
+    ctx.constant_values
+        .insert("GasData.Air.R".to_string(), record);
+
+    assert!(
+        matches!(
+            resolve_projected_constant_path("GasData.Air.R", Span::DUMMY, &ctx),
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            }) if (value - 287.0).abs() < f64::EPSILON
+        ),
+        "projected constant path should select positional constructor field"
+    );
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let function = model
+        .functions
+        .get(&rumoca_core::VarName::new("Pkg.f"))
+        .expect("function should exist");
+    let actual = &function.inputs[0].default;
+    assert!(
+        matches!(
+            actual,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            }) if (*value - 287.0).abs() < f64::EPSILON
+        ),
+        "expected projected R field, got {actual:?}"
+    );
+}
+
+#[test]
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
@@ -1369,6 +1714,159 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
         },
         other => panic!("expected assignment statement, got {other:?}"),
     }
+}
+
+#[test]
+fn substitutes_indexed_array_comprehension_parameter_binding_as_scalar_element() {
+    let span = test_span();
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        "fluidVolumes".to_string(),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Mul,
+                    lhs: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("crossAreas"),
+                        subscripts: vec![rumoca_core::Subscript::Expr {
+                            expr: Box::new(var_ref("i")),
+                            span,
+                        }],
+                        span,
+                    }),
+                    rhs: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("lengths"),
+                        subscripts: vec![rumoca_core::Subscript::Expr {
+                            expr: Box::new(var_ref("i")),
+                            span,
+                        }],
+                        span,
+                    }),
+                    span,
+                }),
+                indices: vec![rumoca_core::ComprehensionIndex {
+                    name: "i".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(int_literal(1)),
+                        step: None,
+                        end: Box::new(int_literal(2)),
+                        span,
+                    },
+                }],
+                filter: None,
+                span,
+            }),
+            rhs: Box::new(var_ref("nParallel")),
+            span,
+        },
+    );
+    ctx.constant_values
+        .insert("nParallel".to_string(), int_literal(3));
+
+    let mut live_vars = rustc_hash::FxHashSet::default();
+    live_vars.insert("crossAreas".to_string());
+    live_vars.insert("lengths".to_string());
+    let substituted = substitute_known_constants_expr(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("fluidVolumes"),
+            subscripts: vec![rumoca_core::Subscript::generated_index(2, span)],
+            span,
+        },
+        &ctx,
+        &live_vars,
+        &HashSet::new(),
+        "",
+    )
+    .expect("indexed comprehension parameter should substitute");
+
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = substituted else {
+        panic!("expected scalar product, got {substituted:?}");
+    };
+    assert!(matches!(
+        rhs.as_ref(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(3),
+            ..
+        }
+    ));
+    let rumoca_core::Expression::Binary {
+        lhs: cross_area,
+        rhs: length,
+        ..
+    } = lhs.as_ref()
+    else {
+        panic!("expected selected comprehension body, got {lhs:?}");
+    };
+    assert_indexed_var_ref(cross_area, "crossAreas", 2);
+    assert_indexed_var_ref(length, "lengths", 2);
+}
+
+#[test]
+fn substitutes_symbolically_indexed_array_comprehension_parameter_binding() {
+    let span = test_span();
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        "fluidVolumes".to_string(),
+        rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("crossAreas"),
+                    subscripts: vec![rumoca_core::Subscript::Expr {
+                        expr: Box::new(var_ref("j")),
+                        span,
+                    }],
+                    span,
+                }),
+                rhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("lengths"),
+                    subscripts: vec![rumoca_core::Subscript::Expr {
+                        expr: Box::new(var_ref("j")),
+                        span,
+                    }],
+                    span,
+                }),
+                span,
+            }),
+            indices: vec![rumoca_core::ComprehensionIndex {
+                name: "j".to_string(),
+                range: rumoca_core::Expression::Range {
+                    start: Box::new(int_literal(1)),
+                    step: None,
+                    end: Box::new(int_literal(2)),
+                    span,
+                },
+            }],
+            filter: None,
+            span,
+        },
+    );
+
+    let mut live_vars = rustc_hash::FxHashSet::default();
+    live_vars.insert("crossAreas".to_string());
+    live_vars.insert("lengths".to_string());
+    let substituted = substitute_known_constants_expr(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("fluidVolumes"),
+            subscripts: vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(var_ref("i")),
+                span,
+            }],
+            span,
+        },
+        &ctx,
+        &live_vars,
+        &HashSet::new(),
+        "",
+    )
+    .expect("symbolically indexed comprehension parameter should substitute");
+
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = substituted else {
+        panic!("expected selected comprehension body, got {substituted:?}");
+    };
+    assert_symbolically_indexed_var_ref(&lhs, "crossAreas", "i");
+    assert_symbolically_indexed_var_ref(&rhs, "lengths", "i");
 }
 
 #[test]

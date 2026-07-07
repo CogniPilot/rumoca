@@ -559,6 +559,11 @@ fn var_ref_target_name(
     owner_span: Option<rumoca_core::Span>,
 ) -> Result<Option<String>, LowerError> {
     if !subscripts.is_empty() {
+        if continuous_equation_dims(dae_model, name.var_name()).is_some_and(|dims| dims.is_empty())
+            && singleton_scalar_target_projection(subscripts)
+        {
+            return Ok(Some(name.as_str().to_string()));
+        }
         if let Some(indices) = sliced_target_indices(
             dae_model,
             name.var_name(),
@@ -596,6 +601,21 @@ fn continuous_equation_scalar_name_if_known(
         dims,
         flat_index,
     ))
+}
+
+fn singleton_scalar_target_projection(subscripts: &[rumoca_core::Subscript]) -> bool {
+    !subscripts.is_empty()
+        && subscripts.iter().all(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => *value == 1,
+            rumoca_core::Subscript::Expr { expr, .. } => matches!(
+                expr.as_ref(),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    ..
+                }
+            ),
+            rumoca_core::Subscript::Colon { .. } => false,
+        })
 }
 
 fn sliced_target_indices(

@@ -587,6 +587,9 @@ pub(in crate::lower) fn result_dims_for_subscripts(
     structural_bindings: &IndexMap<String, f64>,
     fallback_span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
+    if dims.is_empty() && singleton_scalar_projection_subscripts(subscripts) {
+        return Ok(Vec::new());
+    }
     if subscripts.is_empty() {
         let mut copied = derivative_vec_with_capacity(
             dims.len(),
@@ -604,4 +607,19 @@ pub(in crate::lower) fn result_dims_for_subscripts(
         result_dims.push(selection.len());
     }
     Ok(result_dims)
+}
+
+fn singleton_scalar_projection_subscripts(subscripts: &[rumoca_core::Subscript]) -> bool {
+    !subscripts.is_empty()
+        && subscripts.iter().all(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => *value == 1,
+            rumoca_core::Subscript::Expr { expr, .. } => matches!(
+                expr.as_ref(),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    ..
+                }
+            ),
+            rumoca_core::Subscript::Colon { .. } => false,
+        })
 }

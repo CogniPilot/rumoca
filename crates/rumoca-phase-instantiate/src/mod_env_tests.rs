@@ -543,6 +543,37 @@ mod moved_inline_tests {
     }
 
     #[test]
+    fn test_declaration_binding_preserves_composite_integer_expression_shape() {
+        let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
+        let mut n = ast::Component {
+            name: "n".to_string(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        n.binding = Some(make_int_expr(2));
+        effective_components.insert("n".to_string(), n);
+
+        let expr = ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Arc::new(make_comp_ref_expr(&["n"])),
+            rhs: Arc::new(make_int_expr(1)),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let resolved = resolve_declaration_binding_expr(
+            &expr,
+            &ast::ModificationEnvironment::default(),
+            &effective_components,
+            &ast::ClassTree::default(),
+        )
+        .expect("declaration binding resolution should succeed");
+
+        assert_eq!(
+            resolved, expr,
+            "declaration bindings must keep composite expressions for instance-scope name resolution"
+        );
+    }
+
+    #[test]
     fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
         let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
         let mut data = ast::Component {

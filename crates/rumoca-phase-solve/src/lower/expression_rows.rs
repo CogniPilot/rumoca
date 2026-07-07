@@ -10,11 +10,14 @@ use rumoca_ir_solve::{
 use super::{
     DirectAssignmentValue, IndexedBindingMap, LowerBuilder, LowerBuilderMetadata, LowerError,
     Scope, compile_time, derivative_rhs,
+    function_calls::external_table_intrinsic_kind,
     helpers::{
         build_indexed_binding_map, format_usize_dims, parse_indexed_binding_key, variable_size,
     },
     unsupported_at,
 };
+
+mod residual_projection;
 
 pub(super) type LoweredRowsAndTargets = (Vec<Vec<LinearOp>>, Vec<Option<ScalarSlot>>);
 
@@ -1222,15 +1225,32 @@ fn lower_equation_residual_rows(
     } else {
         &eq.rhs
     };
-
     let scalar_count = eq.scalar_count.max(1);
     let values = if scalar_count == 1 {
         let mut values = expression_vec_with_capacity(1, "scalar residual value count", eq.span)?;
-        values.push(
-            builder
-                .lower_expr_with_source_context(expr, eq.span, &scope, 0)
-                .map_err(|err| residual_row_context(err, row_idx, eq))?,
-        );
+        if row_idx >= state_scalar_count
+            && let Some(projected_values) =
+                scalarized_explicit_residual_values(eq, scalar_count, ctx, &mut builder)?
+            && let [value] = projected_values.as_slice()
+        {
+            values.push(*value);
+        } else if let Some(projected_values) =
+            scalarized_binary_residual_values(expr, scalar_count, ctx, &mut builder)?
+            && let [value] = projected_values.as_slice()
+        {
+            values.push(*value);
+        } else if let Some(value) =
+            lower_singleton_array_residual_value(&mut builder, expr, eq.span, &scope)
+                .map_err(|err| residual_row_context(err, row_idx, eq))?
+        {
+            values.push(value);
+        } else {
+            values.push(
+                builder
+                    .lower_expr_with_source_context(expr, eq.span, &scope, 0)
+                    .map_err(|err| residual_row_context(err, row_idx, eq))?,
+            );
+        }
         values
     } else if let Some(values) =
         scalarized_explicit_residual_values(eq, scalar_count, ctx, &mut builder)?
@@ -1266,6 +1286,38 @@ fn lower_equation_residual_rows(
     Ok(rows)
 }
 
+fn lower_singleton_array_residual_value(
+    builder: &mut LowerBuilder<'_>,
+    expr: &rumoca_core::Expression,
+    span: rumoca_core::Span,
+    scope: &Scope,
+) -> Result<Option<Reg>, LowerError> {
+    let dims = match builder.infer_expr_dims(expr, scope) {
+        Ok(dims) => dims,
+        Err(_) => return Ok(None),
+    };
+    if dims.is_empty() {
+        return Ok(None);
+    }
+    let mut count = 1usize;
+    for dim in dims {
+        count = count.checked_mul(dim).ok_or_else(|| {
+            LowerError::contract_violation(
+                "singleton residual shape overflows host index range",
+                span,
+            )
+        })?;
+    }
+    if count != 1 {
+        return Ok(None);
+    }
+    let values = builder.lower_array_like_values_with_source_context(expr, span, scope, 0)?;
+    match values.as_slice() {
+        [value] => Ok(Some(*value)),
+        _ => Ok(None),
+    }
+}
+
 fn scalarized_explicit_residual_values(
     eq: &dae::Equation,
     scalar_count: usize,
@@ -1275,12 +1327,40 @@ fn scalarized_explicit_residual_values(
     let Some(lhs) = eq.lhs.as_ref() else {
         return Ok(None);
     };
-    let target = rumoca_core::Expression::VarRef {
+    let target = scalarized_explicit_residual_target(lhs, ctx.layout, eq.span)?;
+    if scalar_count == 1 && is_plain_scalar_residual_target(&target) {
+        return Ok(None);
+    }
+    scalarized_binary_residual_operands(&target, &eq.rhs, scalar_count, ctx, builder, eq.span)
+}
+
+fn is_plain_scalar_residual_target(target: &rumoca_core::Expression) -> bool {
+    matches!(
+        target,
+        rumoca_core::Expression::VarRef { subscripts, .. } if subscripts.is_empty()
+    )
+}
+
+fn scalarized_explicit_residual_target(
+    lhs: &rumoca_core::Reference,
+    layout: &VarLayout,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Expression, LowerError> {
+    if let Some((base, indices)) = parse_indexed_binding_key(lhs.as_str())
+        && layout.shape(base.as_str()).is_some()
+    {
+        return Ok(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(base),
+            subscripts: generated_subscripts_from_usize(&indices, span)?,
+            span,
+        });
+    }
+
+    Ok(rumoca_core::Expression::VarRef {
         name: lhs.clone(),
         subscripts: Vec::new(),
-        span: eq.span,
-    };
-    scalarized_binary_residual_operands(&target, &eq.rhs, scalar_count, ctx, builder, eq.span)
+        span,
+    })
 }
 
 fn scalarized_binary_residual_values(
@@ -1298,25 +1378,46 @@ fn scalarized_binary_residual_values(
     else {
         return Ok(None);
     };
-    if !requires_projected_function_field_scalars(rhs) {
+    if !requires_projected_function_scalars(rhs) {
         return Ok(None);
     }
     scalarized_binary_residual_operands(lhs, rhs, scalar_count, ctx, builder, *span)
 }
 
-fn requires_projected_function_field_scalars(expr: &rumoca_core::Expression) -> bool {
+fn requires_projected_function_scalars(expr: &rumoca_core::Expression) -> bool {
     match expr {
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: false,
+            ..
+        } => external_table_intrinsic_kind(name.as_str()).is_none(),
         rumoca_core::Expression::FieldAccess { base, .. } => {
             matches!(base.as_ref(), rumoca_core::Expression::FunctionCall { .. })
-                || requires_projected_function_field_scalars(base)
+                || requires_projected_function_scalars(base)
         }
-        rumoca_core::Expression::Index { base, .. } => {
-            requires_projected_function_field_scalars(base)
+        rumoca_core::Expression::Index { base, .. } => requires_projected_function_scalars(base),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            requires_projected_function_scalars(lhs) || requires_projected_function_scalars(rhs)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => requires_projected_function_scalars(rhs),
+        rumoca_core::Expression::BuiltinCall { args, .. } => {
+            args.iter().any(requires_projected_function_scalars)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(_, value)| requires_projected_function_scalars(value))
+                || requires_projected_function_scalars(else_branch)
         }
         _ => false,
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn scalarized_binary_residual_operands(
     target: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
@@ -1336,6 +1437,18 @@ fn scalarized_binary_residual_operands(
         ..Default::default()
     };
     dae_model.symbols.functions = ctx.functions.clone();
+    residual_projection::reject_array_denominator_division(rhs, &dae_model, structural_bindings)?;
+    if matches!(target, rumoca_core::Expression::Tuple { .. }) {
+        return residual_projection::scalarized_tuple_residual_operands(
+            target,
+            rhs,
+            scalar_count,
+            &dae_model,
+            structural_bindings,
+            builder,
+            span,
+        );
+    }
     let lhs_values = derivative_rhs::scalarized_rhs_expressions_with_owner(
         target,
         target,
@@ -1344,13 +1457,53 @@ fn scalarized_binary_residual_operands(
         structural_bindings,
         span,
     )?;
-    let Some(mut rhs_values) = derivative_rhs::function_call_projected_scalars_with_owner(
-        rhs,
-        &dae_model,
-        structural_bindings,
-        span,
-    )?
-    else {
+    if scalar_count == 1
+        && let Some(lane_index) = target_scalarized_lane_index(target, ctx.layout, span)?
+        && let Some(rhs_value) = derivative_rhs::project_array_like_scalar_with_owner(
+            rhs,
+            lane_index,
+            &dae_model,
+            structural_bindings,
+            span,
+        )?
+    {
+        let scope = Scope::new();
+        let mut values =
+            expression_vec_with_capacity(1, "scalarized explicit residual value count", span)?;
+        let lhs = lhs_values.into_iter().next().ok_or_else(|| {
+            LowerError::contract_violation("scalarized residual target produced no lhs value", span)
+        })?;
+        let residual = rumoca_core::Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs_value),
+            span,
+        };
+        values.push(builder.lower_expr_with_source_context(&residual, span, &scope, 0)?);
+        return Ok(Some(values));
+    }
+    let rhs_values = if requires_projected_function_scalars(rhs) {
+        derivative_rhs::function_call_projected_scalars_with_owner(
+            rhs,
+            &dae_model,
+            structural_bindings,
+            span,
+        )?
+        .or(derivative_rhs::project_array_like_scalars_with_owner(
+            rhs,
+            &dae_model,
+            structural_bindings,
+            span,
+        )?)
+    } else {
+        derivative_rhs::project_array_like_scalars_with_owner(
+            rhs,
+            &dae_model,
+            structural_bindings,
+            span,
+        )?
+    };
+    let Some(mut rhs_values) = rhs_values else {
         return Ok(None);
     };
     if rhs_values.len() == 1 && scalar_count > 1 {
@@ -1364,6 +1517,15 @@ fn scalarized_binary_residual_operands(
             return Ok(None);
         };
         rhs_values = projected;
+    }
+    if scalar_count == 1
+        && rhs_values.len() > 1
+        && let Some(lane_index) = target_scalarized_lane_index(target, ctx.layout, span)?
+    {
+        let Some(rhs_value) = rhs_values.get(lane_index).cloned() else {
+            return Ok(None);
+        };
+        rhs_values = vec![rhs_value];
     }
     if lhs_values.len() != scalar_count || rhs_values.len() != scalar_count {
         return Ok(None);
@@ -1384,6 +1546,54 @@ fn scalarized_binary_residual_operands(
         values.push(builder.lower_expr_with_source_context(&residual, span, &scope, 0)?);
     }
     Ok(Some(values))
+}
+
+fn target_scalarized_lane_index(
+    target: &rumoca_core::Expression,
+    layout: &VarLayout,
+    span: rumoca_core::Span,
+) -> Result<Option<usize>, LowerError> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = target
+    else {
+        return Ok(None);
+    };
+    if subscripts.is_empty() {
+        return Ok(None);
+    }
+    let Some(dims) = layout.shape(name.as_str()) else {
+        return Ok(None);
+    };
+    let Some(indices) = super::helpers::static_subscript_indices_with_owner(subscripts, span)?
+    else {
+        return Ok(None);
+    };
+    if indices.len() != dims.len() {
+        return Ok(None);
+    }
+    let mut flat_index = 0usize;
+    for (dim_index, index) in indices.iter().copied().enumerate() {
+        let dim = dims[dim_index];
+        if index == 0 || index > dim {
+            return Ok(None);
+        }
+        let stride = dims[dim_index + 1..].iter().product::<usize>();
+        flat_index = flat_index
+            .checked_add((index - 1).checked_mul(stride).ok_or_else(|| {
+                LowerError::contract_violation(
+                    "scalarized target lane index overflows host index range",
+                    span,
+                )
+            })?)
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    "scalarized target lane index overflows host index range",
+                    span,
+                )
+            })?;
+    }
+    Ok(Some(flat_index))
 }
 
 fn lower_scalarized_record_residual_rows(

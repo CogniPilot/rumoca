@@ -18,6 +18,29 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn component_ref(parts: &[(&str, Option<i64>)]) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: test_span(),
+        parts: parts
+            .iter()
+            .map(|(ident, index)| rumoca_core::ComponentRefPart {
+                ident: ident.to_string(),
+                span: test_span(),
+                subs: index
+                    .map(|value| {
+                        vec![rumoca_core::Subscript::Index {
+                            value,
+                            span: test_span(),
+                        }]
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect(),
+        def_id: None,
+    }
+}
+
 fn var_ref_with_expr_subscript(
     name: &str,
     subscript: rumoca_core::Expression,
@@ -152,6 +175,20 @@ fn all_var_names(expr: &rumoca_core::Expression) -> Vec<String> {
     names
 }
 
+fn var_ref_subscript_indices(expr: &rumoca_core::Expression) -> Vec<rumoca_core::Subscript> {
+    let rumoca_core::Expression::VarRef { subscripts, .. } = expr else {
+        panic!("expected VarRef, got {expr:?}");
+    };
+    subscripts.clone()
+}
+
+fn index_expr_subscripts(expr: &rumoca_core::Expression) -> Vec<rumoca_core::Subscript> {
+    let rumoca_core::Expression::Index { subscripts, .. } = expr else {
+        panic!("expected Index, got {expr:?}");
+    };
+    subscripts.clone()
+}
+
 fn collect_var_names_rec(expr: &rumoca_core::Expression, names: &mut Vec<String>) {
     match expr {
         rumoca_core::Expression::VarRef {
@@ -227,6 +264,92 @@ fn assert_any_true_array_arg(expr: &rumoca_core::Expression, expected_names: &[&
             names.contains(&expected_name.to_string()),
             "missing {expected_name} from anyTrue argument: {names:?}"
         );
+    }
+}
+
+fn contains_literal_index_ref(expr: &rumoca_core::Expression, needle: &str, index: i64) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            name.as_str() == needle
+                && matches!(
+                    subscripts.as_slice(),
+                    [rumoca_core::Subscript::Expr {
+                        expr,
+                        ..
+                    }] if matches!(
+                        expr.as_ref(),
+                        rumoca_core::Expression::Literal {
+                            value: rumoca_core::Literal::Integer(value),
+                            ..
+                        } if *value == index
+                    )
+                )
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            contains_literal_index_ref(lhs, needle, index)
+                || contains_literal_index_ref(rhs, needle, index)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            contains_literal_index_ref(rhs, needle, index)
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| contains_literal_index_ref(arg, needle, index)),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                contains_literal_index_ref(condition, needle, index)
+                    || contains_literal_index_ref(value, needle, index)
+            }) || contains_literal_index_ref(else_branch, needle, index)
+        }
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => elements
+            .iter()
+            .any(|element| contains_literal_index_ref(element, needle, index)),
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            contains_literal_index_ref(start, needle, index)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| contains_literal_index_ref(step, needle, index))
+                || contains_literal_index_ref(end, needle, index)
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            contains_literal_index_ref(expr, needle, index)
+                || indices
+                    .iter()
+                    .any(|index_def| contains_literal_index_ref(&index_def.range, needle, index))
+                || filter
+                    .as_ref()
+                    .is_some_and(|filter| contains_literal_index_ref(filter, needle, index))
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            contains_literal_index_ref(base, needle, index)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        contains_literal_index_ref(expr, needle, index)
+                    }
+                    _ => false,
+                })
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            contains_literal_index_ref(base, needle, index)
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
     }
 }
 
@@ -843,6 +966,58 @@ fn test_scalarize_vector_binding_preserves_array_comprehension_without_phantom_r
 }
 
 #[test]
+fn test_scalarize_scalar_lhs_projects_array_comprehension_rhs() {
+    let mut dae = Dae::new();
+    let mut vs = dae::Variable::new(
+        rumoca_core::VarName::new("pipe.vs"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    vs.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("pipe.vs"), vs);
+
+    let rhs = sub(
+        var_ref_with_expr_subscript("pipe.vs", int_lit(1)),
+        rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(mul(
+                var_ref_with_expr_subscript("pipe.crossAreas", var_ref("i")),
+                var_ref_with_expr_subscript("pipe.lengths", var_ref("i")),
+            )),
+            indices: vec![rumoca_core::ComprehensionIndex {
+                name: "i".to_string(),
+                range: rumoca_core::Expression::Range {
+                    start: Box::new(int_lit(1)),
+                    step: None,
+                    end: Box::new(int_lit(2)),
+                    span: test_span(),
+                },
+            }],
+            filter: None,
+            span: test_span(),
+        },
+    );
+    dae.continuous.equations.push(dae::Equation::residual(
+        rhs,
+        test_span(),
+        "binding equation for pipe.vs[1]",
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    let rewritten = &dae.continuous.equations[0].rhs;
+    assert!(
+        !expr_has_array_comprehension(rewritten),
+        "scalar lhs equation should project aggregate RHS: {rewritten:?}"
+    );
+    assert!(
+        contains_literal_index_ref(rewritten, "pipe.crossAreas", 1)
+            && contains_literal_index_ref(rewritten, "pipe.lengths", 1),
+        "scalar lhs equation should select matching RHS element: {rewritten:?}"
+    );
+}
+
+#[test]
 fn test_scalarize_phantom_vector_equations_selects_zeros() {
     let mut dae = Dae::new();
 
@@ -914,6 +1089,61 @@ fn test_scalarize_phantom_vector_equations_selects_zeros() {
                 .iter()
                 .any(|name| name == &format!("sensor.plug_p.pin[{}].i", idx + 1)),
             "equation {idx} missing indexed positive pin: {names:?}"
+        );
+    }
+}
+
+#[test]
+fn test_scalarize_fill_repeats_vector_value_across_outer_dimension() {
+    let mut dae = Dae::new();
+    let span = test_span();
+
+    for port in 1..=2 {
+        let name = format!("freshAir.ports[{port}].C_outflow");
+        let mut var = dae::Variable::new(rumoca_core::VarName::new(&name), span);
+        var.dims = vec![1];
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(&name), var);
+    }
+
+    let mut input = dae::Variable::new(rumoca_core::VarName::new("freshAir.C_in_internal"), span);
+    input.dims = vec![1];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("freshAir.C_in_internal"), input);
+
+    let residual = sub(
+        var_ref("freshAir.ports.C_outflow"),
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![var_ref("freshAir.C_in_internal"), int_lit(2)],
+            span,
+        },
+    );
+    dae.continuous.equations.push(dae::Equation::residual_array(
+        residual,
+        span,
+        "equation from freshAir",
+        2,
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.continuous.equations.len(), 2);
+    for (idx, eq) in dae.continuous.equations.iter().enumerate() {
+        let names = all_var_names(&eq.rhs);
+        assert!(
+            names.contains(&format!("freshAir.ports[{}].C_outflow", idx + 1)),
+            "equation {idx} should select the matching port: {names:?}"
+        );
+        assert!(
+            names.contains(&"freshAir.C_in_internal[1]".to_string()),
+            "fill should repeat the singleton concentration vector for each port: {names:?}"
+        );
+        assert!(
+            !names.contains(&"freshAir.C_in_internal[2]".to_string()),
+            "outer fill index must not be used as the concentration component lane: {names:?}"
         );
     }
 }
@@ -1011,6 +1241,206 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
             "function argument did not preserve all vector elements: {names:?}"
         );
     }
+}
+
+#[test]
+fn test_scalarize_projects_vectorized_scalar_function_arguments() {
+    let mut dae = Dae::new();
+    let span = test_span();
+
+    for (name, dims) in [
+        ("rhos", vec![4]),
+        ("states.p", vec![4]),
+        ("states.T", vec![4]),
+        ("states.X", vec![4, 2]),
+    ] {
+        let mut var = dae::Variable::new(rumoca_core::VarName::new(name), span);
+        var.dims = dims;
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), var);
+    }
+
+    let mut density = rumoca_core::Function::new("Medium.density", span);
+    density
+        .inputs
+        .push(rumoca_core::FunctionParam::new("state_p", "Real", span));
+    density
+        .inputs
+        .push(rumoca_core::FunctionParam::new("state_T", "Real", span));
+    density
+        .inputs
+        .push(rumoca_core::FunctionParam::new("state_X", "Real", span).with_dims(vec![0]));
+    density
+        .outputs
+        .push(rumoca_core::FunctionParam::new("d", "Real", span));
+    dae.symbols.functions.insert(density.name.clone(), density);
+
+    let eq_rhs = sub(
+        var_ref("rhos"),
+        function_call(
+            "Medium.density",
+            vec![
+                var_ref("states.p"),
+                var_ref("states.T"),
+                var_ref("states.X"),
+            ],
+        ),
+    );
+    dae.continuous.equations.push(dae::Equation::residual_array(
+        eq_rhs,
+        span,
+        "density vector equation",
+        4,
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.continuous.equations.len(), 4);
+    let rumoca_core::Expression::Binary { rhs, .. } = &dae.continuous.equations[2].rhs else {
+        panic!("expected scalarized subtraction residual");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = rhs.as_ref() else {
+        panic!("expected scalarized RHS to remain a scalar density call");
+    };
+    assert_eq!(all_var_names(&args[0]), vec!["states.p[3]".to_string()]);
+    assert_eq!(
+        var_ref_subscript_indices(&args[0]),
+        vec![rumoca_core::Subscript::generated_index(3, span)]
+    );
+    assert_eq!(
+        index_expr_subscripts(&args[2]),
+        vec![
+            rumoca_core::Subscript::generated_index(3, span),
+            rumoca_core::Subscript::generated_colon(span),
+        ]
+    );
+}
+
+#[test]
+fn test_scalarize_scalar_lhs_preserves_stream_wrapped_array_formal_argument() {
+    let mut dae = Dae::new();
+    let span = test_span();
+
+    for (name, dims) in [
+        ("volume.portInDensities", vec![4]),
+        ("volume.vessel_ps_static", vec![4]),
+        ("volume.ports[2].Xi_outflow", vec![1]),
+    ] {
+        let mut var = dae::Variable::new(rumoca_core::VarName::new(name), span);
+        var.dims = dims;
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), var);
+    }
+
+    let mut set_state = rumoca_core::Function::new("Medium.setState_phX", span);
+    set_state
+        .inputs
+        .push(rumoca_core::FunctionParam::new("p", "Real", span));
+    set_state
+        .inputs
+        .push(rumoca_core::FunctionParam::new("X", "Real", span).with_dims(vec![0]));
+    set_state.outputs.push(rumoca_core::FunctionParam::new(
+        "state",
+        "Medium.ThermodynamicState",
+        span,
+    ));
+    dae.symbols
+        .functions
+        .insert(set_state.name.clone(), set_state);
+
+    let lhs = rumoca_core::Expression::VarRef {
+        name: rumoca_core::VarName::new("volume.portInDensities").into(),
+        subscripts: vec![rumoca_core::Subscript::generated_index(2, span)],
+        span,
+    };
+    let eq_rhs = sub(
+        lhs,
+        function_call(
+            "Medium.setState_phX",
+            vec![
+                var_ref("volume.vessel_ps_static"),
+                function_call("inStream", vec![var_ref("volume.ports[2].Xi_outflow")]),
+            ],
+        ),
+    );
+    dae.continuous
+        .equations
+        .push(dae::Equation::residual(eq_rhs, span, "volume port density"));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    let rumoca_core::Expression::Binary { rhs, .. } = &dae.continuous.equations[0].rhs else {
+        panic!("expected residual subtraction");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = rhs.as_ref() else {
+        panic!("expected setState call");
+    };
+    assert_eq!(
+        var_ref_subscript_indices(&args[0]),
+        vec![rumoca_core::Subscript::generated_index(2, span)]
+    );
+    let rumoca_core::Expression::FunctionCall {
+        args: stream_args, ..
+    } = &args[1]
+    else {
+        panic!("expected stream passthrough argument");
+    };
+    assert_eq!(
+        all_var_names(&stream_args[0]),
+        vec!["volume.ports[2].Xi_outflow"]
+    );
+}
+
+#[test]
+fn test_scalarize_canonicalizes_var_ref_colon_slice_to_index_expr() {
+    let mut dae = Dae::new();
+    let span = test_span();
+    let mut a = dae::Variable::new(rumoca_core::VarName::new("a"), span);
+    a.dims = vec![2, 3];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("a"), a);
+    dae.continuous.equations.push(dae::Equation::residual(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new("a").into(),
+            subscripts: vec![
+                rumoca_core::Subscript::generated_index(1, span),
+                rumoca_core::Subscript::generated_colon(span),
+            ],
+            span,
+        },
+        span,
+        "colon slice",
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    let rumoca_core::Expression::Index {
+        base, subscripts, ..
+    } = &dae.continuous.equations[0].rhs
+    else {
+        panic!(
+            "colon VarRef should be normalized to Index, got {:?}",
+            dae.continuous.equations[0].rhs
+        );
+    };
+    assert!(matches!(
+        base.as_ref(),
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if name.as_str() == "a" && subscripts.is_empty()
+    ));
+    assert_eq!(
+        subscripts,
+        &[
+            rumoca_core::Subscript::generated_index(1, span),
+            rumoca_core::Subscript::generated_colon(span),
+        ]
+    );
 }
 
 #[test]
@@ -1317,6 +1747,100 @@ fn test_scalarize_vector_equation_projects_indexed_record_field_slice() {
     assert_eq!(
         all_var_names(&dae.continuous.equations[1].rhs),
         vec!["T1[2]", "ele[2]"]
+    );
+}
+
+#[test]
+fn test_scalarize_record_array_field_uses_field_lane_before_record_lane() {
+    let mut dae = Dae::new();
+
+    for record_index in [1, 2] {
+        let name = format!("ductOut.mediums[{record_index}].state.X");
+        let mut var = dae::Variable::new(rumoca_core::VarName::new(&name), test_span());
+        var.dims = vec![2];
+        var.component_ref = Some(component_ref(&[
+            ("ductOut", None),
+            ("mediums", Some(record_index)),
+            ("state", None),
+            ("X", None),
+        ]));
+        dae.variables.algebraics.insert(var.name.clone(), var);
+    }
+    for record_index in [2, 3] {
+        let name = format!("ductOut.statesFM[{record_index}].X");
+        let mut var = dae::Variable::new(rumoca_core::VarName::new(&name), test_span());
+        var.dims = vec![2];
+        var.component_ref = Some(component_ref(&[
+            ("ductOut", None),
+            ("statesFM", Some(record_index)),
+            ("X", None),
+        ]));
+        dae.variables.algebraics.insert(var.name.clone(), var);
+    }
+
+    let record_array_fields = build_record_array_field_map(&dae);
+    let array_dims = build_array_dims_map(&dae);
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(var_ref("ductOut.mediums.state")),
+        field: "X".to_string(),
+        span: test_span(),
+    };
+
+    let projected = (0..4)
+        .map(|k| {
+            project_scalarized_rhs_expr_at(
+                &expr,
+                k,
+                &array_dims,
+                &record_array_fields,
+                &IndexMap::new(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        projected.iter().flat_map(all_var_names).collect::<Vec<_>>(),
+        vec![
+            "ductOut.mediums[1].state.X[1]",
+            "ductOut.mediums[1].state.X[2]",
+            "ductOut.mediums[2].state.X[1]",
+            "ductOut.mediums[2].state.X[2]",
+        ]
+    );
+
+    let lhs = rumoca_core::Expression::Array {
+        elements: vec![
+            var_ref("ductOut.statesFM[2].X"),
+            var_ref("ductOut.statesFM[3].X"),
+        ],
+        is_matrix: false,
+        span: test_span(),
+    };
+    let projected_lhs = (0..4)
+        .map(|k| {
+            project_scalarized_rhs_expr_at(
+                &lhs,
+                k,
+                &array_dims,
+                &record_array_fields,
+                &IndexMap::new(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        projected_lhs
+            .iter()
+            .flat_map(all_var_names)
+            .collect::<Vec<_>>(),
+        vec![
+            "ductOut.statesFM[2].X[1]",
+            "ductOut.statesFM[2].X[2]",
+            "ductOut.statesFM[3].X[1]",
+            "ductOut.statesFM[3].X[2]",
+        ]
     );
 }
 

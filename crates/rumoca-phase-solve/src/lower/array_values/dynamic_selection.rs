@@ -21,6 +21,73 @@ fn projected_field_expr_may_be_array_like(expr: &rumoca_core::Expression) -> boo
     }
 }
 
+fn resolve_zero_dims_from_value_count(
+    dims: &[usize],
+    value_count: usize,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<usize>>, LowerError> {
+    let zero_count = dims.iter().filter(|dim| **dim == 0).count();
+    if zero_count != 1 || value_count == 0 {
+        return Ok(None);
+    }
+    let known_product = dims
+        .iter()
+        .filter(|dim| **dim != 0)
+        .try_fold(1usize, |acc, dim| acc.checked_mul(*dim))
+        .ok_or_else(|| {
+            LowerError::contract_violation("array-like dynamic selection shape overflows", span)
+        })?;
+    if known_product == 0 || !value_count.is_multiple_of(known_product) {
+        return Ok(None);
+    }
+    let mut resolved = dims.to_vec();
+    let Some(zero_index) = resolved.iter().position(|dim| *dim == 0) else {
+        return Ok(None);
+    };
+    resolved[zero_index] = value_count / known_product;
+    Ok(Some(resolved))
+}
+
+fn collect_function_output_slice_indices(
+    per_dim: &[Vec<usize>],
+    dim_index: usize,
+    current: &mut Vec<usize>,
+    out: &mut Vec<Vec<usize>>,
+) -> Result<(), LowerError> {
+    if dim_index == per_dim.len() {
+        out.try_reserve_exact(1)
+            .map_err(|_| LowerError::UnspannedContractViolation {
+                reason: "function output slice index count exceeds host memory limits".to_string(),
+            })?;
+        out.push(current.clone());
+        return Ok(());
+    }
+    for index in &per_dim[dim_index] {
+        current.push(*index);
+        collect_function_output_slice_indices(per_dim, dim_index + 1, current, out)?;
+        current.pop();
+    }
+    Ok(())
+}
+
+fn collect_full_shape_binding_keys(
+    base_name: &str,
+    shape: &[usize],
+    depth: usize,
+    current: &mut Vec<usize>,
+    keys: &mut Vec<String>,
+) {
+    if depth == shape.len() {
+        keys.push(format_subscript_binding_key(base_name, current));
+        return;
+    }
+    for index in 1..=shape[depth] {
+        current.push(index);
+        collect_full_shape_binding_keys(base_name, shape, depth + 1, current, keys);
+        current.pop();
+    }
+}
+
 struct RecordArraySliceFieldPath<'a> {
     name: &'a rumoca_core::Reference,
     subscripts: &'a [rumoca_core::Subscript],
@@ -197,7 +264,7 @@ impl<'a> LowerBuilder<'a> {
         ) {
             return Ok(None);
         }
-        let dims = self.infer_expr_dims(base, scope)?;
+        let mut dims = self.infer_expr_dims(base, scope)?;
         if dims.is_empty() || subscripts.len() > dims.len() {
             return Ok(None);
         }
@@ -208,13 +275,19 @@ impl<'a> LowerBuilder<'a> {
             owner_span,
             "array-like dynamic selection",
         )?;
+        let values = self.lower_array_like_values_with_optional_source_context(
+            base, owner_span, scope, call_depth,
+        )?;
+        if dims.contains(&0)
+            && !values.is_empty()
+            && let Some(resolved) = resolve_zero_dims_from_value_count(&dims, values.len(), span)?
+        {
+            dims = resolved;
+        }
         let index_tuples = one_based_index_tuples(&dims, span)?;
         if index_tuples.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        let values = self.lower_array_like_values_with_optional_source_context(
-            base, owner_span, scope, call_depth,
-        )?;
         if values.len() != index_tuples.len() {
             return Err(unsupported_at(
                 format!(
@@ -651,6 +724,9 @@ impl<'a> LowerBuilder<'a> {
             if let Some(values) = self.lower_record_field_array_values(key.as_str(), span)? {
                 return Ok(values);
             }
+            if let Some(values) = self.lower_shaped_flattened_field_values(&key, span)? {
+                return Ok(values);
+            }
             if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {
                 return single_reg_vec(reg, "scalarized record field access value count", span);
             }
@@ -664,6 +740,31 @@ impl<'a> LowerBuilder<'a> {
         Ok(values)
     }
 
+    fn lower_shaped_flattened_field_values(
+        &mut self,
+        key: &str,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let shape = if let Some(shape) = self.layout.shape(key) {
+            shape.to_vec()
+        } else if let Some(variable) = self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, &rumoca_core::VarName::new(key)))
+            .filter(|variable| !variable.dims.is_empty())
+        {
+            concrete_i64_dims(&variable.dims, key, "flattened field dimensions", span)?
+        } else {
+            return Ok(None);
+        };
+        if shape.is_empty() {
+            return Ok(None);
+        }
+        let mut keys = Vec::new();
+        collect_full_shape_binding_keys(key, &shape, 0, &mut Vec::new(), &mut keys);
+        self.load_binding_keys(&keys, span).map(Some)
+    }
+
+    #[allow(clippy::excessive_nesting)]
     fn lower_projected_function_field_array_like_values(
         &mut self,
         base: &rumoca_core::Expression,
@@ -681,6 +782,32 @@ impl<'a> LowerBuilder<'a> {
             .ok_or_else(|| LowerError::UnspannedContractViolation {
                 reason: "projected function field array access requires source span".to_string(),
             })?;
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = base
+            && let Some(materialized) = self.materialize_single_record_function_call_components(
+                name, args, span, scope, call_depth,
+            )?
+        {
+            for (suffix, bindings) in materialized.indexed_components {
+                if suffix == field {
+                    let mut values = bindings
+                        .into_iter()
+                        .map(|binding| (binding.indices, binding.reg))
+                        .collect::<Vec<_>>();
+                    values.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+                    return Ok(Some(values.into_iter().map(|(_, reg)| reg).collect()));
+                }
+            }
+            for component in materialized.components {
+                if component.suffix == field {
+                    return Ok(Some(vec![component.reg]));
+                }
+            }
+        }
         let mut dae_model = dae::Dae::default();
         dae_model.symbols.functions = self.functions.clone();
         if let Some(variables) = self.dae_variables {
@@ -1026,13 +1153,42 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        if let Some(projection) = self.lookup_function_output_projection(name, span)?
+        let output_projection = self.lookup_function_output_projection(name, span)?;
+        if let Some(projection) = output_projection.as_ref()
             && let Some(values) =
-                self.lower_fft_projection_values(&projection, args, span, caller_scope, call_depth)?
+                self.lower_fft_projection_values(projection, args, span, caller_scope, call_depth)?
         {
             return Ok(Some(values));
         }
-        if let Some(projection) = self.lookup_function_output_projection(name, span)?
+        if output_projection.is_none()
+            && self.lookup_function(name).is_some_and(|function| {
+                function
+                    .outputs
+                    .first()
+                    .is_some_and(|output| !output.dims.is_empty())
+            })
+            && let Some(values) = self.lower_user_function_call_output_values(
+                name,
+                args,
+                span,
+                caller_scope,
+                call_depth,
+                Some(0),
+            )?
+        {
+            return Ok(Some(values));
+        }
+        if let Some(values) = self.lower_projected_scalar_function_call_values(
+            name,
+            args,
+            span,
+            caller_scope,
+            call_depth,
+        )? {
+            return first_expression_output_values(self.lookup_function(name), values, span)
+                .map(Some);
+        }
+        if let Some(projection) = output_projection.as_ref()
             && projection.indices.is_empty()
             && projection.output_field.is_none()
         {
@@ -1139,9 +1295,6 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        let Some(indices) = static_subscript_indices_with_owner(subscripts, span)? else {
-            return Ok(None);
-        };
         let Some(function) = self.lookup_function(name) else {
             return Ok(None);
         };
@@ -1149,9 +1302,21 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         };
         let dims = function_output_dims(name, output)?;
-        let Some(flat_index) = flat_index_for_subscripts(&dims, &indices) else {
+        let flat_indices =
+            self.function_output_flat_indices(&dims, subscripts, caller_scope, span)?;
+        if flat_indices.is_empty() {
             return Ok(None);
-        };
+        }
+        if let Some(values) = self.lower_projected_function_output_index_values(
+            name,
+            args,
+            span,
+            &flat_indices,
+            caller_scope,
+            call_depth,
+        )? {
+            return Ok(Some(values));
+        }
         let Some(values) = self.lower_user_function_call_output_values(
             name,
             args,
@@ -1163,11 +1328,128 @@ impl<'a> LowerBuilder<'a> {
         else {
             return Ok(None);
         };
-        values
-            .get(flat_index)
-            .copied()
-            .map(|value| single_reg_vec(value, "function output projection value count", span))
-            .transpose()
+        let mut selected = array_vec_with_capacity(
+            flat_indices.len(),
+            "function output slice projection value count",
+            span,
+        )?;
+        for flat_index in flat_indices {
+            let Some(value) = values.get(flat_index).copied() else {
+                return Ok(None);
+            };
+            selected.push(value);
+        }
+        Ok(Some(selected))
+    }
+
+    fn function_output_flat_indices(
+        &self,
+        dims: &[usize],
+        subscripts: &[rumoca_core::Subscript],
+        scope: &Scope,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<usize>, LowerError> {
+        let selections = self.function_output_slice_indices(dims, subscripts, scope, span)?;
+        if selections.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut flat_indices = array_vec_with_capacity(
+            selections.len(),
+            "function output flat slice index count",
+            span,
+        )?;
+        for indices in selections {
+            let Some(flat_index) = flat_index_for_subscripts(dims, &indices) else {
+                return Ok(Vec::new());
+            };
+            flat_indices.push(flat_index);
+        }
+        Ok(flat_indices)
+    }
+
+    fn lower_projected_function_output_index_values(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        flat_indices: &[usize],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let mut dae_model = dae::Dae::default();
+        dae_model.symbols.functions = self.functions.clone();
+        if let Some(variables) = self.dae_variables {
+            dae_model.variables = variables.clone();
+        }
+        let call = rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: args.to_vec(),
+            is_constructor: false,
+            span,
+        };
+        let Some(expressions) = (match derivative_rhs::function_call_projected_scalars_with_owner(
+            &call,
+            &dae_model,
+            self.structural_bindings.as_ref(),
+            span,
+        ) {
+            Ok(values) => values,
+            Err(_) => return Ok(None),
+        }) else {
+            return Ok(None);
+        };
+        let mut values = array_vec_with_capacity(
+            flat_indices.len(),
+            "projected function output slice value count",
+            span,
+        )?;
+        for &flat_index in flat_indices {
+            let Some(expression) = expressions.get(flat_index) else {
+                return Ok(None);
+            };
+            values.push(self.lower_expr(expression, caller_scope, call_depth + 1)?);
+        }
+        Ok(Some(values))
+    }
+
+    fn function_output_slice_indices(
+        &self,
+        dims: &[usize],
+        subscripts: &[rumoca_core::Subscript],
+        scope: &Scope,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<Vec<usize>>, LowerError> {
+        if subscripts.len() > dims.len() {
+            return Ok(Vec::new());
+        }
+        let mut per_dim = array_vec_with_capacity(dims.len(), "function output slice rank", span)?;
+        for (dim_index, subscript) in subscripts.iter().enumerate() {
+            per_dim.push(self.slice_subscript_indices(subscript, dims[dim_index], scope)?);
+        }
+        for &dim in &dims[subscripts.len()..] {
+            per_dim.push(one_based_indices(
+                dim,
+                "function output implicit slice index count",
+                span,
+            )?);
+        }
+        let mut indices = array_vec_with_capacity(
+            per_dim
+                .iter()
+                .try_fold(1usize, |count, dim_indices| {
+                    count.checked_mul(dim_indices.len())
+                })
+                .ok_or_else(|| {
+                    LowerError::contract_violation(
+                        "function output slice selection count overflows host index range",
+                        span,
+                    )
+                })?,
+            "function output slice selection count",
+            span,
+        )?;
+        collect_function_output_slice_indices(&per_dim, 0, &mut Vec::new(), &mut indices)?;
+        Ok(indices)
     }
 
     pub(in crate::lower) fn lower_user_function_call_output_values(
@@ -1955,6 +2237,7 @@ impl<'a> LowerBuilder<'a> {
         Ok(Some(values))
     }
 
+    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn lower_if(
         &mut self,
         branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
@@ -1965,6 +2248,14 @@ impl<'a> LowerBuilder<'a> {
         let mut runtime_branches = Vec::new();
         let mut selected_static_branch = None;
         for (cond, value) in branches {
+            if compile_time_string_condition_call(cond) {
+                let condition = self.eval_compile_time_expr(cond, &self.local_const_bindings)?;
+                if condition != 0.0 {
+                    selected_static_branch = Some(value);
+                    break;
+                }
+                continue;
+            }
             match lower_static_condition_truth(cond)? {
                 Some(false) => {}
                 Some(true) => {
@@ -1992,6 +2283,51 @@ impl<'a> LowerBuilder<'a> {
         }
         Ok(result)
     }
+}
+
+fn compile_time_string_condition_call(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::FunctionCall { name, .. }
+            if matches!(
+                name.as_str(),
+                "Modelica.Utilities.Strings.isEqual" | "Strings.isEqual" | "isEqual"
+            )
+    )
+}
+
+fn first_expression_output_values(
+    function: Option<&rumoca_core::Function>,
+    values: Vec<Reg>,
+    span: rumoca_core::Span,
+) -> Result<Vec<Reg>, LowerError> {
+    let Some(output) = function.and_then(|function| function.outputs.first()) else {
+        return Ok(values);
+    };
+    let width = output.dims.iter().try_fold(1usize, |acc, dim| {
+        let dim = usize::try_from(*dim).map_err(|_| {
+            LowerError::contract_violation(
+                format!(
+                    "function output `{}` has invalid dimension `{dim}`",
+                    output.name
+                ),
+                span,
+            )
+        })?;
+        acc.checked_mul(dim).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "function output `{}` scalar count exceeds host index range",
+                    output.name
+                ),
+                span,
+            )
+        })
+    })?;
+    if values.len() <= width {
+        return Ok(values);
+    }
+    Ok(values.into_iter().take(width).collect())
 }
 
 fn function_output_dims(

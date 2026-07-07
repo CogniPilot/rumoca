@@ -52,7 +52,7 @@ pub(super) fn expression_is_scalar_after_subscripts(
     }
 }
 
-fn var_ref_is_scalar_after_subscripts(
+pub(super) fn var_ref_is_scalar_after_subscripts(
     name: &Reference,
     subscripts: &[Subscript],
     reference_span: rumoca_core::Span,

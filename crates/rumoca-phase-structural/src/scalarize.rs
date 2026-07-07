@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use rumoca_core::ExpressionRewriter;
 use rumoca_ir_dae as dae;
 
 use crate::projection_maps::{
@@ -248,6 +249,70 @@ pub fn build_complex_field_map(dae: &Dae) -> HashMap<String, [Option<String>; 2]
 /// - `FunctionCall { is_constructor: true }` → project positional constructor arg `i`
 /// - `Binary/Unary/BuiltinCall/If/FunctionCall/Index` → recurse into children
 /// - Scalars (Literal, etc.) → broadcast unchanged
+fn comprehension_index_value_for_scalar(range: &Expression, one_based_index: usize) -> Option<i64> {
+    let Expression::Range {
+        start, step, end, ..
+    } = range
+    else {
+        return None;
+    };
+    let start = integer_literal_value(start)?;
+    let step = match step.as_deref() {
+        Some(step) => integer_literal_value(step)?,
+        None => 1,
+    };
+    let offset = i64::try_from(one_based_index.checked_sub(1)?).ok()?;
+    let value = start.checked_add(offset.checked_mul(step)?)?;
+    let end = integer_literal_value(end)?;
+    ((step > 0 && value <= end) || (step < 0 && value >= end) || (step == 0 && value == start))
+        .then_some(value)
+}
+
+struct ComprehensionIndexSubstitution<'a> {
+    name: &'a str,
+    value: i64,
+    span: Span,
+}
+
+impl ExpressionRewriter for ComprehensionIndexSubstitution<'_> {
+    fn walk_var_ref_expression(
+        &mut self,
+        name: &Reference,
+        subscripts: &[Subscript],
+        span: Span,
+    ) -> Expression {
+        if name.as_str() == self.name && subscripts.is_empty() {
+            return Expression::Literal {
+                value: Literal::Integer(self.value),
+                span: self.span,
+            };
+        }
+        Expression::VarRef {
+            name: name.clone(),
+            subscripts: self.rewrite_subscripts(subscripts),
+            span,
+        }
+    }
+
+    fn walk_array_comprehension_expression(
+        &mut self,
+        expr: &Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&Expression>,
+        span: Span,
+    ) -> Expression {
+        if indices.iter().any(|index| index.name == self.name) {
+            return Expression::ArrayComprehension {
+                expr: Box::new(expr.clone()),
+                indices: indices.to_vec(),
+                filter: filter.cloned().map(Box::new),
+                span,
+            };
+        }
+        ExpressionRewriter::walk_array_comprehension_expression(self, expr, indices, filter, span)
+    }
+}
+
 pub struct IndexProjectionContext<'a> {
     i: usize,
     context_span: Option<Span>,
@@ -739,22 +804,16 @@ impl<'a> IndexProjectionContext<'a> {
                 ..
             } => Ok(project_array_literal_scalar(elements, *is_matrix, self.i)
                 .unwrap_or_else(|| expr.clone())),
+            Expression::ArrayComprehension {
+                expr: inner,
+                indices,
+                filter,
+                span,
+            } => self.project_array_comprehension(inner, indices, filter.as_deref(), *span),
             Expression::VarRef {
                 name, subscripts, ..
             } => self.project_var_ref(name, subscripts, expr),
-            Expression::Binary { op, lhs, rhs, span } => {
-                if matches!(op, OpBinary::Mul)
-                    && let Some(projected) = self.project_matrix_mul(lhs, rhs, *span)?
-                {
-                    return Ok(projected);
-                }
-                Ok(Expression::Binary {
-                    op: op.clone(),
-                    lhs: Box::new(self.project(lhs)?),
-                    rhs: Box::new(self.project(rhs)?),
-                    span: *span,
-                })
-            }
+            Expression::Binary { op, lhs, rhs, span } => self.project_binary(op, lhs, rhs, *span),
             Expression::Unary { op, rhs, span } => Ok(Expression::Unary {
                 op: op.clone(),
                 rhs: Box::new(self.project(rhs)?),
@@ -828,6 +887,58 @@ impl<'a> IndexProjectionContext<'a> {
             }
             _ => Ok(expr.clone()),
         }
+    }
+
+    fn project_binary(
+        &self,
+        op: &OpBinary,
+        lhs: &Expression,
+        rhs: &Expression,
+        span: Span,
+    ) -> Result<Expression, StructuralError> {
+        if matches!(op, OpBinary::Mul)
+            && let Some(projected) = self.project_matrix_mul(lhs, rhs, span)?
+        {
+            return Ok(projected);
+        }
+        Ok(Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(self.project(lhs)?),
+            rhs: Box::new(self.project(rhs)?),
+            span,
+        })
+    }
+
+    fn project_array_comprehension(
+        &self,
+        inner: &Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&Expression>,
+        span: Span,
+    ) -> Result<Expression, StructuralError> {
+        if filter.is_some() || indices.len() != 1 {
+            return Ok(Expression::ArrayComprehension {
+                expr: Box::new(inner.clone()),
+                indices: indices.to_vec(),
+                filter: filter.cloned().map(Box::new),
+                span,
+            });
+        }
+        let Some(value) = comprehension_index_value_for_scalar(&indices[0].range, self.i) else {
+            return Ok(Expression::ArrayComprehension {
+                expr: Box::new(inner.clone()),
+                indices: indices.to_vec(),
+                filter: None,
+                span,
+            });
+        };
+        let mut substitution = ComprehensionIndexSubstitution {
+            name: &indices[0].name,
+            value,
+            span: indices[0].range.span().unwrap_or(span),
+        };
+        let selected = substitution.rewrite_expression(inner);
+        self.project(&selected)
     }
 
     fn project_function_call(

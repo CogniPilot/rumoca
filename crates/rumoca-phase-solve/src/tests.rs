@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: phase-solve integration tests still cover
+//! cross-module lowering interactions. split plan: move remaining scalarization
+//! and projection regression groups into focused test modules.
+
 use super::*;
 use std::collections::BTreeSet;
 mod derivative_row_tests;
@@ -481,6 +485,47 @@ fn target_expr_scalar_name_accepts_spanned_index_base_ref() -> Result<(), LowerE
     let name = target_expr_scalar_name(&dae_model, &expr, 0, 1)?;
 
     assert_eq!(name.as_deref(), Some("tail[2]"));
+    Ok(())
+}
+
+#[test]
+fn target_expr_scalar_name_folds_singleton_projection_of_known_scalar_target()
+-> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::new();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("volume.heatTransfer.heatPorts[1].T"),
+        scalar_var("volume.heatTransfer.heatPorts[1].T"),
+    );
+    let span = solve_numbered_span(12, 5, 16);
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("volume.heatTransfer.heatPorts[1].T"),
+        subscripts: vec![rumoca_core::Subscript::index(1, span)],
+        span,
+    };
+
+    let name = target_expr_scalar_name(&dae_model, &expr, 0, 1)?;
+
+    assert_eq!(name.as_deref(), Some("volume.heatTransfer.heatPorts[1].T"));
+    Ok(())
+}
+
+#[test]
+fn target_expr_scalar_name_preserves_real_array_target_subscript() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("x"), array_var("x", &[2]));
+    let span = solve_numbered_span(13, 5, 16);
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("x"),
+        subscripts: vec![rumoca_core::Subscript::index(1, span)],
+        span,
+    };
+
+    let name = target_expr_scalar_name(&dae_model, &expr, 0, 1)?;
+
+    assert_eq!(name.as_deref(), Some("x[1]"));
     Ok(())
 }
 

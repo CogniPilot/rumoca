@@ -1146,6 +1146,201 @@ fn test_eliminate_trivial_skips_substitution_to_unsliced_multiscalar_solution() 
 }
 
 #[test]
+fn test_scalarized_substitution_projects_array_comprehension_solution() {
+    let mut dae = Dae::new();
+    dae.variables.algebraics.insert(
+        VarName::new("ductOut.fluidVolumes[1]"),
+        test_dae_variable("ductOut.fluidVolumes[1]"),
+    );
+    let span = test_span();
+    let index_ref = || Expression::VarRef {
+        name: reference("i"),
+        subscripts: Vec::new(),
+        span,
+    };
+    let indexed_ref = |name: &str| Expression::VarRef {
+        name: reference(name),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(index_ref()),
+            span,
+        }],
+        span,
+    };
+    let comprehension = Expression::ArrayComprehension {
+        expr: Box::new(binary(
+            mul_op(),
+            indexed_ref("ductOut.crossAreas"),
+            indexed_ref("ductOut.lengths"),
+        )),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: Expression::Range {
+                start: Box::new(Expression::Literal {
+                    value: Literal::Integer(1),
+                    span,
+                }),
+                step: None,
+                end: Box::new(Expression::Literal {
+                    value: Literal::Integer(2),
+                    span,
+                }),
+                span,
+            },
+        }],
+        filter: None,
+        span,
+    };
+    let aggregate_solution = binary(mul_op(), comprehension, lit(1.0));
+
+    let substitution = substitution_for_var(
+        &dae,
+        VarName::new("ductOut.fluidVolumes[1]"),
+        aggregate_solution,
+    )
+    .expect("scalarized substitution should be constructed");
+
+    assert!(
+        !contains_array_comprehension_expr(&substitution.expr),
+        "scalarized substitution should project the aggregate RHS: {:?}",
+        substitution.expr
+    );
+    assert!(
+        contains_indexed_literal_ref(&substitution.expr, "ductOut.crossAreas", 1)
+            && contains_indexed_literal_ref(&substitution.expr, "ductOut.lengths", 1),
+        "projected substitution should select the first physical duct volume element: {:?}",
+        substitution.expr
+    );
+}
+
+fn contains_array_comprehension_expr(expr: &Expression) -> bool {
+    match expr {
+        Expression::ArrayComprehension { .. } => true,
+        Expression::Binary { lhs, rhs, .. } => {
+            contains_array_comprehension_expr(lhs) || contains_array_comprehension_expr(rhs)
+        }
+        Expression::Unary { rhs, .. } => contains_array_comprehension_expr(rhs),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            args.iter().any(contains_array_comprehension_expr)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                contains_array_comprehension_expr(condition)
+                    || contains_array_comprehension_expr(value)
+            }) || contains_array_comprehension_expr(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            elements.iter().any(contains_array_comprehension_expr)
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            contains_array_comprehension_expr(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| contains_array_comprehension_expr(step))
+                || contains_array_comprehension_expr(end)
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            contains_array_comprehension_expr(base)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        contains_array_comprehension_expr(expr)
+                    }
+                    _ => false,
+                })
+        }
+        Expression::FieldAccess { base, .. } => contains_array_comprehension_expr(base),
+        Expression::VarRef { .. } | Expression::Literal { .. } | Expression::Empty { .. } => false,
+    }
+}
+
+fn contains_indexed_literal_ref(expr: &Expression, needle: &str, index: i64) -> bool {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            name.as_str() == needle
+                && matches!(
+                    subscripts.as_slice(),
+                    [rumoca_core::Subscript::Expr {
+                        expr,
+                        ..
+                    }] if matches!(
+                        expr.as_ref(),
+                        Expression::Literal {
+                            value: Literal::Integer(value),
+                            ..
+                        } if *value == index
+                    )
+                )
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            contains_indexed_literal_ref(lhs, needle, index)
+                || contains_indexed_literal_ref(rhs, needle, index)
+        }
+        Expression::Unary { rhs, .. } => contains_indexed_literal_ref(rhs, needle, index),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| contains_indexed_literal_ref(arg, needle, index)),
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                contains_indexed_literal_ref(condition, needle, index)
+                    || contains_indexed_literal_ref(value, needle, index)
+            }) || contains_indexed_literal_ref(else_branch, needle, index)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => elements
+            .iter()
+            .any(|element| contains_indexed_literal_ref(element, needle, index)),
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            contains_indexed_literal_ref(start, needle, index)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| contains_indexed_literal_ref(step, needle, index))
+                || contains_indexed_literal_ref(end, needle, index)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            contains_indexed_literal_ref(expr, needle, index)
+                || indices
+                    .iter()
+                    .any(|index_def| contains_indexed_literal_ref(&index_def.range, needle, index))
+                || filter
+                    .as_ref()
+                    .is_some_and(|filter| contains_indexed_literal_ref(filter, needle, index))
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            contains_indexed_literal_ref(base, needle, index)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        contains_indexed_literal_ref(expr, needle, index)
+                    }
+                    _ => false,
+                })
+        }
+        Expression::FieldAccess { base, .. } => contains_indexed_literal_ref(base, needle, index),
+        Expression::Literal { .. } | Expression::Empty { .. } => false,
+    }
+}
+
+#[test]
 fn test_eliminate_trivial_rewrites_eliminated_indexed_record_field_aggregate() {
     let expr = Expression::BuiltinCall {
         function: BuiltinFunction::Sum,

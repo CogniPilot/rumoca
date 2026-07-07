@@ -1233,6 +1233,7 @@ impl<'a> LowerBuilder<'a> {
         Ok(false)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn bind_flattened_record_positional_input(
         &mut self,
         state: FunctionInputBindState<'_>,
@@ -1248,6 +1249,48 @@ impl<'a> LowerBuilder<'a> {
             return Ok(false);
         }
 
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = arg_expr
+            && let Some(materialized) = self.materialize_single_record_function_call_components(
+                name,
+                args,
+                arg_expr.span().unwrap_or(request.input.span),
+                request.caller_scope,
+                request.call_depth,
+            )?
+        {
+            let local_key = request.input.name.clone();
+            if let Some(component) = materialized
+                .components
+                .into_iter()
+                .find(|component| component.suffix == field)
+            {
+                state
+                    .scope
+                    .insert(generated_scope_key(&local_key), component.reg);
+                if let Some(dims) = component.dims {
+                    self.local_binding_dims.insert(local_key.clone(), dims);
+                    self.update_known_empty_local_array(&local_key, component.known_empty);
+                }
+                self.advance_flattened_record_positional(request, prefix);
+                return Ok(true);
+            }
+            if let Some((_suffix, bindings)) = materialized
+                .indexed_components
+                .into_iter()
+                .find(|(suffix, _bindings)| suffix == field)
+            {
+                self.local_indexed_bindings
+                    .insert(local_key.clone(), bindings);
+                self.advance_flattened_record_positional(request, prefix);
+                return Ok(true);
+            }
+        }
+
         let projected = rumoca_core::Expression::FieldAccess {
             base: Box::new((*arg_expr).clone()),
             field: field.to_string(),
@@ -1261,6 +1304,15 @@ impl<'a> LowerBuilder<'a> {
             request.caller_scope,
             request.call_depth,
         )?;
+        self.advance_flattened_record_positional(request, prefix);
+        Ok(true)
+    }
+
+    fn advance_flattened_record_positional(
+        &self,
+        request: FlattenedRecordPositionalInputRequest<'_, '_>,
+        prefix: &str,
+    ) {
         if !request
             .inputs
             .iter()
@@ -1269,7 +1321,6 @@ impl<'a> LowerBuilder<'a> {
         {
             *request.positional_idx += 1;
         }
-        Ok(true)
     }
 
     fn bind_function_input_arg_or_closure(
@@ -1362,16 +1413,15 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
     ) -> Result<Option<FunctionClosure>, LowerError> {
         match arg_expr {
-            rumoca_core::Expression::FunctionCall {
-                name,
-                args,
-                is_constructor: false,
-                ..
-            } if self.lookup_function(name).is_some() => Ok(Some(FunctionClosure {
-                target_name: name.clone(),
-                bound_args: args.clone(),
-                captured_scope: caller_scope.clone(),
-            })),
+            rumoca_core::Expression::FunctionCall { name, args, .. }
+                if self.lookup_function(name).is_some() =>
+            {
+                Ok(Some(FunctionClosure {
+                    target_name: name.clone(),
+                    bound_args: args.clone(),
+                    captured_scope: caller_scope.clone(),
+                }))
+            }
             rumoca_core::Expression::VarRef {
                 name,
                 subscripts,
@@ -1460,8 +1510,10 @@ impl<'a> LowerBuilder<'a> {
         self.functions
             .iter()
             .find(|(name, function)| {
-                function.is_constructor
-                    && rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
+                (function.is_constructor
+                    || is_record_constructor_signature(name.as_str(), function))
+                    && (rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
+                        || rumoca_core::qualified_type_name_matches(type_name, name.as_str()))
             })
             .map(|(_, function)| function.inputs.clone())
             .filter(|fields| !fields.is_empty())
@@ -1603,24 +1655,28 @@ impl<'a> LowerBuilder<'a> {
             return Ok(false);
         }
 
-        // SPEC_0008: a call recognized as a record constructor must have a
-        // registered field list; fabricating scalar Real params for missing
-        // registrations silently mis-binds record fields.
-        let Some(fields) = self.record_constructor_fields(name.as_str()) else {
+        let (named_args, positional_args) =
+            split_named_and_positional_call_args(name.as_str(), args)?;
+        let fields = self
+            .record_constructor_fields(name.as_str())
+            .or_else(|| self.record_constructor_fields(&input.type_name));
+        if fields.is_none() && named_args.is_empty() {
             return Err(LowerError::InvalidFunction {
                 name: name.as_str().to_string(),
                 reason: "record constructor has no registered field list".to_string(),
             });
-        };
-        let (named_args, positional_args) =
-            split_named_and_positional_call_args(name.as_str(), args)?;
+        }
         let mut bound_any = false;
         for (field_name, arg_expr) in named_args
             .into_iter()
             .filter(|(_, arg_expr)| !non_numeric_record_metadata(arg_expr))
         {
             let local_name = format!("{}.{}", input.name, field_name);
-            let field = record_constructor_field(name.as_str(), &fields, &field_name, *span)?;
+            let field = if let Some(fields) = fields.as_ref() {
+                record_constructor_field(name.as_str(), fields, &field_name, *span)?
+            } else {
+                self.record_constructor_named_arg_field(&field_name, arg_expr, *span, expr_scope)?
+            };
             self.bind_flattened_record_field_value(
                 FunctionInputBindState {
                     scope: &mut *state.scope,
@@ -1636,7 +1692,14 @@ impl<'a> LowerBuilder<'a> {
             bound_any = true;
         }
 
-        if !positional_args.is_empty() && !fields.is_empty() {
+        if !positional_args.is_empty() {
+            let Some(fields) = fields.as_ref() else {
+                return Err(LowerError::InvalidFunction {
+                    name: name.as_str().to_string(),
+                    reason: "positional record constructor requires a registered field list"
+                        .to_string(),
+                });
+            };
             for (field, arg_expr) in fields
                 .iter()
                 .zip(positional_args)
@@ -1662,6 +1725,18 @@ impl<'a> LowerBuilder<'a> {
         Ok(bound_any)
     }
 
+    fn record_constructor_named_arg_field(
+        &self,
+        field_name: &str,
+        arg_expr: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<rumoca_core::FunctionParam, LowerError> {
+        let dims = self.infer_expr_dims(arg_expr, scope)?;
+        let dims = checked_usize_dims_to_i64(&dims, "record constructor named field shape", span)?;
+        Ok(rumoca_core::FunctionParam::new(field_name, "Real", span).with_dims(dims))
+    }
+
     fn bind_function_input_value(
         &mut self,
         mut state: FunctionInputBindState<'_>,
@@ -1671,6 +1746,9 @@ impl<'a> LowerBuilder<'a> {
         expr_scope: &Scope,
         call_depth: usize,
     ) -> Result<(), LowerError> {
+        if self.bind_function_input_closure(function_name, input, expr, expr_scope)? {
+            return Ok(());
+        }
         if self.bind_record_constructor_function_input(
             input, expr, expr_scope, &mut state, call_depth,
         )? {
@@ -1712,6 +1790,21 @@ impl<'a> LowerBuilder<'a> {
         )? {
             return Ok(());
         }
+        if input.dims.is_empty() {
+            let inferred_dims = self.infer_expr_dims(expr, expr_scope)?;
+            if !inferred_dims.is_empty()
+                && inferred_dims
+                    .iter()
+                    .try_fold(1usize, |total, dim| total.checked_mul(*dim))
+                    == Some(1)
+                && let Ok(reg) = self.lower_expr(expr, expr_scope, call_depth)
+            {
+                self.insert_optional_compile_time_input_binding(input, expr, &mut state);
+                self.clear_local_array_metadata(&input.name, expr.span().unwrap_or(input.span))?;
+                state.scope.insert(generated_scope_key(&input.name), reg);
+                return Ok(());
+            }
+        }
         if self
             .bind_inferred_array_function_input(&mut state, input, expr, expr_scope, call_depth)?
         {
@@ -1749,6 +1842,21 @@ impl<'a> LowerBuilder<'a> {
             }
             Err(err) => return Err(err),
         };
+        let values = if binding_dims.iter().any(|dim| *dim <= 0) {
+            Some(self.lower_array_like_values(expr, expr_scope, call_depth)?)
+        } else {
+            None
+        };
+        let binding_dims = if let Some(values) = values.as_ref() {
+            resolve_array_dims_for_value_count(
+                &binding_dims,
+                values.len(),
+                "function input dynamic shape dimension resolution",
+                span,
+            )?
+        } else {
+            binding_dims
+        };
         let expected = dims_scalar_count(
             &binding_dims,
             format!(
@@ -1757,10 +1865,10 @@ impl<'a> LowerBuilder<'a> {
             ),
             span,
         )?;
-        let values = if expected == 0 {
-            Vec::new()
-        } else {
-            self.lower_array_like_values(expr, expr_scope, call_depth)?
+        let values = match values {
+            Some(values) => values,
+            None if expected == 0 => Vec::new(),
+            None => self.lower_array_like_values(expr, expr_scope, call_depth)?,
         };
         if values.len() != expected {
             let shape = format_i64_dims(&binding_dims);
@@ -1851,6 +1959,19 @@ impl<'a> LowerBuilder<'a> {
         Ok(())
     }
 
+    fn insert_optional_compile_time_input_binding(
+        &self,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        state: &mut FunctionInputBindState<'_>,
+    ) {
+        let Ok(value) = self.eval_compile_time_expr(expr, state.const_scope) else {
+            return;
+        };
+        state.const_scope.insert(input.name.clone(), value);
+        state.const_bindings.insert(input.name.clone(), value);
+    }
+
     fn resolve_function_input_binding_dims(
         &self,
         function_name: &str,
@@ -1873,6 +1994,18 @@ impl<'a> LowerBuilder<'a> {
             ));
         }
         let actual_dims = self.infer_expr_dims(expr, expr_scope)?;
+        let actual_dims = if actual_dims.len() > input.dims.len()
+            && actual_dims[..actual_dims.len() - input.dims.len()]
+                .iter()
+                .all(|dim| *dim == 1)
+        {
+            actual_dims[actual_dims.len() - input.dims.len()..].to_vec()
+        } else {
+            actual_dims
+        };
+        if input.dims.as_slice() == [0] && actual_dims.is_empty() {
+            return Ok(vec![1]);
+        }
         if actual_dims.len() != input.dims.len() {
             let shape = format_i64_dims(&input.dims);
             return Err(LowerError::contract_violation(
@@ -2296,6 +2429,13 @@ impl<'a> LowerBuilder<'a> {
         self.guarded_uninitialized_locals
             .shift_remove(param.name.as_str());
         if param.default.is_some() {
+            if param.dims.iter().any(|dim| *dim < 0) {
+                self.local_binding_dims
+                    .insert(param.name.clone(), param.dims.clone());
+                let marker = self.emit_const_at(0.0, param.span)?;
+                scope.insert(generated_scope_key(&param.name), marker);
+                return Ok(());
+            }
             let values = self.initial_function_param_values(param, scope, call_depth)?;
             self.bind_assignment_values_with_dims(
                 scope,

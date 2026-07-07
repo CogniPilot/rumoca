@@ -436,6 +436,32 @@ fn project_expression_scalars_rejects_zeros_without_dimension_argument() {
 }
 
 #[test]
+fn project_expression_scalars_accepts_zero_length_zeros_dimension() -> Result<(), LowerError> {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name(
+            "phase_solve_lower_derivative_rhs_projection_tests_source_19.mo",
+        ),
+        9,
+        17,
+    );
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Zeros,
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            span,
+        }],
+        span,
+    };
+
+    let projected =
+        project_expression_scalars(&expr, &[0], &dae::Dae::new(), &IndexMap::new(), span)?
+            .expect("zero-length zeros() should project to an empty scalar list");
+
+    assert!(projected.is_empty());
+    Ok(())
+}
+
+#[test]
 fn project_expression_scalars_rejects_ones_without_dimension_argument() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(

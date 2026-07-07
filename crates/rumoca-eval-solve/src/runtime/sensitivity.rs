@@ -447,7 +447,8 @@ impl SolveRuntime {
             .requirements()
             .seed_len
             .max(self.implicit_jacobian_v.requirements().seed_len)
-            .max(self.solver_count);
+            .max(self.solver_count)
+            .max(seed.len());
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
         let n = seed_copy_len.min(seed.len()).min(seed_buf.len());

@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: special-function evaluation still owns
+//! Modelica builtins, runtime intrinsics, and shape-sensitive dispatch. split plan:
+//! move table, state accessor, and distribution special cases apart.
+
 use super::builtin_table::{
     eval_external_table_function, resolve_function_closure, resolve_user_function,
 };
@@ -195,6 +199,14 @@ fn resolved_function_param_dims<T: SimFloat>(
     param: &FunctionParam,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<i64>>, EvalError> {
+    if let Some(dims) = env.dims.get(&param.name) {
+        return Ok(Some(dims.clone()));
+    }
+    if let Some(default) = &param.default
+        && let Some(dims) = literal_array_shape(default)
+    {
+        return Ok(Some(dims));
+    }
     if !param.shape_expr.is_empty() {
         return eval_function_shape_expr(&param.shape_expr, env).map(Some);
     }
@@ -209,6 +221,30 @@ fn resolved_function_param_dims<T: SimFloat>(
         .with_span_if_missing(param.span));
     }
     Ok(Some(param.dims.clone()))
+}
+
+fn literal_array_shape(expr: &Expression) -> Option<Vec<i64>> {
+    let Expression::Array {
+        elements,
+        is_matrix,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if *is_matrix {
+        let rows = i64::try_from(elements.len()).ok()?;
+        let cols = elements
+            .iter()
+            .map(|row| match row {
+                Expression::Array { elements, .. } => i64::try_from(elements.len()).ok(),
+                _ => Some(1),
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let max_cols = cols.into_iter().max().unwrap_or(0);
+        return Some(vec![rows, max_cols]);
+    }
+    Some(vec![i64::try_from(elements.len()).ok()?])
 }
 
 fn eval_function_shape_expr<T: SimFloat>(
@@ -339,7 +375,7 @@ fn seed_function_input_shape_bindings_from_arg_if_supported<T: SimFloat>(
     match seed_function_input_shape_bindings_from_arg(local_env, param, arg_expr, caller_env) {
         Ok(()) => Ok(()),
         Err(EvalError::UnsupportedExpression {
-            kind: "range" | "range slice",
+            kind: "range" | "range slice" | "dynamic function shape colon",
         }) => Ok(()),
         Err(err) => Err(err),
     }
@@ -371,6 +407,21 @@ fn copy_record_constructor_input_fields<T: SimFloat>(
         let Some((field, value_expr)) = decode_named_constructor_arg(arg) else {
             continue;
         };
+        if expression_contains_string_literal(value_expr) {
+            continue;
+        }
+        if let Some(shape) = literal_array_shape(value_expr) {
+            let values = eval_array_like_values::<T>(value_expr, caller_env)?;
+            set_array_entries(
+                local_env,
+                &format!("{}.{field}", param.name),
+                &shape,
+                &values,
+            );
+            std::sync::Arc::make_mut(&mut local_env.dims)
+                .insert(format!("{}.{field}", param.name), shape);
+            continue;
+        }
         let value = eval_expr::<T>(value_expr, caller_env)?;
         local_env.set(&format!("{}.{field}", param.name), value);
         explicit_fields.insert(field.to_string(), value);
@@ -487,6 +538,7 @@ fn eval_record_start_field<T: SimFloat>(
     match eval_expr::<T>(start_expr, env) {
         Ok(value) => Ok(Some(value)),
         Err(err) if err.missing_binding_name().is_some() => Ok(None),
+        Err(err) if eval_error_is_unsupported_string_literal(&err) => Ok(None),
         Err(err) => Err(err),
     }
 }
@@ -1037,19 +1089,89 @@ fn initialize_user_function_scope_values<T: SimFloat>(
             .get(param.name.as_str())
             .cloned()
             .unwrap_or_else(|| param.dims.clone());
-        let Some(size) = concrete_param_size(&dims) else {
-            if let Some(default) = param.default.as_ref() {
-                let val = eval_expr::<T>(default, local_env)?;
-                local_env.set(&param.name, val);
-            }
+        let Some(default) = param.default.as_ref() else {
             continue;
         };
-        if let Some(default) = param.default.as_ref() {
+        if expression_contains_string_literal(default) {
+            continue;
+        }
+        if let Some(size) = concrete_param_size(&dims) {
             let values = eval_shaped_array_values::<T>(default, local_env, size)?;
             set_array_entries(local_env, &param.name, &dims, &values);
+        } else {
+            let val = eval_expr::<T>(default, local_env)?;
+            local_env.set(&param.name, val);
         }
     }
     Ok(())
+}
+
+fn expression_contains_string_literal(expr: &Expression) -> bool {
+    match expr {
+        Expression::Literal {
+            value: rumoca_core::Literal::String(_),
+            ..
+        } => true,
+        Expression::Literal { .. } | Expression::Empty { .. } => false,
+        Expression::Unary { rhs, .. } => expression_contains_string_literal(rhs),
+        Expression::Binary { lhs, rhs, .. } => {
+            expression_contains_string_literal(lhs) || expression_contains_string_literal(rhs)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expression_contains_string_literal(cond)
+                    || expression_contains_string_literal(value)
+            }) || expression_contains_string_literal(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            elements.iter().any(expression_contains_string_literal)
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            expression_contains_string_literal(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expression_contains_string_literal(step))
+                || expression_contains_string_literal(end)
+        }
+        Expression::FunctionCall { args, .. } | Expression::BuiltinCall { args, .. } => {
+            args.iter().any(expression_contains_string_literal)
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            expression_contains_string_literal(base)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        expression_contains_string_literal(expr)
+                    }
+                    rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
+                        false
+                    }
+                })
+        }
+        Expression::FieldAccess { base, .. } => expression_contains_string_literal(base),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            expression_contains_string_literal(expr)
+                || indices
+                    .iter()
+                    .any(|index| expression_contains_string_literal(&index.range))
+                || filter
+                    .as_ref()
+                    .is_some_and(|filter| expression_contains_string_literal(filter))
+        }
+        Expression::VarRef { .. } => false,
+    }
 }
 
 fn selected_output_name(selection: &OutputSelection) -> Result<String, EvalError> {
@@ -1347,6 +1469,7 @@ fn eval_user_function_call<T: SimFloat>(
     // so selected function calls (`*.re` / `*.im`) propagate correctly.
     let eval_result = with_function_call_stack(&env.runtime, name.as_str(), || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
+        seed_resolved_function_scope_dims(&mut local_env, &inputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
         trace_function_call_inputs(trace_call, &local_env, &inputs);
@@ -1425,6 +1548,7 @@ fn eval_user_function_local_env<T: SimFloat>(
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
     with_function_call_stack(&env.runtime, name.as_str(), || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
+        seed_resolved_function_scope_dims(&mut local_env, &inputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
         initialize_user_function_scope_values(&mut local_env, &outputs, &locals)?;
@@ -1471,6 +1595,7 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
     with_function_call_stack(&env.runtime, name.as_str(), || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
+        seed_resolved_function_scope_dims(&mut local_env, &inputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
         initialize_user_function_scope_values(&mut local_env, &outputs, &locals)?;
@@ -1594,10 +1719,21 @@ fn copy_selected_input_start_fields<T: SimFloat>(
         match eval_expr::<T>(start_expr, env) {
             Ok(value) => local_env.set(&dst, value),
             Err(err) if err.missing_binding_name().is_some() => {}
+            Err(err) if eval_error_is_unsupported_string_literal(&err) => {}
             Err(err) => return Err(err),
         }
     }
     Ok(())
+}
+
+fn eval_error_is_unsupported_string_literal(err: &EvalError) -> bool {
+    match err {
+        EvalError::UnsupportedExpression {
+            kind: "string literal",
+        } => true,
+        EvalError::Spanned { source, .. } => eval_error_is_unsupported_string_literal(source),
+        _ => false,
+    }
 }
 
 pub(in crate::eval) fn copy_record_function_output_fields<T: SimFloat>(
@@ -1816,7 +1952,22 @@ fn eval_constructor_call<T: SimFloat>(
     }
 
     let _ = name;
-    eval_expr::<T>(&args[0], env)
+    let Some(arg) = args
+        .iter()
+        .find(|arg| constructor_scalar_fallback_arg_is_numeric(arg))
+    else {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "string literal",
+        });
+    };
+    eval_expr::<T>(arg, env)
+}
+
+fn constructor_scalar_fallback_arg_is_numeric(arg: &Expression) -> bool {
+    let value = decode_named_constructor_arg(arg)
+        .map(|(_, value)| value)
+        .unwrap_or(arg);
+    !expression_contains_string_literal(value) && !matches!(value, Expression::Array { .. })
 }
 
 pub(super) fn eval_function_call<T: SimFloat>(

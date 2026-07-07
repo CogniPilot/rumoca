@@ -357,6 +357,175 @@ fn lower_expression_binds_named_record_constructor_input_fields() {
 }
 
 #[test]
+fn lower_expression_binds_alias_qualified_record_constructor_input_fields() {
+    let mut function = rumoca_core::Function::new("Pkg.recordInput", lower_test_span());
+    function.inputs.push(rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Record),
+        type_name: "Modelica.Media.IdealGases.Common.DataRecord".to_string(),
+        ..rumoca_core::FunctionParam::new(
+            "data",
+            "Modelica.Media.IdealGases.Common.DataRecord",
+            lower_test_span(),
+        )
+    });
+    function.outputs.push(function_param("y"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::FieldAccess {
+            base: Box::new(var("data")),
+            field: "R_s".to_string(),
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+
+    let mut constructor = rumoca_core::Function::new(
+        "Modelica.Media.IdealGases.Common.DataRecord",
+        lower_test_span(),
+    );
+    constructor.inputs.push(rumoca_core::FunctionParam::new(
+        "R_s",
+        "Real",
+        lower_test_span(),
+    ));
+
+    let mut functions = IndexMap::new();
+    functions.insert(function.name.clone(), function);
+    functions.insert(constructor.name.clone(), constructor);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.recordInput",
+        )),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "IdealGases.Common.DataRecord",
+            )),
+            args: vec![named_arg("R_s", real_lit(287.0))],
+            is_constructor: true,
+            span: lower_test_span(),
+        }],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("alias-qualified record constructor input fields should lower");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 287.0);
+}
+
+#[test]
+fn lower_expression_binds_named_record_constructor_without_registered_field_list() {
+    let mut function = rumoca_core::Function::new("Pkg.recordInput", lower_test_span());
+    function.inputs.push(rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Record),
+        type_name: "Pkg.UnregisteredData".to_string(),
+        ..rumoca_core::FunctionParam::new("data", "Pkg.UnregisteredData", lower_test_span())
+    });
+    function.outputs.push(function_param("y"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::FieldAccess {
+            base: Box::new(var("data")),
+            field: "R_s".to_string(),
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+
+    let mut functions = IndexMap::new();
+    functions.insert(function.name.clone(), function);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.recordInput",
+        )),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "Pkg.UnregisteredData",
+            )),
+            args: vec![named_arg("R_s", real_lit(287.0))],
+            is_constructor: true,
+            span: lower_test_span(),
+        }],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("named record constructor fields should bind without constructor metadata");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 287.0);
+}
+
+#[test]
+fn lower_expression_binds_partial_function_input_closure() {
+    let mut scale = rumoca_core::Function::new("Pkg.scale", lower_test_span());
+    scale.inputs.push(function_param("u"));
+    scale.outputs.push(function_param("y"));
+    scale.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(var("u")),
+            rhs: Box::new(real_lit(2.0)),
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+
+    let mut apply = rumoca_core::Function::new("Pkg.apply", lower_test_span());
+    apply.inputs.push(rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Function),
+        type_name: "Modelica.Math.Nonlinear.Interfaces.partialScalarFunction".to_string(),
+        ..rumoca_core::FunctionParam::new(
+            "f",
+            "Modelica.Math.Nonlinear.Interfaces.partialScalarFunction",
+            lower_test_span(),
+        )
+    });
+    apply.outputs.push(function_param("y"));
+    apply.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(source_component_ref_from_name(
+                "f",
+            )),
+            args: vec![real_lit(3.0)],
+            is_constructor: false,
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+
+    let mut functions = IndexMap::new();
+    functions.insert(scale.name.clone(), scale);
+    functions.insert(apply.name.clone(), apply);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.apply",
+        )),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "Pkg.scale",
+            )),
+            args: Vec::new(),
+            is_constructor: true,
+            span: lower_test_span(),
+        }],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("partial function input closure should lower");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 6.0);
+}
+
+#[test]
 fn lower_expression_binds_constructor_actual_to_flattened_record_inputs_with_defaults() {
     let mut function = rumoca_core::Function::new("Pkg.drop", lower_test_span());
     function
@@ -2214,6 +2383,115 @@ fn lower_expression_binds_zero_dim_flattened_record_array_field_from_actual_shap
     let (regs, _) = eval_linear_ops(&lowered.ops, &[101325.0, 300.0, 0.42, 0.58], &[], 0.0);
 
     assert!((read_reg(&regs, lowered.result) - 0.42).abs() < 1e-12);
+}
+
+#[test]
+fn lower_expression_binds_singleton_vectorized_record_array_field_to_vector_input() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+
+    let mut cp = rumoca_core::Function::new("My.cp", span);
+    cp.inputs.push(function_param("state_p"));
+    cp.inputs.push(function_param("state_T"));
+    cp.inputs.push(
+        function_param_with_dims("state_X", &[0]).with_shape_expr(vec![
+            rumoca_core::Subscript::generated_expr(Box::new(var("nX")), span),
+        ]),
+    );
+    cp.outputs.push(function_param("y"));
+    cp.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: var_index("state_X", 2),
+        span,
+    });
+    dae_model.symbols.functions.insert(cp.name.clone(), cp);
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("states.p"),
+        source_array_var("states.p", &[1]),
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("states.T"),
+        source_array_var("states.T", &[1]),
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("states.X"),
+        source_array_var("states.X", &[1, 2]),
+    );
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.cp",
+        )),
+        args: vec![
+            source_var("states.p"),
+            source_var("states.T"),
+            source_var("states.X"),
+        ],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("singleton vectorized record array field should bind to vector input");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[101325.0, 300.0, 0.42, 0.58], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 0.58).abs() < 1e-12);
+}
+
+#[test]
+fn lower_expression_rejects_non_singleton_vectorized_record_array_field_for_vector_input() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+
+    let mut cp = rumoca_core::Function::new("My.cp", span);
+    cp.inputs.push(function_param("state_p"));
+    cp.inputs.push(function_param("state_T"));
+    cp.inputs.push(
+        function_param_with_dims("state_X", &[0]).with_shape_expr(vec![
+            rumoca_core::Subscript::generated_expr(Box::new(var("nX")), span),
+        ]),
+    );
+    cp.outputs.push(function_param("y"));
+    cp.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: var_index("state_X", 1),
+        span,
+    });
+    dae_model.symbols.functions.insert(cp.name.clone(), cp);
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("states.p"),
+        source_array_var("states.p", &[2]),
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("states.T"),
+        source_array_var("states.T", &[2]),
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("states.X"),
+        source_array_var("states.X", &[2, 2]),
+    );
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.cp",
+        )),
+        args: vec![
+            source_var("states.p"),
+            source_var("states.T"),
+            source_var("states.X"),
+        ],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let err = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect_err("non-singleton vectorized array field must not bind to vector input");
+
+    assert!(
+        err.to_string()
+            .contains("input `state_X` expected rank 1 for declared shape [0], got rank 2"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

@@ -7,7 +7,8 @@ use crate::{EquationRef, StructuralError, UnknownId, tear_algebraic_loop};
 use super::{
     Dae, DerivativeNameMatcher, Substitution, VarName, algebraic_or_output_unknown,
     apply_substitutions_in_order, can_eliminate_scalar_unknown, can_use_equation_for_elimination,
-    equation_has_state_derivative, expr_contains_var, stable_solution_for_unknown,
+    equation_has_state_derivative, expr_contains_var,
+    scalar_blt_solution_would_break_aggregate_element, stable_solution_for_unknown,
     substitution_for_var,
 };
 
@@ -57,6 +58,9 @@ pub(super) fn tear_and_eliminate_loop_block(
         let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
             return Ok(());
         };
+        if scalar_blt_solution_would_break_aggregate_element(dae, &var_name, &solution)? {
+            return Ok(());
+        }
         trial_substitutions.push(substitution_for_var(
             dae,
             var_name.clone(),
@@ -85,7 +89,7 @@ fn loop_elimination_unknowns(
             return Ok(None);
         };
         let var_name = raw_var_name.clone();
-        if !can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns)? {
+        if !can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns, false)? {
             return Ok(None);
         }
         var_names.push(var_name);

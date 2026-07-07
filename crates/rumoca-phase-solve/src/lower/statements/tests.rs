@@ -11,6 +11,13 @@ fn literal_i64(value: i64, span: rumoca_core::Span) -> rumoca_core::Expression {
     }
 }
 
+fn literal_string(value: &str, span: rumoca_core::Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(value.to_string()),
+        span,
+    }
+}
+
 fn lower_builder<'a>(
     layout: &'a rumoca_ir_solve::VarLayout,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -70,6 +77,44 @@ fn eval_compile_time_expr_rejects_unsupported_form_with_span() {
 
     assert_eq!(err.source_span(), Some(span));
     assert_eq!(err.reason(), "unsupported expression in for-loop range");
+}
+
+#[test]
+fn eval_compile_time_expr_evaluates_modelica_strings_is_equal() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("compile_time_string_equal.mo"),
+        3,
+        32,
+    );
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Utilities.Strings.isEqual"),
+        args: vec![
+            rumoca_core::Expression::Index {
+                base: Box::new(rumoca_core::Expression::Array {
+                    elements: vec![literal_string("CO2", span)],
+                    is_matrix: false,
+                    span,
+                }),
+                subscripts: vec![rumoca_core::Subscript::Expr {
+                    expr: Box::new(literal_i64(1, span)),
+                    span,
+                }],
+                span,
+            },
+            literal_string("CO2", span),
+        ],
+        is_constructor: false,
+        span,
+    };
+    let layout = rumoca_ir_solve::VarLayout::default();
+    let functions = IndexMap::new();
+    let builder = lower_builder(&layout, &functions);
+
+    let value = builder
+        .eval_compile_time_expr(&expr, &IndexMap::new())
+        .expect("Strings.isEqual over literal strings should fold");
+
+    assert_eq!(value, 1.0);
 }
 
 #[test]

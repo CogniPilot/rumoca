@@ -106,6 +106,70 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
 }
 
 #[test]
+fn lower_expression_binds_scalar_actual_as_singleton_dynamic_vector_input() {
+    let mut dae_model = dae::Dae::default();
+    let mut evaluate = rumoca_core::Function::new("My.evaluate", lower_test_span());
+    evaluate.inputs.push(function_param_with_dims("p", &[0]));
+    evaluate.inputs.push(function_param("u"));
+    evaluate.outputs.push(function_param("y"));
+    evaluate.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::Index {
+            base: Box::new(var("p")),
+            subscripts: vec![rumoca_core::Subscript::generated_index(
+                1,
+                lower_test_span(),
+            )],
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+    evaluate.body.push(rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "j".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(2)),
+                step: None,
+                end: Box::new(size_expr(var("p"), 1)),
+                span: lower_test_span(),
+            },
+        }],
+        equations: vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("y"),
+            value: add(
+                rumoca_core::Expression::Index {
+                    base: Box::new(var("p")),
+                    subscripts: vec![rumoca_core::Subscript::generated_expr(
+                        Box::new(var("j")),
+                        lower_test_span(),
+                    )],
+                    span: lower_test_span(),
+                },
+                mul(var("u"), var("y")),
+            ),
+            span: lower_test_span(),
+        }],
+        span: lower_test_span(),
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.evaluate"), evaluate);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.evaluate").into(),
+        args: vec![real_lit(5.0), real_lit(2.0)],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect("scalar actual should bind as singleton p[:] vector");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 5.0).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
     let mut dae_model = dae::Dae::default();
     let mut sum = rumoca_core::Function::new("My.sumViaLocalSize", lower_test_span());

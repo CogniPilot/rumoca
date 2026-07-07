@@ -199,9 +199,21 @@ pub(super) fn formal_actual_projection_dims(
     context: String,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<i64>>, LowerError> {
+    if formal.dims.iter().any(|dim| *dim < 0) {
+        return Err(LowerError::contract_violation(
+            format!(
+                "{context} has negative dimension in declared shape {:?}",
+                formal.dims
+            ),
+            span,
+        ));
+    }
     if let Some(actual_dims) = actual_dims {
         if actual_dims == formal.dims {
             return Ok(Some(actual_dims));
+        }
+        if formal.dims.as_slice() == [0] && actual_dims.is_empty() {
+            return Ok(Some(vec![1]));
         }
         if let Some(resolved_dims) =
             resolve_formal_projection_dims(&formal.dims, &actual_dims, &context, span)?
@@ -211,9 +223,7 @@ pub(super) fn formal_actual_projection_dims(
         if formal.dims.is_empty() && formal_accepts_structured_actual(formal) {
             return Ok(Some(actual_dims));
         }
-        if formal.dims.is_empty()
-            && scalar_count_for_dims(&actual_dims, "scalar formal actual dimensions", span)? == 1
-        {
+        if formal.dims.is_empty() {
             return Ok(Some(actual_dims));
         }
         return Err(dimension_mismatch_error(
@@ -349,8 +359,8 @@ pub(super) fn dimension_mismatch_error(
 pub(super) fn is_ignorable_projection_statement(statement: &rumoca_core::Statement) -> bool {
     match statement {
         rumoca_core::Statement::Empty { .. } => true,
-        rumoca_core::Statement::FunctionCall { comp, .. } => {
-            comp.to_var_name().as_str() == "assert"
+        rumoca_core::Statement::FunctionCall { comp, outputs, .. } => {
+            outputs.is_empty() || comp.to_var_name().as_str() == "assert"
         }
         _ => false,
     }
@@ -406,7 +416,18 @@ pub(super) struct FunctionScopeSubstituter<'a> {
 }
 
 impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
+    #[allow(clippy::too_many_lines)]
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::Index {
+            base,
+            subscripts,
+            span,
+        } = expr
+            && let rumoca_core::Expression::VarRef { name, .. } = base.as_ref()
+            && let Some(replacement) = self.substitute_subscripted_var_ref(name, subscripts, *span)
+        {
+            return replacement;
+        }
         if let rumoca_core::Expression::FieldAccess {
             base, field, span, ..
         } = expr
@@ -444,7 +465,23 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             return self.walk_expression(expr);
         };
         if !subscripts.is_empty() {
+            if let Some(replacement) = self.substitute_subscripted_var_ref(name, subscripts, *span)
+            {
+                return replacement;
+            }
             return self.walk_expression(expr);
+        }
+        if let Some(values) = self.scope.scalars.get(name.as_str()) {
+            if let [value] = values.as_slice()
+                && self
+                    .scope
+                    .dims
+                    .get(name.as_str())
+                    .is_none_or(|dims| dims.is_empty())
+            {
+                return value.clone().with_span(*span);
+            }
+            return expr.clone();
         }
         if let Some(replacement) = self.scope.full.get(name.as_str()) {
             if self.stack.iter().any(|active| active == name.as_str()) {
@@ -499,6 +536,159 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             }
         }
         self.walk_expression(expr)
+    }
+}
+
+impl FunctionScopeSubstituter<'_> {
+    fn substitute_subscripted_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        if let Some(replacement) = self.projected_subscripted_var_ref(name, subscripts, span) {
+            return Some(replacement);
+        }
+        self.full_subscripted_var_ref_replacement(name, subscripts, span)
+    }
+
+    fn projected_subscripted_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let values = self.scope.scalars.get(name.as_str())?;
+        let dims = self.scope.dims.get(name.as_str())?;
+        let indices = match self.static_subscript_indices(subscripts, span) {
+            Ok(Some(indices)) => indices,
+            Ok(None) => return None,
+            Err(error) => {
+                self.error = Some(error);
+                return None;
+            }
+        };
+        let flat_index = match flat_index_from_indices(
+            dims,
+            &indices,
+            span,
+            "projected subscripted variable substitution",
+        ) {
+            Ok(Some(flat_index)) => flat_index,
+            Ok(None) => return None,
+            Err(error) => {
+                self.error = Some(error);
+                return None;
+            }
+        };
+        values
+            .get(flat_index)
+            .cloned()
+            .map(|value| value.with_span(span))
+    }
+
+    fn full_subscripted_var_ref_replacement(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let replacement = self.scope.full.get(name.as_str())?;
+        if self.stack.iter().any(|active| active == name.as_str()) {
+            return None;
+        }
+        if is_same_plain_var_ref(replacement, name.as_str()) {
+            return None;
+        }
+        let subscripts = match self.rewrite_subscripts(subscripts, span) {
+            Ok(subscripts) => subscripts,
+            Err(error) => {
+                self.error = Some(error);
+                return None;
+            }
+        };
+        self.stack.push(name.as_str().to_string());
+        let replacement = self.rewrite_expression(replacement);
+        self.stack.pop();
+        match replacement {
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts: mut replacement_subscripts,
+                span,
+            } => {
+                replacement_subscripts.extend(subscripts);
+                Some(rumoca_core::Expression::VarRef {
+                    name,
+                    subscripts: replacement_subscripts,
+                    span,
+                })
+            }
+            replacement => Some(rumoca_core::Expression::Index {
+                base: Box::new(replacement),
+                subscripts,
+                span,
+            }),
+        }
+    }
+
+    fn rewrite_subscripts(
+        &mut self,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Result<Vec<rumoca_core::Subscript>, LowerError> {
+        let mut rewritten =
+            projection_vec_with_capacity(subscripts.len(), "projected subscript count", span)?;
+        for subscript in subscripts {
+            rewritten.push(match subscript {
+                rumoca_core::Subscript::Expr { expr, span } => rumoca_core::Subscript::Expr {
+                    expr: Box::new(self.rewrite_expression(expr)),
+                    span: *span,
+                },
+                rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
+                    subscript.clone()
+                }
+            });
+        }
+        Ok(rewritten)
+    }
+
+    fn static_subscript_indices(
+        &mut self,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let mut indices =
+            projection_vec_with_capacity(subscripts.len(), "projected subscript count", span)?;
+        for subscript in subscripts {
+            let index = match subscript {
+                rumoca_core::Subscript::Index { value, .. } => *value,
+                rumoca_core::Subscript::Expr { expr, .. } => match self.static_expr_index(expr) {
+                    Some(value) => value,
+                    None => return Ok(None),
+                },
+                rumoca_core::Subscript::Colon { .. } => return Ok(None),
+            };
+            indices.push(index);
+        }
+        Ok(Some(indices))
+    }
+
+    fn static_expr_index(&mut self, expr: &rumoca_core::Expression) -> Option<i64> {
+        let rewritten = self.rewrite_expression(expr);
+        literal_expr_to_i64(&rewritten)
+    }
+}
+
+fn literal_expr_to_i64(expr: &rumoca_core::Expression) -> Option<i64> {
+    let rumoca_core::Expression::Literal { value, .. } = expr else {
+        return None;
+    };
+    match value {
+        Literal::Integer(value) => Some(*value),
+        Literal::Real(value) if value.is_finite() && value.fract().abs() < f64::EPSILON => {
+            Some(*value as i64)
+        }
+        _ => None,
     }
 }
 

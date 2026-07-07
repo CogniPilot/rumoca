@@ -7,7 +7,7 @@ pub fn eval_expr<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
     let value = match expr {
-        rumoca_core::Expression::Literal { value: lit, .. } => try_eval_literal::<T>(lit),
+        rumoca_core::Expression::Literal { value: lit, .. } => try_eval_literal::<T>(lit, env),
         rumoca_core::Expression::VarRef {
             name,
             subscripts,
@@ -64,7 +64,16 @@ pub fn eval_expr<T: SimFloat>(
     })
 }
 
-fn try_eval_literal<T: SimFloat>(lit: &rumoca_core::Literal) -> Result<T, EvalError> {
+fn try_eval_literal<T: SimFloat>(
+    lit: &rumoca_core::Literal,
+    env: &VarEnv<T>,
+) -> Result<T, EvalError> {
+    let _ = env;
+    if matches!(lit, rumoca_core::Literal::String(_)) {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "string literal",
+        });
+    }
     validate_literal(lit)?;
     Ok(eval_literal::<T>(lit))
 }

@@ -168,6 +168,24 @@ fn stream_passthrough_projects_argument_scalars() -> Result<(), LowerError> {
 }
 
 #[test]
+fn expression_dimension_inference_stops_at_inline_depth_limit() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let scope = FunctionProjectionScope::default();
+
+    let dims = analysis.expr_dims(
+        &real(1.0),
+        &scope,
+        super::super::super::MAX_FUNCTION_INLINE_DEPTH + 1,
+        test_span(),
+    )?;
+
+    assert_eq!(dims, None);
+    Ok(())
+}
+
+#[test]
 fn cat_projection_concatenates_dynamic_vector_and_computed_tail() -> Result<(), LowerError> {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();
@@ -517,6 +535,202 @@ fn flattened_record_inputs_project_positional_record_actual_fields() -> Result<(
     assert_var_ref_name(
         projected.full.get("state_T").expect("state_T should bind"),
         "T",
+    );
+    Ok(())
+}
+
+#[test]
+fn flattened_record_like_inputs_bind_multiple_scalar_positionals_directly() -> Result<(), LowerError>
+{
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut density = rumoca_core::Function::new("My.density_pTX", test_span());
+    density.inputs.push(scalar_function_param("state_p"));
+    density.inputs.push(scalar_function_param("state_T"));
+    density.inputs.push(scalar_function_param("state_X"));
+
+    let projected = analysis
+        .bind_inputs(
+            &density,
+            &[real(101325.0), local_var("T"), local_var("X")],
+            0,
+            test_span(),
+        )?
+        .expect("flattened scalar positionals should bind directly");
+
+    assert!(matches!(
+        projected
+            .full
+            .get("state_p")
+            .expect("state_p should bind"),
+        rumoca_core::Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } if (*value - 101325.0).abs() < 1e-12
+    ));
+    assert_var_ref_name(
+        projected.full.get("state_T").expect("state_T should bind"),
+        "T",
+    );
+    assert_var_ref_name(
+        projected.full.get("state_X").expect("state_X should bind"),
+        "X",
+    );
+    Ok(())
+}
+
+#[test]
+fn vector_output_projection_scalarizes_ordinary_division_by_lane() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.vectorDiv", test_span());
+    function.inputs.push(function_param_with_dims("a", &[3]));
+    function.inputs.push(function_param_with_dims("b", &[3]));
+    function.outputs.push(function_param_with_dims("y", &[3]));
+    function.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Div,
+            local_var("a"),
+            local_var("b"),
+            test_span(),
+        ),
+    ));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.vectorDiv").into(),
+        args: vec![
+            array(vec![real(2.0), real(4.0), real(6.0)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vector output division should project by lane");
+
+    assert_eq!(values.len(), 3);
+    assert!(values.iter().all(|value| matches!(
+        value,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), rumoca_core::Expression::Literal { .. })
+            && matches!(rhs.as_ref(), rumoca_core::Expression::Literal { .. })
+    )));
+    Ok(())
+}
+
+#[test]
+fn scalar_output_projection_preserves_vector_division_as_elementwise_operand()
+-> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.scalarDotDiv", test_span());
+    function.inputs.push(function_param_with_dims("a", &[3]));
+    function.inputs.push(function_param_with_dims("b", &[3]));
+    function.inputs.push(function_param_with_dims("c", &[3]));
+    function.outputs.push(scalar_function_param("y"));
+    function.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Mul,
+            binary(
+                rumoca_core::OpBinary::Div,
+                local_var("a"),
+                local_var("b"),
+                test_span(),
+            ),
+            local_var("c"),
+            test_span(),
+        ),
+    ));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.scalarDotDiv").into(),
+        args: vec![
+            array(vec![real(2.0), real(4.0), real(6.0)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+            array(vec![real(10.0), real(20.0), real(30.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("scalar output with vector division should project");
+
+    assert_eq!(values.len(), 1);
+    let rumoca_core::Expression::Binary { lhs, .. } = &values[0] else {
+        panic!("expected scalar product expression, got {:?}", values[0]);
+    };
+    assert!(matches!(
+        lhs.as_ref(),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::DivElem,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn projection_dims_preserve_range_slice_and_scalar_division_shape() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.dims.insert("roughnesses".to_string(), vec![4]);
+
+    let span = test_span();
+    let slice = rumoca_core::Expression::VarRef {
+        name: rumoca_core::VarName::new("roughnesses").into(),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(rumoca_core::Expression::Range {
+                start: Box::new(integer(1)),
+                step: None,
+                end: Box::new(integer(3)),
+                span,
+            }),
+            span,
+        }],
+        span,
+    };
+    assert_eq!(
+        analysis
+            .expr_dims(&slice, &scope, 0, span)?
+            .expect("range slice dims should infer"),
+        vec![3]
+    );
+
+    let expr = binary(rumoca_core::OpBinary::Div, real(0.0065), slice, span);
+    assert_eq!(
+        analysis
+            .expr_dims(&expr, &scope, 0, span)?
+            .expect("scalar/range division dims should infer"),
+        vec![3]
     );
     Ok(())
 }
@@ -1320,6 +1534,23 @@ fn dynamic_vector_function_input_uses_actual_dimensions() {
 }
 
 #[test]
+fn dynamic_vector_function_input_accepts_singleton_scalar_actual() {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut function = rumoca_core::Function::new("My.needsDynamicVector", test_span());
+    function.inputs.push(function_param_with_dims("u", &[0]));
+
+    let scope = analysis
+        .bind_inputs(&function, &[real(0.25)], 0, test_span())
+        .expect("dynamic singleton vector input projection should not fail")
+        .expect("dynamic singleton vector input should bind");
+
+    assert_eq!(scope.dims.get("u"), Some(&vec![1]));
+    assert_eq!(scope.scalars.get("u").map(Vec::len), Some(1));
+}
+
+#[test]
 fn compile_time_if_selection_uses_projected_size_dimensions() {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();
@@ -1489,12 +1720,25 @@ fn array_like_projection_expands_stream_size_selected_cat() -> Result<(), LowerE
 }
 
 #[test]
-fn scalar_real_function_input_rejects_vector_actual_with_span() {
-    let dae_model = dae::Dae::default();
-    let structural_bindings = IndexMap::new();
-    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+fn scalar_real_function_input_vectorizes_array_actual_with_span() -> Result<(), LowerError> {
     let mut function = rumoca_core::Function::new("My.needsScalar", test_span());
     function.inputs.push(scalar_function_param("u"));
+    function.outputs.push(scalar_function_param("y"));
+    function.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Mul,
+            local_var("u"),
+            real(2.0),
+            test_span(),
+        ),
+    ));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(
             "phase_solve_lower_derivative_rhs_function_projection_tests_source_54.mo",
@@ -1502,26 +1746,490 @@ fn scalar_real_function_input_rejects_vector_actual_with_span() {
         7,
         13,
     );
-
-    let err = match analysis.bind_inputs(
-        &function,
-        &[rumoca_core::Expression::Array {
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.needsScalar").into(),
+        args: vec![rumoca_core::Expression::Array {
             elements: vec![real(1.0), real(2.0)],
             is_matrix: false,
             span,
         }],
-        0,
+        is_constructor: false,
         span,
-    ) {
-        Ok(_) => panic!("vector actual must not be projected as scalar Real input"),
-        Err(err) => err,
     };
 
-    assert_eq!(err.source_span(), Some(span));
-    assert_eq!(
-        err.reason(),
-        "function `My.needsScalar` input `u` expects dimensions [], got [2]"
+    let values =
+        function_call_projected_scalars_with_owner(&call, &dae_model, &structural_bindings, span)?
+            .expect("vectorized scalar function call should project");
+
+    assert_eq!(values.len(), 2);
+    assert!(values.iter().all(|value| matches!(
+        value,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), rumoca_core::Expression::Literal { .. })
+            && matches!(rhs.as_ref(), rumoca_core::Expression::Literal { .. })
+    )));
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_function_division_projects_by_lane() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.scalarDiv", test_span());
+    function.inputs.push(scalar_function_param("u"));
+    function.inputs.push(scalar_function_param("v"));
+    function.outputs.push(scalar_function_param("y"));
+    function.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Div,
+            local_var("u"),
+            local_var("v"),
+            test_span(),
+        ),
+    ));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.scalarDiv").into(),
+        args: vec![
+            array(vec![real(2.0), real(4.0), real(6.0)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar division should project");
+
+    assert_eq!(values.len(), 3);
+    assert!(values.iter().all(|value| matches!(
+        value,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), rumoca_core::Expression::Literal { .. })
+            && matches!(rhs.as_ref(), rumoca_core::Expression::Literal { .. })
+    )));
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_local_default_projects_by_lane() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.scalarDefault", test_span());
+    function.inputs.push(scalar_function_param("roughness"));
+    function.inputs.push(scalar_function_param("diameter"));
+    function
+        .locals
+        .push(scalar_function_param("Delta").with_default(binary(
+            rumoca_core::OpBinary::Div,
+            local_var("roughness"),
+            local_var("diameter"),
+            test_span(),
+        )));
+    function.outputs.push(scalar_function_param("y"));
+    function
+        .body
+        .push(scalar_assignment("y", local_var("Delta")));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.scalarDefault").into(),
+        args: vec![
+            array(vec![real(0.2), real(0.4), real(0.6)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar local default should project");
+
+    assert_eq!(values.len(), 3);
+    assert!(values.iter().all(|value| matches!(
+        value,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), rumoca_core::Expression::Literal { .. })
+            && matches!(rhs.as_ref(), rumoca_core::Expression::Literal { .. })
+    )));
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_local_default_projects_through_nested_call() -> Result<(), LowerError> {
+    let mut inner = rumoca_core::Function::new("My.inner", test_span());
+    inner.inputs.push(scalar_function_param("u"));
+    inner.inputs.push(scalar_function_param("v"));
+    inner.outputs.push(scalar_function_param("y"));
+    inner.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Add,
+            local_var("u"),
+            local_var("v"),
+            test_span(),
+        ),
+    ));
+
+    let mut outer = rumoca_core::Function::new("My.outer", test_span());
+    outer.inputs.push(scalar_function_param("roughness"));
+    outer.inputs.push(scalar_function_param("diameter"));
+    outer.inputs.push(scalar_function_param("offset"));
+    outer
+        .locals
+        .push(scalar_function_param("Delta").with_default(binary(
+            rumoca_core::OpBinary::Div,
+            local_var("roughness"),
+            local_var("diameter"),
+            test_span(),
+        )));
+    outer.outputs.push(scalar_function_param("y"));
+    outer.body.push(scalar_assignment(
+        "y",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.inner").into(),
+            args: vec![local_var("Delta"), local_var("offset")],
+            is_constructor: false,
+            span: test_span(),
+        },
+    ));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(inner.name.clone(), inner);
+    dae_model
+        .symbols
+        .functions
+        .insert(outer.name.clone(), outer);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.outer").into(),
+        args: vec![
+            array(vec![real(0.2), real(0.4), real(0.6)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+            array(vec![real(10.0), real(20.0), real(30.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar local default should project through nested call");
+
+    assert_eq!(values.len(), 3);
+    assert!(values.iter().all(|value| matches!(
+        value,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } if matches!(
+            lhs.as_ref(),
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Div,
+                ..
+            }
+        ) && matches!(rhs.as_ref(), rumoca_core::Expression::Literal { .. })
+    )));
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_default_projects_elementwise_builtin_and_if_condition()
+-> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.reynoldsStart", test_span());
+    function.inputs.push(scalar_function_param("roughness"));
+    function.inputs.push(scalar_function_param("diameter"));
+    function.inputs.push(scalar_function_param("re_turbulent"));
+    function
+        .locals
+        .push(scalar_function_param("Delta").with_default(binary(
+            rumoca_core::OpBinary::Div,
+            local_var("roughness"),
+            local_var("diameter"),
+            test_span(),
+        )));
+    function
+        .locals
+        .push(scalar_function_param("Re1").with_default(builtin(
+            rumoca_core::BuiltinFunction::Min,
+            vec![
+                rumoca_core::Expression::If {
+                    branches: vec![(
+                        binary(
+                            rumoca_core::OpBinary::Le,
+                            local_var("Delta"),
+                            real(0.0065),
+                            test_span(),
+                        ),
+                        real(1.0),
+                    )],
+                    else_branch: Box::new(binary(
+                        rumoca_core::OpBinary::Div,
+                        real(0.0065),
+                        local_var("Delta"),
+                        test_span(),
+                    )),
+                    span: test_span(),
+                },
+                local_var("re_turbulent"),
+            ],
+        )));
+    function.outputs.push(scalar_function_param("y"));
+    function.body.push(scalar_assignment("y", local_var("Re1")));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.reynoldsStart").into(),
+        args: vec![
+            array(vec![real(0.2), real(0.4), real(0.6)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+            array(vec![real(4000.0), real(4000.0), real(4000.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar default with builtin min should project");
+
+    assert_eq!(values.len(), 3);
+    assert!(values.iter().all(|value| matches!(
+        value,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Min,
+            args,
+            ..
+        } if args.len() == 2
+            && matches!(args[0], rumoca_core::Expression::If { .. })
+            && matches!(args[1], rumoca_core::Expression::Literal { .. })
+    )));
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_local_default_projects_through_exponent_output() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.cubicLike", test_span());
+    function.inputs.push(scalar_function_param("x"));
+    function.inputs.push(scalar_function_param("x1"));
+    function
+        .locals
+        .push(scalar_function_param("dx").with_default(binary(
+            rumoca_core::OpBinary::Div,
+            local_var("x"),
+            local_var("x1"),
+            test_span(),
+        )));
+    function.outputs.push(scalar_function_param("y"));
+    function.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Mul,
+            local_var("x1"),
+            binary(
+                rumoca_core::OpBinary::Exp,
+                binary(
+                    rumoca_core::OpBinary::Div,
+                    local_var("x"),
+                    local_var("x1"),
+                    test_span(),
+                ),
+                binary(
+                    rumoca_core::OpBinary::Add,
+                    real(1.0),
+                    local_var("dx"),
+                    test_span(),
+                ),
+                test_span(),
+            ),
+            test_span(),
+        ),
+    ));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.cubicLike").into(),
+        args: vec![
+            array(vec![real(2.0), real(4.0), real(6.0)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar local default should project through exponent output");
+
+    assert_eq!(values.len(), 3);
+    assert!(
+        values
+            .iter()
+            .all(|value| !format!("{value:?}").contains("dx"))
     );
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_function_default_projects_through_exponent_output() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.cubicFunctionDefault", test_span());
+    function.inputs.push(scalar_function_param("x"));
+    function.inputs.push(scalar_function_param("x1"));
+    function
+        .locals
+        .push(
+            scalar_function_param("dx").with_default(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("My.externalLog10").into(),
+                args: vec![binary(
+                    rumoca_core::OpBinary::Div,
+                    local_var("x"),
+                    local_var("x1"),
+                    test_span(),
+                )],
+                is_constructor: false,
+                span: test_span(),
+            }),
+        );
+    function.outputs.push(scalar_function_param("y"));
+    function.body.push(scalar_assignment(
+        "y",
+        binary(
+            rumoca_core::OpBinary::Exp,
+            binary(
+                rumoca_core::OpBinary::Div,
+                local_var("x"),
+                local_var("x1"),
+                test_span(),
+            ),
+            local_var("dx"),
+            test_span(),
+        ),
+    ));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.cubicFunctionDefault").into(),
+        args: vec![
+            array(vec![real(2.0), real(4.0), real(6.0)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar function default should project through exponent output");
+
+    assert_eq!(values.len(), 3);
+    assert!(
+        values
+            .iter()
+            .all(|value| !format!("{value:?}").contains("dx"))
+    );
+    Ok(())
+}
+
+#[test]
+fn vectorized_scalar_output_default_projects_by_lane() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.outputDefault", test_span());
+    function.inputs.push(scalar_function_param("roughness"));
+    function.inputs.push(scalar_function_param("diameter"));
+    function
+        .outputs
+        .push(scalar_function_param("y").with_default(binary(
+            rumoca_core::OpBinary::Div,
+            local_var("roughness"),
+            local_var("diameter"),
+            test_span(),
+        )));
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.outputDefault").into(),
+        args: vec![
+            array(vec![real(0.2), real(0.4), real(0.6)], false),
+            array(vec![real(1.0), real(2.0), real(3.0)], false),
+        ],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let values = function_call_projected_scalars_with_owner(
+        &call,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )?
+    .expect("vectorized scalar output default should project");
+
+    assert_eq!(values.len(), 3);
+    Ok(())
 }
 
 #[test]

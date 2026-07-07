@@ -1267,6 +1267,14 @@ fn decompose_record_call_args(
     {
         return Ok(args);
     }
+    if decomposed.len() == 1
+        && decomposed[0].fields.len() == 1
+        && old_args.len() == 1
+        && matches!(&old_args[0], rumoca_core::Expression::FieldAccess { .. })
+        && !actual_leaf_matches_input(&old_args[0], &decomposed[0].fields[0].name)
+    {
+        return Ok(old_args.to_vec());
+    }
 
     let mut args = Vec::new();
     let mut old_idx = 0;
@@ -1619,6 +1627,9 @@ fn project_field_access_actuals(
     actuals: &[rumoca_core::Expression],
     fields: &[rumoca_core::FunctionParam],
 ) -> Option<Vec<rumoca_core::Expression>> {
+    if fields.len() < 2 {
+        return None;
+    }
     let mut bases = Vec::<(String, rumoca_core::Expression)>::new();
     for actual in actuals {
         let rumoca_core::Expression::FieldAccess { .. } = actual else {
@@ -4300,6 +4311,55 @@ mod tests {
             panic!("expected function call");
         };
         assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn scalar_function_projection_keeps_single_field_actual_name() {
+        let actual = field_access(var_ref("ductOut.mediums[1]"), "T");
+        let fields = vec![rumoca_core::FunctionParam::new(
+            "Kelvin",
+            "Modelica.Units.SI.Temperature",
+            test_span(),
+        )];
+
+        let projected = project_decomposed_scalar_actuals(&[actual], &fields, &HashSet::new());
+
+        assert!(
+            projected.is_none(),
+            "single scalar formal input must not rewrite an actual field to the formal name"
+        );
+    }
+
+    #[test]
+    fn single_field_decomposition_preserves_mismatched_actual_field() {
+        let actual = field_access(var_ref("ductOut.mediums[1]"), "T");
+        let fields = vec![rumoca_core::FunctionParam::new(
+            "Kelvin",
+            "Modelica.Units.SI.Temperature",
+            test_span(),
+        )];
+        let decomposed = vec![DecomposedParam {
+            original_index: 0,
+            param_name: "Kelvin".to_string(),
+            type_name: "Modelica.Units.SI.Temperature".to_string(),
+            fields,
+            already_decomposed: false,
+        }];
+
+        let args = decompose_record_call_args(
+            "Modelica.Units.Conversions.to_degC",
+            &[actual],
+            &decomposed,
+            None,
+            &HashSet::new(),
+            &HashMap::new(),
+        )
+        .expect("single scalar field mismatch should preserve actual");
+
+        let rumoca_core::Expression::FieldAccess { field, .. } = &args[0] else {
+            panic!("expected original field access");
+        };
+        assert_eq!(field, "T");
     }
 
     #[test]

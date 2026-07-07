@@ -104,6 +104,10 @@ pub(super) fn prepare_dae_for_structural_analysis(
         "prepare.demote_states_after_standalone_derivative_substitution",
         timer,
     );
+    log_solve_lowering_start("prepare.remove_nonnumeric_continuous_equations");
+    let timer = stage_timer_start();
+    remove_nonnumeric_continuous_equations(lowered);
+    log_solve_lowering_done("prepare.remove_nonnumeric_continuous_equations", timer);
     if tracing::enabled!(target: "rumoca_phase_structural", tracing::Level::DEBUG) {
         for (index, eq) in lowered.continuous.equations.iter().enumerate() {
             let summary = format!("{}{}", equation_lhs_prefix(eq), debug_render_expr(&eq.rhs));
@@ -116,6 +120,142 @@ pub(super) fn prepare_dae_for_structural_analysis(
         }
     }
     Ok(())
+}
+
+/// Boundary elimination can expose state constraints that were hidden behind
+/// aliases or simple connector equalities. Re-run the state/dummy preparation
+/// steps that depend on those exposed equations before the final BLT match.
+pub(super) fn prepare_dae_after_boundary_elimination(
+    lowered: &mut dae::Dae,
+    boundary_substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+) -> Result<bool, rumoca_phase_solve::SolveModelLowerError> {
+    log_solve_lowering_start("structural.post_boundary.demote_direct_assigned_states");
+    let timer = stage_timer_start();
+    let direct_demoted =
+        rumoca_phase_structural::dae_prepare::demote_direct_assigned_states_with_boundary_substitutions(
+            lowered,
+            boundary_substitutions,
+        )
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(
+        "structural.post_boundary.demote_direct_assigned_states",
+        timer,
+    );
+
+    log_solve_lowering_start("structural.post_boundary.reduce_constrained_dummy_derivatives");
+    let timer = stage_timer_start();
+    let dummy_reduced =
+        rumoca_phase_structural::dae_prepare::reduce_constrained_dummy_derivatives(lowered)
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(
+        "structural.post_boundary.reduce_constrained_dummy_derivatives",
+        timer,
+    );
+
+    log_solve_lowering_start(
+        "structural.post_boundary.demote_states_without_retained_derivative_rows",
+    );
+    let timer = stage_timer_start();
+    let (states_demoted, unassignable_demoted) =
+        rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(
+            lowered,
+        )
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(
+        "structural.post_boundary.demote_states_without_retained_derivative_rows",
+        timer,
+    );
+
+    Ok(direct_demoted > 0 || dummy_reduced > 0 || states_demoted > 0 || unassignable_demoted > 0)
+}
+
+fn remove_nonnumeric_continuous_equations(dae: &mut dae::Dae) {
+    let removed = dae
+        .continuous
+        .equations
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, equation)| {
+            expression_contains_nonnumeric_metadata(&equation.rhs).then_some(idx)
+        })
+        .collect::<Vec<_>>();
+    if removed.is_empty() {
+        return;
+    }
+    let mut next_removed = 0usize;
+    let mut next_idx = 0usize;
+    dae.continuous.equations.retain(|_| {
+        let remove = removed
+            .get(next_removed)
+            .is_some_and(|idx| *idx == next_idx);
+        next_idx += 1;
+        if remove {
+            next_removed += 1;
+        }
+        !remove
+    });
+    shift_structured_families_after_equation_removal(
+        &mut dae.continuous.structured_equations,
+        &removed,
+    );
+}
+
+fn expression_contains_nonnumeric_metadata(expr: &rumoca_core::Expression) -> bool {
+    struct Visitor {
+        found: bool,
+    }
+
+    impl rumoca_core::ExpressionVisitor for Visitor {
+        fn visit_function_call(
+            &mut self,
+            name: &rumoca_core::Reference,
+            args: &[rumoca_core::Expression],
+            _is_constructor: bool,
+        ) {
+            if name
+                .as_str()
+                .starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+            {
+                self.found = true;
+                return;
+            }
+            for arg in args {
+                self.visit_expression(arg);
+            }
+        }
+
+        fn visit_literal(&mut self, value: &rumoca_core::Literal) {
+            if matches!(value, rumoca_core::Literal::String(_)) {
+                self.found = true;
+            }
+        }
+    }
+
+    let mut visitor = Visitor { found: false };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut visitor, expr);
+    visitor.found
+}
+
+fn shift_structured_families_after_equation_removal(
+    families: &mut Vec<dae::StructuredEquationFamily>,
+    removed_sorted: &[usize],
+) {
+    families.retain_mut(|family| {
+        let total: usize = family.equation_counts.iter().sum();
+        let block_end = family.first_equation_index + total;
+        if removed_sorted
+            .iter()
+            .any(|&idx| idx >= family.first_equation_index && idx < block_end)
+        {
+            return false;
+        }
+        let shift = removed_sorted
+            .iter()
+            .filter(|&&idx| idx < family.first_equation_index)
+            .count();
+        family.first_equation_index -= shift;
+        true
+    });
 }
 
 pub(super) struct StructurallyLoweredDae {
@@ -139,12 +279,39 @@ pub(super) fn structurally_lower_dae_for_simulation(
         mut lowered,
         mut metadata_dae,
     } = prepare_structural_daes(dae_model, opts)?;
+    if dae_model.variables.states.is_empty() {
+        let mut residual_shape_dae = source_dae.clone();
+        remove_nonnumeric_continuous_equations(&mut residual_shape_dae);
+        validate_residual_shapes_for_simulation(&residual_shape_dae)?;
+    }
 
     log_solve_lowering_start("structural.eliminate_trivial");
     let timer = stage_timer_start();
-    let elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
+    let mut elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
         .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     log_solve_lowering_done("structural.eliminate_trivial", timer);
+    if let Some(source) = elimination.blt_error {
+        if prepare_dae_after_boundary_elimination(&mut lowered, &elimination.substitutions)? {
+            let mut substitutions = elimination.substitutions;
+            log_solve_lowering_start("structural.eliminate_trivial_after_boundary_state_prep");
+            let timer = stage_timer_start();
+            elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
+                .map_err(
+                    |source| rumoca_phase_solve::SolveModelLowerError::Structural { source },
+                )?;
+            log_solve_lowering_done(
+                "structural.eliminate_trivial_after_boundary_state_prep",
+                timer,
+            );
+            substitutions.extend(elimination.substitutions);
+            elimination.substitutions = substitutions;
+        } else {
+            if dae_model.variables.states.is_empty() {
+                validate_residual_shapes_for_simulation(dae_model)?;
+            }
+            return Err(rumoca_phase_solve::SolveModelLowerError::Structural { source });
+        }
+    }
     if let Some(source) = elimination.blt_error {
         if dae_model.variables.states.is_empty() {
             validate_residual_shapes_for_simulation(dae_model)?;
@@ -208,8 +375,14 @@ pub(super) fn boundary_reduced_dae_for_simulation_artifact(
     opts: &SimOptions,
 ) -> Result<dae::Dae, rumoca_phase_solve::SolveModelLowerError> {
     let mut lowered = prepare_structural_daes(dae_model, opts)?.lowered;
-    rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
+    let elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
         .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    if elimination.blt_error.is_some()
+        && prepare_dae_after_boundary_elimination(&mut lowered, &elimination.substitutions)?
+    {
+        rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    }
     Ok(lowered)
 }
 

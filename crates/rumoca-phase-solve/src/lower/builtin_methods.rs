@@ -311,6 +311,27 @@ impl<'a> LowerBuilder<'a> {
             return self.lower_size_builtin(&forwarded_args, span, scope, call_depth);
         }
         let base_span = expression_or_call_span(base_expr, span, "size() base argument")?;
+        if let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = base_expr
+            && subscripts.is_empty()
+            && let Some(dims) = self.local_binding_dims.get(name.as_str())
+            && !dims.is_empty()
+            && dims.iter().all(|dim| *dim > 0)
+        {
+            let dims = dims
+                .iter()
+                .copied()
+                .map(usize::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| {
+                    LowerError::contract_violation(
+                        "local size() dimension is outside host range",
+                        base_span,
+                    )
+                })?;
+            return self.lower_size_from_dims(&dims, args, base_span, scope, call_depth);
+        }
         let inferred_dims = if expr_component_reference_missing_def_id(base_expr) {
             Vec::new()
         } else {
@@ -323,8 +344,13 @@ impl<'a> LowerBuilder<'a> {
             return self.emit_const_at(value, base_span);
         }
 
-        let base_key =
-            dynamic_binding_base_key(base_expr).map_err(|err| err.with_fallback_span(base_span))?;
+        let base_key = match dynamic_binding_base_key(base_expr) {
+            Ok(base_key) => base_key,
+            Err(LowerError::DynamicBindingBase { .. }) => {
+                return self.emit_const_at(1.0, base_span);
+            }
+            Err(err) => return Err(err.with_fallback_span(base_span)),
+        };
 
         let generated_key = ComponentReferenceKey::generated(&base_key);
         let generated_entries = self.indexed_bindings.get(&generated_key);

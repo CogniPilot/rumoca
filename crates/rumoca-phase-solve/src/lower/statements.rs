@@ -38,6 +38,33 @@ fn copy_statement_call_args(
     Ok(copied)
 }
 
+fn bind_merged_indexed_scope_value(
+    scope: &mut Scope,
+    base: &str,
+    indices: &[usize],
+    reg: Reg,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let key = format_subscript_binding_key(base, indices);
+    scope.insert(generated_scope_key(&key), reg);
+    let target_path = generated_scope_key(base);
+    scope.insert_indexed(&target_path, indices, reg, span)?;
+    if indices.iter().all(|index| *index == 1) {
+        scope.insert(target_path, reg);
+    }
+    Ok(())
+}
+
+struct BranchIndexedMerge<'a> {
+    scope: &'a mut Scope,
+    entry_indexed: &'a IndexMap<String, Vec<LocalIndexedBinding>>,
+    cond_regs: &'a [Reg],
+    cond_spans: &'a [rumoca_core::Span],
+    branch_indexed: &'a [IndexMap<String, Vec<LocalIndexedBinding>>],
+    else_indexed: &'a IndexMap<String, Vec<LocalIndexedBinding>>,
+    span: rumoca_core::Span,
+}
+
 impl<'a> LowerBuilder<'a> {
     /// Returns `true` when lowering should stop due to `return`.
     pub(super) fn lower_statements(
@@ -74,7 +101,6 @@ impl<'a> LowerBuilder<'a> {
             }
             return Ok(false);
         }
-
         let entry_scope = scope.clone();
         // Each branch lowers inside `with_local_lower_frame`, which rolls back
         // the builder-level `local_indexed_bindings` cache afterwards. Snapshot
@@ -159,14 +185,15 @@ impl<'a> LowerBuilder<'a> {
         // branch frame. Reconstruct array elements assigned inside branches so
         // a partially-filled array (e.g. a small-angle guard that writes only
         // some Lie-algebra components per branch) survives intact.
-        self.merge_branch_indexed_bindings(
-            &entry_indexed,
-            &cond_regs,
-            &cond_spans,
-            &branch_indexed,
-            &else_indexed,
-            branch_span,
-        )?;
+        self.merge_branch_indexed_bindings(BranchIndexedMerge {
+            scope,
+            entry_indexed: &entry_indexed,
+            cond_regs: &cond_regs,
+            cond_spans: &cond_spans,
+            branch_indexed: &branch_indexed,
+            else_indexed: &else_indexed,
+            span: branch_span,
+        })?;
 
         Ok(false)
     }
@@ -184,12 +211,7 @@ impl<'a> LowerBuilder<'a> {
     /// (never an unconditional leak).
     fn merge_branch_indexed_bindings(
         &mut self,
-        entry_indexed: &IndexMap<String, Vec<LocalIndexedBinding>>,
-        cond_regs: &[Reg],
-        cond_spans: &[rumoca_core::Span],
-        branch_indexed: &[IndexMap<String, Vec<LocalIndexedBinding>>],
-        else_indexed: &IndexMap<String, Vec<LocalIndexedBinding>>,
-        merge_span: rumoca_core::Span,
+        ctx: BranchIndexedMerge<'_>,
     ) -> Result<(), LowerError> {
         fn lookup(
             store: &IndexMap<String, Vec<LocalIndexedBinding>>,
@@ -205,29 +227,31 @@ impl<'a> LowerBuilder<'a> {
         // Every (base, indices) a branch or the else-branch assigns differently
         // from the entry state needs a merged value.
         let mut candidates: IndexSet<(String, Vec<usize>)> = IndexSet::new();
-        let assigned_entries = branch_indexed
+        let assigned_entries = ctx
+            .branch_indexed
             .iter()
-            .chain(std::iter::once(else_indexed))
+            .chain(std::iter::once(ctx.else_indexed))
             .flat_map(|store| store.iter())
             .flat_map(|(base, entries)| entries.iter().map(move |entry| (base, entry)));
         for (base, entry) in assigned_entries {
-            if lookup(entry_indexed, base, &entry.indices) != Some(entry.reg) {
+            if lookup(ctx.entry_indexed, base, &entry.indices) != Some(entry.reg) {
                 candidates.insert((base.clone(), entry.indices.clone()));
             }
         }
 
         for (base, indices) in candidates {
-            let mut merged = if let Some(merged) = lookup(else_indexed, &base, &indices)
-                .or_else(|| lookup(entry_indexed, &base, &indices))
+            let mut merged = if let Some(merged) = lookup(ctx.else_indexed, &base, &indices)
+                .or_else(|| lookup(ctx.entry_indexed, &base, &indices))
             {
                 merged
             } else {
-                self.emit_const_at(0.0, merge_span)?
+                self.emit_const_at(0.0, ctx.span)?
             };
-            let branch_values = cond_regs
+            let branch_values = ctx
+                .cond_regs
                 .iter()
-                .zip(cond_spans.iter())
-                .zip(branch_indexed.iter())
+                .zip(ctx.cond_spans.iter())
+                .zip(ctx.branch_indexed.iter())
                 .rev()
                 .filter_map(|((cond, span), store)| {
                     lookup(store, &base, &indices).map(|reg| (cond, span, reg))
@@ -236,11 +260,12 @@ impl<'a> LowerBuilder<'a> {
                 merged = self.emit_select_at(*cond, reg, merged, *span)?;
             }
             upsert_local_indexed_binding(
-                self.local_indexed_bindings.entry(base).or_default(),
+                self.local_indexed_bindings.entry(base.clone()).or_default(),
                 &indices,
                 merged,
-                merge_span,
+                ctx.span,
             )?;
+            bind_merged_indexed_scope_value(ctx.scope, &base, &indices, merged, ctx.span)?;
         }
         Ok(())
     }
@@ -487,6 +512,84 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::Expression::Array { .. }
             | rumoca_core::Expression::Empty { .. } => Err(unsupported_at(
                 "unsupported expression in for-loop range",
+                self.statement_expr_span(expr)?,
+            )),
+        }
+    }
+
+    pub(super) fn eval_compile_time_string(
+        &self,
+        expr: &rumoca_core::Expression,
+        const_scope: &IndexMap<String, f64>,
+    ) -> Result<String, LowerError> {
+        match expr {
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(value),
+                ..
+            } => Ok(value.clone()),
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } => {
+                let key = compile_time_var_key(name, subscripts, const_scope, *span)?;
+                let Some(start) = self
+                    .variable_starts
+                    .and_then(|starts| starts.get(key.as_str()))
+                else {
+                    return Err(unsupported_at(
+                        format!("compile-time string expression requires constant `{key}`"),
+                        *span,
+                    ));
+                };
+                self.eval_compile_time_string(start, const_scope)
+            }
+            rumoca_core::Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => {
+                let [subscript] = subscripts.as_slice() else {
+                    return Err(unsupported_at(
+                        "compile-time string array index requires one subscript",
+                        *span,
+                    ));
+                };
+                let index = match subscript {
+                    rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+                        positive_i64_index(*value, *span)?
+                    }
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        let value = self.eval_compile_time_int(
+                            expr,
+                            const_scope,
+                            "compile-time string array index",
+                        )?;
+                        positive_compile_time_string_index(value, expr.span().unwrap_or(*span))?
+                    }
+                    _ => {
+                        return Err(unsupported_at(
+                            "compile-time string array index requires a positive scalar index",
+                            subscript.span(),
+                        ));
+                    }
+                };
+                let rumoca_core::Expression::Array { elements, .. } = base.as_ref() else {
+                    return Err(unsupported_at(
+                        "compile-time string index requires a literal string array",
+                        *span,
+                    ));
+                };
+                let Some(element) = elements.get(index - 1) else {
+                    return Err(unsupported_at(
+                        "compile-time string array index is out of bounds",
+                        *span,
+                    ));
+                };
+                self.eval_compile_time_string(element, const_scope)
+            }
+            _ => Err(unsupported_at(
+                "unsupported compile-time string expression",
                 self.statement_expr_span(expr)?,
             )),
         }
@@ -871,6 +974,12 @@ impl<'a> LowerBuilder<'a> {
         if !subscripts.is_empty() {
             return Ok(1.0);
         }
+        if let Some(dims) = self.local_binding_dims.get(name.as_str())
+            && let Some(value) = dims.get(dim - 1)
+            && *value > 0
+        {
+            return Ok(*value as f64);
+        }
         let key = size_binding_key(name.as_str(), dim);
         self.structural_bindings
             .get(key.as_str())
@@ -907,7 +1016,7 @@ impl<'a> LowerBuilder<'a> {
                 {
                     return Ok(false);
                 }
-                let values = self.lower_array_like_values(value, scope, call_depth)?;
+                let values = self.lower_assignment_values(&target, value, scope, call_depth)?;
                 if let Some(indices) = target
                     .indices
                     .as_deref()
@@ -972,6 +1081,33 @@ impl<'a> LowerBuilder<'a> {
                 self.statement_source_span(statement)?,
             )),
         }
+    }
+
+    fn lower_assignment_values(
+        &mut self,
+        target: &AssignmentTarget,
+        value: &rumoca_core::Expression,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        if target.indices.is_none() && !self.assignment_target_has_array_shape(&target.base) {
+            return Ok(vec![self.lower_expr(value, scope, call_depth)?]);
+        }
+        self.lower_array_like_values(value, scope, call_depth)
+    }
+
+    fn assignment_target_has_array_shape(&self, target: &str) -> bool {
+        self.local_binding_dims
+            .get(target)
+            .is_some_and(|dims| !dims.is_empty())
+            || self
+                .layout
+                .shape(target)
+                .is_some_and(|dims| !dims.is_empty())
+            || self
+                .local_indexed_bindings
+                .get(target)
+                .is_some_and(|bindings| !bindings.is_empty())
     }
 
     fn bind_record_component_assignment(
@@ -1116,7 +1252,7 @@ impl<'a> LowerBuilder<'a> {
         assignment_span: rumoca_core::Span,
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        let Some(fields) = record_if_assignment_fields(value) else {
+        let Some(fields) = self.record_if_assignment_fields(value) else {
             return Ok(false);
         };
         let span = self.statement_expr_or_context_span(value, assignment_span)?;
@@ -1133,6 +1269,58 @@ impl<'a> LowerBuilder<'a> {
             self.bind_assignment_values_at(scope, &format!("{target}.{field}"), &values, span)?;
         }
         Ok(true)
+    }
+
+    fn record_if_assignment_fields(&self, value: &rumoca_core::Expression) -> Option<Vec<String>> {
+        let rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } = value
+        else {
+            return None;
+        };
+
+        let mut fields = IndexSet::new();
+        for (_, branch_expr) in branches {
+            self.collect_record_constructor_fields(branch_expr, &mut fields);
+        }
+        self.collect_record_constructor_fields(else_branch, &mut fields);
+        (!fields.is_empty()).then(|| fields.into_iter().collect())
+    }
+
+    fn collect_record_constructor_fields(
+        &self,
+        expr: &rumoca_core::Expression,
+        fields: &mut IndexSet<String>,
+    ) {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } = expr
+        else {
+            return;
+        };
+        if !self.is_record_constructor_call(name, *is_constructor) {
+            return;
+        }
+        if let Some(constructor) = self.lookup_function(name) {
+            for input in &constructor.inputs {
+                fields.insert(input.name.clone());
+            }
+            return;
+        }
+        for arg in args {
+            if let Some((field, _)) = super::function_calls::decode_named_function_arg(arg) {
+                fields.insert(field.to_string());
+            }
+        }
+        if fields.is_empty() && name.last_segment() == "Complex" {
+            fields.insert("re".to_string());
+            fields.insert("im".to_string());
+        }
     }
 
     fn bind_record_function_call_assignment(
@@ -1789,6 +1977,24 @@ impl<'a> LowerBuilder<'a> {
     }
 }
 
+fn positive_compile_time_string_index(
+    value: i64,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    if value <= 0 {
+        return Err(unsupported_at(
+            "compile-time string array index requires a positive scalar index",
+            span,
+        ));
+    }
+    usize::try_from(value).map_err(|_| {
+        unsupported_at(
+            "compile-time string array index is outside supported range",
+            span,
+        )
+    })
+}
+
 fn start_metadata_refers_to_key(expr: &rumoca_core::Expression, key: &str) -> bool {
     binding_base_key(expr).is_ok_and(|start_key| start_key == key)
 }
@@ -1799,48 +2005,6 @@ fn is_control_flag(name: &rumoca_ir_solve::ComponentReferenceKey) -> bool {
             matches!(name.as_str(), RETURN_FLAG_BINDING | BREAK_FLAG_BINDING)
         }
         rumoca_ir_solve::ComponentReferenceKey::Source { .. } => false,
-    }
-}
-
-fn record_if_assignment_fields(value: &rumoca_core::Expression) -> Option<Vec<String>> {
-    let rumoca_core::Expression::If {
-        branches,
-        else_branch,
-        ..
-    } = value
-    else {
-        return None;
-    };
-
-    let mut fields = IndexSet::new();
-    for (_, branch_expr) in branches {
-        collect_record_constructor_fields(branch_expr, &mut fields);
-    }
-    collect_record_constructor_fields(else_branch, &mut fields);
-    (!fields.is_empty()).then(|| fields.into_iter().collect())
-}
-
-fn collect_record_constructor_fields(
-    expr: &rumoca_core::Expression,
-    fields: &mut IndexSet<String>,
-) {
-    let rumoca_core::Expression::FunctionCall {
-        name,
-        args,
-        is_constructor: true,
-        ..
-    } = expr
-    else {
-        return;
-    };
-    for arg in args {
-        if let Some((field, _)) = super::function_calls::decode_named_function_arg(arg) {
-            fields.insert(field.to_string());
-        }
-    }
-    if fields.is_empty() && name.last_segment() == "Complex" {
-        fields.insert("re".to_string());
-        fields.insert("im".to_string());
     }
 }
 

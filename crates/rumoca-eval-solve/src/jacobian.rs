@@ -186,7 +186,7 @@ impl SolveRuntime {
     ) -> ParameterJacobianReport {
         let layout = &self.model.problem.layout;
         let n_state = self.state_count;
-        let y_scalars = layout.y_scalars();
+        let solver_y_scalars = self.solver_count;
         let row_labels = (0..n_state).map(|index| self.state_label(index)).collect();
         // One column per model parameter (rumoca-internal `__`-prefixed slots are
         // excluded); each carries its P-slot so callers can map a column back to
@@ -196,9 +196,9 @@ impl SolveRuntime {
             model_params.into_iter().unzip();
         let n_param = param_slots.len();
 
-        // The seed must reach the largest P-slot index, not just `n_param`, since
-        // model and internal parameter slots may be interleaved.
-        let seed_len = y_scalars.saturating_add(layout.p_scalars());
+        // The seed spans the runtime `[solver-y | parameter]` vector, not just
+        // states; model and internal parameter slots may also be interleaved.
+        let seed_len = solver_y_scalars.saturating_add(layout.p_scalars());
         let buffers = rect_jacobian_buffers(n_state, n_param, seed_len);
         let (mut matrix, mut seed, mut column) = match buffers {
             Ok(buffers) => buffers,
@@ -215,14 +215,14 @@ impl SolveRuntime {
         };
         let mut error = None;
         for (col, slot) in param_slots.iter().copied().enumerate() {
-            seed[y_scalars + slot] = 1.0;
+            seed[solver_y_scalars + slot] = 1.0;
             let result = self.eval_full_jacobian_v_ad_into(
                 AlgebraicLinearization { t, params, settle },
                 state,
                 &seed,
                 &mut column,
             );
-            seed[y_scalars + slot] = 0.0;
+            seed[solver_y_scalars + slot] = 0.0;
             match result {
                 Ok(()) => write_column(&mut matrix, col, &column),
                 Err(err) => {

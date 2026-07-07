@@ -21,9 +21,9 @@ use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, Scalar
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use function_projection::function_projected_residuals_with_owner;
 pub(in crate::lower) use function_projection::{
-    function_call_projected_scalars_with_owner, project_array_like_scalars_with_owner,
+    function_call_projected_scalars_with_owner, function_projected_residuals_with_owner,
+    project_array_like_scalar_with_owner, project_array_like_scalars_with_owner,
 };
 
 #[derive(Debug, Clone)]

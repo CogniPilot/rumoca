@@ -705,13 +705,12 @@ impl Context {
                 {
                     self.non_structural_params.insert(name.to_string());
                 }
-                let is_fixed_parameter =
-                    matches!(var.variability, rumoca_core::Variability::Parameter(_))
-                        && var.fixed != Some(false);
+                let is_parameter =
+                    matches!(var.variability, rumoca_core::Variability::Parameter(_));
                 let may_be_record_alias = !var.is_primitive;
                 if var.evaluate
                     || matches!(var.variability, rumoca_core::Variability::Constant(_))
-                    || is_fixed_parameter
+                    || (is_parameter && var.is_discrete_type)
                 {
                     self.structural_params.insert(name.to_string());
                 }

@@ -588,6 +588,60 @@ end P;
     );
 }
 
+/// MLS section 7.3: forwarding package redeclares must carry non-dimensional
+/// package constants as well as size constants. Trace-substance fluid models
+/// use `Medium.C_nominal` in nested balance equations.
+#[test]
+fn test_forwarding_package_redeclare_applies_to_nested_real_array_constant() {
+    let source = r#"
+package P
+  package MediumBase
+    constant Integer nC = 0;
+    constant Real C_nominal[nC] = fill(0.0, nC);
+  end MediumBase;
+
+  package MediumCO2
+    extends MediumBase(nC = 1, C_nominal = {0.001519});
+  end MediumCO2;
+
+  model Duct
+    replaceable package Medium = MediumBase;
+    Real mCs_scaled[2, Medium.nC];
+    parameter Real mbC_flows[2, Medium.nC] = fill(1.0, 2, Medium.nC);
+  equation
+    for i in 1:2 loop
+      der(mCs_scaled[i, :]) = mbC_flows[i, :] ./ Medium.C_nominal;
+    end for;
+  end Duct;
+
+  model Source
+    replaceable package Medium = MediumBase;
+    Duct duct(redeclare package Medium = Medium);
+  end Source;
+
+  model M
+    Source s(redeclare package Medium = MediumCO2);
+  end M;
+end P;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("P.M").expect("compile failed");
+    let dae_debug = format!("{:?}", result.dae.continuous.equations);
+    assert!(
+        !dae_debug.contains("Medium.C_nominal"),
+        "forwarded Medium.C_nominal should be substituted before DAE conversion: {dae_debug}"
+    );
+    assert!(
+        dae_debug.contains("0.001519"),
+        "forwarded Medium.C_nominal value should come from MediumCO2: {dae_debug}"
+    );
+}
+
 /// MLS §7.3: package aliases in sibling models must not leak into the active
 /// model's alias resolution. Compiling `Examples.A` should use `A.Medium`.
 #[test]

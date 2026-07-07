@@ -19,6 +19,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 type Dae = dae::Dae;
 type RecordArgMap = HashMap<String, Vec<RecordArgDecomposition>>;
 type ArrayParamMap = HashMap<String, Vec<(usize, String)>>;
+type RecordArrayFieldMap = HashMap<String, RecordArrayFieldVariants>;
+
+#[derive(Debug, Clone)]
+struct RecordArrayFieldVariants {
+    variants: Vec<rumoca_core::Reference>,
+    field_dims: Vec<i64>,
+}
 
 struct RecordArgDecomposition {
     original_index: usize,
@@ -375,11 +382,32 @@ pub(crate) fn lower_enum_literal_refs_to_ordinals(dae: &mut Dae) {
         ordinals: &ordinals,
     }
     .rewrite_dae(dae);
+    lower_enum_literal_refs_in_structured_families(
+        &mut dae.continuous.structured_equations,
+        &ordinals,
+    );
+    lower_enum_literal_refs_in_structured_families(
+        &mut dae.initialization.structured_equations,
+        &ordinals,
+    );
     for function in dae.symbols.functions.values_mut() {
         function.body = EnumLiteralOrdinalLowerer {
             ordinals: &ordinals,
         }
         .rewrite_statements(&function.body);
+    }
+}
+
+fn lower_enum_literal_refs_in_structured_families(
+    families: &mut [dae::StructuredEquationFamily],
+    ordinals: &IndexMap<String, i64>,
+) {
+    for family in families {
+        let Some(template) = &mut family.template else {
+            continue;
+        };
+        let mut lowerer = EnumLiteralOrdinalLowerer { ordinals };
+        template.body = lowerer.rewrite_expressions(&template.body);
     }
 }
 
@@ -1022,6 +1050,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     let known_names = build_known_var_name_set(dae);
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
     let array_dims = build_array_dims_map(dae);
+    let record_array_fields = build_record_array_field_map(dae);
 
     canonicalize_embedded_subscript_equation_list(&mut dae.continuous.equations, &array_dims)?;
     canonicalize_embedded_subscript_equation_list(&mut dae.initialization.equations, &array_dims)?;
@@ -1037,6 +1066,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.continuous.equations,
         &phantom_map,
         &array_dims,
+        &record_array_fields,
         &dae.symbols.functions,
         false,
     )?;
@@ -1048,6 +1078,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.initialization.equations,
         &phantom_map,
         &array_dims,
+        &record_array_fields,
         &dae.symbols.functions,
         false,
     )?;
@@ -1060,6 +1091,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.discrete.real_updates,
         &phantom_map,
         &array_dims,
+        &record_array_fields,
         &dae.symbols.functions,
         true,
     )?;
@@ -1067,6 +1099,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.discrete.valued_updates,
         &phantom_map,
         &array_dims,
+        &record_array_fields,
         &dae.symbols.functions,
         true,
     )?;
@@ -1074,6 +1107,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.conditions.equations,
         &phantom_map,
         &array_dims,
+        &record_array_fields,
         &dae.symbols.functions,
         false,
     )?;
@@ -1426,9 +1460,24 @@ impl ExpressionRewriter for StructuredBinderSubstitution<'_> {
                 span: if span.is_dummy() { self.span } else { span },
             };
         }
+        let subscripts = self.rewrite_subscripts(subscripts);
+        if subscripts
+            .iter()
+            .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+        {
+            return rumoca_core::Expression::Index {
+                base: Box::new(rumoca_core::Expression::VarRef {
+                    name: name.clone(),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                subscripts,
+                span,
+            };
+        }
         rumoca_core::Expression::VarRef {
             name: name.clone(),
-            subscripts: self.rewrite_subscripts(subscripts),
+            subscripts,
             span,
         }
     }
@@ -1541,6 +1590,100 @@ fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
     dims_map
 }
 
+fn build_record_array_field_map(dae: &Dae) -> RecordArrayFieldMap {
+    let mut fields: HashMap<String, (BTreeMap<usize, rumoca_core::Reference>, Vec<i64>)> =
+        HashMap::new();
+    for map in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, var) in map {
+            let Some(component_ref) = var.component_ref.as_ref() else {
+                continue;
+            };
+            let Some((key, index)) = record_array_field_key(component_ref) else {
+                continue;
+            };
+            let (indexed, field_dims) = fields.entry(key).or_default();
+            if field_dims.is_empty() {
+                *field_dims = var.dims.clone();
+            }
+            indexed.insert(
+                index,
+                rumoca_core::Reference::with_component_reference(
+                    name.as_str(),
+                    component_ref.clone(),
+                ),
+            );
+        }
+    }
+    fields
+        .into_iter()
+        .filter_map(|(key, (indexed, field_dims))| {
+            let mut variants = Vec::with_capacity(indexed.len());
+            for expected in 1..=indexed.len() {
+                let value = indexed.get(&expected)?.clone();
+                variants.push(value);
+            }
+            Some((
+                key,
+                RecordArrayFieldVariants {
+                    variants,
+                    field_dims,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn record_array_field_key(
+    component_ref: &rumoca_core::ComponentReference,
+) -> Option<(String, usize)> {
+    if component_ref.parts.len() < 2 {
+        return None;
+    }
+    let container_index = component_ref
+        .parts
+        .iter()
+        .enumerate()
+        .take(component_ref.parts.len() - 1)
+        .rev()
+        .find_map(|(index, part)| {
+            single_positive_index_subscript(&part.subs).map(|sub| (index, sub))
+        })?;
+    let (container_index, _) = container_index;
+    let suffix = component_ref.parts.get(container_index + 1..)?;
+    if suffix.is_empty() {
+        return None;
+    }
+    let suffix = suffix
+        .iter()
+        .map(|part| part.ident.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
+    let container = component_ref.parts.get(container_index)?;
+    let index = single_positive_index_subscript(&container.subs)?;
+    let mut base_ref = component_ref.clone();
+    base_ref.parts.truncate(container_index + 1);
+    base_ref.parts.last_mut()?.subs.clear();
+    base_ref.def_id = None;
+    let base = rumoca_core::ComponentPath::from_component_reference(&base_ref).to_flat_string();
+    Some((format!("{base}.{suffix}"), index))
+}
+
+fn single_positive_index_subscript(subscripts: &[rumoca_core::Subscript]) -> Option<usize> {
+    let [rumoca_core::Subscript::Index { value, .. }] = subscripts else {
+        return None;
+    };
+    usize::try_from(*value).ok().filter(|value| *value > 0)
+}
+
 fn canonicalize_embedded_subscript_equation_list(
     equations: &mut [dae::Equation],
     array_dims: &HashMap<String, Vec<i64>>,
@@ -1621,9 +1764,24 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
                 span,
             };
         }
+        let subscripts = self.rewrite_subscripts(subscripts);
+        if subscripts
+            .iter()
+            .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+        {
+            return rumoca_core::Expression::Index {
+                base: Box::new(rumoca_core::Expression::VarRef {
+                    name: name.clone(),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                subscripts,
+                span,
+            };
+        }
         rumoca_core::Expression::VarRef {
             name: name.clone(),
-            subscripts: self.rewrite_subscripts(subscripts),
+            subscripts,
             span,
         }
     }
@@ -1805,6 +1963,83 @@ fn subscript_has_array_comprehension(subscript: &rumoca_core::Subscript) -> bool
     }
 }
 
+fn expr_has_vectorized_scalar_function_call(
+    expr: &rumoca_core::Expression,
+    array_dims: &HashMap<String, Vec<i64>>,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> bool {
+    match expr {
+        rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } => {
+            let function = functions.get(name.var_name());
+            if scalar_output_function(function) {
+                let mut positional_idx = 0usize;
+                if args.iter().any(|arg| {
+                    let formal_rank =
+                        scalarized_function_arg_formal_rank(function, arg, &mut positional_idx);
+                    expr_has_vectorized_scalar_actual(arg, formal_rank, array_dims)
+                }) {
+                    return true;
+                }
+            }
+            args.iter()
+                .any(|arg| expr_has_vectorized_scalar_function_call(arg, array_dims, functions))
+        }
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            expr_has_vectorized_scalar_function_call(lhs, array_dims, functions)
+                || expr_has_vectorized_scalar_function_call(rhs, array_dims, functions)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            expr_has_vectorized_scalar_function_call(rhs, array_dims, functions)
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. } => args
+            .iter()
+            .any(|arg| expr_has_vectorized_scalar_function_call(arg, array_dims, functions)),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                expr_has_vectorized_scalar_function_call(condition, array_dims, functions)
+                    || expr_has_vectorized_scalar_function_call(value, array_dims, functions)
+            }) || expr_has_vectorized_scalar_function_call(else_branch, array_dims, functions)
+        }
+        rumoca_core::Expression::Index { base, .. }
+        | rumoca_core::Expression::FieldAccess { base, .. } => {
+            expr_has_vectorized_scalar_function_call(base, array_dims, functions)
+        }
+        _ => false,
+    }
+}
+
+fn expr_has_vectorized_scalar_actual(
+    expr: &rumoca_core::Expression,
+    formal_rank: usize,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> bool {
+    if let Some((_, value)) = named_function_arg_value(expr) {
+        return expr_has_vectorized_scalar_actual(value, formal_rank, array_dims);
+    }
+    matches!(
+        expr,
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if subscripts.is_empty()
+            && array_dims
+                .get(name.as_str())
+                .is_some_and(|dims| dims.len() == formal_rank + 1)
+    )
+}
+
 fn subscript_has_record_array_member_slice(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
         rumoca_core::Subscript::Expr { expr, .. } => expr_has_record_array_member_slice(expr),
@@ -1825,12 +2060,14 @@ fn scalarize_expr_at(
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     let ctx = ScalarizeExprContext {
         k,
         phantom_map,
         array_dims,
+        record_array_fields,
         functions,
     };
     scalarize_expr_with_context(expr, &ctx)
@@ -1840,6 +2077,7 @@ struct ScalarizeExprContext<'a> {
     k: usize,
     phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &'a HashMap<String, Vec<i64>>,
+    record_array_fields: &'a RecordArrayFieldMap,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 }
 
@@ -1859,6 +2097,7 @@ fn scalarize_expr_with_context(
             ctx.k,
             ctx.phantom_map,
             ctx.array_dims,
+            ctx.record_array_fields,
         )
         .and_then(|projected| projected.map_or_else(|| Ok(expr.clone()), Ok)),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
@@ -1879,15 +2118,8 @@ fn scalarize_expr_with_context(
             args,
             span,
         } => {
-            if let Some(expr) = scalarize_builtin_array_constructor_at(
-                *function,
-                args,
-                *span,
-                ctx.k,
-                ctx.phantom_map,
-                ctx.array_dims,
-                ctx.functions,
-            )? {
+            if let Some(expr) = scalarize_builtin_array_constructor_at(*function, args, *span, ctx)?
+            {
                 return Ok(expr);
             }
             Ok(rumoca_core::Expression::BuiltinCall {
@@ -1919,9 +2151,17 @@ fn scalarize_expr_with_context(
             span,
         } => scalarize_if_expr_at(branches, else_branch, *span, ctx),
         rumoca_core::Expression::Array { elements, .. } => {
-            // An array literal in a vector equation context: extract element k
-            if ctx.k < elements.len() {
-                scalarize_expr_with_context(&elements[ctx.k], ctx)
+            if let Some((element_index, element_lane)) =
+                scalarized_array_literal_lane(elements, ctx.k, ctx.array_dims)
+            {
+                let element_ctx = ScalarizeExprContext {
+                    k: element_lane,
+                    phantom_map: ctx.phantom_map,
+                    array_dims: ctx.array_dims,
+                    record_array_fields: ctx.record_array_fields,
+                    functions: ctx.functions,
+                };
+                scalarize_expr_with_context(&elements[element_index], &element_ctx)
             } else {
                 Ok(expr.clone())
             }
@@ -1958,6 +2198,7 @@ fn scalarize_index_expr_at(
             ctx.k,
             ctx.phantom_map,
             ctx.array_dims,
+            ctx.record_array_fields,
         )?
     {
         return Ok(expr);
@@ -1975,7 +2216,12 @@ fn scalarize_field_access_at(
     span: rumoca_core::Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
-    if let Some(projected) = scalarize_record_array_member_slice_at(base, field, span, ctx.k)? {
+    if let Some(projected) =
+        scalarize_record_array_member_slice_at(base, field, span, ctx.k, ctx.record_array_fields)?
+    {
+        return Ok(projected);
+    }
+    if let Some(projected) = scalarize_record_array_field_at(base, field, span, ctx)? {
         return Ok(projected);
     }
     let base = scalarize_expr_with_context(base, ctx)?;
@@ -1998,12 +2244,110 @@ fn scalarize_field_access_at(
     })
 }
 
+fn scalarize_record_array_field_at(
+    base: &rumoca_core::Expression,
+    field: &str,
+    span: rumoca_core::Span,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    project_record_array_field_rhs_at(base, field, span, ctx.k, ctx.record_array_fields)
+}
+
+fn project_record_array_field_rhs_at(
+    base: &rumoca_core::Expression,
+    field: &str,
+    span: rumoca_core::Span,
+    k: usize,
+    record_array_fields: &RecordArrayFieldMap,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = base
+    else {
+        return Ok(None);
+    };
+    if !subscripts.is_empty() {
+        return Ok(None);
+    }
+    let key = format!("{}.{}", name.as_str(), field);
+    project_record_array_field_entry_at(record_array_fields.get(&key), k, span)
+}
+
+fn project_record_array_field_entry_at(
+    entry: Option<&RecordArrayFieldVariants>,
+    k: usize,
+    span: rumoca_core::Span,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    let field_width = record_array_field_width(&entry.field_dims);
+    if field_width == 0 {
+        return Ok(None);
+    }
+    let record_index = k / field_width;
+    let field_index = k % field_width;
+    let Some(projected) = entry.variants.get(record_index).cloned() else {
+        return Ok(None);
+    };
+    let subscripts = if field_width == 1 {
+        Vec::new()
+    } else {
+        let index = one_based_scalar_index(
+            field_index,
+            span,
+            "DAE record-array field scalarized subscript",
+        )?;
+        vec![generated_index_subscript(
+            index,
+            span,
+            "DAE record-array field scalarized subscript",
+        )?]
+    };
+    Ok(Some(rumoca_core::Expression::VarRef {
+        name: projected,
+        subscripts,
+        span,
+    }))
+}
+
+fn record_array_field_width(dims: &[i64]) -> usize {
+    if dims.is_empty() {
+        return 1;
+    }
+    dims.iter()
+        .copied()
+        .try_fold(1usize, |acc, dim| {
+            let dim = usize::try_from(dim).ok()?;
+            (dim > 0).then_some(acc.saturating_mul(dim))
+        })
+        .unwrap_or(0)
+}
+
+fn record_array_field_scalar_count(entry: &RecordArrayFieldVariants) -> usize {
+    entry
+        .variants
+        .len()
+        .saturating_mul(record_array_field_width(&entry.field_dims))
+}
+
 fn scalarize_record_array_member_slice_at(
     base: &rumoca_core::Expression,
     field: &str,
     span: rumoca_core::Span,
     k: usize,
+    record_array_fields: &RecordArrayFieldMap,
 ) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    if let Some((name, subscript, suffix)) = record_array_member_slice_parts(base, field)
+        && let Some(component_ref) = name.component_ref()
+        && let Some(key) = record_array_member_slice_field_key(component_ref, &suffix)
+        && let Some(entry) = record_array_fields.get(&key)
+        && let Some(projected) =
+            project_record_array_field_slice_entry_at(entry, subscript, k, span)?
+    {
+        return Ok(Some(projected));
+    }
+
     let rumoca_core::Expression::Index {
         base: inner,
         subscripts,
@@ -2047,6 +2391,115 @@ fn scalarize_record_array_member_slice_at(
     Ok(Some(rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::from_component_reference(element_ref),
         subscripts: Vec::new(),
+        span,
+    }))
+}
+
+fn record_array_member_slice_parts<'a>(
+    base: &'a rumoca_core::Expression,
+    field: &str,
+) -> Option<(
+    &'a rumoca_core::Reference,
+    &'a rumoca_core::Subscript,
+    Vec<String>,
+)> {
+    let (name, subscript, mut suffix) = collect_record_array_member_slice_base(base)?;
+    suffix.push(field.to_string());
+    Some((name, subscript, suffix))
+}
+
+fn collect_record_array_member_slice_base(
+    expr: &rumoca_core::Expression,
+) -> Option<(
+    &rumoca_core::Reference,
+    &rumoca_core::Subscript,
+    Vec<String>,
+)> {
+    match expr {
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let [subscript] = subscripts.as_slice() else {
+                return None;
+            };
+            let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: ref_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            ref_subscripts
+                .is_empty()
+                .then_some((name, subscript, Vec::new()))
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let (name, subscript, mut suffix) = collect_record_array_member_slice_base(base)?;
+            suffix.push(field.clone());
+            Some((name, subscript, suffix))
+        }
+        _ => None,
+    }
+}
+
+fn record_array_member_slice_field_key(
+    component_ref: &rumoca_core::ComponentReference,
+    suffix: &[String],
+) -> Option<String> {
+    if suffix.is_empty() {
+        return None;
+    }
+    let mut base_ref = component_ref.clone();
+    base_ref.parts.last_mut()?.subs.clear();
+    base_ref.def_id = None;
+    let base = rumoca_core::ComponentPath::from_component_reference(&base_ref).to_flat_string();
+    Some(format!("{base}.{}", suffix.join(".")))
+}
+
+fn project_record_array_field_slice_entry_at(
+    entry: &RecordArrayFieldVariants,
+    subscript: &rumoca_core::Subscript,
+    k: usize,
+    span: rumoca_core::Span,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    let field_width = record_array_field_width(&entry.field_dims);
+    if field_width == 0 {
+        return Ok(None);
+    }
+    let record_lane = k / field_width;
+    let field_index = k % field_width;
+    let element_index = record_array_member_slice_index(subscript, record_lane, span)?;
+    let variant_index = usize::try_from(element_index.checked_sub(1).ok_or_else(|| {
+        ToDaeError::runtime_metadata_violation(
+            "record-array member slice produced a non-positive index".to_string(),
+        )
+    })?)
+    .map_err(|_| {
+        ToDaeError::runtime_metadata_violation(
+            "record-array member slice index is outside supported range".to_string(),
+        )
+    })?;
+    let Some(projected) = entry.variants.get(variant_index).cloned() else {
+        return Ok(None);
+    };
+    let subscripts = if field_width == 1 {
+        Vec::new()
+    } else {
+        let index = one_based_scalar_index(
+            field_index,
+            span,
+            "DAE record-array member field scalarized subscript",
+        )?;
+        vec![generated_index_subscript(
+            index,
+            span,
+            "DAE record-array member field scalarized subscript",
+        )?]
+    };
+    Ok(Some(rumoca_core::Expression::VarRef {
+        name: projected,
+        subscripts,
         span,
     }))
 }
@@ -2185,6 +2638,7 @@ fn scalarize_var_ref_at(
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
 ) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
     let n = name.as_str();
     if !subscripts.is_empty() {
@@ -2198,6 +2652,11 @@ fn scalarize_var_ref_at(
             subscripts: vec![],
             span,
         }));
+    }
+    if let Some(projected) =
+        project_record_array_field_entry_at(record_array_fields.get(n), k, span)?
+    {
+        return Ok(Some(projected));
     }
     if !array_dims.contains_key(n) {
         return Ok(None);
@@ -2274,9 +2733,29 @@ fn scalarize_function_call_args(
     function: Option<&rumoca_core::Function>,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<Vec<rumoca_core::Expression>, ToDaeError> {
+    let scalar_output = scalar_output_function(function);
+    let mut positional_idx = 0usize;
     args.iter()
         .enumerate()
         .map(|(index, arg)| {
+            let formal_rank =
+                scalarized_function_arg_formal_rank(function, arg, &mut positional_idx);
+            if scalar_output
+                && function_input_expects_array(function, arg, index)
+                && expr_phantom_ref_width(arg, ctx.phantom_map).is_some()
+            {
+                return Ok(vectorize_phantom_expr(arg, ctx.phantom_map));
+            }
+            if scalar_output {
+                return project_scalarized_function_arg_at(
+                    arg,
+                    formal_rank,
+                    ctx.k,
+                    ctx.array_dims,
+                    ctx.record_array_fields,
+                    ctx.functions,
+                );
+            }
             if function_input_expects_array(function, arg, index) {
                 return Ok(vectorize_phantom_expr(arg, ctx.phantom_map));
             }
@@ -2389,6 +2868,19 @@ fn generated_index_subscript(
     })
 }
 
+fn generated_colon_subscript(
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<rumoca_core::Subscript, ToDaeError> {
+    rumoca_core::Subscript::try_generated_colon(span, context).map_err(|err| {
+        if span.is_dummy() {
+            ToDaeError::runtime_metadata_violation(err.to_string())
+        } else {
+            ToDaeError::runtime_metadata_violation_at(err.to_string(), span)
+        }
+    })
+}
+
 fn scalarize_if_expr_at(
     branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
     else_branch: &rumoca_core::Expression,
@@ -2414,10 +2906,7 @@ fn scalarize_builtin_array_constructor_at(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
     span: rumoca_core::Span,
-    k: usize,
-    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
-    array_dims: &HashMap<String, Vec<i64>>,
-    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    ctx: &ScalarizeExprContext<'_>,
 ) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
     match function {
         rumoca_core::BuiltinFunction::Zeros => Ok(Some(real_literal(0.0, span))),
@@ -2426,17 +2915,93 @@ fn scalarize_builtin_array_constructor_at(
             let Some(value) = args.first() else {
                 return Ok(None);
             };
-            scalarize_expr_at(value, k, phantom_map, array_dims, functions).map(Some)
+            let value_lane = scalarized_fill_value_lane(
+                value,
+                ctx.k,
+                ctx.phantom_map,
+                ctx.array_dims,
+                ctx.record_array_fields,
+            );
+            scalarize_expr_at(
+                value,
+                value_lane,
+                ctx.phantom_map,
+                ctx.array_dims,
+                ctx.record_array_fields,
+                ctx.functions,
+            )
+            .map(Some)
         }
         rumoca_core::BuiltinFunction::Identity => {
             let Some(n) = args.first().and_then(literal_positive_usize) else {
                 return Ok(None);
             };
-            let row = k / n;
-            let col = k % n;
+            let row = ctx.k / n;
+            let col = ctx.k % n;
             Ok(Some(real_literal(if row == col { 1.0 } else { 0.0 }, span)))
         }
         _ => Ok(None),
+    }
+}
+
+fn scalarized_fill_value_lane(
+    value: &rumoca_core::Expression,
+    k: usize,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
+) -> usize {
+    let Some(width) =
+        scalarized_fill_value_width(value, phantom_map, array_dims, record_array_fields)
+    else {
+        return k;
+    };
+    if width <= 1 { 0 } else { k % width }
+}
+
+fn scalarized_fill_value_width(
+    value: &rumoca_core::Expression,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
+) -> Option<usize> {
+    match value {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => phantom_map
+            .get(name.as_str())
+            .map(Vec::len)
+            .or_else(|| {
+                record_array_fields
+                    .get(name.as_str())
+                    .map(record_array_field_scalar_count)
+            })
+            .or_else(|| {
+                array_dims
+                    .get(name.as_str())
+                    .map(|dims| compute_var_size(dims))
+            }),
+        rumoca_core::Expression::Array { elements, .. } => Some(elements.len()),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if !base_subscripts.is_empty() {
+                return None;
+            }
+            array_dims
+                .get(name.as_str())
+                .and_then(|dims| projected_dims_for_subscripts(dims, subscripts))
+                .map(|dims| compute_var_size(&dims))
+        }
+        _ => None,
     }
 }
 
@@ -2636,6 +3201,7 @@ fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     recover_discrete_assignments: bool,
 ) -> Result<Vec<(usize, usize)>, ToDaeError> {
@@ -2645,11 +3211,20 @@ fn scalarize_equation_list(
         let new_start = new_equations.len();
         let phantom_width = expr_phantom_ref_width(&eq.rhs, phantom_map);
         if eq.scalar_count > 1
-            && (phantom_width.is_some() || expr_has_record_array_member_slice(&eq.rhs))
+            && (phantom_width.is_some()
+                || expr_has_record_array_member_slice(&eq.rhs)
+                || expr_has_vectorized_scalar_function_call(&eq.rhs, array_dims, functions))
         {
             // Expand into scalar_count individual equations
             for k in 0..eq.scalar_count {
-                let scalar_rhs = scalarize_expr_at(&eq.rhs, k, phantom_map, array_dims, functions)?;
+                let scalar_rhs = scalarize_expr_at(
+                    &eq.rhs,
+                    k,
+                    phantom_map,
+                    array_dims,
+                    record_array_fields,
+                    functions,
+                )?;
                 let origin = format!("{} [scalarized {}]", eq.origin, k + 1);
                 new_equations.push(scalarized_equation_at(
                     &eq,
@@ -2662,7 +3237,14 @@ fn scalarize_equation_list(
                 )?);
             }
         } else if phantom_width == Some(1) {
-            let scalar_rhs = scalarize_expr_at(&eq.rhs, 0, phantom_map, array_dims, functions)?;
+            let scalar_rhs = scalarize_expr_at(
+                &eq.rhs,
+                0,
+                phantom_map,
+                array_dims,
+                record_array_fields,
+                functions,
+            )?;
             new_equations.push(dae::Equation {
                 rhs: scalar_rhs,
                 ..eq
@@ -2671,12 +3253,534 @@ fn scalarize_equation_list(
             let rhs = vectorize_phantom_array_formal_args(&eq.rhs, phantom_map, functions);
             new_equations.push(dae::Equation { rhs, ..eq });
         } else {
-            new_equations.push(eq);
+            new_equations.push(project_scalarized_residual_rhs(
+                eq,
+                phantom_map,
+                array_dims,
+                record_array_fields,
+                functions,
+            )?);
         }
         spans.push((new_start, new_equations.len() - new_start));
     }
     *equations = new_equations;
     Ok(spans)
+}
+
+fn project_scalarized_residual_rhs(
+    eq: dae::Equation,
+    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> Result<dae::Equation, ToDaeError> {
+    if eq.scalar_count != 1 {
+        return Ok(eq);
+    }
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        span,
+    } = &eq.rhs
+    else {
+        return Ok(eq);
+    };
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = lhs.as_ref()
+    else {
+        return Ok(eq);
+    };
+    let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims) else {
+        return Ok(eq);
+    };
+    let _ = phantom_map;
+    let scalar_lhs =
+        project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?;
+    let scalar_rhs =
+        project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?;
+    Ok(dae::Equation {
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(scalar_lhs),
+            rhs: Box::new(scalar_rhs),
+            span: *span,
+        },
+        ..eq
+    })
+}
+
+fn project_scalarized_rhs_expr_at(
+    expr: &rumoca_core::Expression,
+    k: usize,
+    array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    RhsProjectionCtx {
+        k,
+        array_dims,
+        record_array_fields,
+        functions,
+    }
+    .project(expr)
+}
+
+struct RhsProjectionCtx<'a> {
+    k: usize,
+    array_dims: &'a HashMap<String, Vec<i64>>,
+    record_array_fields: &'a RecordArrayFieldMap,
+    functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+}
+
+impl RhsProjectionCtx<'_> {
+    fn project(
+        &self,
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        match expr {
+            rumoca_core::Expression::VarRef { .. } => self.project_var_ref(expr),
+            rumoca_core::Expression::Array { elements, .. } => self.project_array(elements, expr),
+            rumoca_core::Expression::ArrayComprehension {
+                expr: inner,
+                indices,
+                filter,
+                span,
+            } => self.project_array_comprehension(inner, indices, filter.as_deref(), *span, expr),
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                span,
+            } => self.project_function_call(name, args, *is_constructor, *span),
+            rumoca_core::Expression::FieldAccess { base, field, span } => {
+                self.project_field_access(base, field, *span)
+            }
+            rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+                self.project_binary(op, lhs, rhs, *span)
+            }
+            rumoca_core::Expression::Unary { op, rhs, span } => self.project_unary(op, rhs, *span),
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => self.project_if(branches, else_branch, *span),
+            _ => Ok(expr.clone()),
+        }
+    }
+
+    fn project_var_ref(
+        &self,
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        let rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = expr
+        else {
+            return Ok(expr.clone());
+        };
+        if subscripts.is_empty() && self.array_dims.contains_key(name.as_str()) {
+            let index = one_based_scalar_index(self.k, *span, "DAE scalar lhs RHS projection")?;
+            return Ok(rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: vec![generated_index_subscript(
+                    index,
+                    *span,
+                    "DAE scalar lhs RHS projection",
+                )?],
+                span: *span,
+            });
+        }
+        if subscripts.is_empty()
+            && let Some(projected) = project_record_array_field_entry_at(
+                self.record_array_fields.get(name.as_str()),
+                self.k,
+                *span,
+            )?
+        {
+            return Ok(projected);
+        }
+        Ok(expr.clone())
+    }
+
+    fn project_array(
+        &self,
+        elements: &[rumoca_core::Expression],
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        if let Some((element_index, element_lane)) =
+            scalarized_array_literal_lane(elements, self.k, self.array_dims)
+        {
+            return RhsProjectionCtx {
+                k: element_lane,
+                ..*self
+            }
+            .project(&elements[element_index]);
+        }
+        Ok(expr.clone())
+    }
+
+    fn project_array_comprehension(
+        &self,
+        inner: &rumoca_core::Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&rumoca_core::Expression>,
+        span: rumoca_core::Span,
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        if filter.is_some() || indices.len() != 1 {
+            return Ok(expr.clone());
+        }
+        let Some(value) = scalarized_comprehension_index_value(&indices[0].range, self.k) else {
+            return Ok(expr.clone());
+        };
+        let mut substitution = ComprehensionIndexSubstitution {
+            name: indices[0].name.clone(),
+            value,
+            span: indices[0].range.span().unwrap_or(span),
+        };
+        let selected = substitution.rewrite_expression(inner);
+        self.project(&selected)
+    }
+
+    fn project_function_call(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        let function = self.functions.get(name.var_name());
+        if scalar_output_function(function) {
+            return self.project_function_call_with_formals(name, args, false, span, function);
+        }
+        if let Some(function) = function {
+            return self.project_function_call_with_formals(
+                name,
+                args,
+                is_constructor,
+                span,
+                Some(function),
+            );
+        }
+        let projected_args = args
+            .iter()
+            .map(|arg| self.project(arg))
+            .collect::<Result<Vec<_>, ToDaeError>>()?;
+        Ok(rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: projected_args,
+            is_constructor,
+            span,
+        })
+    }
+
+    fn project_function_call_with_formals(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+        function: Option<&rumoca_core::Function>,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        let mut positional_idx = 0usize;
+        let projected_args = args
+            .iter()
+            .map(|arg| {
+                let formal_rank =
+                    scalarized_function_arg_formal_rank(function, arg, &mut positional_idx);
+                project_scalarized_function_arg_at(
+                    arg,
+                    formal_rank,
+                    self.k,
+                    self.array_dims,
+                    self.record_array_fields,
+                    self.functions,
+                )
+            })
+            .collect::<Result<Vec<_>, ToDaeError>>()?;
+        Ok(rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: projected_args,
+            is_constructor,
+            span,
+        })
+    }
+
+    fn project_field_access(
+        &self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        if let Some(projected) =
+            project_record_array_field_rhs_at(base, field, span, self.k, self.record_array_fields)?
+        {
+            return Ok(projected);
+        }
+        Ok(rumoca_core::Expression::FieldAccess {
+            base: Box::new(self.project(base)?),
+            field: field.to_string(),
+            span,
+        })
+    }
+
+    fn project_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(self.project(lhs)?),
+            rhs: Box::new(self.project(rhs)?),
+            span,
+        })
+    }
+
+    fn project_unary(
+        &self,
+        op: &rumoca_core::OpUnary,
+        rhs: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        Ok(rumoca_core::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(self.project(rhs)?),
+            span,
+        })
+    }
+
+    fn project_if(
+        &self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        let branches = branches
+            .iter()
+            .map(|(condition, value)| Ok((condition.clone(), self.project(value)?)))
+            .collect::<Result<Vec<_>, ToDaeError>>()?;
+        Ok(rumoca_core::Expression::If {
+            branches,
+            else_branch: Box::new(self.project(else_branch)?),
+            span,
+        })
+    }
+}
+
+fn scalarized_array_literal_lane(
+    elements: &[rumoca_core::Expression],
+    k: usize,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> Option<(usize, usize)> {
+    if elements.is_empty() {
+        return None;
+    }
+    let widths = elements
+        .iter()
+        .map(|element| scalarized_array_literal_element_width(element, array_dims))
+        .collect::<Option<Vec<_>>>()?;
+    let width = *widths.first()?;
+    if width == 0 || widths.iter().any(|candidate| *candidate != width) {
+        return None;
+    }
+    let element_index = k / width;
+    if element_index >= elements.len() {
+        return None;
+    }
+    Some((element_index, k % width))
+}
+
+fn scalarized_array_literal_element_width(
+    element: &rumoca_core::Expression,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> Option<usize> {
+    match element {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => array_dims
+            .get(name.as_str())
+            .map(|dims| compute_var_size(dims))
+            .or(Some(1)),
+        _ => Some(1),
+    }
+}
+
+fn scalar_output_function(function: Option<&rumoca_core::Function>) -> bool {
+    matches!(function.and_then(|function| function.outputs.first()), Some(output) if output.dims.is_empty())
+}
+
+fn scalarized_function_arg_formal_rank(
+    function: Option<&rumoca_core::Function>,
+    arg: &rumoca_core::Expression,
+    positional_idx: &mut usize,
+) -> usize {
+    let Some(function) = function else {
+        return 0;
+    };
+    if let Some(input_name) = named_argument_input_name(arg) {
+        return function
+            .inputs
+            .iter()
+            .find(|input| input.name == input_name)
+            .map_or(0, |input| input.dims.len());
+    }
+    let rank = function
+        .inputs
+        .get(*positional_idx)
+        .map_or(0, |input| input.dims.len());
+    *positional_idx += 1;
+    rank
+}
+
+fn project_scalarized_function_arg_at(
+    arg: &rumoca_core::Expression,
+    formal_rank: usize,
+    k: usize,
+    array_dims: &HashMap<String, Vec<i64>>,
+    record_array_fields: &RecordArrayFieldMap,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let Some((_, value)) = named_function_arg_value(arg)
+        && let rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor,
+            span,
+            ..
+        } = arg
+    {
+        return Ok(rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: vec![project_scalarized_function_arg_at(
+                value,
+                formal_rank,
+                k,
+                array_dims,
+                record_array_fields,
+                functions,
+            )?],
+            is_constructor: *is_constructor,
+            span: *span,
+        });
+    }
+    if let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        span,
+    } = arg
+        && is_stream_passthrough_intrinsic_dae(name.as_str())
+    {
+        let projected_args = match args.as_slice() {
+            [inner] => vec![project_scalarized_function_arg_at(
+                inner,
+                formal_rank,
+                k,
+                array_dims,
+                record_array_fields,
+                functions,
+            )?],
+            _ => args.clone(),
+        };
+        return Ok(rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: projected_args,
+            is_constructor: false,
+            span: *span,
+        });
+    }
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    } = arg
+    else {
+        return project_scalarized_rhs_expr_at(arg, k, array_dims, record_array_fields, functions);
+    };
+    if !subscripts.is_empty() {
+        return Ok(arg.clone());
+    }
+    if let Some(projected) =
+        project_record_array_field_entry_at(record_array_fields.get(name.as_str()), k, *span)?
+    {
+        return Ok(projected);
+    }
+    let Some(dims) = array_dims.get(name.as_str()) else {
+        return Ok(arg.clone());
+    };
+    if dims.len() == formal_rank {
+        return Ok(arg.clone());
+    }
+    if dims.len() != formal_rank + 1 {
+        return project_scalarized_rhs_expr_at(arg, k, array_dims, record_array_fields, functions);
+    }
+    let index = one_based_scalar_index(k, *span, "DAE scalarized function argument projection")?;
+    let index_subscript =
+        generated_index_subscript(index, *span, "DAE scalarized function argument projection")?;
+    if formal_rank == 0 {
+        return Ok(rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: vec![index_subscript],
+            span: *span,
+        });
+    }
+    let mut projected_subscripts = Vec::with_capacity(dims.len());
+    projected_subscripts.push(index_subscript);
+    for _ in 0..formal_rank {
+        projected_subscripts.push(generated_colon_subscript(
+            *span,
+            "DAE scalarized function argument projection",
+        )?);
+    }
+    Ok(rumoca_core::Expression::Index {
+        base: Box::new(rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: Vec::new(),
+            span: *span,
+        }),
+        subscripts: projected_subscripts,
+        span: *span,
+    })
+}
+
+fn is_stream_passthrough_intrinsic_dae(name: &str) -> bool {
+    rumoca_core::qualified_type_name_matches(name, "actualStream")
+        || rumoca_core::qualified_type_name_matches(name, "inStream")
+}
+
+fn scalarized_lhs_zero_based_index(subscripts: &[rumoca_core::Subscript]) -> Option<usize> {
+    match subscripts {
+        [subscript] => {
+            let index = match subscript {
+                rumoca_core::Subscript::Index { value, .. } => *value,
+                rumoca_core::Subscript::Expr { expr, .. } => integer_literal_value(expr)?,
+                rumoca_core::Subscript::Colon { .. } => return None,
+            };
+            usize::try_from(index.checked_sub(1)?).ok()
+        }
+        _ => None,
+    }
+}
+
+fn scalarized_lhs_zero_based_index_or_singleton(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> Option<usize> {
+    if let Some(index) = scalarized_lhs_zero_based_index(subscripts) {
+        return Some(index);
+    }
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let dims = array_dims.get(name.as_str())?;
+    (dims.iter().copied().product::<i64>() == 1).then_some(0)
 }
 
 fn scalarized_equation_at(

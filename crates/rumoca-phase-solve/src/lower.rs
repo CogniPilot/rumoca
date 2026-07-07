@@ -861,6 +861,19 @@ impl<'a> LowerBuilder<'a> {
             return self.emit_slot_load(slot, span);
         }
 
+        if subscripts.is_empty()
+            && let Some(reference) = self.singleton_record_array_field_reference(name)
+        {
+            return self.lower_var_ref(&reference, &[], span, scope, call_depth);
+        }
+
+        if subscripts.is_empty()
+            && let Some(reg) =
+                self.lower_var_ref_binding_key(name.as_str(), span, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
+
         if subscripts.is_empty() {
             let real_field_key = format!("{}.re", name.as_str());
             if self.scalarized_field_binding_available(name.as_str(), "re")
@@ -901,6 +914,18 @@ impl<'a> LowerBuilder<'a> {
             && scope.contains_key(&name_key)
             && !self.local_indexed_bindings.contains_key(name.as_str())
         {
+            if let Some(dims) = self.local_binding_dims.get(name.as_str())
+                && dims.iter().any(|dim| *dim < 0)
+            {
+                return Err(unsupported_at(
+                    format!(
+                        "subscripted local array `{}` has negative dimensions {}",
+                        name.as_str(),
+                        format_i64_dims(dims)
+                    ),
+                    owner_span,
+                ));
+            }
             return Err(LowerError::Unsupported {
                 reason: format!(
                     "subscripted local variable references are unsupported: {}[...]",
@@ -996,6 +1021,32 @@ impl<'a> LowerBuilder<'a> {
             return None;
         }
         self.layout.binding(name.as_str())
+    }
+
+    fn singleton_record_array_field_reference(
+        &self,
+        name: &rumoca_core::Reference,
+    ) -> Option<rumoca_core::Reference> {
+        let component_ref = name.component_ref()?;
+        if component_ref.def_id.is_some() || component_ref.parts.len() < 2 {
+            return None;
+        }
+        let mut candidate_ref = component_ref.clone();
+        let base_index = candidate_ref.parts.len().checked_sub(2)?;
+        let span = candidate_ref.parts[base_index].span;
+        let subscript =
+            rumoca_core::Subscript::try_generated_index(1, span, "singleton record array field")
+                .ok()?;
+        candidate_ref.parts[base_index].subs.push(subscript);
+        let candidate = candidate_ref.to_var_name().to_string();
+        let variable = self.dae_variables.and_then(|variables| {
+            dae_variable(variables, &rumoca_core::VarName::new(candidate.as_str()))
+        })?;
+        let component_ref = variable.component_ref.clone()?;
+        Some(rumoca_core::Reference::with_component_reference(
+            candidate.as_str(),
+            component_ref,
+        ))
     }
 
     fn generated_local_static_subscript_reg(
@@ -1120,6 +1171,7 @@ impl<'a> LowerBuilder<'a> {
         Ok(Some(values))
     }
 
+    #[allow(clippy::too_many_lines, clippy::excessive_nesting)]
     fn lower_index(
         &mut self,
         base: &rumoca_core::Expression,
@@ -1158,6 +1210,42 @@ impl<'a> LowerBuilder<'a> {
             self.lower_compile_time_indexed_local_value(base, subscripts, owner_span, scope)?
         {
             return Ok(reg);
+        }
+        if matches!(base, rumoca_core::Expression::FieldAccess { .. })
+            && let Some(span) = index_owner_span(base, subscripts, owner_span)
+            && let Some(indices) = static_subscript_indices_with_owner(subscripts, span)?
+        {
+            let dims = self.infer_expr_dims(base, scope)?;
+            if let Some(flat_index) = flat_index_from_one_based_usize_indices(&dims, &indices) {
+                let mut dae_model = dae::Dae::default();
+                dae_model.symbols.functions = self.functions.clone();
+                if let Some(variables) = self.dae_variables {
+                    dae_model.variables = variables.clone();
+                }
+                if let Some(values) = derivative_rhs::function_call_projected_scalars_with_owner(
+                    base,
+                    &dae_model,
+                    &self.structural_bindings,
+                    span,
+                )? && let Some(value) = values.get(flat_index).cloned()
+                {
+                    return self.lower_expr(&value, scope, call_depth + 1);
+                }
+                if let Some(value) = derivative_rhs::project_array_like_scalar_with_owner(
+                    base,
+                    flat_index,
+                    &dae_model,
+                    &self.structural_bindings,
+                    span,
+                )? {
+                    return self.lower_expr(&value, scope, call_depth + 1);
+                }
+                let values = self
+                    .lower_array_like_values_with_source_context(base, span, scope, call_depth)?;
+                if let Some(value) = values.get(flat_index).copied() {
+                    return Ok(value);
+                }
+            }
         }
         if let Some(reg) =
             self.lower_array_like_dynamic_index(base, subscripts, owner_span, scope, call_depth)?
@@ -1575,7 +1663,7 @@ impl<'a> LowerBuilder<'a> {
         self.emit_unary_at(UnaryOp::Trunc, shifted, span)
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::excessive_nesting)]
     fn lower_field_access(
         &mut self,
         base: &rumoca_core::Expression,
@@ -1698,6 +1786,48 @@ impl<'a> LowerBuilder<'a> {
 
         if let Some(reg) = self.lower_constructor_field_access(base, field, scope, call_depth)? {
             return Ok(reg);
+        }
+
+        if let rumoca_core::Expression::FunctionCall { .. } = base {
+            let expr = rumoca_core::Expression::FieldAccess {
+                base: Box::new(base.clone()),
+                field: field.to_string(),
+                span: field_access_span,
+            };
+            let mut dae_model = dae::Dae::default();
+            dae_model.symbols.functions = self.functions.clone();
+            if let Some(variables) = self.dae_variables {
+                dae_model.variables = variables.clone();
+            }
+            if let Some(mut values) = derivative_rhs::function_call_projected_scalars_with_owner(
+                &expr,
+                &dae_model,
+                &self.structural_bindings,
+                field_access_span,
+            )? && values.len() == 1
+            {
+                let value = values.remove(0);
+                if value != expr {
+                    return self.lower_expr(&value, scope, call_depth + 1);
+                }
+            }
+        }
+
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            span,
+        } = base
+            && let Some(materialized) = self.materialize_single_record_function_call_components(
+                name, args, *span, scope, call_depth,
+            )?
+            && let Some(component) = materialized
+                .components
+                .into_iter()
+                .find(|component| component.suffix == field)
+        {
+            return Ok(component.reg);
         }
 
         if let Some(reg) =
@@ -2142,6 +2272,22 @@ fn index_owner_span(
         .find_map(subscript_source_provenance)
         .or_else(|| base.span().filter(|span| !span.is_dummy()))
         .or_else(|| owner_span.filter(|span| !span.is_dummy()))
+}
+
+fn flat_index_from_one_based_usize_indices(dims: &[usize], indices: &[usize]) -> Option<usize> {
+    if dims.len() != indices.len() || dims.is_empty() {
+        return None;
+    }
+    let mut flat = 0usize;
+    for (axis, index) in indices.iter().copied().enumerate() {
+        let dim = dims[axis];
+        if index == 0 || index > dim {
+            return None;
+        }
+        let stride = dims[axis + 1..].iter().product::<usize>();
+        flat = flat.checked_add((index - 1).checked_mul(stride)?)?;
+    }
+    Some(flat)
 }
 
 fn subscript_source_provenance(subscript: &rumoca_core::Subscript) -> Option<rumoca_core::Span> {

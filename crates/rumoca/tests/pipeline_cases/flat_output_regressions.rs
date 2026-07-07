@@ -262,14 +262,15 @@ end AssertEmission;
     )
     .expect("flat rendering should succeed");
 
-    let equation_idx = flat_code
+    let flat_code_normalized = flat_code.replace("\r\n", "\n");
+    let equation_idx = flat_code_normalized
         .find("\nequation\n")
         .expect("flat output should contain equation section");
-    let initial_idx = flat_code
+    let initial_idx = flat_code_normalized
         .find("\ninitial equation\n")
         .expect("flat output should contain initial equation section");
-    let equation_section = &flat_code[equation_idx..initial_idx];
-    let initial_section = &flat_code[initial_idx..];
+    let equation_section = &flat_code_normalized[equation_idx..initial_idx];
+    let initial_section = &flat_code_normalized[initial_idx..];
     assert!(
         equation_section.contains(r#""k must stay positive""#)
             && equation_section.contains("assert("),

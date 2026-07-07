@@ -24,15 +24,7 @@ impl<'a> LowerBuilder<'a> {
         if let Some(reg) = scope.get(&generated_key).copied() {
             return Ok(vec![reg]);
         }
-
         let key = name.as_str();
-        if self
-            .dae_variables
-            .and_then(|variables| dae_variable(variables, name.var_name()))
-            .is_some_and(|variable| variable.dims.contains(&0))
-        {
-            return Ok(Vec::new());
-        }
         if let Some(values) = self.lower_record_field_array_values(key, span)? {
             return Ok(values);
         }
@@ -43,6 +35,18 @@ impl<'a> LowerBuilder<'a> {
         {
             re_values.extend(im_values);
             return Ok(re_values);
+        }
+        if let Some(values) = self.lower_direct_assignment_values_for_key(key, scope, call_depth)? {
+            return Ok(values);
+        }
+        if self.value_mode == ValueMode::Pre
+            && let Some(pre_key) = self.pre_mode_base_key(key)
+            && let Some(values) = self.lower_indexed_binding_values_at(pre_key.as_str(), span)?
+        {
+            return Ok(values);
+        }
+        if let Some(values) = self.lower_indexed_binding_values_at(key, span)? {
+            return Ok(values);
         }
 
         let key_path = self.scope_key_from_reference(name, span)?;
@@ -70,9 +74,6 @@ impl<'a> LowerBuilder<'a> {
         if let Some(pre_key) = self.pre_mode_base_key(key)
             && let Some(values) = self.lower_indexed_binding_values_at(pre_key.as_str(), span)?
         {
-            return Ok(values);
-        }
-        if let Some(values) = self.lower_direct_assignment_values_for_key(key, scope, call_depth)? {
             return Ok(values);
         }
         if let Some(values) =

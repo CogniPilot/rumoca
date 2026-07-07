@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::lower::derivative_rhs) fn function_projected_residuals_with_owner(
+pub(in crate::lower) fn function_projected_residuals_with_owner(
     residual: &rumoca_core::Expression,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
@@ -131,7 +131,16 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
         expr,
         inherited_projection_source_span(expr.span(), owner_span),
     )? {
-        return projected_output_expressions(outputs, owner_span).map(Some);
+        return projected_output_expressions(
+            analysis.resolve_projected_scalar_field_outputs(outputs, owner_span)?,
+            owner_span,
+        )
+        .map(Some);
+    }
+    if let Some(values) =
+        projected_qualified_function_output_scalars(expr, dae_model, &analysis, owner_span)?
+    {
+        return Ok(Some(values));
     }
     let Some((call, scalar_index)) = selected_function_output_call(expr, dae_model)? else {
         return Ok(None);
@@ -164,6 +173,73 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
     Ok(Some(values))
 }
 
+fn projected_qualified_function_output_scalars(
+    expr: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+    analysis: &FunctionProjectionAnalysis<'_>,
+    owner_span: rumoca_core::Span,
+) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        span,
+    } = expr
+    else {
+        return Ok(None);
+    };
+    if dae_model.symbols.functions.contains_key(name.var_name()) {
+        return Ok(None);
+    }
+    let selected_name = name.as_str();
+    for (function_name, function) in &dae_model.symbols.functions {
+        let prefix = format!("{}.", function_name.as_str());
+        let Some(selector) = selected_name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let call = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_var_name(function_name.clone()),
+            args: args.clone(),
+            is_constructor: false,
+            span: *span,
+        };
+        let Some(outputs) = analysis.top_level_function_call_outputs(
+            &call,
+            inherited_projection_source_span(call.span(), owner_span),
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut selected = projection_vec_with_capacity(
+            outputs.len(),
+            "qualified projected function output scalar count",
+            owner_span,
+        )?;
+        for output in outputs {
+            let output_selector = projected_output_selector(&output);
+            if output_selector == selector
+                || function.outputs.iter().any(|function_output| {
+                    selector == format!("{}.{}", function_output.name, output_selector)
+                })
+            {
+                selected.push(output.expr);
+            }
+        }
+        return Ok((!selected.is_empty()).then_some(selected));
+    }
+    Ok(None)
+}
+
+fn projected_output_selector(output: &ProjectedFunctionOutput) -> String {
+    let mut selector = output.field_path.join(".");
+    for index in &output.selector_indices {
+        selector.push('[');
+        selector.push_str(&index.to_string());
+        selector.push(']');
+    }
+    selector
+}
+
 pub(in crate::lower) fn project_array_like_scalars_with_owner(
     expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
@@ -179,6 +255,24 @@ pub(in crate::lower) fn project_array_like_scalars_with_owner(
         return Ok(None);
     }
     analysis.project_value_scalars(expr, &dims, &scope, 0, owner_span)
+}
+
+pub(in crate::lower) fn project_array_like_scalar_with_owner(
+    expr: &rumoca_core::Expression,
+    flat_index: usize,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    owner_span: rumoca_core::Span,
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
+    let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
+    let scope = FunctionProjectionScope::default();
+    let Some(dims) = analysis.expr_dims_with_owner(expr, &scope, 0, owner_span)? else {
+        return Ok(None);
+    };
+    if dims.is_empty() {
+        return Ok(None);
+    }
+    analysis.project_value(expr, &dims, flat_index, &scope, 0, owner_span)
 }
 
 pub(in crate::lower::derivative_rhs) fn projected_output_expressions(

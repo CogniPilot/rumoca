@@ -274,10 +274,14 @@ fn collect_residual_var_ref_access_operands(
     owner_span: rumoca_core::Span,
     operands: &mut Vec<stencil::StructuredAccessOperand>,
 ) -> Result<Option<()>, LowerError> {
-    if subscripts
-        .iter()
-        .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
-    {
+    if subscripts.iter().any(|subscript| {
+        matches!(subscript, rumoca_core::Subscript::Colon { .. })
+            || matches!(
+                subscript,
+                rumoca_core::Subscript::Expr { expr, .. }
+                    if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+            )
+    }) {
         return Ok(None);
     }
     let indices = lower::compile_time_subscript_indices_for_structured_access(
