@@ -14,10 +14,16 @@
 //!   relations) inline back to their defining Boolean expressions;
 //! - the clock wiring can read the sample call's period argument.
 
-use rumoca_core::{Expression, Subscript, component_path_trailing_index, pre_slot_name};
+use rumoca_core::{
+    Expression, Subscript, component_path_trailing_index, expressions_semantically_equal,
+    pre_slot_name,
+};
 use rumoca_ir_dae::Dae;
 
+use crate::admissibility::AdmittedClock;
+use crate::classify::Classification;
 use crate::diagnostic::GalecTargetError;
+use crate::manifest_vars::const_eval::ConstEnv;
 
 /// One `f_c` slot: `c[index] := rhs`.
 pub(crate) struct ConditionEntry<'a> {
@@ -81,12 +87,22 @@ impl<'a> ConditionTable<'a> {
         self.entries.iter().find(|entry| entry.index == index)
     }
 
-    /// Index of the single sample-tick condition, when present. More than
-    /// one sample condition means multiple rates and is rejected.
-    pub(crate) fn sample_index(&self) -> Result<Option<usize>, GalecTargetError> {
-        let mut samples = self.entries.iter().filter(|entry| entry.is_sample);
-        let first = samples.next().map(|entry| entry.index);
-        if samples.next().is_some() {
+    /// Indices of all condition slots that define the admitted sample tick.
+    /// Multiple slots are allowed only when their sample timing matches the
+    /// single admitted clock (e.g. a parent uses `dt` and an inlined component
+    /// uses a bound `pid.samplePeriod`). Distinct timings mean multiple rates.
+    pub(crate) fn sample_indices(
+        &self,
+        classification: &Classification<'a>,
+        clock: &AdmittedClock,
+    ) -> Result<Vec<usize>, GalecTargetError> {
+        let samples = self
+            .entries
+            .iter()
+            .filter(|entry| entry.is_sample)
+            .collect::<Vec<_>>();
+        let env = ConstEnv::from_classification(classification);
+        if !same_sample_clock(&samples, &env, clock) {
             return Err(GalecTargetError::UnsupportedFeature {
                 feature: "multi-rate".to_owned(),
                 detail: "model has more than one sample-tick condition \
@@ -95,20 +111,74 @@ impl<'a> ConditionTable<'a> {
                 span: None,
             });
         }
-        Ok(first)
+        Ok(samples.into_iter().map(|entry| entry.index).collect())
     }
 
     /// The period argument expression of the sample-tick condition
     /// (`sample(start, period)` — argument 2).
     pub(crate) fn sample_period_expr(&self) -> Option<&'a Expression> {
         let entry = self.entries.iter().find(|entry| entry.is_sample)?;
-        match entry.rhs {
-            Expression::FunctionCall { args, .. } | Expression::BuiltinCall { args, .. } => {
-                args.get(1)
-            }
-            _ => None,
-        }
+        sample_timing_args(entry.rhs).map(|(_, interval)| interval)
     }
+}
+
+fn same_sample_clock(
+    samples: &[&ConditionEntry<'_>],
+    env: &ConstEnv<'_>,
+    clock: &AdmittedClock,
+) -> bool {
+    if samples
+        .iter()
+        .all(|entry| sample_matches_admitted_clock(entry.rhs, env, clock))
+    {
+        return true;
+    }
+    let Some(first) = samples.first() else {
+        return true;
+    };
+    samples
+        .iter()
+        .skip(1)
+        .all(|entry| expressions_semantically_equal(first.rhs, entry.rhs))
+}
+
+fn sample_matches_admitted_clock(
+    expression: &Expression,
+    env: &ConstEnv<'_>,
+    clock: &AdmittedClock,
+) -> bool {
+    let Some((start, interval)) = sample_timing_args(expression) else {
+        return false;
+    };
+    let Ok(start) = env.evaluate_scalar(start) else {
+        return false;
+    };
+    let Ok(start) = start.as_real() else {
+        return false;
+    };
+    let Ok(interval) = env.evaluate_scalar(interval) else {
+        return false;
+    };
+    let Ok(interval) = interval.as_real() else {
+        return false;
+    };
+    same_time(start, clock.phase_seconds) && same_time(interval, clock.period_seconds)
+}
+
+fn sample_timing_args(expression: &Expression) -> Option<(&Expression, &Expression)> {
+    let args = match expression {
+        Expression::FunctionCall { args, .. } | Expression::BuiltinCall { args, .. } => args,
+        _ => return None,
+    };
+    match args.as_slice() {
+        [start, interval] => Some((start, interval)),
+        [_id, start, interval] => Some((start, interval)),
+        _ => None,
+    }
+}
+
+fn same_time(lhs: f64, rhs: f64) -> bool {
+    lhs.is_finite() && rhs.is_finite() && (lhs - rhs).abs() <= 1.0e-12
 }
 
 /// True when `expr` is the lowered clock sample-tick call (brief fact 6:

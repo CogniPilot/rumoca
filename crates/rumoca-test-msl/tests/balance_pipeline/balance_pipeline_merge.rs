@@ -138,12 +138,13 @@ fn test_msl_merge_and_gate() {
 
 #[cfg(test)]
 fn model_result(name: &str) -> MslModelResult {
-    // MslModelResult has no Default; every field but the first two is
-    // #[serde(default)], so a minimal JSON reconstructs a valid record.
-    serde_json::from_str(&format!(
-        r#"{{"model_name":"{name}","phase_reached":"Simulate"}}"#
-    ))
-    .expect("construct MslModelResult")
+    let mut result = phase_error_result(name.to_string(), "Success", None, None);
+    result.is_balanced = Some(true);
+    result.initial_balance_ok = Some(true);
+    result.ir_solve_file = Some(format!("ir_solve/{name}.json"));
+    result.ic_status = Some("ic_ok".to_string());
+    result.sim_status = Some("sim_ok".to_string());
+    result
 }
 
 #[test]
@@ -171,6 +172,8 @@ fn merge_shard_summaries_concatenates_and_sums() {
         "model_results concatenated (stripes tile the set)"
     );
     assert_eq!(merged.sim_target_models.len(), 3, "sim targets unioned");
+    assert_eq!(merged.sim_attempted, 3, "sim statuses recomputed");
+    assert_eq!(merged.sim_ok, 3, "sim successes recomputed");
 }
 
 #[test]

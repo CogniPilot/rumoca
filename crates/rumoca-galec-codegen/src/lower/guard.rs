@@ -29,7 +29,7 @@ pub(crate) fn unwrap_guarded_update<'a>(
     equation: &'a Equation,
     target: &str,
     table: &ConditionTable<'_>,
-    sample_index: Option<usize>,
+    sample_indices: &[usize],
 ) -> Result<&'a Expression, GalecTargetError> {
     let reject = |detail: String| GalecTargetError::UnsupportedFeature {
         feature: "when-update-form".to_owned(),
@@ -66,7 +66,7 @@ pub(crate) fn unwrap_guarded_update<'a>(
              `c[i] and not __pre__.c[i]` when-edge"
         )));
     };
-    if Some(edge_index) != sample_index {
+    if !sample_indices.contains(&edge_index) {
         return Err(GalecTargetError::UnsupportedFeature {
             feature: "non-clock-when".to_owned(),
             detail: format!(

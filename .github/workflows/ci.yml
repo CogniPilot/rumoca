@@ -188,11 +188,12 @@ jobs:
           # Public cache: pulls need no auth; the token lets CI push new paths.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Nix build the flake checks
-        # Build ONLY the flake `checks` (rumoca build, clippy, fmt). The heavy
-        # release PACKAGES (msl-test-binary, rumoca-sim-worker, rumoca-msl-tools)
-        # are built once by the dedicated `nix-build-msl` producer and consumed
-        # via Cachix; building them here too would double that ~release+LTO work.
+      - name: Nix build the flake package check
+        # Build ONLY the reproducible package check. Format and clippy are owned
+        # by the standalone Format/Lint jobs, and the heavy release MSL artifact
+        # bundle is built once by the dedicated `nix-build-msl` producer and
+        # consumed via Cachix; building any of that here too would duplicate
+        # release+LTO work.
         #
         # We deliberately do NOT run `nix flake check`: it eval-builds every output
         # (re-building those packages), and its `--no-build` eval trips over the
@@ -200,10 +201,7 @@ jobs:
         # (`path '…rust-nightly.toml.drv' is not valid`). `nix build` realizes the
         # toolchain, so building the checks directly is the reliable gate.
         run: |
-          nix build --print-build-logs \
-            .#checks.x86_64-linux.rumoca \
-            .#checks.x86_64-linux.clippy \
-            .#checks.x86_64-linux.fmt
+          nix build --print-build-logs .#checks.x86_64-linux.rumoca
 
   test:
     name: Test (${{ matrix.os }})
@@ -416,6 +414,7 @@ jobs:
         with:
           shared-key: template-runtime
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
 
       # No-op once the dev image ships it (core-requirements.txt); kept so the
       # symforce runtime tests exercise the real package even on a stale image
@@ -636,8 +635,8 @@ jobs:
           ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane and push to
-  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead of
-  # each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
+  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead
+  # of each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
   # per-crate cache can avoid — only build-once does. On an unchanged dep closure
   # the crane `cargoArtifacts` layer is a Cachix hit; only the workspace crates
   # rebuild here, once, for all consumers.
@@ -664,8 +663,7 @@ jobs:
 
       - name: Build + cache MSL artifacts
         run: |
-          nix build --print-build-logs \
-            .#msl-test-binary .#rumoca-sim-worker .#rumoca-msl-tools
+          nix build --print-build-logs .#msl-artifacts
 
   # ============================================================================
   # MSL parity gate, sharded. The ~54min root-example parity run (575 models +
@@ -673,8 +671,8 @@ jobs:
   # (so the timeout tail spreads evenly); the msl-merge job then runs the
   # baseline ratchet ONCE on the merged results. ModelicaTest is its own job.
   #
-  # Each consumer restores the prebuilt msl_tests + rumoca-sim-worker from Cachix
-  # (needs: nix-build-msl) and runs them via `--prebuilt-test-binary` /
+  # Each consumer restores the prebuilt MSL artifact bundle from Cachix (needs:
+  # nix-build-msl) and runs it via `--prebuilt-test-binary` /
   # `--prebuilt-sim-worker`, so no workspace compile/LTO happens here — only the
   # light `cargo xtask` wrapper builds.
   # ============================================================================
@@ -708,6 +706,7 @@ jobs:
         with:
           shared-key: msl-gate
           cache-on-failure: true
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
@@ -766,15 +765,15 @@ jobs:
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
-          nix build .#msl-test-binary --out-link result-msl-test
-          nix build .#rumoca-sim-worker --out-link result-sim-worker
+          nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
           cargo xtask verify msl-parity \
             --shard ${{ matrix.shard }}/4 \
-            --prebuilt-test-binary "$PWD/result-msl-test/bin/msl_tests" \
-            --prebuilt-sim-worker "$PWD/result-sim-worker/bin/rumoca-sim-worker" \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
             --stage-parallelism 3 \
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
@@ -793,6 +792,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [nix-build-msl, msl-shards]
     timeout-minutes: 30
+    env:
+      MSL_BASELINE_RELEASE_TAG: msl-quality-baseline
+      MSL_BASELINE_RELEASE_ASSET: msl_quality_baseline.json
     steps:
       - uses: actions/checkout@v5
         with:
@@ -814,6 +816,7 @@ jobs:
         with:
           shared-key: msl-gate
           cache-on-failure: true
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Download shard results
@@ -832,38 +835,252 @@ jobs:
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
-          nix build .#msl-test-binary --out-link result-msl-test
-          nix build .#rumoca-msl-tools --out-link result-msl-tools
+          nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Merge shards + run quality gate
         run: |
           cargo xtask verify msl-parity \
             --merge-shards target/msl/shards \
-            --prebuilt-test-binary "$PWD/result-msl-test/bin/msl_tests"
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
+
+      - name: Validate merged MSL quality outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/msl/results/msl_results.json
+          test -s target/msl/results/msl_quality_current.json
 
       - name: Generate MSL compatibility report
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f target/msl/results/msl_results.json ]]; then
-            ./result-msl-tools/bin/rumoca-msl-tools compatibility-report
-          else
-            echo "No merged target/msl/results/msl_results.json; skipping report."
-          fi
+          test -s target/msl/results/msl_results.json
+          ./result-msl-artifacts/bin/rumoca-msl-tools compatibility-report
 
       - name: Generate MSL PR summary comment
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          test -s target/msl/results/msl_quality_current.json
           baseline="crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json"
           if [[ -f target/msl/baselines/msl_quality_baseline.json ]]; then
             baseline="target/msl/baselines/msl_quality_baseline.json"
           fi
-          ./result-msl-tools/bin/rumoca-msl-tools pr-comment \
+          ./result-msl-artifacts/bin/rumoca-msl-tools pr-comment \
             --results-dir target/msl/results \
             --baseline "$baseline"
+
+      - name: Publish MSL PR summary comment
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'target/msl/results/msl_pr_comment.md';
+            if (!fs.existsSync(path)) {
+              core.info(`Skipping MSL PR summary comment; ${path} was not produced.`);
+              return;
+            }
+
+            const marker = '<!-- rumoca-msl-quality-summary -->';
+            const body = fs.readFileSync(path, 'utf8');
+            if (!body.includes(marker)) {
+              core.setFailed(`Refusing to publish ${path}: missing ${marker}`);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const previous = comments.find(comment =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker)
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+      - name: Locate MSL quality snapshot
+        id: msl-quality-snapshot
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="target/msl/results/msl_quality_current.json"
+          if [[ ! -f "$snapshot" ]]; then
+            echo "No $snapshot produced by the merged MSL quality gate."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "path=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Install Node for MSL baseline ratchet
+        if: ${{ steps.msl-quality-snapshot.outputs.found == 'true' }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Load current promoted MSL baseline
+        id: release-baseline
+        if: ${{ steps.msl-quality-snapshot.outputs.found == 'true' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const tag = process.env.MSL_BASELINE_RELEASE_TAG;
+            const assetName = process.env.MSL_BASELINE_RELEASE_ASSET;
+            const outputPath = 'target/msl-baseline-ratchet/current-baseline.json';
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              const asset = release.data.assets.find(item => item.name === assetName);
+              if (!asset) {
+                core.info(`Release ${tag} has no ${assetName}; using checked-in fallback.`);
+                fs.copyFileSync(
+                  'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+                  outputPath
+                );
+              } else {
+                const download = await github.rest.repos.getReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: asset.id,
+                  headers: { accept: 'application/octet-stream' },
+                });
+                fs.writeFileSync(outputPath, Buffer.from(download.data));
+                core.info(`Loaded current promoted baseline from release ${tag}/${assetName}.`);
+              }
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`Release ${tag} does not exist; using checked-in fallback.`);
+              fs.copyFileSync(
+                'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+                outputPath
+              );
+            }
+            core.setOutput('path', outputPath);
+
+      - name: Promote MSL baseline if the current run improves it
+        id: promote-msl-baseline
+        if: ${{ steps.msl-quality-snapshot.outputs.found == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous="${{ steps.release-baseline.outputs.path }}"
+          promoted="target/msl-baseline-ratchet/$MSL_BASELINE_RELEASE_ASSET"
+          cp "$previous" "$promoted"
+          node .github/scripts/msl-baseline-ratchet.mjs \
+            --source "${{ steps.msl-quality-snapshot.outputs.path }}" \
+            --baseline "$promoted"
+
+          if cmp -s "$previous" "$promoted"; then
+            echo "MSL quality baseline did not improve the promoted release baseline."
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "MSL quality baseline improved the promoted release baseline."
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
+          echo "path=$promoted" >> "$GITHUB_OUTPUT"
+
+      - name: Publish promoted MSL baseline release asset
+        if: ${{ steps.promote-msl-baseline.outputs.promoted == 'true' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const tag = process.env.MSL_BASELINE_RELEASE_TAG;
+            const assetName = process.env.MSL_BASELINE_RELEASE_ASSET;
+            const assetPath = '${{ steps.promote-msl-baseline.outputs.path }}';
+            const runId = context.runId;
+            const runSha = context.sha;
+            const body = [
+              'Mutable release that stores the latest promoted MSL quality baseline.',
+              '',
+              `Source CI run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
+              `Source commit: \`${runSha}\``,
+              '',
+              '`cargo xtask verify msl-parity` downloads this asset when available and falls back to the checked-in baseline when offline.',
+              '',
+            ].join('\n');
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: release.data.id,
+                name: 'MSL Quality Baseline',
+                body,
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: 'main',
+                name: 'MSL Quality Baseline',
+                body,
+                draft: false,
+                prerelease: false,
+              });
+            }
+
+            const existingAsset = release.data.assets.find(asset => asset.name === assetName);
+            if (existingAsset) {
+              await github.rest.repos.deleteReleaseAsset({
+                owner,
+                repo,
+                asset_id: existingAsset.id,
+              });
+            }
+
+            const data = fs.readFileSync(assetPath);
+            await github.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.data.id,
+              name: assetName,
+              data,
+              headers: {
+                'content-type': 'application/json',
+                'content-length': data.length,
+              },
+            });
+            core.info(`Published ${assetName} to release ${tag}.`);
 
       - name: Upload MSL compatibility artifacts
         if: always()
@@ -871,17 +1088,19 @@ jobs:
         with:
           name: msl-compatibility-report
           path: |
+            target/msl/results/msl_results.json
             target/msl/results/msl_quality_current.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/mls_contract_coverage.md
             target/msl/results/msl_pr_comment.md
             target/msl/results/msl_compatibility_report.md
             target/msl/results/msl_compatibility_report.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
   modelicatest-gate:
     name: ModelicaTest Semantic Gate
     runs-on: ubuntu-24.04
+    needs: [nix-build-msl]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -904,6 +1123,7 @@ jobs:
         with:
           shared-key: msl-gate
           cache-on-failure: true
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
@@ -957,20 +1177,41 @@ jobs:
           rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
           cp -a             target/msl/modelicatest-source/ModelicaTest             target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
 
-      # NOTE: ModelicaTest is intentionally NOT on the Nix build-once path. The
-      # prebuilt (nix, non-native-CPU) msl_tests binary hangs the sim/render queue
-      # on ModelicaTest.Blocks.MuxDemux (300s stage-timeout -> SIGABRT), a model
-      # the compiled binary sims in milliseconds. The 4 MSL shards + merge DO use
-      # build-once (they run the root-MSL model set, unaffected). Debugging the
-      # ModelicaTest prebuilt hang is a follow-up; until then this job compiles.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
+      - name: Restore prebuilt MSL binaries (Cachix)
+        run: |
+          nix build .#msl-artifacts --out-link result-msl-artifacts
+
       - name: Run ModelicaTest semantic gate
         shell: bash
         run: |
           set -euo pipefail
           targets="crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json"
           rm -rf target/msl/modelicatest-results
-          cargo xtask verify msl-parity --results-dir target/msl/modelicatest-results --sim-targets-file "$targets" --include-modelica-test --require-selected-targets-success --sim-set full --stage-parallelism 3 --sim-parallelism 3 --sim-worker-memory-mb 2048 --sim-total-memory-mb 6144
-          cargo xtask repo msl modelica-test-catalog --results target/msl/modelicatest-results/msl_results.json --out target/msl/modelicatest-results/modelica_test_catalog.md --json-out target/msl/modelicatest-results/modelica_test_catalog.json
+          cargo xtask verify msl-parity \
+            --results-dir target/msl/modelicatest-results \
+            --sim-targets-file "$targets" \
+            --include-modelica-test \
+            --require-selected-targets-success \
+            --sim-set full \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
+            --stage-parallelism 3 \
+            --sim-parallelism 3 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144
+          ./result-msl-artifacts/bin/rumoca-msl-tools modelica-test-catalog \
+            --results target/msl/modelicatest-results/msl_results.json \
+            --out target/msl/modelicatest-results/modelica_test_catalog.md \
+            --json-out target/msl/modelicatest-results/modelica_test_catalog.json
 
       - name: Upload ModelicaTest artifacts
         if: always()
@@ -1009,6 +1250,7 @@ jobs:
         with:
           shared-key: docs
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.5.2
@@ -1054,6 +1296,7 @@ jobs:
         with:
           shared-key: vscode
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
 
       - name: Run VS Code extension CI gate
         run: cargo xtask vscode test
@@ -1108,6 +1351,7 @@ jobs:
         with:
           shared-key: wasm
           cache-on-failure: true
+          cache-targets: false
 
       - name: Build optimized npm packages
         # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
@@ -1247,6 +1491,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: wasm
+          cache-targets: false
           cache-on-failure: true
 
       - name: Run playground CI gate
@@ -1807,25 +2052,25 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
           OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
-      - name: Publish Python packages to PyPI
+      - name: Stage Python packages for PyPI
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip twine
           shopt -s nullglob
+          mkdir -p pypi-dist
           python_files=(release-assets/*.whl release-assets/*.tar.gz)
           if [ "${#python_files[@]}" -eq 0 ]; then
             echo "::error::No Python distribution artifacts found in release-assets"
             exit 1
           fi
-          python -m twine upload --skip-existing "${python_files[@]}"
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          cp "${python_files[@]}" pypi-dist/
+          ls -la pypi-dist/
+
+      - name: Publish Python packages to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist
+          skip-existing: true
 
       - name: Setup Node.js for npm publish
         uses: actions/setup-node@v5

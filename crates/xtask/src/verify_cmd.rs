@@ -129,6 +129,11 @@ pub(crate) struct VerifyMslParityArgs {
     /// `cargo test`, so no workspace compile + LTO in the consuming job.
     #[arg(long, value_name = "PATH")]
     prebuilt_test_binary: Option<PathBuf>,
+    /// Path to the prebuilt `rumoca-worker` binary the harness should spawn for
+    /// isolated per-model compile/lower runs. Required by CI prebuilt harnesses;
+    /// local `cargo test` resolves it through Cargo's normal test-binary env.
+    #[arg(long, value_name = "PATH", requires = "prebuilt_test_binary")]
+    prebuilt_model_worker: Option<PathBuf>,
     /// Path to the prebuilt `rumoca-sim-worker` binary the harness should spawn
     /// (used with `--prebuilt-test-binary` for the sim-running jobs; the harness
     /// resolves it via `CARGO_BIN_EXE_rumoca-sim-worker`). Not needed for the
@@ -1012,6 +1017,7 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
         run_prebuilt_msl_test(
             root,
             binary,
+            args.prebuilt_model_worker.as_deref(),
             args.prebuilt_sim_worker.as_deref(),
             test_target,
             &mut cargo_setup_steps,
@@ -1037,6 +1043,7 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
 fn run_prebuilt_msl_test(
     root: &Path,
     binary: &Path,
+    model_worker: Option<&Path>,
     sim_worker: Option<&Path>,
     test_target: &str,
     cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
@@ -1053,6 +1060,14 @@ fn run_prebuilt_msl_test(
         .arg("--nocapture")
         .env("RUST_BACKTRACE", "full")
         .current_dir(root);
+    if let Some(worker) = model_worker {
+        ensure!(
+            worker.is_file(),
+            "prebuilt rumoca-worker not found at {}",
+            worker.display()
+        );
+        run.env("CARGO_BIN_EXE_rumoca-worker", worker);
+    }
     if let Some(worker) = sim_worker {
         ensure!(
             worker.is_file(),
@@ -1060,6 +1075,10 @@ fn run_prebuilt_msl_test(
             worker.display()
         );
         run.env("CARGO_BIN_EXE_rumoca-sim-worker", worker);
+    }
+    if let Some(tools) = prebuilt_sibling_binary(binary, "rumoca-msl-tools") {
+        run.env("CARGO_BIN_EXE_rumoca-msl-tools", &tools);
+        run.env("CARGO_BIN_EXE_rumoca_msl_tools", tools);
     }
     run_msl_cargo_setup_step(
         cargo_setup_steps,
@@ -1073,6 +1092,11 @@ fn run_prebuilt_msl_test(
         ),
         run,
     )
+}
+
+fn prebuilt_sibling_binary(binary: &Path, name: &str) -> Option<PathBuf> {
+    let candidate = binary.parent()?.join(name);
+    candidate.is_file().then_some(candidate)
 }
 
 fn run_msl_quality_gate_cargo_commands(
@@ -1483,7 +1507,7 @@ mod tests {
     use super::{
         MslCargoSetupTimingStep, MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary,
         VERIFY_SUITE_STEPS, VerifyMslParityArgs, VerifySuite, VerifyTimingReport, VerifyTimingStep,
-        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid,
+        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid, prebuilt_sibling_binary,
         render_verify_timing_markdown, should_log_process_tables,
         write_msl_cargo_setup_timing_report, write_verify_timing_report,
     };
@@ -1660,6 +1684,22 @@ mod tests {
         assert!(markdown.contains("# MSL Cargo Setup Timing"));
         assert!(markdown.contains("| run release MSL test | fail | 1.300 | rumoca-test-msl |"));
         assert!(markdown.contains("| release | msl-full-test |"));
+    }
+
+    #[test]
+    fn prebuilt_sibling_binary_finds_tools_next_to_msl_tests() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let bin_dir = root.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("mkdir bin");
+        let msl_tests = bin_dir.join("msl_tests");
+        let tools = bin_dir.join("rumoca-msl-tools");
+        std::fs::write(&msl_tests, "").expect("write msl_tests");
+        std::fs::write(&tools, "").expect("write tools");
+
+        assert_eq!(
+            prebuilt_sibling_binary(&msl_tests, "rumoca-msl-tools"),
+            Some(tools)
+        );
     }
 
     #[test]

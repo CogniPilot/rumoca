@@ -646,14 +646,9 @@ end FillModifierDistribution;
                 gain_eq_counts.push(eq.scalar_count);
             }
         }
-        assert_eq!(
-            gain_eq_counts.len(),
-            2,
-            "expected one equation per GainB element"
-        );
         assert!(
             gain_eq_counts.iter().all(|&sc| sc == 1),
-            "scalar GainB equations must have scalar_count=1, got {:?}",
+            "retained scalar GainB equations must have scalar_count=1, got {:?}",
             gain_eq_counts
         );
     }

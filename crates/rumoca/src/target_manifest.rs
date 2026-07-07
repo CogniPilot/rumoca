@@ -443,11 +443,22 @@ fn validate_target_requirements(
     let Some(capabilities) = &manifest.capabilities else {
         return Ok(());
     };
-    validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
+    let projection_dae = is_galec_dae_target(manifest)
+        .then(|| rumoca_compile::galec::dae_for_galec_projection(&result.dae));
+    let dae = projection_dae.as_ref().unwrap_or(&result.dae);
+    validate_dae_target_capabilities(dae, manifest, capabilities)?;
     if manifest.ir == TargetTemplateIr::Solve {
         validate_solve_target_capabilities(result, manifest, capabilities)?;
     }
     Ok(())
+}
+
+fn is_galec_dae_target(manifest: &TargetManifest) -> bool {
+    manifest.ir == TargetTemplateIr::Dae
+        && manifest
+            .name
+            .as_deref()
+            .is_some_and(rumoca_compile::galec::is_galec_target)
 }
 
 fn validate_solve_target_capabilities(

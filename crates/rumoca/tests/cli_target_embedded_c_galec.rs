@@ -65,11 +65,11 @@ const DRIVER_MAIN: &str = "\
 #include \"EmbeddedGalecSmoke.h\"
 
 int main(void) {
-    EmbeddedGalecSmokeState state;
-    EmbeddedGalecSmoke_startup(&state);
-    EmbeddedGalecSmoke_recalibrate(&state);
+    EFMI_STATE_TYPE(EmbeddedGalecSmoke) state;
+    EFMI_INIT(EmbeddedGalecSmoke, &state);
+    EFMI_RECALIBRATE(EmbeddedGalecSmoke, &state);
     for (int step = 0; step < 3; ++step) {
-        EmbeddedGalecSmoke_dostep(&state);
+        EFMI_STEP(EmbeddedGalecSmoke, &state);
         printf(\"%.1f\\n\", state.y);
     }
     return 0;
@@ -159,6 +159,17 @@ fn export_self_describes_as_not_an_efmi_production_code_container() {
         header.contains("NOT an eFMI Production Code container"),
         "header must carry the GAL-024 self-description:\n{header}"
     );
+    for macro_name in [
+        "EFMI_STATE_TYPE",
+        "EFMI_INIT",
+        "EFMI_RECALIBRATE",
+        "EFMI_STEP",
+    ] {
+        assert!(
+            header.contains(macro_name),
+            "header must expose {macro_name}:\n{header}"
+        );
+    }
     assert!(
         strip_ansi(&stderr).contains("NOT an eFMI Production Code"),
         "completion message must carry the GAL-024 self-description, got:\n{stderr}"

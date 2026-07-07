@@ -83,6 +83,43 @@ equation
 end GalecProdCliContinuous;
 ";
 
+/// A component block with an algebraic equation, sampled by the parent. The
+/// component output is a hidden algebraic alias of sampled/discrete values and
+/// must be folded before the target capability gate sees residual `f_x` rows.
+const ALGEBRAIC_COMPONENT_FIXTURE: &str = "\
+block AlgebraicGain
+  parameter Real k = 2.0;
+  input Real u;
+  output Real y;
+equation
+  y = k * u;
+end AlgebraicGain;
+
+block AlgorithmGain
+  parameter Real k = 2.0;
+  input Real u;
+  output Real y;
+algorithm
+  y := k * u;
+end AlgorithmGain;
+
+model GalecProdAlgebraicComponent
+  constant Real dt = 0.02;
+  input Real error;
+  discrete output Real out(start = 0.0);
+  discrete output Real out2(start = 0.0);
+  AlgebraicGain gain(k = 3.0);
+  AlgorithmGain alg(k = 4.0);
+algorithm
+  when sample(0.0, dt) then
+    gain.u := error;
+    alg.u := error;
+    out := gain.y;
+    out2 := alg.y;
+  end when;
+end GalecProdAlgebraicComponent;
+";
+
 /// Driver exercising the packaged block: startup, recalibrate, then three
 /// dostep ticks of `y = gain * (pre(y) + 1)` with `gain = 2`, `y0 = 0`
 /// (expected 2, 6, 14) — row E6.
@@ -91,11 +128,11 @@ const DRIVER_MAIN: &str = "\
 #include \"GalecProdCliSmoke.h\"
 
 int main(void) {
-    GalecProdCliSmokeState state;
-    GalecProdCliSmoke_startup(&state);
-    GalecProdCliSmoke_recalibrate(&state);
+    EFMI_STATE_TYPE(GalecProdCliSmoke) state;
+    EFMI_INIT(GalecProdCliSmoke, &state);
+    EFMI_RECALIBRATE(GalecProdCliSmoke, &state);
     for (int step = 0; step < 3; ++step) {
-        GalecProdCliSmoke_dostep(&state);
+        EFMI_STEP(GalecProdCliSmoke, &state);
         printf(\"%.1f\\n\", state.y);
     }
     return 0;
@@ -207,6 +244,23 @@ fn build_container(work_dir: &Path, out_dir: &Path) -> BuiltContainer {
         efmu_zip: out_dir.join(format!("{MODEL}.efmu")),
         cli_stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
+}
+
+#[test]
+fn algebraic_component_output_read_by_sampled_parent_compiles() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdAlgebraicComponent";
+    let file = write_fixture(dir.path(), model, ALGEBRAIC_COMPONENT_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "algebraic component output should not leave residual continuous equations.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_dir.join(model).join("__content.xml").is_file());
+    assert!(out_dir.join(format!("{model}.efmu")).is_file());
 }
 
 /// Attribute name → value maps for every element called `element_name`,

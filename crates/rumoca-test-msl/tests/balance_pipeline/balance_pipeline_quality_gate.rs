@@ -1420,13 +1420,17 @@ pub(super) fn push_sim_rate_regression_reason(
     gate_input: MslQualityGateInput<'_>,
     baseline: &MslQualityBaseline,
 ) {
-    push_stage_count_regression_reason(
-        reasons,
-        "IC",
-        gate_input.ic_ok,
-        baseline.ic_ok,
-        gate_input.sim_target_models,
-    );
+    let allowed_drop = stage_count_allowed_drop(gate_input.sim_target_models);
+    if stage_count_regressed(gate_input.sim_ok, baseline.sim_ok, allowed_drop) {
+        push_stage_count_regression_reason_with_drop(
+            reasons,
+            "IC",
+            gate_input.ic_ok,
+            baseline.ic_ok,
+            gate_input.sim_target_models,
+            allowed_drop,
+        );
+    }
     push_stage_count_regression_reason(
         reasons,
         "Sim",
@@ -1434,6 +1438,10 @@ pub(super) fn push_sim_rate_regression_reason(
         baseline.sim_ok,
         gate_input.sim_target_models,
     );
+}
+
+fn stage_count_regressed(current: usize, baseline: usize, allowed_drop: usize) -> bool {
+    current < baseline.saturating_sub(allowed_drop)
 }
 
 fn stage_percent(count: usize, total: usize) -> f64 {
@@ -1469,7 +1477,7 @@ fn push_stage_count_regression_reason_with_drop(
     allowed_drop: usize,
 ) {
     let floor = baseline.saturating_sub(allowed_drop);
-    if current >= floor {
+    if !stage_count_regressed(current, baseline, allowed_drop) {
         return;
     }
     reasons.push(format!(
@@ -1674,12 +1682,18 @@ pub(super) fn msl_quality_gate_failure_message(
 }
 
 pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
-    if summary.sim_attempted == 0 {
-        println!("MSL quality gate: skipped for compile/balance-only run.");
-        return Ok(());
-    }
     if require_selected_targets_success() {
         return enforce_all_selected_targets_succeeded(summary);
+    }
+    if summary.sim_attempted == 0 {
+        if should_skip_msl_quality_gate() {
+            println!("MSL quality gate: skipped for compile/balance-only run.");
+            return Ok(());
+        }
+        return Err(io::Error::other(format!(
+            "MSL quality gate: invalid full run (0 simulations attempted for {} selected simulation target(s)); fix the MSL shard/worker setup before accepting this run",
+            summary.sim_target_models.len()
+        )));
     }
     if should_skip_msl_quality_gate() {
         println!(

@@ -116,7 +116,7 @@ fn render_quality_snapshot_summary(
         "initial_balanced_models",
         "balance_denominator",
     );
-    let simulation = quality_metric_cell(&json, baseline.as_ref(), "sim_ok", "sim_attempted");
+    let simulation = quality_metric_cell(&json, baseline.as_ref(), "sim_ok", "sim_target_models");
     let mut delta_note = String::new();
     if let Some(baseline) = baseline.as_ref() {
         delta_note.push_str(
@@ -176,7 +176,7 @@ fn quality_metric_cell(
 fn render_ci_gate_metrics_table(json: &Value, baseline: Option<&Value>) -> String {
     let mut out = String::from(
         "#### CI Gate Snapshot\n\n\
-         _These are the baseline-relative MSL stats enforced by CI; speed metrics are informational only._\n\n\
+         _These are the baseline-relative MSL stats checked by CI; IC progress is contextual unless simulation successes regress, and speed metrics are informational only._\n\n\
          | Gate area | Current (Δ vs baseline) |\n\
          |---|---:|\n",
     );
@@ -217,9 +217,9 @@ fn compact_balance_gate_row(json: &Value, baseline: Option<&Value>) -> String {
 }
 
 fn compact_runtime_gate_row(json: &Value, baseline: Option<&Value>) -> String {
-    let keys = [("IC", "ic_ok"), ("sim", "sim_ok")];
+    let keys = [("IC progress", "ic_ok"), ("sim", "sim_ok")];
     compact_gate_row(
-        "Runtime floors",
+        "Runtime gate",
         json,
         baseline,
         &keys,
@@ -358,7 +358,7 @@ fn render_ci_gate_detail_table(json: &Value, baseline: Option<&Value>) -> String
     );
     push_gate_count_row(
         &mut out,
-        "IC floor",
+        "IC progress",
         json,
         baseline,
         "ic_ok",
@@ -1203,7 +1203,7 @@ mod tests {
         let rendered = render_pr_comment(results, Some(&baseline_path)).expect("render comment");
         assert!(rendered.contains(COMMENT_MARKER));
         assert!(rendered.contains(
-            "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 (Δ+2/0) | 9/10 (Δ+1/0) | 8/10 (Δ0/0) | 7/10 (Δ+2/+1) |"
+            "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 (Δ+2/0) | 9/10 (Δ+1/0) | 8/10 (Δ0/0) | 7/10 (Δ+2/0) |"
         ));
         assert!(rendered.contains("Deltas compare numerator/denominator"));
         assert!(rendered.contains(
@@ -1219,7 +1219,8 @@ mod tests {
         assert!(rendered.contains("<summary><strong>CI gate details</strong></summary>"));
         assert!(rendered.contains("| Flatten floor | 9/10 | 8/10 | +1 |"));
         assert!(rendered.contains("| Solve-IR floor | 7/10 | 6/10 | +1 |"));
-        assert!(rendered.contains("| IC floor | 6/10 | 5/10 | +1 |"));
+        assert!(rendered.contains("IC progress is contextual unless simulation successes regress"));
+        assert!(rendered.contains("| IC progress | 6/10 | 5/10 | +1 |"));
         assert!(rendered.contains("| Trace acceptable floor | 6/10 | 4/10 | +2 |"));
         assert!(rendered.contains("| Trace no-severe floor | 6/10 | 4/10 | +2 |"));
         assert!(rendered.contains("| Trace compared floor (drop ≤2) | 7 | 6 | +1 |"));
@@ -1441,8 +1442,9 @@ mod tests {
                 "balance_denominator": 10,
                 "balanced_models": 9,
                 "initial_balanced_models": 8,
+                "sim_target_models": 10,
                 "sim_ok": 7,
-                "sim_attempted": 10
+                "sim_attempted": 8
             }"#,
         )
         .expect("write quality snapshot");
@@ -1453,5 +1455,34 @@ mod tests {
             "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 | 9/10 | 8/10 | 7/10 |"
         ));
         assert!(!rendered.contains("Deltas compare numerator/denominator"));
+    }
+
+    #[test]
+    fn pr_comment_simulation_summary_uses_ci_gate_denominator() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let results = temp.path();
+        fs::write(
+            results.join("msl_quality_current.json"),
+            r#"{
+                "run_scope": "full",
+                "msl_version": "v4.1.0",
+                "omc_version": "OpenModelica 1.26.1",
+                "compiled_models": 10,
+                "balance_denominator": 10,
+                "balanced_models": 9,
+                "initial_balanced_models": 8,
+                "sim_target_models": 10,
+                "sim_ok": 0,
+                "sim_attempted": 0
+            }"#,
+        )
+        .expect("write quality snapshot");
+
+        let rendered = render_pr_comment(results, None).expect("render comment");
+
+        assert!(rendered.contains(
+            "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 | 9/10 | 8/10 | 0/10 |"
+        ));
+        assert!(!rendered.contains("| 10/10 | 9/10 | 8/10 | 0/0 |"));
     }
 }

@@ -74,10 +74,12 @@ pub fn lower_to_algorithm_code(
     let clock = check_admissibility(input)?;
     let classification = classify_variables(input)?;
     let conditions = ConditionTable::build(input.dae).map_err(|error| vec![error])?;
-    let sample_index = conditions.sample_index().map_err(|error| vec![error])?;
+    let sample_indices = conditions
+        .sample_indices(&classification, &clock)
+        .map_err(|error| vec![error])?;
 
     // 3. DoStep rows: unwrap guards, lower bodies, record read pre slots.
-    let mut lowerer = ExprLowerer::new(&classification, &conditions);
+    let mut lowerer = ExprLowerer::new(&classification, &conditions, &input.dae.symbols);
     let mut do_step = Vec::new();
     let mut errors = Vec::new();
     let updates = input
@@ -91,7 +93,7 @@ pub fn lower_to_algorithm_code(
             equation,
             &classification,
             &conditions,
-            sample_index,
+            &sample_indices,
             &mut lowerer,
         ) {
             Ok(statement) => do_step.push(statement),
@@ -126,8 +128,8 @@ pub fn lower_to_algorithm_code(
     // may extend the manifest).
     let (interface, mut protected) =
         methods::build_sections(&kept, &starts).map_err(|error| vec![error])?;
-    let mut startup = methods::build_startup(&kept, &conditions, &starts)?;
-    let recalibrate = methods::build_recalibrate(&kept, &conditions)?;
+    let mut startup = methods::build_startup(&kept, &conditions, &input.dae.symbols, &starts)?;
+    let recalibrate = methods::build_recalibrate(&kept, &conditions, &input.dae.symbols)?;
     let commits = methods::build_pre_commits(&kept, &referenced)?;
     do_step.extend(commits);
 
@@ -182,7 +184,7 @@ fn lower_update_row(
     equation: &Equation,
     classification: &Classification<'_>,
     conditions: &ConditionTable<'_>,
-    sample_index: Option<usize>,
+    sample_indices: &[usize],
     lowerer: &mut ExprLowerer<'_>,
 ) -> Result<gast::Spanned<Statement>, GalecTargetError> {
     let Some(lhs) = &equation.lhs else {
@@ -197,7 +199,7 @@ fn lower_update_row(
     };
     let target_name = lhs.as_str();
     let (classified, subscripts) = resolve_target(classification, target_name)?;
-    let body = guard::unwrap_guarded_update(equation, target_name, conditions, sample_index)?;
+    let body = guard::unwrap_guarded_update(equation, target_name, conditions, sample_indices)?;
     let typed = lowerer.lower(body)?;
     let value = methods::coerce_to(typed, classified.scalar_type, target_name)?;
     Ok(gast::Spanned::new(

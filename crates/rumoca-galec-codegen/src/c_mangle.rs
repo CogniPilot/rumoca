@@ -20,9 +20,9 @@
 //! whole package and fails with a typed `ET022` — names are never silently
 //! renamed apart (SPEC_0008: no silent defaults).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use rumoca_ir_galec::ast::{Block, Name};
+use rumoca_ir_galec::ast::{Block, Dimension, Expression, Name};
 
 use crate::diagnostic::GalecTargetError;
 use crate::mangle::manifest_name;
@@ -261,10 +261,10 @@ pub fn c_identifier(name: &Name) -> Result<String, GalecTargetError> {
 #[derive(Debug)]
 pub struct CNameTable {
     by_spelling: HashMap<String, String>,
-    /// Manifest spellings whose declaration is dimensioned (an array). A C
-    /// array field is not assignable with `=`, so whole-array copies of these
-    /// must be `memcpy`'d rather than scalar-assigned (see [`Self::is_array`]).
-    array_spellings: HashSet<String>,
+    /// Manifest spellings whose declaration is dimensioned, with their literal
+    /// positive extents. A C array field is not assignable with `=`, so
+    /// whole-array copies of these must be `memcpy`'d or expanded element-wise.
+    array_dimensions: HashMap<String, Vec<i64>>,
 }
 
 impl CNameTable {
@@ -281,7 +281,7 @@ impl CNameTable {
             .map(|variable| &variable.decl)
             .chain(block.protected.iter().map(|entity| &entity.decl));
         let mut by_spelling = HashMap::new();
-        let mut array_spellings = HashSet::new();
+        let mut array_dimensions = HashMap::new();
         let mut owners: HashMap<String, String> = HashMap::new();
         for decl in declared {
             let spelling = manifest_name(&decl.name).to_owned();
@@ -297,13 +297,13 @@ impl CNameTable {
             }
             owners.insert(c_name.clone(), spelling.clone());
             if !decl.dimensions.is_empty() {
-                array_spellings.insert(spelling.clone());
+                array_dimensions.insert(spelling.clone(), literal_dimensions(&decl.dimensions)?);
             }
             by_spelling.insert(spelling, c_name);
         }
         Ok(Self {
             by_spelling,
-            array_spellings,
+            array_dimensions,
         })
     }
 
@@ -312,7 +312,17 @@ impl CNameTable {
     /// C printer emits `memcpy` instead.
     #[must_use]
     pub fn is_array(&self, name: &Name) -> bool {
-        self.array_spellings.contains(manifest_name(name))
+        self.array_dimensions.contains_key(manifest_name(name))
+    }
+
+    /// Literal positive dimensions of a declared GALEC array, or `None` for a
+    /// scalar/unknown name. Build-time validation ensures block-level
+    /// dimensions are literal before C printing asks for them.
+    #[must_use]
+    pub fn array_dimensions(&self, name: &Name) -> Option<&[i64]> {
+        self.array_dimensions
+            .get(manifest_name(name))
+            .map(Vec::as_slice)
     }
 
     /// The C identifier of a declared GALEC name.
@@ -342,6 +352,23 @@ impl CNameTable {
                 ),
             })
     }
+}
+
+fn literal_dimensions(dimensions: &[Dimension]) -> Result<Vec<i64>, GalecTargetError> {
+    dimensions
+        .iter()
+        .map(|dimension| match dimension {
+            Dimension::Expr(Expression::Integer(value)) if *value > 0 => Ok(*value),
+            Dimension::Expr(_) => Err(GalecTargetError::CExportUnsupported {
+                construct: "a non-literal array dimension",
+                detail: "C export requires literal positive array dimensions".to_owned(),
+            }),
+            Dimension::Derived => Err(GalecTargetError::CExportUnsupported {
+                construct: "a derived array dimension",
+                detail: "C export requires concrete block variable dimensions".to_owned(),
+            }),
+        })
+        .collect()
 }
 
 #[cfg(test)]

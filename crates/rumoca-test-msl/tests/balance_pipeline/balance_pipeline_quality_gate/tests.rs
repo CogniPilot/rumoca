@@ -208,6 +208,18 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
 }
 
 #[test]
+fn full_quality_gate_rejects_zero_simulation_attempts() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
+
+    let error = enforce_msl_quality_gate(&summary)
+        .expect_err("full quality gate must reject a zero-attempt simulation run");
+    let message = error.to_string();
+    assert!(message.contains("invalid full run"));
+    assert!(message.contains("0 simulations attempted for 2 selected simulation target(s)"));
+}
+
+#[test]
 fn current_quality_snapshot_marks_only_partial_runs() {
     let summary = valid_summary_template();
     let full = current_msl_quality_snapshot_json(&summary, None, false)
@@ -565,7 +577,7 @@ fn ic_stage_gate_allows_one_model_full_run_jitter() {
 }
 
 #[test]
-fn ic_stage_gate_rejects_two_model_full_run_drop() {
+fn ic_stage_gate_is_advisory_when_sim_count_is_stable() {
     let baseline = MslQualityBaseline {
         sim_target_models: 1000,
         ic_ok: 800,
@@ -580,10 +592,61 @@ fn ic_stage_gate_rejects_two_model_full_run_drop() {
     let mut reasons = Vec::new();
     push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
     assert!(
+        reasons.is_empty(),
+        "IC-only progress drop should not fail a stable simulation gate, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn ic_stage_regression_is_reported_when_sim_count_also_regresses() {
+    let baseline = MslQualityBaseline {
+        sim_target_models: 1000,
+        ic_ok: 800,
+        sim_ok: 700,
+        sim_success_rate: 0.7,
+        ..baseline_quality_template()
+    };
+    let mut gate_input = gate_input_with_sim_rate(698, 1000);
+    gate_input.sim_target_models = 1000;
+    gate_input.ic_ok = 798;
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
         reasons
             .iter()
             .any(|reason| reason.contains("IC pass count regressed")),
-        "expected IC-stage regression reason, got: {reasons:?}"
+        "expected IC-stage context with simulation regression, got: {reasons:?}"
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("Sim pass count regressed")),
+        "expected simulation-stage regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn current_sharded_ic_accounting_shape_keeps_sim_gate_green() {
+    let baseline = MslQualityBaseline {
+        sim_target_models: 566,
+        ic_ok: 239,
+        sim_ok: 170,
+        sim_success_rate: 170.0 / 566.0,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        sim_target_models: 566,
+        ic_ok: 227,
+        sim_ok: 170,
+        ..gate_input_with_sim_rate(170, 413)
+    };
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons.is_empty(),
+        "current CI run preserves simulation successes and should pass, got: {reasons:?}"
     );
 }
 

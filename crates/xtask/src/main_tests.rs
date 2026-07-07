@@ -261,6 +261,29 @@ fn verify_msl_parity_shard_parses_and_validates() {
 }
 
 #[test]
+fn cli_parses_verify_msl_parity_prebuilt_workers() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "msl-parity",
+        "--prebuilt-test-binary",
+        "result-msl-test/bin/msl_tests",
+        "--prebuilt-model-worker",
+        "result-msl-test/bin/rumoca-worker",
+        "--prebuilt-sim-worker",
+        "result-sim-worker/bin/rumoca-sim-worker",
+    ])
+    .expect("parse verify msl-parity prebuilt workers");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::MslParity(_) => {}
+            other => panic!("expected msl-parity, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_verify_msl_hotspots_job() {
     let cli = Cli::try_parse_from(["xtask", "verify", "msl-hotspots"])
         .expect("parse verify msl-hotspots");
