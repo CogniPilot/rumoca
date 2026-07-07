@@ -1153,38 +1153,7 @@ impl<'a> ExprLowerer<'a> {
                 })
             }
             Expression::Binary { op, lhs, rhs, span } => {
-                let left = self.lower(lhs)?;
-                let right = self.lower(rhs)?;
-                if matches!(op, OpBinary::Mul) && vector_dot_shape(&left, &right).is_some() {
-                    return Err(unsupported(
-                        "scalar-indexed-expression".to_owned(),
-                        "indexed expression over a vector dot-product result".to_owned(),
-                        Some(*span),
-                    ));
-                }
-                if left.is_scalar() && right.is_scalar() {
-                    return Err(unsupported(
-                        "scalar-indexed-expression".to_owned(),
-                        "indexed expression over a scalar binary result".to_owned(),
-                        Some(*span),
-                    ));
-                }
-                let lhs = if left.is_scalar() {
-                    lhs.as_ref().clone()
-                } else {
-                    indexed_expression(lhs.as_ref().clone(), subscripts.to_vec(), *span)
-                };
-                let rhs = if right.is_scalar() {
-                    rhs.as_ref().clone()
-                } else {
-                    indexed_expression(rhs.as_ref().clone(), subscripts.to_vec(), *span)
-                };
-                self.lower(&Expression::Binary {
-                    op: op.clone(),
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                    span: *span,
-                })
+                self.lower_indexed_binary(op, lhs, rhs, *span, subscripts)
             }
             Expression::Unary { op, rhs, span } => {
                 let value = self.lower(rhs)?;
@@ -1205,6 +1174,19 @@ impl<'a> ExprLowerer<'a> {
                     span: *span,
                 })
             }
+            Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                span: call_span,
+            } => self.lower_indexed_function_call(
+                name,
+                args,
+                *is_constructor,
+                *call_span,
+                subscripts,
+                span,
+            ),
             _ => Err(unsupported(
                 "indexed-expression-base".to_owned(),
                 format!("indexed expression over {}", form_name(base)),
@@ -1213,12 +1195,91 @@ impl<'a> ExprLowerer<'a> {
         }
     }
 
+    fn lower_indexed_binary(
+        &mut self,
+        op: &OpBinary,
+        lhs: &Expression,
+        rhs: &Expression,
+        span: Span,
+        subscripts: &[Subscript],
+    ) -> Result<Typed, GalecTargetError> {
+        let left = self.lower(lhs)?;
+        let right = self.lower(rhs)?;
+        if matches!(op, OpBinary::Mul) && vector_dot_shape(&left, &right).is_some() {
+            return Err(unsupported(
+                "scalar-indexed-expression".to_owned(),
+                "indexed expression over a vector dot-product result".to_owned(),
+                Some(span),
+            ));
+        }
+        if left.is_scalar() && right.is_scalar() {
+            return Err(unsupported(
+                "scalar-indexed-expression".to_owned(),
+                "indexed expression over a scalar binary result".to_owned(),
+                Some(span),
+            ));
+        }
+        let lhs = if left.is_scalar() {
+            lhs.clone()
+        } else {
+            indexed_expression(lhs.clone(), subscripts.to_vec(), span)
+        };
+        let rhs = if right.is_scalar() {
+            rhs.clone()
+        } else {
+            indexed_expression(rhs.clone(), subscripts.to_vec(), span)
+        };
+        self.lower(&Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        })
+    }
+
+    fn lower_indexed_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
+        call_span: Span,
+        subscripts: &[Subscript],
+        index_span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        self.lower_inlined_function_call(
+            name,
+            args,
+            is_constructor,
+            call_span,
+            |lowerer, expression| {
+                lowerer.lower(&indexed_expression(
+                    expression,
+                    subscripts.to_vec(),
+                    index_span,
+                ))
+            },
+        )
+    }
+
     fn lower_function_call(
         &mut self,
         name: &rumoca_core::Reference,
         args: &[Expression],
         is_constructor: bool,
         span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        self.lower_inlined_function_call(name, args, is_constructor, span, |lowerer, expression| {
+            lowerer.lower(&expression)
+        })
+    }
+
+    fn lower_inlined_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
+        span: Span,
+        lower: impl FnOnce(&mut Self, Expression) -> Result<Typed, GalecTargetError>,
     ) -> Result<Typed, GalecTargetError> {
         if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
             return Err(unsupported(
@@ -1261,7 +1322,7 @@ impl<'a> ExprLowerer<'a> {
         self.inlined_functions.push(name.as_str().to_owned());
         let expression = inline_function_call(function, args, span);
         let result = match expression {
-            Ok(expression) => self.lower(&expression),
+            Ok(expression) => lower(self, expression),
             Err(error) => Err(error),
         };
         self.inlined_functions.pop();

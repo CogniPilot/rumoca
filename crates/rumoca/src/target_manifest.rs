@@ -2,13 +2,15 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 
-use crate::{CompilationResult, TemplateIr};
+use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile,
     TargetManifest, TargetTemplateIr, TargetTemplateSource, TensorCapability,
     ensure_target_has_rendered_files, safe_target_join, validate_dae_target_capabilities,
 };
+use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
+use rumoca_compile::galec::{GalecExportError, GalecTargetError};
 
 pub(crate) fn compile_target(
     result: &CompilationResult,
@@ -142,7 +144,7 @@ fn build_galec_plan(
                 model_identifier,
                 model,
             )
-            .context("GALEC eFMU plan for target 'galec'")?,
+            .map_err(|error| galec_plan_error(result, error, "galec"))?,
         )),
         Some("galec-production") => Ok(Some(
             rumoca_compile::galec::plan_galec_production_export(
@@ -151,10 +153,70 @@ fn build_galec_plan(
                 model_identifier,
                 model,
             )
-            .context("eFMI Production Code eFMU plan for target 'galec-production'")?,
+            .map_err(|error| galec_plan_error(result, error, "galec-production"))?,
         )),
         _ => Ok(None),
     }
+}
+
+fn galec_plan_error(
+    result: &CompilationResult,
+    error: GalecExportError,
+    target: &'static str,
+) -> anyhow::Error {
+    match error {
+        GalecExportError::Projection(diagnostics) => {
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.span().is_some())
+            {
+                return CompilerError::SourceDiagnosticsError {
+                    summary: format!("GALEC projection rejected target '{target}'"),
+                    diagnostics: diagnostics
+                        .iter()
+                        .map(galec_projection_diagnostic)
+                        .collect(),
+                    source_map: Box::new(source_map(result)),
+                }
+                .into();
+            }
+            anyhow::Error::new(GalecExportError::Projection(diagnostics))
+                .context(galec_plan_context(target))
+        }
+        other => anyhow::Error::new(other).context(galec_plan_context(target)),
+    }
+}
+
+fn galec_projection_diagnostic(error: &GalecTargetError) -> CommonDiagnostic {
+    let Some(span) = error.span() else {
+        return CommonDiagnostic::global_error(error.code(), error.to_string());
+    };
+    CommonDiagnostic::error(
+        error.code(),
+        error.to_string(),
+        PrimaryLabel::new(span).with_message(galec_projection_label(error)),
+    )
+}
+
+fn galec_projection_label(error: &GalecTargetError) -> String {
+    match error {
+        GalecTargetError::UnsupportedFeature { feature, .. } => {
+            format!("unsupported GALEC projection feature `{feature}`")
+        }
+        _ => "GALEC projection rejected this construct".to_owned(),
+    }
+}
+
+fn galec_plan_context(target: &'static str) -> &'static str {
+    match target {
+        "galec" => "GALEC eFMU plan for target 'galec'",
+        "galec-production" => "eFMI Production Code eFMU plan for target 'galec-production'",
+        _ => "GALEC target plan",
+    }
+}
+
+fn source_map(result: &CompilationResult) -> SourceMap {
+    result.resolved.0.source_map.clone()
 }
 
 /// The per-file render closure driving the declarative eFMU build step for a
