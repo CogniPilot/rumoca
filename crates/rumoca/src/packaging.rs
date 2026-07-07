@@ -25,20 +25,23 @@
 //! written (one `bytes` buffer feeds both `Sha1Hex::of_bytes` and the write).
 
 use std::collections::{BTreeMap, HashMap};
+#[cfg(feature = "runner")]
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rumoca_compile::codegen::targets::{
-    AssetBundle, RenderedTargetFile, TargetFile, safe_target_join,
-};
+#[cfg(feature = "runner")]
+use rumoca_compile::codegen::targets::{AssetBundle, safe_target_join};
+use rumoca_compile::codegen::targets::{RenderedTargetFile, TargetFile};
 use rumoca_compile::galec::Sha1Hex;
 
+#[cfg(feature = "runner")]
 use crate::container;
 
 /// How the rendered files + assets are finalized on disk (contract §4b).
 ///
 /// The `.efmu`/flat-zip specifics are fields, not constants, so `build_fmu`
 /// can fold into this one step later with different values (out of scope here).
+#[cfg(feature = "runner")]
 pub struct PackageSpec {
     /// The product's root index file (e.g. `__content.xml`). A directory that
     /// already holds it is recognized as a prior build of THIS product and is
@@ -49,6 +52,7 @@ pub struct PackageSpec {
 }
 
 /// The zip form of a package (contract §4b `Zip { ext }`).
+#[cfg(feature = "runner")]
 pub struct ZipPackage {
     /// Absolute path of the archive to write (e.g. `<out>/<model>.efmu`).
     pub archive_path: PathBuf,
@@ -56,6 +60,7 @@ pub struct ZipPackage {
 
 /// One resolved asset file: a bundle-relative `/`-separated path and its exact
 /// bytes, copied verbatim into the product (contract §4d).
+#[cfg(feature = "runner")]
 pub struct AssetFile {
     /// Path relative to the bundle's declared `dest`, `/`-separated.
     pub relative_path: String,
@@ -67,6 +72,7 @@ pub struct AssetFile {
 /// (contract §4d): the generic build step's real asset source. Fails early on
 /// an unknown bundle so a `target.toml` typo cannot silently ship an empty
 /// `schemas/`.
+#[cfg(feature = "runner")]
 pub fn efmi_asset_source(bundle: &str) -> Result<Vec<AssetFile>> {
     let files = container::asset_bundle_files(bundle)
         .with_context(|| format!("Unknown asset bundle '{bundle}'"))?;
@@ -160,6 +166,7 @@ pub fn topo_sort(files: &[TargetFile]) -> Result<Vec<usize>> {
 /// a declared bundle name to its files. Nothing is written until every byte is
 /// rendered and hashed, so a render or topo failure leaves the product path
 /// untouched.
+#[cfg(feature = "runner")]
 pub fn render_and_package(
     files: &[TargetFile],
     render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
@@ -272,6 +279,7 @@ pub fn render_web_files(
 /// holding the package `index` file is a previous build of this product and is
 /// removed so the writer starts clean; an empty directory is accepted; anything
 /// else non-empty is foreign and refused with a remedy, never deleted.
+#[cfg(feature = "runner")]
 fn prepare_root(out_dir: &Path, index: &str) -> Result<()> {
     if !out_dir.exists() {
         std::fs::create_dir_all(out_dir)
@@ -304,6 +312,7 @@ fn prepare_root(out_dir: &Path, index: &str) -> Result<()> {
 
 /// Write the exact rendered bytes that were hashed (contract §4c): the tuple
 /// list is the same `(path, bytes)` produced by the render loop.
+#[cfg(feature = "runner")]
 fn write_rendered_files(out_dir: &Path, rendered: &[(String, Vec<u8>)]) -> Result<()> {
     for (path, bytes) in rendered {
         let output_path = safe_target_join(out_dir, path)?;
@@ -319,6 +328,7 @@ fn write_rendered_files(out_dir: &Path, rendered: &[(String, Vec<u8>)]) -> Resul
 
 /// Copy one declared asset bundle into `out_dir/<dest>` verbatim (contract
 /// §4d): assets are outside the render/hash DAG, so this is a pure file copy.
+#[cfg(feature = "runner")]
 fn copy_asset_bundle(
     out_dir: &Path,
     asset: &AssetBundle,
@@ -339,7 +349,7 @@ fn copy_asset_bundle(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runner"))]
 mod tests {
     use super::*;
     use rumoca_compile::codegen::targets::parse_target_manifest;
