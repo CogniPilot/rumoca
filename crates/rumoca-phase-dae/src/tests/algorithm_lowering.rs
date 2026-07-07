@@ -1133,6 +1133,81 @@ fn test_todae_lowers_when_algorithm_record_assignment_to_fields() {
 }
 
 #[test]
+fn test_todae_if_reassignment_uses_current_step_false_branch() {
+    let mut flat = Model::new();
+    add_discrete_valued(&mut flat, "cond");
+    add_discrete_real(&mut flat, "raw");
+    add_discrete_real(&mut flat, "x");
+    add_discrete_real(&mut flat, "y");
+
+    flat.algorithms.push(flat::Algorithm::new(
+        vec![
+            rumoca_core::Statement::Assignment {
+                comp: make_comp_ref("x"),
+                value: make_var_ref("raw"),
+                span: test_span(),
+            },
+            rumoca_core::Statement::If {
+                cond_blocks: vec![rumoca_core::StatementBlock {
+                    cond: make_var_ref("cond"),
+                    stmts: vec![rumoca_core::Statement::Assignment {
+                        comp: make_comp_ref("x"),
+                        value: rumoca_core::Expression::Literal {
+                            value: rumoca_core::Literal::Real(0.0),
+                            span: test_span(),
+                        },
+                        span: test_span(),
+                    }],
+                }],
+                else_block: None,
+                span: test_span(),
+            },
+            rumoca_core::Statement::Assignment {
+                comp: make_comp_ref("y"),
+                value: make_var_ref("x"),
+                span: test_span(),
+            },
+        ],
+        test_span(),
+        "if reassignment after current value".to_string(),
+    ));
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("conditional reassignment should lower");
+
+    let updates = dae
+        .discrete
+        .real_updates
+        .iter()
+        .filter_map(|eq| {
+            Some((
+                eq.lhs.as_ref()?.as_str().to_string(),
+                format!("{:?}", eq.rhs),
+            ))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    for target in ["x", "y"] {
+        let rhs = updates
+            .get(target)
+            .unwrap_or_else(|| panic!("missing lowered update for {target}"));
+        assert!(
+            rhs.contains("VarName(\"raw\")"),
+            "{target} should retain the current-step raw value in the false branch, got {rhs}"
+        );
+        assert!(
+            !rhs.contains("VarName(\"__pre__.x\")"),
+            "{target} must not read pre(x) for an if reassignment false branch, got {rhs}"
+        );
+    }
+}
+
+#[test]
 fn test_todae_lowers_when_algorithm_for_loop_with_sequential_cross_target_updates() {
     let mut flat = Model::new();
     add_tick_z_y_discrete_fixture(&mut flat);

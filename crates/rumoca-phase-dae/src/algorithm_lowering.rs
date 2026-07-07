@@ -1134,6 +1134,18 @@ fn algorithm_if_fallback_expr(
     }
 }
 
+fn algorithm_if_unassigned_branch_expr(
+    dae: &Dae,
+    target: &VarName,
+    span: Span,
+    outer_current_values: &IndexMap<VarName, Expression>,
+) -> Result<Expression, String> {
+    match outer_current_values.get(target) {
+        Some(value) => Ok(value.clone()),
+        None => algorithm_if_fallback_expr(dae, target, span),
+    }
+}
+
 fn algorithm_assignment_to_target_expr(
     dae: &Dae,
     statement: &Statement,
@@ -1472,17 +1484,25 @@ fn lower_if_statement_assignments(
         for (condition, assignments) in &branch_maps {
             let rhs = match assignments.get(&target) {
                 Some((_, value, _, _)) => value.clone(),
-                // MLS §11.1.3: if an if-branch does not assign a target variable,
-                // the variable retains its value — pre(x) for discrete, x for continuous.
-                None => algorithm_if_fallback_expr(dae, &target, if_span)?,
+                // MLS §11.1.3: if a branch does not assign a target variable,
+                // the variable retains its value at if-entry. That can be a
+                // value assigned earlier in this algorithm invocation.
+                None => algorithm_if_unassigned_branch_expr(
+                    dae,
+                    &target,
+                    if_span,
+                    outer_current_values,
+                )?,
             };
             branches.push((condition.clone(), rhs));
         }
         let else_rhs = match else_assignments.get(&target) {
             Some((_, value, _, _)) => value.clone(),
-            // MLS §11.1.3: unassigned target in else-branch falls back to pre(x) for discrete,
-            // x for continuous.
-            None => algorithm_if_fallback_expr(dae, &target, if_span)?,
+            // No else branch means no assignment happened on the false path,
+            // so keep the if-entry value rather than jumping to event-entry pre(x).
+            None => {
+                algorithm_if_unassigned_branch_expr(dae, &target, if_span, outer_current_values)?
+            }
         };
         lowered.push((
             target,
