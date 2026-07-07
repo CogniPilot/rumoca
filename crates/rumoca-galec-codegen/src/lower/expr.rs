@@ -30,22 +30,23 @@
 //!   `self.<name>` state reference.
 
 mod function_inline;
+mod references;
 
 use std::collections::HashSet;
 
 use rumoca_core::{
-    BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Span, Subscript, VarName,
-    component_path_trailing_index, is_pre_slot, pre_slot_base,
+    BuiltinFunction, ComprehensionIndex, Expression, Function, Literal, OpBinary, OpUnary, Span,
+    Subscript, VarName,
 };
 use rumoca_ir_dae::DaeSymbolTable;
 use rumoca_ir_galec::ast::{
     self as gast, BinaryOp, FunctionCall, IfExpression, Name, RefPart, Reference, ScalarType,
 };
 
-use crate::classify::{Classification, VariableClass};
+use crate::classify::Classification;
 use crate::diagnostic::GalecTargetError;
-use crate::lower::conditions::{ConditionTable, condition_ref_index, pre_condition_ref_index};
-use function_inline::inline_function_call;
+use crate::lower::conditions::ConditionTable;
+use function_inline::{inline_function_call, inline_function_output_call};
 
 /// A lowered expression together with its GALEC scalar (element) type.
 pub(crate) struct Typed {
@@ -76,6 +77,34 @@ impl Typed {
 
     fn rank(&self) -> usize {
         self.shape.len()
+    }
+}
+
+enum InlineFunctionTarget {
+    Whole {
+        function: Function,
+    },
+    Output {
+        function: Function,
+        output_name: String,
+    },
+}
+
+impl InlineFunctionTarget {
+    fn active_name(&self) -> &str {
+        match self {
+            Self::Whole { function } | Self::Output { function, .. } => function.name.as_str(),
+        }
+    }
+
+    fn inline(&self, args: &[Expression], span: Span) -> Result<Expression, GalecTargetError> {
+        match self {
+            Self::Whole { function } => inline_function_call(function, args, span),
+            Self::Output {
+                function,
+                output_name,
+            } => inline_function_output_call(function, args, output_name, span),
+        }
     }
 }
 
@@ -201,569 +230,6 @@ impl<'a> ExprLowerer<'a> {
             return Err(mismatch(context, "Boolean", typed.ty, expr.span()));
         }
         Ok(typed.expr)
-    }
-
-    // -----------------------------------------------------------------
-    // References
-    // -----------------------------------------------------------------
-
-    fn lower_var_ref(
-        &mut self,
-        name: &str,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        if name == "time" && subscripts.is_empty() {
-            return Err(unsupported(
-                "time-in-discrete-block".to_owned(),
-                "reference to the continuous independent variable `time`".to_owned(),
-                Some(span),
-            ));
-        }
-        if let Some(condition_base) = &self.conditions.base_name {
-            let as_expr = Expression::VarRef {
-                name: rumoca_core::Reference::new(name),
-                subscripts: subscripts.to_vec(),
-                span,
-            };
-            if let Some(index) = condition_ref_index(&as_expr, condition_base) {
-                return self.inline_condition(index, span);
-            }
-            if pre_condition_ref_index(&as_expr, condition_base).is_some()
-                || name == condition_base
-                || pre_slot_base(name) == Some(condition_base.as_str())
-            {
-                return Err(unsupported(
-                    "condition-memory-outside-guard".to_owned(),
-                    format!(
-                        "generated when-edge condition machinery `{name}` referenced \
-                         outside a recognizable when-edge guard"
-                    ),
-                    Some(span),
-                ));
-            }
-        }
-        if is_pre_slot(name) {
-            return self.lower_pre_ref(name, subscripts, span);
-        }
-        self.lower_state_ref(name, subscripts, span)
-    }
-
-    /// `__pre__.x` → `self.'previous(x)'`, recorded in the referenced set.
-    /// Like [`Self::lower_state_ref`], the rendered element form
-    /// (`__pre__.x[2]`) resolves through its base slot with the index as a
-    /// literal subscript.
-    fn lower_pre_ref(
-        &mut self,
-        slot_name: &str,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        let (classified, prefix_indices) = match self.classification.find(slot_name) {
-            Some(classified) => (classified, Vec::new()),
-            None => {
-                let Some((base, index)) = component_path_trailing_index(slot_name) else {
-                    return Err(GalecTargetError::UnknownVariableReference {
-                        name: slot_name.to_owned(),
-                        span: optional(span),
-                    });
-                };
-                let Some(classified) = self.classification.find(&base) else {
-                    return Err(GalecTargetError::UnknownVariableReference {
-                        name: slot_name.to_owned(),
-                        span: optional(span),
-                    });
-                };
-                let index =
-                    i64::try_from(index).map_err(|_| GalecTargetError::LoweringInternal {
-                        detail: format!("index of `{slot_name}` exceeds i64"),
-                    })?;
-                (classified, vec![index])
-            }
-        };
-        if classified.pre_base.is_none() {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: format!(
-                    "variable `{slot_name}` carries the pre-slot prefix but did not \
-                     classify as a pre slot"
-                ),
-            });
-        }
-        // Record the SLOT name (`__pre__.x`), not the rendered element name:
-        // the kept-slot filter and the commit builder match on it.
-        self.referenced_pre
-            .record(classified.variable.name.as_str());
-        self.lower_reference_access(classified, prefix_indices, subscripts, span)
-    }
-
-    fn lower_state_ref(
-        &mut self,
-        name: &str,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        // Exact-name match first (scalar variables), then base-name match
-        // with the rendered index as an extra subscript (`x[2]`).
-        let (classified, prefix_indices) = match self.classification.find(name) {
-            Some(classified) => (classified, Vec::new()),
-            None => {
-                let Some((base, index)) = component_path_trailing_index(name) else {
-                    return Err(GalecTargetError::UnknownVariableReference {
-                        name: name.to_owned(),
-                        span: optional(span),
-                    });
-                };
-                let Some(classified) = self.classification.find(&base) else {
-                    return Err(GalecTargetError::UnknownVariableReference {
-                        name: name.to_owned(),
-                        span: optional(span),
-                    });
-                };
-                let index =
-                    i64::try_from(index).map_err(|_| GalecTargetError::LoweringInternal {
-                        detail: format!("index of `{name}` exceeds i64"),
-                    })?;
-                (classified, vec![index])
-            }
-        };
-        if classified.projection_internal {
-            return Err(unsupported(
-                "condition-memory-outside-guard".to_owned(),
-                format!("generated condition machinery `{name}` referenced as a value"),
-                Some(span),
-            ));
-        }
-        self.lower_reference_access(classified, prefix_indices, subscripts, span)
-    }
-
-    fn lower_reference_access(
-        &mut self,
-        classified: &crate::classify::ClassifiedVariable<'_>,
-        prefix_indices: Vec<i64>,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        let dims = &classified.variable.dims;
-        let subscript_count = prefix_indices.len() + subscripts.len();
-        if subscript_count == 0 {
-            return Ok(Typed::array(
-                state_ref(classified.galec_name.clone(), Vec::new()),
-                classified.scalar_type,
-                dims.clone(),
-            ));
-        }
-        if subscript_count != dims.len() {
-            return Err(unsupported(
-                "array-partial-subscript".to_owned(),
-                format!(
-                    "reference to `{}` uses {subscript_count} subscript(s) for {} dimension(s)",
-                    classified.variable.name.as_str(),
-                    dims.len()
-                ),
-                Some(span),
-            ));
-        }
-        if subscripts
-            .iter()
-            .any(|subscript| matches!(subscript, Subscript::Colon { .. }))
-        {
-            return self.lower_slice_reference(classified, prefix_indices, subscripts, span);
-        }
-        if subscripts
-            .iter()
-            .any(|subscript| self.static_index_value(subscript).is_none())
-        {
-            if !prefix_indices.is_empty() {
-                return Err(unsupported(
-                    "dynamic-subscript-after-rendered-index".to_owned(),
-                    format!(
-                        "dynamic subscript on scalarized element name `{}`",
-                        classified.variable.name.as_str()
-                    ),
-                    Some(span),
-                ));
-            }
-            return self.lower_dynamic_reference_selection(classified, subscripts, span);
-        }
-        let mut galec_subscripts = prefix_indices
-            .into_iter()
-            .map(gast::Expression::Integer)
-            .collect::<Vec<_>>();
-        galec_subscripts.extend(self.lower_subscripts(subscripts)?);
-        Ok(Typed::new(
-            state_ref(classified.galec_name.clone(), galec_subscripts),
-            classified.scalar_type,
-        ))
-    }
-
-    fn lower_slice_reference(
-        &mut self,
-        classified: &crate::classify::ClassifiedVariable<'_>,
-        prefix_indices: Vec<i64>,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        let mut full_subscripts = prefix_indices
-            .into_iter()
-            .map(|value| Subscript::index(value, Span::DUMMY))
-            .collect::<Vec<_>>();
-        full_subscripts.extend_from_slice(subscripts);
-        let shape = full_subscripts
-            .iter()
-            .zip(&classified.variable.dims)
-            .filter_map(|(subscript, dimension)| {
-                matches!(subscript, Subscript::Colon { .. }).then_some(*dimension)
-            })
-            .collect::<Vec<_>>();
-        let expr = self.slice_array_expression(classified, &mut full_subscripts, 0, span)?;
-        Ok(Typed::array(expr, classified.scalar_type, shape))
-    }
-
-    fn slice_array_expression(
-        &mut self,
-        classified: &crate::classify::ClassifiedVariable<'_>,
-        subscripts: &mut [Subscript],
-        position: usize,
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let Some(colon_position) =
-            subscripts
-                .iter()
-                .enumerate()
-                .skip(position)
-                .find_map(|(index, subscript)| {
-                    matches!(subscript, Subscript::Colon { .. }).then_some(index)
-                })
-        else {
-            let typed = self.lower_reference_access(classified, Vec::new(), subscripts, span)?;
-            if !typed.is_scalar() {
-                return Err(GalecTargetError::LoweringInternal {
-                    detail: "array slice expansion produced a non-scalar element".to_owned(),
-                });
-            }
-            return Ok(typed.expr);
-        };
-        let dimension = classified.variable.dims[colon_position];
-        if dimension < 1 {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: format!(
-                    "non-positive slice dimension {dimension} on `{}` survived admissibility",
-                    classified.variable.name.as_str()
-                ),
-            });
-        }
-        let original = subscripts[colon_position].clone();
-        let mut elements = Vec::new();
-        for index in 1..=dimension {
-            subscripts[colon_position] = Subscript::index(index, span);
-            elements.push(self.slice_array_expression(
-                classified,
-                subscripts,
-                colon_position + 1,
-                span,
-            )?);
-        }
-        subscripts[colon_position] = original;
-        Ok(gast::Expression::Array(elements))
-    }
-
-    fn lower_dynamic_reference_selection(
-        &mut self,
-        classified: &crate::classify::ClassifiedVariable<'_>,
-        subscripts: &[Subscript],
-        _span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        let dims = &classified.variable.dims;
-        let combinations =
-            self.static_index_combinations(dims, subscripts, classified.variable.name.as_str())?;
-        let Some((else_indices, branch_indices)) = combinations.split_last() else {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: "dynamic subscript expansion saw an empty index domain".to_owned(),
-            });
-        };
-        let mut branches = Vec::with_capacity(branch_indices.len());
-        for indices in branch_indices {
-            let condition = self.dynamic_index_condition(subscripts, indices)?;
-            branches.push((condition, self.static_reference_value(classified, indices)));
-        }
-        Ok(Typed::new(
-            gast::Expression::If(IfExpression {
-                branches,
-                else_value: Box::new(self.static_reference_value(classified, else_indices)),
-            }),
-            classified.scalar_type,
-        ))
-    }
-
-    fn static_reference_value(
-        &self,
-        classified: &crate::classify::ClassifiedVariable<'_>,
-        indices: &[i64],
-    ) -> gast::Expression {
-        let subscripts = indices
-            .iter()
-            .copied()
-            .map(gast::Expression::Integer)
-            .collect();
-        state_ref(classified.galec_name.clone(), subscripts)
-    }
-
-    fn dynamic_index_condition(
-        &mut self,
-        subscripts: &[Subscript],
-        indices: &[i64],
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let mut conditions = Vec::new();
-        for (subscript, index) in subscripts.iter().zip(indices) {
-            if self.static_index_value(subscript).is_some() {
-                continue;
-            }
-            let Subscript::Expr { expr, span } = subscript else {
-                return Err(unsupported(
-                    "array-slice".to_owned(),
-                    "`:` array slice subscript".to_owned(),
-                    Some(subscript.span()),
-                ));
-            };
-            let lhs = self.lower_as_integer(expr, *span)?;
-            conditions.push(gast::Expression::binary(
-                BinaryOp::Eq,
-                lhs,
-                gast::Expression::Integer(*index),
-            ));
-        }
-        conjunction(conditions).ok_or_else(|| GalecTargetError::LoweringInternal {
-            detail: "dynamic subscript expansion produced no dynamic conditions".to_owned(),
-        })
-    }
-
-    fn lower_subscripts(
-        &mut self,
-        subscripts: &[Subscript],
-    ) -> Result<Vec<gast::Expression>, GalecTargetError> {
-        subscripts
-            .iter()
-            .map(|subscript| match subscript {
-                Subscript::Index { value, .. } => Ok(gast::Expression::Integer(*value)),
-                Subscript::Expr { expr, span } => {
-                    if let Some(value) = self.static_index_value(subscript) {
-                        return Ok(gast::Expression::Integer(value));
-                    }
-                    let typed = self.lower(expr)?;
-                    if typed.ty != ScalarType::Integer {
-                        return Err(mismatch(
-                            "array subscript",
-                            "Integer",
-                            typed.ty,
-                            Some(*span),
-                        ));
-                    }
-                    Ok(typed.expr)
-                }
-                Subscript::Colon { span } => Err(unsupported(
-                    "array-slice".to_owned(),
-                    "`:` array slice subscript".to_owned(),
-                    Some(*span),
-                )),
-            })
-            .collect()
-    }
-
-    fn static_index_value(&self, subscript: &Subscript) -> Option<i64> {
-        match subscript {
-            Subscript::Index { value, .. } => Some(*value),
-            Subscript::Expr { expr, .. } => self.static_integer_expression(expr),
-            Subscript::Colon { .. } => None,
-        }
-    }
-
-    fn static_integer_expression(&self, expr: &Expression) -> Option<i64> {
-        match expr {
-            Expression::Literal {
-                value: Literal::Integer(value),
-                ..
-            } => Some(*value),
-            Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => self.constant_integer_value(name.as_str()),
-            _ => None,
-        }
-    }
-
-    fn constant_integer_value(&self, name: &str) -> Option<i64> {
-        let classified = self.classification.find(name)?;
-        if classified.class != VariableClass::Constant || !classified.variable.dims.is_empty() {
-            return None;
-        }
-        match classified.variable.start.as_ref()? {
-            Expression::Literal {
-                value: Literal::Integer(value),
-                ..
-            } => Some(*value),
-            _ => None,
-        }
-    }
-
-    fn static_index_combinations(
-        &self,
-        dims: &[i64],
-        subscripts: &[Subscript],
-        variable: &str,
-    ) -> Result<Vec<Vec<i64>>, GalecTargetError> {
-        let mut choices = Vec::with_capacity(dims.len());
-        for (dimension, subscript) in dims.iter().zip(subscripts) {
-            choices.push(self.subscript_index_choices(*dimension, subscript, variable)?);
-        }
-        let mut result = vec![Vec::new()];
-        for values in choices {
-            result = extend_index_combinations(result, &values);
-        }
-        Ok(result)
-    }
-
-    fn subscript_index_choices(
-        &self,
-        dimension: i64,
-        subscript: &Subscript,
-        variable: &str,
-    ) -> Result<Vec<i64>, GalecTargetError> {
-        if let Some(index) = self.static_index_value(subscript) {
-            return Ok(vec![index]);
-        }
-        if dimension < 1 {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: format!(
-                    "non-positive dimension {dimension} on `{variable}` survived admissibility"
-                ),
-            });
-        }
-        self.require_dynamic_subscript_range(subscript, dimension, variable)?;
-        Ok((1..=dimension).collect())
-    }
-
-    fn require_dynamic_subscript_range(
-        &self,
-        subscript: &Subscript,
-        dimension: i64,
-        variable: &str,
-    ) -> Result<(), GalecTargetError> {
-        let Subscript::Expr { expr, span } = subscript else {
-            return Ok(());
-        };
-        let Some((min, max)) = self.integer_expression_range(expr) else {
-            return Err(unsupported(
-                "dynamic-array-subscript-range".to_owned(),
-                format!(
-                    "dynamic subscript into `{variable}` must have statically known Integer \
-                     bounds inside 1..{dimension}"
-                ),
-                Some(*span),
-            ));
-        };
-        if min < 1 || max > dimension {
-            return Err(unsupported(
-                "dynamic-array-subscript-range".to_owned(),
-                format!(
-                    "dynamic subscript into `{variable}` has proven bounds {min}..{max}, \
-                     outside 1..{dimension}"
-                ),
-                Some(*span),
-            ));
-        }
-        Ok(())
-    }
-
-    fn integer_expression_range(&self, expr: &Expression) -> Option<(i64, i64)> {
-        match expr {
-            Expression::Literal {
-                value: Literal::Integer(value),
-                ..
-            } => Some((*value, *value)),
-            Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => self.variable_integer_range(name.as_str()),
-            Expression::Unary {
-                op: OpUnary::Minus,
-                rhs,
-                ..
-            } => {
-                let (min, max) = self.integer_expression_range(rhs)?;
-                Some((max.checked_neg()?, min.checked_neg()?))
-            }
-            Expression::Binary {
-                op: OpBinary::Add,
-                lhs,
-                rhs,
-                ..
-            } => {
-                let (left_min, left_max) = self.integer_expression_range(lhs)?;
-                let (right_min, right_max) = self.integer_expression_range(rhs)?;
-                Some((
-                    left_min.checked_add(right_min)?,
-                    left_max.checked_add(right_max)?,
-                ))
-            }
-            Expression::Binary {
-                op: OpBinary::Sub,
-                lhs,
-                rhs,
-                ..
-            } => {
-                let (left_min, left_max) = self.integer_expression_range(lhs)?;
-                let (right_min, right_max) = self.integer_expression_range(rhs)?;
-                Some((
-                    left_min.checked_sub(right_max)?,
-                    left_max.checked_sub(right_min)?,
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    fn variable_integer_range(&self, name: &str) -> Option<(i64, i64)> {
-        self.classified_integer_range(name)
-            .or_else(|| pre_slot_base(name).and_then(|base| self.classified_integer_range(base)))
-    }
-
-    fn classified_integer_range(&self, name: &str) -> Option<(i64, i64)> {
-        let classified = self.classification.find(name)?;
-        let min = integer_bound(classified.variable.min.as_ref()?)?;
-        let max = integer_bound(classified.variable.max.as_ref()?)?;
-        (min <= max).then_some((min, max))
-    }
-
-    /// Inline `c[index]` to its defining Boolean expression.
-    fn inline_condition(&mut self, index: usize, span: Span) -> Result<Typed, GalecTargetError> {
-        let Some(entry) = self.conditions.entry(index) else {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: format!("reference to undefined condition slot c[{index}]"),
-            });
-        };
-        if entry.is_sample {
-            return Err(unsupported(
-                "sample-condition-as-value".to_owned(),
-                "the clock sample-tick condition used as a value expression".to_owned(),
-                Some(span),
-            ));
-        }
-        if self.inlining.contains(&index) {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: format!("condition slot c[{index}] is defined in terms of itself"),
-            });
-        }
-        self.inlining.push(index);
-        let result = self.lower(entry.rhs);
-        self.inlining.pop();
-        let typed = result?;
-        if typed.ty != ScalarType::Boolean {
-            return Err(mismatch(
-                "inlined condition expression",
-                "Boolean",
-                typed.ty,
-                optional(span),
-            ));
-        }
-        Ok(typed)
     }
 
     // -----------------------------------------------------------------
@@ -1107,160 +573,6 @@ impl<'a> ExprLowerer<'a> {
         ))
     }
 
-    fn lower_index(
-        &mut self,
-        base: &Expression,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        if subscripts.is_empty() {
-            return self.lower(base);
-        }
-        match base {
-            Expression::VarRef {
-                name,
-                subscripts: base_subscripts,
-                span,
-            } => {
-                let mut combined = base_subscripts.clone();
-                combined.extend_from_slice(subscripts);
-                self.lower_var_ref(name.as_str(), &combined, *span)
-            }
-            Expression::Array { elements, .. } => {
-                let selected = self.select_array_element(elements, subscripts, span)?;
-                self.lower(selected)
-            }
-            Expression::If {
-                branches,
-                else_branch,
-                span,
-            } => {
-                let indexed_branches = branches
-                    .iter()
-                    .map(|(condition, value)| {
-                        (
-                            condition.clone(),
-                            indexed_expression(value.clone(), subscripts.to_vec(), *span),
-                        )
-                    })
-                    .collect();
-                let indexed_else =
-                    indexed_expression(else_branch.as_ref().clone(), subscripts.to_vec(), *span);
-                self.lower(&Expression::If {
-                    branches: indexed_branches,
-                    else_branch: Box::new(indexed_else),
-                    span: *span,
-                })
-            }
-            Expression::Binary { op, lhs, rhs, span } => {
-                self.lower_indexed_binary(op, lhs, rhs, *span, subscripts)
-            }
-            Expression::Unary { op, rhs, span } => {
-                let value = self.lower(rhs)?;
-                if value.is_scalar() {
-                    return Err(unsupported(
-                        "scalar-indexed-expression".to_owned(),
-                        "indexed expression over a scalar unary result".to_owned(),
-                        Some(*span),
-                    ));
-                }
-                self.lower(&Expression::Unary {
-                    op: op.clone(),
-                    rhs: Box::new(indexed_expression(
-                        rhs.as_ref().clone(),
-                        subscripts.to_vec(),
-                        *span,
-                    )),
-                    span: *span,
-                })
-            }
-            Expression::FunctionCall {
-                name,
-                args,
-                is_constructor,
-                span: call_span,
-            } => self.lower_indexed_function_call(
-                name,
-                args,
-                *is_constructor,
-                *call_span,
-                subscripts,
-                span,
-            ),
-            _ => Err(unsupported(
-                "indexed-expression-base".to_owned(),
-                format!("indexed expression over {}", form_name(base)),
-                Some(span),
-            )),
-        }
-    }
-
-    fn lower_indexed_binary(
-        &mut self,
-        op: &OpBinary,
-        lhs: &Expression,
-        rhs: &Expression,
-        span: Span,
-        subscripts: &[Subscript],
-    ) -> Result<Typed, GalecTargetError> {
-        let left = self.lower(lhs)?;
-        let right = self.lower(rhs)?;
-        if matches!(op, OpBinary::Mul) && vector_dot_shape(&left, &right).is_some() {
-            return Err(unsupported(
-                "scalar-indexed-expression".to_owned(),
-                "indexed expression over a vector dot-product result".to_owned(),
-                Some(span),
-            ));
-        }
-        if left.is_scalar() && right.is_scalar() {
-            return Err(unsupported(
-                "scalar-indexed-expression".to_owned(),
-                "indexed expression over a scalar binary result".to_owned(),
-                Some(span),
-            ));
-        }
-        let lhs = if left.is_scalar() {
-            lhs.clone()
-        } else {
-            indexed_expression(lhs.clone(), subscripts.to_vec(), span)
-        };
-        let rhs = if right.is_scalar() {
-            rhs.clone()
-        } else {
-            indexed_expression(rhs.clone(), subscripts.to_vec(), span)
-        };
-        self.lower(&Expression::Binary {
-            op: op.clone(),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span,
-        })
-    }
-
-    fn lower_indexed_function_call(
-        &mut self,
-        name: &rumoca_core::Reference,
-        args: &[Expression],
-        is_constructor: bool,
-        call_span: Span,
-        subscripts: &[Subscript],
-        index_span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        self.lower_inlined_function_call(
-            name,
-            args,
-            is_constructor,
-            call_span,
-            |lowerer, expression| {
-                lowerer.lower(&indexed_expression(
-                    expression,
-                    subscripts.to_vec(),
-                    index_span,
-                ))
-            },
-        )
-    }
-
     fn lower_function_call(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1298,17 +610,19 @@ impl<'a> ExprLowerer<'a> {
                 Some(span),
             ));
         }
-        let Some(function) = self.functions.functions.get(&VarName::new(name.as_str())) else {
+        let args = self.inline_expression_function_calls_in_slice(args)?;
+        let Some(target) = self.inline_function_target(name.as_str()) else {
             return Err(unsupported(
                 format!("user-function-call:{}", name.as_str()),
                 format!("call to `{}` in a lowered expression", name.as_str()),
                 Some(span),
             ));
         };
+        let active_name = target.active_name().to_owned();
         if self
             .inlined_functions
             .iter()
-            .any(|active| active == name.as_str())
+            .any(|active| active == active_name.as_str())
         {
             return Err(unsupported(
                 format!("recursive-user-function:{}", name.as_str()),
@@ -1319,8 +633,8 @@ impl<'a> ExprLowerer<'a> {
                 Some(span),
             ));
         }
-        self.inlined_functions.push(name.as_str().to_owned());
-        let expression = inline_function_call(function, args, span);
+        self.inlined_functions.push(active_name);
+        let expression = target.inline(&args, span);
         let result = match expression {
             Ok(expression) => lower(self, expression),
             Err(error) => Err(error),
@@ -1329,45 +643,255 @@ impl<'a> ExprLowerer<'a> {
         result
     }
 
-    fn select_array_element<'b>(
-        &self,
-        elements: &'b [Expression],
-        subscripts: &[Subscript],
+    fn inline_expression_function_calls_in_slice(
+        &mut self,
+        expressions: &[Expression],
+    ) -> Result<Vec<Expression>, GalecTargetError> {
+        expressions
+            .iter()
+            .map(|expr| self.inline_expression_function_calls(expr))
+            .collect()
+    }
+
+    fn inline_expression_function_calls(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<Expression, GalecTargetError> {
+        match expr {
+            Expression::Binary { op, lhs, rhs, span } => Ok(Expression::Binary {
+                op: op.clone(),
+                lhs: Box::new(self.inline_expression_function_calls(lhs)?),
+                rhs: Box::new(self.inline_expression_function_calls(rhs)?),
+                span: *span,
+            }),
+            Expression::Unary { op, rhs, span } => Ok(Expression::Unary {
+                op: op.clone(),
+                rhs: Box::new(self.inline_expression_function_calls(rhs)?),
+                span: *span,
+            }),
+            Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } => Ok(Expression::VarRef {
+                name: name.clone(),
+                subscripts: self.inline_function_calls_in_subscripts(subscripts)?,
+                span: *span,
+            }),
+            Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } => Ok(Expression::BuiltinCall {
+                function: *function,
+                args: self.inline_expression_function_calls_in_slice(args)?,
+                span: *span,
+            }),
+            Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                span,
+            } => self.inline_expression_function_call_expr(name, args, *is_constructor, *span),
+            Expression::Literal { value, span } => Ok(Expression::Literal {
+                value: value.clone(),
+                span: *span,
+            }),
+            Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => self.inline_function_calls_in_if(branches, else_branch, *span),
+            Expression::Array {
+                elements,
+                is_matrix,
+                span,
+            } => Ok(Expression::Array {
+                elements: self.inline_expression_function_calls_in_slice(elements)?,
+                is_matrix: *is_matrix,
+                span: *span,
+            }),
+            Expression::Tuple { elements, span } => Ok(Expression::Tuple {
+                elements: self.inline_expression_function_calls_in_slice(elements)?,
+                span: *span,
+            }),
+            Expression::Range {
+                start,
+                step,
+                end,
+                span,
+            } => Ok(Expression::Range {
+                start: Box::new(self.inline_expression_function_calls(start)?),
+                step: step
+                    .as_deref()
+                    .map(|expr| self.inline_expression_function_calls(expr).map(Box::new))
+                    .transpose()?,
+                end: Box::new(self.inline_expression_function_calls(end)?),
+                span: *span,
+            }),
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                span,
+            } => self.inline_function_calls_in_comprehension(expr, indices, filter, *span),
+            Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => Ok(Expression::Index {
+                base: Box::new(self.inline_expression_function_calls(base)?),
+                subscripts: self.inline_function_calls_in_subscripts(subscripts)?,
+                span: *span,
+            }),
+            Expression::FieldAccess { base, field, span } => Ok(Expression::FieldAccess {
+                base: Box::new(self.inline_expression_function_calls(base)?),
+                field: field.clone(),
+                span: *span,
+            }),
+            Expression::Empty { span } => Ok(Expression::Empty { span: *span }),
+        }
+    }
+
+    fn inline_expression_function_call_expr(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
         span: Span,
-    ) -> Result<&'b Expression, GalecTargetError> {
-        let Some((first, rest)) = subscripts.split_first() else {
-            return Err(GalecTargetError::LoweringInternal {
-                detail: "array element selection called without subscripts".to_owned(),
+    ) -> Result<Expression, GalecTargetError> {
+        let args = self.inline_expression_function_calls_in_slice(args)?;
+        if is_constructor || name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+            return Ok(Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor,
+                span,
+            });
+        }
+        let Some(target) = self.inline_function_target(name.as_str()) else {
+            return Ok(Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor,
+                span,
             });
         };
-        let Some(index) = self.static_index_value(first) else {
+        self.inline_user_function_expression(name.as_str(), target, &args, span)
+    }
+
+    fn inline_user_function_expression(
+        &mut self,
+        name: &str,
+        target: InlineFunctionTarget,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Expression, GalecTargetError> {
+        let active_name = target.active_name().to_owned();
+        if self
+            .inlined_functions
+            .iter()
+            .any(|active| active == active_name.as_str())
+        {
             return Err(unsupported(
-                "dynamic-indexed-array-constructor".to_owned(),
-                "dynamic subscript into an array constructor".to_owned(),
-                Some(first.span()),
-            ));
-        };
-        let index = usize::try_from(index)
-            .ok()
-            .filter(|index| *index >= 1 && *index <= elements.len())
-            .ok_or_else(|| GalecTargetError::LoweringInternal {
-                detail: format!(
-                    "array constructor index {index} is outside 1..{}",
-                    elements.len()
-                ),
-            })?;
-        let selected = &elements[index - 1];
-        if rest.is_empty() {
-            return Ok(selected);
-        }
-        match selected {
-            Expression::Array { elements, .. } => self.select_array_element(elements, rest, span),
-            _ => Err(unsupported(
-                "array-constructor-rank".to_owned(),
-                "too many subscripts for array constructor rank".to_owned(),
+                format!("recursive-user-function:{name}"),
+                format!("recursive call to `{name}` in a lowered expression"),
                 Some(span),
-            )),
+            ));
         }
+        self.inlined_functions.push(active_name);
+        let expression = target.inline(args, span);
+        let result = match expression {
+            Ok(expression) => self.inline_expression_function_calls(&expression),
+            Err(error) => Err(error),
+        };
+        self.inlined_functions.pop();
+        result
+    }
+
+    fn inline_function_target(&self, name: &str) -> Option<InlineFunctionTarget> {
+        if let Some(function) = self.functions.functions.get(&VarName::new(name)) {
+            return Some(InlineFunctionTarget::Whole {
+                function: function.clone(),
+            });
+        }
+        rumoca_core::find_map_top_level_splits_rev(name, |base, suffix| {
+            let function = self.functions.functions.get(&VarName::new(base))?;
+            function
+                .outputs
+                .iter()
+                .any(|output| output.name == suffix)
+                .then(|| InlineFunctionTarget::Output {
+                    function: function.clone(),
+                    output_name: suffix.to_owned(),
+                })
+        })
+    }
+
+    fn inline_function_calls_in_if(
+        &mut self,
+        branches: &[(Expression, Expression)],
+        else_branch: &Expression,
+        span: Span,
+    ) -> Result<Expression, GalecTargetError> {
+        let branches = branches
+            .iter()
+            .map(|(condition, value)| {
+                Ok((
+                    self.inline_expression_function_calls(condition)?,
+                    self.inline_expression_function_calls(value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, GalecTargetError>>()?;
+        Ok(Expression::If {
+            branches,
+            else_branch: Box::new(self.inline_expression_function_calls(else_branch)?),
+            span,
+        })
+    }
+
+    fn inline_function_calls_in_comprehension(
+        &mut self,
+        expr: &Expression,
+        indices: &[ComprehensionIndex],
+        filter: &Option<Box<Expression>>,
+        span: Span,
+    ) -> Result<Expression, GalecTargetError> {
+        let indices = indices
+            .iter()
+            .map(|index| {
+                Ok(ComprehensionIndex {
+                    name: index.name.clone(),
+                    range: self.inline_expression_function_calls(&index.range)?,
+                })
+            })
+            .collect::<Result<Vec<_>, GalecTargetError>>()?;
+        Ok(Expression::ArrayComprehension {
+            expr: Box::new(self.inline_expression_function_calls(expr)?),
+            indices,
+            filter: filter
+                .as_deref()
+                .map(|expr| self.inline_expression_function_calls(expr).map(Box::new))
+                .transpose()?,
+            span,
+        })
+    }
+
+    fn inline_function_calls_in_subscripts(
+        &mut self,
+        subscripts: &[Subscript],
+    ) -> Result<Vec<Subscript>, GalecTargetError> {
+        subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                Subscript::Index { value, span } => Ok(Subscript::index(*value, *span)),
+                Subscript::Colon { span } => Ok(Subscript::colon(*span)),
+                Subscript::Expr { expr, span } => Ok(Subscript::expr(
+                    Box::new(self.inline_expression_function_calls(expr)?),
+                    *span,
+                )),
+            })
+            .collect()
     }
 
     fn lower_builtin(
@@ -1921,6 +1445,20 @@ fn form_name(expr: &Expression) -> &'static str {
         Expression::FieldAccess { .. } => "field access",
         Expression::Empty { .. } => "empty expression",
     }
+}
+
+fn is_slice_subscript(subscript: &Subscript) -> bool {
+    match subscript {
+        Subscript::Colon { .. } => true,
+        Subscript::Expr { expr, .. } => matches!(expr.as_ref(), Expression::Range { .. }),
+        Subscript::Index { .. } => false,
+    }
+}
+
+fn slice_len_to_i64(len: usize) -> Result<i64, GalecTargetError> {
+    i64::try_from(len).map_err(|_| GalecTargetError::LoweringInternal {
+        detail: "slice result length exceeds i64".to_owned(),
+    })
 }
 
 fn optional(span: Span) -> Option<Span> {
