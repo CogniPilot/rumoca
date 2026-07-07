@@ -1997,9 +1997,13 @@ jobs:
       # never collides with an existing release.
       - name: Create GitHub Release
         run: |
-          gh release create ${{ steps.tag.outputs.name }} \
-            --title "Release ${{ steps.tag.outputs.name }}" \
-            --generate-notes
+          if gh release view ${{ steps.tag.outputs.name }} >/dev/null 2>&1; then
+            echo "Release ${{ steps.tag.outputs.name }} already exists; reusing it."
+          else
+            gh release create ${{ steps.tag.outputs.name }} \
+              --title "Release ${{ steps.tag.outputs.name }}" \
+              --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2083,13 +2087,16 @@ jobs:
       - name: Setup Node.js for npm publish
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Publish npm package to npmjs
         shell: bash
         run: |
           set -euo pipefail
+          echo "node $(node --version)"
+          echo "npm $(npm --version)"
           # Two packages: the batteries-included build and the compile/codegen
           # build (no solver runtime). Both are wasm-opt'd in build-wasm.
           for variant in release-full-web release-core; do
@@ -2109,7 +2116,5 @@ jobs:
             fi
             npm publish "$pkg_dir" --access public
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Rust binary and VS Code extension artifacts are distributed via GitHub Releases.
