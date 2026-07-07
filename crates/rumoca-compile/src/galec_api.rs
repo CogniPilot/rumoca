@@ -2,8 +2,9 @@
 //!
 //! Frontends reach the `rumoca-galec-codegen` projection only through this
 //! module: it supplies the auxiliary provenance the canonical DAE does not
-//! carry — the [`ScalarTypeMap`] built from Flat-side declared types — and
-//! drives the projection into the CLI's declarative eFMU packaging step.
+//! carry — the [`ScalarTypeMap`] built from Flat-side declared types — runs
+//! the GALEC-only DAE projection preparation on a clone, and drives the
+//! projection into the CLI's declarative eFMU packaging step.
 //!
 //! The container products are produced through [`GalecPackagingPlan`]: the
 //! `rumoca` crate's generic checksum/container build step renders each
@@ -112,6 +113,18 @@ pub struct GalecCExport {
     /// `include_guard`, `variables`, `methods` — the complete template
     /// context, C text intelligence stays in the typed printer (D2/GAL-008).
     pub context: serde_json::Value,
+}
+
+/// Return the DAE shape used by GALEC capability checks and projection.
+///
+/// The canonical DAE is left untouched. GALEC targets use this prepared clone
+/// so component-local output aliases that are only meaningful as intermediate
+/// equations do not trip the target's no-continuous-state capability gate.
+#[must_use]
+pub fn dae_for_galec_projection(dae: &Dae) -> Dae {
+    let mut projection_dae = dae.clone();
+    rumoca_phase_dae::fold_hidden_component_outputs_for_projection(&mut projection_dae);
+    projection_dae
 }
 
 /// Render the embedded C export context for a compiled model: the same
@@ -508,14 +521,15 @@ fn as_render_error(error: impl Into<GalecTargetError>) -> GalecExportError {
 
 /// Project a compiled model to the validated Algorithm Code package — the
 /// shared first step of every export facade: Flat-side scalar-type
-/// provenance plus the untouched DAE through `lower_to_algorithm_code`.
+/// provenance plus a GALEC-prepared DAE clone through `lower_to_algorithm_code`.
 fn lower_package(
     dae: &Dae,
     flat: &FlatModel,
     model_name: &str,
 ) -> Result<AlgorithmCodePackage, GalecExportError> {
+    let projection_dae = dae_for_galec_projection(dae);
     let scalar_types = build_scalar_type_map(flat);
-    let input = GalecInput::new(dae, model_name).with_scalar_types(&scalar_types);
+    let input = GalecInput::new(&projection_dae, model_name).with_scalar_types(&scalar_types);
     lower_to_algorithm_code(&input, &GalecOptions::default()).map_err(GalecExportError::Projection)
 }
 

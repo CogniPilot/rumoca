@@ -843,22 +843,27 @@ jobs:
             --merge-shards target/msl/shards \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
 
+      - name: Validate merged MSL quality outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/msl/results/msl_results.json
+          test -s target/msl/results/msl_quality_current.json
+
       - name: Generate MSL compatibility report
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f target/msl/results/msl_results.json ]]; then
-            ./result-msl-artifacts/bin/rumoca-msl-tools compatibility-report
-          else
-            echo "No merged target/msl/results/msl_results.json; skipping report."
-          fi
+          test -s target/msl/results/msl_results.json
+          ./result-msl-artifacts/bin/rumoca-msl-tools compatibility-report
 
       - name: Generate MSL PR summary comment
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          test -s target/msl/results/msl_quality_current.json
           baseline="crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json"
           if [[ -f target/msl/baselines/msl_quality_baseline.json ]]; then
             baseline="target/msl/baselines/msl_quality_baseline.json"
@@ -1083,13 +1088,14 @@ jobs:
         with:
           name: msl-compatibility-report
           path: |
+            target/msl/results/msl_results.json
             target/msl/results/msl_quality_current.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/mls_contract_coverage.md
             target/msl/results/msl_pr_comment.md
             target/msl/results/msl_compatibility_report.md
             target/msl/results/msl_compatibility_report.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
   modelicatest-gate:
     name: ModelicaTest Semantic Gate
@@ -2046,25 +2052,25 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
           OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
-      - name: Publish Python packages to PyPI
+      - name: Stage Python packages for PyPI
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip twine
           shopt -s nullglob
+          mkdir -p pypi-dist
           python_files=(release-assets/*.whl release-assets/*.tar.gz)
           if [ "${#python_files[@]}" -eq 0 ]; then
             echo "::error::No Python distribution artifacts found in release-assets"
             exit 1
           fi
-          python -m twine upload --skip-existing "${python_files[@]}"
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          cp "${python_files[@]}" pypi-dist/
+          ls -la pypi-dist/
+
+      - name: Publish Python packages to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist
+          skip-existing: true
 
       - name: Setup Node.js for npm publish
         uses: actions/setup-node@v5

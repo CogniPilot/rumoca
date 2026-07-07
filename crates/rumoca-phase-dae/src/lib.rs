@@ -358,6 +358,16 @@ pub fn to_dae_with_options(
     Ok(dae)
 }
 
+/// Fold hidden scalar component-output algebraics for projection backends.
+///
+/// This is intentionally not part of canonical ToDae finalization. Some export
+/// targets need component-local output aliases expressed as ordinary discrete
+/// RHS expressions before their capability gates run, while simulation and MSL
+/// quality gates should consume the canonical DAE emitted by ToDae.
+pub fn fold_hidden_component_outputs_for_projection(dae: &mut dae::Dae) {
+    inline_hidden_component_algebraics::inline_hidden_component_algebraics(dae);
+}
+
 fn finalize_lowered_dae(
     dae: &mut dae::Dae,
     flat: &flat::Model,
@@ -404,13 +414,6 @@ fn finalize_lowered_dae(
         sort_parameters_by_start_dependency(dae);
         Ok::<(), ToDaeError>(())
     })?;
-    run_todae_phase(
-        todae_subphase_timing,
-        "inline_hidden_component_algebraics",
-        || {
-            inline_hidden_component_algebraics::inline_hidden_component_algebraics(dae);
-        },
-    );
     run_todae_phase(todae_subphase_timing, "reference_metadata", || {
         attach_dae_reference_metadata(dae)
     })?;

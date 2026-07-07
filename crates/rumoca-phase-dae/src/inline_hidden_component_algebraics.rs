@@ -107,6 +107,7 @@ fn removable_context_definitions(
             !continuous_equations_reference_target(dae, target, definition.equation_index)
                 && !equations_reference_target(&dae.initialization.equations, target)
                 && !variable_attributes_reference_target(&dae.variables, target)
+                && !event_or_clock_contexts_reference_target(dae, target)
         })
         .collect()
 }
@@ -162,6 +163,31 @@ fn variable_references_target(variable: &dae::Variable, target: &str) -> bool {
     .into_iter()
     .flatten()
     .any(|expression| references_target(expression, target))
+}
+
+fn event_or_clock_contexts_reference_target(dae: &dae::Dae, target: &str) -> bool {
+    expression_slots_reference_target(&dae.events.synthetic_root_conditions, target)
+        || event_actions_reference_target(&dae.events.event_actions, target)
+        || expression_slots_reference_target(&dae.clocks.constructor_exprs, target)
+        || expression_slots_reference_target(&dae.clocks.triggered_conditions, target)
+}
+
+fn expression_slots_reference_target(slots: &[Expression], target: &str) -> bool {
+    slots
+        .iter()
+        .any(|expression| references_target(expression, target))
+}
+
+fn event_actions_reference_target(actions: &[dae::DaeEventAction], target: &str) -> bool {
+    actions.iter().any(|action| {
+        references_target(&action.condition, target)
+            || match &action.kind {
+                dae::DaeEventActionKind::Assert { message }
+                | dae::DaeEventActionKind::Terminate { message } => {
+                    references_target(message, target)
+                }
+            }
+    })
 }
 
 fn is_component_owned_definition(equation: &dae::Equation, target: &str) -> bool {
@@ -283,10 +309,6 @@ fn rewrite_non_continuous_contexts(dae: &mut dae::Dae, definitions: &HashMap<Str
     rewriter.rewrite_equations(&mut dae.discrete.valued_updates);
     rewriter.rewrite_equations(&mut dae.conditions.equations);
     rewriter.rewrite_expression_slots(&mut dae.conditions.relations);
-    rewriter.rewrite_expression_slots(&mut dae.events.synthetic_root_conditions);
-    rewriter.rewrite_event_actions(&mut dae.events.event_actions);
-    rewriter.rewrite_expression_slots(&mut dae.clocks.constructor_exprs);
-    rewriter.rewrite_expression_slots(&mut dae.clocks.triggered_conditions);
 }
 
 fn declared_runtime_names(dae: &dae::Dae) -> HashSet<String> {
