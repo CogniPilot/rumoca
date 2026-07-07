@@ -784,7 +784,10 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: shard-${{ matrix.shard }}
-          path: target/msl/results/msl_results.json
+          path: |
+            target/msl/results/msl_results.json
+            target/msl/results/omc_simulation_reference.json
+            target/msl/results/sim_trace_comparison.json
           if-no-files-found: error
 
   msl-merge:
@@ -848,6 +851,8 @@ jobs:
         run: |
           set -euo pipefail
           test -s target/msl/results/msl_results.json
+          test -s target/msl/results/omc_simulation_reference.json
+          test -s target/msl/results/sim_trace_comparison.json
           test -s target/msl/results/msl_quality_current.json
 
       - name: Generate MSL compatibility report
@@ -1089,8 +1094,11 @@ jobs:
           name: msl-compatibility-report
           path: |
             target/msl/results/msl_results.json
+            target/msl/results/omc_simulation_reference.json
+            target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_quality_current.json
             target/msl/results/msl_package_pass_rates.md
+            target/msl/results/msl_package_trace_accuracy.md
             target/msl/results/mls_contract_coverage.md
             target/msl/results/msl_pr_comment.md
             target/msl/results/msl_compatibility_report.md
