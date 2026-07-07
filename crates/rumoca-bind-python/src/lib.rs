@@ -15,14 +15,11 @@
 //! by the Rust compiler/solver types; this module holds the shared compile
 //! plumbing the typed classes reuse.
 
-use ::rumoca::{CompilationResult as HighLevelCompilationResult, TemplateIr};
+use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::{PyErr, exceptions::PyRuntimeError};
-use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, render_dae_target_files,
-    validate_dae_target_capabilities,
-};
+use rumoca_compile::codegen::targets::RenderedTargetFile;
 use rumoca_compile::compile::{FailedPhase, PhaseResult, Session, SourceRootKind};
 use rumoca_compile::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
@@ -563,61 +560,14 @@ pub(crate) fn compile_source_in_session(
 }
 
 /// Render a codegen target's files from a compiled model, returning the typed
-/// (path, content) list. DAE-IR targets render straight from the DAE; solve-IR
-/// targets first lower to the scalarized/causalized solve IR — the same path the
-/// CLI's `compile --target` uses.
+/// (path, content) list through the same target-dispatch path the CLI uses.
 pub(crate) fn render_target_files(
     result: &HighLevelCompilationResult,
     model_name: &str,
     target: &str,
 ) -> Result<Vec<RenderedTargetFile>, PyRuntimeStringError> {
-    let bundle = TargetBundle::load(target)
-        .map_err(|e| PyRuntimeStringError(format!("Target error: {e}")))?;
-    let manifest = bundle
-        .parse_manifest()
-        .map_err(|e| PyRuntimeStringError(format!("Target manifest error: {e}")))?;
-    if let Some(capabilities) = manifest.capabilities.as_ref() {
-        validate_dae_target_capabilities(&result.dae, &manifest, capabilities)
-            .map_err(|e| PyRuntimeStringError(format!("Target capability error: {e}")))?;
-    }
-    if manifest.ir == TargetTemplateIr::Solve {
-        render_solve_target_files(&bundle, &manifest, result, model_name)
-    } else {
-        render_dae_target_files(&bundle, &manifest, &result.dae, model_name)
-            .map_err(|e| PyRuntimeStringError(format!("Target rendering error: {e}")))
-    }
-}
-
-/// Render a solve-IR target's files through the IR-aware renderer — byte-for-byte
-/// identical to the CLI's `compile --target`.
-fn render_solve_target_files(
-    bundle: &TargetBundle,
-    manifest: &TargetManifest,
-    result: &HighLevelCompilationResult,
-    model_name: &str,
-) -> Result<Vec<RenderedTargetFile>, PyRuntimeStringError> {
-    use rumoca_compile::codegen::targets::TargetTemplateSource;
-    let mut files = Vec::with_capacity(manifest.files.len());
-    for file in &manifest.files {
-        let path = result
-            .render_template_str_with_name_and_ir(&file.path, model_name, TemplateIr::Solve)
-            .map_err(|e| {
-                PyRuntimeStringError(format!("Render target path '{}': {e}", file.path))
-            })?;
-        let template = bundle.template_source(&file.template).map_err(|e| {
-            PyRuntimeStringError(format!("Target template '{}': {e}", file.template))
-        })?;
-        let content = result
-            .render_template_str_with_name_and_ir(template.as_ref(), model_name, TemplateIr::Solve)
-            .map_err(|e| {
-                PyRuntimeStringError(format!("Render target template '{}': {e}", file.template))
-            })?;
-        files.push(RenderedTargetFile {
-            path: path.trim().to_string(),
-            content,
-        });
-    }
-    Ok(files)
+    ::rumoca::render_target_files(result, model_name, target, None)
+        .map_err(|e| PyRuntimeStringError(format!("Target rendering error: {e:#}")))
 }
 
 /// Rumoca compiled extension module (`rumoca._native`).
