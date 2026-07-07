@@ -301,6 +301,7 @@ where
     fresh_state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
     cap_fresh_step_size::<Eqn, S>(&mut fresh_state, h_cap);
     solver.set_state(fresh_state);
+    mark_solver_state_modified_for_reinit(solver);
     Ok(())
 }
 
@@ -314,6 +315,15 @@ where
     if *state.h > h_cap {
         *state.h = h_cap;
     }
+}
+
+fn mark_solver_state_modified_for_reinit<'a, Eqn, S>(solver: &mut S)
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let _state = solver.state_mut();
 }
 
 pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> Result<bool, SimError> {
