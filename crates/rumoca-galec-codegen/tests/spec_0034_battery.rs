@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 
 use rumoca_core::{
     BuiltinFunction, ComponentReference, Expression, Function, FunctionParam, Literal, OpBinary,
-    OpUnary, Reference, Span, Statement, Subscript, VarName,
+    OpUnary, Reference, Span, Statement, StatementBlock, Subscript, VarName,
 };
 use rumoca_galec_codegen::input::ScalarTypeMap;
 use rumoca_galec_codegen::lower::emittable_builtin_targets;
@@ -638,6 +638,19 @@ mod array_vector_regressions {
         Subscript::expr(Box::new(expr), Span::DUMMY)
     }
 
+    fn range(start: i64, end: i64) -> Expression {
+        Expression::Range {
+            start: Box::new(integer(start)),
+            step: None,
+            end: Box::new(integer(end)),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn range_subscript(start: i64, end: i64) -> Subscript {
+        subscript_expr(range(start, end))
+    }
+
     fn add_real_vector(model: &mut dae::Dae, name: &str, len: i64) {
         let mut vector = variable(name);
         vector.dims = vec![len];
@@ -863,6 +876,84 @@ mod array_vector_regressions {
         assert!(
             !alg.contains("waypoints[self.'previous(idx)', :"),
             "GALEC must not receive slice syntax:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn structural_range_slice_lowers_to_static_index_constructor() {
+        let mut model = model_with_body(Expression::VarRef {
+            name: Reference::new("a"),
+            subscripts: vec![range_subscript(1, 2)],
+            span: Span::DUMMY,
+        });
+        add_real_vector(&mut model, "a", 3);
+        make_y_vector(&mut model, 2);
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("self.a[1]"), "{alg}");
+        assert!(alg.contains("self.a[2]"), "{alg}");
+        assert!(
+            !alg.contains("1:2"),
+            "GALEC must not receive range syntax:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn scalarized_index_into_dynamic_row_slice_projects_original_dimension() {
+        let row_slice = Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                subscript_expr(var("__pre__.idx")),
+                Subscript::colon(Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        };
+        let mut model = model_with_body(index(row_slice, vec![Subscript::index(2, Span::DUMMY)]));
+        add_waypoints(&mut model);
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        idx.min = Some(integer(1));
+        idx.max = Some(integer(3));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(
+            alg.contains("if self.'previous(idx)' == 1 then self.waypoints[1, 2]"),
+            "{alg}"
+        );
+        assert!(alg.contains("else self.waypoints[3, 2]"), "{alg}");
+        assert!(
+            !alg.contains("waypoints[self.'previous(idx)', :, 2"),
+            "slice result index must project into the original array rank:\n{alg}"
+        );
+    }
+
+    #[test]
+    fn scalarized_index_into_range_slice_projects_original_dimension() {
+        let range_slice = Expression::VarRef {
+            name: Reference::new("a"),
+            subscripts: vec![range_subscript(1, 2)],
+            span: Span::DUMMY,
+        };
+        let mut model = model_with_body(index(range_slice, vec![Subscript::index(2, Span::DUMMY)]));
+        add_real_vector(&mut model, "a", 3);
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("self.a[2]"), "{alg}");
+        assert!(
+            !alg.contains("1:2"),
+            "GALEC must not receive range syntax:\n{alg}"
         );
     }
 
@@ -1128,6 +1219,107 @@ mod array_vector_regressions {
             !alg.contains("lowPass("),
             "inlineable vector helper must not survive into GALEC:\n{alg}"
         );
+    }
+
+    #[test]
+    fn nested_same_user_function_call_is_not_recursive() {
+        let nested = Expression::FunctionCall {
+            name: Reference::new("clip"),
+            args: vec![
+                Expression::FunctionCall {
+                    name: Reference::new("clip"),
+                    args: vec![var("__pre__.y"), real(-1.0), real(1.0)],
+                    is_constructor: false,
+                    span: Span::DUMMY,
+                },
+                real(-2.0),
+                real(2.0),
+            ],
+            is_constructor: false,
+            span: Span::DUMMY,
+        };
+        let mut model = model_with_body(nested);
+        add_clip_function(&mut model);
+
+        let alg = render_algorithm_code(&lower(&model, &base_types())).expect("renders");
+        assert!(alg.contains("max(self.'previous(y)', -1.0)"), "{alg}");
+        assert!(!alg.contains("clip("), "{alg}");
+    }
+
+    #[test]
+    fn multi_output_user_function_projection_call_inlines_named_output() {
+        let call = Expression::FunctionCall {
+            name: Reference::new("split.hi"),
+            args: vec![var("__pre__.y")],
+            is_constructor: false,
+            span: Span::DUMMY,
+        };
+        let mut model = model_with_body(call);
+        add_split_function(&mut model);
+
+        let alg = render_algorithm_code(&lower(&model, &base_types())).expect("renders");
+        assert!(alg.contains("if self.'previous(y)' > 0.0 then"), "{alg}");
+        assert!(!alg.contains("split.hi("), "{alg}");
+        assert!(!alg.contains("split("), "{alg}");
+    }
+
+    fn add_clip_function(model: &mut dae::Dae) {
+        let mut clip = Function::new("clip", Span::DUMMY);
+        clip.inputs
+            .push(FunctionParam::new("value", "Real", Span::DUMMY));
+        clip.inputs
+            .push(FunctionParam::new("lower", "Real", Span::DUMMY));
+        clip.inputs
+            .push(FunctionParam::new("upper", "Real", Span::DUMMY));
+        clip.outputs
+            .push(FunctionParam::new("result", "Real", Span::DUMMY));
+        clip.body.push(Statement::Assignment {
+            comp: ComponentReference::from_flat_segments("result", Span::DUMMY, None),
+            value: builtin(
+                BuiltinFunction::Min,
+                vec![
+                    builtin(BuiltinFunction::Max, vec![var("value"), var("lower")]),
+                    var("upper"),
+                ],
+            ),
+            span: Span::DUMMY,
+        });
+        model.symbols.functions.insert(clip.name.clone(), clip);
+    }
+
+    fn add_split_function(model: &mut dae::Dae) {
+        let mut split = Function::new("split", Span::DUMMY);
+        split
+            .inputs
+            .push(FunctionParam::new("u", "Real", Span::DUMMY));
+        split
+            .outputs
+            .push(FunctionParam::new("lo", "Real", Span::DUMMY));
+        split
+            .outputs
+            .push(FunctionParam::new("hi", "Real", Span::DUMMY));
+        split.body.push(Statement::Assignment {
+            comp: ComponentReference::from_flat_segments("lo", Span::DUMMY, None),
+            value: binary(OpBinary::Sub, var("u"), real(1.0)),
+            span: Span::DUMMY,
+        });
+        split.body.push(Statement::If {
+            cond_blocks: vec![StatementBlock {
+                cond: binary(OpBinary::Gt, var("u"), real(0.0)),
+                stmts: vec![Statement::Assignment {
+                    comp: ComponentReference::from_flat_segments("hi", Span::DUMMY, None),
+                    value: var("u"),
+                    span: Span::DUMMY,
+                }],
+            }],
+            else_block: Some(vec![Statement::Assignment {
+                comp: ComponentReference::from_flat_segments("hi", Span::DUMMY, None),
+                value: real(0.0),
+                span: Span::DUMMY,
+            }]),
+            span: Span::DUMMY,
+        });
+        model.symbols.functions.insert(split.name.clone(), split);
     }
 
     fn production_c_lines(package: &AlgorithmCodePackage) -> String {

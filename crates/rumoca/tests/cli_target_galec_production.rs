@@ -152,21 +152,63 @@ annotation(
   Inline = true);
 end lowPass;
 
+function vectorNorm
+  input Real v[:];
+  output Real result;
+algorithm
+  result := sqrt(v * v);
+annotation(
+  Inline = true);
+end vectorNorm;
+
+function rateLimit
+  input Real target;
+  input Real current;
+  input Real maxStep;
+  output Real result;
+algorithm
+  result := current + clip(target - current, -maxStep, maxStep);
+annotation(
+  Inline = true);
+end rateLimit;
+
+function splitCommand
+  input Real value;
+  output Real low;
+  output Real high;
+algorithm
+  low := value - 1.0;
+  if value > 0.0 then
+    high := value;
+  else
+    high := 0.0;
+  end if;
+annotation(
+  Inline = true);
+end splitCommand;
+
 model GalecProdHelperIdioms
   constant Real dt = 0.02;
   parameter Real waypoints[2, 3] = [0.0, 0.0, 0.0; 1.0, 2.0, 3.0];
   input Real sample[3];
   discrete output Real filtered[3](each start = 0.0);
   discrete output Real segmentStart[3](each start = 0.0);
+  discrete output Real horizontal[2](each start = 0.0);
   discrete output Real bounded(start = 0.0);
   discrete output Real yaw(start = 0.0);
+  discrete output Real roll(start = 0.0);
+  discrete output Real splitLow(start = 0.0);
+  discrete output Real splitHigh(start = 0.0);
   discrete output Integer currentWaypoint(min = 1, max = 2, start = 1);
 algorithm
   when sample(0.0, dt) then
     filtered := lowPass(sample, pre(filtered), 0.5);
     segmentStart := waypoints[currentWaypoint, :];
-    bounded := clip(filtered[1], -1.0, 1.0);
+    horizontal := sample[1:2];
+    bounded := clip(vectorNorm(sample[1:2]), -1.0, 1.0);
     yaw := wrapAngle(pre(yaw) + 0.25);
+    roll := rateLimit(clip(yaw, -1.0, 1.0), pre(roll), 0.1);
+    (splitLow, splitHigh) := splitCommand(sample[1]);
     currentWaypoint := pre(currentWaypoint);
   end when;
 end GalecProdHelperIdioms;
@@ -350,8 +392,12 @@ fn inline_helpers_vector_return_and_row_slice_compile() {
     assert!(alg.contains("self.sample[1]"), "{alg}");
     assert!(alg.contains("self.waypoints["), "{alg}");
     assert!(!alg.contains("lowPass("), "{alg}");
+    assert!(!alg.contains("vectorNorm("), "{alg}");
+    assert!(!alg.contains("rateLimit("), "{alg}");
+    assert!(!alg.contains("splitCommand("), "{alg}");
     assert!(!alg.contains("clip("), "{alg}");
     assert!(!alg.contains("wrapAngle("), "{alg}");
+    assert!(!alg.contains("1:2"), "{alg}");
 }
 
 #[test]
