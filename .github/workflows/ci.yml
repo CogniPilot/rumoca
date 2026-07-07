@@ -635,11 +635,11 @@ jobs:
           ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane and push to
-  # Cachix, so the shard / merge consumers restore them instead of each
-  # recompiling + re-LTO'ing the workspace. LTO is a link-time cost no per-crate
-  # cache can avoid — only build-once does. On an unchanged dep closure the crane
-  # `cargoArtifacts` layer is a Cachix hit; only the workspace crates rebuild
-  # here, once, for all consumers.
+  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead
+  # of each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
+  # per-crate cache can avoid — only build-once does. On an unchanged dep closure
+  # the crane `cargoArtifacts` layer is a Cachix hit; only the workspace crates
+  # rebuild here, once, for all consumers.
   nix-build-msl:
     name: Build MSL artifacts (Nix, once)
     runs-on: ubuntu-24.04
@@ -706,6 +706,7 @@ jobs:
         with:
           shared-key: msl-gate
           cache-on-failure: true
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
@@ -815,6 +816,7 @@ jobs:
         with:
           shared-key: msl-gate
           cache-on-failure: true
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Download shard results
@@ -1092,6 +1094,7 @@ jobs:
   modelicatest-gate:
     name: ModelicaTest Semantic Gate
     runs-on: ubuntu-24.04
+    needs: [nix-build-msl]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -1114,6 +1117,7 @@ jobs:
         with:
           shared-key: msl-gate
           cache-on-failure: true
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
@@ -1167,20 +1171,41 @@ jobs:
           rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
           cp -a             target/msl/modelicatest-source/ModelicaTest             target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
 
-      # NOTE: ModelicaTest is intentionally NOT on the Nix build-once path. The
-      # prebuilt (nix, non-native-CPU) msl_tests binary hangs the sim/render queue
-      # on ModelicaTest.Blocks.MuxDemux (300s stage-timeout -> SIGABRT), a model
-      # the compiled binary sims in milliseconds. The 4 MSL shards + merge DO use
-      # build-once (they run the root-MSL model set, unaffected). Debugging the
-      # ModelicaTest prebuilt hang is a follow-up; until then this job compiles.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
+      - name: Restore prebuilt MSL binaries (Cachix)
+        run: |
+          nix build .#msl-artifacts --out-link result-msl-artifacts
+
       - name: Run ModelicaTest semantic gate
         shell: bash
         run: |
           set -euo pipefail
           targets="crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json"
           rm -rf target/msl/modelicatest-results
-          cargo xtask verify msl-parity --results-dir target/msl/modelicatest-results --sim-targets-file "$targets" --include-modelica-test --require-selected-targets-success --sim-set full --stage-parallelism 3 --sim-parallelism 3 --sim-worker-memory-mb 2048 --sim-total-memory-mb 6144
-          cargo xtask repo msl modelica-test-catalog --results target/msl/modelicatest-results/msl_results.json --out target/msl/modelicatest-results/modelica_test_catalog.md --json-out target/msl/modelicatest-results/modelica_test_catalog.json
+          cargo xtask verify msl-parity \
+            --results-dir target/msl/modelicatest-results \
+            --sim-targets-file "$targets" \
+            --include-modelica-test \
+            --require-selected-targets-success \
+            --sim-set full \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
+            --stage-parallelism 3 \
+            --sim-parallelism 3 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144
+          ./result-msl-artifacts/bin/rumoca-msl-tools modelica-test-catalog \
+            --results target/msl/modelicatest-results/msl_results.json \
+            --out target/msl/modelicatest-results/modelica_test_catalog.md \
+            --json-out target/msl/modelicatest-results/modelica_test_catalog.json
 
       - name: Upload ModelicaTest artifacts
         if: always()

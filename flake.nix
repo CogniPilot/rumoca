@@ -79,11 +79,12 @@
         });
 
         # Release-mode artifacts for the MSL parity gate, built as one Cargo
-        # graph so the shard / merge consumers restore them via Cachix instead
-        # of recompiling + re-LTO'ing the workspace. A single derivation keeps
-        # rumoca-worker, rumoca-sim-worker, rumoca-msl-tools, and the libtest
-        # harness in one target directory; separate derivations rebuild the same
-        # workspace crates and made rumoca-worker a serial extra build.
+        # graph so the shard / merge / ModelicaTest consumers restore them via
+        # Cachix instead of recompiling + re-LTO'ing the workspace. A single
+        # derivation keeps rumoca-worker, rumoca-sim-worker, rumoca-msl-tools,
+        # and the libtest harness in one target directory; separate derivations
+        # rebuild the same workspace crates and made rumoca-worker a serial
+        # extra build.
         msl-artifacts = craneLib.mkCargoDerivation (commonArgs // {
           inherit cargoArtifacts;
           pname = "rumoca-msl-artifacts";
@@ -112,11 +113,10 @@
         });
         # xtask itself is NOT built here: after the light-xtask split it carries no
         # compiler deps and compiles per-job in seconds, so build-once buys nothing.
-        # The MSL merge job runs `repo msl` reporting through the
+        # The MSL merge and ModelicaTest jobs run reporting through the
         # compiler-linked `rumoca-msl-tools` bin, so the MSL artifact bundle
-        # includes it and the merge job invokes the prebuilt binary instead of
-        # recompiling the stack. ModelicaTest still uses the local fallback until
-        # its prebuilt hang is fixed.
+        # includes it and those jobs invoke the prebuilt binary instead of
+        # recompiling the stack.
       in {
         packages = {
           default = rumoca;
