@@ -67,6 +67,9 @@ license = "Apache-2.0"
 repository = "https://github.com/cognipilot/rumoca"
 homepage = "https://github.com/cognipilot/rumoca"
 
+[workspace.metadata.crane]
+name = "rumoca"
+
 [workspace.dependencies]
 # Internal crates
 # Library consumers of the umbrella crate (currently only the Python binding)
