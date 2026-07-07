@@ -1076,6 +1076,10 @@ fn run_prebuilt_msl_test(
         );
         run.env("CARGO_BIN_EXE_rumoca-sim-worker", worker);
     }
+    if let Some(tools) = prebuilt_sibling_binary(binary, "rumoca-msl-tools") {
+        run.env("CARGO_BIN_EXE_rumoca-msl-tools", &tools);
+        run.env("CARGO_BIN_EXE_rumoca_msl_tools", tools);
+    }
     run_msl_cargo_setup_step(
         cargo_setup_steps,
         MslCargoSetupStepMetadata::new(
@@ -1088,6 +1092,11 @@ fn run_prebuilt_msl_test(
         ),
         run,
     )
+}
+
+fn prebuilt_sibling_binary(binary: &Path, name: &str) -> Option<PathBuf> {
+    let candidate = binary.parent()?.join(name);
+    candidate.is_file().then_some(candidate)
 }
 
 fn run_msl_quality_gate_cargo_commands(
@@ -1498,7 +1507,7 @@ mod tests {
     use super::{
         MslCargoSetupTimingStep, MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary,
         VERIFY_SUITE_STEPS, VerifyMslParityArgs, VerifySuite, VerifyTimingReport, VerifyTimingStep,
-        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid,
+        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid, prebuilt_sibling_binary,
         render_verify_timing_markdown, should_log_process_tables,
         write_msl_cargo_setup_timing_report, write_verify_timing_report,
     };
@@ -1675,6 +1684,22 @@ mod tests {
         assert!(markdown.contains("# MSL Cargo Setup Timing"));
         assert!(markdown.contains("| run release MSL test | fail | 1.300 | rumoca-test-msl |"));
         assert!(markdown.contains("| release | msl-full-test |"));
+    }
+
+    #[test]
+    fn prebuilt_sibling_binary_finds_tools_next_to_msl_tests() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let bin_dir = root.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("mkdir bin");
+        let msl_tests = bin_dir.join("msl_tests");
+        let tools = bin_dir.join("rumoca-msl-tools");
+        std::fs::write(&msl_tests, "").expect("write msl_tests");
+        std::fs::write(&tools, "").expect("write tools");
+
+        assert_eq!(
+            prebuilt_sibling_binary(&msl_tests, "rumoca-msl-tools"),
+            Some(tools)
+        );
     }
 
     #[test]

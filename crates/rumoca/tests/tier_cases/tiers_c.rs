@@ -885,8 +885,8 @@ end MiniBusTranscriptionArr;
         assert!(
             origins
                 .iter()
-                .any(|origin| origin.contains("equation from g")),
-            "source model should retain the component equation defining g.y; origins={origins:?}"
+                .all(|origin| !origin.contains("equation from g")),
+            "hidden component output equation should be inlined away; origins={origins:?}"
         );
         assert!(
             origins.iter().all(|origin| {
