@@ -4,7 +4,7 @@ use indexmap::IndexSet;
 use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, OpBinary, VarName};
 use rumoca_ir_dae::{self as dae, Dae};
 
-use super::{equation_analysis_expr, expr_contains_var};
+use super::{equation_analysis_expr, exact_reference_expr_name_in_dae, expr_contains_var};
 
 pub(super) fn runtime_protected_unknown_names(dae: &Dae) -> IndexSet<String> {
     let mut protected = crate::runtime_defined::runtime_defined_continuous_unknown_names(dae);
@@ -203,6 +203,18 @@ pub(super) fn assignment_target_name(expr: &Expression) -> Option<VarName> {
     None
 }
 
+pub(super) fn assignment_target_name_in_dae(dae: &Dae, expr: &Expression) -> Option<VarName> {
+    let Expression::Binary { op, lhs, rhs, .. } = expr else {
+        return None;
+    };
+    if !matches!(op, OpBinary::Sub) {
+        return None;
+    }
+    exact_reference_expr_name_in_dae(dae, lhs)
+        .or_else(|| exact_reference_expr_name_in_dae(dae, rhs))
+        .or_else(|| assignment_target_name(expr))
+}
+
 pub(super) fn assignment_var_ref_name(
     name: &VarName,
     subscripts: &[rumoca_core::Subscript],
@@ -269,7 +281,7 @@ pub(super) fn runtime_partition_or_event_refs_var(dae: &Dae, var_name: &VarName)
 }
 
 pub(super) fn should_preserve_runtime_known_assignment(dae: &Dae, eq_rhs: &Expression) -> bool {
-    let Some(target) = assignment_target_name(eq_rhs) else {
+    let Some(target) = assignment_target_name_in_dae(dae, eq_rhs) else {
         return false;
     };
     dae.variables.discrete_reals.contains_key(&target)

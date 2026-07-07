@@ -31,6 +31,8 @@ type Variable = dae::Variable;
 type DefiningExprIndex = IndexMap<String, Vec<IndexedDefiningExpr>>;
 type AliasSafetyCache = IndexMap<(String, Option<usize>), bool>;
 
+const MAX_DIRECT_DEMOTION_DEFINING_EXPR_NODES: usize = 1024;
+
 #[derive(Clone)]
 struct IndexedDefiningExpr {
     equation_index: usize,
@@ -380,6 +382,11 @@ fn collect_residual_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
 fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
     let mut index = DefiningExprIndex::new();
     for (equation_index, eq) in dae.continuous.equations.iter().enumerate() {
+        if expression_node_count_exceeds(&eq.rhs, MAX_DIRECT_DEMOTION_DEFINING_EXPR_NODES)
+            .unwrap_or(true)
+        {
+            continue;
+        }
         let lhs_name = eq.lhs.as_ref().map(|lhs| lhs.var_name().clone());
         if let Some(name) = &lhs_name
             && !expression_contains_any_der_call(&eq.rhs)
@@ -397,6 +404,105 @@ fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
         }
     }
     index
+}
+
+fn expression_node_count_exceeds(expr: &Expression, limit: usize) -> Option<bool> {
+    fn visit(expr: &Expression, limit: usize, count: &mut usize) -> Option<bool> {
+        *count = count.checked_add(1)?;
+        if *count > limit {
+            return Some(true);
+        }
+        match expr {
+            Expression::Binary { lhs, rhs, .. } => {
+                if visit(lhs, limit, count)? {
+                    return Some(true);
+                }
+                visit(rhs, limit, count)
+            }
+            Expression::Unary { rhs, .. } => visit(rhs, limit, count),
+            Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+                for arg in args {
+                    if visit(arg, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, branch) in branches {
+                    if visit(condition, limit, count)? || visit(branch, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                visit(else_branch, limit, count)
+            }
+            Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+                for element in elements {
+                    if visit(element, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            Expression::Range {
+                start, step, end, ..
+            } => {
+                if visit(start, limit, count)? {
+                    return Some(true);
+                }
+                if let Some(step) = step
+                    && visit(step, limit, count)?
+                {
+                    return Some(true);
+                }
+                visit(end, limit, count)
+            }
+            Expression::Index {
+                base, subscripts, ..
+            } => {
+                if visit(base, limit, count)? {
+                    return Some(true);
+                }
+                for subscript in subscripts {
+                    if let rumoca_core::Subscript::Expr { expr, .. } = subscript
+                        && visit(expr, limit, count)?
+                    {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            Expression::FieldAccess { base, .. } => visit(base, limit, count),
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                ..
+            } => {
+                if visit(expr, limit, count)? {
+                    return Some(true);
+                }
+                for index in indices {
+                    if visit(&index.range, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                if let Some(filter) = filter {
+                    visit(filter, limit, count)
+                } else {
+                    Some(false)
+                }
+            }
+            _ => Some(false),
+        }
+    }
+
+    let mut count = 0usize;
+    visit(expr, limit, &mut count)
 }
 
 fn defining_expr_candidates<'a>(
@@ -1219,6 +1325,9 @@ fn choose_exact_alias_state_representative<'a>(
         .filter_map(|name| dae.variables.states.get(name).map(|var| (name, var)))
         .min_by_key(|(name, var)| {
             (
+                Reverse(u8::from(exact_alias_state_has_derivative_reference(
+                    dae, name,
+                ))),
                 Reverse(state_select_rank(var.state_select)),
                 Reverse(u8::from(var.fixed == Some(true))),
                 Reverse(u8::from(var.start.is_some())),
@@ -1226,6 +1335,13 @@ fn choose_exact_alias_state_representative<'a>(
             )
         })
         .map(|(name, _)| name)
+}
+
+fn exact_alias_state_has_derivative_reference(dae: &Dae, name: &VarName) -> bool {
+    dae.continuous
+        .equations
+        .iter()
+        .any(|eq| expr_contains_der_of(&eq.rhs, name))
 }
 
 fn exact_alias_member_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable> {

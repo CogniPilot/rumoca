@@ -264,6 +264,11 @@ impl<'a> LowerBuilder<'a> {
         ) {
             return Ok(None);
         }
+        if matches!(base, rumoca_core::Expression::Binary { .. })
+            && subscripts.iter().all(is_scalar_selector_subscript)
+        {
+            return Ok(None);
+        }
         let mut dims = self.infer_expr_dims(base, scope)?;
         if dims.is_empty() || subscripts.len() > dims.len() {
             return Ok(None);

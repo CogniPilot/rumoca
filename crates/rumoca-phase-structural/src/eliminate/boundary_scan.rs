@@ -34,12 +34,42 @@ impl BoundaryScanState {
         var_name: VarName,
         solution: Expression,
     ) -> Result<(), StructuralError> {
-        self.substitutions
-            .push(substitution_for_var(dae, var_name.clone(), solution)?);
+        let substitution = substitution_for_var(dae, var_name.clone(), solution)?;
+        if self.substitution_would_overgrow_remaining_equations(dae, eq_idx, &substitution)? {
+            return Ok(());
+        }
+        self.substitutions.push(substitution);
         self.eliminated_eq_indices.push(eq_idx);
         self.eliminated_eq_flags[eq_idx] = true;
         self.resolved.insert(var_name);
         Ok(())
+    }
+
+    fn substitution_would_overgrow_remaining_equations(
+        &self,
+        dae: &Dae,
+        eliminated_eq_idx: usize,
+        substitution: &Substitution,
+    ) -> Result<bool, StructuralError> {
+        for (eq_idx, equation) in dae.continuous.equations.iter().enumerate() {
+            if eq_idx == eliminated_eq_idx || self.eliminated_eq_flags[eq_idx] {
+                continue;
+            }
+            let expr = equation_analysis_expr(equation);
+            if !expr_contains_var(&expr, &substitution.var_name) {
+                continue;
+            }
+            let Some(rhs) = apply_substitutions_for_symbolic_candidate(&expr, &self.substitutions)?
+            else {
+                return Ok(true);
+            };
+            if apply_substitutions_for_symbolic_candidate(&rhs, std::slice::from_ref(substitution))?
+                .is_none()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -64,7 +94,10 @@ fn scan_boundary_equation(
     }
     let equation = &ctx.dae.continuous.equations[eq_idx];
     let expr = equation_analysis_expr(equation);
-    let eq_rhs = apply_substitutions_in_order(&expr, &state.substitutions)?;
+    let Some(eq_rhs) = apply_substitutions_for_symbolic_candidate(&expr, &state.substitutions)?
+    else {
+        return Ok(());
+    };
     let is_connection_eq = equation.origin.starts_with("connection equation:");
     let live = find_live_scalar_unknowns(&eq_rhs, ctx.unknown_index, &state.resolved)?;
     if is_connection_eq
@@ -84,6 +117,9 @@ fn scan_boundary_equation(
         &live,
         ctx.runtime_defined_discrete_targets,
     ) {
+        return Ok(());
+    }
+    if should_preserve_runtime_sensitive_continuous_assignment(ctx.dae, &eq_rhs) {
         return Ok(());
     }
     let has_state_derivative = expr_contains_der_of_any(&eq_rhs, ctx.state_derivative_matcher);

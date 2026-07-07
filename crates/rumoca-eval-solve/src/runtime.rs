@@ -414,13 +414,13 @@ impl SolveRuntime {
             };
             let mut augmented = self.refresh_newton_augmented(probe, solver_y)?;
             if crate::linear_solve::gaussian_eliminate(&mut augmented).is_none() {
-                return Err(self.refresh_newton_failure());
+                return Err(self.refresh_newton_failure(rows));
             }
             if !apply_newton_steps(&mut x, &augmented) {
-                return Err(self.refresh_newton_failure());
+                return Err(self.refresh_newton_failure(rows));
             }
         }
-        Err(self.refresh_newton_failure())
+        Err(self.refresh_newton_failure(rows))
     }
 
     /// Evaluate the refresh map `F` at `x` (writing `x` into the target slots
@@ -481,7 +481,8 @@ impl SolveRuntime {
         Ok(augmented)
     }
 
-    fn refresh_newton_failure(&self) -> RuntimeSolveError {
+    fn refresh_newton_failure(&self, rows: &[AlgebraicRefreshRow]) -> RuntimeSolveError {
+        let _ = rows;
         tracing::debug!(target: "rumoca_eval_solve::refresh", "newton fallback FAILED");
         self.refresh_convergence_error(
             0,

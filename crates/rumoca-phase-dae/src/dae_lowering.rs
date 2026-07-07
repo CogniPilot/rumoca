@@ -1955,6 +1955,50 @@ fn expr_has_record_array_member_slice(expr: &rumoca_core::Expression) -> bool {
     }
 }
 
+fn expr_has_colon_slice(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            subscripts
+                .iter()
+                .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+                || expr_has_colon_slice(base)
+                || subscripts.iter().any(subscript_has_colon_slice)
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => expr_has_colon_slice(base),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            expr_has_colon_slice(lhs) || expr_has_colon_slice(rhs)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => expr_has_colon_slice(rhs),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => {
+            args.iter().any(expr_has_colon_slice)
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                expr_has_colon_slice(condition) || expr_has_colon_slice(value)
+            }) || expr_has_colon_slice(else_branch)
+        }
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            elements.iter().any(expr_has_colon_slice)
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            expr_has_colon_slice(start)
+                || step.as_ref().is_some_and(|step| expr_has_colon_slice(step))
+                || expr_has_colon_slice(end)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 fn subscript_has_array_comprehension(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
@@ -2047,6 +2091,13 @@ fn subscript_has_record_array_member_slice(subscript: &rumoca_core::Subscript) -
     }
 }
 
+fn subscript_has_colon_slice(subscript: &rumoca_core::Subscript) -> bool {
+    match subscript {
+        rumoca_core::Subscript::Expr { expr, .. } => expr_has_colon_slice(expr),
+        rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
+    }
+}
+
 /// Scalarize an expression at index `k` (0-based).
 ///
 /// - Phantom VarRefs are replaced by the k-th indexed variant from `phantom_map`.
@@ -2118,6 +2169,9 @@ fn scalarize_expr_with_context(
             args,
             span,
         } => {
+            if let Some(expr) = scalarize_builtin_vector_output_at(*function, args, *span, ctx)? {
+                return Ok(expr);
+            }
             if let Some(expr) = scalarize_builtin_array_constructor_at(*function, args, *span, ctx)?
             {
                 return Ok(expr);
@@ -2176,32 +2230,128 @@ fn scalarize_expr_with_context(
     }
 }
 
+fn scalarize_builtin_vector_output_at(
+    function: rumoca_core::BuiltinFunction,
+    args: &[rumoca_core::Expression],
+    span: rumoca_core::Span,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    let Some(output_width) = builtin_fixed_vector_output_width(function) else {
+        return Ok(None);
+    };
+    if ctx.k >= output_width {
+        return Ok(None);
+    }
+    let index = one_based_scalar_index(ctx.k, span, "DAE scalarized builtin output subscript")?;
+    Ok(Some(rumoca_core::Expression::Index {
+        base: Box::new(rumoca_core::Expression::BuiltinCall {
+            function,
+            args: args
+                .iter()
+                .map(|arg| vectorize_builtin_vector_arg(arg, ctx))
+                .collect::<Result<Vec<_>, _>>()?,
+            span,
+        }),
+        subscripts: vec![generated_index_subscript(
+            index,
+            span,
+            "DAE scalarized builtin output subscript",
+        )?],
+        span,
+    }))
+}
+
+fn vectorize_builtin_vector_arg(
+    arg: &rumoca_core::Expression,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let rumoca_core::Expression::Index {
+        base,
+        subscripts,
+        span,
+    } = arg
+        && let rumoca_core::Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            ..
+        } = base.as_ref()
+        && base_subscripts.is_empty()
+        && subscripts
+            .iter()
+            .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+        && let Some(dims) = ctx.array_dims.get(name.as_str())
+        && let Some(projected_dims) = projected_dims_for_subscripts(dims, subscripts)
+    {
+        let scalar_count = compute_var_size(&projected_dims);
+        if scalar_count > 1 {
+            let mut elements = Vec::with_capacity(scalar_count);
+            for idx in 0..scalar_count {
+                let Some(projected_subscripts) =
+                    project_slice_subscripts_for_lane(dims, subscripts, idx, *span)?
+                else {
+                    return Ok(vectorize_phantom_expr(arg, ctx.phantom_map));
+                };
+                elements.push(rumoca_core::Expression::VarRef {
+                    name: name.clone(),
+                    subscripts: projected_subscripts,
+                    span: *span,
+                });
+            }
+            return Ok(rumoca_core::Expression::Array {
+                elements,
+                is_matrix: false,
+                span: *span,
+            });
+        }
+    }
+    Ok(vectorize_phantom_expr(arg, ctx.phantom_map))
+}
+
+fn builtin_fixed_vector_output_width(function: rumoca_core::BuiltinFunction) -> Option<usize> {
+    match function {
+        rumoca_core::BuiltinFunction::Cross => Some(3),
+        _ => None,
+    }
+}
+
 fn scalarize_index_expr_at(
     base: &rumoca_core::Expression,
     subscripts: &[rumoca_core::Subscript],
     span: rumoca_core::Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
-    if subscripts
-        .iter()
-        .all(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
-        && let rumoca_core::Expression::VarRef {
-            name,
-            subscripts: base_subscripts,
-            ..
-        } = base
+    if let rumoca_core::Expression::VarRef {
+        name,
+        subscripts: base_subscripts,
+        ..
+    } = base
         && base_subscripts.is_empty()
-        && let Some(expr) = scalarize_var_ref_at(
-            name,
-            base_subscripts,
-            span,
-            ctx.k,
-            ctx.phantom_map,
-            ctx.array_dims,
-            ctx.record_array_fields,
-        )?
     {
-        return Ok(expr);
+        if subscripts
+            .iter()
+            .all(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+            && let Some(expr) = scalarize_var_ref_at(
+                name,
+                base_subscripts,
+                span,
+                ctx.k,
+                ctx.phantom_map,
+                ctx.array_dims,
+                ctx.record_array_fields,
+            )?
+        {
+            return Ok(expr);
+        }
+        if let Some(dims) = ctx.array_dims.get(name.as_str())
+            && let Some(projected_subscripts) =
+                project_slice_subscripts_for_lane(dims, subscripts, ctx.k, span)?
+        {
+            return Ok(rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: projected_subscripts,
+                span,
+            });
+        }
     }
     Ok(rumoca_core::Expression::Index {
         base: Box::new(scalarize_expr_with_context(base, ctx)?),
@@ -3210,13 +3360,20 @@ fn scalarize_equation_list(
     for eq in equations.drain(..) {
         let new_start = new_equations.len();
         let phantom_width = expr_phantom_ref_width(&eq.rhs, phantom_map);
-        if eq.scalar_count > 1
+        let effective_scalar_count = if eq.scalar_count > 1 {
+            eq.scalar_count
+        } else {
+            structured_template_residual_scalar_count(&eq.rhs, array_dims)
+                .unwrap_or(eq.scalar_count)
+        };
+        if effective_scalar_count > 1
             && (phantom_width.is_some()
                 || expr_has_record_array_member_slice(&eq.rhs)
+                || expr_has_colon_slice(&eq.rhs)
                 || expr_has_vectorized_scalar_function_call(&eq.rhs, array_dims, functions))
         {
             // Expand into scalar_count individual equations
-            for k in 0..eq.scalar_count {
+            for k in 0..effective_scalar_count {
                 let scalar_rhs = scalarize_expr_at(
                     &eq.rhs,
                     k,
@@ -3284,22 +3441,27 @@ fn project_scalarized_residual_rhs(
         span,
     } = &eq.rhs
     else {
-        return Ok(eq);
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
+        return Ok(dae::Equation { rhs, ..eq });
     };
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = lhs.as_ref()
     else {
-        return Ok(eq);
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
+        return Ok(dae::Equation { rhs, ..eq });
     };
     let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims) else {
-        return Ok(eq);
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
+        return Ok(dae::Equation { rhs, ..eq });
     };
     let _ = phantom_map;
     let scalar_lhs =
         project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?;
     let scalar_rhs =
         project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?;
+    let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, array_dims)?;
+    let scalar_rhs = lower_colon_slice_dot_products(&scalar_rhs, array_dims)?;
     Ok(dae::Equation {
         rhs: rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
@@ -3327,6 +3489,252 @@ fn project_scalarized_rhs_expr_at(
     .project(expr)
 }
 
+fn lower_colon_slice_dot_products(
+    expr: &rumoca_core::Expression,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    match expr {
+        rumoca_core::Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            if let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+                && base_subscripts.is_empty()
+                && subscripts
+                    .iter()
+                    .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+                && let Some(dims) = array_dims.get(name.as_str())
+                && let Some(projected_dims) = projected_dims_for_subscripts(dims, subscripts)
+            {
+                let scalar_count = compute_var_size(&projected_dims);
+                if scalar_count > 1 {
+                    let mut elements = Vec::with_capacity(scalar_count);
+                    for idx in 0..scalar_count {
+                        let Some(projected_subscripts) =
+                            project_slice_subscripts_for_lane(dims, subscripts, idx, *span)?
+                        else {
+                            break;
+                        };
+                        elements.push(rumoca_core::Expression::VarRef {
+                            name: name.clone(),
+                            subscripts: projected_subscripts,
+                            span: *span,
+                        });
+                    }
+                    if elements.len() == scalar_count {
+                        return Ok(rumoca_core::Expression::Array {
+                            elements,
+                            is_matrix: false,
+                            span: *span,
+                        });
+                    }
+                }
+            }
+            Ok(rumoca_core::Expression::Index {
+                base: Box::new(lower_colon_slice_dot_products(base, array_dims)?),
+                subscripts: subscripts.clone(),
+                span: *span,
+            })
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+            let lhs = lower_colon_slice_dot_products(lhs, array_dims)?;
+            let rhs = lower_colon_slice_dot_products(rhs, array_dims)?;
+            if matches!(op, rumoca_core::OpBinary::Mul)
+                && let (
+                    rumoca_core::Expression::Array {
+                        elements: lhs_values,
+                        ..
+                    },
+                    rumoca_core::Expression::Array {
+                        elements: rhs_values,
+                        ..
+                    },
+                ) = (&lhs, &rhs)
+                && lhs_values.len() == rhs_values.len()
+                && let Some(dot) = dot_product_expr(lhs_values, rhs_values, *span)
+            {
+                return Ok(dot);
+            }
+            Ok(vectorized_binary_expr(op.clone(), lhs, rhs, *span))
+        }
+        rumoca_core::Expression::Unary { op, rhs, span } => Ok(rumoca_core::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(lower_colon_slice_dot_products(rhs, array_dims)?),
+            span: *span,
+        }),
+        rumoca_core::Expression::BuiltinCall {
+            function,
+            args,
+            span,
+        } => Ok(rumoca_core::Expression::BuiltinCall {
+            function: *function,
+            args: args
+                .iter()
+                .map(|arg| lower_colon_slice_dot_products(arg, array_dims))
+                .collect::<Result<Vec<_>, _>>()?,
+            span: *span,
+        }),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => Ok(rumoca_core::Expression::If {
+            branches: branches
+                .iter()
+                .map(|(condition, value)| {
+                    Ok((
+                        lower_colon_slice_dot_products(condition, array_dims)?,
+                        lower_colon_slice_dot_products(value, array_dims)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, ToDaeError>>()?,
+            else_branch: Box::new(lower_colon_slice_dot_products(else_branch, array_dims)?),
+            span: *span,
+        }),
+        rumoca_core::Expression::Array {
+            elements,
+            is_matrix,
+            span,
+        } => Ok(rumoca_core::Expression::Array {
+            elements: elements
+                .iter()
+                .map(|element| lower_colon_slice_dot_products(element, array_dims))
+                .collect::<Result<Vec<_>, _>>()?,
+            is_matrix: *is_matrix,
+            span: *span,
+        }),
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn dot_product_expr(
+    lhs_values: &[rumoca_core::Expression],
+    rhs_values: &[rumoca_core::Expression],
+    span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
+    let mut terms = lhs_values
+        .iter()
+        .cloned()
+        .zip(rhs_values.iter().cloned())
+        .map(|(lhs, rhs)| rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        });
+    let first = terms.next()?;
+    Some(
+        terms.fold(first, |acc, term| rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(acc),
+            rhs: Box::new(term),
+            span,
+        }),
+    )
+}
+
+fn project_slice_subscripts_for_lane(
+    dims: &[i64],
+    subscripts: &[rumoca_core::Subscript],
+    k: usize,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<rumoca_core::Subscript>>, ToDaeError> {
+    let mut selected_dims = Vec::new();
+    let mut dim_idx = 0usize;
+    for subscript in subscripts {
+        if dim_idx >= dims.len() {
+            break;
+        }
+        match subscript {
+            rumoca_core::Subscript::Index { .. } => {
+                dim_idx += 1;
+            }
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                if subscript_expr_selects_vector(expr).unwrap_or(true) {
+                    return Ok(None);
+                }
+                dim_idx += 1;
+            }
+            rumoca_core::Subscript::Colon { .. } => {
+                selected_dims.push(dims[dim_idx]);
+                dim_idx += 1;
+            }
+        }
+    }
+    selected_dims.extend_from_slice(&dims[dim_idx..]);
+    if selected_dims.is_empty() {
+        return Ok(None);
+    }
+    let Some(lane_indices) = lane_indices_for_dims(k, &selected_dims) else {
+        return Ok(None);
+    };
+    let mut lane_iter = lane_indices.into_iter();
+    let mut projected = Vec::with_capacity(subscripts.len() + dims.len().saturating_sub(dim_idx));
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Colon { .. } => {
+                let Some(index) = lane_iter.next() else {
+                    return Ok(None);
+                };
+                projected.push(generated_index_subscript(
+                    index,
+                    span,
+                    "DAE scalarized colon slice projection",
+                )?);
+            }
+            rumoca_core::Subscript::Index { .. } => projected.push(subscript.clone()),
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                if subscript_expr_selects_vector(expr).unwrap_or(true) {
+                    return Ok(None);
+                }
+                projected.push(subscript.clone());
+            }
+        }
+    }
+    for _ in dim_idx..dims.len() {
+        let Some(index) = lane_iter.next() else {
+            return Ok(None);
+        };
+        projected.push(generated_index_subscript(
+            index,
+            span,
+            "DAE scalarized trailing array projection",
+        )?);
+    }
+    Ok(Some(projected))
+}
+
+fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
+    let mut remaining = k;
+    let mut indices = Vec::with_capacity(dims.len());
+    for (idx, dim) in dims.iter().enumerate() {
+        let dim = usize::try_from(*dim).ok()?;
+        if dim == 0 {
+            return None;
+        }
+        let stride =
+            dims.get(idx + 1..)
+                .unwrap_or_default()
+                .iter()
+                .try_fold(1usize, |acc, next_dim| {
+                    let next_dim = usize::try_from(*next_dim).ok()?;
+                    acc.checked_mul(next_dim)
+                })?;
+        let zero_based = remaining / stride;
+        if zero_based >= dim {
+            return None;
+        }
+        remaining %= stride;
+        indices.push(i64::try_from(zero_based.checked_add(1)?).ok()?);
+    }
+    (remaining == 0).then_some(indices)
+}
+
 struct RhsProjectionCtx<'a> {
     k: usize,
     array_dims: &'a HashMap<String, Vec<i64>>,
@@ -3341,6 +3749,11 @@ impl RhsProjectionCtx<'_> {
     ) -> Result<rumoca_core::Expression, ToDaeError> {
         match expr {
             rumoca_core::Expression::VarRef { .. } => self.project_var_ref(expr),
+            rumoca_core::Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => self.project_index(base, subscripts, *span, expr),
             rumoca_core::Expression::Array { elements, .. } => self.project_array(elements, expr),
             rumoca_core::Expression::ArrayComprehension {
                 expr: inner,
@@ -3404,6 +3817,39 @@ impl RhsProjectionCtx<'_> {
             return Ok(projected);
         }
         Ok(expr.clone())
+    }
+
+    fn project_index(
+        &self,
+        base: &rumoca_core::Expression,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+        expr: &rumoca_core::Expression,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        let rumoca_core::Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            ..
+        } = base
+        else {
+            return Ok(expr.clone());
+        };
+        if !base_subscripts.is_empty() {
+            return Ok(expr.clone());
+        }
+        let Some(dims) = self.array_dims.get(name.as_str()) else {
+            return Ok(expr.clone());
+        };
+        let Some(projected_subscripts) =
+            project_slice_subscripts_for_lane(dims, subscripts, self.k, span)?
+        else {
+            return Ok(expr.clone());
+        };
+        Ok(rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: projected_subscripts,
+            span,
+        })
     }
 
     fn project_array(

@@ -1015,15 +1015,14 @@ fn lower_projection_plan(
     let projection_set = projection_indices.iter().copied().collect::<BTreeSet<_>>();
 
     for row_idx in row_indices {
-        let mut y_indices =
-            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set);
-        if y_indices.is_empty()
-            && let Some(solve::ScalarSlot::Y { index, .. }) =
-                row_targets.get(row_idx).copied().flatten()
+        let y_indices = if let Some(solve::ScalarSlot::Y { index, .. }) =
+            row_targets.get(row_idx).copied().flatten()
             && projection_set.contains(&index)
         {
-            y_indices.insert(index);
-        }
+            BTreeSet::from([index])
+        } else {
+            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set)
+        };
         if y_indices.is_empty() {
             continue;
         }

@@ -57,7 +57,7 @@ use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_co
 use profiling::{eliminate_profile_enabled, log_eliminate_profile};
 use runtime_known::singular_rows_are_runtime_known_assignments;
 use runtime_protection::{
-    assignment_target_name, expr_references_any_discrete_name,
+    assignment_target_name_in_dae, expr_references_any_discrete_name,
     expr_references_any_runtime_discrete_target, is_runtime_protected_unknown,
     runtime_defined_discrete_target_names, runtime_partition_or_event_refs_var,
     runtime_protected_unknown_names, should_preserve_runtime_known_assignment,
@@ -66,8 +66,8 @@ use scalar_shape::expression_is_scalar_after_subscripts;
 pub use solve_for_unknown::try_solve_for_unknown;
 use solve_for_unknown::{expr_contains_unknown_in_dae, try_solve_for_unknown_in_dae};
 use substitution_application::{
-    apply_substitutions_in_order, apply_substitutions_to_dae_partitions,
-    apply_substitutions_to_remaining_once, equation_analysis_expr,
+    apply_substitutions_to_dae_partitions, apply_substitutions_to_remaining_once,
+    equation_analysis_expr,
 };
 use substitution_target::{
     expr_contains_derivative_substitution_target, expr_contains_substitution_target,
@@ -269,6 +269,18 @@ fn regular_blt_blocks_for_fully_matched_rows(
     else {
         return Ok(None);
     };
+    if unmatched_unknowns.is_empty() && n_matched == n_unknowns && n_unknowns < n_equations {
+        let incidence = crate::incidence::build_incidence(dae);
+        let regular = maximum_regular_subsystem(&incidence)?;
+        if regular.dropped_unknowns.is_empty()
+            && regular.dropped_equations.iter().all(|equation| {
+                dropped_equation_is_evaluation_assignment_row(dae, &incidence, equation)
+            })
+        {
+            return build_blt_from_incidence(&regular.incidence).map(Some);
+        }
+        return Ok(None);
+    }
     if n_matched != n_equations || !unmatched_equations.is_empty() || n_unknowns <= n_equations {
         return Ok(None);
     }
@@ -283,6 +295,36 @@ fn regular_blt_blocks_for_fully_matched_rows(
         return Ok(None);
     }
     build_blt_from_incidence(&regular.incidence).map(Some)
+}
+
+fn dropped_equation_is_evaluation_assignment_row(
+    dae: &Dae,
+    incidence: &crate::incidence::Incidence,
+    equation: &EquationRef,
+) -> bool {
+    let Some(eq) = dae.continuous.equations.get(equation.0) else {
+        return false;
+    };
+    let analysis_expr = equation_analysis_expr(eq);
+    let Some(target) = assignment_target_name_in_dae(dae, &analysis_expr) else {
+        return false;
+    };
+    let Some(row_unknowns) = incidence
+        .equation_refs
+        .iter()
+        .position(|candidate| candidate == equation)
+        .and_then(|idx| incidence.eq_unknowns.get(idx))
+    else {
+        return false;
+    };
+    !row_unknowns
+        .iter()
+        .filter_map(|idx| incidence.unknown_names.get(*idx))
+        .any(|unknown| unknown_matches_var_name(unknown, &target))
+}
+
+fn unknown_matches_var_name(unknown: &UnknownId, target: &VarName) -> bool {
+    matches!(unknown, UnknownId::Variable(name) if name == target)
 }
 
 fn regular_subsystem_extra_unknown_is_direct_component_helper(
@@ -436,7 +478,6 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
         direct_definitions.len(),
     );
     let mut scan_state = BoundaryScanState::new(dae.continuous.equations.len());
-
     let p_order = maybe_start_timer_if(profile);
     let eq_order = boundary_equation_order(dae, &unknown_index, &scan_state.resolved)?;
     log_eliminate_profile(profile, "boundary_equation_order", p_order, eq_order.len());
@@ -569,10 +610,22 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
 fn finish_boundary_elimination(
     dae: &mut Dae,
     substitutions: Vec<Substitution>,
-    eliminated_eq_flags: Vec<bool>,
+    mut eliminated_eq_flags: Vec<bool>,
     mut eliminated_eq_indices: Vec<usize>,
     resolved: &HashSet<VarName>,
 ) -> Result<EliminationResult, StructuralError> {
+    eliminated_eq_indices.retain(|&idx| {
+        let preserve = dae.continuous.equations.get(idx).is_some_and(|eq| {
+            should_preserve_runtime_sensitive_continuous_assignment(
+                dae,
+                &equation_analysis_expr(eq),
+            )
+        });
+        if preserve && let Some(flag) = eliminated_eq_flags.get_mut(idx) {
+            *flag = false;
+        }
+        !preserve
+    });
     apply_substitutions_to_remaining_once(dae, &eliminated_eq_flags, &substitutions)?;
     let n_eliminated = eliminated_eq_indices.len();
     eliminated_eq_indices.sort_unstable();
@@ -781,10 +834,13 @@ fn try_eliminate_zero_unknown_equation(
         .state_names
         .iter()
         .any(|sn| expr_contains_var(eq_rhs, sn));
+    let assignment_target = assignment_target_name_in_dae(ctx.dae, eq_rhs);
+    let assignment_target_is_dae_var = assignment_target
+        .as_ref()
+        .is_some_and(|target| dae_var(ctx.dae, target).is_some());
     if has_state_derivative
-        || references_state_value
         || has_any_live_unknown(eq_rhs, ctx.unknown_index, ctx.resolved)?
-        || expr_contains_indexed_multiscalar_ref(eq_rhs, ctx.dae)?
+        || (references_state_value && assignment_target_is_dae_var)
     {
         return Ok(());
     }
@@ -792,6 +848,9 @@ fn try_eliminate_zero_unknown_equation(
     // define a live runtime discrete/event value. Do not drop those rows
     // unless they can be substituted safely through every runtime consumer.
     if should_preserve_runtime_known_assignment(ctx.dae, eq_rhs) {
+        return Ok(());
+    }
+    if should_preserve_runtime_sensitive_continuous_assignment(ctx.dae, eq_rhs) {
         return Ok(());
     }
     let n_subs_before = ctx.substitutions.len();
@@ -802,14 +861,28 @@ fn try_eliminate_zero_unknown_equation(
         ctx.runtime_defined_discrete_targets,
         ctx.substitutions,
     )?;
-    if assignment_target_name(eq_rhs).is_some_and(|target| dae_var(ctx.dae, &target).is_some())
-        && ctx.substitutions.len() == n_subs_before
-    {
+    if assignment_target_is_dae_var && ctx.substitutions.len() == n_subs_before {
         return Ok(());
     }
     ctx.eliminated_eq_indices.push(eq_idx);
     ctx.eliminated_eq_flags[eq_idx] = true;
     Ok(())
+}
+
+fn should_preserve_runtime_sensitive_continuous_assignment(dae: &Dae, eq_rhs: &Expression) -> bool {
+    if !expr_contains_runtime_sensitive_operator(eq_rhs) {
+        return false;
+    }
+    let Some(target) = assignment_target_name_in_dae(dae, eq_rhs) else {
+        return false;
+    };
+    dae.variables.algebraics.contains_key(&target)
+        || dae.variables.outputs.contains_key(&target)
+        || rumoca_ir_dae::component_base_name(target.as_str()).is_some_and(|base| {
+            let base = VarName::new(base);
+            dae.variables.algebraics.contains_key(&base)
+                || dae.variables.outputs.contains_key(&base)
+        })
 }
 
 pub(in crate::eliminate) struct EliminationChoiceContext<'a> {
@@ -859,9 +932,6 @@ fn choose_solvable_unknown_for_elimination(
         if dae.variables.states.contains_key(candidate) {
             continue;
         }
-        if is_runtime_protected_unknown(candidate, ctx.runtime_protected_unknowns) {
-            continue;
-        }
         let is_output = output_partition_contains_unknown(dae, candidate);
         // Try the simple top-level Sub pattern first; fall back to the additive
         // solver so substitution residues like `x - (y - 0)` (which the simple
@@ -874,13 +944,32 @@ fn choose_solvable_unknown_for_elimination(
             continue;
         }
         let direct_assignment_solution = has_direct_assignment_form(dae, rhs, candidate);
+        if !is_trivial_alias_in_dae(dae, &solution)
+            && !solution_is_cheap_for_symbolic_substitution(&solution)
+        {
+            continue;
+        }
+        if is_runtime_protected_unknown(candidate, ctx.runtime_protected_unknowns)
+            && !(direct_assignment_solution
+                && !solution_references_fixed_unknown(dae, &solution)
+                && !expr_contains_runtime_sensitive_operator(&solution))
+        {
+            continue;
+        }
+        if direct_assignment_solution
+            && !is_trivial_alias_in_dae(dae, &solution)
+            && expr_contains_runtime_sensitive_operator(&solution)
+            && is_scalarized_element_of_aggregate(dae, candidate)?
+            && scalarized_element_has_non_connection_use(dae, candidate)
+        {
+            continue;
+        }
         if ctx.has_state_derivative && is_scalarized_element_of_aggregate(dae, candidate)? {
             continue;
         }
         if is_scalarized_element_of_aggregate(dae, candidate)?
-            && scalarized_element_has_derivative_equation_use(dae, candidate)
-            && (scalarized_aggregate_base_rank(dae, candidate)?.is_some_and(|rank| rank > 1)
-                || solution_references_algebraic_or_output_unknown(dae, &solution))
+            && scalarized_element_has_coupled_derivative_use(dae, candidate)
+            && !is_trivial_alias_in_dae(dae, &solution)
         {
             continue;
         }
@@ -920,7 +1009,7 @@ fn choose_solvable_unknown_for_elimination(
         if solution_has_blocking_unsliced_multiscalar_ref(&solution, dae)? {
             continue;
         }
-        if expr_contains_indexed_multiscalar_ref(&solution, dae)?
+        if expr_contains_indexed_multiscalar_slice_ref(&solution, dae)?
             && !(is_trivial_alias_in_dae(dae, &solution)
                 && expression_is_scalar_after_subscripts(&solution, dae)?)
             && !is_scalar_reduction_solution_tree(&solution)
@@ -1104,7 +1193,7 @@ fn is_assignment_target(dae: &Dae, expr: &Expression, candidate: &VarName) -> bo
         } => {
             var_ref_matches_unknown(name, subscripts, candidate)
                 || assignment_slice_target_contains_scalarized_candidate(
-                    name, subscripts, candidate,
+                    dae, name, subscripts, candidate,
                 )
                 || assignment_target_is_singleton_projection(dae, name, subscripts, candidate)
         }
@@ -1122,7 +1211,7 @@ fn is_assignment_target(dae: &Dae, expr: &Expression, candidate: &VarName) -> bo
                 combined.extend_from_slice(subscripts);
                 var_ref_matches_unknown(name, &combined, candidate)
                     || assignment_slice_target_contains_scalarized_candidate(
-                        name, &combined, candidate,
+                        dae, name, &combined, candidate,
                     )
                     || assignment_target_is_singleton_projection(dae, name, &combined, candidate)
             } else {
@@ -1134,6 +1223,7 @@ fn is_assignment_target(dae: &Dae, expr: &Expression, candidate: &VarName) -> bo
 }
 
 fn assignment_slice_target_contains_scalarized_candidate(
+    dae: &Dae,
     name: &Reference,
     subscripts: &[rumoca_core::Subscript],
     candidate: &VarName,
@@ -1150,7 +1240,9 @@ fn assignment_slice_target_contains_scalarized_candidate(
         .all(|(subscript, candidate_index)| match subscript {
             rumoca_core::Subscript::Index { value, .. } => value == candidate_index,
             rumoca_core::Subscript::Colon { .. } => true,
-            rumoca_core::Subscript::Expr { .. } => false,
+            rumoca_core::Subscript::Expr { .. } => {
+                exact_subscript_index_in_dae(dae, subscript) == Some(*candidate_index)
+            }
         })
 }
 
@@ -1188,42 +1280,79 @@ fn scalarized_element_has_non_connection_use(dae: &Dae, candidate: &VarName) -> 
     })
 }
 
-fn scalarized_element_has_derivative_equation_use(dae: &Dae, candidate: &VarName) -> bool {
-    dae.continuous.equations.iter().any(|eq| {
-        expression_contains_der_call(&eq.rhs)
-            && expr_references_var_for_presence(&eq.rhs, candidate)
-    })
+fn scalarized_element_has_coupled_derivative_use(dae: &Dae, candidate: &VarName) -> bool {
+    let mut exact_derivative_use_count = 0usize;
+    let has_aggregate_base_use = dae.continuous.equations.iter().any(|eq| {
+        if !expression_contains_der_call(&eq.rhs) {
+            return false;
+        }
+        let mut refs = Vec::new();
+        collect_var_ref_nodes(&eq.rhs, &mut refs);
+        if refs
+            .iter()
+            .any(|(name, subscripts)| var_ref_matches_unknown(name, subscripts, candidate))
+        {
+            exact_derivative_use_count += 1;
+        }
+        refs.iter().any(|(name, subscripts)| {
+            subscripts.is_empty()
+                && aggregate_ref_matches_scalarized_candidate(name, subscripts, candidate)
+        })
+    });
+    has_aggregate_base_use || exact_derivative_use_count > 1
 }
 
-fn scalarized_aggregate_base_rank(
-    dae: &Dae,
-    candidate: &VarName,
-) -> Result<Option<usize>, StructuralError> {
-    let Some(scalar) = rumoca_core::parse_scalar_name(candidate.as_str()) else {
-        return Ok(None);
-    };
-    let base_name = VarName::new(scalar.base);
-    let Some(base_var) = DaeVariableScope::new(dae).exact(&base_name) else {
-        return Ok(None);
-    };
-    if scalar_count_from_dims(&base_name, &base_var.dims)? <= 1 {
-        return Ok(None);
-    }
-    Ok(Some(base_var.dims.len()))
-}
-
-fn solution_references_algebraic_or_output_unknown(dae: &Dae, expr: &Expression) -> bool {
+fn solution_references_fixed_unknown(dae: &Dae, expr: &Expression) -> bool {
     let mut refs = Vec::new();
     collect_exact_reference_expr_names_in_dae(dae, expr, &mut refs);
     refs.into_iter().any(|name| {
-        dae.variables.algebraics.contains_key(&name)
-            || dae.variables.outputs.contains_key(&name)
-            || rumoca_ir_dae::component_base_name(name.as_str()).is_some_and(|base| {
-                let base = VarName::new(base);
-                dae.variables.algebraics.contains_key(&base)
-                    || dae.variables.outputs.contains_key(&base)
-            })
+        unknown_is_fixed(dae, &name)
+            || rumoca_ir_dae::component_base_name(name.as_str())
+                .is_some_and(|base| unknown_is_fixed(dae, &VarName::new(base)))
     })
+}
+
+fn expr_contains_runtime_sensitive_operator(expr: &Expression) -> bool {
+    struct Checker {
+        found: bool,
+    }
+
+    impl ExpressionVisitor for Checker {
+        fn visit_expression(&mut self, expr: &Expression) {
+            if !self.found {
+                if let Expression::VarRef { name, .. } = expr
+                    && name.as_str() == "time"
+                {
+                    self.found = true;
+                    return;
+                }
+                self.walk_expression(expr);
+            }
+        }
+
+        fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+            if matches!(
+                function,
+                BuiltinFunction::Pre
+                    | BuiltinFunction::Sample
+                    | BuiltinFunction::Initial
+                    | BuiltinFunction::Terminal
+                    | BuiltinFunction::Edge
+                    | BuiltinFunction::Change
+                    | BuiltinFunction::Reinit
+            ) {
+                self.found = true;
+                return;
+            }
+            for arg in args {
+                self.visit_expression(arg);
+            }
+        }
+    }
+
+    let mut checker = Checker { found: false };
+    checker.visit_expression(expr);
+    checker.found
 }
 
 fn expression_contains_der_call(expr: &Expression) -> bool {
@@ -1323,7 +1452,7 @@ fn is_trivial_alias(expr: &Expression) -> bool {
     }
 }
 
-fn is_trivial_alias_in_dae(dae: &Dae, expr: &Expression) -> bool {
+pub(super) fn is_trivial_alias_in_dae(dae: &Dae, expr: &Expression) -> bool {
     if exact_reference_expr_name_in_dae(dae, expr).is_some() {
         return true;
     }
@@ -1407,6 +1536,118 @@ fn solution_has_blocking_unsliced_multiscalar_ref(
 ) -> Result<bool, StructuralError> {
     let scope = DaeVariableScope::new(dae);
     solution_has_blocking_unsliced_multiscalar_ref_inner(expr, &scope)
+}
+
+const MAX_SYMBOLIC_SUBSTITUTION_NODES: usize = 64;
+const MAX_BLT_SYMBOLIC_CANDIDATE_NODES: usize = 256;
+
+pub(super) fn solution_is_cheap_for_symbolic_substitution(expr: &Expression) -> bool {
+    expression_node_count_exceeds(expr, MAX_SYMBOLIC_SUBSTITUTION_NODES)
+        .is_some_and(|exceeds| !exceeds)
+}
+
+fn expression_is_within_symbolic_candidate_budget(expr: &Expression) -> bool {
+    expression_node_count_exceeds(expr, MAX_BLT_SYMBOLIC_CANDIDATE_NODES)
+        .is_some_and(|exceeds| !exceeds)
+}
+
+fn expression_node_count_exceeds(expr: &Expression, limit: usize) -> Option<bool> {
+    fn visit(expr: &Expression, limit: usize, count: &mut usize) -> Option<bool> {
+        *count = count.checked_add(1)?;
+        if *count > limit {
+            return Some(true);
+        }
+        match expr {
+            Expression::Binary { lhs, rhs, .. } => {
+                if visit(lhs, limit, count)? {
+                    return Some(true);
+                }
+                visit(rhs, limit, count)
+            }
+            Expression::Unary { rhs, .. } => visit(rhs, limit, count),
+            Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+                for arg in args {
+                    if visit(arg, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, branch) in branches {
+                    if visit(condition, limit, count)? || visit(branch, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                visit(else_branch, limit, count)
+            }
+            Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+                for element in elements {
+                    if visit(element, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            Expression::Range {
+                start, step, end, ..
+            } => {
+                if visit(start, limit, count)? {
+                    return Some(true);
+                }
+                if let Some(step) = step
+                    && visit(step, limit, count)?
+                {
+                    return Some(true);
+                }
+                visit(end, limit, count)
+            }
+            Expression::Index {
+                base, subscripts, ..
+            } => {
+                if visit(base, limit, count)? {
+                    return Some(true);
+                }
+                for subscript in subscripts {
+                    if let rumoca_core::Subscript::Expr { expr, .. } = subscript
+                        && visit(expr, limit, count)?
+                    {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            Expression::FieldAccess { base, .. } => visit(base, limit, count),
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                ..
+            } => {
+                if visit(expr, limit, count)? {
+                    return Some(true);
+                }
+                for index in indices {
+                    if visit(&index.range, limit, count)? {
+                        return Some(true);
+                    }
+                }
+                if let Some(filter) = filter {
+                    visit(filter, limit, count)
+                } else {
+                    Some(false)
+                }
+            }
+            _ => Some(false),
+        }
+    }
+
+    let mut count = 0usize;
+    visit(expr, limit, &mut count)
 }
 
 fn is_scalar_reduction_solution_tree(expr: &Expression) -> bool {
@@ -1734,6 +1975,24 @@ fn exact_index_expr_in_dae(dae: &Dae, expr: &Expression) -> Option<i64> {
         Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => fixed_integer_parameter_start(dae, name.var_name()),
+        Expression::Unary { op, rhs, .. } => match op {
+            OpUnary::Plus => exact_index_expr_in_dae(dae, rhs),
+            OpUnary::Minus => {
+                exact_index_expr_in_dae(dae, rhs).and_then(|value| value.checked_neg())
+            }
+            _ => None,
+        },
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = exact_index_expr_in_dae(dae, lhs)?;
+            let rhs = exact_index_expr_in_dae(dae, rhs)?;
+            match op {
+                OpBinary::Add | OpBinary::AddElem => lhs.checked_add(rhs),
+                OpBinary::Sub | OpBinary::SubElem => lhs.checked_sub(rhs),
+                OpBinary::Mul | OpBinary::MulElem => lhs.checked_mul(rhs),
+                OpBinary::Div | OpBinary::DivElem if rhs != 0 && lhs % rhs == 0 => Some(lhs / rhs),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -1967,8 +2226,16 @@ fn scalar_blt_solution(
         return Ok(None);
     }
 
-    let eq_rhs =
-        apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions)?;
+    let Some(eq_rhs) = apply_substitutions_for_symbolic_candidate(
+        &dae.continuous.equations[eq_idx].rhs,
+        substitutions,
+    )?
+    else {
+        return Ok(None);
+    };
+    if should_preserve_runtime_sensitive_continuous_assignment(dae, &eq_rhs) {
+        return Ok(None);
+    }
     if expr_contains_indexed_multiscalar_slice_ref(&eq_rhs, dae)? {
         return Ok(None);
     }
@@ -1998,7 +2265,38 @@ fn scalar_blt_solution(
     {
         return Ok(None);
     }
+    if !is_trivial_alias_in_dae(dae, &solution)
+        && !solution_is_cheap_for_symbolic_substitution(&solution)
+    {
+        return Ok(None);
+    }
     Ok(Some((eq_idx, var_name, solution)))
+}
+
+pub(super) fn apply_substitutions_for_symbolic_candidate(
+    expr: &Expression,
+    substitutions: &[Substitution],
+) -> Result<Option<Expression>, StructuralError> {
+    let mut out = apply_record_field_aggregate_substitutions(expr, substitutions, None);
+    for sub in substitutions {
+        if !expr_contains_substitution_target(&out, sub) {
+            continue;
+        }
+        if !is_trivial_alias(&sub.expr) && !solution_is_cheap_for_symbolic_substitution(&sub.expr) {
+            return Ok(None);
+        }
+        out = SubstituteVarRewriter {
+            substitution: sub,
+            replacement: &sub.expr,
+            replacement_dims: &sub.replacement_dims,
+            derivative_replacement: None,
+        }
+        .rewrite_expression(&out)?;
+        if !expression_is_within_symbolic_candidate_budget(&out) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(out))
 }
 
 fn is_internal_component_output(dae: &Dae, var_name: &VarName) -> bool {
@@ -2060,11 +2358,12 @@ pub(super) fn scalar_blt_solution_would_break_aggregate_element(
     if !is_scalarized_element_of_aggregate(dae, var_name)? {
         return Ok(false);
     }
-    Ok(
-        scalarized_element_has_derivative_equation_use(dae, var_name)
-            && (scalarized_aggregate_base_rank(dae, var_name)?.is_some_and(|rank| rank > 1)
-                || solution_references_algebraic_or_output_unknown(dae, solution)),
-    )
+    if is_trivial_alias_in_dae(dae, solution) {
+        return Ok(false);
+    }
+    Ok(scalarized_element_has_coupled_derivative_use(dae, var_name)
+        || (expr_contains_runtime_sensitive_operator(solution)
+            && scalarized_element_has_non_connection_use(dae, var_name)))
 }
 
 fn can_use_equation_for_elimination(dae: &Dae, eq_idx: usize) -> bool {

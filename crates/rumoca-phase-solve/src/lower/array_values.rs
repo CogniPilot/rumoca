@@ -2187,16 +2187,16 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(vec![value]);
         }
-        if let Some(values) = self.lower_array_like_dynamic_selection_values(
-            base, subscripts, owner_span, scope, call_depth,
-        )? {
-            return Ok(values);
-        }
         if is_static_singleton_scalar_projection(base, subscripts)? {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
         }
         if scalar_literal_projection(base, subscripts, owner_span)? {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
+        }
+        if let Some(values) = self.lower_array_like_dynamic_selection_values(
+            base, subscripts, owner_span, scope, call_depth,
+        )? {
+            return Ok(values);
         }
         let base_key = match dynamic_binding_base_key(base) {
             Ok(base_key) => base_key,

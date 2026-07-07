@@ -450,7 +450,14 @@ fn examples_directory_scenario_configs_compile_and_smoke_requested_task() {
         !configs.is_empty(),
         "examples directory should contain rumoca-scenario.toml scenarios to smoke-test"
     );
+    let filter = env::var("RUMOCA_EXAMPLES_SMOKE_FILTER").ok();
     for config_path in configs {
+        if filter
+            .as_deref()
+            .is_some_and(|filter| !config_path.to_string_lossy().contains(filter))
+        {
+            continue;
+        }
         let config = load_example_toml_config(&config_path);
         let Some(result) = compile_toml_model_if_source_roots_exist(&config_path) else {
             continue;

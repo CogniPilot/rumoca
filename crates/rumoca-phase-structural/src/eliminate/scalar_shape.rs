@@ -58,6 +58,18 @@ pub(super) fn var_ref_is_scalar_after_subscripts(
     reference_span: rumoca_core::Span,
     dae: &dae::Dae,
 ) -> Result<bool, StructuralError> {
+    if !subscripts.is_empty() {
+        let expr = Expression::VarRef {
+            name: name.clone(),
+            subscripts: subscripts.to_vec(),
+            span: reference_span,
+        };
+        if let Some(exact_name) = exact_reference_expr_name_in_dae(dae, &expr)
+            && let Some(var) = DaeVariableScope::new(dae).exact(&exact_name)
+        {
+            return Ok(scalar_count_from_dims(&exact_name, &var.dims)? == 1);
+        }
+    }
     let scope = DaeVariableScope::new(dae);
     let dims = match scope.dims_for_reference(name) {
         Ok(Some(dims)) => dims,

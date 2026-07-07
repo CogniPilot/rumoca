@@ -913,6 +913,13 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(dims);
         }
+        if dynamic_binding_base_key(base).is_err()
+            && subscripts
+                .iter()
+                .all(super::helpers::is_scalar_selector_subscript)
+        {
+            return Ok(Vec::new());
+        }
         let base_dims = self.infer_expr_dims(base, scope)?;
         if base_dims.is_empty() && scalar_singleton_projection(subscripts) {
             return Ok(Vec::new());

@@ -75,13 +75,10 @@ pub(super) fn expr_contains_indexed_multiscalar_slice_ref(
         if !reference_touches_continuous_unknown(dae, name.var_name()) {
             continue;
         }
-        let Some(reference_span) = name
+        let reference_span = name
             .span()
             .or_else(|| subscripts.first().map(rumoca_core::Subscript::span))
-            .filter(|span| !span.is_dummy())
-        else {
-            return Ok(true);
-        };
+            .unwrap_or(rumoca_core::Span::DUMMY);
         if !var_ref_is_scalar_after_subscripts(&name, &subscripts, reference_span, dae)? {
             return Ok(true);
         }

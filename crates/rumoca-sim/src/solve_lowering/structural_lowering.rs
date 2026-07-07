@@ -284,7 +284,6 @@ pub(super) fn structurally_lower_dae_for_simulation(
         remove_nonnumeric_continuous_equations(&mut residual_shape_dae);
         validate_residual_shapes_for_simulation(&residual_shape_dae)?;
     }
-
     log_solve_lowering_start("structural.eliminate_trivial");
     let timer = stage_timer_start();
     let mut elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
@@ -318,7 +317,6 @@ pub(super) fn structurally_lower_dae_for_simulation(
         }
         return Err(rumoca_phase_solve::SolveModelLowerError::Structural { source });
     }
-
     apply_simulation_elimination(&mut lowered, &elimination.substitutions)?;
     trace_simulation_elimination(&lowered, &elimination.substitutions);
     mark_state_selection_metadata(&mut metadata_dae, &elimination.substitutions)?;

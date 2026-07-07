@@ -6,10 +6,11 @@ use crate::{EquationRef, StructuralError, UnknownId, tear_algebraic_loop};
 
 use super::{
     Dae, DerivativeNameMatcher, Substitution, VarName, algebraic_or_output_unknown,
-    apply_substitutions_in_order, can_eliminate_scalar_unknown, can_use_equation_for_elimination,
-    equation_has_state_derivative, expr_contains_var,
-    scalar_blt_solution_would_break_aggregate_element, stable_solution_for_unknown,
-    substitution_for_var,
+    apply_substitutions_for_symbolic_candidate, can_eliminate_scalar_unknown,
+    can_use_equation_for_elimination, equation_has_state_derivative, expr_contains_var,
+    is_trivial_alias_in_dae, scalar_blt_solution_would_break_aggregate_element,
+    should_preserve_runtime_sensitive_continuous_assignment,
+    solution_is_cheap_for_symbolic_substitution, stable_solution_for_unknown, substitution_for_var,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -51,13 +52,24 @@ pub(super) fn tear_and_eliminate_loop_block(
             return Ok(());
         }
         let var_name = var_names[local_var].clone();
-        let eq_rhs = apply_substitutions_in_order(
+        let Some(eq_rhs) = apply_substitutions_for_symbolic_candidate(
             &dae.continuous.equations[eq_idx].rhs,
             &trial_substitutions,
-        )?;
+        )?
+        else {
+            return Ok(());
+        };
+        if should_preserve_runtime_sensitive_continuous_assignment(dae, &eq_rhs) {
+            return Ok(());
+        }
         let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
             return Ok(());
         };
+        if !is_trivial_alias_in_dae(dae, &solution)
+            && !solution_is_cheap_for_symbolic_substitution(&solution)
+        {
+            return Ok(());
+        }
         if scalar_blt_solution_would_break_aggregate_element(dae, &var_name, &solution)? {
             return Ok(());
         }
@@ -119,8 +131,13 @@ fn loop_local_incidence(
     eq_indices
         .iter()
         .map(|&eq_idx| {
-            let rhs =
-                apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions)?;
+            let Some(rhs) = apply_substitutions_for_symbolic_candidate(
+                &dae.continuous.equations[eq_idx].rhs,
+                substitutions,
+            )?
+            else {
+                return Ok(HashSet::new());
+            };
             Ok(var_names
                 .iter()
                 .enumerate()

@@ -651,6 +651,9 @@ pub fn index_reduce_missing_state_derivatives_once(
                 {
                     return None;
                 }
+                if is_explicit_non_state_definition(dae, eq) {
+                    return None;
+                }
                 if is_non_state_direct_definition(dae, eq, idx, &defining_expr_index) {
                     return None;
                 }
@@ -743,6 +746,18 @@ fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
                 if name.var_name() == alg_name && subscripts.is_empty()
         )
     })
+}
+
+fn is_explicit_non_state_definition(dae: &Dae, eq: &Equation) -> bool {
+    let Some(lhs) = eq.lhs.as_ref() else {
+        return false;
+    };
+    let exact_name = lhs.as_str();
+    dae.variables
+        .algebraics
+        .keys()
+        .chain(dae.variables.outputs.keys())
+        .any(|unknown| exact_name_matches_unknown_or_component(exact_name, unknown))
 }
 
 fn is_non_state_direct_definition(

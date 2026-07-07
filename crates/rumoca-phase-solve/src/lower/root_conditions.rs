@@ -9,6 +9,7 @@ struct RootRuntime<'a> {
     clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
     triggered_clock_conditions: &'a [rumoca_core::Expression],
     variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
+    dae_variables: &'a dae::DaeVariables,
 }
 
 pub(super) fn lower_root_conditions(
@@ -21,6 +22,7 @@ pub(super) fn lower_root_conditions(
         clock_timings: &dae_model.clocks.timings,
         triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
         variable_starts: &dae_model.metadata.variable_starts,
+        dae_variables: &dae_model.variables,
     };
     let span = root_condition_context_span(dae_model);
     let row_count = root_condition_count(dae_model, span)?;
@@ -179,6 +181,7 @@ fn lower_root_condition_row(
         runtime.clock_timings,
         runtime.triggered_clock_conditions,
         runtime.variable_starts,
+        runtime.dae_variables,
         false,
     );
     let scope = Scope::new();
@@ -426,6 +429,7 @@ fn lower_synthetic_root_condition_row(
         runtime.clock_timings,
         runtime.triggered_clock_conditions,
         runtime.variable_starts,
+        runtime.dae_variables,
         false,
     );
     let root_value = builder.lower_expr(condition, &Scope::new(), 0)?;
@@ -445,6 +449,7 @@ fn lower_triggered_clock_condition_row(
         runtime.clock_timings,
         runtime.triggered_clock_conditions,
         runtime.variable_starts,
+        runtime.dae_variables,
         false,
     );
     let root_value = lower_bool_condition_as_root(condition, &mut builder, &Scope::new())?;

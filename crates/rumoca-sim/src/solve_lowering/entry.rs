@@ -162,7 +162,7 @@ fn lower_structured_dae_for_simulation(
     opts: &SimOptions,
     param_overrides: &std::collections::HashMap<String, f64>,
 ) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
-    match opts.solver_mode {
+    let solve_model = match opts.solver_mode {
         SimSolverMode::RkLike => {
             rumoca_phase_solve::lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides(
                 structurally_lowered.dae,
@@ -179,7 +179,8 @@ fn lower_structured_dae_for_simulation(
                 param_overrides,
             )
         }
-    }
+    }?;
+    Ok(solve_model)
 }
 
 pub fn structurally_lowered_dae_for_simulation_artifact(

@@ -142,9 +142,15 @@ fn defining_expr_references_non_alias_output(
 }
 
 fn output_is_direct_alias_of_state(dae: &Dae, output_name: &VarName, state_name: &VarName) -> bool {
-    super::find_defining_expr_candidates(dae, output_name)
+    let mut candidates = super::find_defining_expr_candidates(dae, output_name);
+    if candidates.is_empty()
+        && let Some(scalar) = rumoca_core::parse_scalar_name(output_name.as_str())
+    {
+        candidates = super::find_defining_expr_candidates(dae, &VarName::new(scalar.base));
+    }
+    candidates
         .into_iter()
-        .any(|expr| expression_is_plain_var_ref(&expr, state_name))
+        .any(|expr| expression_is_state_or_component_alias(&expr, output_name, state_name))
 }
 
 fn expression_is_plain_var_ref(expr: &Expression, expected: &VarName) -> bool {
@@ -153,6 +159,40 @@ fn expression_is_plain_var_ref(expr: &Expression, expected: &VarName) -> bool {
         Expression::VarRef { name, subscripts, .. }
             if subscripts.is_empty() && name.var_name() == expected
     )
+}
+
+fn expression_is_state_or_component_alias(
+    expr: &Expression,
+    output_name: &VarName,
+    state_name: &VarName,
+) -> bool {
+    if expression_is_plain_var_ref(expr, state_name) {
+        return true;
+    }
+    let Some(output_scalar) = rumoca_core::parse_scalar_name(output_name.as_str()) else {
+        return false;
+    };
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return false;
+    };
+    if let Some(state_scalar) = rumoca_core::parse_scalar_name(name.as_str()) {
+        return state_scalar.base == state_name.as_str()
+            && state_scalar.indices == output_scalar.indices
+            && subscripts.is_empty();
+    }
+    name.var_name() == state_name
+        && subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                Subscript::Index { value, .. } => Some(*value),
+                Subscript::Expr { expr, .. } => numeric_constant(expr).map(|value| value as i64),
+                Subscript::Colon { .. } => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .is_some_and(|indices| indices == output_scalar.indices)
 }
 
 /// True when the constrained-dummy defining expression for `state_name`
@@ -174,8 +214,95 @@ fn candidate_is_self_integrating_non_state_alias(
     definition: &ConstrainedDummyDefinition,
     state_names: &[VarName],
 ) -> bool {
-    state_has_standalone_der_equation(dae, state_name, state_names).unwrap_or(false)
-        && !defining_expr_couples_other_state(&definition.defining_expr, state_name, state_names)
+    let has_any_derivative_reference = dae
+        .continuous
+        .equations
+        .iter()
+        .any(|eq| super::expr_contains_der_of(&eq.rhs, state_name));
+    if has_any_derivative_reference
+        && (defining_expr_is_plain_other_state_alias(
+            &definition.defining_expr,
+            state_name,
+            state_names,
+        ) || defining_expr_is_direct_output_alias_of_state(
+            dae,
+            &definition.defining_expr,
+            state_name,
+        ) || defining_expr_references_direct_output_alias_of_state(
+            dae,
+            &definition.defining_expr,
+            state_name,
+        ))
+    {
+        return true;
+    }
+    if !state_has_standalone_der_equation(dae, state_name, state_names).unwrap_or(false) {
+        return false;
+    }
+    !defining_expr_couples_other_state(&definition.defining_expr, state_name, state_names)
+        || defining_expr_is_plain_other_state_alias(
+            &definition.defining_expr,
+            state_name,
+            state_names,
+        )
+        || defining_expr_is_direct_output_alias_of_state(dae, &definition.defining_expr, state_name)
+        || defining_expr_references_direct_output_alias_of_state(
+            dae,
+            &definition.defining_expr,
+            state_name,
+        )
+}
+
+fn defining_expr_is_plain_other_state_alias(
+    defining_expr: &Expression,
+    state_name: &VarName,
+    state_names: &[VarName],
+) -> bool {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = defining_expr
+    else {
+        return false;
+    };
+    subscripts.is_empty()
+        && name.var_name() != state_name
+        && state_names.iter().any(|state| state == name.var_name())
+}
+
+fn defining_expr_is_direct_output_alias_of_state(
+    dae: &Dae,
+    defining_expr: &Expression,
+    state_name: &VarName,
+) -> bool {
+    let Some(row) = linear_terms(dae, defining_expr) else {
+        return false;
+    };
+    if row.terms.len() != 1 {
+        return false;
+    }
+    row.terms.keys().any(|term| {
+        let term_name = VarName::new(term.clone());
+        output_is_direct_alias_of_state(dae, &term_name, state_name)
+            || rumoca_core::parse_scalar_name(term).is_some_and(|scalar| {
+                let base = VarName::new(scalar.base);
+                output_is_direct_alias_of_state(dae, &base, state_name)
+            })
+    })
+}
+
+fn defining_expr_references_direct_output_alias_of_state(
+    dae: &Dae,
+    defining_expr: &Expression,
+    state_name: &VarName,
+) -> bool {
+    let mut refs = Vec::new();
+    defining_expr.collect_var_refs(&mut refs);
+    refs.into_iter().any(|name| {
+        output_is_direct_alias_of_state(dae, &name, state_name)
+            || rumoca_core::parse_scalar_name(name.as_str()).is_some_and(|scalar| {
+                output_is_direct_alias_of_state(dae, &VarName::new(scalar.base), state_name)
+            })
+    })
 }
 
 fn numeric_constant(expr: &Expression) -> Option<f64> {

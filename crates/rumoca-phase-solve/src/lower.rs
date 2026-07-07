@@ -442,6 +442,7 @@ impl<'a> LowerBuilder<'a> {
         clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
         triggered_clock_conditions: &'a [rumoca_core::Expression],
         variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
+        dae_variables: &'a dae::DaeVariables,
         is_initial_mode: bool,
     ) -> Self {
         Self::new_with_metadata(
@@ -453,7 +454,7 @@ impl<'a> LowerBuilder<'a> {
                 triggered_clock_conditions: Some(triggered_clock_conditions),
                 discrete_valued_names: None,
                 variable_starts: Some(variable_starts),
-                dae_variables: None,
+                dae_variables: Some(dae_variables),
                 indexed_bindings: None,
                 is_initial_mode,
             },
@@ -665,8 +666,65 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(ComponentReferenceKey::generated(name.as_str()));
         }
-        if name.is_generated() || name.component_ref().is_some() || self.dae_variables.is_none() {
+        if name.is_generated() || self.dae_variables.is_none() {
             return scope_key_from_reference(name, span);
+        }
+        if let Some(component_ref) = name.component_ref() {
+            match ComponentReferenceKey::from_component_reference(component_ref) {
+                Ok(key) => return Ok(key),
+                Err(err)
+                    if err.kind
+                        == rumoca_ir_solve::ComponentReferenceKeyErrorKind::MissingDefId =>
+                {
+                    if let Some(component_ref) = self
+                        .dae_variables
+                        .and_then(|variables| dae_variable(variables, name.var_name()))
+                        .and_then(|variable| variable.component_ref.as_ref())
+                        && component_ref.def_id.is_some()
+                    {
+                        return ComponentReferenceKey::from_component_reference(component_ref)
+                            .map_err(|err| {
+                                LowerError::contract_violation(
+                                    format!(
+                                        "Solve lowering requires static component-reference metadata for `{}`: {err}",
+                                        name.as_str(),
+                                    ),
+                                    err.span,
+                                )
+                            });
+                    }
+                    if let Some(component_ref) =
+                        self.scalarized_base_component_ref(name, err.span)?
+                    {
+                        return ComponentReferenceKey::from_component_reference(&component_ref)
+                            .map_err(|err| {
+                                LowerError::contract_violation(
+                                    format!(
+                                        "Solve lowering requires static component-reference metadata for `{}`: {err}",
+                                        name.as_str(),
+                                    ),
+                                    err.span,
+                                )
+                            });
+                    }
+                    return Err(LowerError::contract_violation(
+                        format!(
+                            "Solve lowering requires static component-reference metadata for `{}`: {err}",
+                            name.as_str(),
+                        ),
+                        err.span,
+                    ));
+                }
+                Err(err) => {
+                    return Err(LowerError::contract_violation(
+                        format!(
+                            "Solve lowering requires static component-reference metadata for `{}`: {err}",
+                            name.as_str(),
+                        ),
+                        err.span,
+                    ));
+                }
+            }
         }
         let Some(variable) = self
             .dae_variables
@@ -713,6 +771,38 @@ impl<'a> LowerBuilder<'a> {
                 })
             }
         }
+    }
+
+    fn scalarized_base_component_ref(
+        &self,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::ComponentReference>, LowerError> {
+        let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) else {
+            return Ok(None);
+        };
+        let Some(component_ref) = self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, &VarName::new(scalar.base)))
+            .and_then(|variable| variable.component_ref.as_ref())
+            .filter(|component_ref| component_ref.def_id.is_some())
+        else {
+            return Ok(None);
+        };
+        let mut component_ref = component_ref.clone();
+        let Some(last) = component_ref.parts.last_mut() else {
+            return Ok(None);
+        };
+        for index in scalar.indices {
+            let subscript = rumoca_core::Subscript::try_generated_index(
+                index,
+                span,
+                "scalarized source reference",
+            )
+            .map_err(|err| LowerError::contract_violation(err.to_string(), span))?;
+            last.subs.push(subscript);
+        }
+        Ok(Some(component_ref))
     }
 
     fn lower_expr(
@@ -1211,6 +1301,19 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(reg);
         }
+        if dynamic_binding_base_key(base).is_err()
+            && let Some(span) = index_owner_span(base, subscripts, owner_span)
+            && let Some(indices) = static_subscript_indices_with_owner(subscripts, span)?
+        {
+            let dims = self.infer_expr_dims(base, scope)?;
+            if let Some(flat_index) = flat_index_from_one_based_usize_indices(&dims, &indices) {
+                let values = self
+                    .lower_array_like_values_with_source_context(base, span, scope, call_depth)?;
+                if let Some(value) = values.get(flat_index).copied() {
+                    return Ok(value);
+                }
+            }
+        }
         if matches!(base, rumoca_core::Expression::FieldAccess { .. })
             && let Some(span) = index_owner_span(base, subscripts, owner_span)
             && let Some(indices) = static_subscript_indices_with_owner(subscripts, span)?
@@ -1282,7 +1385,68 @@ impl<'a> LowerBuilder<'a> {
             return self.lower_expr(base, scope, call_depth);
         }
 
-        let base_key = dynamic_binding_base_key(base)?;
+        if dynamic_binding_base_key(base).is_err()
+            && self
+                .infer_expr_dims(base, scope)
+                .unwrap_or_default()
+                .is_empty()
+            && index_owner_span(base, subscripts, owner_span).is_some_and(|span| {
+                static_subscript_indices_with_owner(subscripts, span)
+                    .is_ok_and(|indices| indices.is_some())
+            })
+        {
+            return self.lower_expr(base, scope, call_depth);
+        }
+
+        if let Some(span) = index_owner_span(base, subscripts, owner_span)
+            && let Some(indices) = static_subscript_indices_with_owner(subscripts, span)?
+            && dynamic_binding_base_key(base).is_err()
+        {
+            let dims = self.infer_expr_dims(base, scope).unwrap_or_default();
+            let flat_index =
+                flat_index_from_one_based_usize_indices(&dims, &indices).or_else(|| {
+                    (indices.len() == 1)
+                        .then(|| indices.first().and_then(|index| index.checked_sub(1)))
+                        .flatten()
+                });
+            if let Some(flat_index) = flat_index {
+                let mut dae_model = dae::Dae::default();
+                dae_model.symbols.functions = self.functions.clone();
+                if let Some(variables) = self.dae_variables {
+                    dae_model.variables = variables.clone();
+                }
+                if let Some(value) = derivative_rhs::project_array_like_scalar_with_owner(
+                    base,
+                    flat_index,
+                    &dae_model,
+                    &self.structural_bindings,
+                    span,
+                )? {
+                    return self.lower_expr(&value, scope, call_depth + 1);
+                }
+            }
+            let values =
+                self.lower_array_like_values_with_source_context(base, span, scope, call_depth)?;
+            if let Some(index) =
+                flat_index_from_one_based_usize_indices(&dims, &indices).or_else(|| {
+                    (indices.len() == 1)
+                        .then(|| indices.first().and_then(|index| index.checked_sub(1)))
+                        .flatten()
+                })
+            {
+                if let Some(value) = values.get(index).copied() {
+                    return Ok(value);
+                }
+            }
+        }
+
+        let base_key = match dynamic_binding_base_key(base) {
+            Ok(base_key) => base_key,
+            Err(err @ LowerError::DynamicBindingBase { .. }) => {
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         let source_key = component_reference_key_for_expr(base)?;
         let source_span = base.span();
         self.lower_dynamic_subscripted_binding(

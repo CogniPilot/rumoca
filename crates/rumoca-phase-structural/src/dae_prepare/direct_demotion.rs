@@ -418,10 +418,12 @@ fn collect_direct_demotion_plans_with_boundary_substitutions(
     let mut alias_safety_cache = AliasSafetyCache::new();
     let mut substitutions = HashMap::new();
     let mut counters = DirectDemotionCounters::default();
-
-    for plan in
-        collect_componentwise_direct_demotion_plans(&round, &mut counters, boundary_substitutions)?
-    {
+    for plan in collect_componentwise_direct_demotion_plans(
+        &round,
+        &mut counters,
+        boundary_substitutions,
+        &mut alias_safety_cache,
+    )? {
         substitutions
             .entry(plan.state_name.as_str().to_string())
             .or_insert(plan);
@@ -453,6 +455,7 @@ fn collect_componentwise_direct_demotion_plans(
     round: &DirectDemotionRound<'_>,
     counters: &mut DirectDemotionCounters,
     boundary_substitutions: &[crate::eliminate::Substitution],
+    alias_safety_cache: &mut AliasSafetyCache,
 ) -> Result<Vec<DirectStateDemotionPlan>, StructuralError> {
     let by_state = collect_componentwise_direct_demotion_slots(round, boundary_substitutions)?;
 
@@ -469,6 +472,7 @@ fn collect_componentwise_direct_demotion_plans(
                 &state_name,
                 &dims,
                 &slots,
+                alias_safety_cache,
             )?);
             continue;
         };
@@ -479,9 +483,30 @@ fn collect_componentwise_direct_demotion_plans(
                 &state_name,
                 &dims,
                 &slots,
+                alias_safety_cache,
             )?);
             continue;
         };
+        let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
+        if defining_expr_references_unsafe_non_state_alias_closure(
+            &round.non_state_defining_exprs,
+            &alias_scan_expr,
+            &round.state_name_set,
+            &round.non_state_unknown_names,
+            None,
+            alias_safety_cache,
+        ) {
+            counters.n_skip_unsafe_non_state_alias += 1;
+            plans.extend(componentwise_scalar_demotion_plans(
+                round,
+                counters,
+                &state_name,
+                &dims,
+                &slots,
+                alias_safety_cache,
+            )?);
+            continue;
+        }
         let der_map = build_relaxed_derivative_map_for_exprs(
             round.dae,
             std::slice::from_ref(&defining_expr),
@@ -499,6 +524,7 @@ fn collect_componentwise_direct_demotion_plans(
                 &state_name,
                 &dims,
                 &slots,
+                alias_safety_cache,
             )?);
             continue;
         };
@@ -511,6 +537,7 @@ fn collect_componentwise_direct_demotion_plans(
                 &state_name,
                 &dims,
                 &slots,
+                alias_safety_cache,
             )?);
             continue;
         }
@@ -725,6 +752,7 @@ fn componentwise_scalar_demotion_plans(
     state_name: &VarName,
     dims: &[i64],
     slots: &[Option<Expression>],
+    alias_safety_cache: &mut AliasSafetyCache,
 ) -> Result<Vec<DirectStateDemotionPlan>, StructuralError> {
     let mut plans = Vec::new();
     for (flat_index, defining_expr) in slots.iter().enumerate() {
@@ -736,6 +764,18 @@ fn componentwise_scalar_demotion_plans(
             dims,
             flat_index,
         ));
+        let alias_scan_expr = mask_state_der_calls(defining_expr, &round.state_name_set);
+        if defining_expr_references_unsafe_non_state_alias_closure(
+            &round.non_state_defining_exprs,
+            &alias_scan_expr,
+            &round.state_name_set,
+            &round.non_state_unknown_names,
+            None,
+            alias_safety_cache,
+        ) {
+            counters.n_skip_unsafe_non_state_alias += 1;
+            continue;
+        }
         let der_map =
             build_relaxed_derivative_map_for_exprs(round.dae, std::slice::from_ref(defining_expr))?;
         let Some(der_expr) = choose_derivative_replacement_allowing_preferred_promotions(

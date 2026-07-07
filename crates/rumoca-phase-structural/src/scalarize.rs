@@ -12,8 +12,8 @@ mod shape;
 #[cfg(test)]
 use projection::is_complex_field_scalar_name;
 use projection::{
-    ScalarProjectionContext, lower_scalar_linear_algebra_exprs, project_rhs_for_scalar_target,
-    scalarized_equation_lhs,
+    ScalarProjectionContext, lower_scalar_linear_algebra_exprs,
+    project_explicit_rhs_for_scalar_target, project_rhs_for_scalar_target, scalarized_equation_lhs,
 };
 use shape::*;
 
@@ -1111,10 +1111,7 @@ fn project_subscripted_dims(
         return Ok(None);
     };
     let scalar_count = output_scalar_count(&projected_dims, span)?;
-    if scalar_count == 0
-        || linear_index > scalar_count
-        || (scalar_count == 1 && projected_dims.is_empty())
-    {
+    if scalar_count == 0 || linear_index > scalar_count {
         return Ok(None);
     }
 
@@ -1173,8 +1170,18 @@ fn project_subscripted_dims(
                 )?);
                 dim_idx += 1;
             }
-            Subscript::Expr { expr: _, .. } => {
-                projected_subscripts.push(subscript.clone());
+            Subscript::Expr { expr, .. } => {
+                if let Some(index) =
+                    eval_structural_int_expr(expr, structural_values, &HashMap::new())
+                {
+                    projected_subscripts.push(positive_generated_index_subscript(
+                        index,
+                        span,
+                        "structural fixed-expression subscript",
+                    )?);
+                } else {
+                    projected_subscripts.push(subscript.clone());
+                }
                 dim_idx += 1;
             }
             Subscript::Colon { .. } => {
@@ -1838,6 +1845,25 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
             eq.scalar_count.max(lhs_targets.len()).max(1)
         };
         if scalar_count <= 1 {
+            if has_residual_lhs_targets
+                && let Some(target) = lhs_targets.first()
+                && let Some(rhs) = project_explicit_rhs_for_scalar_target(
+                    &eq.rhs,
+                    scalarization_target.as_deref(),
+                    target,
+                    &eq_projection,
+                )?
+            {
+                expanded.push(Equation::explicit_with_scalar_count(
+                    VarName::new(target.name.clone()),
+                    eq_projection.lower_scalar_linear_algebra(&rhs)?,
+                    eq.span,
+                    eq.origin.clone(),
+                    1,
+                ));
+                spans.push((new_start, expanded.len() - new_start));
+                continue;
+            }
             let mut lowered = eq.clone();
             let rhs = if projection
                 .expression_shape(&lowered.rhs)

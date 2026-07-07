@@ -259,6 +259,43 @@ fn initialization_projection_plan_includes_unfixed_states() {
 }
 
 #[test]
+fn initialization_projection_prefers_explicit_algebraic_row_target_over_state_dependency() {
+    let mut dae_model = dae::Dae::default();
+    let mut x = scalar_var("x");
+    x.fixed = Some(false);
+    dae_model.variables.states.insert("x".into(), x);
+    dae_model
+        .variables
+        .algebraics
+        .insert("z".into(), scalar_var("z"));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
+        solve_test_span(),
+        "derivative row for x",
+    ));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, var("z"), var("x")),
+        solve_test_span(),
+        "explicit algebraic target depends on state",
+    ));
+
+    let problem = lower_solve_problem(&dae_model).expect("initialization plan should lower");
+    let projected = problem
+        .initialization
+        .projection_plan
+        .blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().copied())
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        !projected.contains(&0),
+        "state x should remain a dependency when the row explicitly targets z"
+    );
+    assert!(projected.contains(&1), "algebraic z should be projected");
+}
+
+#[test]
 fn solve_problem_records_scaled_algebraic_residual_target() {
     let mut dae_model = dae::Dae::default();
     dae_model

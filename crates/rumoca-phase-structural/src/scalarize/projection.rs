@@ -472,6 +472,41 @@ pub(super) fn project_rhs_for_scalar_target(
     projection.project_index(rhs, scalar_idx)
 }
 
+pub(super) fn project_explicit_rhs_for_scalar_target(
+    rhs: &Expression,
+    lhs_target: Option<&str>,
+    target: &ScalarizedLhsTarget,
+    projection: &ScalarProjectionContext<'_>,
+) -> Result<Option<Expression>, StructuralError> {
+    let Expression::Binary {
+        op,
+        lhs,
+        rhs: row_rhs,
+        ..
+    } = rhs
+    else {
+        return Ok(None);
+    };
+    if !matches!(op, OpBinary::Sub)
+        || !lhs_target.is_some_and(|lhs_name| {
+            expression_scalarization_name(lhs.as_ref())
+                .as_deref()
+                .is_some_and(|lhs_row_name| lhs_row_name == lhs_name)
+        })
+    {
+        return Ok(None);
+    }
+
+    let mut projected_rhs = (*row_rhs.clone()).clone();
+    if let Some(idx) = target.array_selector {
+        projected_rhs = projection.project_index(&projected_rhs, idx)?;
+    }
+    if let Some(field_idx) = target.field_selector {
+        projected_rhs = project_complex_component(&projected_rhs, field_idx, projection)?;
+    }
+    Ok(Some(projected_rhs))
+}
+
 fn expression_scalarization_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::VarRef {
@@ -507,10 +542,11 @@ pub(super) fn scalarized_equation_lhs(
         return Ok(None);
     };
     if let Some(name) = target {
-        return Ok(Some(structured_scalar_target(
-            &rumoca_core::VarName::new(name.name.clone()),
-            span,
-        )));
+        let target_name = rumoca_core::VarName::new(name.name.clone());
+        if let Some(reference) = scalarized_target_from_lhs(lhs, &target_name, span)? {
+            return Ok(Some(reference));
+        }
+        return Ok(Some(structured_scalar_target(&target_name, span)));
     }
     let indexed = lhs.with_appended_index(
         scalar_idx as i64,
@@ -522,6 +558,42 @@ pub(super) fn scalarized_equation_lhs(
     Ok(Some(structured_scalar_target(
         &rumoca_core::VarName::new(indexed.as_str().to_string()),
         span,
+    )))
+}
+
+fn scalarized_target_from_lhs(
+    lhs: &rumoca_core::Reference,
+    target: &rumoca_core::VarName,
+    equation_span: Span,
+) -> Result<Option<rumoca_core::Reference>, StructuralError> {
+    let Some(component_ref) = lhs.component_ref() else {
+        return Ok(None);
+    };
+    let Some(scalar) = rumoca_core::parse_scalar_name(target.as_str()) else {
+        return Ok(None);
+    };
+    if scalar.base != lhs.as_str() {
+        return Ok(None);
+    }
+    let owner_span = scalarized_lhs_index_owner_span(lhs, equation_span)?;
+    let mut component_ref = component_ref.clone();
+    let Some(last) = component_ref.parts.last_mut() else {
+        return Ok(None);
+    };
+    for index in scalar.indices {
+        let subscript = rumoca_core::Subscript::try_generated_index(
+            index,
+            owner_span.into(),
+            "scalarized equation LHS",
+        )
+        .map_err(|err| StructuralError::UnspannedContractViolation {
+            reason: err.to_string(),
+        })?;
+        last.subs.push(subscript);
+    }
+    Ok(Some(rumoca_core::Reference::with_component_reference(
+        target.as_str(),
+        component_ref,
     )))
 }
 

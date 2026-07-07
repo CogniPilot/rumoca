@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rumoca_core::{Literal, OpUnary};
 
 use super::{
-    Dae, Expression, OpBinary, Substitution, VarName, apply_substitutions_to_expr,
+    Dae, Expression, OpBinary, Substitution, VarName,
     apply_substitutions_to_expr_with_derivatives_and_dae,
 };
 use crate::StructuralError;
@@ -100,14 +100,6 @@ pub(super) fn apply_substitutions_to_dae_partitions(
         derivative_replacements: DerivativeReplacementCache::new(&derivative_source),
     };
     rewriter.rewrite_dae(dae)
-}
-
-pub(super) fn apply_substitutions_in_order(
-    expr: &Expression,
-    substitutions: &[Substitution],
-) -> Result<Expression, StructuralError> {
-    let substituted = apply_substitutions_to_expr(expr, substitutions)?;
-    Ok(simplify_arithmetic_identities(substituted))
 }
 
 fn apply_substitutions_in_order_with_derivatives_and_dae(

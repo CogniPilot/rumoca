@@ -71,9 +71,6 @@ pub(super) fn is_scalarized_element_of_aggregate(
     let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str()) else {
         return Ok(false);
     };
-    if DaeVariableScope::new(dae).exact(name).is_some() {
-        return Ok(false);
-    }
     let base_name = VarName::new(scalar.base);
     let Some(base_var) = DaeVariableScope::new(dae).exact(&base_name) else {
         return Ok(false);

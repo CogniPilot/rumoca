@@ -18,7 +18,7 @@ use rumoca_ir_dae::{
 
 use super::{
     Dae, Expression, Reference, VarName, collect_exact_reference_expr_names_in_dae,
-    collect_var_ref_nodes,
+    collect_var_ref_nodes, exact_subscript_index_in_dae,
 };
 use crate::StructuralError;
 use crate::variable_scope::DaeVariableScope;
@@ -166,7 +166,7 @@ impl<'a> BoundaryUnknownIndex<'a> {
             if let Some(bucket) = self.all_one_embedded.get(base) {
                 out.extend_from_slice(bucket);
             }
-        } else if let Some(indices) = literal_subscript_indices(subscripts)
+        } else if let Some(indices) = dae_subscript_indices(self.dae, subscripts)
             && let Some(bucket) = self.by_base_and_trailing.get(&(base.to_string(), indices))
         {
             out.extend_from_slice(bucket);
@@ -227,22 +227,10 @@ fn component_ref_ident_path(component_ref: &rumoca_core::ComponentReference) -> 
     path
 }
 
-/// Literal integer values of subscripts, mirroring the acceptance rules of
-/// `subscripts_match_indices` (plain indices and literal integer expressions).
-fn literal_subscript_indices(subscripts: &[rumoca_core::Subscript]) -> Option<Vec<i64>> {
+fn dae_subscript_indices(dae: &Dae, subscripts: &[rumoca_core::Subscript]) -> Option<Vec<i64>> {
     subscripts
         .iter()
-        .map(|sub| match sub {
-            rumoca_core::Subscript::Index { value, .. } => Some(*value),
-            rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
-                Expression::Literal {
-                    value: rumoca_core::Literal::Integer(i),
-                    ..
-                } => Some(*i),
-                _ => None,
-            },
-            rumoca_core::Subscript::Colon { .. } => None,
-        })
+        .map(|subscript| exact_subscript_index_in_dae(dae, subscript))
         .collect()
 }
 
@@ -323,7 +311,7 @@ fn var_ref_mentions_unknown_for_presence(
 ) -> Result<bool, StructuralError> {
     if name.component_ref().is_some()
         && !subscripts.is_empty()
-        && let Some(indices) = literal_subscript_indices(subscripts)
+        && let Some(indices) = dae_subscript_indices(dae, subscripts)
     {
         let indices = indices
             .into_iter()

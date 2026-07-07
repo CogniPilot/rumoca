@@ -86,6 +86,17 @@ fn var_ref_idx(name: &str, idx: i64) -> Expression {
     }
 }
 
+fn var_ref_with_subscript_expr(name: &str, expr: Expression) -> Expression {
+    Expression::VarRef {
+        name: reference(name),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(expr),
+            span: test_span(),
+        }],
+        span: test_span(),
+    }
+}
+
 fn real(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
@@ -105,6 +116,14 @@ fn der(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
         args: vec![expr],
+        span: test_span(),
+    }
+}
+
+fn builtin(function: BuiltinFunction, args: Vec<Expression>) -> Expression {
+    Expression::BuiltinCall {
+        function,
+        args,
         span: test_span(),
     }
 }
@@ -1562,6 +1581,98 @@ fn test_eliminate_trivial_preserves_scalarized_matrix_derivative_rows() {
             );
         }
     }
+}
+
+#[test]
+fn test_eliminate_trivial_preserves_runtime_sensitive_aggregate_driver_rows() {
+    let mut dae = Dae::new();
+    let mut n_latent = test_dae_variable("nLatent");
+    n_latent.start = Some(Expression::Literal {
+        value: Literal::Integer(8),
+        span: test_span(),
+    });
+    dae.variables
+        .parameters
+        .insert(VarName::new("nLatent"), n_latent);
+    let mut features = test_dae_variable("features");
+    features.dims = vec![10];
+    features.source_span = test_span();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("features"), features);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("features[9]"), component_var("features[9]"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("a1"), component_var("a1"));
+
+    dae.continuous.equations.push(residual(
+        var_ref_with_subscript_expr(
+            "features",
+            binary(
+                OpBinary::Add,
+                var_ref("nLatent"),
+                Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: test_span(),
+                },
+            ),
+        ),
+        builtin(BuiltinFunction::Sin, vec![var_ref("time")]),
+        1,
+        "binding equation for features[9]",
+    ));
+    dae.continuous
+        .equations
+        .push(dae::Equation::explicit_with_scalar_count(
+            VarName::new("features[10]"),
+            builtin(
+                BuiltinFunction::Cos,
+                vec![binary(OpBinary::Mul, real(0.35), var_ref("time"))],
+            ),
+            test_span(),
+            "explicit binding equation for features[10]",
+            1,
+        ));
+    dae.continuous.equations.push(residual(
+        var_ref("a1"),
+        var_ref_idx("features", 9),
+        1,
+        "consumer equation for a1",
+    ));
+
+    let result = eliminate_trivial(&mut dae).expect("elimination should not fail structurally");
+
+    assert!(
+        result.blt_error.is_none(),
+        "runtime-sensitive aggregate driver rows must remain matchable: {:?}",
+        result.blt_error
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("features[9]")),
+        "features[9] must stay as a refreshable continuous producer"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| assignment_target_name_in_dae(&dae, &eq.rhs).as_ref()
+                == Some(&VarName::new("features[9]"))
+                && expr_contains_runtime_sensitive_operator(&eq.rhs)),
+        "features[9] = sin(time) producer row was eliminated"
+    );
+    assert!(
+        dae.continuous.equations.iter().any(|eq| {
+            eq.lhs
+                .as_ref()
+                .is_some_and(|lhs| lhs.as_str() == "features[10]")
+                && expr_contains_runtime_sensitive_operator(&eq.rhs)
+        }),
+        "explicit features[10] = cos(0.35*time) producer row was eliminated"
+    );
 }
 
 #[test]

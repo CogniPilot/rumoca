@@ -67,8 +67,8 @@ pub(super) fn lower_continuous_row_targets_for_equation(
         return Ok(targets);
     }
     for flat_index in 0..row_count {
-        let Some(name) = continuous_row_target_name(dae_model, eq, layout, flat_index, row_count)?
-        else {
+        let name = continuous_row_target_name(dae_model, eq, layout, flat_index, row_count)?;
+        let Some(name) = name else {
             targets.push(None);
             continue;
         };
@@ -139,6 +139,11 @@ fn continuous_row_target_name(
     scalar_count: usize,
 ) -> Result<Option<String>, LowerError> {
     if let Some(lhs) = eq.lhs.as_ref() {
+        if let Some(name) =
+            residual_expression_target_name(dae_model, layout, &eq.rhs, flat_index, scalar_count)?
+        {
+            return Ok(Some(name));
+        }
         return continuous_equation_scalar_name(
             dae_model,
             lhs.var_name(),
@@ -573,6 +578,9 @@ fn var_ref_target_name(
         )? {
             return Ok(Some(dae::format_subscript_key(name.as_str(), &indices)));
         }
+        if let Some(indices) = fixed_positive_indices(dae_model, subscripts, owner_span)? {
+            return Ok(Some(dae::format_subscript_key(name.as_str(), &indices)));
+        }
         let Some(indices) = checked_literal_positive_indices(subscripts, owner_span)? else {
             return Ok(None);
         };
@@ -616,6 +624,114 @@ fn singleton_scalar_target_projection(subscripts: &[rumoca_core::Subscript]) -> 
             ),
             rumoca_core::Subscript::Colon { .. } => false,
         })
+}
+
+fn fixed_positive_indices(
+    dae_model: &dae::Dae,
+    subscripts: &[rumoca_core::Subscript],
+    owner_span: Option<rumoca_core::Span>,
+) -> Result<Option<Vec<usize>>, LowerError> {
+    if subscripts.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let span = subscript_source_span(subscripts, owner_span, "fixed positive subscript")?;
+    let mut indices = lower_vec_with_capacity(
+        subscripts.len(),
+        "fixed positive subscript index count",
+        span,
+    )?;
+    for subscript in subscripts {
+        let Some(value) = fixed_subscript_index(dae_model, subscript)? else {
+            return Ok(None);
+        };
+        if value <= 0 {
+            return Ok(None);
+        }
+        let index = usize::try_from(value).map_err(|_| {
+            lower_contract_violation(
+                format!("fixed subscript index {value} exceeds host index range"),
+                span,
+            )
+        })?;
+        indices.push(index);
+    }
+    Ok(Some(indices))
+}
+
+fn fixed_subscript_index(
+    dae_model: &dae::Dae,
+    subscript: &rumoca_core::Subscript,
+) -> Result<Option<i64>, LowerError> {
+    match subscript {
+        rumoca_core::Subscript::Index { value, .. } => Ok(Some(*value)),
+        rumoca_core::Subscript::Expr { expr, .. } => fixed_index_expr(dae_model, expr),
+        rumoca_core::Subscript::Colon { .. } => Ok(None),
+    }
+}
+
+fn fixed_index_expr(
+    dae_model: &dae::Dae,
+    expr: &rumoca_core::Expression,
+) -> Result<Option<i64>, LowerError> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Ok(Some(*value)),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if value.is_finite() && value.fract() == 0.0 => Ok(Some(*value as i64)),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => fixed_integer_parameter_start(dae_model, name.var_name()),
+        rumoca_core::Expression::Unary { op, rhs, .. } => match op {
+            rumoca_core::OpUnary::Plus => fixed_index_expr(dae_model, rhs),
+            rumoca_core::OpUnary::Minus => {
+                Ok(fixed_index_expr(dae_model, rhs)?.and_then(|value| value.checked_neg()))
+            }
+            _ => Ok(None),
+        },
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let Some(lhs) = fixed_index_expr(dae_model, lhs)? else {
+                return Ok(None);
+            };
+            let Some(rhs) = fixed_index_expr(dae_model, rhs)? else {
+                return Ok(None);
+            };
+            Ok(match op {
+                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs.checked_add(rhs),
+                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs.checked_sub(rhs),
+                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => lhs.checked_mul(rhs),
+                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem
+                    if rhs != 0 && lhs % rhs == 0 =>
+                {
+                    Some(lhs / rhs)
+                }
+                _ => None,
+            })
+        }
+        _ => Ok(None),
+    }
+}
+
+fn fixed_integer_parameter_start(
+    dae_model: &dae::Dae,
+    name: &rumoca_core::VarName,
+) -> Result<Option<i64>, LowerError> {
+    let Some(var) = dae_model
+        .variables
+        .parameters
+        .get(name)
+        .filter(|var| !var.is_tunable)
+        .or_else(|| dae_model.variables.constants.get(name))
+    else {
+        return Ok(None);
+    };
+    let Some(start) = var.start.as_ref() else {
+        return Ok(None);
+    };
+    fixed_index_expr(dae_model, start)
 }
 
 fn sliced_target_indices(
