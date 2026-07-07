@@ -1140,10 +1140,29 @@ fn algorithm_if_unassigned_branch_expr(
     span: Span,
     outer_current_values: &IndexMap<VarName, Expression>,
 ) -> Result<Expression, String> {
-    match outer_current_values.get(target) {
-        Some(value) => Ok(value.clone()),
-        None => algorithm_if_fallback_expr(dae, target, span),
+    if let Some(value) = outer_current_values.get(target) {
+        return Ok(value.clone());
     }
+
+    if let Some(scalar) = rumoca_core::parse_scalar_name(target.as_str())
+        && let Some(value) = outer_current_values.get(&VarName::new(scalar.base))
+    {
+        let subscripts = scalar
+            .indices
+            .into_iter()
+            .map(|index| {
+                Subscript::try_generated_index(
+                    index,
+                    span,
+                    "algorithm if-entry scalarized target subscript",
+                )
+                .map_err(|err| err.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return current_value_subscript_expr(value, &subscripts);
+    }
+
+    algorithm_if_fallback_expr(dae, target, span)
 }
 
 fn algorithm_assignment_to_target_expr(
