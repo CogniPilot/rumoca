@@ -1119,7 +1119,11 @@ fn optional_derivative_probe<T>(
 ) -> Result<Option<T>, LowerError> {
     match result {
         Ok(value) => Ok(value),
-        Err(LowerError::MissingBinding { .. } | LowerError::Unsupported { .. }) => Ok(None),
+        Err(
+            LowerError::MissingBinding { .. }
+            | LowerError::Unsupported { .. }
+            | LowerError::UnsupportedAt { .. },
+        ) => Ok(None),
         Err(LowerError::InvalidFunction { name, .. }) if name == "projected function output" => {
             Ok(None)
         }

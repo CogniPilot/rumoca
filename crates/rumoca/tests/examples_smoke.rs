@@ -450,14 +450,7 @@ fn examples_directory_scenario_configs_compile_and_smoke_requested_task() {
         !configs.is_empty(),
         "examples directory should contain rumoca-scenario.toml scenarios to smoke-test"
     );
-    let filter = env::var("RUMOCA_EXAMPLES_SMOKE_FILTER").ok();
     for config_path in configs {
-        if filter
-            .as_deref()
-            .is_some_and(|filter| !config_path.to_string_lossy().contains(filter))
-        {
-            continue;
-        }
         let config = load_example_toml_config(&config_path);
         let Some(result) = compile_toml_model_if_source_roots_exist(&config_path) else {
             continue;
@@ -557,6 +550,31 @@ fn rover_config_steering_input_changes_delta_and_heading() {
         theta > 0.1,
         "full steering while moving should change heading; theta={theta}"
     );
+}
+
+#[cfg(feature = "runner")]
+#[test]
+fn switched_rlc_msl_config_auto_stepper_advances() {
+    let config_path = example_root().join("simulation/rumoca-scenario.switched_rlc_msl.toml");
+    let result = compile_toml_model_if_source_roots_exist(&config_path)
+        .expect("switched RLC MSL scenario should compile with cached MSL");
+    let mut stepper = SimStepper::new_with_diagnostics(
+        &result.dae,
+        SimOptions {
+            rtol: 1e-3,
+            atol: 1e-3,
+            dt: Some(0.004),
+            solver_mode: SimSolverMode::Auto,
+            pacing_mode: SimPacingMode::AsFastAsPossible,
+            ..Default::default()
+        },
+    )
+    .expect("switched RLC MSL Auto stepper should select a viable interactive backend");
+
+    stepper
+        .step(0.004)
+        .expect("switched RLC MSL Auto stepper should advance one frame");
+    assert!(stepper.time() > 0.0);
 }
 
 #[cfg(feature = "runner")]

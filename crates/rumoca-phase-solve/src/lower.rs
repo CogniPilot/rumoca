@@ -1367,7 +1367,7 @@ impl<'a> LowerBuilder<'a> {
             return self.emit_slot_load(slot, required_expression_span(base, "indexed slot load")?);
         }
 
-        if is_static_singleton_scalar_projection(base, subscripts)? {
+        if is_static_singleton_scalar_projection(base, subscripts, owner_span)? {
             return self.lower_expr(base, scope, call_depth);
         }
 
@@ -2450,6 +2450,12 @@ fn component_reference_key_or_error(
     name: &rumoca_core::Reference,
     component_ref: &rumoca_core::ComponentReference,
 ) -> Result<ComponentReferenceKey, LowerError> {
+    #[cfg(test)]
+    if let Some(key) =
+        crate::test_support::fixture_key_for_component_ref(component_ref, name.as_str())
+    {
+        return Ok(key);
+    }
     ComponentReferenceKey::from_component_reference(component_ref)
         .map_err(|err| component_reference_lower_error(name, err))
 }

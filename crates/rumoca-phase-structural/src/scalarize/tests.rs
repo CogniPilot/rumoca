@@ -527,6 +527,27 @@ fn expr_contains_der_var_idx(expr: &Expression, target: &str, idx: i64) -> bool 
     }
 }
 
+fn assert_scalar_assignment(expr: &Expression, target: &str, indices: &[i64], expected: f64) {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        panic!("expected scalar residual assignment, got {expr:?}");
+    };
+    assert_eq!(lhs.as_ref(), &var_idx(target, indices));
+    let Expression::Literal {
+        value: Literal::Real(actual),
+        ..
+    } = rhs.as_ref()
+    else {
+        panic!("expected real RHS literal, got {rhs:?}");
+    };
+    assert_eq!(*actual, expected);
+}
+
 #[test]
 fn build_output_names_orders_states_algebraics_outputs_and_expands_arrays() {
     let mut dae_model = dae::Dae::default();
@@ -1609,6 +1630,42 @@ fn scalarize_matrix_matrix_derivative_residual_preserves_derivative_lhs_rows() {
             );
         }
     }
+}
+
+#[test]
+fn scalarize_matrix_literal_assignment_projects_whole_array_lhs() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("skew"), variable("skew", &[3, 3]));
+
+    dae_model.continuous.equations.push(Equation {
+        lhs: None,
+        rhs: sub_expr(
+            var("skew"),
+            array(vec![
+                array(vec![real(0.0), real(-1.0), real(0.0)]),
+                array(vec![real(1.0), real(0.0), real(0.0)]),
+                array(vec![real(0.0), real(0.0), real(0.0)]),
+            ]),
+        ),
+        span: Span::DUMMY,
+        origin: "matrix literal residual".to_string(),
+        scalar_count: 1,
+    });
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 9);
+    assert_scalar_assignment(&dae_model.continuous.equations[0].rhs, "skew", &[1, 1], 0.0);
+    assert_scalar_assignment(
+        &dae_model.continuous.equations[1].rhs,
+        "skew",
+        &[1, 2],
+        -1.0,
+    );
+    assert_scalar_assignment(&dae_model.continuous.equations[3].rhs, "skew", &[2, 1], 1.0);
 }
 
 #[test]

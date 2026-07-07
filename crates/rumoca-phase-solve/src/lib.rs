@@ -713,6 +713,7 @@ fn lower_initialization_system(
         &row_targets,
         &projection_indices,
         0..residual_rows.len(),
+        false,
         dae_model_span(dae_model)?,
     )?;
 
@@ -1000,6 +1001,7 @@ fn lower_algebraic_projection_plan(
         row_targets,
         &projection_indices,
         state_scalar_count..solver_scalar_count,
+        true,
         context_span,
     )
 }
@@ -1009,20 +1011,26 @@ fn lower_projection_plan(
     row_targets: &[Option<solve::ScalarSlot>],
     projection_indices: &[usize],
     row_indices: std::ops::Range<usize>,
+    include_explicit_row_targets: bool,
     context_span: rumoca_core::Span,
 ) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
     let mut row_to_vars = BTreeMap::<usize, BTreeSet<usize>>::new();
     let projection_set = projection_indices.iter().copied().collect::<BTreeSet<_>>();
 
     for row_idx in row_indices {
-        let y_indices = if let Some(solve::ScalarSlot::Y { index, .. }) =
+        let mut y_indices =
+            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set);
+        if let Some(solve::ScalarSlot::Y { index, .. }) =
             row_targets.get(row_idx).copied().flatten()
             && projection_set.contains(&index)
         {
-            BTreeSet::from([index])
-        } else {
-            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set)
-        };
+            if include_explicit_row_targets {
+                y_indices.insert(index);
+            } else {
+                y_indices.clear();
+                y_indices.insert(index);
+            }
+        }
         if y_indices.is_empty() {
             continue;
         }

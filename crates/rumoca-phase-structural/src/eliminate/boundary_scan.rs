@@ -99,6 +99,9 @@ fn scan_boundary_equation(
         return Ok(());
     };
     let is_connection_eq = equation.origin.starts_with("connection equation:");
+    if is_connection_eq && connection_refs_unanchored_scalarized_aggregate(ctx.dae, &eq_rhs)? {
+        return Ok(());
+    }
     let live = find_live_scalar_unknowns(&eq_rhs, ctx.unknown_index, &state.resolved)?;
     if is_connection_eq
         && let Some((var_name, solution)) = scalar_connection_alias_for_elimination(

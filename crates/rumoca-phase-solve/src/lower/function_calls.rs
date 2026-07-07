@@ -1888,6 +1888,14 @@ impl<'a> LowerBuilder<'a> {
             &binding_dims,
             span,
         )?;
+        self.bind_compile_time_array_input_scalars(
+            &input.name,
+            &binding_dims,
+            expr,
+            &mut *state.const_scope,
+            &mut *state.const_bindings,
+            span,
+        )?;
         self.bind_local_array_shape(&input.name, &binding_dims, values.len(), span)?;
         Ok(true)
     }
@@ -1922,8 +1930,65 @@ impl<'a> LowerBuilder<'a> {
             &dims,
             span,
         )?;
+        self.bind_compile_time_array_input_scalars(
+            &input.name,
+            &dims,
+            expr,
+            &mut *state.const_scope,
+            &mut *state.const_bindings,
+            span,
+        )?;
         self.bind_local_array_shape(&input.name, &dims, values.len(), span)?;
         Ok(true)
+    }
+
+    fn bind_compile_time_array_input_scalars(
+        &self,
+        input_name: &str,
+        dims: &[i64],
+        expr: &rumoca_core::Expression,
+        const_scope: &mut IndexMap<String, f64>,
+        const_bindings: &mut IndexMap<String, f64>,
+        span: rumoca_core::Span,
+    ) -> Result<(), LowerError> {
+        let mut values = Vec::new();
+        if self
+            .collect_compile_time_array_input_scalars(expr, const_scope, &mut values)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let expected = dims_scalar_count(dims, "function input compile-time array shape", span)?;
+        if values.len() != expected {
+            return Ok(());
+        }
+        for (flat_index, value) in values.into_iter().enumerate() {
+            let key = dae::scalar_name_text_for_flat_index(input_name, dims, flat_index);
+            const_scope.insert(key.clone(), value);
+            const_bindings.insert(key, value);
+        }
+        Ok(())
+    }
+
+    fn collect_compile_time_array_input_scalars(
+        &self,
+        expr: &rumoca_core::Expression,
+        const_scope: &IndexMap<String, f64>,
+        values: &mut Vec<f64>,
+    ) -> Result<(), LowerError> {
+        match expr {
+            rumoca_core::Expression::Array { elements, .. }
+            | rumoca_core::Expression::Tuple { elements, .. } => {
+                for element in elements {
+                    self.collect_compile_time_array_input_scalars(element, const_scope, values)?;
+                }
+                Ok(())
+            }
+            _ => {
+                values.push(self.eval_compile_time_expr(expr, const_scope)?);
+                Ok(())
+            }
+        }
     }
 
     fn bind_scalar_function_input_value(

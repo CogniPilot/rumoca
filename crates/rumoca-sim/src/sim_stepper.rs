@@ -260,9 +260,19 @@ fn new_auto_stepper(
     }
     #[cfg(feature = "solver-diffsol")]
     {
-        crate::diffsol::SimStepper::from_solve_model(solve_model, opts).map(|stepper| SimStepper {
-            inner: SimStepperInner::Bdf(Box::new(stepper)),
-        })
+        match crate::diffsol::SimStepper::from_solve_model(solve_model.clone(), opts.clone()) {
+            Ok(stepper) => Ok(SimStepper {
+                inner: SimStepperInner::Bdf(Box::new(stepper)),
+            }),
+            #[cfg(feature = "solver-rk45")]
+            Err(_) => crate::rk45::SimStepper::from_solve_model(solve_model, opts).map(|stepper| {
+                SimStepper {
+                    inner: SimStepperInner::RkLike(Box::new(stepper)),
+                }
+            }),
+            #[cfg(not(feature = "solver-rk45"))]
+            Err(err) => Err(err),
+        }
     }
     #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
     {

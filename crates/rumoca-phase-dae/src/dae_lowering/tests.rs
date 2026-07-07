@@ -908,6 +908,57 @@ fn embedded_scalar_reference_canonicalization_requires_provenance() {
 }
 
 #[test]
+fn test_scalarize_preserves_plain_matrix_literal_assignment_for_structural_scalarizer() {
+    let mut dae = Dae::new();
+
+    let mut skew = dae::Variable::new(
+        rumoca_core::VarName::new("skew"),
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+    );
+    skew.dims = vec![3, 3];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("skew"), skew);
+
+    let row = |values: [f64; 3]| rumoca_core::Expression::Array {
+        elements: values
+            .into_iter()
+            .map(|value| rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                span: test_span(),
+            })
+            .collect(),
+        is_matrix: false,
+        span: test_span(),
+    };
+    let matrix = rumoca_core::Expression::Array {
+        elements: vec![
+            row([0.0, -1.0, 0.0]),
+            row([1.0, 0.0, 0.0]),
+            row([0.0, 0.0, 0.0]),
+        ],
+        is_matrix: false,
+        span: test_span(),
+    };
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("skew"), matrix.clone()),
+        span: test_span(),
+        origin: "plain matrix literal residual".to_string(),
+        scalar_count: 1,
+    });
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert_eq!(dae.continuous.equations[0].scalar_count, 1);
+    assert_eq!(
+        dae.continuous.equations[0].rhs,
+        sub(var_ref("skew"), matrix)
+    );
+}
+
+#[test]
 fn test_scalarize_vector_binding_preserves_array_comprehension_without_phantom_refs() {
     let mut dae = Dae::new();
     let mut vs = dae::Variable::new(

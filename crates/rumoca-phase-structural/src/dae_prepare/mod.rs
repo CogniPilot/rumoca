@@ -1388,10 +1388,10 @@ fn choose_exact_alias_state_representative<'a>(
         .filter_map(|name| dae.variables.states.get(name).map(|var| (name, var)))
         .min_by_key(|(name, var)| {
             (
+                Reverse(state_select_rank(var.state_select)),
                 Reverse(u8::from(exact_alias_state_has_derivative_reference(
                     dae, name,
                 ))),
-                Reverse(state_select_rank(var.state_select)),
                 Reverse(u8::from(var.fixed == Some(true))),
                 Reverse(u8::from(var.start.is_some())),
                 name.as_str().to_string(),

@@ -78,7 +78,12 @@ pub(super) fn expr_contains_indexed_multiscalar_slice_ref(
         let reference_span = name
             .span()
             .or_else(|| subscripts.first().map(rumoca_core::Subscript::span))
-            .unwrap_or(rumoca_core::Span::DUMMY);
+            .ok_or_else(|| StructuralError::UnspannedContractViolation {
+                reason: format!(
+                    "cannot classify indexed multiscalar reference `{}` without source provenance",
+                    name.as_str()
+                ),
+            })?;
         if !var_ref_is_scalar_after_subscripts(&name, &subscripts, reference_span, dae)? {
             return Ok(true);
         }

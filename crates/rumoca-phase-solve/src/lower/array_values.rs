@@ -2187,7 +2187,15 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(vec![value]);
         }
-        if is_static_singleton_scalar_projection(base, subscripts)? {
+        if let rumoca_core::Expression::VarRef { name, .. } = base
+            && subscripts
+                .iter()
+                .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+        {
+            return self
+                .lower_subscripted_var_ref_array_like_values(name, subscripts, scope, call_depth);
+        }
+        if is_static_singleton_scalar_projection(base, subscripts, owner_span)? {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
         }
         if scalar_literal_projection(base, subscripts, owner_span)? {

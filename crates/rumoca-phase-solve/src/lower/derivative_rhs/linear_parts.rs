@@ -212,14 +212,22 @@ pub(in crate::lower) fn derivative_dot_product_linear_parts(
     }
     let lhs_dims = match expression_result_dims(lhs, ctx.dae_model, ctx.structural_bindings, span) {
         Ok(dims) => dims,
-        Err(LowerError::MissingBinding { .. } | LowerError::Unsupported { .. }) => {
+        Err(
+            LowerError::MissingBinding { .. }
+            | LowerError::Unsupported { .. }
+            | LowerError::UnsupportedAt { .. },
+        ) => {
             return Ok(None);
         }
         Err(err) => return Err(err),
     };
     let rhs_dims = match expression_result_dims(rhs, ctx.dae_model, ctx.structural_bindings, span) {
         Ok(dims) => dims,
-        Err(LowerError::MissingBinding { .. } | LowerError::Unsupported { .. }) => {
+        Err(
+            LowerError::MissingBinding { .. }
+            | LowerError::Unsupported { .. }
+            | LowerError::UnsupportedAt { .. },
+        ) => {
             return Ok(None);
         }
         Err(err) => return Err(err),

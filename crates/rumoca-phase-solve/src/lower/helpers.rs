@@ -550,8 +550,20 @@ pub(super) fn static_subscript_indices_with_owner(
 pub(super) fn is_static_singleton_scalar_projection(
     base: &rumoca_core::Expression,
     subscripts: &[rumoca_core::Subscript],
+    owner_span: Option<rumoca_core::Span>,
 ) -> Result<bool, LowerError> {
-    let owner_span = base.require_span("singleton scalar projection")?.span();
+    if subscripts
+        .iter()
+        .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+    {
+        return Ok(false);
+    }
+    let owner_span =
+        base.span()
+            .or(owner_span)
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: "missing source provenance for singleton scalar projection".to_string(),
+            })?;
     let Some(indices) = static_subscript_indices_with_owner(subscripts, owner_span)? else {
         return Ok(false);
     };

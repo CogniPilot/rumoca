@@ -25,6 +25,11 @@ impl<'a> LowerBuilder<'a> {
             return Ok(vec![reg]);
         }
         let key = name.as_str();
+        if (rumoca_core::parse_scalar_name(key).is_some() || self.layout.shape(key).is_none())
+            && let Some(slot) = self.layout.binding(key)
+        {
+            return Ok(vec![self.emit_slot_load(slot, span)?]);
+        }
         if let Some(values) = self.lower_record_field_array_values(key, span)? {
             return Ok(values);
         }

@@ -3462,16 +3462,11 @@ fn lower_colon_slice_dot_products(
             base,
             subscripts,
             span,
-        } => {
-            if let Some(projected) = try_project_colon_slice_var_ref(expr, array_dims)? {
-                return Ok(projected);
-            }
-            Ok(rumoca_core::Expression::Index {
-                base: Box::new(lower_colon_slice_dot_products(base, array_dims)?),
-                subscripts: subscripts.clone(),
-                span: *span,
-            })
-        }
+        } => Ok(rumoca_core::Expression::Index {
+            base: Box::new(lower_colon_slice_dot_products(base, array_dims)?),
+            subscripts: subscripts.clone(),
+            span: *span,
+        }),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
             lower_colon_slice_binary_expr(op, lhs, rhs, *span, array_dims)
         }
@@ -3605,12 +3600,33 @@ fn lower_colon_slice_binary_expr(
     span: rumoca_core::Span,
     array_dims: &HashMap<String, Vec<i64>>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
-    let lhs = lower_colon_slice_dot_products(lhs, array_dims)?;
-    let rhs = lower_colon_slice_dot_products(rhs, array_dims)?;
+    if !matches!(op, rumoca_core::OpBinary::Mul) {
+        return Ok(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(lower_colon_slice_dot_products(lhs, array_dims)?),
+            rhs: Box::new(lower_colon_slice_dot_products(rhs, array_dims)?),
+            span,
+        });
+    }
+    let lhs = lower_colon_slice_dot_operand(op, lhs, array_dims)?;
+    let rhs = lower_colon_slice_dot_operand(op, rhs, array_dims)?;
     if let Some(dot) = dot_product_if_matching_vectors(op, &lhs, &rhs, span) {
         return Ok(dot);
     }
     Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span))
+}
+
+fn lower_colon_slice_dot_operand(
+    op: &rumoca_core::OpBinary,
+    expr: &rumoca_core::Expression,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if matches!(op, rumoca_core::OpBinary::Mul)
+        && let Some(projected) = try_project_colon_slice_var_ref(expr, array_dims)?
+    {
+        return Ok(projected);
+    }
+    lower_colon_slice_dot_products(expr, array_dims)
 }
 
 fn dot_product_if_matching_vectors(

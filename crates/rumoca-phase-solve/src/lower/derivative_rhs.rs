@@ -4,6 +4,7 @@ mod equation_collection;
 mod function_projection;
 mod linear_parts;
 mod projection;
+mod row_projection;
 #[cfg(test)]
 mod tests;
 use super::{
@@ -15,6 +16,7 @@ pub(super) use equation_collection::*;
 use indexmap::IndexMap;
 pub(super) use linear_parts::*;
 pub(super) use projection::*;
+use row_projection::project_derivative_row_expr;
 use rumoca_core::{Literal, OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, ScalarSlot, VarLayout};
@@ -290,8 +292,10 @@ pub(super) fn lower_derivative_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<ComputeBlock, LowerError> {
-    let analysis = analyze_derivative_rhs(dae_model)?;
+    let analysis = analyze_derivative_rhs(dae_model)
+        .map_err(|err| err.with_context("analyze derivative RHS".to_string()))?;
     lower_derivative_rhs_with_analysis(dae_model, layout, &analysis)
+        .map_err(|err| err.with_context("lower derivative RHS".to_string()))
 }
 
 // SPEC_0021: Exception - derivative RHS lowering owns block assembly across
@@ -432,7 +436,10 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             .filter(|span| !span.is_dummy())
             .map(Ok)
             .unwrap_or_else(|| derivative_state_or_context_span(dae_model, state))?;
-        let row = lower_state_derivative_row(state, &analysis.direct_equations, &lowering_ctx)?;
+        let row = lower_state_derivative_row(state, &analysis.direct_equations, &lowering_ctx)
+            .map_err(|err| {
+                err.with_context(format!("lower derivative row for `{}`", state.name))
+            })?;
         reserve_derivative_capacity(
             &mut pending_derivative_programs,
             1,
@@ -451,7 +458,13 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                 state,
                 &analysis.direct_equations,
                 &lowering_ctx,
-            )?,
+            )
+            .map_err(|err| {
+                err.with_context(format!(
+                    "build derivative access proof for `{}`",
+                    state.name
+                ))
+            })?,
         });
         processed[i] = true;
         i += 1;
@@ -931,14 +944,24 @@ fn lower_direct_row(
     let scope = Scope::new();
     let mut active_assignments = active_assignment_stack(equation.span)?;
     let rhs_expr = inline_direct_assignment_expr(&equation.rhs, ctx, &mut active_assignments)?;
-    let rhs = lower_state_component_expr(&mut builder, &rhs_expr, state, equation.span, &scope)?;
+    let rhs = lower_state_component_expr(&mut builder, &rhs_expr, state, equation.span, &scope)
+        .map_err(|err| {
+            err.with_context(format!(
+                "lower derivative RHS for `{}` from {}",
+                state.name,
+                short_expr(&rhs_expr, 160)
+            ))
+        })?;
     let mut coeff_active_assignments = active_assignment_stack(equation.span)?;
     let coeff_expr = inline_direct_assignment_expr(
         &equation.coefficients[&state.name],
         ctx,
         &mut coeff_active_assignments,
     )?;
-    let coeff = builder.lower_expr(&coeff_expr, &scope, 0)?;
+    let coeff = lower_state_component_expr(&mut builder, &coeff_expr, state, equation.span, &scope)
+        .map_err(|err| {
+            err.with_context(format!("lower derivative coefficient for `{}`", state.name))
+        })?;
     let value = builder.emit_binary_at(BinaryOp::Div, rhs, coeff, equation.span)?;
     builder.ops.push(LinearOp::StoreOutput { src: value });
     Ok(builder.ops)
@@ -1370,8 +1393,11 @@ fn lower_direct_row_group_scalar(
     // Compute every component of the shared base RHS once (shared by RowCse
     // within this single builder), then project each component below.
     let head_base = shared_vector_rhs_base(&head_eq.rhs);
-    let values =
-        builder.lower_array_like_values_with_source_context(head_base, head_eq.span, &scope, 0)?;
+    let values = builder
+        .lower_array_like_values_with_source_context(head_base, head_eq.span, &scope, 0)
+        .map_err(|err| {
+            err.with_context(format!("lower shared derivative RHS for `{}`", head.base))
+        })?;
     if values.len() != group_len {
         return Err(LowerError::Unsupported {
             reason: format!(
@@ -1386,7 +1412,16 @@ fn lower_direct_row_group_scalar(
         let state = &analysis.states[start + offset];
         let equation = &analysis.equations[analysis.direct_equations[&state.name]];
         let rhs = values[state.component];
-        let coeff = builder.lower_expr(&equation.coefficients[&state.name], &scope, 0)?;
+        let coeff = lower_state_component_expr(
+            &mut builder,
+            &equation.coefficients[&state.name],
+            state,
+            equation.span,
+            &scope,
+        )
+        .map_err(|err| {
+            err.with_context(format!("lower derivative coefficient for `{}`", state.name))
+        })?;
         let value = builder.emit_binary_at(BinaryOp::Div, rhs, coeff, equation.span)?;
         builder.ops.push(LinearOp::StoreOutput { src: value });
     }
@@ -1425,8 +1460,31 @@ fn lower_row_rhs_expr(
         return builder.lower_expr_with_source_context(expr, source_context_span, scope, 0);
     }
 
-    let values =
-        builder.lower_array_like_values_with_source_context(expr, source_context_span, scope, 0)?;
+    let values = match builder.lower_array_like_values_with_source_context(
+        expr,
+        source_context_span,
+        scope,
+        0,
+    ) {
+        Ok(values) => values,
+        Err(err) => {
+            let projected = project_derivative_row_expr(
+                builder,
+                expr,
+                row_index,
+                row_count,
+                source_context_span,
+                scope,
+            )
+            .map_err(|_| err)?;
+            return builder.lower_expr_with_source_context(
+                &projected,
+                source_context_span,
+                scope,
+                0,
+            );
+        }
+    };
     if values.len() == row_count {
         return values
             .get(row_index)

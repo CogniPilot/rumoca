@@ -509,6 +509,8 @@ fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, Struct
         scan_state.eliminated_eq_flags,
         scan_state.eliminated_eq_indices,
         &scan_state.resolved,
+        &runtime_protected_unknowns,
+        &runtime_defined_discrete_targets,
     )?;
     log_eliminate_profile(profile, "boundary_finish", p_finish, result.n_eliminated);
     Ok(result)
@@ -609,11 +611,14 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
 
 fn finish_boundary_elimination(
     dae: &mut Dae,
-    substitutions: Vec<Substitution>,
+    mut substitutions: Vec<Substitution>,
     mut eliminated_eq_flags: Vec<bool>,
     mut eliminated_eq_indices: Vec<usize>,
     resolved: &HashSet<VarName>,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
 ) -> Result<EliminationResult, StructuralError> {
+    let mut resolved = resolved.clone();
     eliminated_eq_indices.retain(|&idx| {
         let preserve = dae.continuous.equations.get(idx).is_some_and(|eq| {
             should_preserve_runtime_sensitive_continuous_assignment(
@@ -624,6 +629,16 @@ fn finish_boundary_elimination(
         if preserve && let Some(flag) = eliminated_eq_flags.get_mut(idx) {
             *flag = false;
         }
+        if preserve
+            && let Some(target) = dae
+                .continuous
+                .equations
+                .get(idx)
+                .and_then(|eq| assignment_target_name_in_dae(dae, &equation_analysis_expr(eq)))
+        {
+            substitutions.retain(|sub| sub.var_name != target);
+            resolved.remove(&target);
+        }
         !preserve
     });
     apply_substitutions_to_remaining_once(dae, &eliminated_eq_flags, &substitutions)?;
@@ -633,7 +648,12 @@ fn finish_boundary_elimination(
         dae.continuous.equations.remove(idx);
     }
     shift_structured_families_after_equation_removal(dae, &eliminated_eq_indices);
-    for name in fully_resolved_continuous_unknowns(dae, resolved)? {
+    for name in fully_resolved_continuous_unknowns(
+        dae,
+        &resolved,
+        runtime_protected_unknowns,
+        runtime_defined_discrete_targets,
+    )? {
         dae.variables.algebraics.shift_remove(&name);
         dae.variables.outputs.shift_remove(&name);
     }
@@ -647,6 +667,8 @@ fn finish_boundary_elimination(
 fn fully_resolved_continuous_unknowns(
     dae: &Dae,
     resolved: &HashSet<VarName>,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
 ) -> Result<IndexSet<VarName>, StructuralError> {
     let mut removable = IndexSet::new();
     for (name, var) in dae
@@ -655,6 +677,12 @@ fn fully_resolved_continuous_unknowns(
         .iter()
         .chain(dae.variables.outputs.iter())
     {
+        if is_runtime_protected_unknown(name, runtime_protected_unknowns)
+            || runtime_defined_discrete_targets.contains(name.as_str())
+            || runtime_partition_or_event_refs_var(dae, name)
+        {
+            continue;
+        }
         if resolved.contains(name) || aggregate_variable_fully_resolved(name, var, resolved)? {
             removable.insert(name.clone());
         }
@@ -812,6 +840,11 @@ fn scalar_connection_alias_candidate_rank(
         runtime_protected_unknowns,
         runtime_defined_discrete_targets,
     ) || DaeVariableScope::new(dae).size(var_name)? != 1
+    {
+        return Ok(None);
+    }
+    if is_scalarized_element_of_aggregate(dae, var_name)?
+        && !scalarized_element_has_non_connection_use(dae, var_name)
     {
         return Ok(None);
     }
@@ -1017,13 +1050,10 @@ fn elimination_solution_is_valid(
 fn runtime_protected_elimination_is_valid(
     ctx: &EliminationChoiceContext<'_>,
     candidate: &VarName,
-    solution: &Expression,
-    direct_assignment_solution: bool,
+    _solution: &Expression,
+    _direct_assignment_solution: bool,
 ) -> bool {
     !is_runtime_protected_unknown(candidate, ctx.runtime_protected_unknowns)
-        || (direct_assignment_solution
-            && !solution_references_fixed_unknown(ctx.dae, solution)
-            && !expr_contains_runtime_sensitive_operator(solution))
 }
 
 fn scalarized_candidate_elimination_is_valid(
@@ -1335,6 +1365,22 @@ fn scalarized_element_has_non_connection_use(dae: &Dae, candidate: &VarName) -> 
     })
 }
 
+pub(super) fn connection_refs_unanchored_scalarized_aggregate(
+    dae: &Dae,
+    expr: &Expression,
+) -> Result<bool, StructuralError> {
+    let mut refs = Vec::new();
+    collect_exact_reference_expr_names_in_dae(dae, expr, &mut refs);
+    for name in refs {
+        if is_scalarized_element_of_aggregate(dae, &name)?
+            && !scalarized_element_has_non_connection_use(dae, &name)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn scalarized_element_has_coupled_derivative_use(dae: &Dae, candidate: &VarName) -> bool {
     let mut exact_derivative_use_count = 0usize;
     let has_aggregate_base_use = dae.continuous.equations.iter().any(|eq| {
@@ -1355,16 +1401,6 @@ fn scalarized_element_has_coupled_derivative_use(dae: &Dae, candidate: &VarName)
         })
     });
     has_aggregate_base_use || exact_derivative_use_count > 1
-}
-
-fn solution_references_fixed_unknown(dae: &Dae, expr: &Expression) -> bool {
-    let mut refs = Vec::new();
-    collect_exact_reference_expr_names_in_dae(dae, expr, &mut refs);
-    refs.into_iter().any(|name| {
-        unknown_is_fixed(dae, &name)
-            || rumoca_ir_dae::component_base_name(name.as_str())
-                .is_some_and(|base| unknown_is_fixed(dae, &VarName::new(base)))
-    })
 }
 
 fn expr_contains_runtime_sensitive_operator(expr: &Expression) -> bool {
