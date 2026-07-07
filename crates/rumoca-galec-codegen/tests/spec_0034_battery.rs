@@ -1081,6 +1081,55 @@ mod array_vector_regressions {
         assert!(!alg.contains("norm3("), "{alg}");
     }
 
+    #[test]
+    fn indexed_vector_user_function_call_inlines_before_subscript_lowering() {
+        let call = Expression::FunctionCall {
+            name: Reference::new("lowPass"),
+            args: vec![var("a"), var("b"), real(0.5)],
+            is_constructor: false,
+            span: Span::DUMMY,
+        };
+        let mut model = vector_model(index(call, vec![Subscript::index(2, Span::DUMMY)]));
+        let mut low_pass = Function::new("lowPass", Span::DUMMY);
+        low_pass
+            .inputs
+            .push(FunctionParam::new("sample", "Real", Span::DUMMY).with_dims(vec![3]));
+        low_pass
+            .inputs
+            .push(FunctionParam::new("previous", "Real", Span::DUMMY).with_dims(vec![3]));
+        low_pass
+            .inputs
+            .push(FunctionParam::new("sampleWeight", "Real", Span::DUMMY));
+        low_pass
+            .outputs
+            .push(FunctionParam::new("result", "Real", Span::DUMMY).with_dims(vec![3]));
+        low_pass.body.push(Statement::Assignment {
+            comp: ComponentReference::from_flat_segments("result", Span::DUMMY, None),
+            value: binary(
+                OpBinary::Add,
+                binary(OpBinary::Mul, var("sampleWeight"), var("sample")),
+                binary(
+                    OpBinary::Mul,
+                    binary(OpBinary::Sub, real(1.0), var("sampleWeight")),
+                    var("previous"),
+                ),
+            ),
+            span: Span::DUMMY,
+        });
+        model
+            .symbols
+            .functions
+            .insert(low_pass.name.clone(), low_pass);
+
+        let alg = render_algorithm_code(&lower(&model, &base_types())).expect("renders");
+        assert!(alg.contains("self.a[2]"), "{alg}");
+        assert!(alg.contains("self.b[2]"), "{alg}");
+        assert!(
+            !alg.contains("lowPass("),
+            "inlineable vector helper must not survive into GALEC:\n{alg}"
+        );
+    }
+
     fn production_c_lines(package: &AlgorithmCodePackage) -> String {
         let context = c_template_context(package, "Battery").expect("C context");
         ["startup", "recalibrate", "do_step"]

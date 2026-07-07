@@ -120,6 +120,69 @@ algorithm
 end GalecProdAlgebraicComponent;
 ";
 
+const HELPER_IDIOMS_FIXTURE: &str = "\
+function clip
+  input Real value;
+  input Real lower;
+  input Real upper;
+  output Real result;
+algorithm
+  result := min(max(value, lower), upper);
+annotation(
+  Inline = true);
+end clip;
+
+function wrapAngle
+  input Real angle(unit = \"rad\");
+  output Real result(unit = \"rad\");
+algorithm
+  result := atan2(sin(angle), cos(angle));
+annotation(
+  Inline = true);
+end wrapAngle;
+
+function lowPass
+  input Real sample[:];
+  input Real previous[size(sample, 1)];
+  input Real sampleWeight;
+  output Real result[size(sample, 1)];
+algorithm
+  result := sampleWeight * sample + (1.0 - sampleWeight) * previous;
+annotation(
+  Inline = true);
+end lowPass;
+
+model GalecProdHelperIdioms
+  constant Real dt = 0.02;
+  parameter Real waypoints[2, 3] = [0.0, 0.0, 0.0; 1.0, 2.0, 3.0];
+  input Real sample[3];
+  discrete output Real filtered[3](each start = 0.0);
+  discrete output Real segmentStart[3](each start = 0.0);
+  discrete output Real bounded(start = 0.0);
+  discrete output Real yaw(start = 0.0);
+  discrete output Integer currentWaypoint(min = 1, max = 2, start = 1);
+algorithm
+  when sample(0.0, dt) then
+    filtered := lowPass(sample, pre(filtered), 0.5);
+    segmentStart := waypoints[currentWaypoint, :];
+    bounded := clip(filtered[1], -1.0, 1.0);
+    yaw := wrapAngle(pre(yaw) + 0.25);
+    currentWaypoint := pre(currentWaypoint);
+  end when;
+end GalecProdHelperIdioms;
+";
+
+const UNSUPPORTED_GALEC_BUILTIN_FIXTURE: &str = "\
+model GalecProdUnsupportedBuiltin
+  constant Real dt = 0.02;
+  discrete output Integer y(start = 0);
+algorithm
+  when sample(0.0, dt) then
+    y := mod(3, 2);
+  end when;
+end GalecProdUnsupportedBuiltin;
+";
+
 /// Driver exercising the packaged block: startup, recalibrate, then three
 /// dostep ticks of `y = gain * (pre(y) + 1)` with `gain = 2`, `y0 = 0`
 /// (expected 2, 6, 14) — row E6.
@@ -261,6 +324,54 @@ fn algebraic_component_output_read_by_sampled_parent_compiles() {
     );
     assert!(out_dir.join(model).join("__content.xml").is_file());
     assert!(out_dir.join(format!("{model}.efmu")).is_file());
+}
+
+#[test]
+fn inline_helpers_vector_return_and_row_slice_compile() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdHelperIdioms";
+    let file = write_fixture(dir.path(), model, HELPER_IDIOMS_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "GALEC production target should compile inline scalar helpers, \
+         vector-returning helpers, and row slices.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let alg = fs::read_to_string(
+        out_dir
+            .join(model)
+            .join("AlgorithmCode")
+            .join(format!("{model}.alg")),
+    )
+    .expect("read generated Algorithm Code");
+    assert!(alg.contains("self.sample[1]"), "{alg}");
+    assert!(alg.contains("self.waypoints["), "{alg}");
+    assert!(!alg.contains("lowPass("), "{alg}");
+    assert!(!alg.contains("clip("), "{alg}");
+    assert!(!alg.contains("wrapAngle("), "{alg}");
+}
+
+#[test]
+fn unsupported_galec_projection_diagnostic_points_at_source_expression() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdUnsupportedBuiltin";
+    let file = write_fixture(dir.path(), model, UNSUPPORTED_GALEC_BUILTIN_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        !output.status.success(),
+        "unsupported GALEC builtin should be rejected"
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("[ET017]"), "{stderr}");
+    assert!(stderr.contains("builtin:mod"), "{stderr}");
+    assert!(
+        stderr.contains("mod(3, 2)"),
+        "projection diagnostic should show the source expression:\n{stderr}"
+    );
 }
 
 /// Attribute name → value maps for every element called `element_name`,
