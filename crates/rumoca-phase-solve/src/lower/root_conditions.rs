@@ -177,12 +177,14 @@ fn lower_root_condition_row(
     let mut builder = LowerBuilder::new_with_runtime_metadata(
         layout,
         runtime.functions,
-        runtime.clock_intervals,
-        runtime.clock_timings,
-        runtime.triggered_clock_conditions,
-        runtime.variable_starts,
-        runtime.dae_variables,
-        false,
+        super::RuntimeLowerBuilderMetadata {
+            clock_intervals: runtime.clock_intervals,
+            clock_timings: runtime.clock_timings,
+            triggered_clock_conditions: runtime.triggered_clock_conditions,
+            variable_starts: runtime.variable_starts,
+            dae_variables: runtime.dae_variables,
+            is_initial_mode: false,
+        },
     );
     let scope = Scope::new();
     let span = root_condition_span(condition)?;
@@ -425,12 +427,14 @@ fn lower_synthetic_root_condition_row(
     let mut builder = LowerBuilder::new_with_runtime_metadata(
         layout,
         runtime.functions,
-        runtime.clock_intervals,
-        runtime.clock_timings,
-        runtime.triggered_clock_conditions,
-        runtime.variable_starts,
-        runtime.dae_variables,
-        false,
+        super::RuntimeLowerBuilderMetadata {
+            clock_intervals: runtime.clock_intervals,
+            clock_timings: runtime.clock_timings,
+            triggered_clock_conditions: runtime.triggered_clock_conditions,
+            variable_starts: runtime.variable_starts,
+            dae_variables: runtime.dae_variables,
+            is_initial_mode: false,
+        },
     );
     let root_value = builder.lower_expr(condition, &Scope::new(), 0)?;
     builder.ops.push(LinearOp::StoreOutput { src: root_value });
@@ -445,12 +449,14 @@ fn lower_triggered_clock_condition_row(
     let mut builder = LowerBuilder::new_with_runtime_metadata(
         layout,
         runtime.functions,
-        runtime.clock_intervals,
-        runtime.clock_timings,
-        runtime.triggered_clock_conditions,
-        runtime.variable_starts,
-        runtime.dae_variables,
-        false,
+        super::RuntimeLowerBuilderMetadata {
+            clock_intervals: runtime.clock_intervals,
+            clock_timings: runtime.clock_timings,
+            triggered_clock_conditions: runtime.triggered_clock_conditions,
+            variable_starts: runtime.variable_starts,
+            dae_variables: runtime.dae_variables,
+            is_initial_mode: false,
+        },
     );
     let root_value = lower_bool_condition_as_root(condition, &mut builder, &Scope::new())?;
     builder.ops.push(LinearOp::StoreOutput { src: root_value });

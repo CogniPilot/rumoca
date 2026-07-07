@@ -940,91 +940,146 @@ fn choose_solvable_unknown_for_elimination(
         let Some(solution) = try_solve_for_unknown_in_dae(dae, rhs, candidate) else {
             continue;
         };
-        if expr_contains_unknown_in_dae(dae, &solution, candidate) {
-            continue;
-        }
         let direct_assignment_solution = has_direct_assignment_form(dae, rhs, candidate);
-        if !is_trivial_alias_in_dae(dae, &solution)
-            && !solution_is_cheap_for_symbolic_substitution(&solution)
-        {
-            continue;
-        }
-        if is_runtime_protected_unknown(candidate, ctx.runtime_protected_unknowns)
-            && !(direct_assignment_solution
-                && !solution_references_fixed_unknown(dae, &solution)
-                && !expr_contains_runtime_sensitive_operator(&solution))
-        {
-            continue;
-        }
-        if direct_assignment_solution
-            && !is_trivial_alias_in_dae(dae, &solution)
-            && expr_contains_runtime_sensitive_operator(&solution)
-            && is_scalarized_element_of_aggregate(dae, candidate)?
-            && scalarized_element_has_non_connection_use(dae, candidate)
-        {
-            continue;
-        }
-        if ctx.has_state_derivative && is_scalarized_element_of_aggregate(dae, candidate)? {
-            continue;
-        }
-        if is_scalarized_element_of_aggregate(dae, candidate)?
-            && scalarized_element_has_coupled_derivative_use(dae, candidate)
-            && !is_trivial_alias_in_dae(dae, &solution)
-        {
-            continue;
-        }
-        if is_scalarized_element_of_aggregate(dae, candidate)?
-            && !scalarized_element_has_non_connection_use(dae, candidate)
-        {
-            continue;
-        }
-        // Skip equations with state derivatives — unless the candidate is an
-        // output alias or an algebraic alias that is also directly constrained
-        // elsewhere. The latter preserves first-order block inputs such as
-        // der(x)=u while allowing u to be substituted into its connection-side
-        // definition.
-        if ctx.has_state_derivative
-            && !is_output
-            && !(direct_assignment_solution
-                && ctx
-                    .direct_definitions
-                    .has_other_direct_definition(ctx.eq_idx, candidate)
-                && is_derivative_alias_expr(&solution))
-        {
-            continue;
-        }
-        // Output variables exist for external callers — only eliminate them
-        // when the solution is a trivial alias (a single variable reference or
-        // its negation), since keeping non-trivial outputs enlarges the DAE and
-        // can hurt solver performance.
-        if is_output
-            && !is_trivial_alias_in_dae(dae, &solution)
-            && !is_internal_component_output(dae, candidate)
-        {
-            continue;
-        }
-        if !direct_assignment_solution && !is_symbolically_stable_solution(&solution) {
-            continue;
-        }
-        if solution_has_blocking_unsliced_multiscalar_ref(&solution, dae)? {
-            continue;
-        }
-        if expr_contains_indexed_multiscalar_slice_ref(&solution, dae)?
-            && !(is_trivial_alias_in_dae(dae, &solution)
-                && expression_is_scalar_after_subscripts(&solution, dae)?)
-            && !is_scalar_reduction_solution_tree(&solution)
-        {
-            continue;
-        }
-        if live.len() > 1
-            && !direct_assignment_solution
-            && !(ctx.allow_multi_live_trivial_alias && is_trivial_alias_in_dae(dae, &solution))
-        {
+        if !elimination_solution_is_valid(
+            ctx,
+            candidate,
+            &solution,
+            is_output,
+            direct_assignment_solution,
+            live.len(),
+        )? {
             continue;
         }
         return Ok(Some((candidate.clone(), solution)));
     }
     Ok(None)
+}
+
+fn elimination_solution_is_valid(
+    ctx: &EliminationChoiceContext<'_>,
+    candidate: &VarName,
+    solution: &Expression,
+    is_output: bool,
+    direct_assignment_solution: bool,
+    live_len: usize,
+) -> Result<bool, StructuralError> {
+    let dae = ctx.dae;
+    if expr_contains_unknown_in_dae(dae, solution, candidate) {
+        return Ok(false);
+    }
+    if !is_trivial_alias_in_dae(dae, solution)
+        && !solution_is_cheap_for_symbolic_substitution(solution)
+    {
+        return Ok(false);
+    }
+    if !runtime_protected_elimination_is_valid(ctx, candidate, solution, direct_assignment_solution)
+    {
+        return Ok(false);
+    }
+    if !scalarized_candidate_elimination_is_valid(
+        ctx,
+        candidate,
+        solution,
+        direct_assignment_solution,
+    )? {
+        return Ok(false);
+    }
+    if !state_derivative_elimination_is_valid(
+        ctx,
+        candidate,
+        solution,
+        is_output,
+        direct_assignment_solution,
+    ) {
+        return Ok(false);
+    }
+    if is_output
+        && !is_trivial_alias_in_dae(dae, solution)
+        && !is_internal_component_output(dae, candidate)
+    {
+        return Ok(false);
+    }
+    if !direct_assignment_solution && !is_symbolically_stable_solution(solution) {
+        return Ok(false);
+    }
+    if solution_has_blocking_unsliced_multiscalar_ref(solution, dae)? {
+        return Ok(false);
+    }
+    if indexed_multiscalar_slice_solution_is_blocked(dae, solution)? {
+        return Ok(false);
+    }
+    Ok(live_len <= 1
+        || direct_assignment_solution
+        || (ctx.allow_multi_live_trivial_alias && is_trivial_alias_in_dae(dae, solution)))
+}
+
+fn runtime_protected_elimination_is_valid(
+    ctx: &EliminationChoiceContext<'_>,
+    candidate: &VarName,
+    solution: &Expression,
+    direct_assignment_solution: bool,
+) -> bool {
+    !is_runtime_protected_unknown(candidate, ctx.runtime_protected_unknowns)
+        || (direct_assignment_solution
+            && !solution_references_fixed_unknown(ctx.dae, solution)
+            && !expr_contains_runtime_sensitive_operator(solution))
+}
+
+fn scalarized_candidate_elimination_is_valid(
+    ctx: &EliminationChoiceContext<'_>,
+    candidate: &VarName,
+    solution: &Expression,
+    direct_assignment_solution: bool,
+) -> Result<bool, StructuralError> {
+    let dae = ctx.dae;
+    let is_scalarized_element = is_scalarized_element_of_aggregate(dae, candidate)?;
+    if !is_scalarized_element {
+        return Ok(true);
+    }
+    let is_trivial_alias = is_trivial_alias_in_dae(dae, solution);
+    if direct_assignment_solution
+        && !is_trivial_alias
+        && expr_contains_runtime_sensitive_operator(solution)
+        && scalarized_element_has_non_connection_use(dae, candidate)
+    {
+        return Ok(false);
+    }
+    if ctx.has_state_derivative {
+        return Ok(false);
+    }
+    if scalarized_element_has_coupled_derivative_use(dae, candidate) && !is_trivial_alias {
+        return Ok(false);
+    }
+    Ok(scalarized_element_has_non_connection_use(dae, candidate))
+}
+
+fn state_derivative_elimination_is_valid(
+    ctx: &EliminationChoiceContext<'_>,
+    candidate: &VarName,
+    solution: &Expression,
+    is_output: bool,
+    direct_assignment_solution: bool,
+) -> bool {
+    !ctx.has_state_derivative
+        || is_output
+        || (direct_assignment_solution
+            && ctx
+                .direct_definitions
+                .has_other_direct_definition(ctx.eq_idx, candidate)
+            && is_derivative_alias_expr(solution))
+}
+
+fn indexed_multiscalar_slice_solution_is_blocked(
+    dae: &Dae,
+    solution: &Expression,
+) -> Result<bool, StructuralError> {
+    if !expr_contains_indexed_multiscalar_slice_ref(solution, dae)? {
+        return Ok(false);
+    }
+    Ok(!(is_scalar_reduction_solution_tree(solution)
+        || is_trivial_alias_in_dae(dae, solution)
+            && expression_is_scalar_after_subscripts(solution, dae)?))
 }
 
 fn connection_rhs_assignment_target<'a>(
@@ -1319,15 +1374,16 @@ fn expr_contains_runtime_sensitive_operator(expr: &Expression) -> bool {
 
     impl ExpressionVisitor for Checker {
         fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                if let Expression::VarRef { name, .. } = expr
-                    && name.as_str() == "time"
-                {
-                    self.found = true;
-                    return;
-                }
-                self.walk_expression(expr);
+            if self.found {
+                return;
             }
+            if let Expression::VarRef { name, .. } = expr
+                && name.as_str() == "time"
+            {
+                self.found = true;
+                return;
+            }
+            self.walk_expression(expr);
         }
 
         fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
@@ -1552,102 +1608,165 @@ fn expression_is_within_symbolic_candidate_budget(expr: &Expression) -> bool {
 }
 
 fn expression_node_count_exceeds(expr: &Expression, limit: usize) -> Option<bool> {
-    fn visit(expr: &Expression, limit: usize, count: &mut usize) -> Option<bool> {
-        *count = count.checked_add(1)?;
-        if *count > limit {
+    let mut count = 0usize;
+    expression_node_count_visit(expr, limit, &mut count)
+}
+
+fn expression_node_count_visit_all<'a>(
+    exprs: impl IntoIterator<Item = &'a Expression>,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    for expr in exprs {
+        if expression_node_count_visit(expr, limit, count)? {
             return Some(true);
         }
-        match expr {
-            Expression::Binary { lhs, rhs, .. } => {
-                if visit(lhs, limit, count)? {
-                    return Some(true);
-                }
-                visit(rhs, limit, count)
-            }
-            Expression::Unary { rhs, .. } => visit(rhs, limit, count),
-            Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-                for arg in args {
-                    if visit(arg, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                Some(false)
-            }
-            Expression::If {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (condition, branch) in branches {
-                    if visit(condition, limit, count)? || visit(branch, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                visit(else_branch, limit, count)
-            }
-            Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
-                for element in elements {
-                    if visit(element, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                Some(false)
-            }
-            Expression::Range {
-                start, step, end, ..
-            } => {
-                if visit(start, limit, count)? {
-                    return Some(true);
-                }
-                if let Some(step) = step
-                    && visit(step, limit, count)?
-                {
-                    return Some(true);
-                }
-                visit(end, limit, count)
-            }
-            Expression::Index {
-                base, subscripts, ..
-            } => {
-                if visit(base, limit, count)? {
-                    return Some(true);
-                }
-                for subscript in subscripts {
-                    if let rumoca_core::Subscript::Expr { expr, .. } = subscript
-                        && visit(expr, limit, count)?
-                    {
-                        return Some(true);
-                    }
-                }
-                Some(false)
-            }
-            Expression::FieldAccess { base, .. } => visit(base, limit, count),
-            Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-                ..
-            } => {
-                if visit(expr, limit, count)? {
-                    return Some(true);
-                }
-                for index in indices {
-                    if visit(&index.range, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                if let Some(filter) = filter {
-                    visit(filter, limit, count)
-                } else {
-                    Some(false)
-                }
-            }
-            _ => Some(false),
+    }
+    Some(false)
+}
+
+fn expression_node_count_visit_branches(
+    branches: &[(Expression, Expression)],
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    for (condition, branch) in branches {
+        if expression_node_count_visit_all([condition, branch], limit, count)? {
+            return Some(true);
         }
     }
+    Some(false)
+}
 
-    let mut count = 0usize;
-    visit(expr, limit, &mut count)
+fn expression_node_count_visit_subscripts(
+    subscripts: &[rumoca_core::Subscript],
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    expression_node_count_visit_all(
+        subscripts.iter().filter_map(|subscript| match subscript {
+            rumoca_core::Subscript::Expr { expr, .. } => Some(expr.as_ref()),
+            _ => None,
+        }),
+        limit,
+        count,
+    )
+}
+
+fn expression_node_count_visit(expr: &Expression, limit: usize, count: &mut usize) -> Option<bool> {
+    *count = count.checked_add(1)?;
+    if *count > limit {
+        return Some(true);
+    }
+    match expr {
+        Expression::Binary { lhs, rhs, .. } => {
+            expression_node_count_visit_binary(lhs, rhs, limit, count)
+        }
+        Expression::Unary { rhs, .. } => expression_node_count_visit(rhs, limit, count),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            expression_node_count_visit_all(args, limit, count)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => expression_node_count_visit_if(branches, else_branch, limit, count),
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            expression_node_count_visit_all(elements, limit, count)
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => expression_node_count_visit_range(start, step.as_deref(), end, limit, count),
+        Expression::Index {
+            base, subscripts, ..
+        } => expression_node_count_visit_index(base, subscripts, limit, count),
+        Expression::FieldAccess { base, .. } => expression_node_count_visit(base, limit, count),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => expression_node_count_visit_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            limit,
+            count,
+        ),
+        _ => Some(false),
+    }
+}
+
+fn expression_node_count_visit_binary(
+    lhs: &Expression,
+    rhs: &Expression,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(lhs, limit, count)? {
+        return Some(true);
+    }
+    expression_node_count_visit(rhs, limit, count)
+}
+
+fn expression_node_count_visit_if(
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit_branches(branches, limit, count)? {
+        return Some(true);
+    }
+    expression_node_count_visit(else_branch, limit, count)
+}
+
+fn expression_node_count_visit_range(
+    start: &Expression,
+    step: Option<&Expression>,
+    end: &Expression,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(start, limit, count)? {
+        return Some(true);
+    }
+    if let Some(step) = step
+        && expression_node_count_visit(step, limit, count)?
+    {
+        return Some(true);
+    }
+    expression_node_count_visit(end, limit, count)
+}
+
+fn expression_node_count_visit_index(
+    base: &Expression,
+    subscripts: &[rumoca_core::Subscript],
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(base, limit, count)? {
+        return Some(true);
+    }
+    expression_node_count_visit_subscripts(subscripts, limit, count)
+}
+
+fn expression_node_count_visit_comprehension(
+    expr: &Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&Expression>,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(expr, limit, count)? {
+        return Some(true);
+    }
+    if expression_node_count_visit_all(indices.iter().map(|index| &index.range), limit, count)? {
+        return Some(true);
+    }
+    filter.map_or(Some(false), |filter| {
+        expression_node_count_visit(filter, limit, count)
+    })
 }
 
 fn is_scalar_reduction_solution_tree(expr: &Expression) -> bool {

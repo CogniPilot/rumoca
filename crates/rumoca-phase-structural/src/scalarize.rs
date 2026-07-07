@@ -1815,85 +1815,15 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     let mut spans: Vec<(usize, usize)> = Vec::with_capacity(dae.continuous.equations.len());
     for eq in &dae.continuous.equations {
         let new_start = expanded.len();
-        let eq_projection = projection.with_context_span(eq.span);
-        let scalarization_target = eq
-            .lhs
-            .as_ref()
-            .map(|lhs| lhs.as_str().to_string())
-            .or_else(|| residual_lhs_target_name(&eq.rhs));
-        let residual_lhs_targets =
-            residual_lhs_scalar_targets(&eq.rhs, eq.span, &var_dims, &structural_values)?;
-        let (lhs_targets, has_residual_lhs_targets) = scalar_lhs_targets_for_equation(
-            residual_lhs_targets,
-            scalarization_target.as_deref(),
-            eq.lhs.as_ref(),
-            eq.span,
+        expand_scalarized_equation(
+            eq,
+            &projection,
             &scalar_names,
             &var_dims,
             &var_spans,
+            &structural_values,
+            &mut expanded,
         )?;
-        let rhs_shape_count = shape_scalar_count(eq_projection.expression_shape(&eq.rhs));
-        let scalar_count = if has_residual_lhs_targets {
-            lhs_targets.len().max(1)
-        } else if let Some(rhs_count) = rhs_shape_count.filter(|count| *count > 1) {
-            // MLS §10.6 / SPEC_0019: array equations represent one scalar
-            // equation per array element. Prefer the expression IR shape over
-            // stale scalar_count metadata for residuals such as
-            // `J * der(omega) - M_body`.
-            rhs_count.max(lhs_targets.len())
-        } else {
-            eq.scalar_count.max(lhs_targets.len()).max(1)
-        };
-        if scalar_count <= 1 {
-            if has_residual_lhs_targets
-                && let Some(target) = lhs_targets.first()
-                && let Some(rhs) = project_explicit_rhs_for_scalar_target(
-                    &eq.rhs,
-                    scalarization_target.as_deref(),
-                    target,
-                    &eq_projection,
-                )?
-            {
-                expanded.push(Equation::explicit_with_scalar_count(
-                    VarName::new(target.name.clone()),
-                    eq_projection.lower_scalar_linear_algebra(&rhs)?,
-                    eq.span,
-                    eq.origin.clone(),
-                    1,
-                ));
-                spans.push((new_start, expanded.len() - new_start));
-                continue;
-            }
-            let mut lowered = eq.clone();
-            let rhs = if projection
-                .expression_shape(&lowered.rhs)
-                .is_singleton_array()
-            {
-                eq_projection.project_index(&lowered.rhs, 1)?
-            } else {
-                lowered.rhs.clone()
-            };
-            lowered.rhs = eq_projection.lower_scalar_linear_algebra(&rhs)?;
-            expanded.push(lowered);
-        } else {
-            for i in 1..=scalar_count {
-                let target = lhs_targets.get(i - 1);
-                expanded.push(Equation {
-                    lhs: scalarized_equation_lhs(eq, target, i, eq.span)?,
-                    rhs: project_rhs_for_scalar_target(
-                        &eq.rhs,
-                        i,
-                        scalarization_target.as_deref(),
-                        target,
-                        eq.span,
-                        &eq_projection,
-                    )?,
-                    span: eq.span,
-                    origin: eq.origin.clone(),
-                    scalar_count: 1,
-                });
-            }
-        }
         spans.push((new_start, expanded.len() - new_start));
     }
     dae.continuous.equations = expanded;
@@ -1906,6 +1836,140 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     lower_scalar_linear_algebra_exprs(&mut dae.events.synthetic_root_conditions, &projection)?;
     lower_scalar_linear_algebra_exprs(&mut dae.clocks.triggered_conditions, &projection)?;
     lower_scalar_linear_algebra_exprs(&mut dae.clocks.constructor_exprs, &projection)?;
+    Ok(())
+}
+
+fn expand_scalarized_equation(
+    eq: &Equation,
+    projection: &ScalarProjectionContext<'_>,
+    scalar_names: &[String],
+    var_dims: &HashMap<String, Vec<i64>>,
+    var_spans: &HashMap<String, Span>,
+    structural_values: &HashMap<String, i64>,
+    expanded: &mut Vec<Equation>,
+) -> Result<(), StructuralError> {
+    let eq_projection = projection.with_context_span(eq.span);
+    let scalarization_target = eq
+        .lhs
+        .as_ref()
+        .map(|lhs| lhs.as_str().to_string())
+        .or_else(|| residual_lhs_target_name(&eq.rhs));
+    let residual_lhs_targets =
+        residual_lhs_scalar_targets(&eq.rhs, eq.span, var_dims, structural_values)?;
+    let (lhs_targets, has_residual_lhs_targets) = scalar_lhs_targets_for_equation(
+        residual_lhs_targets,
+        scalarization_target.as_deref(),
+        eq.lhs.as_ref(),
+        eq.span,
+        scalar_names,
+        var_dims,
+        var_spans,
+    )?;
+    let scalar_count =
+        equation_scalar_count(eq, &eq_projection, &lhs_targets, has_residual_lhs_targets);
+    if scalar_count <= 1 {
+        return expand_single_scalar_equation(
+            eq,
+            &eq_projection,
+            scalarization_target.as_deref(),
+            &lhs_targets,
+            has_residual_lhs_targets,
+            expanded,
+        );
+    }
+    expand_multi_scalar_equation(
+        eq,
+        &eq_projection,
+        scalarization_target.as_deref(),
+        &lhs_targets,
+        scalar_count,
+        expanded,
+    )
+}
+
+fn equation_scalar_count(
+    eq: &Equation,
+    projection: &ScalarProjectionContext<'_>,
+    lhs_targets: &[ScalarizedLhsTarget],
+    has_residual_lhs_targets: bool,
+) -> usize {
+    if has_residual_lhs_targets {
+        return lhs_targets.len().max(1);
+    }
+    let rhs_shape_count = shape_scalar_count(projection.expression_shape(&eq.rhs));
+    if let Some(rhs_count) = rhs_shape_count.filter(|count| *count > 1) {
+        // MLS 10.6 / SPEC_0019: array equations represent one scalar equation
+        // per array element. Prefer expression IR shape over stale metadata.
+        return rhs_count.max(lhs_targets.len());
+    }
+    eq.scalar_count.max(lhs_targets.len()).max(1)
+}
+
+fn expand_single_scalar_equation(
+    eq: &Equation,
+    projection: &ScalarProjectionContext<'_>,
+    scalarization_target: Option<&str>,
+    lhs_targets: &[ScalarizedLhsTarget],
+    has_residual_lhs_targets: bool,
+    expanded: &mut Vec<Equation>,
+) -> Result<(), StructuralError> {
+    if has_residual_lhs_targets
+        && let Some(target) = lhs_targets.first()
+        && let Some(rhs) = project_explicit_rhs_for_scalar_target(
+            &eq.rhs,
+            scalarization_target,
+            target,
+            projection,
+        )?
+    {
+        expanded.push(Equation::explicit_with_scalar_count(
+            VarName::new(target.name.clone()),
+            projection.lower_scalar_linear_algebra(&rhs)?,
+            eq.span,
+            eq.origin.clone(),
+            1,
+        ));
+        return Ok(());
+    }
+    let mut lowered = eq.clone();
+    let rhs = if projection
+        .expression_shape(&lowered.rhs)
+        .is_singleton_array()
+    {
+        projection.project_index(&lowered.rhs, 1)?
+    } else {
+        lowered.rhs.clone()
+    };
+    lowered.rhs = projection.lower_scalar_linear_algebra(&rhs)?;
+    expanded.push(lowered);
+    Ok(())
+}
+
+fn expand_multi_scalar_equation(
+    eq: &Equation,
+    projection: &ScalarProjectionContext<'_>,
+    scalarization_target: Option<&str>,
+    lhs_targets: &[ScalarizedLhsTarget],
+    scalar_count: usize,
+    expanded: &mut Vec<Equation>,
+) -> Result<(), StructuralError> {
+    for i in 1..=scalar_count {
+        let target = lhs_targets.get(i - 1);
+        expanded.push(Equation {
+            lhs: scalarized_equation_lhs(eq, target, i, eq.span)?,
+            rhs: project_rhs_for_scalar_target(
+                &eq.rhs,
+                i,
+                scalarization_target,
+                target,
+                eq.span,
+                projection,
+            )?,
+            span: eq.span,
+            origin: eq.origin.clone(),
+            scalar_count: 1,
+        });
+    }
     Ok(())
 }
 

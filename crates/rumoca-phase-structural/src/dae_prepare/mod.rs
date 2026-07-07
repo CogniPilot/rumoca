@@ -407,102 +407,165 @@ fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
 }
 
 fn expression_node_count_exceeds(expr: &Expression, limit: usize) -> Option<bool> {
-    fn visit(expr: &Expression, limit: usize, count: &mut usize) -> Option<bool> {
-        *count = count.checked_add(1)?;
-        if *count > limit {
+    let mut count = 0usize;
+    expression_node_count_visit(expr, limit, &mut count)
+}
+
+fn expression_node_count_visit_all<'a>(
+    exprs: impl IntoIterator<Item = &'a Expression>,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    for expr in exprs {
+        if expression_node_count_visit(expr, limit, count)? {
             return Some(true);
         }
-        match expr {
-            Expression::Binary { lhs, rhs, .. } => {
-                if visit(lhs, limit, count)? {
-                    return Some(true);
-                }
-                visit(rhs, limit, count)
-            }
-            Expression::Unary { rhs, .. } => visit(rhs, limit, count),
-            Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-                for arg in args {
-                    if visit(arg, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                Some(false)
-            }
-            Expression::If {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (condition, branch) in branches {
-                    if visit(condition, limit, count)? || visit(branch, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                visit(else_branch, limit, count)
-            }
-            Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
-                for element in elements {
-                    if visit(element, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                Some(false)
-            }
-            Expression::Range {
-                start, step, end, ..
-            } => {
-                if visit(start, limit, count)? {
-                    return Some(true);
-                }
-                if let Some(step) = step
-                    && visit(step, limit, count)?
-                {
-                    return Some(true);
-                }
-                visit(end, limit, count)
-            }
-            Expression::Index {
-                base, subscripts, ..
-            } => {
-                if visit(base, limit, count)? {
-                    return Some(true);
-                }
-                for subscript in subscripts {
-                    if let rumoca_core::Subscript::Expr { expr, .. } = subscript
-                        && visit(expr, limit, count)?
-                    {
-                        return Some(true);
-                    }
-                }
-                Some(false)
-            }
-            Expression::FieldAccess { base, .. } => visit(base, limit, count),
-            Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-                ..
-            } => {
-                if visit(expr, limit, count)? {
-                    return Some(true);
-                }
-                for index in indices {
-                    if visit(&index.range, limit, count)? {
-                        return Some(true);
-                    }
-                }
-                if let Some(filter) = filter {
-                    visit(filter, limit, count)
-                } else {
-                    Some(false)
-                }
-            }
-            _ => Some(false),
+    }
+    Some(false)
+}
+
+fn expression_node_count_visit_branches(
+    branches: &[(Expression, Expression)],
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    for (condition, branch) in branches {
+        if expression_node_count_visit_all([condition, branch], limit, count)? {
+            return Some(true);
         }
     }
+    Some(false)
+}
 
-    let mut count = 0usize;
-    visit(expr, limit, &mut count)
+fn expression_node_count_visit_subscripts(
+    subscripts: &[rumoca_core::Subscript],
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    expression_node_count_visit_all(
+        subscripts.iter().filter_map(|subscript| match subscript {
+            rumoca_core::Subscript::Expr { expr, .. } => Some(expr.as_ref()),
+            _ => None,
+        }),
+        limit,
+        count,
+    )
+}
+
+fn expression_node_count_visit(expr: &Expression, limit: usize, count: &mut usize) -> Option<bool> {
+    *count = count.checked_add(1)?;
+    if *count > limit {
+        return Some(true);
+    }
+    match expr {
+        Expression::Binary { lhs, rhs, .. } => {
+            expression_node_count_visit_binary(lhs, rhs, limit, count)
+        }
+        Expression::Unary { rhs, .. } => expression_node_count_visit(rhs, limit, count),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            expression_node_count_visit_all(args, limit, count)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => expression_node_count_visit_if(branches, else_branch, limit, count),
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            expression_node_count_visit_all(elements, limit, count)
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => expression_node_count_visit_range(start, step.as_deref(), end, limit, count),
+        Expression::Index {
+            base, subscripts, ..
+        } => expression_node_count_visit_index(base, subscripts, limit, count),
+        Expression::FieldAccess { base, .. } => expression_node_count_visit(base, limit, count),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => expression_node_count_visit_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            limit,
+            count,
+        ),
+        _ => Some(false),
+    }
+}
+
+fn expression_node_count_visit_binary(
+    lhs: &Expression,
+    rhs: &Expression,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(lhs, limit, count)? {
+        return Some(true);
+    }
+    expression_node_count_visit(rhs, limit, count)
+}
+
+fn expression_node_count_visit_if(
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit_branches(branches, limit, count)? {
+        return Some(true);
+    }
+    expression_node_count_visit(else_branch, limit, count)
+}
+
+fn expression_node_count_visit_range(
+    start: &Expression,
+    step: Option<&Expression>,
+    end: &Expression,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(start, limit, count)? {
+        return Some(true);
+    }
+    if let Some(step) = step
+        && expression_node_count_visit(step, limit, count)?
+    {
+        return Some(true);
+    }
+    expression_node_count_visit(end, limit, count)
+}
+
+fn expression_node_count_visit_index(
+    base: &Expression,
+    subscripts: &[rumoca_core::Subscript],
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(base, limit, count)? {
+        return Some(true);
+    }
+    expression_node_count_visit_subscripts(subscripts, limit, count)
+}
+
+fn expression_node_count_visit_comprehension(
+    expr: &Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&Expression>,
+    limit: usize,
+    count: &mut usize,
+) -> Option<bool> {
+    if expression_node_count_visit(expr, limit, count)? {
+        return Some(true);
+    }
+    if expression_node_count_visit_all(indices.iter().map(|index| &index.range), limit, count)? {
+        return Some(true);
+    }
+    filter.map_or(Some(false), |filter| {
+        expression_node_count_visit(filter, limit, count)
+    })
 }
 
 fn defining_expr_candidates<'a>(

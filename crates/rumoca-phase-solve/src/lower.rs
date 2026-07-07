@@ -421,6 +421,15 @@ pub(super) struct LowerBuilderMetadata<'a> {
     pub(super) is_initial_mode: bool,
 }
 
+pub(in crate::lower) struct RuntimeLowerBuilderMetadata<'a> {
+    pub(in crate::lower) clock_intervals: &'a IndexMap<String, f64>,
+    pub(in crate::lower) clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
+    pub(in crate::lower) triggered_clock_conditions: &'a [rumoca_core::Expression],
+    pub(in crate::lower) variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
+    pub(in crate::lower) dae_variables: &'a dae::DaeVariables,
+    pub(in crate::lower) is_initial_mode: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueMode {
     Current,
@@ -438,25 +447,20 @@ impl<'a> LowerBuilder<'a> {
     fn new_with_runtime_metadata(
         layout: &'a VarLayout,
         functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-        clock_intervals: &'a IndexMap<String, f64>,
-        clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
-        triggered_clock_conditions: &'a [rumoca_core::Expression],
-        variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
-        dae_variables: &'a dae::DaeVariables,
-        is_initial_mode: bool,
+        runtime: RuntimeLowerBuilderMetadata<'a>,
     ) -> Self {
         Self::new_with_metadata(
             layout,
             functions,
             LowerBuilderMetadata {
-                clock_intervals: Some(clock_intervals),
-                clock_timings: Some(clock_timings),
-                triggered_clock_conditions: Some(triggered_clock_conditions),
+                clock_intervals: Some(runtime.clock_intervals),
+                clock_timings: Some(runtime.clock_timings),
+                triggered_clock_conditions: Some(runtime.triggered_clock_conditions),
                 discrete_valued_names: None,
-                variable_starts: Some(variable_starts),
-                dae_variables: Some(dae_variables),
+                variable_starts: Some(runtime.variable_starts),
+                dae_variables: Some(runtime.dae_variables),
                 indexed_bindings: None,
-                is_initial_mode,
+                is_initial_mode: runtime.is_initial_mode,
             },
         )
     }
@@ -670,61 +674,7 @@ impl<'a> LowerBuilder<'a> {
             return scope_key_from_reference(name, span);
         }
         if let Some(component_ref) = name.component_ref() {
-            match ComponentReferenceKey::from_component_reference(component_ref) {
-                Ok(key) => return Ok(key),
-                Err(err)
-                    if err.kind
-                        == rumoca_ir_solve::ComponentReferenceKeyErrorKind::MissingDefId =>
-                {
-                    if let Some(component_ref) = self
-                        .dae_variables
-                        .and_then(|variables| dae_variable(variables, name.var_name()))
-                        .and_then(|variable| variable.component_ref.as_ref())
-                        && component_ref.def_id.is_some()
-                    {
-                        return ComponentReferenceKey::from_component_reference(component_ref)
-                            .map_err(|err| {
-                                LowerError::contract_violation(
-                                    format!(
-                                        "Solve lowering requires static component-reference metadata for `{}`: {err}",
-                                        name.as_str(),
-                                    ),
-                                    err.span,
-                                )
-                            });
-                    }
-                    if let Some(component_ref) =
-                        self.scalarized_base_component_ref(name, err.span)?
-                    {
-                        return ComponentReferenceKey::from_component_reference(&component_ref)
-                            .map_err(|err| {
-                                LowerError::contract_violation(
-                                    format!(
-                                        "Solve lowering requires static component-reference metadata for `{}`: {err}",
-                                        name.as_str(),
-                                    ),
-                                    err.span,
-                                )
-                            });
-                    }
-                    return Err(LowerError::contract_violation(
-                        format!(
-                            "Solve lowering requires static component-reference metadata for `{}`: {err}",
-                            name.as_str(),
-                        ),
-                        err.span,
-                    ));
-                }
-                Err(err) => {
-                    return Err(LowerError::contract_violation(
-                        format!(
-                            "Solve lowering requires static component-reference metadata for `{}`: {err}",
-                            name.as_str(),
-                        ),
-                        err.span,
-                    ));
-                }
-            }
+            return self.scope_key_from_component_ref(name, component_ref);
         }
         let Some(variable) = self
             .dae_variables
@@ -771,6 +721,46 @@ impl<'a> LowerBuilder<'a> {
                 })
             }
         }
+    }
+
+    fn scope_key_from_component_ref(
+        &self,
+        name: &rumoca_core::Reference,
+        component_ref: &rumoca_core::ComponentReference,
+    ) -> Result<ComponentReferenceKey, LowerError> {
+        match ComponentReferenceKey::from_component_reference(component_ref) {
+            Ok(key) => Ok(key),
+            Err(err)
+                if err.kind == rumoca_ir_solve::ComponentReferenceKeyErrorKind::MissingDefId =>
+            {
+                self.scope_key_from_component_ref_missing_def_id(name, err)
+            }
+            Err(err) => Err(component_reference_lower_error(name, err)),
+        }
+    }
+
+    fn scope_key_from_component_ref_missing_def_id(
+        &self,
+        name: &rumoca_core::Reference,
+        err: rumoca_ir_solve::ComponentReferenceKeyError,
+    ) -> Result<ComponentReferenceKey, LowerError> {
+        if let Some(component_ref) = self.dae_variable_component_ref_with_def_id(name) {
+            return component_reference_key_or_error(name, component_ref);
+        }
+        if let Some(component_ref) = self.scalarized_base_component_ref(name, err.span)? {
+            return component_reference_key_or_error(name, &component_ref);
+        }
+        Err(component_reference_lower_error(name, err))
+    }
+
+    fn dae_variable_component_ref_with_def_id(
+        &self,
+        name: &rumoca_core::Reference,
+    ) -> Option<&rumoca_core::ComponentReference> {
+        self.dae_variables
+            .and_then(|variables| dae_variable(variables, name.var_name()))
+            .and_then(|variable| variable.component_ref.as_ref())
+            .filter(|component_ref| component_ref.def_id.is_some())
     }
 
     fn scalarized_base_component_ref(
@@ -1427,16 +1417,10 @@ impl<'a> LowerBuilder<'a> {
             }
             let values =
                 self.lower_array_like_values_with_source_context(base, span, scope, call_depth)?;
-            if let Some(index) =
-                flat_index_from_one_based_usize_indices(&dims, &indices).or_else(|| {
-                    (indices.len() == 1)
-                        .then(|| indices.first().and_then(|index| index.checked_sub(1)))
-                        .flatten()
-                })
+            if let Some(index) = flat_index_for_lowered_values(&dims, &indices)
+                && let Some(value) = values.get(index).copied()
             {
-                if let Some(value) = values.get(index).copied() {
-                    return Ok(value);
-                }
+                return Ok(value);
             }
         }
 
@@ -2452,6 +2436,35 @@ fn flat_index_from_one_based_usize_indices(dims: &[usize], indices: &[usize]) ->
         flat = flat.checked_add((index - 1).checked_mul(stride)?)?;
     }
     Some(flat)
+}
+
+fn flat_index_for_lowered_values(dims: &[usize], indices: &[usize]) -> Option<usize> {
+    flat_index_from_one_based_usize_indices(dims, indices).or_else(|| {
+        (indices.len() == 1)
+            .then(|| indices.first().and_then(|index| index.checked_sub(1)))
+            .flatten()
+    })
+}
+
+fn component_reference_key_or_error(
+    name: &rumoca_core::Reference,
+    component_ref: &rumoca_core::ComponentReference,
+) -> Result<ComponentReferenceKey, LowerError> {
+    ComponentReferenceKey::from_component_reference(component_ref)
+        .map_err(|err| component_reference_lower_error(name, err))
+}
+
+fn component_reference_lower_error(
+    name: &rumoca_core::Reference,
+    err: rumoca_ir_solve::ComponentReferenceKeyError,
+) -> LowerError {
+    LowerError::contract_violation(
+        format!(
+            "Solve lowering requires static component-reference metadata for `{}`: {err}",
+            name.as_str(),
+        ),
+        err.span,
+    )
 }
 
 fn subscript_source_provenance(subscript: &rumoca_core::Subscript) -> Option<rumoca_core::Span> {
