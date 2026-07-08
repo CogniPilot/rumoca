@@ -1063,13 +1063,13 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         subscripts: &[rumoca_core::Subscript],
         scope: &FunctionProjectionScope,
     ) -> Result<Option<Vec<i64>>, LowerError> {
+        if subscripts.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
         let mut indices = projection_vec_with_capacity(
             subscripts.len(),
             "compile-time subscript index count",
-            subscripts.first().map_or(
-                rumoca_core::Span::source_free_serde_default(),
-                rumoca_core::Subscript::span,
-            ),
+            subscripts[0].span(),
         )?;
         for subscript in subscripts {
             let index = match subscript {

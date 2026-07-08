@@ -292,7 +292,7 @@ fn shape_expr_scalar_count_dim(
             match shape_expr_builtin_size_dim(expr, shape_env, span)? {
                 Some(dim) => Ok(Some(dim)),
                 None => static_shape_scalar(expr, &shape_env.input_scalars, &IndexMap::new())?
-                    .map(usize_shape_dim)
+                    .map(|value| usize_shape_dim(value, expr.span().unwrap_or(span)))
                     .transpose(),
             }
         }
@@ -422,13 +422,13 @@ fn literal_scalar(value: &rumoca_core::Literal) -> Option<f64> {
     }
 }
 
-fn usize_shape_dim(value: f64) -> Result<usize, LowerError> {
+fn usize_shape_dim(value: f64, span: rumoca_core::Span) -> Result<usize, LowerError> {
     if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= usize::MAX as f64 {
         Ok(value as usize)
     } else {
         Err(LowerError::contract_violation(
             format!("function output shape evaluated to invalid dimension {value}"),
-            rumoca_core::Span::DUMMY,
+            span,
         ))
     }
 }
