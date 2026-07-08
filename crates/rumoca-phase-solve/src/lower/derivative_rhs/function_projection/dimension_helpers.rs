@@ -166,13 +166,6 @@ pub(super) fn append_projected_outputs(
     Ok(())
 }
 
-pub(super) fn declared_dims(
-    function: &rumoca_core::Function,
-    name: &str,
-) -> Result<Option<Vec<i64>>, LowerError> {
-    Ok(declared_param_dims(function, name)?.filter(|dims| !dims.is_empty()))
-}
-
 pub(super) fn declared_param_dims(
     function: &rumoca_core::Function,
     name: &str,
@@ -211,6 +204,13 @@ pub(super) fn formal_actual_projection_dims(
     if let Some(actual_dims) = actual_dims {
         if actual_dims == formal.dims {
             return Ok(Some(actual_dims));
+        }
+        if actual_dims.is_empty() && formal.dims.len() > 1 && formal.dims.contains(&0) {
+            return Ok(Some(copy_projection_dims(
+                &formal.dims,
+                "zero-length formal parameter dimension count",
+                span,
+            )?));
         }
         if formal.dims.as_slice() == [0] && actual_dims.is_empty() {
             return Ok(Some(vec![1]));
@@ -295,16 +295,16 @@ pub(super) fn constructor_input_projection_dims(
 }
 
 pub(super) fn assignment_projection_dims(
-    function: &rumoca_core::Function,
+    function_name: &str,
     target: &str,
+    declared: Option<Vec<i64>>,
     value_dims: Option<Vec<i64>>,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<i64>>, LowerError> {
-    let declared = declared_param_dims(function, target)?;
     match (value_dims, declared) {
         (Some(value_dims), Some(declared)) if value_dims != declared => {
             Err(dimension_mismatch_error(
-                &format!("function `{}` assignment to `{target}`", function.name),
+                &format!("function `{function_name}` assignment to `{target}`"),
                 &declared,
                 &value_dims,
                 span,
@@ -930,6 +930,7 @@ pub(super) fn binary_mul_dims(
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<i64>>, LowerError> {
     Ok(match (lhs_dims, rhs_dims) {
+        ([], []) => Some(Vec::new()),
         ([], dims) if !dims.is_empty() => Some(copy_projection_dims(
             dims,
             "scalar lhs product dimension count",

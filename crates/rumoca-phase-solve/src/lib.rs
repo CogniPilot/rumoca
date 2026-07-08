@@ -64,7 +64,8 @@ use continuous_row_targets::{
     continuous_equation_scalar_name, scalarized_record_target_names, target_expr_scalar_name,
 };
 use continuous_row_targets::{
-    lower_continuous_row_targets, lower_continuous_row_targets_for_equation,
+    dedupe_continuous_y_targets, lower_continuous_row_targets,
+    lower_continuous_row_targets_for_equation,
 };
 use discrete_pre_modes::discrete_pre_mode_for_equation;
 #[cfg(test)]
@@ -333,7 +334,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     // `solver_residual_equations` has already removed state-derivative rows.
     // The remaining original DAE indices are not a state-row prefix, so residual
     // lowering must not infer derivative-row behavior from `row_idx < n_x`.
-    let (residual, residual_targets) = lower_residual_rows_and_targets_from_equations(
+    let (residual, mut residual_targets) = lower_residual_rows_and_targets_from_equations(
         dae_model,
         &layout,
         residual_equations.iter().copied(),
@@ -343,6 +344,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         },
     )
     .map_err(|err| lower_problem_context(err, "lower continuous residual rows and targets"))?;
+    dedupe_continuous_y_targets(&mut residual_targets);
     timing::log_stage("problem.lower_residual_rows", timer);
     // Derivative lowering must LOAD retained algebraic unknowns from their projected
     // slot rather than inline their definitions (roadmap 4b): inlining a boundary cell
@@ -708,12 +710,21 @@ fn lower_initialization_system(
     let residual_rows = lower_initial_residual(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
     let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout)?;
+    let continuous_equation_count = dae_model.continuous.equations.len();
+    let implicit_initial_projection_rows = residual_equations
+        .iter()
+        .enumerate()
+        .filter_map(|(row_idx, (equation_idx, _))| {
+            (*equation_idx >= continuous_equation_count).then_some(row_idx)
+        })
+        .collect::<BTreeSet<_>>();
     let projection_plan = lower_projection_plan(
         &residual_rows,
         &row_targets,
         &projection_indices,
         0..residual_rows.len(),
         false,
+        Some(&implicit_initial_projection_rows),
         dae_model_span(dae_model)?,
     )?;
 
@@ -1002,25 +1013,41 @@ fn lower_algebraic_projection_plan(
         &projection_indices,
         state_scalar_count..solver_scalar_count,
         true,
+        None,
         context_span,
     )
 }
 
+// SPEC_0021: Exception - projection planning keeps explicit target,
+// initialization incidence, and identity-row ownership decisions together.
+#[allow(clippy::excessive_nesting)]
 fn lower_projection_plan(
     rows: &[Vec<solve::LinearOp>],
     row_targets: &[Option<solve::ScalarSlot>],
     projection_indices: &[usize],
     row_indices: std::ops::Range<usize>,
     include_explicit_row_targets: bool,
+    implicit_incidence_rows: Option<&BTreeSet<usize>>,
     context_span: rumoca_core::Span,
 ) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
     let mut row_to_vars = BTreeMap::<usize, BTreeSet<usize>>::new();
     let projection_set = projection_indices.iter().copied().collect::<BTreeSet<_>>();
+    let row_indices = row_indices.collect::<Vec<_>>();
+    let identity_projection_rows = row_indices
+        .iter()
+        .filter_map(|row_idx| {
+            identity_projection_y_index(rows.get(*row_idx)?.as_slice(), &projection_set)
+                .map(|y_idx| (y_idx, *row_idx))
+        })
+        .collect::<BTreeMap<_, _>>();
 
     for row_idx in row_indices {
-        let mut y_indices =
-            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set);
-        if let Some(solve::ScalarSlot::Y { index, .. }) =
+        let mut y_indices = if implicit_incidence_rows.is_none_or(|rows| rows.contains(&row_idx)) {
+            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set)
+        } else {
+            BTreeSet::new()
+        };
+        let explicit_target = if let Some(solve::ScalarSlot::Y { index, .. }) =
             row_targets.get(row_idx).copied().flatten()
             && projection_set.contains(&index)
         {
@@ -1029,6 +1056,25 @@ fn lower_projection_plan(
             } else {
                 y_indices.clear();
                 y_indices.insert(index);
+            }
+            true
+        } else {
+            false
+        };
+        if !explicit_target {
+            if let Some(index) =
+                identity_projection_y_index(rows[row_idx].as_slice(), &projection_set)
+            {
+                y_indices.clear();
+                y_indices.insert(index);
+            } else {
+                y_indices.retain(|index| {
+                    projection_index_not_claimed_by_identity(
+                        &identity_projection_rows,
+                        *index,
+                        row_idx,
+                    )
+                });
             }
         }
         if y_indices.is_empty() {
@@ -1047,6 +1093,33 @@ fn lower_projection_plan(
             context_span,
         )?,
     })
+}
+
+fn projection_index_not_claimed_by_identity(
+    identity_projection_rows: &BTreeMap<usize, usize>,
+    index: usize,
+    row_idx: usize,
+) -> bool {
+    identity_projection_rows
+        .get(&index)
+        .is_none_or(|identity_row| *identity_row == row_idx)
+}
+
+fn identity_projection_y_index(
+    row: &[solve::LinearOp],
+    projection_set: &BTreeSet<usize>,
+) -> Option<usize> {
+    let [
+        solve::LinearOp::LoadY {
+            dst: load_dst,
+            index,
+        },
+        solve::LinearOp::StoreOutput { src },
+    ] = row
+    else {
+        return None;
+    };
+    (*load_dst == *src && projection_set.contains(index)).then_some(*index)
 }
 
 fn projection_blt_blocks(

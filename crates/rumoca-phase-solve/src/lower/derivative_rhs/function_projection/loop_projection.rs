@@ -88,7 +88,7 @@ impl FunctionProjectionAnalysis<'_> {
     ) -> Result<rumoca_core::Subscript, LowerError> {
         match subscript {
             rumoca_core::Subscript::Expr { expr, span } => {
-                let value = self.compile_time_int(&self.substitute(expr, scope)?, *span)?;
+                let value = self.compile_time_int(&self.substitute(expr, scope)?, scope, *span)?;
                 Ok(rumoca_core::Subscript::Index { value, span: *span })
             }
             rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
@@ -108,10 +108,10 @@ impl FunctionProjectionAnalysis<'_> {
             rumoca_core::Expression::Range {
                 start, step, end, ..
             } => {
-                let start = self.compile_time_int(&start, span)?;
-                let end = self.compile_time_int(&end, span)?;
+                let start = self.compile_time_int(&start, scope, span)?;
+                let end = self.compile_time_int(&end, scope, span)?;
                 let step = match step {
-                    Some(step) => self.compile_time_int(&step, span)?,
+                    Some(step) => self.compile_time_int(&step, scope, span)?,
                     None => 1,
                 };
                 if step == 0 {
@@ -129,7 +129,7 @@ impl FunctionProjectionAnalysis<'_> {
                     span,
                 )?,
                 |mut values, element| {
-                    values.push(self.compile_time_int(element, span)?);
+                    values.push(self.compile_time_int(element, scope, span)?);
                     Ok(values)
                 },
             ),
@@ -139,7 +139,7 @@ impl FunctionProjectionAnalysis<'_> {
                     "function projection scalar range value count",
                     span,
                 )?;
-                values.push(self.compile_time_int(&range, span)?);
+                values.push(self.compile_time_int(&range, scope, span)?);
                 Ok(values)
             }
         }
@@ -148,11 +148,14 @@ impl FunctionProjectionAnalysis<'_> {
     fn compile_time_int(
         &self,
         expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
         span: rumoca_core::Span,
     ) -> Result<i64, LowerError> {
-        let value = self.compile_time_scalar(expr).ok_or_else(|| {
-            unsupported_at("function projection requires a compile-time integer", span)
-        })?;
+        let value = self
+            .compile_time_scalar_in_scope(expr, scope)?
+            .ok_or_else(|| {
+                unsupported_at("function projection requires a compile-time integer", span)
+            })?;
         checked_compile_time_i64(value, span)
     }
 }

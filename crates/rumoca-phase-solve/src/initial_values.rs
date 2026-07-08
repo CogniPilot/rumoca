@@ -34,6 +34,20 @@ pub(crate) fn apply_initial_equations_to_start_values(
     for _ in 0..max_passes {
         let mut changed = false;
         for eq in &dae_model.initialization.equations {
+            changed |= seed_tuple_function_initial_assignment(
+                dae_model,
+                layout,
+                params,
+                initial_y,
+                &mut env,
+                &mut pinned,
+                eq,
+            )
+            .map_err(|source| SolveModelLowerError::Evaluation {
+                context: "initial tuple function assignment".to_string(),
+                source,
+                span: Some(eq.span),
+            })?;
             let Some(assignment) = initial_assignment_from_equation(eq) else {
                 continue;
             };
@@ -93,6 +107,128 @@ pub(crate) fn apply_initial_equations_to_start_values(
         }
     }
     Ok(())
+}
+
+fn seed_tuple_function_initial_assignment(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    params: &mut [f64],
+    initial_y: &mut [f64],
+    env: &mut rumoca_eval_dae::VarEnv<f64>,
+    pinned: &mut HashSet<String>,
+    eq: &dae::Equation,
+) -> Result<bool, EvalError> {
+    let Some((targets_exprs, function_name, args)) = tuple_function_assignment(&eq.rhs) else {
+        return Ok(false);
+    };
+    let Some((resolved, outputs)) = resolve_function_call_outputs_pub(function_name, env) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for (idx, target_expr) in targets_exprs.iter().enumerate() {
+        let Some(output_name) = outputs.get(idx) else {
+            break;
+        };
+        let Some(target) = tuple_assignment_target_name(target_expr) else {
+            continue;
+        };
+        let targets =
+            assignment_target_scalar_names(layout, target.as_str(), eq.span).map_err(|err| {
+                EvalError::InvalidShape {
+                    context: "tuple initial assignment target",
+                    reason: err.to_string(),
+                }
+            })?;
+        if targets.is_empty() {
+            continue;
+        }
+        let Some(indices) = target_selection_indices(target.as_str(), &targets)? else {
+            continue;
+        };
+        let mut values = Vec::new();
+        reserve_initial_eval_vec_capacity(
+            &mut values,
+            indices.len(),
+            "tuple initial function values",
+        )?;
+        for indices in &indices {
+            values.push(eval_selected_function_output_pub(
+                &resolved,
+                output_name,
+                indices,
+                args,
+                env,
+            )?);
+        }
+        let values = initial_assignment_values_with_expected_size(
+            &rumoca_core::Expression::FunctionCall {
+                name: function_name.clone(),
+                args: args.to_vec(),
+                is_constructor: false,
+                span: eq.rhs.span().unwrap_or(eq.span),
+            },
+            env,
+            values,
+            targets.len().max(1),
+        )?;
+        let assignment = InitialAssignment {
+            target,
+            solution: &eq.rhs,
+            is_pre_target: false,
+        };
+        changed |= pin_initial_assignment_targets(&targets, pinned);
+        changed |= apply_initial_assignment_values(
+            InitialAssignmentApplyContext {
+                dae_model,
+                layout,
+                params,
+                initial_y,
+                env,
+            },
+            &assignment,
+            &targets,
+            &values,
+        );
+    }
+    Ok(changed)
+}
+
+fn tuple_function_assignment(
+    expr: &rumoca_core::Expression,
+) -> Option<(
+    &[rumoca_core::Expression],
+    &rumoca_core::Reference,
+    &[rumoca_core::Expression],
+)> {
+    let rumoca_core::Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let rumoca_core::Expression::Tuple { elements, .. } = lhs.as_ref() else {
+        return None;
+    };
+    let rumoca_core::Expression::FunctionCall { name, args, .. } = rhs.as_ref() else {
+        return None;
+    };
+    Some((elements, name, args))
+}
+
+fn tuple_assignment_target_name(expr: &rumoca_core::Expression) -> Option<String> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    Some(name.as_str().to_string())
 }
 
 fn seed_continuous_assignments(
@@ -591,8 +727,7 @@ fn apply_initial_assignment_values(
 ) -> bool {
     let target_name = assignment.target.as_str();
     let dims = assignment_target_dims(ctx.dae_model, target_name);
-    if values.len() > 1 && !dims.is_empty() && rumoca_core::parse_scalar_name(target_name).is_none()
-    {
+    if !dims.is_empty() && rumoca_core::parse_scalar_name(target_name).is_none() {
         set_array_entries(ctx.env, target_name, dims, values);
     }
 
@@ -948,6 +1083,10 @@ mod tests {
         }
     }
 
+    fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
+        rumoca_core::ComponentReference::from_flat_segments(name, test_span(), None)
+    }
+
     fn time_layout() -> solve::VarLayout {
         solve::VarLayout::from_parts(
             IndexMap::from([("time".to_string(), solve::ScalarSlot::Time)]),
@@ -1008,6 +1147,95 @@ mod tests {
                 actual: 1,
             }
         );
+    }
+
+    #[test]
+    fn initial_tuple_function_assignment_seeds_selected_parameter_output() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("a"),
+            dae::Variable {
+                fixed: Some(false),
+                ..dae::Variable::empty_with_span(test_span())
+            },
+        );
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("b"),
+            dae::Variable {
+                fixed: Some(false),
+                ..dae::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut function = rumoca_core::Function::new("Pkg.multi", test_span());
+        function.add_output(rumoca_core::FunctionParam::new(
+            "first",
+            "Real",
+            test_span(),
+        ));
+        function.add_output(rumoca_core::FunctionParam::new(
+            "second",
+            "Real",
+            test_span(),
+        ));
+        function.body = vec![
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref("first"),
+                value: real(1.25),
+                span: test_span(),
+            },
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref("second"),
+                value: real(2.5),
+                span: test_span(),
+            },
+        ];
+        dae_model
+            .symbols
+            .functions
+            .insert(rumoca_core::VarName::new("Pkg.multi"), function);
+        dae_model
+            .initialization
+            .equations
+            .push(dae::Equation::residual(
+                rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Sub,
+                    lhs: Box::new(rumoca_core::Expression::Tuple {
+                        elements: vec![var("a"), var("b")],
+                        span: test_span(),
+                    }),
+                    rhs: Box::new(rumoca_core::Expression::FunctionCall {
+                        name: rumoca_core::Reference::new("Pkg.multi"),
+                        args: Vec::new(),
+                        is_constructor: false,
+                        span: test_span(),
+                    }),
+                    span: test_span(),
+                },
+                test_span(),
+                "(a, b) = Pkg.multi()",
+            ));
+        let layout = solve::VarLayout::from_parts(
+            IndexMap::from([
+                ("a".to_string(), solve::scalar_slot_p(0)),
+                ("b".to_string(), solve::scalar_slot_p(1)),
+            ]),
+            0,
+            2,
+        );
+        let mut params = vec![0.0, 0.0];
+        let mut initial_y = Vec::new();
+
+        apply_initial_equations_to_start_values(
+            &dae_model,
+            &layout,
+            &mut params,
+            &mut initial_y,
+            std::sync::Arc::new(EvalRuntimeState::default()),
+        )
+        .expect("tuple function initial assignment should seed params");
+
+        assert_eq!(params, vec![1.25, 2.5]);
     }
 
     #[test]

@@ -805,6 +805,81 @@ fn test_boundary_eliminates_scalarized_element_with_boundary_known_derivative_us
 }
 
 #[test]
+fn test_boundary_eliminates_scalarized_element_with_static_index_expression_derivative_use() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_dae_variable("x"));
+    let mut v = test_dae_variable("v");
+    v.dims = vec![3];
+    dae.variables.algebraics.insert(VarName::new("v"), v);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref_idx("v", 2)),
+            rhs: Box::new(lit(20.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "binding equation for v[2]".to_string(),
+        scalar_count: 1,
+    });
+    let static_index = Expression::Binary {
+        op: OpBinary::Add,
+        lhs: Box::new(Expression::BuiltinCall {
+            function: BuiltinFunction::Mod,
+            args: vec![lit(3.0), lit(2.0)],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(lit(1.0)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rhs: Box::new(var_ref_with_subscript_expr("v", static_index)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "ode with static subscript expression".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "v[2]"),
+        "boundary-known scalarized element should be substituted into derivative use"
+    );
+    assert_eq!(dae.continuous.equations.len(), 1);
+    let Expression::Binary { rhs, .. } = &dae.continuous.equations[0].rhs else {
+        panic!("remaining ODE should stay as a binary residual");
+    };
+    assert!(
+        matches!(
+            rhs.as_ref(),
+            Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            } if *value == 20.0
+        ),
+        "static-index derivative row should receive the boundary-known scalar value, got {:?}",
+        dae.continuous.equations[0].rhs
+    );
+}
+
+#[test]
 fn test_boundary_eliminates_internal_output_nontrivial_definition() {
     let mut dae = Dae::new();
     let mut y = test_dae_variable("block.y");

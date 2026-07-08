@@ -29,12 +29,9 @@ pub(super) fn lower_continuous_row_targets<'a>(
     let mut targets =
         lower_vec_with_capacity(equations.len(), "continuous row target count", span)?;
     for (_, eq) in equations {
-        let equation_targets = lower_continuous_row_targets_for_equation(
-            dae_model,
-            eq,
-            layout,
-            eq.scalar_count.max(1),
-        )?;
+        let row_count = lower::residual_equation_effective_row_count(dae_model, eq)?.max(1);
+        let equation_targets =
+            lower_continuous_row_targets_for_equation(dae_model, eq, layout, row_count)?;
         reserve_lower_capacity(
             &mut targets,
             equation_targets.len(),
@@ -43,7 +40,20 @@ pub(super) fn lower_continuous_row_targets<'a>(
         )?;
         targets.extend(equation_targets);
     }
+    dedupe_continuous_y_targets(&mut targets);
     Ok(targets)
+}
+
+pub(super) fn dedupe_continuous_y_targets(targets: &mut [Option<solve::ScalarSlot>]) {
+    let mut claimed_y_targets = BTreeSet::new();
+    for target in targets {
+        let Some(solve::ScalarSlot::Y { index, .. }) = target else {
+            continue;
+        };
+        if !claimed_y_targets.insert(*index) {
+            *target = None;
+        }
+    }
 }
 
 pub(super) fn lower_continuous_row_targets_for_equation(
@@ -212,8 +222,19 @@ fn residual_expression_target_name(
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
             lhs,
+            rhs,
             ..
-        } => target_expr_scalar_name(dae_model, lhs, flat_index, scalar_count),
+        } => {
+            if let Some(name) =
+                target_expr_y_scalar_name(dae_model, layout, lhs, flat_index, scalar_count)?
+            {
+                return Ok(Some(name));
+            }
+            if expression_is_solver_y_free(dae_model, layout, lhs, flat_index, scalar_count)? {
+                return target_expr_y_scalar_name(dae_model, layout, rhs, flat_index, scalar_count);
+            }
+            Ok(None)
+        }
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Add,
             lhs,
@@ -550,6 +571,16 @@ pub(super) fn target_expr_scalar_name(
                 scalar_count,
                 expr.span().or_else(|| base.span()),
             )
+        }
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            ..
+        } => {
+            let [arg] = args.as_slice() else {
+                return Ok(None);
+            };
+            target_expr_scalar_name(dae_model, arg, flat_index, scalar_count)
         }
         _ => Ok(None),
     }

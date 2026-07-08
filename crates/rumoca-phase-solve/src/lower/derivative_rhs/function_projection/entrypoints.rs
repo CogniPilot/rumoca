@@ -173,6 +173,64 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
     Ok(Some(values))
 }
 
+pub(in crate::lower) fn function_call_projected_output_groups_with_owner(
+    expr: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    owner_span: rumoca_core::Span,
+) -> Result<Option<Vec<Vec<rumoca_core::Expression>>>, LowerError> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor: false,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+    let Some(function) = dae_model.symbols.functions.get(name.var_name()) else {
+        return Ok(None);
+    };
+    let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
+    let Some(outputs) = analysis.top_level_function_call_outputs(
+        expr,
+        inherited_projection_source_span(expr.span(), owner_span),
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut groups = projection_vec_with_capacity(
+        function.outputs.len(),
+        "projected function output group count",
+        owner_span,
+    )?;
+    for output_param in &function.outputs {
+        let mut group = projection_vec_with_capacity(
+            outputs.len(),
+            "projected function output scalar group count",
+            owner_span,
+        )?;
+        if function.outputs.len() == 1 {
+            for output in &outputs {
+                group.push(output.expr.clone());
+            }
+        } else {
+            group.extend(
+                outputs
+                    .iter()
+                    .filter(|output| {
+                        output
+                            .field_path
+                            .first()
+                            .is_some_and(|field| field == &output_param.name)
+                    })
+                    .map(|output| output.expr.clone()),
+            );
+        }
+        groups.push(group);
+    }
+    Ok(Some(groups))
+}
+
 fn projected_qualified_function_output_scalars(
     expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
@@ -299,22 +357,6 @@ pub(in crate::lower::derivative_rhs) fn plain_var_ref_name(
         } if subscripts.is_empty() => Some(name),
         _ => None,
     }
-}
-
-pub(in crate::lower::derivative_rhs) fn project_scalar_outputs(
-    output: &rumoca_core::FunctionParam,
-    values: &[rumoca_core::Expression],
-    output_span: rumoca_core::Span,
-) -> Result<Vec<ProjectedFunctionOutput>, LowerError> {
-    let mut projected_values = projection_vec_with_capacity(
-        values.len(),
-        "function output scalar value count",
-        output_span,
-    )?;
-    for value in values {
-        projected_values.push(value.clone());
-    }
-    project_target_scalar_outputs(&output.dims, projected_values, output_span)
 }
 
 pub(in crate::lower::derivative_rhs) fn project_target_scalar_outputs(

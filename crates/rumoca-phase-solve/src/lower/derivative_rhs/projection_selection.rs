@@ -355,12 +355,6 @@ pub(super) fn subscript_selector_expr(
     }
 }
 
-pub(super) fn is_function_output_target(function: &rumoca_core::Function, target: &str) -> bool {
-    function.outputs.iter().any(|output| {
-        target == output.name || target.starts_with(format!("{}.", output.name).as_str())
-    })
-}
-
 pub(super) fn projection_scope_names(
     entry_scope: &FunctionProjectionScope,
     branch_scopes: &[FunctionProjectionScope],

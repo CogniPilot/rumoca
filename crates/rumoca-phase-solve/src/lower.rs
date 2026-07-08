@@ -148,6 +148,13 @@ pub(crate) fn scalarized_record_field_binding_names(
     expression_rows::scalarized_record_field_binding_names(base, layout)
 }
 
+pub(crate) fn residual_equation_effective_row_count(
+    dae_model: &dae::Dae,
+    eq: &dae::Equation,
+) -> Result<usize, LowerError> {
+    expression_rows::residual_equation_effective_row_count(dae_model, eq)
+}
+
 pub(crate) fn compile_time_subscript_indices_for_structured_access(
     subscripts: &[rumoca_core::Subscript],
     structural_bindings: &IndexMap<String, f64>,

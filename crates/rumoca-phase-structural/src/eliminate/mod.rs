@@ -2094,17 +2094,7 @@ fn exact_name_with_subscripts_in_dae(
 fn exact_subscript_index(subscript: &rumoca_core::Subscript) -> Option<i64> {
     match subscript {
         rumoca_core::Subscript::Index { value, .. } => Some(*value),
-        rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
-            Expression::Literal {
-                value: rumoca_core::Literal::Integer(value),
-                ..
-            } => Some(*value),
-            Expression::Literal {
-                value: rumoca_core::Literal::Real(value),
-                ..
-            } if value.is_finite() && value.fract() == 0.0 => Some(*value as i64),
-            _ => None,
-        },
+        rumoca_core::Subscript::Expr { expr, .. } => exact_index_expr(expr),
         rumoca_core::Subscript::Colon { .. } => None,
     }
 }
@@ -2118,6 +2108,23 @@ fn exact_subscript_index_in_dae(dae: &Dae, subscript: &rumoca_core::Subscript) -
 }
 
 fn exact_index_expr_in_dae(dae: &Dae, expr: &Expression) -> Option<i64> {
+    if let Some(value) = exact_index_expr(expr) {
+        return Some(value);
+    }
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => fixed_integer_parameter_start(dae, name.var_name()),
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = exact_index_expr_in_dae(dae, lhs)?;
+            let rhs = exact_index_expr_in_dae(dae, rhs)?;
+            exact_binary_index_value(op, lhs, rhs)
+        }
+        _ => None,
+    }
+}
+
+fn exact_index_expr(expr: &Expression) -> Option<i64> {
     match expr {
         Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
@@ -2127,26 +2134,38 @@ fn exact_index_expr_in_dae(dae: &Dae, expr: &Expression) -> Option<i64> {
             value: rumoca_core::Literal::Real(value),
             ..
         } if value.is_finite() && value.fract() == 0.0 => Some(*value as i64),
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => fixed_integer_parameter_start(dae, name.var_name()),
         Expression::Unary { op, rhs, .. } => match op {
-            OpUnary::Plus => exact_index_expr_in_dae(dae, rhs),
-            OpUnary::Minus => {
-                exact_index_expr_in_dae(dae, rhs).and_then(|value| value.checked_neg())
-            }
+            OpUnary::Plus => exact_index_expr(rhs),
+            OpUnary::Minus => exact_index_expr(rhs).and_then(|value| value.checked_neg()),
             _ => None,
         },
         Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = exact_index_expr_in_dae(dae, lhs)?;
-            let rhs = exact_index_expr_in_dae(dae, rhs)?;
-            match op {
-                OpBinary::Add | OpBinary::AddElem => lhs.checked_add(rhs),
-                OpBinary::Sub | OpBinary::SubElem => lhs.checked_sub(rhs),
-                OpBinary::Mul | OpBinary::MulElem => lhs.checked_mul(rhs),
-                OpBinary::Div | OpBinary::DivElem if rhs != 0 && lhs % rhs == 0 => Some(lhs / rhs),
-                _ => None,
-            }
+            let lhs = exact_index_expr(lhs)?;
+            let rhs = exact_index_expr(rhs)?;
+            exact_binary_index_value(op, lhs, rhs)
+        }
+        Expression::BuiltinCall { function, args, .. } => exact_builtin_index_value(function, args),
+        _ => None,
+    }
+}
+
+fn exact_binary_index_value(op: &OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+    match op {
+        OpBinary::Add | OpBinary::AddElem => lhs.checked_add(rhs),
+        OpBinary::Sub | OpBinary::SubElem => lhs.checked_sub(rhs),
+        OpBinary::Mul | OpBinary::MulElem => lhs.checked_mul(rhs),
+        OpBinary::Div | OpBinary::DivElem if rhs != 0 && lhs % rhs == 0 => Some(lhs / rhs),
+        _ => None,
+    }
+}
+
+fn exact_builtin_index_value(function: &BuiltinFunction, args: &[Expression]) -> Option<i64> {
+    match function {
+        BuiltinFunction::Integer if args.len() == 1 => exact_index_expr(&args[0]),
+        BuiltinFunction::Mod if args.len() == 2 => {
+            let lhs = exact_index_expr(&args[0])?;
+            let rhs = exact_index_expr(&args[1])?;
+            (rhs != 0).then(|| lhs.rem_euclid(rhs))
         }
         _ => None,
     }
@@ -3531,6 +3550,10 @@ pub(super) fn var_ref_matches_unknown_for_substitution(
         return subscripts.is_empty() || subscripts_all_one(subscripts);
     }
 
+    if scalar_subscript_ref_matches_substitution(name, subscripts, substitution) {
+        return true;
+    }
+
     if subscripts.is_empty() && substitution_indexed_base_matches(name, substitution) {
         return false;
     }
@@ -3553,6 +3576,26 @@ pub(super) fn var_ref_matches_unknown_for_substitution(
     }
 
     var_ref_matches_unknown(name, subscripts, &substitution.var_name)
+}
+
+fn scalar_subscript_ref_matches_substitution(
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
+    substitution: &Substitution,
+) -> bool {
+    let Some((base, expected_indices)) = scalar_substitution_target_key(substitution) else {
+        return false;
+    };
+    if !references_same_base(name, &base) || subscripts.len() != expected_indices.len() {
+        return false;
+    }
+    subscripts
+        .iter()
+        .zip(expected_indices)
+        .all(|(subscript, expected)| {
+            exact_subscript_index(subscript).and_then(|index| usize::try_from(index).ok())
+                == Some(expected)
+        })
 }
 
 pub(super) fn aggregate_subscript_ref_matches_var(

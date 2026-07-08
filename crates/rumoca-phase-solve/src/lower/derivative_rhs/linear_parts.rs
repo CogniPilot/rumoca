@@ -180,16 +180,16 @@ pub(in crate::lower) fn derivative_linear_parts_any(
             divide_linear_parts(parts, rhs.as_ref().clone(), *span).map(Some)
         }
         _ if !expr.contains_der() => Ok(Some((IndexMap::new(), Some(expr.clone())))),
-        _ => derivative_terminal_linear_parts(expr, ctx.state_names, owner_span),
+        _ => derivative_terminal_linear_parts(expr, ctx, owner_span),
     }
 }
 
 fn derivative_terminal_linear_parts(
     expr: &rumoca_core::Expression,
-    state_names: &HashSet<String>,
+    ctx: &DerivativeLinearCtx<'_>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<LinearParts>, LowerError> {
-    let Some((name, coeff)) = derivative_term_coefficient(expr, state_names, owner_span)? else {
+    let Some((name, coeff)) = derivative_term_coefficient(expr, ctx, owner_span)? else {
         return Ok(None);
     };
     let span = linear_expr_or_owner_span(expr, owner_span)?;
@@ -560,10 +560,10 @@ pub(in crate::lower) fn rhs_without_remainder(
 
 pub(in crate::lower) fn derivative_term_coefficient(
     term: &rumoca_core::Expression,
-    state_names: &HashSet<String>,
+    ctx: &DerivativeLinearCtx<'_>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<(String, rumoca_core::Expression)>, LowerError> {
-    if let Some(name) = der_state_name(term, state_names)? {
+    if let Some(name) = der_state_name(term, ctx, owner_span)? {
         let span = linear_expr_or_owner_span(term, owner_span)?;
         return Ok(Some((name, one_expr_with_span(span))));
     }
@@ -574,12 +574,12 @@ pub(in crate::lower) fn derivative_term_coefficient(
         return Ok(None);
     }
     if !rhs.contains_der()
-        && let Some(name) = der_state_name(lhs, state_names)?
+        && let Some(name) = der_state_name(lhs, ctx, owner_span)?
     {
         return Ok(Some((name, rhs.as_ref().clone())));
     }
     if !lhs.contains_der()
-        && let Some(name) = der_state_name(rhs, state_names)?
+        && let Some(name) = der_state_name(rhs, ctx, owner_span)?
     {
         return Ok(Some((name, lhs.as_ref().clone())));
     }
@@ -588,7 +588,8 @@ pub(in crate::lower) fn derivative_term_coefficient(
 
 pub(in crate::lower) fn der_state_name(
     expr: &rumoca_core::Expression,
-    state_names: &HashSet<String>,
+    ctx: &DerivativeLinearCtx<'_>,
+    owner_span: rumoca_core::Span,
 ) -> Result<Option<String>, LowerError> {
     let rumoca_core::Expression::BuiltinCall {
         function,
@@ -607,97 +608,24 @@ pub(in crate::lower) fn der_state_name(
             *span,
         ));
     };
-    let key = binding_key_for_der_arg(arg)
-        .map_err(|err| err.with_fallback_span(arg.span().unwrap_or(*span)))?;
-    let Some(key) = key else {
+    let arg_span = arg
+        .span()
+        .unwrap_or_else(|| inherited_linear_span(*span, owner_span));
+    let keys =
+        match derivative_arg_binding_keys(arg, ctx.dae_model, ctx.structural_bindings, arg_span) {
+            Ok(keys) => keys,
+            Err(LowerError::MissingBinding { .. }) => return Ok(None),
+            Err(err @ LowerError::UnsupportedAt { .. })
+                if err.reason().contains("not compile-time bound") =>
+            {
+                return Ok(None);
+            }
+            Err(err) => return Err(err.with_fallback_span(arg_span)),
+        };
+    let [key] = keys.as_slice() else {
         return Ok(None);
     };
-    Ok(state_names.contains(&key).then_some(key))
-}
-
-pub(in crate::lower) fn binding_key_for_der_arg(
-    expr: &rumoca_core::Expression,
-) -> Result<Option<String>, LowerError> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name,
-            subscripts,
-            span,
-        } => {
-            if subscripts.is_empty() {
-                return Ok(Some(name.as_str().to_string()));
-            }
-            let Some(indices) = der_arg_static_subscript_indices(subscripts, *span)? else {
-                return Ok(None);
-            };
-            Ok(Some(dae::format_subscript_key(name.as_str(), &indices)))
-        }
-        rumoca_core::Expression::Index {
-            base,
-            subscripts,
-            span,
-        } => {
-            let Some(base_key) = binding_key_for_der_arg(base)? else {
-                return Ok(None);
-            };
-            let Some(indices) = der_arg_static_subscript_indices(subscripts, *span)? else {
-                return Ok(None);
-            };
-            Ok(Some(dae::format_subscript_key(&base_key, &indices)))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn der_arg_static_subscript_indices(
-    subscripts: &[rumoca_core::Subscript],
-    fallback_span: rumoca_core::Span,
-) -> Result<Option<Vec<usize>>, LowerError> {
-    let span = der_arg_subscript_span(subscripts, fallback_span);
-    let mut indices = derivative_vec_with_capacity(
-        subscripts.len(),
-        "derivative argument subscript index count",
-        span,
-    )?;
-    for subscript in subscripts {
-        match subscript {
-            rumoca_core::Subscript::Index { value, span } if *value > 0 => {
-                indices.push(super::super::positive_i64_index(
-                    *value,
-                    super::super::span_or_owner(*span, fallback_span),
-                )?);
-            }
-            rumoca_core::Subscript::Expr { expr, span } => {
-                let Some(index) = super::super::lower_static_index_expr_with_owner(
-                    expr,
-                    super::super::span_or_owner(*span, fallback_span),
-                )?
-                else {
-                    return Ok(None);
-                };
-                indices.push(index);
-            }
-            rumoca_core::Subscript::Colon { .. } => return Ok(None),
-            _ => {
-                return Err(super::super::unsupported_at(
-                    "non-positive subscript is unsupported",
-                    super::super::span_or_owner(subscript.span(), fallback_span),
-                ));
-            }
-        }
-    }
-    Ok(Some(indices))
-}
-
-fn der_arg_subscript_span(
-    subscripts: &[rumoca_core::Subscript],
-    fallback_span: rumoca_core::Span,
-) -> rumoca_core::Span {
-    subscripts
-        .iter()
-        .map(rumoca_core::Subscript::span)
-        .find(|span| !span.is_dummy())
-        .unwrap_or(fallback_span)
+    Ok(ctx.state_names.contains(key).then_some(key.clone()))
 }
 
 pub(in crate::lower) fn split_subtraction(
@@ -907,6 +835,31 @@ mod tests {
         }
     }
 
+    fn dae_with_state(name: &str, dims: &[i64]) -> dae::Dae {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.states.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable {
+                name: rumoca_core::VarName::new(name),
+                dims: dims.to_vec(),
+                ..dae::Variable::empty_with_span(span(0, 1))
+            },
+        );
+        dae_model
+    }
+
+    fn derivative_ctx<'a>(
+        state_names: &'a HashSet<String>,
+        dae_model: &'a dae::Dae,
+        structural_bindings: &'a IndexMap<String, f64>,
+    ) -> DerivativeLinearCtx<'a> {
+        DerivativeLinearCtx {
+            state_names,
+            dae_model,
+            structural_bindings,
+        }
+    }
+
     #[test]
     fn rhs_without_remainder_preserves_rhs_span() {
         let rhs_span = span(10, 20);
@@ -981,14 +934,22 @@ mod tests {
 
     #[test]
     fn der_state_name_declines_non_state_derivative() -> Result<(), LowerError> {
+        let dae_model = dae::Dae::default();
+        let structural_bindings = IndexMap::new();
+        let state_names = HashSet::from(["x".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
         let expr = der(var_ref("p", Vec::new(), span(1, 2)), span(0, 3));
 
-        assert!(der_state_name(&expr, &HashSet::from(["x".to_string()]))?.is_none());
+        assert!(der_state_name(&expr, &ctx, span(0, 3))?.is_none());
         Ok(())
     }
 
     #[test]
     fn der_state_name_reports_missing_argument_with_call_span() {
+        let dae_model = dae::Dae::default();
+        let structural_bindings = IndexMap::new();
+        let state_names = HashSet::from(["x".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
         let call_span = span(0, 5);
         let expr = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
@@ -996,21 +957,25 @@ mod tests {
             span: call_span,
         };
 
-        let err = der_state_name(&expr, &HashSet::from(["x".to_string()]))
-            .expect_err("malformed der() call should fail");
+        let err =
+            der_state_name(&expr, &ctx, call_span).expect_err("malformed der() call should fail");
         assert_eq!(err.source_span(), Some(call_span));
         assert!(err.reason().contains("der() call has no argument"));
     }
 
     #[test]
     fn der_state_name_missing_argument_dummy_span_stays_unspanned() {
+        let dae_model = dae::Dae::default();
+        let structural_bindings = IndexMap::new();
+        let state_names = HashSet::from(["x".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
         let expr = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args: Vec::new(),
             span: unspanned_linear_parts_test_span(),
         };
 
-        let err = der_state_name(&expr, &HashSet::from(["x".to_string()]))
+        let err = der_state_name(&expr, &ctx, unspanned_linear_parts_test_span())
             .expect_err("malformed synthetic der() call should fail");
         assert!(
             matches!(err, LowerError::UnspannedContractViolation { .. }),
@@ -1021,6 +986,10 @@ mod tests {
 
     #[test]
     fn der_state_name_bubbles_invalid_static_subscript_span() {
+        let dae_model = dae_with_state("x", &[1]);
+        let structural_bindings = IndexMap::new();
+        let state_names = HashSet::from(["x[1]".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
         let subscript_span = span(3, 4);
         let expr = der(
             var_ref(
@@ -1034,14 +1003,18 @@ mod tests {
             span(0, 5),
         );
 
-        let err = der_state_name(&expr, &HashSet::from(["x[1]".to_string()]))
+        let err = der_state_name(&expr, &ctx, span(0, 5))
             .expect_err("invalid der() subscript should fail");
         assert_eq!(err.source_span(), Some(subscript_span));
-        assert!(err.reason().contains("non-positive subscript"));
+        assert!(err.reason().contains("subscript"), "{err:?}");
     }
 
     #[test]
     fn der_state_name_declines_slice_subscript() -> Result<(), LowerError> {
+        let dae_model = dae_with_state("x", &[1, 1]);
+        let structural_bindings = IndexMap::new();
+        let state_names = HashSet::from(["x[1,1]".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
         let expr = der(
             var_ref(
                 "x",
@@ -1057,12 +1030,19 @@ mod tests {
             span(0, 7),
         );
 
-        assert!(der_state_name(&expr, &HashSet::from(["x[1,1]".to_string()]))?.is_none());
+        assert_eq!(
+            der_state_name(&expr, &ctx, span(0, 7))?,
+            Some("x[1,1]".to_string())
+        );
         Ok(())
     }
 
     #[test]
     fn der_state_name_declines_dynamic_subscript() -> Result<(), LowerError> {
+        let dae_model = dae_with_state("x", &[1]);
+        let structural_bindings = IndexMap::new();
+        let state_names = HashSet::from(["x[1]".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
         let subscript_span = span(3, 4);
         let expr = der(
             var_ref(
@@ -1076,7 +1056,56 @@ mod tests {
             span(0, 5),
         );
 
-        assert!(der_state_name(&expr, &HashSet::from(["x[1]".to_string()]))?.is_none());
+        assert!(der_state_name(&expr, &ctx, span(0, 5))?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn der_state_name_resolves_structural_subscript_expression() -> Result<(), LowerError> {
+        let dae_model = dae_with_state("x", &[3]);
+        let mut structural_bindings = IndexMap::new();
+        structural_bindings.insert("nr".to_string(), 1.0);
+        structural_bindings.insert("i".to_string(), 1.0);
+        let state_names = HashSet::from(["x[2]".to_string()]);
+        let ctx = derivative_ctx(&state_names, &dae_model, &structural_bindings);
+        let subscript_expr = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var_ref("nr", Vec::new(), span(3, 5))),
+            rhs: Box::new(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Mul,
+                    lhs: Box::new(rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(2),
+                        span: span(6, 7),
+                    }),
+                    rhs: Box::new(var_ref("i", Vec::new(), span(8, 9))),
+                    span: span(6, 9),
+                }),
+                rhs: Box::new(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: span(10, 11),
+                }),
+                span: span(6, 11),
+            }),
+            span: span(3, 11),
+        };
+        let expr = der(
+            var_ref(
+                "x",
+                vec![rumoca_core::Subscript::Expr {
+                    expr: Box::new(subscript_expr),
+                    span: span(3, 11),
+                }],
+                span(1, 11),
+            ),
+            span(0, 12),
+        );
+
+        assert_eq!(
+            der_state_name(&expr, &ctx, span(0, 12))?,
+            Some("x[2]".to_string())
+        );
         Ok(())
     }
 }

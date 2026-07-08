@@ -1708,6 +1708,117 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
 }
 
 #[test]
+fn lower_residual_counts_only_bound_tuple_function_outputs() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("r"),
+        dae::Variable {
+            dims: vec![3],
+            ..scalar_var("r")
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("cr"),
+        dae::Variable {
+            dims: vec![3],
+            ..scalar_var("cr")
+        },
+    );
+
+    let mut function = rumoca_core::Function::new("Pkg.roots", lower_test_span());
+    function
+        .inputs
+        .push(function_param_with_dims("cr_in", &[0]));
+    function
+        .inputs
+        .push(function_param_with_dims("c0_in", &[0]));
+    function
+        .inputs
+        .push(function_param_with_dims("c1_in", &[0]));
+    function.inputs.push(function_param_with_dims("f_cut", &[]));
+    function
+        .outputs
+        .push(function_param_with_dims("r", &[0]).with_shape_expr(vec![size_shape_expr("cr_in")]));
+    for output in ["a", "b", "ku"] {
+        function.outputs.push(
+            function_param_with_dims(output, &[0]).with_shape_expr(vec![size_shape_expr("c0_in")]),
+        );
+    }
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("r"),
+        value: rumoca_core::Expression::Array {
+            elements: vec![real_lit(1.0), real_lit(2.0), real_lit(3.0)],
+            is_matrix: false,
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let placeholder = || rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("Real").into(),
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(false),
+            span: lower_test_span(),
+        }],
+        is_constructor: true,
+        span: lower_test_span(),
+    };
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            rumoca_core::Expression::Tuple {
+                elements: vec![var("r"), placeholder(), placeholder(), placeholder()],
+                span: lower_test_span(),
+            },
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("Pkg.roots").into(),
+                args: vec![var("cr"), placeholder(), placeholder(), real_lit(1.0)],
+                is_constructor: false,
+                span: lower_test_span(),
+            },
+        ),
+        span: lower_test_span(),
+        origin: "tuple function output residual with placeholders".to_string(),
+        scalar_count: 6,
+    });
+    assert_eq!(
+        expression_rows::residual_equation_effective_row_count(
+            &dae_model,
+            dae_model
+                .continuous
+                .equations
+                .last()
+                .expect("test equation should exist"),
+        )
+        .expect("call-site output shape should determine bound residual rows"),
+        3
+    );
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("placeholder tuple outputs should not declare solve rows");
+    let p = vec![0.0; layout.p_scalars()];
+    let actual = eval_programs_all_outputs(&rows, &[], &p, 0.0);
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(actual, vec![-1.0, -2.0, -3.0]);
+}
+
+fn size_shape_expr(name: &str) -> rumoca_core::Subscript {
+    rumoca_core::Subscript::Expr {
+        expr: Box::new(builtin_with_span(
+            rumoca_core::BuiltinFunction::Size,
+            vec![var(name), int_lit_with_span(1, lower_test_span())],
+            lower_test_span(),
+        )),
+        span: lower_test_span(),
+    }
+}
+
+#[test]
 fn lower_discrete_rhs_lowers_easy_array_builtins() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();

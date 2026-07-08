@@ -354,6 +354,19 @@ fn eval_when_statement<T: SimFloat>(
     Ok(StatementFlow::Continue)
 }
 
+fn eval_assert_statement<T: SimFloat>(
+    condition: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<StatementFlow, EvalError> {
+    if eval::try_eval_condition_truth(condition, env)? {
+        return Ok(StatementFlow::Continue);
+    }
+    Err(EvalError::InvalidShape {
+        context: "assert statement",
+        reason: "assertion condition evaluated to false".to_string(),
+    })
+}
+
 fn maybe_log_unsupported_output_target(
     trace_algorithm_calls: bool,
     func_name: &rumoca_core::VarName,
@@ -440,32 +453,24 @@ fn apply_selected_function_outputs<T: SimFloat>(
             continue;
         };
 
-        if target_indices.is_empty() {
-            let dims = match env.dims.get(target_key.as_str()) {
-                Some(dims) => dims.clone(),
-                None => Vec::new(),
-            };
-            let total = dims
-                .iter()
-                .try_fold(1usize, |acc, dim| match usize::try_from(*dim) {
-                    Ok(dim) => acc.checked_mul(dim),
-                    Err(_) => None,
-                });
-            if !dims.is_empty()
-                && let Some(total) = total
-                && total > 1
-            {
-                let values = eval_selected_function_output_array(
-                    &resolved_name,
-                    output_name,
-                    args,
-                    env,
-                    total,
-                )?;
-                eval::set_array_entries(env, &target_key, &dims, &values);
+        if target_indices.is_empty()
+            && let Some((dims, total)) = non_empty_array_dims_total(env, &target_key)
+        {
+            if total == 0 {
                 assigned_outputs += 1;
                 continue;
             }
+            let values = eval_selected_function_output_array(
+                &resolved_name,
+                output_name,
+                args,
+                env,
+                &dims,
+                total,
+            )?;
+            eval::set_array_entries(env, &target_key, &dims, &values);
+            assigned_outputs += 1;
+            continue;
         }
 
         let value = eval::eval_selected_function_output_pub(
@@ -491,28 +496,76 @@ fn apply_selected_function_outputs<T: SimFloat>(
     Ok(assigned_outputs > 0)
 }
 
+fn non_empty_array_dims_total<T: SimFloat>(
+    env: &VarEnv<T>,
+    target_key: &str,
+) -> Option<(Vec<i64>, usize)> {
+    let dims = env.dims.get(target_key)?.clone();
+    if dims.is_empty() {
+        return None;
+    }
+    let total = dims.iter().try_fold(1usize, |acc, dim| {
+        usize::try_from(*dim)
+            .ok()
+            .and_then(|dim| acc.checked_mul(dim))
+    })?;
+    Some((dims, total))
+}
+
 fn eval_selected_function_output_array<T: SimFloat>(
     resolved_name: &rumoca_core::VarName,
     output_name: &str,
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
+    dims: &[i64],
     total: usize,
 ) -> Result<Vec<T>, EvalError> {
     let mut values = Vec::with_capacity(total);
-    for i in 1..=total {
+    for flat_index in 0..total {
+        let indices = if dims.len() > 1 {
+            multidim_output_indices(dims, flat_index, total)?
+        } else {
+            vec![
+                i64::try_from(flat_index + 1).map_err(|_| EvalError::ShapeMismatch {
+                    context: "function output array index",
+                    expected: flat_index + 1,
+                    actual: i64::MAX as usize,
+                })?,
+            ]
+        };
         values.push(eval::eval_selected_function_output_pub(
             resolved_name,
             output_name,
-            &[i64::try_from(i).map_err(|_| EvalError::ShapeMismatch {
-                context: "function output array index",
-                expected: i,
-                actual: i64::MAX as usize,
-            })?],
+            &indices,
             args,
             env,
         )?);
     }
     Ok(values)
+}
+
+fn multidim_output_indices(
+    dims: &[i64],
+    flat_index: usize,
+    total: usize,
+) -> Result<Vec<i64>, EvalError> {
+    let subscripts = rumoca_ir_dae::flat_index_to_subscripts(dims, flat_index).ok_or(
+        EvalError::ShapeMismatch {
+            context: "function output array selection",
+            expected: total,
+            actual: flat_index,
+        },
+    )?;
+    subscripts
+        .into_iter()
+        .map(|index| {
+            i64::try_from(index).map_err(|_| EvalError::ShapeMismatch {
+                context: "function output array index",
+                expected: index,
+                actual: i64::MAX as usize,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn eval_function_call_statement<T: SimFloat>(
@@ -577,9 +630,8 @@ fn eval_statement<T: SimFloat>(
         }
         rumoca_core::Statement::Break { .. } => Ok(StatementFlow::Break),
         rumoca_core::Statement::Return { .. } => Ok(StatementFlow::Return),
-        rumoca_core::Statement::Assert { .. } | rumoca_core::Statement::Empty { .. } => {
-            Ok(StatementFlow::Continue)
-        }
+        rumoca_core::Statement::Assert { condition, .. } => eval_assert_statement(condition, env),
+        rumoca_core::Statement::Empty { .. } => Ok(StatementFlow::Continue),
     }
 }
 
@@ -689,6 +741,20 @@ mod tests {
         }
     }
 
+    fn comp_ref_index(parts: &[&str], index: i64) -> rumoca_core::ComponentReference {
+        comp_ref_indices(parts, &[index])
+    }
+
+    fn comp_ref_indices(parts: &[&str], indices: &[i64]) -> rumoca_core::ComponentReference {
+        let mut comp = comp_ref(parts);
+        if let Some(last) = comp.parts.last_mut() {
+            last.subs.extend(indices.iter().copied().map(|index| {
+                rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+            }));
+        }
+        comp
+    }
+
     fn var(name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new(name),
@@ -715,6 +781,38 @@ mod tests {
     fn test_eval_empty_statements() {
         let mut env = VarEnv::<f64>::new();
         eval_statements(&[], &mut env).expect("empty statements should evaluate");
+    }
+
+    #[test]
+    fn assert_statement_with_true_condition_continues() {
+        let mut env = VarEnv::<f64>::new();
+        eval_statements(
+            &[rumoca_core::Statement::Assert {
+                condition: bool_lit(true),
+                message: Box::new(real(0.0)),
+                level: None,
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect("true assert should continue");
+    }
+
+    #[test]
+    fn assert_statement_with_false_condition_errors() {
+        let mut env = VarEnv::<f64>::new();
+        let err = eval_statements(
+            &[rumoca_core::Statement::Assert {
+                condition: bool_lit(false),
+                message: Box::new(real(0.0)),
+                level: None,
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect_err("false assert must fail evaluation");
+
+        assert!(err.to_string().contains("assertion condition"));
     }
 
     #[test]
@@ -1059,6 +1157,143 @@ mod tests {
 
         assert_eq!(env_value(&env, "out1"), 2.1);
         assert_eq!(env_value(&env, "out2"), 4.2);
+    }
+
+    #[test]
+    fn function_call_statement_assigns_singleton_array_output_target() {
+        let mut env = VarEnv::<f64>::new();
+        let mut functions = indexmap::IndexMap::new();
+
+        let mut f = rumoca_core::Function::new("Pkg.singletonOutput", rumoca_core::Span::DUMMY);
+        f.add_output(
+            rumoca_core::FunctionParam::new(
+                "y",
+                "Real",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![1]),
+        );
+        f.body = vec![rumoca_core::Statement::Assignment {
+            comp: comp_ref_index(&["y"], 1),
+            value: real(2.5),
+            span: rumoca_core::Span::DUMMY,
+        }];
+        functions.insert("Pkg.singletonOutput".to_string(), f);
+        env.functions = std::sync::Arc::new(functions);
+        std::sync::Arc::make_mut(&mut env.dims).insert("out".to_string(), vec![1]);
+
+        eval_statements(
+            &[rumoca_core::Statement::FunctionCall {
+                comp: comp_ref(&["Pkg", "singletonOutput"]),
+                args: vec![],
+                outputs: vec![comp_ref(&["out"])],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect("function call statement should assign singleton array output");
+
+        assert_eq!(env_value(&env, "out"), 2.5);
+        assert_eq!(env_value(&env, "out[1]"), 2.5);
+    }
+
+    #[test]
+    fn function_call_statement_assigns_matrix_array_output_target() {
+        let mut env = VarEnv::<f64>::new();
+        let mut functions = indexmap::IndexMap::new();
+
+        let mut f = rumoca_core::Function::new("Pkg.matrixOutput", rumoca_core::Span::DUMMY);
+        f.add_output(
+            rumoca_core::FunctionParam::new(
+                "y",
+                "Real",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![1, 2]),
+        );
+        f.body = vec![
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref_indices(&["y"], &[1, 1]),
+                value: real(3.0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref_indices(&["y"], &[1, 2]),
+                value: real(4.0),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ];
+        functions.insert("Pkg.matrixOutput".to_string(), f);
+        env.functions = std::sync::Arc::new(functions);
+        std::sync::Arc::make_mut(&mut env.dims).insert("out".to_string(), vec![1, 2]);
+
+        eval_statements(
+            &[rumoca_core::Statement::FunctionCall {
+                comp: comp_ref(&["Pkg", "matrixOutput"]),
+                args: vec![],
+                outputs: vec![comp_ref(&["out"])],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect("function call statement should assign matrix array output");
+
+        assert_eq!(env_value(&env, "out"), 3.0);
+        assert_eq!(env_value(&env, "out[1]"), 3.0);
+        assert_eq!(env_value(&env, "out[2]"), 4.0);
+        assert_eq!(env_value(&env, "out[1,1]"), 3.0);
+        assert_eq!(env_value(&env, "out[1,2]"), 4.0);
+    }
+
+    #[test]
+    fn test_function_call_statement_accepts_zero_length_output_targets() {
+        let mut env = VarEnv::<f64>::new();
+        let mut functions = indexmap::IndexMap::new();
+
+        let mut f = rumoca_core::Function::new("Pkg.withEmptyOutput", rumoca_core::Span::DUMMY);
+        f.add_input(rumoca_core::FunctionParam::new(
+            "u",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
+            "y",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(
+            rumoca_core::FunctionParam::new(
+                "empty",
+                "Real",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![0]),
+        );
+        f.body = vec![rumoca_core::Statement::Assignment {
+            comp: comp_ref(&["y"]),
+            value: var("u"),
+            span: rumoca_core::Span::DUMMY,
+        }];
+        functions.insert("Pkg.withEmptyOutput".to_string(), f);
+        env.functions = std::sync::Arc::new(functions);
+
+        env.set("out", 0.0);
+        std::sync::Arc::make_mut(&mut env.dims).insert("emptyOut".to_string(), vec![0]);
+
+        eval_statements(
+            &[rumoca_core::Statement::FunctionCall {
+                comp: comp_ref(&["Pkg", "withEmptyOutput"]),
+                args: vec![real(4.5)],
+                outputs: vec![comp_ref(&["out"]), comp_ref(&["emptyOut"])],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect("zero-length output target should not require a scalar binding");
+
+        assert_eq!(env_value(&env, "out"), 4.5);
+        assert_eq!(env.dims.get("emptyOut"), Some(&vec![0]));
+        assert!(env.get_optional("emptyOut").is_none());
     }
 
     #[test]

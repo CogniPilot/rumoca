@@ -629,6 +629,56 @@ fn implicit_rhs_records_residual_row_placement() {
 }
 
 #[test]
+fn implicit_rhs_keeps_uncovered_non_state_rows_as_y_identity() {
+    let derivative = vec![constant_row(10.0)];
+
+    let implicit = super::build_implicit_rhs_rows(&derivative, &[], &[], 1, 3, solve_test_span())
+        .expect("implicit rows should build");
+
+    assert_eq!(implicit.rows[0], derivative[0]);
+    assert_eq!(
+        implicit.rows[1],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]
+    );
+    assert_eq!(
+        implicit.rows[2],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 2 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]
+    );
+    assert_eq!(
+        implicit.residual_to_implicit_rows,
+        Vec::<Option<usize>>::new()
+    );
+}
+
+#[test]
+fn implicit_rhs_preserves_non_state_target_on_fallback_row() {
+    let derivative = vec![constant_row(10.0)];
+    let residual = vec![constant_row(20.0), constant_row(30.0)];
+    let residual_targets = vec![Some(solve::scalar_slot_y(2)), Some(solve::scalar_slot_y(2))];
+
+    let implicit = super::build_implicit_rhs_rows(
+        &derivative,
+        &residual,
+        &residual_targets,
+        1,
+        3,
+        solve_test_span(),
+    )
+    .expect("implicit rows should build");
+
+    assert_eq!(implicit.rows[2], residual[0]);
+    assert_eq!(implicit.rows[1], residual[1]);
+    assert_eq!(implicit.row_targets[2], Some(solve::scalar_slot_y(2)));
+    assert_eq!(implicit.row_targets[1], Some(solve::scalar_slot_y(2)));
+}
+
+#[test]
 fn implicit_rhs_reports_solver_sized_buffer_overflow() -> Result<(), super::LowerError> {
     let err = match super::build_implicit_rhs_rows(
         &[],
@@ -829,6 +879,38 @@ fn algebraic_projection_plan_merges_blocks_that_share_row_targets() -> Result<()
         blocks
             .iter()
             .any(|block| { block.rows == vec![30] && block.y_indices == vec![8] })
+    );
+    Ok(())
+}
+
+#[test]
+fn initial_row_targets_map_derivative_array_rows_to_state_slots() -> Result<(), LowerError> {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), array_var("x", &[2]));
+    let equation = dae::Equation::residual(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(der(var("x"))),
+            rhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Zeros,
+                args: vec![int_expr(2)],
+                span: solve_test_span(),
+            }),
+            span: solve_test_span(),
+        },
+        solve_test_span(),
+        "derivative array initialization",
+    );
+    let layout = layout::build_var_layout_with_solver_len(&dae_model, 2)
+        .expect("test DAE layout should build");
+    let row_targets = lower_continuous_row_targets_for_equation(&dae_model, &equation, &layout, 2)?;
+
+    assert_eq!(
+        row_targets,
+        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))]
     );
     Ok(())
 }
@@ -1723,7 +1805,7 @@ fn solve_problem_preserves_scalar_program_source_spans() {
 }
 
 #[test]
-fn solve_problem_zero_fills_missing_non_state_implicit_rows_for_templates() {
+fn solve_problem_keeps_missing_non_state_implicit_rows_as_y_identity_for_templates() {
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -1752,7 +1834,13 @@ fn solve_problem_zero_fills_missing_non_state_implicit_rows_for_templates() {
     assert_eq!(problem.solve_layout.solver_scalar_count(), 2);
     let rhs = scalar_program_block_fixture(&problem.continuous.implicit_rhs);
     assert_eq!(rhs.programs.len(), 2);
-    assert_eq!(rhs.programs[1], zero_rhs_row());
+    assert_eq!(
+        rhs.programs[1],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]
+    );
 }
 
 #[test]

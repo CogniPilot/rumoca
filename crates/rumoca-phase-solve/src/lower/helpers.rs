@@ -1139,6 +1139,23 @@ fn compile_time_index_builtin(
             let value = compile_time_unary_numeric_builtin_arg(args, const_scope, span)?;
             Ok(value.ceil())
         }
+        rumoca_core::BuiltinFunction::Atan2
+        | rumoca_core::BuiltinFunction::Min
+        | rumoca_core::BuiltinFunction::Max
+        | rumoca_core::BuiltinFunction::Div
+        | rumoca_core::BuiltinFunction::Mod
+        | rumoca_core::BuiltinFunction::Rem => {
+            let (lhs, rhs) = compile_time_binary_numeric_builtin_args(args, const_scope, span)?;
+            rumoca_core::apply_scalar_binary_math(function, lhs, rhs).ok_or_else(|| {
+                unsupported_at(
+                    format!(
+                        "builtin `{}` is undefined for compile-time subscript arguments",
+                        function.name()
+                    ),
+                    span,
+                )
+            })
+        }
         rumoca_core::BuiltinFunction::Size => compile_time_size_builtin(args, const_scope, span),
         _ => Err(unsupported_at(
             format!(
@@ -1162,6 +1179,29 @@ fn compile_time_unary_numeric_builtin_arg(
         ));
     };
     compile_time_index_raw_with_owner(arg, const_scope, span)
+}
+
+fn compile_time_binary_numeric_builtin_args(
+    args: &[rumoca_core::Expression],
+    const_scope: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<(f64, f64), LowerError> {
+    let Some(lhs) = args.first() else {
+        return Err(unsupported_at(
+            "compile-time subscript builtin requires two arguments",
+            span,
+        ));
+    };
+    let Some(rhs) = args.get(1) else {
+        return Err(unsupported_at(
+            "compile-time subscript builtin requires two arguments",
+            span,
+        ));
+    };
+    Ok((
+        compile_time_index_raw_with_owner(lhs, const_scope, span)?,
+        compile_time_index_raw_with_owner(rhs, const_scope, span)?,
+    ))
 }
 
 fn compile_time_size_builtin(
@@ -1737,6 +1777,34 @@ mod tests {
             err.reason(),
             "subscript variable `i` is not compile-time bound"
         );
+    }
+
+    #[test]
+    fn compile_time_index_expr_evaluates_modelica_mod_builtin() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("compile_time_mod.mo"),
+            2,
+            11,
+        );
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Mod,
+            args: vec![
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(5),
+                    span,
+                },
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span,
+                },
+            ],
+            span,
+        };
+
+        let index = compile_time_index_expr_with_owner(&expr, &IndexMap::new(), span)
+            .expect("mod(5, 2) should evaluate to a positive compile-time index");
+
+        assert_eq!(index, 1);
     }
 
     #[test]

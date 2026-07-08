@@ -857,6 +857,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             .flatten()
     }
 
+    #[allow(clippy::too_many_lines, clippy::excessive_nesting)]
     pub(super) fn compile_time_scalar_in_scope(
         &self,
         expr: &rumoca_core::Expression,
@@ -867,6 +868,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } => {
+                if subscripts.is_empty()
+                    && let Some(value) = scope.full.get(name.as_str())
+                    && !is_same_plain_var_ref(value, name.as_str())
+                {
+                    return self.compile_time_scalar_in_scope(value, scope);
+                }
                 let Some(key) = compile_time_var_key(name, subscripts) else {
                     return Ok(None);
                 };
@@ -899,8 +906,185 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 args,
                 span,
             } => self.compile_time_size(args, scope, *span),
+            rumoca_core::Expression::BuiltinCall {
+                function:
+                    rumoca_core::BuiltinFunction::NoEvent | rumoca_core::BuiltinFunction::Homotopy,
+                args,
+                ..
+            } => {
+                let Some(arg) = args.first() else {
+                    return Ok(None);
+                };
+                self.compile_time_scalar_in_scope(arg, scope)
+            }
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Smooth,
+                args,
+                ..
+            } => {
+                let Some(arg) = args.get(1) else {
+                    return Ok(None);
+                };
+                self.compile_time_scalar_in_scope(arg, scope)
+            }
+            rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span: _,
+            } if is_compile_time_unary_numeric_builtin(function) => {
+                let [arg] = args.as_slice() else {
+                    return Ok(None);
+                };
+                let Some(value) = self.compile_time_scalar_in_scope(arg, scope)? else {
+                    return Ok(None);
+                };
+                if *function == rumoca_core::BuiltinFunction::Integer {
+                    return Ok(Some(value.floor()));
+                }
+                Ok(rumoca_core::apply_scalar_unary_math(*function, value))
+            }
+            rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span: _,
+            } if is_compile_time_binary_numeric_builtin(function) => {
+                let [lhs, rhs] = args.as_slice() else {
+                    return Ok(None);
+                };
+                let Some(lhs) = self.compile_time_scalar_in_scope(lhs, scope)? else {
+                    return Ok(None);
+                };
+                let Some(rhs) = self.compile_time_scalar_in_scope(rhs, scope)? else {
+                    return Ok(None);
+                };
+                Ok(rumoca_core::apply_scalar_binary_math(*function, lhs, rhs))
+            }
+            rumoca_core::Expression::FunctionCall {
+                is_constructor: false,
+                name,
+                args,
+                span,
+                ..
+            } => {
+                if let Some((call, selected_index)) =
+                    selected_function_output_call(expr, self.dae_model)?
+                {
+                    let Some(outputs) = self.function_call_outputs_with_projection_scope(
+                        &call,
+                        0,
+                        inherited_projection_source_span(call.span(), *span),
+                        Some(scope),
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(output) = outputs.get(selected_index) else {
+                        return Ok(None);
+                    };
+                    return self.compile_time_scalar_in_scope(&output.expr, scope);
+                }
+                if let Some(value) = self.compile_time_modelica_math_call(name, args, scope)? {
+                    return Ok(Some(value));
+                }
+                let Some(outputs) = self.function_call_outputs_with_projection_scope(
+                    expr,
+                    0,
+                    inherited_projection_source_span(Some(*span), *span),
+                    Some(scope),
+                )?
+                else {
+                    return Ok(None);
+                };
+                let [output] = outputs.as_slice() else {
+                    return Ok(None);
+                };
+                self.compile_time_scalar_in_scope(&output.expr, scope)
+            }
+            rumoca_core::Expression::Index {
+                base,
+                subscripts,
+                span,
+            } => {
+                let Some(dims) = self.expr_dims_with_owner(base, scope, 0, *span)? else {
+                    return Ok(None);
+                };
+                let Some(indices) = self.compile_time_subscript_indices(subscripts, scope)? else {
+                    return Ok(None);
+                };
+                let Some(flat_index) =
+                    flat_index_from_indices(&dims, &indices, *span, "compile-time indexed scalar")?
+                else {
+                    return Ok(None);
+                };
+                let Some(value) = self.project_value(base, &dims, flat_index, scope, 0, *span)?
+                else {
+                    return Ok(None);
+                };
+                self.compile_time_scalar_in_scope(&value, scope)
+            }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let Some(selected) =
+                    self.compile_time_if_selection(branches, else_branch, scope)?
+                else {
+                    return Ok(None);
+                };
+                self.compile_time_scalar_in_scope(selected, scope)
+            }
             _ => Ok(None),
         }
+    }
+
+    fn compile_time_modelica_math_call(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+    ) -> Result<Option<f64>, LowerError> {
+        let [arg] = args else {
+            return Ok(None);
+        };
+        let Some(value) = self.compile_time_scalar_in_scope(arg, scope)? else {
+            return Ok(None);
+        };
+        let name = name.as_str();
+        if name == "asinh" || name.ends_with(".asinh") {
+            return Ok(Some(value.asinh()));
+        }
+        Ok(None)
+    }
+
+    #[allow(clippy::excessive_nesting)]
+    fn compile_time_subscript_indices(
+        &self,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &FunctionProjectionScope,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let mut indices = projection_vec_with_capacity(
+            subscripts.len(),
+            "compile-time subscript index count",
+            subscripts.first().map_or(
+                rumoca_core::Span::source_free_serde_default(),
+                rumoca_core::Subscript::span,
+            ),
+        )?;
+        for subscript in subscripts {
+            let index = match subscript {
+                rumoca_core::Subscript::Index { value, .. } => *value,
+                rumoca_core::Subscript::Expr { expr, span } => {
+                    let Some(value) = self.compile_time_scalar_in_scope(expr, scope)? else {
+                        return Ok(None);
+                    };
+                    checked_shape_dimension(value, *span)?
+                }
+                rumoca_core::Subscript::Colon { .. } => return Ok(None),
+            };
+            indices.push(index);
+        }
+        Ok(Some(indices))
     }
 
     fn compile_time_size(
@@ -952,6 +1136,42 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
         Ok(Some(else_dims))
     }
+}
+
+fn is_compile_time_unary_numeric_builtin(function: &rumoca_core::BuiltinFunction) -> bool {
+    matches!(
+        function,
+        rumoca_core::BuiltinFunction::Abs
+            | rumoca_core::BuiltinFunction::Sign
+            | rumoca_core::BuiltinFunction::Sqrt
+            | rumoca_core::BuiltinFunction::Floor
+            | rumoca_core::BuiltinFunction::Ceil
+            | rumoca_core::BuiltinFunction::Sin
+            | rumoca_core::BuiltinFunction::Cos
+            | rumoca_core::BuiltinFunction::Tan
+            | rumoca_core::BuiltinFunction::Asin
+            | rumoca_core::BuiltinFunction::Acos
+            | rumoca_core::BuiltinFunction::Atan
+            | rumoca_core::BuiltinFunction::Sinh
+            | rumoca_core::BuiltinFunction::Cosh
+            | rumoca_core::BuiltinFunction::Tanh
+            | rumoca_core::BuiltinFunction::Exp
+            | rumoca_core::BuiltinFunction::Log
+            | rumoca_core::BuiltinFunction::Log10
+            | rumoca_core::BuiltinFunction::Integer
+    )
+}
+
+fn is_compile_time_binary_numeric_builtin(function: &rumoca_core::BuiltinFunction) -> bool {
+    matches!(
+        function,
+        rumoca_core::BuiltinFunction::Atan2
+            | rumoca_core::BuiltinFunction::Min
+            | rumoca_core::BuiltinFunction::Max
+            | rumoca_core::BuiltinFunction::Div
+            | rumoca_core::BuiltinFunction::Mod
+            | rumoca_core::BuiltinFunction::Rem
+    )
 }
 
 fn collect_scope_projected_expr_dims(

@@ -39,8 +39,12 @@ pub(crate) fn build_implicit_rhs_rows(
 ) -> Result<ImplicitRowsAndTargets, LowerError> {
     let span = context_span;
     let mut rows = implicit_rhs_vec_with_capacity(solver_scalar_count, "implicit RHS rows", span)?;
-    for _ in 0..solver_scalar_count {
-        rows.push(implicit_rhs_zero_row(span)?);
+    for index in 0..solver_scalar_count {
+        if index < state_scalar_count {
+            rows.push(implicit_rhs_zero_row(span)?);
+        } else {
+            rows.push(implicit_rhs_y_identity_row(index, span)?);
+        }
     }
     let mut row_targets =
         implicit_rhs_vec_with_capacity(solver_scalar_count, "implicit RHS row targets", span)?;
@@ -234,6 +238,16 @@ fn reserve_implicit_rhs_capacity<T>(
 fn implicit_rhs_zero_row(span: rumoca_core::Span) -> Result<Vec<solve::LinearOp>, LowerError> {
     let mut row = implicit_rhs_vec_with_capacity(2, "implicit RHS zero row op count", span)?;
     row.push(solve::LinearOp::Const { dst: 0, value: 0.0 });
+    row.push(solve::LinearOp::StoreOutput { src: 0 });
+    Ok(row)
+}
+
+fn implicit_rhs_y_identity_row(
+    index: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<solve::LinearOp>, LowerError> {
+    let mut row = implicit_rhs_vec_with_capacity(2, "implicit RHS identity row op count", span)?;
+    row.push(solve::LinearOp::LoadY { dst: 0, index });
     row.push(solve::LinearOp::StoreOutput { src: 0 });
     Ok(row)
 }
@@ -654,16 +668,13 @@ fn place_targeted_residual_rows(
 
 fn fallback_residual_row_target(
     residual_target: Option<solve::ScalarSlot>,
-    state_scalar_count: usize,
+    _state_scalar_count: usize,
     span: rumoca_core::Span,
 ) -> Result<Option<solve::ScalarSlot>, LowerError> {
     let Some(solve::ScalarSlot::Y { index, .. }) = residual_target else {
         return Ok(None);
     };
-    if index < state_scalar_count {
-        return implicit_rhs_y_slot(index, span).map(Some);
-    }
-    Ok(None)
+    implicit_rhs_y_slot(index, span).map(Some)
 }
 
 fn implicit_rhs_y_slot(

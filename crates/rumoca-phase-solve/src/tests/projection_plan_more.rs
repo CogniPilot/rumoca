@@ -296,6 +296,60 @@ fn initialization_projection_prefers_explicit_algebraic_row_target_over_state_de
 }
 
 #[test]
+fn initialization_projection_does_not_infer_algebraic_targets_from_continuous_rows() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("z"), scalar_var("z"));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Cos,
+            args: vec![var("u")],
+            span: solve_test_span(),
+        },
+        solve_test_span(),
+        "continuous residual references u without an explicit target",
+    ));
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            binary(rumoca_core::OpBinary::Sub, var("z"), int_expr(3)),
+            solve_test_span(),
+            "initial equation drives z",
+        ));
+
+    let problem = lower_solve_problem(&dae_model).expect("initialization plan should lower");
+    let u_idx = problem.solve_layout.solver_maps.name_to_idx["u"];
+    let z_idx = problem.solve_layout.solver_maps.name_to_idx["z"];
+    let projected = problem
+        .initialization
+        .projection_plan
+        .blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().copied())
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        !projected.contains(&u_idx),
+        "continuous-derived rows without explicit targets are handled by continuous algebraic projection"
+    );
+    assert!(
+        projected.contains(&z_idx),
+        "initialization-specific algebraic equations still project their algebraic unknowns"
+    );
+}
+
+#[test]
 fn solve_problem_records_scaled_algebraic_residual_target() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -554,6 +608,34 @@ fn solve_problem_skips_negated_additive_terms_when_recording_row_targets() {
     );
     assert!(
         !problem
+            .continuous
+            .implicit_row_targets
+            .iter()
+            .any(|target| matches!(target, Some(solve::ScalarSlot::Y { index: 0, .. })))
+    );
+}
+
+#[test]
+fn solve_problem_records_rhs_target_for_source_minus_algebraic_residual() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("source"), scalar_var("source"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, var("source"), var("u")),
+        solve_test_span(),
+        "source expression drives algebraic input",
+    ));
+
+    let problem = lower_solve_problem(&dae_model).expect("source-minus-target should lower");
+
+    assert!(
+        problem
             .continuous
             .implicit_row_targets
             .iter()

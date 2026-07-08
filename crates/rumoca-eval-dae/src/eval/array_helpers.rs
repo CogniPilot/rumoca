@@ -132,6 +132,30 @@ fn collect_dense_indexed_values_generic<T: SimFloat>(
     Some(values)
 }
 
+fn collect_dense_declared_values_generic<T: SimFloat>(
+    name: &str,
+    dims: &[i64],
+    scalar_count: usize,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    if let Some(values) = collect_dense_indexed_values_generic(name, scalar_count, env) {
+        return Some(values);
+    }
+    if dims.len() <= 1 {
+        return None;
+    }
+    let mut values = Vec::with_capacity(scalar_count);
+    for flat_index in 0..scalar_count {
+        let subscripts = dae::flat_index_to_subscripts(dims, flat_index)?;
+        values.push(
+            env.vars
+                .get(dae::format_subscript_key(name, &subscripts).as_str())
+                .copied()?,
+        );
+    }
+    Some(values)
+}
+
 fn collect_dense_record_field_indexed_values_generic<T: SimFloat>(
     name: &str,
     scalar_count: usize,
@@ -152,9 +176,16 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
 ) -> Result<Option<Vec<T>>, EvalError> {
     let declared_zero_count = if let Some(dims) = env.dims.get(name) {
         let scalar_count = dims.iter().map(|&d| d.max(0) as usize).product::<usize>();
-        if scalar_count > 1 {
-            if let Some(values) = collect_dense_indexed_values_generic(name, scalar_count, env) {
+        if scalar_count > 0 {
+            if let Some(values) =
+                collect_dense_declared_values_generic(name, dims, scalar_count, env)
+            {
                 return Ok(Some(values));
+            }
+            if scalar_count == 1
+                && let Some(value) = env.vars.get(name).copied()
+            {
+                return Ok(Some(vec![value]));
             }
             if let Some(values) =
                 collect_dense_record_field_indexed_values_generic(name, scalar_count, env)

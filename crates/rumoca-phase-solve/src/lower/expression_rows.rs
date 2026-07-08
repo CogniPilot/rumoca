@@ -1161,7 +1161,7 @@ fn lower_residual_rows_from_equations_core<'a>(
             )?;
             rows.extend(record_rows);
             let row_count = rows.len() - start;
-            validate_equation_row_count(eq, row_count)?;
+            validate_equation_row_count(eq, row_count, &ctx)?;
             after_equation(eq, row_count)?;
             continue;
         }
@@ -1175,14 +1175,18 @@ fn lower_residual_rows_from_equations_core<'a>(
         )?;
         rows.extend(lowered_rows);
         let row_count = rows.len() - start;
-        validate_equation_row_count(eq, row_count)?;
+        validate_equation_row_count(eq, row_count, &ctx)?;
         after_equation(eq, row_count)?;
     }
     Ok(rows)
 }
 
-fn validate_equation_row_count(eq: &dae::Equation, actual: usize) -> Result<(), LowerError> {
-    let expected = eq.scalar_count;
+fn validate_equation_row_count(
+    eq: &dae::Equation,
+    actual: usize,
+    ctx: &RowLoweringContext<'_>,
+) -> Result<(), LowerError> {
+    let expected = residual_equation_row_count(eq, ctx)?.unwrap_or(eq.scalar_count);
     if actual == expected {
         return Ok(());
     }
@@ -1193,6 +1197,63 @@ fn validate_equation_row_count(eq: &dae::Equation, actual: usize) -> Result<(), 
         ),
         eq.span,
     ))
+}
+
+pub(crate) fn residual_equation_effective_row_count(
+    dae_model: &dae::Dae,
+    eq: &dae::Equation,
+) -> Result<usize, LowerError> {
+    let rumoca_core::Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        span,
+    } = &eq.rhs
+    else {
+        return Ok(eq.scalar_count);
+    };
+    let structural_bindings = compile_time::structural_bindings(dae_model)?;
+    residual_projection::scalarized_tuple_residual_binding_count(
+        lhs,
+        rhs,
+        dae_model,
+        &structural_bindings,
+        *span,
+    )
+    .map(|count| count.unwrap_or(eq.scalar_count))
+}
+
+fn residual_equation_row_count(
+    eq: &dae::Equation,
+    ctx: &RowLoweringContext<'_>,
+) -> Result<Option<usize>, LowerError> {
+    let rumoca_core::Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        span,
+    } = &eq.rhs
+    else {
+        return Ok(None);
+    };
+    let Some(structural_bindings) = ctx.structural_bindings.as_ref() else {
+        return Ok(None);
+    };
+    let Some(dae_variables) = ctx.dae_variables else {
+        return Ok(None);
+    };
+    let mut dae_model = dae::Dae {
+        variables: dae_variables.clone(),
+        ..Default::default()
+    };
+    dae_model.symbols.functions = ctx.functions.clone();
+    residual_projection::scalarized_tuple_residual_binding_count(
+        lhs,
+        rhs,
+        &dae_model,
+        structural_bindings,
+        *span,
+    )
 }
 
 fn lower_equation_residual_rows(
@@ -1225,7 +1286,9 @@ fn lower_equation_residual_rows(
     } else {
         &eq.rhs
     };
-    let scalar_count = eq.scalar_count.max(1);
+    let scalar_count = residual_equation_row_count(eq, ctx)?
+        .unwrap_or(eq.scalar_count)
+        .max(1);
     let values = if scalar_count == 1 {
         let mut values = expression_vec_with_capacity(1, "scalar residual value count", eq.span)?;
         if row_idx >= state_scalar_count
@@ -1482,6 +1545,16 @@ fn scalarized_binary_residual_operands(
         values.push(builder.lower_expr_with_source_context(&residual, span, &scope, 0)?);
         return Ok(Some(values));
     }
+    if let Some(rhs_values) = matching_function_output_residual_values(
+        target,
+        rhs,
+        scalar_count,
+        &dae_model,
+        structural_bindings,
+        span,
+    )? {
+        return scalarized_residual_registers(lhs_values, rhs_values, scalar_count, builder, span);
+    }
     let rhs_values = if requires_projected_function_scalars(rhs) {
         derivative_rhs::function_call_projected_scalars_with_owner(
             rhs,
@@ -1527,6 +1600,93 @@ fn scalarized_binary_residual_operands(
         };
         rhs_values = vec![rhs_value];
     }
+    if lhs_values.len() != scalar_count || rhs_values.len() != scalar_count {
+        return Ok(None);
+    }
+    scalarized_residual_registers(lhs_values, rhs_values, scalar_count, builder, span)
+}
+
+fn matching_function_output_residual_values(
+    target: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    scalar_count: usize,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
+    let Some(target_leaf) = residual_target_leaf_name(target) else {
+        return Ok(None);
+    };
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        ..
+    } = rhs
+    else {
+        return Ok(None);
+    };
+    let Some(function) = dae_model.symbols.functions.get(name.var_name()) else {
+        return Ok(None);
+    };
+    if function.inputs.iter().any(|input| {
+        matches!(
+            input.type_class,
+            Some(rumoca_core::ClassType::Record | rumoca_core::ClassType::Connector)
+        )
+    }) {
+        return Ok(None);
+    }
+    if !function
+        .outputs
+        .iter()
+        .any(|output| output.name == target_leaf)
+    {
+        return Ok(None);
+    }
+    let selected_call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(format!("{}.{}", name.as_str(), target_leaf)).into(),
+        args: args.clone(),
+        is_constructor: false,
+        span,
+    };
+    let Some(values) = derivative_rhs::function_call_projected_scalars_with_owner(
+        &selected_call,
+        dae_model,
+        structural_bindings,
+        span,
+    )?
+    .or(derivative_rhs::project_array_like_scalars_with_owner(
+        &selected_call,
+        dae_model,
+        structural_bindings,
+        span,
+    )?) else {
+        return Ok(None);
+    };
+    if values.len() == scalar_count {
+        Ok(Some(values))
+    } else {
+        Ok(None)
+    }
+}
+
+fn residual_target_leaf_name(target: &rumoca_core::Expression) -> Option<&str> {
+    match target {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => name.as_str().rsplit('.').next(),
+        _ => None,
+    }
+}
+
+fn scalarized_residual_registers(
+    lhs_values: Vec<rumoca_core::Expression>,
+    rhs_values: Vec<rumoca_core::Expression>,
+    scalar_count: usize,
+    builder: &mut LowerBuilder<'_>,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<Reg>>, LowerError> {
     if lhs_values.len() != scalar_count || rhs_values.len() != scalar_count {
         return Ok(None);
     }

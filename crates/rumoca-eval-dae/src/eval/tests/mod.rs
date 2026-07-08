@@ -316,19 +316,190 @@ fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
 }
 
 fn comp_ref_index(name: &str, index: i64) -> rumoca_core::ComponentReference {
+    comp_ref_indices(name, &[index])
+}
+
+fn comp_ref_indices(name: &str, indices: &[i64]) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
         span: rumoca_core::Span::DUMMY,
         parts: vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
             span: rumoca_core::Span::DUMMY,
-            subs: vec![rumoca_core::Subscript::generated_index(
-                index,
-                rumoca_core::Span::DUMMY,
-            )],
+            subs: indices
+                .iter()
+                .copied()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
         }],
         def_id: None,
     }
+}
+
+#[test]
+fn singleton_array_output_collects_dense_index_assignment() {
+    let mut env = VarEnv::<f64>::new();
+    let mut function = Function::new("Pkg.singletonOutput", rumoca_core::Span::DUMMY);
+    function.add_output(
+        FunctionParam::new("c1", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![1]),
+    );
+    function.body = vec![Statement::Assignment {
+        comp: comp_ref_index("c1", 1),
+        value: lit(2.5),
+        span: rumoca_core::Span::DUMMY,
+    }];
+    env.functions = Arc::new(IndexMap::from([(
+        "Pkg.singletonOutput".to_string(),
+        function,
+    )]));
+
+    assert_eq!(
+        eval_user_function_array_output_pub::<f64>(
+            &rumoca_core::VarName::new("Pkg.singletonOutput"),
+            &[],
+            &env,
+        ),
+        Ok(vec![2.5])
+    );
+    assert_eq!(
+        eval_selected_function_output_pub::<f64>(
+            &rumoca_core::VarName::new("Pkg.singletonOutput"),
+            "c1",
+            &[1],
+            &[],
+            &env,
+        ),
+        Ok(2.5)
+    );
+}
+
+#[test]
+fn singleton_array_values_accept_base_alias_binding() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("den1".to_string(), vec![1])]));
+    env.set("den1", 1.5962800638268535);
+
+    assert_eq!(
+        eval_array_values::<f64>(&var("den1"), &env),
+        Ok(vec![1.5962800638268535])
+    );
+}
+
+#[test]
+fn matrix_array_output_collects_dense_multidimensional_assignment() {
+    let mut env = VarEnv::<f64>::new();
+    let mut function = Function::new("Pkg.matrixOutput", rumoca_core::Span::DUMMY);
+    function.add_output(
+        FunctionParam::new("c2", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![1, 2]),
+    );
+    function.body = vec![
+        Statement::Assignment {
+            comp: comp_ref_indices("c2", &[1, 1]),
+            value: lit(3.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+        Statement::Assignment {
+            comp: comp_ref_indices("c2", &[1, 2]),
+            value: lit(4.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+    ];
+    env.functions = Arc::new(IndexMap::from([("Pkg.matrixOutput".to_string(), function)]));
+
+    assert_eq!(
+        eval_user_function_array_output_pub::<f64>(
+            &rumoca_core::VarName::new("Pkg.matrixOutput"),
+            &[],
+            &env,
+        ),
+        Ok(vec![3.0, 4.0])
+    );
+}
+
+#[test]
+fn function_local_shape_can_depend_on_output_shape() {
+    let mut env = VarEnv::<f64>::new();
+    let mut producer = Function::new("Pkg.producer", rumoca_core::Span::DUMMY);
+    producer.add_output(
+        FunctionParam::new("c1", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![1]),
+    );
+    producer.body = vec![Statement::Assignment {
+        comp: comp_ref_index("c1", 1),
+        value: lit(7.0),
+        span: rumoca_core::Span::DUMMY,
+    }];
+
+    let mut parent = Function::new("Pkg.parent", rumoca_core::Span::DUMMY);
+    parent.add_input(FunctionParam::new(
+        "order",
+        "Integer",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    parent.add_output(
+        FunctionParam::new("cr", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![0])
+            .with_shape_expr(vec![Subscript::generated_expr(
+                Box::new(builtin(
+                    BuiltinFunction::Mod,
+                    vec![var("order"), int_lit(2)],
+                )),
+                rumoca_core::Span::DUMMY,
+            )]),
+    );
+    parent.add_output(FunctionParam::new(
+        "y",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    parent.add_local(
+        FunctionParam::new(
+            "den1",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        )
+        .with_dims(vec![0])
+        .with_shape_expr(vec![Subscript::generated_expr(
+            Box::new(builtin(BuiltinFunction::Size, vec![var("cr"), int_lit(1)])),
+            rumoca_core::Span::DUMMY,
+        )]),
+    );
+    parent.body = vec![
+        Statement::FunctionCall {
+            comp: rumoca_core::ComponentReference::from_flat_segments(
+                "Pkg.producer",
+                rumoca_core::Span::DUMMY,
+                None,
+            ),
+            args: vec![],
+            outputs: vec![comp_ref("den1")],
+            span: rumoca_core::Span::DUMMY,
+        },
+        Statement::Assignment {
+            comp: comp_ref("y"),
+            value: indexed_var("den1", &[1]),
+            span: rumoca_core::Span::DUMMY,
+        },
+    ];
+    env.functions = Arc::new(IndexMap::from([
+        ("Pkg.producer".to_string(), producer),
+        ("Pkg.parent".to_string(), parent),
+    ]));
+
+    assert_eq!(
+        eval_selected_function_output_pub::<f64>(
+            &rumoca_core::VarName::new("Pkg.parent"),
+            "y",
+            &[],
+            &[int_lit(3)],
+            &env,
+        ),
+        Ok(7.0)
+    );
 }
 
 fn arr(elements: Vec<rumoca_core::Expression>, is_matrix: bool) -> rumoca_core::Expression {

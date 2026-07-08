@@ -198,9 +198,7 @@ fn eval_misc_intrinsic_function<T: SimFloat>(
                 None => T::one(),
             };
             if cond.to_bool() {
-                Err(EvalError::UnsupportedExpression {
-                    kind: "assert statement in scalar expression",
-                })
+                Ok(Some(T::zero()))
             } else {
                 Err(EvalError::UnsupportedExpression { kind: "assert" })
             }

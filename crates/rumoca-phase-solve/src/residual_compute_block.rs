@@ -13,6 +13,7 @@ pub(crate) fn build_residual_compute_block(
 ) -> Result<solve::ComputeBlock, LowerError> {
     let span = residual_context_span(dae_model, residual_equations);
     validate_residual_compute_block_contract(
+        dae_model,
         residual_rows.len(),
         residual_targets.len(),
         residual_equations,
@@ -27,7 +28,8 @@ pub(crate) fn build_residual_compute_block(
     let structural_bindings = lower::structural_bindings_for_structured_access(dae_model)?;
     let mut residual_index = 0usize;
     for (equation_index, equation) in residual_equations {
-        let scalar_count = equation.scalar_count.max(1);
+        let scalar_count =
+            lower::residual_equation_effective_row_count(dae_model, equation)?.max(1);
         for row_offset in 0..scalar_count {
             let Some(ops) = residual_rows.get(residual_index).cloned() else {
                 break;
@@ -74,6 +76,7 @@ pub(crate) fn build_residual_compute_block(
 }
 
 fn validate_residual_compute_block_contract(
+    dae_model: &dae::Dae,
     residual_row_count: usize,
     residual_target_count: usize,
     residual_equations: &[(usize, &dae::Equation)],
@@ -84,17 +87,18 @@ fn validate_residual_compute_block_contract(
             format!(
                 "residual target count {residual_target_count} does not match residual row count {residual_row_count}"
             ),
-            residual_contract_error_span(residual_target_count, residual_equations)
+            residual_contract_error_span(dae_model, residual_target_count, residual_equations)
                 .or(fallback_span),
         ));
     }
-    let expected_rows = residual_equation_scalar_count(residual_equations)?;
+    let expected_rows = residual_equation_scalar_count(dae_model, residual_equations)?;
     if expected_rows != residual_row_count {
         return Err(residual_contract_error(
             format!(
                 "residual equation scalar count {expected_rows} does not match residual row count {residual_row_count}"
             ),
-            residual_contract_error_span(residual_row_count, residual_equations).or(fallback_span),
+            residual_contract_error_span(dae_model, residual_row_count, residual_equations)
+                .or(fallback_span),
         ));
     }
     Ok(())
@@ -108,29 +112,34 @@ fn residual_contract_error(reason: String, span: Option<rumoca_core::Span>) -> L
 }
 
 fn residual_equation_scalar_count(
+    dae_model: &dae::Dae,
     residual_equations: &[(usize, &dae::Equation)],
 ) -> Result<usize, LowerError> {
     residual_equations
         .iter()
         .try_fold(0usize, |total, (_, equation)| {
-            total
-                .checked_add(equation.scalar_count.max(1))
-                .ok_or_else(|| {
-                    residual_contract_error(
-                        "residual equation scalar count overflows usize".to_string(),
-                        Some(equation.span),
-                    )
-                })
+            let row_count = lower::residual_equation_effective_row_count(dae_model, equation)?;
+            total.checked_add(row_count.max(1)).ok_or_else(|| {
+                residual_contract_error(
+                    "residual equation scalar count overflows usize".to_string(),
+                    Some(equation.span),
+                )
+            })
         })
 }
 
 fn residual_contract_error_span(
+    dae_model: &dae::Dae,
     row_count: usize,
     residual_equations: &[(usize, &dae::Equation)],
 ) -> Option<rumoca_core::Span> {
     let mut row_start = 0usize;
     for (_, equation) in residual_equations {
-        let row_end = row_start.checked_add(equation.scalar_count.max(1))?;
+        let row_end = row_start.checked_add(
+            lower::residual_equation_effective_row_count(dae_model, equation)
+                .ok()?
+                .max(1),
+        )?;
         if row_count < row_end {
             return Some(equation.span);
         }
@@ -327,8 +336,15 @@ mod tests {
             19,
         );
         let equation = dae::Equation::residual_array(literal_zero(span), span, "eq", 2);
-        let err = validate_residual_compute_block_contract(2, 1, &[(0, &equation)], Some(span))
-            .expect_err("target count mismatch should fail");
+        let dae_model = dae::Dae::default();
+        let err = validate_residual_compute_block_contract(
+            &dae_model,
+            2,
+            1,
+            &[(0, &equation)],
+            Some(span),
+        )
+        .expect_err("target count mismatch should fail");
 
         assert_eq!(err.source_span(), Some(span));
         assert!(
@@ -345,8 +361,15 @@ mod tests {
             23,
         );
         let equation = dae::Equation::residual_array(literal_zero(span), span, "eq", 2);
-        let err = validate_residual_compute_block_contract(1, 1, &[(0, &equation)], Some(span))
-            .expect_err("row count mismatch should fail");
+        let dae_model = dae::Dae::default();
+        let err = validate_residual_compute_block_contract(
+            &dae_model,
+            1,
+            1,
+            &[(0, &equation)],
+            Some(span),
+        )
+        .expect_err("row count mismatch should fail");
 
         assert_eq!(err.source_span(), Some(span));
         assert!(
@@ -370,7 +393,9 @@ mod tests {
         let first = dae::Equation::residual_array(literal_zero(first_span), first_span, "eq1", 1);
         let second =
             dae::Equation::residual_array(literal_zero(second_span), second_span, "eq2", 1);
+        let dae_model = dae::Dae::default();
         let err = validate_residual_compute_block_contract(
+            &dae_model,
             1,
             1,
             &[(0, &first), (1, &second)],
@@ -383,7 +408,8 @@ mod tests {
 
     #[test]
     fn residual_compute_block_contract_does_not_fabricate_span_without_context() {
-        let err = validate_residual_compute_block_contract(1, 0, &[], None)
+        let dae_model = dae::Dae::default();
+        let err = validate_residual_compute_block_contract(&dae_model, 1, 0, &[], None)
             .expect_err("unmatched residual rows without provenance should fail");
 
         assert_eq!(err.source_span(), None);
@@ -409,7 +435,8 @@ mod tests {
             1,
         );
 
-        let err = residual_equation_scalar_count(&[(0, &first), (1, &second)])
+        let dae_model = dae::Dae::default();
+        let err = residual_equation_scalar_count(&dae_model, &[(0, &first), (1, &second)])
             .expect_err("oversized residual scalar count should fail");
 
         assert_eq!(err.source_span(), None);
