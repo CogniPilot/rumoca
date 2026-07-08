@@ -571,6 +571,38 @@ fn rk45_session_advance_to_clamps_to_sim_options_end_time() {
 }
 
 #[test]
+fn rk45_session_runs_no_state_discrete_controller() {
+    let model = no_state_input_accumulator_model();
+    let mut session = SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.05,
+            solver_mode: SimSolverMode::RkLike,
+            ..Default::default()
+        },
+    )
+    .expect("no-state session should build");
+
+    session.set_input("u", 1.5).expect("input should exist");
+    session.step(0.02).expect("first controller tick");
+    assert!((session.time() - 0.02).abs() <= 1.0e-12);
+    assert_eq!(session.get("y").expect("read y"), Some(1.5));
+
+    session.set_input("u", 2.0).expect("input should update");
+    session.step(0.02).expect("second controller tick");
+    assert_eq!(session.get("y").expect("read y"), Some(3.5));
+
+    session.step(1.0).expect("step should clamp at t_end");
+    assert!((session.time() - 0.05).abs() <= 1.0e-12);
+    assert_eq!(session.get("y").expect("read y"), Some(5.5));
+
+    session
+        .step(1.0)
+        .expect("further steps at t_end should be stable");
+    assert_eq!(session.get("y").expect("read y"), Some(5.5));
+}
+
+#[test]
 fn rk45_session_uses_adaptive_event_integration_for_stiff_contact() {
     let model = stiff_contact_model();
     let mut session = SimulationSession::new(
@@ -901,4 +933,89 @@ fn const_scalar_program_block(value: f64) -> ScalarProgramBlock {
         ]],
         fixture_span!(),
     )
+}
+
+fn no_state_input_accumulator_model() -> solve::SolveModel {
+    let zero = const_scalar_program_block(0.0);
+    let preserve_y = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    solve::SolveModel {
+        problem: SolveProblem {
+            schema_version: solve::SOLVE_SCHEMA_VERSION,
+            layout: solve::VarLayout::from_parts(Default::default(), 0, 1),
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: ComputeBlock::from_scalar_program_block(preserve_y.clone()),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                residual: ComputeBlock::from_scalar_program_block(preserve_y.clone()),
+                derivative_rhs: ComputeBlock::from_scalar_program_block(
+                    ScalarProgramBlock::default(),
+                ),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+            },
+            initialization: solve::InitializationSolveSystem::default(),
+            discrete: solve::DiscreteSolveSystem {
+                rhs: ScalarProgramBlock::with_source_span(
+                    vec![vec![
+                        LinearOp::LoadY { dst: 0, index: 0 },
+                        LinearOp::LoadP { dst: 1, index: 0 },
+                        LinearOp::Binary {
+                            dst: 2,
+                            op: solve::BinaryOp::Add,
+                            lhs: 0,
+                            rhs: 1,
+                        },
+                        LinearOp::StoreOutput { src: 2 },
+                    ]],
+                    fixture_span!(),
+                ),
+                update_targets: vec![solve::scalar_slot_y(0)],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition::default(),
+            clocks: solve::SolveClockPartition::default(),
+            solve_layout: SolveLayout {
+                solver_maps: SolverNameIndexMaps {
+                    names: vec!["y".to_string()],
+                    name_to_idx: IndexMap::from([("y".to_string(), 0)]),
+                    base_to_indices: IndexMap::from([("y".to_string(), vec![0])]),
+                },
+                state_scalar_count: 0,
+                algebraic_scalar_count: 0,
+                output_scalar_count: 1,
+                parameter_count: 0,
+                compiled_parameter_len: 1,
+                input_scalar_names: vec!["u".to_string()],
+                discrete_real_scalar_names: vec!["y".to_string()],
+                discrete_valued_scalar_names: Vec::new(),
+                relation_memory_parameter_indices: Vec::new(),
+                initial_event_parameter_index: None,
+                pre_param_bindings: Vec::new(),
+            },
+        },
+        artifacts: solve::SolveArtifacts {
+            continuous: solve::ContinuousSolveArtifacts {
+                mass_matrix: Vec::new(),
+                implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
+                implicit_jacobian_v_scalar: zero,
+                full_jacobian_v: ScalarProgramBlock::default(),
+            },
+        },
+        initial_y: vec![0.0],
+        parameters: vec![0.0],
+        external_tables: solve::ExternalTables::default(),
+        visible_names: vec!["y".to_string()],
+        visible_value_rows: ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+        variable_meta: Vec::new(),
+    }
 }

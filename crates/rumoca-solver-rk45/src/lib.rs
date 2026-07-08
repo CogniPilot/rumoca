@@ -19,9 +19,11 @@ use rumoca_solver::{
     runtime_event_horizon, timeline,
 };
 
+mod no_state;
 mod reset;
 mod trace;
 
+use no_state::NoStateSession;
 use reset::Rk45ResetSnapshot;
 use trace::{
     record_derivative_eval_trace, record_root_eval_trace, reset_rk_eval_trace,
@@ -90,6 +92,15 @@ pub struct SessionState {
 }
 
 pub struct SimulationSession {
+    inner: SimulationSessionInner,
+}
+
+enum SimulationSessionInner {
+    NoState(Box<NoStateSession>),
+    State(Box<StateSession>),
+}
+
+struct StateSession {
     runtime: &'static SolveRuntime,
     backend: Rk45Backend<'static>,
     reset_snapshot: Rk45ResetSnapshot,
@@ -102,7 +113,97 @@ impl SimulationSession {
             SimSolverMode::Auto | SimSolverMode::RkLike => {}
             requested => return Err(SimError::UnsupportedSolverMode { requested }),
         }
+        if model.state_scalar_count() == 0 {
+            return NoStateSession::new(model, opts).map(|session| Self {
+                inner: SimulationSessionInner::NoState(Box::new(session)),
+            });
+        }
         validate_explicit_solve_model(model)?;
+        StateSession::new(model, opts).map(|session| Self {
+            inner: SimulationSessionInner::State(Box::new(session)),
+        })
+    }
+
+    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.set_input(name, value),
+            SimulationSessionInner::State(session) => session.set_input(name, value),
+        }
+    }
+
+    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.set_inputs(inputs),
+            SimulationSessionInner::State(session) => session.set_inputs(inputs),
+        }
+    }
+
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.advance_to(target_time),
+            SimulationSessionInner::State(session) => session.advance_to(target_time),
+        }
+    }
+
+    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.step(dt),
+            SimulationSessionInner::State(session) => session.step(dt),
+        }
+    }
+
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.reset(t_start),
+            SimulationSessionInner::State(session) => session.reset(t_start),
+        }
+    }
+
+    pub fn time(&self) -> f64 {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.time(),
+            SimulationSessionInner::State(session) => session.time(),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.get(name),
+            SimulationSessionInner::State(session) => session.get(name),
+        }
+    }
+
+    pub fn state(&self) -> Result<SessionState, SimError> {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.state(),
+            SimulationSessionInner::State(session) => session.state(),
+        }
+    }
+
+    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.values_for(names),
+            SimulationSessionInner::State(session) => session.values_for(names),
+        }
+    }
+
+    pub fn input_names(&self) -> &[String] {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.input_names(),
+            SimulationSessionInner::State(session) => session.input_names(),
+        }
+    }
+
+    pub fn variable_names(&self) -> &[String] {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.variable_names(),
+            SimulationSessionInner::State(session) => session.variable_names(),
+        }
+    }
+}
+
+impl StateSession {
+    fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         let runtime = Box::leak(Box::new(SolveRuntime::new(model)?));
         let mut backend = Rk45Backend::new(runtime, &opts)?;
         backend.init()?;
@@ -115,7 +216,7 @@ impl SimulationSession {
         })
     }
 
-    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+    fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
         let Some(param_idx) = self
             .runtime
             .model
@@ -133,14 +234,14 @@ impl SimulationSession {
         Ok(())
     }
 
-    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
         for (name, value) in inputs {
             self.set_input(name, *value)?;
         }
         Ok(())
     }
 
-    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+    fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
         let target_time = target_time.min(self.backend.t_end);
         if target_time <= self.backend.time {
             return Ok(());
@@ -148,25 +249,25 @@ impl SimulationSession {
         advance_backend_to(&mut self.backend, target_time)
     }
 
-    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+    fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt <= 0.0 {
             return Ok(());
         }
         self.advance_to(self.backend.time + dt)
     }
 
-    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+    fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.backend
             .reset_to_snapshot(&self.reset_snapshot, t_start);
         Ok(())
     }
 
-    pub fn time(&self) -> f64 {
+    fn time(&self) -> f64 {
         self.backend.time
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+    fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
             return Ok(Some(value));
         }
@@ -193,14 +294,14 @@ impl SimulationSession {
         })
     }
 
-    pub fn state(&self) -> Result<SessionState, SimError> {
+    fn state(&self) -> Result<SessionState, SimError> {
         Ok(SessionState {
             time: self.time(),
             values: self.session_visible_values()?,
         })
     }
 
-    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+    fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
         let visible_values = self.session_visible_values()?;
         let mut values = IndexMap::with_capacity(names.len());
         for name in names {
@@ -211,11 +312,11 @@ impl SimulationSession {
         Ok(values)
     }
 
-    pub fn input_names(&self) -> &[String] {
+    fn input_names(&self) -> &[String] {
         self.runtime.model.problem.solve_layout.input_scalar_names()
     }
 
-    pub fn variable_names(&self) -> &[String] {
+    fn variable_names(&self) -> &[String] {
         &self.runtime.model.visible_names
     }
 
