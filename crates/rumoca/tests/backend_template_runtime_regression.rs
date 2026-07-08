@@ -1,7 +1,7 @@
 //! Runtime regression tests for backend templates.
 //!
-//! For runtime-capable backends (CasADi MX, CasADi SX, FMI2, SymPy) and each
-//! test model (Ball, ParamDecay, Oscillator), we:
+//! For runtime-capable backends (CasADi MX, CasADi SX, FMI2/FMI3, Julia MTK,
+//! ONNX, SymPy, JAX) and each test model (Ball, ParamDecay, Oscillator), we:
 //!   1. Compile the Modelica source and render the backend template
 //!   2. Execute the generated code (Python or C) to produce a CSV trace
 //!   3. Run rumoca's built-in simulator to produce a reference trace
@@ -42,6 +42,51 @@ fn python_command() -> &'static str {
         }
     }
     panic!("expected python3 or python to be available");
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn strict_runtime_dependencies() -> bool {
+    std::env::var_os("RUMOCA_TEMPLATE_RUNTIME_STRICT").is_some()
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn runtime_dependency_available(available: bool, dependency: &str) -> bool {
+    if available {
+        return true;
+    }
+    if strict_runtime_dependencies() {
+        panic!("{dependency} not available; strict template runtime checks require it");
+    }
+    eprintln!("SKIP: {dependency} not available");
+    false
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn julia_command() -> Option<&'static str> {
+    ["julia"]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn julia_project_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../infra/julia")
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn julia_has_template_deps() -> bool {
+    let Some(julia) = julia_command() else {
+        return false;
+    };
+    Command::new(julia)
+        .arg(format!("--project={}", julia_project_dir().display()))
+        .args([
+            "-e",
+            "using ModelingToolkit, OrdinaryDiffEqTsit5, IfElse, SciMLBase, Sundials",
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn cc_command() -> &'static str {
@@ -268,6 +313,33 @@ fn run_python(rendered: &str, driver: &str) -> String {
     assert!(
         output.status.success(),
         "Python execution failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout).expect("stdout is utf8")
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn run_julia(rendered: &str, driver: &str) -> String {
+    let dir = Builder::new()
+        .prefix("rumoca_julia_runtime_test_")
+        .tempdir()
+        .expect("create temp dir");
+    let model_path = dir.path().join("model.jl");
+    let driver_path = dir.path().join("driver.jl");
+    fs::write(&model_path, rendered).expect("write model.jl");
+    fs::write(&driver_path, driver).expect("write driver.jl");
+
+    let output = Command::new(julia_command().expect("julia available"))
+        .arg(format!("--project={}", julia_project_dir().display()))
+        .arg(driver_path.to_str().unwrap())
+        .output()
+        .expect("run Julia driver");
+
+    assert!(
+        output.status.success(),
+        "Julia execution failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -556,6 +628,47 @@ fn embedded_c_oscillator() {
 #[test]
 fn embedded_c_event_reinit_renders_solve_ir() {
     embedded_c_renders_solve_ir(EVENT_REINIT_SOURCE, "EventReinit");
+}
+
+// ============================================================================
+// Julia ModelingToolkit runtime smoke
+// ============================================================================
+
+#[cfg(feature = "template-runtime-tests")]
+const JULIA_MTK_DRIVER: &str = r#"
+include(joinpath(@__DIR__, "model.jl"))
+
+sys = create_model()
+defaults = get_default_values()
+
+@assert haskey(defaults.x0, "x")
+@assert isapprox(defaults.x0["x"], 2.0)
+@assert haskey(defaults.p0, "k")
+@assert isapprox(defaults.p0["k"], 3.0)
+
+sol = simulate(tspan=(0.0, 0.1), p=Dict("k" => 3.0), saveat=[0.0, 0.1])
+@assert length(sol.t) >= 2
+
+println("JULIA_MTK_OK")
+"#;
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn julia_mtk_param_decay_executes() {
+    if !runtime_dependency_available(julia_has_template_deps(), "julia template runtime deps") {
+        return;
+    }
+
+    let rendered = render_template(
+        PARAM_DECAY_SOURCE,
+        "ParamDecay",
+        templates::builtin_template_source("julia-mtk", "julia_mtk.jl.jinja").unwrap(),
+    );
+    let stdout = run_julia(&rendered, JULIA_MTK_DRIVER);
+    assert!(
+        stdout.contains("JULIA_MTK_OK"),
+        "expected Julia MTK smoke output, got:\n{stdout}"
+    );
 }
 
 fn render_fmi_solve_template(
@@ -1511,8 +1624,7 @@ fn python_has_onnx() -> bool {
 
 #[cfg(feature = "template-runtime-tests")]
 fn onnx_trace_test(source: &str, model_name: &str) {
-    if !python_has_onnx() {
-        eprintln!("SKIP: onnx/onnxruntime not available");
+    if !runtime_dependency_available(python_has_onnx(), "onnx/onnxruntime") {
         return;
     }
     let rendered = render_template(
@@ -1576,8 +1688,7 @@ fn python_has_jax() -> bool {
 
 #[cfg(feature = "template-runtime-tests")]
 fn jax_trace_test(source: &str, model_name: &str) {
-    if !python_has_jax() {
-        eprintln!("SKIP: jax/diffrax not available");
+    if !runtime_dependency_available(python_has_jax(), "jax/diffrax") {
         return;
     }
     let rendered = render_template(

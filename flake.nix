@@ -25,6 +25,15 @@
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        ciJulia = pkgs.julia_111;
+        ciPython = pkgs.python312.withPackages (ps: [
+          ps.ipython
+          ps.numpy
+          ps.pandas
+          ps.pip
+          ps.sympy
+          ps.virtualenv
+        ]);
 
         # Native libs the workspace links against. libudev (systemd) for the
         # gamepad/input crates; clang/libclang for any bindgen-using dep.
@@ -138,8 +147,20 @@
 
         devShells.default = craneLib.devShell {
           inputsFrom = [ rumoca ];
-          packages = [ pkgs.nodejs_22 pkgs.python3 ];
+          packages = [
+            ciJulia
+            ciPython
+            pkgs.maturin
+            pkgs.mdbook
+            pkgs.nodejs_22
+            pkgs.wasm-pack
+          ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+            pkgs.gfortran.cc.lib
+            pkgs.stdenv.cc.cc.lib
+            pkgs.zlib
+          ];
         };
       });
 }

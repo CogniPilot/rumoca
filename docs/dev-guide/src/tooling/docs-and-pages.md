@@ -36,7 +36,7 @@ cargo xtask verify docs        # the docs CI gate
 | `packages/playground` | Static playground app and browser smoke tests; it is a product package, not a reusable JavaScript library. |
 | `packages/vscode` | VS Code extension, including offline webview assets built from the same `packages/rumoca-web` source package. |
 | `docs/user-guide/live` | mdBook live-example harness. `docs/dev-guide/live` is a symlink to it. |
-| `infra/` | Installer, Docker, and Nix integration; not npm/Cargo package source. |
+| `infra/` | Installer, Nix, and runtime dependency integration; not npm/Cargo package source. |
 
 Do not check generated/minified vendor JavaScript into the tree. Browser
 dependencies are normal npm dependencies and are staged into ignored/generated

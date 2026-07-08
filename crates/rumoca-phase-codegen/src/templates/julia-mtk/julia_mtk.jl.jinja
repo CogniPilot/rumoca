@@ -4,7 +4,8 @@
 # Do not edit manually.
 
 using ModelingToolkit
-using DifferentialEquations
+using SciMLBase: CallbackSet, ContinuousCallback, ODEProblem, solve
+using OrdinaryDiffEqTsit5: Tsit5
 using IfElse: ifelse
 
 {# Configuration for render_expr - Julia style #}

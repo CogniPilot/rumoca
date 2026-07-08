@@ -391,25 +391,26 @@ jobs:
   template-runtime-tests:
     name: Template Runtime Tests
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/cognipilot/rumoca-dev:main
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      # The dev image's cargo home; rust-cache resolves $CARGO_HOME for both
-      # its restore and its (separate) post-job save, so set it job-wide.
-      CARGO_HOME: /opt/rumoca/cargo
+      JULIA_DEPOT_PATH: "${{ github.workspace }}/target/julia-depot:"
+      JULIA_PKG_PRECOMPILE_AUTO: '0'
+      JULIA_PROJECT: ${{ github.workspace }}/infra/julia
+      RUMOCA_TEMPLATE_RUNTIME_STRICT: '1'
     steps:
       - uses: actions/checkout@v5
         with:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - name: Install system dependencies
-        run: |
-          apt-get update
-          apt-get install -y libudev-dev
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
 
       - name: Rust cache (template-runtime)
         uses: Swatinem/rust-cache@v2
@@ -418,14 +419,44 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: false
 
-      # No-op once the dev image ships it (core-requirements.txt); kept so the
-      # symforce runtime tests exercise the real package even on a stale image
-      # instead of silently skipping.
-      - name: Ensure symforce runtime dependency
-        run: pip install --no-cache-dir 'symforce==0.11.0'
+      - name: Julia template runtime cache
+        uses: actions/cache@v4
+        with:
+          path: target/julia-depot
+          key: ${{ runner.os }}-julia-template-${{ hashFiles('infra/julia/Manifest.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-template-
+
+      - name: Prepare Python template runtime dependencies
+        run: |
+          nix develop --command bash -lc '
+            set -euo pipefail
+            python -m venv target/template-runtime-venv
+            . target/template-runtime-venv/bin/activate
+            python -m pip install --upgrade pip
+            python -m pip install -r infra/python/core-requirements.txt
+            python -c "import casadi, diffrax, jax, numpy, onnx, onnxruntime, symforce, sympy; print('python template runtime deps ok')"
+          '
+
+      - name: Prepare Julia template runtime dependencies
+        run: |
+          nix develop --command bash -lc '
+            set -euo pipefail
+            julia --project=infra/julia -e "
+              using Pkg
+              Pkg.instantiate()
+              using ModelingToolkit, OrdinaryDiffEqTsit5, IfElse, SciMLBase, Sundials
+              println(\"julia template runtime deps ok\")
+            "
+          '
 
       - name: Run template runtime checks
-        run: cargo xtask verify template-runtimes
+        run: |
+          nix develop --command bash -lc '
+            set -euo pipefail
+            . target/template-runtime-venv/bin/activate
+            cargo xtask verify template-runtimes
+          '
 
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
@@ -1664,10 +1695,9 @@ jobs:
   pr-python-smoke:
     name: Python binding smoke (PR)
     # rumoca-bind-python is excluded from `verify workspace`, and its full wheel
-    # matrix (build-python-wheels) is tag-only, so on PRs this builds just the
-    # native linux-x86_64-gnu wheel and runs the binding smoke tests to keep the
-    # API/magic/export coverage pre-merge. The full 7-wheel matrix still runs on
-    # the release tag.
+    # matrix (build-python-wheels) is tag-only, so on PRs this builds one native
+    # Linux wheel directly under the Nix dev shell and runs the binding smoke
+    # tests to keep the API/magic/export coverage pre-merge.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
@@ -1676,121 +1706,153 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - uses: actions/setup-python@v6
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          python-version: '3.12'
+          determinate: false
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
 
       - name: Build wheel (linux-x86_64-gnu)
-        uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64-unknown-linux-gnu
-          manylinux: auto
-          args: --release --out dist --manifest-path crates/rumoca-bind-python/Cargo.toml
-          before-script-linux: |
-            if command -v yum >/dev/null 2>&1; then yum install -y systemd-devel; fi
-            if command -v apk >/dev/null 2>&1; then apk add --no-cache eudev-dev; fi
+        run: |
+          nix develop --command bash -lc '
+            set -euo pipefail
+            maturin build \
+              --release \
+              --out dist \
+              --manifest-path crates/rumoca-bind-python/Cargo.toml \
+              --target x86_64-unknown-linux-gnu
+          '
 
       - name: Smoke test installed wheel
         shell: bash
         run: |
-          # Mirror build-python-wheels' native smoke: install the notebook+data
-          # extras and run the four binding tests. maturin writes to ./dist.
-          WHEEL=$(ls dist/*.whl | head -1)
-          python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
-          python crates/rumoca-bind-python/tests/smoke_test.py
-          python crates/rumoca-bind-python/tests/api_test.py
-          python crates/rumoca-bind-python/tests/magic_test.py
-          python crates/rumoca-bind-python/tests/export_test.py
+          nix develop --command bash -lc '
+            set -euo pipefail
+            python -m venv target/python-smoke-venv
+            . target/python-smoke-venv/bin/activate
+            python -m pip install --upgrade pip
+            WHEEL=$(ls dist/*.whl | head -1)
+            python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
+            python crates/rumoca-bind-python/tests/smoke_test.py
+            python crates/rumoca-bind-python/tests/api_test.py
+            python crates/rumoca-bind-python/tests/magic_test.py
+            python crates/rumoca-bind-python/tests/export_test.py
+          '
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
     # Release-only: the full wheel matrix is consumed by the tag-time deploy, so
-    # it is deferred off PRs. Trade-off: rumoca-bind-python's smoke tests (which
-    # `verify workspace` excludes) now first run at tag time; revisit with a
-    # dedicated single-wheel PR smoke job if pre-merge binding coverage is wanted.
+    # it is deferred off PRs. Linux/macOS wheels build directly under the Nix dev
+    # shell; the Windows wheel builds natively because Nix is not
+    # available on GitHub's Windows runners.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
-    # The natively-built/tested wheels (x86_64 glibc, macOS x2, Windows) gate the
-    # PR; the cross-compiled aarch64 and musllinux targets are best-effort
-    # (non-blocking) until CI proves them green, then flip them to required.
-    continue-on-error: ${{ !matrix.native }}
     strategy:
-      # One target's build failure (e.g. a cross target) must not cancel the
-      # others — abi3 + the mainstream wheels still publish.
       fail-fast: false
       matrix:
         include:
-          # Linux glibc (manylinux) — abi3, one wheel per arch for Python >= 3.10.
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            manylinux: auto
             name: linux-x86_64-gnu
-            native: true
-          - os: ubuntu-24.04
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            manylinux: auto
             name: linux-aarch64-gnu
-            native: false
-          # Linux musl (musllinux) — Alpine / musl Docker base images.
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            manylinux: musllinux_1_2
-            name: linux-x86_64-musl
-            native: false
-          - os: ubuntu-24.04
-            target: aarch64-unknown-linux-musl
-            manylinux: musllinux_1_2
-            name: linux-aarch64-musl
-            native: false
           - os: macos-15-intel
             target: x86_64-apple-darwin
             name: macos-x86_64
-            native: true
           - os: macos-15
             target: aarch64-apple-darwin
             name: macos-aarch64
-            native: true
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             name: windows-x64
-            native: true
     steps:
       - uses: actions/checkout@v5
         with:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Install Nix
+        if: runner.os != 'Windows'
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Cachix (rumoca binary cache)
+        if: runner.os != 'Windows'
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
       - uses: actions/setup-python@v6
+        if: runner.os == 'Windows'
         with:
           python-version: '3.12'
 
-      # maturin-action builds Linux wheels inside manylinux/musllinux containers
-      # (and cross-compiles aarch64), so it handles the platform tags and the
-      # cross toolchain. abi3 is picked up from the crate's pyo3 feature, giving
-      # one wheel per platform for all CPython >= 3.10.
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux }}
-          args: --release --out dist --manifest-path crates/rumoca-bind-python/Cargo.toml
-          # libudev (pulled in via the `rumoca` crate) inside the Linux build
-          # containers: systemd-devel on manylinux (yum), eudev-dev on musllinux
-          # (apk). No-op on macOS/Windows runners.
-          before-script-linux: |
-            if command -v yum >/dev/null 2>&1; then yum install -y systemd-devel; fi
-            if command -v apk >/dev/null 2>&1; then apk add --no-cache eudev-dev; fi
-
-      # The wheel is only installable/runnable on a host matching its arch+libc,
-      # so smoke-test just the native rows; cross/musl rows build-and-upload.
-      - name: Smoke test installed wheel
-        if: matrix.native
+      - name: Install Rust (Windows)
+        if: runner.os == 'Windows'
         shell: bash
         run: |
-          # Install the `notebook` extra (real %%modelica magic) plus `data` so
-          # the smoke test exercises numpy/pandas-backed Result paths. The export
-          # test skips casadi/jax/sympy gracefully when those extras are absent.
-          # maturin-action writes wheels to ./dist at the repo root.
+          toolchain="$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          rustup set profile minimal
+          rustup toolchain install "$toolchain"
+          rustup default "$toolchain"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install maturin (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pip install maturin
+
+      - name: Build wheels (Nix)
+        if: runner.os != 'Windows'
+        run: |
+          nix develop --command bash -lc '
+            set -euo pipefail
+            maturin build \
+              --release \
+              --out dist \
+              --manifest-path crates/rumoca-bind-python/Cargo.toml \
+              --target "${{ matrix.target }}"
+          '
+
+      - name: Build wheels (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          maturin build \
+            --release \
+            --out dist \
+            --manifest-path crates/rumoca-bind-python/Cargo.toml \
+            --target "${{ matrix.target }}"
+
+      - name: Smoke test installed wheel (Nix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          nix develop --command bash -lc '
+            set -euo pipefail
+            python -m venv target/python-wheel-smoke-venv
+            . target/python-wheel-smoke-venv/bin/activate
+            python -m pip install --upgrade pip
+            WHEEL=$(ls dist/*.whl | head -1)
+            python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
+            python crates/rumoca-bind-python/tests/smoke_test.py
+            python crates/rumoca-bind-python/tests/api_test.py
+            python crates/rumoca-bind-python/tests/magic_test.py
+            python crates/rumoca-bind-python/tests/export_test.py
+          '
+
+      - name: Smoke test installed wheel (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m venv target/python-wheel-smoke-venv
+          . target/python-wheel-smoke-venv/Scripts/activate
+          python -m pip install --upgrade pip
           WHEEL=$(ls dist/*.whl | head -1)
           python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
           python crates/rumoca-bind-python/tests/smoke_test.py
@@ -1816,37 +1878,23 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - uses: actions/setup-python@v6
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          python-version: '3.12'
+          determinate: false
 
-      - name: Install Rust
-        run: |
-          export PATH="$HOME/.cargo/bin:$PATH"
-          toolchain="$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-          fi
-          rustup set profile minimal
-          if ! rustup toolchain list | grep -Eq "^${toolchain}"; then
-            rustup toolchain install "$toolchain"
-          fi
-          if ! rustup component list --toolchain "$toolchain" --installed | grep -qx 'rust-src'; then
-            rustup component add rust-src --toolchain "$toolchain"
-          fi
-          if ! rustup target list --toolchain "$toolchain" --installed | grep -qx 'wasm32-unknown-unknown'; then
-            rustup target add wasm32-unknown-unknown --toolchain "$toolchain"
-          fi
-          rustup default "$toolchain"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install maturin
-        run: pip install maturin
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
 
       - name: Build sdist
         run: |
-          cd crates/rumoca-bind-python
-          maturin sdist --out dist
+          nix develop --command bash -lc '
+            set -euo pipefail
+            cd crates/rumoca-bind-python
+            maturin sdist --out dist
+          '
 
       - name: Upload sdist
         uses: actions/upload-artifact@v6
