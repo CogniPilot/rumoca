@@ -64,8 +64,8 @@ members = [
 version = "0.9.13"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/cognipilot/rumoca"
-homepage = "https://github.com/cognipilot/rumoca"
+repository = "https://github.com/CogniPilot/rumoca"
+homepage = "https://github.com/CogniPilot/rumoca"
 
 [workspace.metadata.crane]
 name = "rumoca"
