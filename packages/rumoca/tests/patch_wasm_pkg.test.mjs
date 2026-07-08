@@ -33,4 +33,8 @@ test("patched wasm package includes staged runtime dependencies", async () => {
   for (const file of runtimeFiles) {
     assert(patched.files.includes(file), `expected ${file} in package files`);
   }
+  assert.deepEqual(patched.repository, {
+    type: "git",
+    url: "https://github.com/CogniPilot/rumoca",
+  });
 });

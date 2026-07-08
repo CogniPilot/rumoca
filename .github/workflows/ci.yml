@@ -180,6 +180,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cachix (rumoca binary cache)
         uses: cachix/cachix-action@v17
@@ -651,6 +653,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cachix (rumoca binary cache)
         uses: cachix/cachix-action@v17
@@ -757,6 +761,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cachix (rumoca binary cache)
         uses: cachix/cachix-action@v17
@@ -823,13 +829,15 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Download shard results
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           pattern: shard-*
           path: target/msl/shards
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cachix (rumoca binary cache)
         uses: cachix/cachix-action@v17
@@ -1187,6 +1195,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cachix (rumoca binary cache)
         uses: cachix/cachix-action@v17
@@ -1886,7 +1896,7 @@ jobs:
           echo "As of v0.8.0, Rust distribution is via GitHub Releases binaries (not crates.io)."
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
