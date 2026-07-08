@@ -443,14 +443,14 @@ def test_run_codegen_scenario() -> None:
         scenario.write_text(
             "\n".join(
                 [
-                    f'source_roots = ["{SOURCE_ROOT}"]',
+                    f'source_roots = ["{SOURCE_ROOT.as_posix()}"]',
                     "",
                     "[rumoca]",
                     'version = "1"',
                     'task = "codegen"',
                     "",
                     "[model]",
-                    f'file = "{MODEL_FILE}"',
+                    f'file = "{MODEL_FILE.as_posix()}"',
                     'name = "UsesLib"',
                     "",
                     "[codegen]",
