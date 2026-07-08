@@ -147,7 +147,7 @@
 
         devShells.default = craneLib.devShell {
           inputsFrom = [ rumoca ];
-          packages = pkgs.lib.optionals (system != "x86_64-darwin") [
+          packages = pkgs.lib.optionals pkgs.stdenv.isLinux [
             ciJulia
           ] ++ [
             ciPython
