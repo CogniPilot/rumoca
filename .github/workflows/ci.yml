@@ -1701,64 +1701,12 @@ jobs:
           name: ${{ matrix.lsp_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
 
-  pr-python-smoke:
-    name: Build Python (linux-x86_64-gnu check)
-    # rumoca-bind-python is excluded from `verify workspace`, and its full wheel
-    # matrix (build-python-wheels) is tag-only, so regular CI builds one native
-    # Linux wheel directly under the Nix dev shell and runs the binding smoke
-    # tests to keep the API/magic/export coverage from drifting pre-release.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          token: ${{ github.token }}
-          persist-credentials: true
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
-
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
-
-      - name: Build wheel (linux-x86_64-gnu)
-        run: |
-          nix develop --command bash <<'EOF'
-          set -euo pipefail
-          maturin build \
-            --release \
-            --out dist \
-            --manifest-path crates/rumoca-bind-python/Cargo.toml \
-            --target x86_64-unknown-linux-gnu
-          EOF
-
-      - name: Smoke test installed wheel
-        shell: bash
-        run: |
-          nix develop --command bash <<'EOF'
-          set -euo pipefail
-          python -m venv target/python-smoke-venv
-          . target/python-smoke-venv/bin/activate
-          python -m pip install --upgrade pip
-          WHEEL=$(ls dist/*.whl | head -1)
-          python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
-          python crates/rumoca-bind-python/tests/smoke_test.py
-          python crates/rumoca-bind-python/tests/api_test.py
-          python crates/rumoca-bind-python/tests/magic_test.py
-          python crates/rumoca-bind-python/tests/export_test.py
-          EOF
-
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
-    # Release-only: the full wheel matrix is consumed by the tag-time deploy, so
-    # it is deferred off PRs. Linux/macOS wheels build directly under the Nix dev
-    # shell; the Windows wheel builds natively because Nix is not
-    # available on GitHub's Windows runners.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Keep the full wheel matrix on PRs/main as well as tags. Python packaging
+    # has target-specific native build risk, so a linux-only smoke check leaves
+    # release-only macOS/Windows/aarch64 failures hidden until tag time.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -1877,9 +1825,9 @@ jobs:
 
   build-python-sdist:
     name: Build Python sdist
-    # Release-only: the sdist (`maturin sdist`) is consumed solely by the
-    # tag-time deploy job, so it does not run on PRs.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Build the sdist on PRs/main too so packaging metadata breaks before tag
+    # time. Tag deploy still consumes the artifact from the release run.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

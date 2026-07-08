@@ -64,7 +64,7 @@
           strictDeps = true;
 
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.udev ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ];
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           # The wasm binding crates are cdylibs for wasm32 and the python
@@ -147,8 +147,9 @@
 
         devShells.default = craneLib.devShell {
           inputsFrom = [ rumoca ];
-          packages = [
+          packages = pkgs.lib.optionals (system != "x86_64-darwin") [
             ciJulia
+          ] ++ [
             ciPython
             pkgs.binaryen
             pkgs.maturin
