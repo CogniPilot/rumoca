@@ -325,16 +325,16 @@ fn apply_no_state_event_step(
     if let Some(event) = step.event_stop
         && !step.root_event
     {
-        prepare_fixed_event_left_limit(
+        prepare_fixed_event_left_limit(FixedEventLeftLimitInput {
             model,
-            &runtime.runtime,
-            &runtime.equilibrium_model,
-            &mut runtime.current_y,
-            &mut runtime.params,
-            runtime.current_t,
-            step.tol,
+            runtime: &runtime.runtime,
+            equilibrium_model: &runtime.equilibrium_model,
+            y: &mut runtime.current_y,
+            params: &mut runtime.params,
+            event_t: runtime.current_t,
+            tol: step.tol,
             event,
-        )?;
+        })?;
     }
     let event_pre_y = runtime.current_y.clone();
     let event_pre_p = runtime.params.clone();
@@ -580,31 +580,41 @@ fn root_event_application_time(root_time: f64, target: f64) -> f64 {
     runtime_root_event_application_time(root_time, target)
 }
 
-pub(crate) fn prepare_fixed_event_left_limit(
-    model: &solve::SolveModel,
-    runtime: &SolveRuntime,
-    equilibrium_model: &OdeModel,
-    y: &mut [f64],
-    params: &mut [f64],
+pub(crate) struct FixedEventLeftLimitInput<'a> {
+    model: &'a solve::SolveModel,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    y: &'a mut [f64],
+    params: &'a mut [f64],
     event_t: f64,
     tol: f64,
     event: RuntimeEventStop,
+}
+
+pub(crate) fn prepare_fixed_event_left_limit(
+    input: FixedEventLeftLimitInput<'_>,
 ) -> Result<(), SimError> {
     if !matches!(
-        event.pre_mode,
+        input.event.pre_mode,
         EventPreMode::EventEntry | EventPreMode::Fixed
     ) {
         return Ok(());
     }
-    let left_t = event_left_limit_time(event_t);
-    runtime.refresh_observation_discrete_rows(y, params, left_t, tol, EVENT_UPDATE_MAX_ITERS)?;
-    project_algebraics(
-        equilibrium_model,
-        y,
-        params,
+    let left_t = event_left_limit_time(input.event_t);
+    input.runtime.refresh_observation_discrete_rows(
+        input.y,
+        input.params,
         left_t,
-        model.state_scalar_count(),
-        tol,
+        input.tol,
+        EVENT_UPDATE_MAX_ITERS,
+    )?;
+    project_algebraics(
+        input.equilibrium_model,
+        input.y,
+        input.params,
+        left_t,
+        input.model.state_scalar_count(),
+        input.tol,
     )?;
     Ok(())
 }
