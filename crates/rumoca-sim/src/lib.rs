@@ -339,7 +339,7 @@ fn simulate_with_diffsol_diagnostics(
     ))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "viewer-web"))]
+#[cfg(feature = "report")]
 pub mod web;
 
 struct VariableSource<'a> {
