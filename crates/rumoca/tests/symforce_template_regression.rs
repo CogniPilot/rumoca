@@ -189,7 +189,9 @@ fn python_has_symforce() -> bool {
 
 #[cfg(feature = "template-runtime-tests")]
 fn strict_runtime_dependencies() -> bool {
-    std::env::var_os("RUMOCA_TEMPLATE_RUNTIME_STRICT").is_some()
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/template-runtimes/strict")
+        .is_file()
 }
 
 #[cfg(feature = "template-runtime-tests")]

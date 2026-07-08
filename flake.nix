@@ -150,6 +150,7 @@
           packages = [
             ciJulia
             ciPython
+            pkgs.binaryen
             pkgs.maturin
             pkgs.mdbook
             pkgs.nodejs_22

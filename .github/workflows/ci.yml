@@ -395,7 +395,6 @@ jobs:
       JULIA_DEPOT_PATH: "${{ github.workspace }}/target/julia-depot:"
       JULIA_PKG_PRECOMPILE_AUTO: '0'
       JULIA_PROJECT: ${{ github.workspace }}/infra/julia
-      RUMOCA_TEMPLATE_RUNTIME_STRICT: '1'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -429,34 +428,46 @@ jobs:
 
       - name: Prepare Python template runtime dependencies
         run: |
-          nix develop --command bash -lc '
-            set -euo pipefail
-            python -m venv target/template-runtime-venv
-            . target/template-runtime-venv/bin/activate
-            python -m pip install --upgrade pip
-            python -m pip install -r infra/python/core-requirements.txt
-            python -c "import casadi, diffrax, jax, numpy, onnx, onnxruntime, symforce, sympy; print('python template runtime deps ok')"
-          '
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+          python -m venv target/template-runtime-venv
+          . target/template-runtime-venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r infra/python/core-requirements.txt
+          python - <<'PY'
+          import casadi
+          import diffrax
+          import jax
+          import numpy
+          import onnx
+          import onnxruntime
+          import symforce
+          import sympy
+          print("python template runtime deps ok")
+          PY
+          EOF
 
       - name: Prepare Julia template runtime dependencies
         run: |
-          nix develop --command bash -lc '
-            set -euo pipefail
-            julia --project=infra/julia -e "
-              using Pkg
-              Pkg.instantiate()
-              using ModelingToolkit, OrdinaryDiffEqTsit5, IfElse, SciMLBase, Sundials
-              println(\"julia template runtime deps ok\")
-            "
-          '
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+          julia --project=infra/julia <<'JL'
+          using Pkg
+          Pkg.instantiate()
+          using ModelingToolkit, OrdinaryDiffEqTsit5, IfElse, SciMLBase, Sundials
+          println("julia template runtime deps ok")
+          JL
+          EOF
 
       - name: Run template runtime checks
         run: |
-          nix develop --command bash -lc '
-            set -euo pipefail
-            . target/template-runtime-venv/bin/activate
-            cargo xtask verify template-runtimes
-          '
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+          mkdir -p target/template-runtimes
+          touch target/template-runtimes/strict
+          . target/template-runtime-venv/bin/activate
+          cargo xtask verify template-runtimes
+          EOF
 
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
@@ -1355,13 +1366,9 @@ jobs:
   # ============================================================================
   build-wasm:
     name: Build WASM
-    # Release-only heavy job: builds the optimized npm packages, the mdBook
-    # docs, and the GitHub Pages artifact that deploy-pages/deploy consume.
-    # Runs only on the release tag. PRs get their WASM coverage from the
-    # lightweight `playground` job (the playground contract test used to live
-    # here). Nothing on a PR consumes this job's artifacts, so deferring the
-    # whole heavy build off PRs is safe.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Regular CI builds the optimized WASM packages so the release package path
+    # cannot drift until tag time. Only tag pushes prepare/upload Pages content.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1369,31 +1376,15 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
-
-      - name: Install Rust nightly with rust-src
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          rustup target add wasm32-unknown-unknown
-          rustup component add rust-src
-
-      - name: Install wasm-pack (prebuilt)
-        # build.mjs invokes `wasm-pack` directly, so it must be on PATH. This
-        # release-only job never runs on PRs (it is gated to the release tag),
-        # so the gate job's wasm-pack install does not cover it — install the
-        # same pinned prebuilt binary here.
-        uses: taiki-e/install-action@v2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          tool: wasm-pack@0.15.0
+          determinate: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
         with:
-          node-version: '20'
+          name: rumoca
 
       - name: Rust cache (wasm)
         uses: Swatinem/rust-cache@v2
@@ -1403,28 +1394,25 @@ jobs:
           cache-targets: false
 
       - name: Build optimized npm packages
-        # Push-only: wasm-opt (-Oz) is slow, and PRs already validate the build
-        # via the gate above. BOTH packages compile Modelica and emit code from
-        # every IR (AST/flat/DAE/solve) — they are equally capable for codegen.
-        # The only difference is the bundled solver RUNTIME for in-package
-        # simulation:
+        # BOTH packages compile Modelica and emit code from every IR
+        # (AST/flat/DAE/solve). The only difference is the bundled solver
+        # RUNTIME for in-package simulation:
         #   full-web -> @cognipilot/rumoca       (+ rk45 runtime; browser-safe —
         #                                          diffsol is excluded, it pulls a
         #                                          non-browser-safe relaxed-SIMD graph)
         #   core     -> @cognipilot/rumoca-core  (no bundled solver — bring your own)
-        # These overwrite the gate's unoptimized full-web so gh-pages and the
-        # wasm-package artifact (published on release by the deploy job) both
-        # get the optimized build.
-        if: github.event_name == 'push'
         run: |
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
           node packages/rumoca/build.mjs --profile release --variant full-web --optimize
           node packages/rumoca/build.mjs --profile release --variant core --optimize
-
-      - name: Install mdBook
-        run: cargo install mdbook --locked --version 0.5.2
+          EOF
 
       - name: Prepare GitHub Pages content
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
           if [ -d packages/rumoca/dist/release-full-web ]; then
             PKG_SUBDIR="release-full-web"
           elif [ -d packages/rumoca/dist/release-full-web-rayon ]; then
@@ -1475,6 +1463,7 @@ jobs:
 
           echo "=== GitHub Pages content ==="
           find gh-pages -type f
+          EOF
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v6
@@ -1483,6 +1472,7 @@ jobs:
           path: packages/rumoca/dist/
 
       - name: Upload Pages artifact
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-pages-artifact@v3
         with:
           path: gh-pages/
@@ -1693,12 +1683,12 @@ jobs:
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
 
   pr-python-smoke:
-    name: Python binding smoke (PR)
+    name: Build Python (linux-x86_64-gnu check)
     # rumoca-bind-python is excluded from `verify workspace`, and its full wheel
-    # matrix (build-python-wheels) is tag-only, so on PRs this builds one native
+    # matrix (build-python-wheels) is tag-only, so regular CI builds one native
     # Linux wheel directly under the Nix dev shell and runs the binding smoke
-    # tests to keep the API/magic/export coverage pre-merge.
-    if: github.event_name == 'pull_request'
+    # tests to keep the API/magic/export coverage from drifting pre-release.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1718,30 +1708,30 @@ jobs:
 
       - name: Build wheel (linux-x86_64-gnu)
         run: |
-          nix develop --command bash -lc '
-            set -euo pipefail
-            maturin build \
-              --release \
-              --out dist \
-              --manifest-path crates/rumoca-bind-python/Cargo.toml \
-              --target x86_64-unknown-linux-gnu
-          '
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+          maturin build \
+            --release \
+            --out dist \
+            --manifest-path crates/rumoca-bind-python/Cargo.toml \
+            --target x86_64-unknown-linux-gnu
+          EOF
 
       - name: Smoke test installed wheel
         shell: bash
         run: |
-          nix develop --command bash -lc '
-            set -euo pipefail
-            python -m venv target/python-smoke-venv
-            . target/python-smoke-venv/bin/activate
-            python -m pip install --upgrade pip
-            WHEEL=$(ls dist/*.whl | head -1)
-            python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
-            python crates/rumoca-bind-python/tests/smoke_test.py
-            python crates/rumoca-bind-python/tests/api_test.py
-            python crates/rumoca-bind-python/tests/magic_test.py
-            python crates/rumoca-bind-python/tests/export_test.py
-          '
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+          python -m venv target/python-smoke-venv
+          . target/python-smoke-venv/bin/activate
+          python -m pip install --upgrade pip
+          WHEEL=$(ls dist/*.whl | head -1)
+          python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
+          python crates/rumoca-bind-python/tests/smoke_test.py
+          python crates/rumoca-bind-python/tests/api_test.py
+          python crates/rumoca-bind-python/tests/magic_test.py
+          python crates/rumoca-bind-python/tests/export_test.py
+          EOF
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
