@@ -1067,7 +1067,9 @@ fn test_julia_mtk_template_empty_dae() {
     let result =
         render_template(&dae, builtin_template("julia-mtk", "julia_mtk.jl.jinja")).unwrap();
     assert!(result.contains("using ModelingToolkit"));
-    assert!(result.contains("using DifferentialEquations"));
+    assert!(result.contains("using SciMLBase: CallbackSet, ContinuousCallback, ODEProblem, solve"));
+    assert!(result.contains("using OrdinaryDiffEqTsit5: Tsit5"));
+    assert!(result.contains("using IfElse: ifelse"));
     assert!(result.contains("@independent_variables t"));
     assert!(result.contains("D = Differential(t)"));
     assert!(result.contains("@named sys = ODESystem(eqs, t)"));
