@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use crate::SimulationSessionApi;
 use crate::{SimSolverMode, SimulationDiagnosticError};
 
@@ -167,7 +167,7 @@ impl SimulationSession {
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 impl SimulationSessionApi for SimulationSession {
     type Error = SimulationDiagnosticError;
 
@@ -206,10 +206,10 @@ impl SimulationSessionApi for SimulationSession {
         }
     }
 
-    fn max_runner_advance_dt(&self) -> Option<f64> {
+    fn max_schedule_advance_dt(&self) -> Option<f64> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
-            SimulationSessionInner::Diffsol(session) => session.max_runner_advance_dt(),
+            SimulationSessionInner::Diffsol(session) => session.max_schedule_advance_dt(),
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(_) => None,
         }

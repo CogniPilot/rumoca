@@ -35,7 +35,7 @@ Sources, in priority order:
 3. Runtime defaults.
 
 `--dt` (or `[sim] dt`) sets the *output* interval — and the fixed step for
-the explicit runner path. If omitted, the runtime chooses automatically.
+the explicit solver path. If omitted, the runtime chooses automatically.
 
 ## Experiment Annotations
 

@@ -140,7 +140,7 @@ and live presentation are independent additions:
 - `[transport.http]` + `[transport.websocket]` — serve the browser viewer
   (`scene = "my_scene.js"` selects the 3D scene file). This asks for an
   external web surface.
-- `[input]`, `[locals]`, `[signals.model_inputs]` — named runner state and
+- `[input]`, `[locals]`, `[signals.model_inputs]` — named simulation state and
   routing from input devices to model `input` variables. Input alone does not
   select a special viewer.
 - `[transport.udp]` + `[schema]`/`[receive]`/`[send]` — couple an external
@@ -172,5 +172,5 @@ devices) without changing the Modelica source.
 
 Viewer surfaces are separate from input routing. Standard timeseries/scatter
 panels use the results viewer. External web scenes use the native realtime
-runner and the configured scene script. Both are launched from scenarios, so
+scheduled loop and the configured scene script. Both are launched from scenarios, so
 the same configuration works from the CLI, VS Code, and editor tooling.

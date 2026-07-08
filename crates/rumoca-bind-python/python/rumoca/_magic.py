@@ -97,9 +97,8 @@ def run_modelica_cell(user_ns: dict[str, Any], line: str, cell: str) -> Any:
     args = _parse_line(line)
 
     try:
-        model = _native.loads(
-            cell, model=args.model, filename=_CELL_FILENAME, roots=_roots(args)
-        )
+        session = _native.Session(roots=_roots(args))
+        model = session.loads(cell, model=args.model, filename=_CELL_FILENAME)
         if args.subcommand == "compile":
             result: Any = model
         elif args.subcommand == "sim":

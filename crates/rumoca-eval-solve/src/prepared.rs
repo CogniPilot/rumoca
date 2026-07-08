@@ -498,6 +498,63 @@ impl PreparedScalarProgramBlock {
         }
     }
 
+    pub(crate) fn target_assignment_diagonal_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<Option<f64>, EvalSolveError> {
+        let Some(shape) = self.row_assignment_shapes.get(row_idx).copied().flatten() else {
+            return Ok(None);
+        };
+        if shape.target_y_index() != target_y_index {
+            return Ok(None);
+        }
+        let span = self.block.program_span(row_idx);
+        match shape {
+            TargetAssignmentShape::Direct { target_scale, .. } => Ok(Some(target_scale)),
+            TargetAssignmentShape::Affine {
+                coefficient_reg,
+                coefficient_scale,
+                expr_eval_len,
+                ..
+            } => {
+                let Some(row) = self.block.programs.get(row_idx) else {
+                    return Err(EvalSolveError::OutputTooSmall {
+                        required: checked_required_row_count(row_idx)?,
+                        len: self.block.row_count(),
+                        span,
+                    });
+                };
+                let coefficient = match coefficient_reg {
+                    Some(reg) => {
+                        let mut scratch = self.scratch.borrow_mut();
+                        eval_program_single(
+                            PreparedRowEval::new(
+                                &row[..expr_eval_len],
+                                self.row_registers[row_idx],
+                                y,
+                                p,
+                                t,
+                                context,
+                            )
+                            .with_source_span(span),
+                            self.row_register_safe[row_idx],
+                            &mut scratch,
+                        )
+                        .map_err(|error| error.with_source_span(span))?;
+                        read_shape_reg(&scratch.regs, reg, span)?
+                    }
+                    None => 1.0,
+                };
+                Ok(Some(coefficient_scale * coefficient))
+            }
+        }
+    }
+
     pub fn eval_target_assignment_row_unchecked_with_context(
         &self,
         row_idx: usize,
@@ -790,6 +847,7 @@ enum TargetAssignmentShape {
     Direct {
         target_y_index: usize,
         expr_reg: u32,
+        target_scale: f64,
         expr_eval_len: usize,
     },
     Affine {
@@ -886,7 +944,7 @@ fn direct_assignment_shape(
     row: &[LinearOp],
     output_reg: u32,
 ) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    let Some((target_reg, expr_reg)) = assignment_expr_reg(row, output_reg) else {
+    let Some((target_reg, expr_reg, target_scale)) = assignment_expr_reg(row, output_reg) else {
         return Ok(None);
     };
     let Some(target_y_index) = target_load_index(row, target_reg) else {
@@ -899,6 +957,7 @@ fn direct_assignment_shape(
     Ok(Some(TargetAssignmentShape::Direct {
         target_y_index,
         expr_reg,
+        target_scale,
         expr_eval_len,
     }))
 }
@@ -1166,7 +1225,7 @@ fn checked_reg_offset(start: u32, offset: usize) -> Option<u32> {
     start.checked_add(offset)
 }
 
-fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> {
+fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32, f64)> {
     let output_op = producer(row, output_reg)?;
     match *output_op {
         LinearOp::Binary {
@@ -1174,7 +1233,7 @@ fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> 
             lhs,
             rhs,
             ..
-        } => sub_assignment_expr_reg(row, lhs, rhs),
+        } => sub_assignment_expr_reg(row, lhs, rhs, 1.0),
         LinearOp::Unary {
             op: rumoca_ir_solve::UnaryOp::Neg,
             arg,
@@ -1190,7 +1249,7 @@ fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> 
             else {
                 return None;
             };
-            sub_assignment_expr_reg(row, lhs, rhs)
+            sub_assignment_expr_reg(row, lhs, rhs, -1.0)
         }
         _ => None,
     }
@@ -1207,11 +1266,16 @@ fn producer_pos(row: &[LinearOp], dst_reg: u32) -> Option<usize> {
         .rposition(|op| op.dst_register() == Some(dst_reg))
 }
 
-fn sub_assignment_expr_reg(row: &[LinearOp], lhs: u32, rhs: u32) -> Option<(u32, u32)> {
+fn sub_assignment_expr_reg(
+    row: &[LinearOp],
+    lhs: u32,
+    rhs: u32,
+    output_scale: f64,
+) -> Option<(u32, u32, f64)> {
     if is_y_load(row, lhs) {
-        Some((lhs, rhs))
+        Some((lhs, rhs, output_scale))
     } else if is_y_load(row, rhs) {
-        Some((rhs, lhs))
+        Some((rhs, lhs, -output_scale))
     } else {
         None
     }

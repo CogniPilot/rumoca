@@ -29,35 +29,35 @@ mod compiler;
 mod error;
 
 // The CLI surface — argument parsing/dispatch (`cli`) plus the per-command
-// implementations below — depends on the interactive `runner` feature
-// (transports, signal-hook, anyhow, `rumoca_sim::runner`). Library consumers of
+// implementations below — depends on the scheduled simulation feature
+// (transports, signal-hook, anyhow, `rumoca_sim::scheduled_sim`). Library consumers of
 // this crate (the Python binding, wasm builds) need only the batch compile
 // surface re-exported below, and must build without those native-only deps, so
-// the whole CLI is gated on `runner`. The `rumoca` binary enables `runner`
+// the whole CLI is gated on `scheduled-sim`. The `rumoca` binary enables it
 // through its package-level `default`, so it always sees the CLI.
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub mod cli;
 
 // CLI subcommand implementations. Declared here (rather than in `main.rs`) so
 // both the binary and the reusable `cli` module can reach them; `cli` owns the
 // argument types and dispatch, these own the per-command work.
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod cache_cmd;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod container;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod fmt_cli;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod fmu;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod main_helpers;
 pub(crate) mod packaging;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod sim_bench;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod sim_inspect;
 pub(crate) mod target_manifest;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod targets_cmd;
 
 pub use compiler::{CompilationResult, Compiler, DaeCompilationResult, TemplateIr};
@@ -68,6 +68,6 @@ pub use target_manifest::render_target_files;
 // The generic declarative checksum/packaging build step (contract §4). Exposed
 // like `render_target_files` so CI can drive the exact build step the CLI uses
 // for the `galec`/`galec-production` eFMU targets (contract §9 WI-5).
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub use packaging::{AssetFile, PackageSpec, ZipPackage, efmi_asset_source, render_and_package};
 pub use packaging::{render_web, render_web_files, topo_sort};

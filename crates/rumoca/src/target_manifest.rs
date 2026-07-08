@@ -1,7 +1,7 @@
 use std::path::Path;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use std::path::PathBuf;
-#[cfg(all(test, feature = "runner"))]
+#[cfg(all(test, feature = "scheduled-sim"))]
 use std::process::Command;
 
 use crate::{CompilationResult, TemplateIr, error::CompilerError};
@@ -11,12 +11,12 @@ use rumoca_compile::codegen::targets::{
     TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     validate_dae_target_capabilities,
 };
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use rumoca_compile::codegen::targets::{TargetBuildKind, TargetFile, safe_target_join};
 use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
 use rumoca_compile::galec::{GalecExportError, GalecTargetError};
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) fn compile_target(
     result: &CompilationResult,
     model: &str,
@@ -318,7 +318,7 @@ fn render_raw_template(
         .with_context(|| format!("Render raw template: {target}"))
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn compile_raw_template_target(
     result: &CompilationResult,
     model: &str,
@@ -351,7 +351,7 @@ fn template_ir_to_cli(value: TargetTemplateIr) -> TemplateIr {
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn compile_manifest_target(
     result: &CompilationResult,
     model: &str,
@@ -429,7 +429,7 @@ fn compile_manifest_target(
 /// `.efmu` zip sits beside it — matching the `build = "fmu"` overwrite-on-re-run
 /// UX. The plan (and its GALEC projection) is built before any filesystem
 /// effect, so a rejected model leaves no directory behind.
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn compile_efmu_target(
     result: &CompilationResult,
     model: &str,
@@ -486,13 +486,13 @@ fn compile_efmu_target(
 
 /// The eFMU root index file: a directory holding it is recognized as a prior
 /// build of this product (contract §4b; eFMI ch. 2 package format 1).
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 const EFMU_CONTENT_INDEX: &str = "__content.xml";
 
 /// Write every `[[files]]` entry of a manifest target under `out_dir` (the
 /// non-packaged and FMU paths; the eFMU path packages the declarative build
 /// step's renders instead).
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn write_manifest_files(
     result: &CompilationResult,
     renderer: &ManifestRenderer,
@@ -597,7 +597,7 @@ fn unsupported_tensor_feature(
     )
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) -> PathBuf {
     match manifest.build {
         Some(TargetBuildKind::Fmu) => PathBuf::from(format!("{model_identifier}.fmu")),
@@ -608,7 +608,7 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn write_manifest_file(
     result: &CompilationResult,
     renderer: &ManifestRenderer,
@@ -781,7 +781,7 @@ fn render_galec_c_template(
     .context("Render embedded-c-galec target template")
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {
     let Some(mode) = mode else {
         return Ok(());
@@ -803,7 +803,7 @@ fn apply_manifest_file_mode(path: &Path, mode: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn print_target_completion_message(
     manifest: &TargetManifest,
     out_dir: &Path,
@@ -831,7 +831,7 @@ fn print_target_completion_message(
     Ok(())
 }
 
-#[cfg(all(test, feature = "runner"))]
+#[cfg(all(test, feature = "scheduled-sim"))]
 mod tests {
     use super::*;
     use crate::Compiler;

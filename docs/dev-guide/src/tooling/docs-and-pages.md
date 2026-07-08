@@ -35,7 +35,7 @@ cargo xtask verify docs        # the docs CI gate
 | `crates/rumoca-web` | Rust crate that embeds the web package for native reports/viewer shells; `crates/rumoca-web/web` points at `packages/rumoca-web` so Cargo packaging and npm packaging use the same sources. |
 | `packages/playground` | Static playground app and browser smoke tests; it is a product package, not a reusable JavaScript library. |
 | `packages/vscode` | VS Code extension, including offline webview assets built from the same `packages/rumoca-web` source package. |
-| `docs/user-guide/live` | mdBook live-example runner. `docs/dev-guide/live` is a symlink to it. |
+| `docs/user-guide/live` | mdBook live-example harness. `docs/dev-guide/live` is a symlink to it. |
 | `infra/` | Installer, Docker, and Nix integration; not npm/Cargo package source. |
 
 Do not check generated/minified vendor JavaScript into the tree. Browser
@@ -45,7 +45,7 @@ outputs by package-local builds or `cargo xtask` commands.
 ## Live Examples
 
 Fenced blocks annotated `modelica,interactive` become editable, runnable
-mini editors backed by the WASM package. The runner is
+mini editors backed by the WASM package. The harness is
 `docs/user-guide/live/rumoca-live.js` (+ `.css`), wired into both books via
 `additional-js`/`additional-css` in their `book.toml`s —
 `docs/dev-guide/live` is a symlink to the user-guide copy so there is a

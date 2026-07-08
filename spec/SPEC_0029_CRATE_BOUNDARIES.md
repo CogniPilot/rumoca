@@ -162,7 +162,7 @@ Re-export guardrails:
   | Facade | Scope | Allowed cross-crate exports |
   |---|---|---|
   | `rumoca-compile` | compilation/session | curated compile, parsing, codegen, analysis APIs |
-  | `rumoca-sim` | simulation/runtime | solver/reporting runner APIs behind features |
+  | `rumoca-sim` | simulation/runtime | solver/reporting/scheduling APIs behind features |
   | `rumoca-codec` | transport-neutral lockstep I/O | `SignalFrame`, codec traits/factories, typed codec config |
 
   These exports stay curated, namespaced, and documented. CLI/bindings may
@@ -248,8 +248,8 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
-| Simulation facade/runner | `rumoca-sim` | Composes solvers/reporting/viz behind features |
-| Simulation session APIs | separate from runtime contracts | Simulation sessions are the interactive runtime surface |
+| Simulation facade | `rumoca-sim` | Composes solvers/reporting/viz behind features |
+| Simulation session APIs | separate from runtime contracts | Simulation sessions are the scheduled runtime surface |
 | Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
 | Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |
@@ -307,7 +307,7 @@ Input boundary:
   state, and signal mapping only. It MUST NOT depend on concrete adapters or
   native device crates such as `gilrs` or `crossterm`.
 - Concrete adapters depend on `rumoca-input` and translate device events.
-- Facades MAY compose input adapters behind opt-in runner features.
+- Facades MAY compose input adapters behind opt-in scheduling/input features.
 
 Simulation composition:
 

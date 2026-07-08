@@ -37,7 +37,7 @@ accesses fail the build.
   from the table above.
 - A child process that genuinely cannot accept argv gets a fixed-path file, not
   an environment variable. Examples: `cargo xtask verify msl-parity` writes
-  `target/msl/parity-config.json` for libtest; VS Code smoke runners write
+  `target/msl/parity-config.json` for libtest; VS Code smoke jobs write
   `.code-workspace` settings that the extension forwards to `rumoca-lsp` flags.
 - Standard, non-Rumoca environment variables a tool merely passes through
   (`MODELICAPATH`, `GITHUB_ACTIONS`, `ELECTRON_DISABLE_SANDBOX`, …) are not
@@ -161,7 +161,7 @@ separate concerns:
   viewer mode.
 - `[viewer].mode` controls the launch surface. `results_panel` runs the normal
   batch simulation and renders configured `[[plot.views]]` in the editor
-  results panel. `external_web` starts the interactive runner and opens the
+  results panel. `external_web` starts the scheduled scheduled simulation and opens the
   HTTP/WebSocket viewer for scenarios with keyboard/gamepad/input routing.
 - `[viewer].prefer_external` is an editor presentation hint: false/omitted
   prefers embedded VS Code panels; true opens the system browser.

@@ -1,6 +1,6 @@
 [package]
 name = "rumoca-sim"
-description = "High-level simulation facade for Rumoca (sim-core + solvers + I/O runner)"
+description = "High-level simulation facade for Rumoca (sim-core + solvers + scheduled simulation)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,26 +19,28 @@ solver-rk45 = ["dep:rumoca-solver-rk45"]
 # Browser assets are built by packages/rumoca-web and loaded at runtime.
 viz = []
 # HTML simulation report renderer. Pure-Rust deps (web + compile);
-# cross-compiles cleanly. Independent of `runner` so non-lockstep
-# CLIs can still emit HTML reports from `simulate`.
+# cross-compiles cleanly. Independent of scheduled loop execution so
+# non-lockstep CLIs can still emit HTML reports from `simulate`.
 report = ["dep:rumoca-compile"]
-runner = [
-    "native-solvers",
-    "viz",
-    "report",
+scenario-config = [
     "dep:rumoca-codec",
     "dep:rumoca-input",
-    "dep:rumoca-input-gamepad",
-    "dep:rumoca-input-keyboard",
     "dep:rumoca-transport-udp",
     "dep:rumoca-transport-zenoh",
-    "dep:rumoca-transport-websocket",
-    "dep:rumoca-compile",
-    "dep:signal-hook",
-    "dep:tiny_http",
-    "dep:anyhow",
     "dep:toml",
 ]
+scheduled-sim = [
+    "native-solvers",
+    "report",
+    "dep:rumoca-compile",
+    "dep:anyhow",
+]
+input-keyboard = ["scenario-config", "dep:rumoca-input-keyboard"]
+input-gamepad = ["scenario-config", "dep:rumoca-input-gamepad"]
+transport-udp = ["scenario-config", "scheduled-sim", "dep:rumoca-transport-udp"]
+transport-zenoh = ["scenario-config", "scheduled-sim", "dep:rumoca-transport-zenoh"]
+viewer-web = ["scheduled-sim", "viz", "dep:rumoca-transport-websocket", "dep:tiny_http"]
+process-control = ["dep:signal-hook"]
 
 [dependencies]
 rumoca-core = { workspace = true }

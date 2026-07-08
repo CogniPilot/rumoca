@@ -2,7 +2,7 @@
 //!
 //! Re-exports the primitives crate `rumoca-solver` plus, when the
 //! corresponding features are enabled, the diffsol/rk45 solver entry points
-//! and the I/O `runner` module that drives interactive simulations.
+//! and the scheduled simulation module that drives scheduled scenario simulations.
 
 use indexmap::IndexSet;
 use rumoca_ir_solve as solve;
@@ -32,7 +32,7 @@ pub mod row_eval_trace;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod simulation_session;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 mod simulation_session_api;
 
 #[cfg(feature = "solver-diffsol")]
@@ -51,7 +51,7 @@ pub use diffsol::{
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use simulation_session::{SessionState, SimulationSession};
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) use simulation_session_api::SimulationSessionApi;
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
@@ -69,11 +69,22 @@ pub use solve_lowering::{
     structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
 };
 
+#[cfg(feature = "scenario-config")]
+pub mod scenario_config;
+
 #[cfg(feature = "solver-rk45")]
 pub mod rk45;
 
-#[cfg(feature = "runner")]
-pub mod runner;
+#[cfg(all(
+    feature = "scheduled-sim",
+    feature = "scenario-config",
+    feature = "input-keyboard",
+    feature = "transport-udp",
+    feature = "transport-zenoh",
+    feature = "viewer-web",
+    feature = "process-control"
+))]
+pub mod scheduled_sim;
 
 #[cfg(feature = "report")]
 pub mod report;
@@ -177,7 +188,7 @@ fn simulate_solve_model_diffsol(
 /// (`NaN`/`inf`) value, automatically re-run once with NaN tracing enabled so
 /// the offending model variable(s) are reported — turning an opaque
 /// "step size too small" into an actionable diagnostic. Intended for
-/// interactive / single-model use (the CLI); bulk callers should use
+/// scheduled single-model use (the CLI); bulk callers should use
 /// [`simulate_with_diagnostics`] to avoid the retry cost.
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub fn simulate_with_diagnostics_auto_nan_trace(
@@ -328,7 +339,7 @@ fn simulate_with_diffsol_diagnostics(
     ))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "viewer-web"))]
 pub mod web;
 
 struct VariableSource<'a> {

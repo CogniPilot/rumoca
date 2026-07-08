@@ -86,7 +86,7 @@ output = "results.html"
 mode = "realtime"  # optional pacing, see below
 ```
 
-`mode` selects runner pacing:
+`mode` selects schedule pacing:
 
 | Mode | Behavior |
 |---|---|
@@ -158,7 +158,7 @@ root_type = "your.namespace.SimInput"
 "gyro.x" = { key = "gyro_x" }
 ```
 
-### `[locals]` — named persistent runner state
+### `[locals]` — named persistent simulation state
 
 ```toml
 [locals]

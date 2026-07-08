@@ -648,16 +648,55 @@ impl SolveRuntime {
         seed[target] = saved;
         let off_diagonal = off_diagonal?;
         self.validate_seed_jacobian_value(t, row, off_diagonal, "right-hand side")?;
+        if self.refresh_row_subtracted_target_index(row) == Some(target) {
+            seed[target] = off_diagonal;
+            return Ok(());
+        }
+        if let Some(diagonal) = self.assignment_row_diagonal(row, solver_y, params, t)? {
+            self.write_seed_refresh_from_diagonal(t, row, seed, off_diagonal, diagonal)?;
+            return Ok(());
+        }
         // Diagonal term ∂g/∂target via a unit seed isolated to the target slot.
         unit_seed[target] = 1.0;
         let diagonal = self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, unit_seed);
         unit_seed[target] = 0.0;
         let diagonal = diagonal?;
         self.validate_seed_jacobian_value(t, row, diagonal, "diagonal coefficient")?;
+        self.write_seed_refresh_from_diagonal(t, row, seed, off_diagonal, diagonal)
+    }
+
+    fn assignment_row_diagonal(
+        &self,
+        row: &AlgebraicRefreshRow,
+        solver_y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        self.implicit_scalar_rhs
+            .target_assignment_diagonal_unchecked_with_context(
+                row.row_idx,
+                row.target_index,
+                solver_y,
+                params,
+                t,
+                self.row_eval_context(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn write_seed_refresh_from_diagonal(
+        &self,
+        t: f64,
+        row: &AlgebraicRefreshRow,
+        seed: &mut [f64],
+        off_diagonal: f64,
+        diagonal: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        self.validate_seed_jacobian_value(t, row, diagonal, "diagonal coefficient")?;
         if diagonal.abs() <= SEED_DIAGONAL_EPS {
             return Err(self.seed_refresh_row_singular_error(t, row, diagonal));
         }
-        seed[target] = -off_diagonal / diagonal;
+        seed[row.target_index] = -off_diagonal / diagonal;
         Ok(())
     }
 
