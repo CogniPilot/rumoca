@@ -892,17 +892,11 @@ fn observation_refresh_keeps_pre_values_fixed_during_settle() {
     model.problem.discrete.observation_refresh = vec![true, true];
     let mut y = Vec::new();
     let mut p = vec![0.0, 0.0, 0.0];
-    let runtime_state = solve_eval::SimulationRuntimeState::new();
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
 
-    let changed = refresh_observation_discrete_rows(
-        &model,
-        &runtime_state,
-        y.as_mut_slice(),
-        p.as_mut_slice(),
-        0.1,
-        1.0e-12,
-    )
-    .expect("MLS §8.6 pre(state) should remain the event-entry value during settle");
+    let changed = runtime
+        .refresh_observation_discrete_rows(y.as_mut_slice(), p.as_mut_slice(), 0.1, 1.0e-12, 8)
+        .expect("MLS §8.6 pre(state) should remain the event-entry value during settle");
 
     assert!(changed);
     assert_eq!(p, vec![1.0, 1.0, 0.0]);
@@ -934,17 +928,11 @@ fn observation_refresh_resets_fixed_pre_event_history_rows() {
     model.problem.discrete.observation_refresh = vec![true, true];
     let mut y = Vec::new();
     let mut p = vec![1.0, 0.0, 0.0, 0.0];
-    let runtime_state = solve_eval::SimulationRuntimeState::new();
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
 
-    let changed = refresh_observation_discrete_rows(
-        &model,
-        &runtime_state,
-        y.as_mut_slice(),
-        p.as_mut_slice(),
-        0.0,
-        1.0e-12,
-    )
-    .expect("observation refresh should settle event-history rows");
+    let changed = runtime
+        .refresh_observation_discrete_rows(y.as_mut_slice(), p.as_mut_slice(), 0.0, 1.0e-12, 8)
+        .expect("observation refresh should settle event-history rows");
 
     assert!(changed);
     assert_eq!(

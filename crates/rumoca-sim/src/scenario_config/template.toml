@@ -28,7 +28,7 @@ version = "1"
 #
 # With only [model] and [sim], `rumoca sim -c rumoca-scenario.toml` compiles, simulates,
 # and writes an HTML report. Add [input], [signals], [transport], or external
-# coupling sections to launch the interactive runner instead.
+# coupling sections to use the scheduled simulation loop instead.
 
 # ── Model ─────────────────────────────────────────────────────────────────
 # Required. Modelica model file (relative to this scenario) + top-level class
@@ -49,7 +49,7 @@ atol = 1e-6        # optional absolute solver tolerance
 rtol = 1e-6        # optional relative solver tolerance
 solver = "auto"    # auto | bdf | rk-like
 output = "results.html"
-mode = "realtime"  # Optional runner pacing:
+mode = "realtime"  # Optional schedule pacing:
                    #   "as_fast_as_possible" — drain available inputs and run without sleeping.
                    #   "realtime"            — zero-order-hold inputs and sleep to wall-clock dt.
                    #   "lockstep"            — wait for each external packet before stepping.
@@ -59,7 +59,7 @@ steps_per_packet = 1
                    # Use e.g. 4 for a 25 Hz controller with a 100 Hz plant dt.
 
 # Optional multirate lockstep scheduler. When present, this supersedes
-# steps_per_packet: the runner streams [send] at send_rate_hz and waits for one
+# steps_per_packet: the scheduled loop streams [send] at send_rate_hz and waits for one
 # [receive] packet at each receive_rate_hz barrier before advancing further.
 # [lockstep]
 # send_rate_hz = 240

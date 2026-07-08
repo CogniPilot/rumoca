@@ -25,10 +25,10 @@
 //! a thin wrapper that sets up the allocator and the miette error hook, parses
 //! the arguments, runs [`rumoca::cli::run`], and renders any error.
 
-// mimalloc is gated behind `runner` (the binary's feature set) so pure-Rust
+// mimalloc is gated behind `native-allocator` so pure-Rust
 // library consumers of this crate don't pull a C allocator. The binary always
-// builds with `runner` via the package default.
-#[cfg(feature = "runner")]
+// enables it via the package default.
+#[cfg(feature = "native-allocator")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -87,17 +87,20 @@ fn print_cli_error(error: &anyhow::Error) {
     {
         return;
     }
-    #[cfg(feature = "runner")]
-    if let Some(runner_error) = error.downcast_ref::<rumoca_sim::runner::RunnerError>()
-        && print_runner_diagnostic_error(runner_error)
+    #[cfg(feature = "scheduled-sim")]
+    if let Some(scheduled_error) =
+        error.downcast_ref::<rumoca_sim::scheduled_sim::ScheduledSimError>()
+        && print_scheduled_sim_diagnostic_error(scheduled_error)
     {
         return;
     }
     eprintln!("{:?}", build_cli_error_report(error));
 }
 
-#[cfg(feature = "runner")]
-fn print_runner_diagnostic_error(error: &rumoca_sim::runner::RunnerError) -> bool {
+#[cfg(feature = "scheduled-sim")]
+fn print_scheduled_sim_diagnostic_error(
+    error: &rumoca_sim::scheduled_sim::ScheduledSimError,
+) -> bool {
     let Some((diagnostic, source_map)) = error.source_diagnostic() else {
         return false;
     };

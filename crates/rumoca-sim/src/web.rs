@@ -35,7 +35,7 @@ globalThis.__rumocaResultsReportMount = function(options) {
   root.replaceChildren(pre);
 };
 "#;
-#[cfg(feature = "runner")]
+#[cfg(feature = "viewer-web")]
 const FALLBACK_VIEWER_HTML: &str = r#"<!DOCTYPE html>
 <html>
 <head>
@@ -137,7 +137,7 @@ fn read_optional_vendor_asset(file_name: &str) -> Option<String> {
     read_required_vendor_asset(file_name).ok()
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "viewer-web")]
 fn read_optional_package_file(relative_path: &str) -> Option<String> {
     candidate_package_paths(relative_path)
         .into_iter()
@@ -157,7 +157,7 @@ fn candidate_vendor_paths(file_name: &str) -> Vec<PathBuf> {
     dirs.into_iter().map(|dir| dir.join(file_name)).collect()
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "viewer-web")]
 fn candidate_package_paths(relative_path: &str) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
@@ -244,7 +244,7 @@ fn escape_inline_script_json(text: &str) -> String {
         .replace('\u{2029}', "\\u2029")
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "viewer-web")]
 pub fn start_viewer_server(
     port: u16,
     ws_port: u16,
@@ -263,7 +263,7 @@ pub fn start_viewer_server(
     )
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "viewer-web")]
 pub mod sim_viewer_server {
     use std::path::{Component, Path, PathBuf};
 

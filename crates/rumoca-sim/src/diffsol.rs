@@ -1,12 +1,12 @@
 use std::time::Instant;
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::BuildSimulationTimings;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use crate::SimulationSessionApi;
 use crate::solve_lowering::{
     SimulationDiagnosticError, lower_dae_for_simulation_with_stage_timing_and_param_overrides,
@@ -191,7 +191,7 @@ impl SimulationSession {
         self.inner.state()
     }
 
-    #[cfg(feature = "runner")]
+    #[cfg(feature = "scheduled-sim")]
     pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
         self.inner.values_for(names)
     }
@@ -204,9 +204,9 @@ impl SimulationSession {
         self.inner.variable_names()
     }
 
-    #[cfg(feature = "runner")]
-    pub(crate) fn max_runner_advance_dt(&self) -> Option<f64> {
-        self.inner.max_runner_advance_dt()
+    #[cfg(feature = "scheduled-sim")]
+    pub(crate) fn max_schedule_advance_dt(&self) -> Option<f64> {
+        self.inner.max_schedule_advance_dt()
     }
 }
 
@@ -214,7 +214,7 @@ fn solve_lowering_sim_error(err: rumoca_phase_solve::SolveModelLowerError) -> Si
     SimError::SolveIr(err.to_string())
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 impl SimulationSessionApi for SimulationSession {
     type Error = SimError;
 
@@ -238,7 +238,7 @@ impl SimulationSessionApi for SimulationSession {
         Self::get(self, name)
     }
 
-    fn max_runner_advance_dt(&self) -> Option<f64> {
-        Self::max_runner_advance_dt(self)
+    fn max_schedule_advance_dt(&self) -> Option<f64> {
+        Self::max_schedule_advance_dt(self)
     }
 }

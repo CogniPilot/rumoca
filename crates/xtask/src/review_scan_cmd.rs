@@ -301,7 +301,7 @@ fn is_allowed_unsafe_boundary_path(path: &str) -> bool {
     path.starts_with("crates/rumoca-exec-cranelift/")
         || path.starts_with("crates/rumoca-exec-mlir/")
         || path.starts_with("crates/rumoca-exec-wasm/")
-        || path == "crates/rumoca-sim/src/runner/executor.rs"
+        || path == "crates/rumoca-sim/src/scheduled_sim/executor.rs"
 }
 
 fn changed_rust_files(repo_root: &Path, base: &str, head: &str) -> Result<Vec<PathBuf>> {

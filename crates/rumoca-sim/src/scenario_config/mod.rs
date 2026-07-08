@@ -1,7 +1,7 @@
-//! TOML configuration model for the interactive simulation runner.
+//! TOML configuration model for scheduled scenario simulations.
 //!
 //! Aggregates input, codec, transport, and pacing sections outside the
-//! compiler/session layer. Lockstep is one pacing mode, not the runner's
+//! compiler/session layer. Lockstep is one pacing mode, not the runtime's
 //! architecture.
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,9 @@ use rumoca_input::config::{DeriveSpec, InputConfig, LocalDef, SignalsConfig};
 use rumoca_solver::SimPacingMode;
 use rumoca_transport_udp::UdpConfig;
 use rumoca_transport_zenoh::ZenohConfig;
+
+/// Template TOML printed by `rumoca sim init`.
+pub const CONFIG_TEMPLATE: &str = include_str!("template.toml");
 
 // ── Top-level ──────────────────────────────────────────────────────────────
 
@@ -157,7 +160,7 @@ pub struct SimConfig {
     /// - `lockstep`: wait for each inbound external-interface packet before stepping.
     #[serde(default)]
     pub mode: Option<SimPacingMode>,
-    /// Number of `dt` runner steps to advance after each received lockstep
+    /// Number of `dt` solver steps to advance after each received lockstep
     /// packet. Values greater than 1 are useful for a slower external
     /// controller driving a faster plant integration rate.
     #[serde(default = "default_steps_per_packet")]
@@ -167,10 +170,10 @@ pub struct SimConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockstepConfig {
-    /// Outbound sample stream rate. With the current runner this is the single
+    /// Outbound sample stream rate. With the current scheduled loop this is the single
     /// configured `[send]` FlatBuffer message, e.g. fake mocap.
     pub send_rate_hz: f64,
-    /// Inbound control barrier rate. The runner waits for one received packet
+    /// Inbound control barrier rate. The scheduled loop waits for one received packet
     /// before advancing beyond each interval.
     pub receive_rate_hz: f64,
     /// Maximum plant integration step used while advancing between scheduled
@@ -622,16 +625,16 @@ impl SimulationConfig {
         self.schema.is_some() && self.receive.is_some() && self.send.is_some()
     }
 
-    /// Effective interactive pacing mode. Explicit TOML wins; otherwise an
-    /// externally-coupled runner defaults to lockstep and standalone defaults
+    /// Effective scenario pacing mode. Explicit TOML wins; otherwise an
+    /// externally-coupled schedule defaults to lockstep and standalone defaults
     /// to realtime.
     pub fn effective_pacing_mode(&self) -> SimPacingMode {
-        SimPacingMode::resolve_interactive(self.sim.mode, self.has_fb())
+        SimPacingMode::resolve_schedule(self.sim.mode, self.has_fb())
     }
 
-    /// True when the config requests the interactive runner instead of a
-    /// batch compile/simulate/report run.
-    pub fn is_interactive_runner(&self) -> bool {
+    /// True when scenario I/O requires the scheduled simulation loop instead of
+    /// a one-shot batch compile/simulate/report run.
+    pub fn requires_scheduled_loop(&self) -> bool {
         self.has_fb()
             || self.external_interface.is_some()
             || self.transport.is_some()
@@ -768,7 +771,7 @@ dt = 0.01
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
         assert!(!cfg.has_fb());
         assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
-        assert!(!cfg.is_interactive_runner());
+        assert!(!cfg.requires_scheduled_loop());
     }
 
     #[test]
@@ -783,10 +786,10 @@ t_end = 10.0
 dt = 0.01
 atol = 1e-7
 rtol = 1e-6
-output = "Ball_results.html"
-"#;
+        output = "Ball_results.html"
+        "#;
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
-        assert!(!cfg.is_interactive_runner());
+        assert!(!cfg.requires_scheduled_loop());
         assert_eq!(cfg.sim.t_end, 10.0);
         assert_eq!(cfg.sim.atol, Some(1.0e-7));
         assert_eq!(cfg.sim.rtol, Some(1.0e-6));

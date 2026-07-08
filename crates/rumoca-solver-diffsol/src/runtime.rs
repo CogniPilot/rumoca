@@ -1,7 +1,6 @@
 use super::*;
 use rumoca_eval_solve::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, apply_discrete_slot_value,
-    apply_discrete_slot_values,
+    EventUpdateRowFilter, ProjectedEventUpdateInput, apply_discrete_slot_values,
 };
 use rumoca_solver::{
     EventActionOutcome, EventPreMode, NoStateEventStep, NoStateOrchestrationBackend,
@@ -11,11 +10,11 @@ use rumoca_solver::{
 
 pub(crate) fn settle_algebraics_and_relation_memory(
     runtime: &SolveRuntime,
-    model: &OdeModel,
+    _model: &OdeModel,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
-    state_count: usize,
+    _state_count: usize,
     tol: f64,
 ) -> Result<(), SimError> {
     runtime
@@ -25,14 +24,33 @@ pub(crate) fn settle_algebraics_and_relation_memory(
             t,
             tol,
             EVENT_UPDATE_MAX_ITERS,
-            move |y, p| project_algebraics_and_detect_changes(model, y, p, t, state_count, tol),
+            move |y, p| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol),
         )
         .map_err(Into::into)
 }
 
+pub(crate) fn refresh_algebraics_and_detect_changes(
+    runtime: &SolveRuntime,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    tol: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let before = y.to_vec();
+    runtime.refresh_algebraic_and_output_slots(t, y, p, tol, EVENT_UPDATE_MAX_ITERS)?;
+    Ok(values_changed(&before, y, tol))
+}
+
+fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
+    before
+        .iter()
+        .zip(after.iter())
+        .any(|(before, after)| (*before - *after).abs() > tol)
+}
+
 pub(crate) fn apply_event_updates(
     runtime: &SolveRuntime,
-    ode_model: &OdeModel,
+    _ode_model: &OdeModel,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
@@ -42,7 +60,6 @@ pub(crate) fn apply_event_updates(
     let event_pre_p = p.to_vec();
     apply_event_updates_with_event_pre(EventUpdateInput {
         runtime,
-        ode_model,
         y,
         p,
         t,
@@ -54,7 +71,6 @@ pub(crate) fn apply_event_updates(
 
 pub(crate) struct EventUpdateInput<'a> {
     pub(crate) runtime: &'a SolveRuntime,
-    pub(crate) ode_model: &'a OdeModel,
     pub(crate) y: &'a mut [f64],
     pub(crate) p: &'a mut [f64],
     pub(crate) t: f64,
@@ -75,7 +91,6 @@ fn apply_event_updates_with_filter(
 ) -> Result<(), SimError> {
     let EventUpdateInput {
         runtime,
-        ode_model,
         y,
         p,
         t,
@@ -95,7 +110,7 @@ fn apply_event_updates_with_filter(
             row_filter,
             root_relation_overrides: &[],
         },
-        project_algebraics_callback(ode_model, t, tol),
+        project_algebraics_callback(runtime, t, tol),
     )?;
     event_action_outcome_to_result(outcome, t)
 }
@@ -125,32 +140,12 @@ pub(crate) fn apply_initialization_updates(
         .map_err(Into::into)
 }
 
-pub(crate) fn apply_discrete_value(
-    target: solve::ScalarSlot,
-    value: f64,
-    y: &mut [f64],
-    p: &mut [f64],
-    tol: f64,
-) -> Result<bool, SimError> {
-    apply_discrete_slot_value(target, value, y, p, tol)
-        .map_err(|err| SimError::SolveIr(err.to_string()))
-}
-
 fn project_algebraics_callback(
-    model: &OdeModel,
+    runtime: &SolveRuntime,
     t: f64,
     tol: f64,
 ) -> impl FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError> + '_ {
-    move |y, p| {
-        project_algebraics_and_detect_changes(
-            model,
-            y,
-            p,
-            t,
-            model.state_count_for_projection(),
-            tol,
-        )
-    }
+    move |y, p| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol)
 }
 
 fn event_action_outcome_to_result(
@@ -330,15 +325,16 @@ fn apply_no_state_event_step(
     if let Some(event) = step.event_stop
         && !step.root_event
     {
-        prepare_fixed_event_left_limit(
+        prepare_fixed_event_left_limit(FixedEventLeftLimitInput {
             model,
-            &runtime.equilibrium_model,
-            &mut runtime.current_y,
-            &mut runtime.params,
-            runtime.current_t,
-            step.tol,
+            runtime: &runtime.runtime,
+            equilibrium_model: &runtime.equilibrium_model,
+            y: &mut runtime.current_y,
+            params: &mut runtime.params,
+            event_t: runtime.current_t,
+            tol: step.tol,
             event,
-        )?;
+        })?;
     }
     let event_pre_y = runtime.current_y.clone();
     let event_pre_p = runtime.params.clone();
@@ -584,37 +580,41 @@ fn root_event_application_time(root_time: f64, target: f64) -> f64 {
     runtime_root_event_application_time(root_time, target)
 }
 
-pub(crate) fn prepare_fixed_event_left_limit(
-    model: &solve::SolveModel,
-    equilibrium_model: &OdeModel,
-    y: &mut [f64],
-    params: &mut [f64],
+pub(crate) struct FixedEventLeftLimitInput<'a> {
+    model: &'a solve::SolveModel,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    y: &'a mut [f64],
+    params: &'a mut [f64],
     event_t: f64,
     tol: f64,
     event: RuntimeEventStop,
+}
+
+pub(crate) fn prepare_fixed_event_left_limit(
+    input: FixedEventLeftLimitInput<'_>,
 ) -> Result<(), SimError> {
     if !matches!(
-        event.pre_mode,
+        input.event.pre_mode,
         EventPreMode::EventEntry | EventPreMode::Fixed
     ) {
         return Ok(());
     }
-    let left_t = event_left_limit_time(event_t);
-    refresh_observation_discrete_rows(
-        model,
-        &equilibrium_model.runtime_state,
-        y,
-        params,
+    let left_t = event_left_limit_time(input.event_t);
+    input.runtime.refresh_observation_discrete_rows(
+        input.y,
+        input.params,
         left_t,
-        tol,
+        input.tol,
+        EVENT_UPDATE_MAX_ITERS,
     )?;
     project_algebraics(
-        equilibrium_model,
-        y,
-        params,
+        input.equilibrium_model,
+        input.y,
+        input.params,
         left_t,
-        model.state_scalar_count(),
-        tol,
+        input.model.state_scalar_count(),
+        input.tol,
     )?;
     Ok(())
 }

@@ -15,7 +15,7 @@ SOURCE_ROOT = FIXTURE_ROOT / "Lib"
 
 
 def _model() -> rm.Model:
-    return rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    return rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
 
 
 def _have(module: str) -> bool:

@@ -1,10 +1,12 @@
 """Rumoca — a first-class Python API for the Rumoca Modelica compiler.
 
-The surface is small and typed. Compile a model and everything hangs off it::
+The surface is small and typed. Create a session, compile a model, and
+everything hangs off it::
 
     import rumoca as rm
 
-    m = rm.load("Quadrotor.mo", model="Quadrotor", roots=["libs/CMM"])
+    session = rm.Session(roots=["libs/CMM"])
+    m = session.load("Quadrotor.mo", model="Quadrotor")
     m.parameters["mass"].value        # typed, autocompletes
     r = m.simulate(t=(0, 10), dt=0.01)
     r.plot("body.v[1]"); df = r.to_dataframe()
@@ -24,9 +26,7 @@ from . import _native
 from ._export import CasadiModel, JaxModel, SolveExport, SympyModel
 from ._magic import load_ipython_extension, unload_ipython_extension
 
-# ── module-level functions ──────────────────────────────────────────────────
-load = _native.load
-loads = _native.loads
+# ── module-level stateless tools ────────────────────────────────────────────
 validate = _native.validate
 validate_source = _native.validate_source
 format = _native.format  # noqa: A001 — mirrors `rumoca format`, intentional
@@ -48,6 +48,7 @@ StructuralInfo = _native.StructuralInfo
 
 # ── results & codegen ───────────────────────────────────────────────────────
 Result = _native.Result
+ScenarioResult = _native.ScenarioResult
 GradientResult = _native.GradientResult
 CodegenResult = _native.CodegenResult
 GeneratedFile = _native.GeneratedFile
@@ -67,8 +68,6 @@ StructuralParamError = _native.StructuralParamError
 
 __all__ = [
     # functions
-    "load",
-    "loads",
     "validate",
     "validate_source",
     "format",
@@ -87,6 +86,7 @@ __all__ = [
     "StructuralInfo",
     # results & codegen
     "Result",
+    "ScenarioResult",
     "GradientResult",
     "CodegenResult",
     "GeneratedFile",

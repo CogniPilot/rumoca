@@ -18,7 +18,17 @@ doc = false
 rumoca = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
-rumoca-sim = { workspace = true, features = ["solver-diffsol", "solver-rk45"] }
+rumoca-sim = { workspace = true, features = [
+    "scheduled-sim",
+    "scenario-config",
+    "input-keyboard",
+    "transport-udp",
+    "transport-zenoh",
+    "viewer-web",
+    "process-control",
+    "solver-diffsol",
+    "solver-rk45",
+] }
 rumoca-compile = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }

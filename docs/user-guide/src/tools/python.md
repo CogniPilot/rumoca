@@ -1,9 +1,9 @@
 # Python API
 
-Rumoca ships a first-class, typed Python API. You compile a model once and
-everything — metadata, simulation, code generation, symbolic export — hangs off
-the returned `Model`. Returned objects are real typed classes (full
-autocomplete), never JSON you have to `json.loads`.
+Rumoca ships a first-class, typed Python API. Create a `Session` once, compile
+models through it, and everything — metadata, simulation, code generation,
+symbolic export — hangs off the returned `Model`. Returned objects are real
+typed classes (full autocomplete), never JSON you have to `json.loads`.
 
 ```bash
 pip install rumoca            # core
@@ -22,7 +22,8 @@ to install.
 ```python
 import rumoca as rm
 
-m = rm.load("Quadrotor.mo", model="Quadrotor", roots=["libs/CMM"])
+session = rm.Session(roots=["libs/CMM"])
+m = session.load("Quadrotor.mo", model="Quadrotor")
 m                                  # repr shows a summary
 m.parameters["mass"].value         # typed, autocompletes
 m.parameters["mass"].kind          # "tunable" or "structural"
@@ -33,8 +34,8 @@ r.plot("body.v[1]")                # needs rumoca[plot]
 df = r.to_dataframe()              # needs rumoca[data]
 ```
 
-Compile from a string with `rm.loads(source, model=...)`. Reuse a configured
-`rm.Session(roots=[...])` to keep source roots and caches across calls.
+Compile from a string with `session.loads(source, model=...)`. Keep and reuse
+the `Session`; it owns source roots and compiler caches.
 
 Or load everything from a `rumoca-scenario.toml` in one call — its model, source
 roots, and solver settings (paths resolved relative to the file):
@@ -42,6 +43,28 @@ roots, and solver settings (paths resolved relative to the file):
 ```python
 session, model, config = rm.Session.from_scenario("rumoca-scenario.toml")
 r = model.simulate(t=(0, 10), config=config)   # config carries solver/dt
+```
+
+For build systems and scenario-driven runs, use the session scenario entry
+point:
+
+```python
+session = rm.Session()
+run = session.run_scenario("rumoca-scenario.toml")
+run.status          # "completed"
+run.output_paths    # generated reports, CSVs, codegen files, debug logs
+run.result          # Result for batch simulation scenarios, otherwise None
+run.codegen         # CodegenResult for codegen scenarios, otherwise None
+```
+
+Runtime knobs are scenario overrides, not a separate execution surface:
+
+```python
+session = rm.Session(roots=["libs/CMM"])
+run = session.run_scenario(
+    "rumoca-scenario.toml",
+    overrides={"t_end": 2.0, "mode": "lockstep", "output": "results.csv"},
+)
 ```
 
 ## Inspecting a model
@@ -110,6 +133,55 @@ These render the same tested codegen targets used by `m.codegen(target)`, so the
 live object and the generated files never drift. For writing files instead, use
 `m.codegen("casadi-mx").save_all("out/")`.
 
+For build systems that need a single callable operation, use:
+
+```python
+session = rm.Session(roots=["libs/Modelica"])
+written = session.codegen_file(
+    "model.mo",
+    "MyModel",
+    "galec-production",
+    "generated/galec",
+)
+```
+
+## CMake Integration
+
+CMake needs an executable build step, but downstream projects should not invent
+a second Rumoca CLI. Use the Python interpreter as the executable and call the
+stable API:
+
+```cmake
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+add_custom_command(
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rumoca-codegen.stamp"
+  COMMAND "${Python3_EXECUTABLE}" -c
+          "import pathlib, rumoca as rm; \
+session = rm.Session(roots=[r'${CMAKE_CURRENT_SOURCE_DIR}/libs/Modelica']); \
+session.codegen_file(r'${CMAKE_CURRENT_SOURCE_DIR}/model.mo', 'MyModel', \
+'galec-production', r'${CMAKE_CURRENT_BINARY_DIR}/generated/galec'); \
+pathlib.Path(r'${CMAKE_CURRENT_BINARY_DIR}/rumoca-codegen.stamp').write_text('ok\\n')"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/model.mo"
+  VERBATIM
+)
+```
+
+Scenario-driven build or test steps use the same pattern:
+
+```cmake
+add_custom_target(run_rumoca_scenario
+  COMMAND "${Python3_EXECUTABLE}" -c
+          "import rumoca as rm; rm.Session().run_scenario(r'${CMAKE_CURRENT_SOURCE_DIR}/rumoca-scenario.toml')"
+  VERBATIM
+)
+```
+
+Reusable CMake modules should be thin wrappers around `Session.run_scenario`
+and `Session.codegen_file`; they should not parse scenario TOML or probe
+private binding names. Create one session per build step and reuse it for all
+Rumoca work in that step so compiler caches stay warm.
+
 ## Jupyter: the `%%modelica` magic
 
 With `rumoca[notebook]`, write Modelica in a cell and get back a typed object:
@@ -125,6 +197,7 @@ model Decay Real x(start=1); equation der(x) = -x; end Decay;
 ## Diagnostics
 
 `rm.validate(path)` / `rm.validate_source(src)` return a list of `Diagnostic`
-objects and never raise on model errors. `load`/`loads`/`simulate` raise the
-typed hierarchy — `RumocaError` and its subclasses `ParseError`, `CompileError`,
-`SimulationError`, `StructuralParamError` — each carrying a message that teaches.
+objects and never raise on model errors. `Session.load` / `Session.loads` /
+`Model.simulate` raise the typed hierarchy — `RumocaError` and its subclasses
+`ParseError`, `CompileError`, `SimulationError`, `StructuralParamError` — each
+carrying a message that teaches.

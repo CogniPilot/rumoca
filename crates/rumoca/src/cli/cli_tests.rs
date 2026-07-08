@@ -219,7 +219,7 @@ fn cli_parses_direct_sim_command() {
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn configured_sim_model_name_prefers_cli_override_without_config_model() {
     let model_path = std::path::Path::new("Fallback.mo");
@@ -230,10 +230,10 @@ fn configured_sim_model_name_prefers_cli_override_without_config_model() {
     );
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn configured_sim_model_name_uses_config_before_file_stem() {
-    let config_model = rumoca_sim::runner::config::ModelConfig {
+    let config_model = rumoca_sim::scenario_config::ModelConfig {
         file: "Configured.mo".to_string(),
         name: "Configured.Model".to_string(),
     };

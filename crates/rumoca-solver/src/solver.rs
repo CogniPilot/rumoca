@@ -95,7 +95,7 @@ pub enum SimPacingMode {
 
 impl SimPacingMode {
     #[must_use]
-    pub fn for_interactive_default(has_external_coupling: bool) -> Self {
+    pub fn default_for_coupling(has_external_coupling: bool) -> Self {
         if has_external_coupling {
             Self::Lockstep
         } else {
@@ -104,8 +104,8 @@ impl SimPacingMode {
     }
 
     #[must_use]
-    pub fn resolve_interactive(explicit: Option<Self>, has_external_coupling: bool) -> Self {
-        explicit.unwrap_or_else(|| Self::for_interactive_default(has_external_coupling))
+    pub fn resolve_schedule(explicit: Option<Self>, has_external_coupling: bool) -> Self {
+        explicit.unwrap_or_else(|| Self::default_for_coupling(has_external_coupling))
     }
 
     #[must_use]
@@ -285,17 +285,17 @@ mod tests {
     }
 
     #[test]
-    fn interactive_pacing_defaults_to_lockstep_only_for_external_coupling() {
+    fn scheduled_pacing_defaults_to_lockstep_only_for_external_coupling() {
         assert_eq!(
-            SimPacingMode::resolve_interactive(None, true),
+            SimPacingMode::resolve_schedule(None, true),
             SimPacingMode::Lockstep
         );
         assert_eq!(
-            SimPacingMode::resolve_interactive(None, false),
+            SimPacingMode::resolve_schedule(None, false),
             SimPacingMode::Realtime
         );
         assert_eq!(
-            SimPacingMode::resolve_interactive(Some(SimPacingMode::AsFastAsPossible), true),
+            SimPacingMode::resolve_schedule(Some(SimPacingMode::AsFastAsPossible), true),
             SimPacingMode::AsFastAsPossible
         );
     }

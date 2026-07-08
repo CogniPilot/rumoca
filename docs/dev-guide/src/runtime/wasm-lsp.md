@@ -18,7 +18,7 @@ completion and diagnostics behave identically everywhere.
 | `packages/rumoca-web` | Hand-written browser runtime, WebGPU/diffsol drivers, visualization code, and vendored web dependencies |
 | `packages/vscode` | VS Code extension (TypeScript) |
 | `packages/playground` | Browser playground (Monaco workbench over the WASM package) |
-| `docs/user-guide/live/` | The books' live-example runner (mini Monaco editors over the same WASM package) |
+| `docs/user-guide/live/` | The books' live-example harness (mini Monaco editors over the same WASM package) |
 
 ## The WASM API Surface
 
@@ -58,5 +58,5 @@ books into one artifact — see [Docs and Pages](../tooling/docs-and-pages.md).
 
 Monaco's Modelica language definition (tokenizer, comments, brackets) lives
 in `packages/rumoca-web/runtime/modelica_language.js` and is imported by both
-the playground and the books' live runner. Edit it there only — the books
+the playground and the books' live harness. Edit it there only — the books
 load it dynamically from the deployed package layout.

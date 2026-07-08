@@ -11,7 +11,7 @@ use crate::cli::{
     DiagnosticsArgs, ModelInputArgs, ModelOptions, SimulateSolverMode,
     compile_dae_with_inferred_model, init_debug_tracing,
 };
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use crate::cli::{configured_model_name, resolve_path};
 
 #[derive(Args, Debug)]
@@ -312,9 +312,9 @@ fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
     })
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<BenchInput> {
-    let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
+    let config = rumoca_sim::scenario_config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
     let config_dir = Path::new(config_path).parent().unwrap_or(Path::new("."));
     let model_path_str = args
@@ -365,11 +365,11 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
     })
 }
 
-#[cfg(not(feature = "runner"))]
+#[cfg(not(feature = "scheduled-sim"))]
 fn resolve_config_bench_input(_args: &SimBenchArgs, _config_path: &str) -> Result<BenchInput> {
     bail!(
         "this rumoca binary was built without simulation config support; \
-         rebuild with --features=runner"
+         rebuild with --features=scheduled-sim"
     );
 }
 

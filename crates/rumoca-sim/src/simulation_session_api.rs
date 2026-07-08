@@ -14,7 +14,7 @@ pub(crate) trait SimulationSessionApi {
         Ok(None)
     }
 
-    fn max_runner_advance_dt(&self) -> Option<f64> {
+    fn max_schedule_advance_dt(&self) -> Option<f64> {
         Some(0.002)
     }
 }

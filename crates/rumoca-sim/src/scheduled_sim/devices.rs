@@ -6,17 +6,17 @@
 
 use anyhow::Result;
 use rumoca_input::{InputEngine, InputMode, KeyboardEvent};
-#[cfg(not(target_env = "musl"))]
+#[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
 use rumoca_input_gamepad::GamepadDevice;
 
 /// Re-export so signal handlers and other emergency-exit paths can
 /// restore the terminal without holding a `Devices` instance.
 pub use rumoca_input_keyboard::disable_raw_mode as disable_terminal_raw_mode;
 
-/// Bundle of the active input device(s) for an interactive simulation run.
+/// Bundle of the active input device(s) for a scheduled simulation run.
 pub struct Devices {
     mode: InputMode,
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
     gamepad: Option<GamepadDevice>,
     keyboard_raw_mode: bool,
 }
@@ -36,7 +36,7 @@ impl Devices {
         }
     }
 
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
     fn gamepad() -> Result<Self> {
         let gamepad = GamepadDevice::new()?;
         gamepad.announce_gamepads();
@@ -47,12 +47,12 @@ impl Devices {
         })
     }
 
-    #[cfg(target_env = "musl")]
+    #[cfg(any(target_env = "musl", not(feature = "input-gamepad")))]
     fn gamepad() -> Result<Self> {
-        anyhow::bail!("input.mode='gamepad' is not available in musl builds")
+        anyhow::bail!("input.mode='gamepad' is not available in this build")
     }
 
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
     fn auto() -> Result<Self> {
         match GamepadDevice::new() {
             Ok(gamepad) if gamepad.is_connected() => {
@@ -70,10 +70,10 @@ impl Devices {
         }
     }
 
-    #[cfg(target_env = "musl")]
+    #[cfg(any(target_env = "musl", not(feature = "input-gamepad")))]
     fn auto() -> Result<Self> {
         eprintln!(
-            "[input] Gamepad input is not available in musl builds, falling back to keyboard."
+            "[input] Gamepad input is not available in this build, falling back to keyboard."
         );
         Self::keyboard()
     }
@@ -85,7 +85,7 @@ impl Devices {
         }
         Ok(Self {
             mode: InputMode::Keyboard,
-            #[cfg(not(target_env = "musl"))]
+            #[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
             gamepad: None,
             keyboard_raw_mode,
         })
@@ -102,14 +102,14 @@ impl Devices {
         }
     }
 
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
     fn is_gamepad_connected(&self) -> bool {
         self.gamepad
             .as_ref()
             .is_some_and(GamepadDevice::is_connected)
     }
 
-    #[cfg(target_env = "musl")]
+    #[cfg(any(target_env = "musl", not(feature = "input-gamepad")))]
     fn is_gamepad_connected(&self) -> bool {
         false
     }
@@ -143,7 +143,7 @@ impl Devices {
         }
     }
 
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(feature = "input-gamepad", not(target_env = "musl")))]
     fn poll_gamepad_or_idle(&mut self, engine: &mut InputEngine, dt: f64) {
         if let Some(snapshot) = self.gamepad.as_mut().and_then(GamepadDevice::snapshot) {
             engine.poll_gamepad_snapshot(&snapshot, dt);
@@ -152,7 +152,7 @@ impl Devices {
         }
     }
 
-    #[cfg(target_env = "musl")]
+    #[cfg(any(target_env = "musl", not(feature = "input-gamepad")))]
     fn poll_gamepad_or_idle(&mut self, engine: &mut InputEngine, _dt: f64) {
         engine.poll_idle();
     }

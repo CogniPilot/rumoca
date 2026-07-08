@@ -9,7 +9,7 @@ use std::{env, fs};
 mod solve_tensor_smoke_tests;
 
 use rumoca::Compiler;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use rumoca_sim::{SimOptions, SimPacingMode, SimSolverMode, SimulationSession};
 use solve_tensor_smoke_tests::cached_cmm_root;
 use tempfile::tempdir;
@@ -107,7 +107,7 @@ fn compile_quadrotor_acro_if_cmm_available() -> Option<rumoca::CompilationResult
     )
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn compile_quadrotor_acro_config_if_cmm_available() -> Option<rumoca::CompilationResult> {
     let config_path = example_root().join("interactive/quadrotor/rumoca-scenario.acro.toml");
     compile_toml_model_if_source_roots_exist(&config_path)
@@ -352,7 +352,7 @@ fn renderable_codegen_target(config_path: &Path, target: &str) -> PathBuf {
     resolve_config_path(config_dir, target)
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn assert_sim_config_creates_session(
     config_path: &Path,
     config: &ExampleTomlConfig,
@@ -407,9 +407,9 @@ fn assert_toml_config_task_smoke(
 ) {
     match config.rumoca.task.as_deref().unwrap_or("simulate") {
         "codegen" => assert_codegen_config_renders(config_path, config, result),
-        #[cfg(feature = "runner")]
+        #[cfg(feature = "scheduled-sim")]
         "simulate" => assert_sim_config_creates_session(config_path, config, result),
-        #[cfg(not(feature = "runner"))]
+        #[cfg(not(feature = "scheduled-sim"))]
         "simulate" => {
             let _ = (config_path, config, result);
         }
@@ -489,7 +489,7 @@ end FileExample;
     assert_eq!(result.dae.continuous.equations.len(), 1);
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn rover_config_steering_input_changes_delta_and_heading() {
     let config_path = example_root().join("interactive/rover/rumoca-scenario.toml");
@@ -534,7 +534,7 @@ fn rover_config_steering_input_changes_delta_and_heading() {
     );
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn quadrotor_acro_config_creates_rk_session_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
@@ -573,7 +573,7 @@ fn quadrotor_acro_config_creates_rk_session_when_cmm_available() {
     assert!(session.time() > 0.0);
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
@@ -635,7 +635,7 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
@@ -725,7 +725,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     );
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn solve_state_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
     model
         .problem
@@ -738,7 +738,7 @@ fn solve_state_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
         .unwrap_or_else(|| panic!("quadrotor solve state should contain {name}"))
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn roll_degrees_from_state(values: &indexmap::IndexMap<String, f64>) -> f64 {
     let q0 = state_value(values, "quat[1]");
     let q1 = state_value(values, "quat[2]");
@@ -749,7 +749,7 @@ fn roll_degrees_from_state(values: &indexmap::IndexMap<String, f64>) -> f64 {
     sinr_cosp.atan2(cosr_cosp).to_degrees()
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn state_value(values: &indexmap::IndexMap<String, f64>, name: &str) -> f64 {
     values.get(name).copied().unwrap_or_else(|| {
         let mut keys = values.keys().cloned().collect::<Vec<_>>();

@@ -21,6 +21,18 @@ pub enum ApiError {
     Py(PyErr),
 }
 
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiError::Compile(msg)
+            | ApiError::Sim(msg)
+            | ApiError::StructuralParam(msg)
+            | ApiError::NotImplemented(msg) => f.write_str(msg),
+            ApiError::Py(err) => write!(f, "{err}"),
+        }
+    }
+}
+
 impl From<PyErr> for ApiError {
     fn from(err: PyErr) -> Self {
         Self::Py(err)

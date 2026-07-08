@@ -66,7 +66,7 @@ The cross-section animation above is itself an editable JavaScript block —
 expand it, change the colors or geometry, and re-run **▶ Simulate** to see
 your version. It receives the simulation results and a small helper API
 (`api.arrayField`, `api.makeCanvas`, `api.addAnimation`,
-`api.addColorbar`, `api.heatColor`, …) from the book's live runner.
+`api.addColorbar`, `api.heatColor`, …) from the book's live harness.
 
 ```js,rumoca-viz
 // Draw the turkey cross-section: concentric shells colored by temperature.

@@ -155,7 +155,7 @@ impl SimulationSession {
         }
     }
 
-    pub fn max_runner_advance_dt(&self) -> Option<f64> {
+    pub fn max_schedule_advance_dt(&self) -> Option<f64> {
         match &self.inner {
             SimulationSessionInner::Bdf(_) => Some(0.002),
             SimulationSessionInner::RuntimeOnly(_) => None,

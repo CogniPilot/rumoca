@@ -6,10 +6,11 @@
 
 //! Python bindings for the Rumoca Modelica compiler.
 //!
-//! The public Python API is a first-class, typed surface: `rumoca.load` /
-//! `rumoca.loads` return a [`model::Model`] hub whose metadata, IR, structure,
-//! codegen, and simulation all hang off typed PyO3 objects — never JSON. JSON
-//! appears only when explicitly requested via `.to_json()` / `.to_dict()`.
+//! The public Python API is a first-class, typed surface. A reusable
+//! [`session::Session`] owns source roots and compiler caches; compiled
+//! [`model::Model`] objects expose metadata, IR, structure, codegen, and
+//! simulation through typed PyO3 objects — never JSON. JSON appears only when
+//! explicitly requested via `.to_json()` / `.to_dict()`.
 //!
 //! The live object graph (`Model`, `VarView`, `Result`, ...) is backed directly
 //! by the Rust compiler/solver types; this module holds the shared compile
@@ -44,6 +45,7 @@ pub mod gradient;
 pub mod metadata;
 pub mod model;
 pub mod result;
+pub mod scenario;
 pub mod session;
 pub mod targets;
 #[cfg(test)]
@@ -582,8 +584,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_source, m)?)?;
     m.add_function(wrap_pyfunction!(targets_fn, m)?)?;
     m.add_function(wrap_pyfunction!(solvers_fn, m)?)?;
-    m.add_function(wrap_pyfunction!(session::load, m)?)?;
-    m.add_function(wrap_pyfunction!(session::loads, m)?)?;
     m.add_function(wrap_pyfunction!(session::validate, m)?)?;
     m.add_function(wrap_pyfunction!(session::validate_source, m)?)?;
 
@@ -597,6 +597,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<metadata::VariableInfo>()?;
     m.add_class::<metadata::ParameterInfo>()?;
     m.add_class::<result::Result>()?;
+    m.add_class::<scenario::ScenarioResult>()?;
     m.add_class::<gradient::GradientResult>()?;
     m.add_class::<codegen::CodegenResult>()?;
     m.add_class::<codegen::GeneratedFile>()?;

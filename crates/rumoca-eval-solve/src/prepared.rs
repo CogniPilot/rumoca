@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod assignment_shape_tests;
+mod dependency;
 #[cfg(test)]
 mod prepared_compute_block_tests;
 
@@ -26,6 +27,7 @@ use crate::{
     row_register_flow_is_valid, validate_input_requirements, validate_input_requirements_with_span,
     validate_output_len,
 };
+use dependency::reg_depends_on_y_index;
 
 /// Reusable evaluator for one Solve-IR row block.
 pub struct PreparedScalarProgramBlock {
@@ -498,6 +500,63 @@ impl PreparedScalarProgramBlock {
         }
     }
 
+    pub(crate) fn target_assignment_diagonal_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<Option<f64>, EvalSolveError> {
+        let Some(shape) = self.row_assignment_shapes.get(row_idx).copied().flatten() else {
+            return Ok(None);
+        };
+        if shape.target_y_index() != target_y_index {
+            return Ok(None);
+        }
+        let span = self.block.program_span(row_idx);
+        match shape {
+            TargetAssignmentShape::Direct { target_scale, .. } => Ok(Some(target_scale)),
+            TargetAssignmentShape::Affine {
+                coefficient_reg,
+                coefficient_scale,
+                expr_eval_len,
+                ..
+            } => {
+                let Some(row) = self.block.programs.get(row_idx) else {
+                    return Err(EvalSolveError::OutputTooSmall {
+                        required: checked_required_row_count(row_idx)?,
+                        len: self.block.row_count(),
+                        span,
+                    });
+                };
+                let coefficient = match coefficient_reg {
+                    Some(reg) => {
+                        let mut scratch = self.scratch.borrow_mut();
+                        eval_program_single(
+                            PreparedRowEval::new(
+                                &row[..expr_eval_len],
+                                self.row_registers[row_idx],
+                                y,
+                                p,
+                                t,
+                                context,
+                            )
+                            .with_source_span(span),
+                            self.row_register_safe[row_idx],
+                            &mut scratch,
+                        )
+                        .map_err(|error| error.with_source_span(span))?;
+                        read_shape_reg(&scratch.regs, reg, span)?
+                    }
+                    None => 1.0,
+                };
+                Ok(Some(coefficient_scale * coefficient))
+            }
+        }
+    }
+
     pub fn eval_target_assignment_row_unchecked_with_context(
         &self,
         row_idx: usize,
@@ -790,6 +849,7 @@ enum TargetAssignmentShape {
     Direct {
         target_y_index: usize,
         expr_reg: u32,
+        target_scale: f64,
         expr_eval_len: usize,
     },
     Affine {
@@ -886,7 +946,7 @@ fn direct_assignment_shape(
     row: &[LinearOp],
     output_reg: u32,
 ) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    let Some((target_reg, expr_reg)) = assignment_expr_reg(row, output_reg) else {
+    let Some((target_reg, expr_reg, target_scale)) = assignment_expr_reg(row, output_reg) else {
         return Ok(None);
     };
     let Some(target_y_index) = target_load_index(row, target_reg) else {
@@ -899,6 +959,7 @@ fn direct_assignment_shape(
     Ok(Some(TargetAssignmentShape::Direct {
         target_y_index,
         expr_reg,
+        target_scale,
         expr_eval_len,
     }))
 }
@@ -1025,148 +1086,7 @@ fn row_loads_y_index(row: &[LinearOp], target_y_index: usize) -> bool {
     })
 }
 
-fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> bool {
-    // Register programs form a DAG: a register computed once can feed many
-    // downstream ops, so the naive recursion below re-traverses shared
-    // sub-expressions exponentially (a 1700-op matrix-product row never
-    // finishes). Memoize by register — dependence on a fixed `y` index is a
-    // pure function of the register — to make the walk linear in the row.
-    let mut memo: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
-    reg_depends_on_y_index_memo(row, reg, target_y_index, &mut memo)
-}
-
-fn reg_depends_on_y_index_memo(
-    row: &[LinearOp],
-    reg: u32,
-    target_y_index: usize,
-    memo: &mut std::collections::HashMap<u32, bool>,
-) -> bool {
-    if let Some(&cached) = memo.get(&reg) {
-        return cached;
-    }
-    // Guard against accidental cycles (register programs are acyclic in
-    // practice): seed `false` before recursing so a back-edge terminates.
-    memo.insert(reg, false);
-    let result = producer(row, reg).is_some_and(|op| match *op {
-        LinearOp::LoadY { index, .. } => index == target_y_index,
-        // Indexed loads structurally depend on y exactly when their index
-        // register does — preserving the sparsity the equivalent select chain
-        // (whose `cond` carried that dependency) would have produced.
-        LinearOp::Move { src, .. }
-        | LinearOp::Unary { arg: src, .. }
-        | LinearOp::LoadIndexedP { index: src, .. }
-        | LinearOp::LoadIndexedSeed { index: src, .. } => {
-            reg_depends_on_y_index_memo(row, src, target_y_index, memo)
-        }
-        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
-            reg_depends_on_y_index_memo(row, lhs, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, rhs, target_y_index, memo)
-        }
-        LinearOp::Select {
-            cond,
-            if_true,
-            if_false,
-            ..
-        } => {
-            reg_depends_on_y_index_memo(row, cond, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, if_true, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, if_false, target_y_index, memo)
-        }
-        LinearOp::LinearSolveComponent {
-            matrix_start,
-            rhs_start,
-            n,
-            ..
-        } => {
-            let Some(matrix_len) = n.checked_mul(n) else {
-                return true;
-            };
-            reg_range_depends_on_y_index(row, matrix_start, matrix_len, target_y_index, memo)
-                || reg_range_depends_on_y_index(row, rhs_start, n, target_y_index, memo)
-        }
-        LinearOp::TableBounds { table_id, .. } => {
-            reg_depends_on_y_index_memo(row, table_id, target_y_index, memo)
-        }
-        LinearOp::TableLookup {
-            table_id,
-            column,
-            input,
-            ..
-        }
-        | LinearOp::TableLookupSlope {
-            table_id,
-            column,
-            input,
-            ..
-        } => {
-            reg_depends_on_y_index_memo(row, table_id, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, column, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, input, target_y_index, memo)
-        }
-        LinearOp::TableNextEvent { table_id, time, .. } => {
-            reg_depends_on_y_index_memo(row, table_id, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, time, target_y_index, memo)
-        }
-        LinearOp::RandomInitialState {
-            local_seed,
-            global_seed,
-            ..
-        } => {
-            reg_depends_on_y_index_memo(row, local_seed, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, global_seed, target_y_index, memo)
-        }
-        LinearOp::RandomResult {
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            state_start,
-            state_len,
-            ..
-        } => reg_range_depends_on_y_index(row, state_start, state_len, target_y_index, memo),
-        LinearOp::ImpureRandomInit { seed, .. } => {
-            reg_depends_on_y_index_memo(row, seed, target_y_index, memo)
-        }
-        LinearOp::ImpureRandom { id, .. } => {
-            reg_depends_on_y_index_memo(row, id, target_y_index, memo)
-        }
-        LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
-            reg_depends_on_y_index_memo(row, id, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, imin, target_y_index, memo)
-                || reg_depends_on_y_index_memo(row, imax, target_y_index, memo)
-        }
-        LinearOp::Const { .. }
-        | LinearOp::LoadTime { .. }
-        | LinearOp::LoadP { .. }
-        | LinearOp::LoadSeed { .. }
-        | LinearOp::StoreOutput { .. } => false,
-    });
-    memo.insert(reg, result);
-    result
-}
-
-fn reg_range_depends_on_y_index(
-    row: &[LinearOp],
-    start: u32,
-    len: usize,
-    target_y_index: usize,
-    memo: &mut std::collections::HashMap<u32, bool>,
-) -> bool {
-    (0..len).any(|offset| {
-        let Some(reg) = checked_reg_offset(start, offset) else {
-            return true;
-        };
-        reg_depends_on_y_index_memo(row, reg, target_y_index, memo)
-    })
-}
-
-fn checked_reg_offset(start: u32, offset: usize) -> Option<u32> {
-    let offset = u32::try_from(offset).ok()?;
-    start.checked_add(offset)
-}
-
-fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> {
+fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32, f64)> {
     let output_op = producer(row, output_reg)?;
     match *output_op {
         LinearOp::Binary {
@@ -1174,7 +1094,7 @@ fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> 
             lhs,
             rhs,
             ..
-        } => sub_assignment_expr_reg(row, lhs, rhs),
+        } => sub_assignment_expr_reg(row, lhs, rhs, 1.0),
         LinearOp::Unary {
             op: rumoca_ir_solve::UnaryOp::Neg,
             arg,
@@ -1190,7 +1110,7 @@ fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32)> 
             else {
                 return None;
             };
-            sub_assignment_expr_reg(row, lhs, rhs)
+            sub_assignment_expr_reg(row, lhs, rhs, -1.0)
         }
         _ => None,
     }
@@ -1207,11 +1127,16 @@ fn producer_pos(row: &[LinearOp], dst_reg: u32) -> Option<usize> {
         .rposition(|op| op.dst_register() == Some(dst_reg))
 }
 
-fn sub_assignment_expr_reg(row: &[LinearOp], lhs: u32, rhs: u32) -> Option<(u32, u32)> {
+fn sub_assignment_expr_reg(
+    row: &[LinearOp],
+    lhs: u32,
+    rhs: u32,
+    output_scale: f64,
+) -> Option<(u32, u32, f64)> {
     if is_y_load(row, lhs) {
-        Some((lhs, rhs))
+        Some((lhs, rhs, output_scale))
     } else if is_y_load(row, rhs) {
-        Some((rhs, lhs))
+        Some((rhs, lhs, -output_scale))
     } else {
         None
     }

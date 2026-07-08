@@ -94,10 +94,10 @@ Current status:
   settings/defaults for the active document. Inherited workspace roots stay out
   of editable scenario overrides, and simulation execution now loads the
   resolved effective source-root contents before dispatching the solver. The
-  Rust book live-example runner now loads staged `rumoca-workspace.toml` files
+  Rust book live-example harness now loads staged `rumoca-workspace.toml` files
   through the same WASM workspace-config API, and generated book scenario TOMLs
   keep inherited dependency roots out of editable scenario settings. The live
-  book runner now validates that repo examples resolve effective workspace
+  book harness now validates that repo examples resolve effective workspace
   roots before simulation/DAE compilation, reports missing staged workspace or
   source-root cache state explicitly, and surfaces the resolved root count in
   the widget status.
@@ -148,7 +148,7 @@ Current status:
   opening Settings, so the same GUI configures simulation, plot panels, and 3D
   viewer script paths. 3D plot panels expose viewer script paths as typed
   controls while script bodies stay in files or host-managed assets, and the
-  browser runner now renders scenario-configured plot/viewer panels instead of
+  browser harness now renders scenario-configured plot/viewer panels instead of
   treating sidecar JavaScript as a hardcoded viewer path. The canonical file
   names are now
   `rumoca-workspace.toml`, `rumoca-scenario.toml`,
@@ -173,7 +173,7 @@ Current status:
   simulation plus input routing in the scenario, with the external 3D scene as
   presentation rather than a distinct scenario kind. The Rust book live widget
   now has the browser side of that path as well: input-enabled/realtime
-  scenarios load the shared web interactive runtime, compile a WASM session with
+  scenarios load the shared web scheduled simulation, compile a WASM session with
   staged workspace/source-root context, route keyboard/gamepad/local inputs into
   Modelica inputs, and run the scenario's 3D scene inline instead of falling
   back to batch plots or a native-only viewer. Interactive capture, HUD/camera
@@ -183,7 +183,7 @@ Current status:
   scenario concepts: `[sim].mode` controls pacing, `[input]` opts into the
   input-capable session/viewer path, and viewer mode only chooses presentation.
   The playground interactive-result editor now uses the same runtime failure
-  reporting path as the shared runner: source-root loading, scene
+  reporting path as the shared runtime: source-root loading, scene
   initialization, startup rendering, and animation-frame errors update the tab
   status and flow into the shared Errors panel instead of leaving `.input`
   editor tabs stuck at "compiling session".

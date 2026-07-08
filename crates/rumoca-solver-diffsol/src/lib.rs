@@ -38,17 +38,16 @@ use rumoca_eval_solve::{
 };
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    DiffsolMethod, EventPreMode, RuntimeEventBoundary, RuntimeEventBoundaryHandler,
-    RuntimeEventStop, SimOptions, SimResult, SimTermination, SolveStopSchedule,
-    build_sim_result_from_solve_model, commit_pre_params_after_event, discrete_row_pre_mode,
-    process_runtime_event_boundary, push_visible_values, replace_last_visible_values,
-    runtime_event_horizon, runtime_root_event_application_time,
-    timeline::sample_time_match_with_tol, write_pre_params_from_sources,
+    DiffsolMethod, RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventStop, SimOptions,
+    SimResult, SimTermination, SolveStopSchedule, build_sim_result_from_solve_model,
+    commit_pre_params_after_event, process_runtime_event_boundary, push_visible_values,
+    replace_last_visible_values, runtime_event_horizon, runtime_root_event_application_time,
+    timeline::sample_time_match_with_tol,
 };
 pub(crate) use runtime::{
-    EventUpdateInput, apply_discrete_value, apply_event_updates,
-    apply_event_updates_with_event_pre, apply_initialization_updates, seed_initial_discrete_values,
-    settle_algebraics_and_relation_memory,
+    EventUpdateInput, apply_event_updates, apply_event_updates_with_event_pre,
+    apply_initialization_updates, refresh_algebraics_and_detect_changes,
+    seed_initial_discrete_values, settle_algebraics_and_relation_memory,
 };
 use runtime::{check_no_state_initialization, simulate_no_state_solve_ir};
 
@@ -274,7 +273,6 @@ fn simulate_with_states(
         StateSimFinalize {
             model,
             opts,
-            equilibrium_model,
             runtime,
             runtime_params: &runtime_params,
             params,
@@ -378,7 +376,6 @@ where
 struct StateSimFinalize<'a> {
     model: &'a solve::SolveModel,
     opts: &'a SimOptions,
-    equilibrium_model: &'a Arc<OdeModel>,
     runtime: &'a Arc<SolveRuntime>,
     runtime_params: &'a RuntimeParameters,
     params: Vec<f64>,
@@ -399,13 +396,12 @@ fn finalize_state_simulation(
             None,
         )),
         Err(SimError::Terminated { time, message }) => {
-            refresh_observation_discrete_rows(
-                fin.model,
-                &fin.equilibrium_model.runtime_state,
+            fin.runtime.refresh_observation_discrete_rows(
                 &mut fin.current_y,
                 &mut fin.params,
                 time,
                 fin.opts.atol.max(1.0e-10),
+                EVENT_UPDATE_MAX_ITERS,
             )?;
             fin.runtime_params.borrow_mut().copy_from_slice(&fin.params);
             let mut samples = SampleRecorder {
@@ -529,7 +525,6 @@ fn simulate_state_only_bdf(
         StateSimFinalize {
             model,
             opts,
-            equilibrium_model,
             runtime,
             runtime_params: &runtime_params,
             params,
@@ -766,18 +761,49 @@ where
         t: f64,
         tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
-        project_algebraics_and_detect_changes(
-            self.equilibrium_model,
-            y,
-            p,
-            t,
-            self.equilibrium_model.state_count_for_projection(),
-            tol,
-        )
+        match self.mode {
+            DiffsolMode::General => project_algebraics_and_detect_changes(
+                self.equilibrium_model,
+                y,
+                p,
+                t,
+                self.equilibrium_model.state_count_for_projection(),
+                tol,
+            ),
+            DiffsolMode::StateOnly => {
+                let before = y.to_vec();
+                self.runtime.refresh_algebraic_and_output_slots(
+                    t,
+                    y,
+                    p,
+                    tol,
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+                Ok(values_changed(&before, y, tol))
+            }
+        }
     }
 
     fn derivative_guess(&self, y: &[f64], p: &[f64], t: f64) -> Result<Vec<f64>, SimDriverError> {
-        bdf_derivative_guess(self.model, self.equilibrium_model, y, p, t).map_err(sim_to_driver)
+        match self.mode {
+            DiffsolMode::General => {
+                bdf_derivative_guess(self.model, self.equilibrium_model, y, p, t)
+                    .map_err(sim_to_driver)
+            }
+            DiffsolMode::StateOnly => {
+                let state_count = self.model.state_scalar_count().min(y.len());
+                let state_dy = self.runtime.eval_state_derivatives(
+                    t,
+                    &y[..state_count],
+                    p,
+                    self.tol(),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+                let mut dy = vec![0.0; y.len()];
+                dy[..state_dy.len()].copy_from_slice(&state_dy);
+                Ok(dy)
+            }
+        }
     }
 
     fn record_sample(
@@ -803,16 +829,11 @@ where
         p: &mut [f64],
         t: f64,
     ) -> Result<(), SimDriverError> {
-        refresh_observation_discrete_rows(
-            self.model,
-            &self.equilibrium_model.runtime_state,
-            y,
-            p,
-            t,
-            self.tol(),
-        )
-        .map(|_| ())
-        .map_err(sim_to_driver)
+        self.runtime
+            .refresh_observation_discrete_rows(y, p, t, self.tol(), EVENT_UPDATE_MAX_ITERS)
+            .map(|_| ())
+            .map_err(SimError::from)
+            .map_err(sim_to_driver)
     }
 
     fn trace_step_failure(
@@ -949,7 +970,7 @@ fn refresh_observation_rows_and_relation_memory(
 ) -> Result<(), SimError> {
     let state_count = model.state_scalar_count();
     settle_algebraics_and_relation_memory(runtime, equilibrium_model, y, p, t, state_count, tol)?;
-    if refresh_observation_discrete_rows(model, &equilibrium_model.runtime_state, y, p, t, tol)? {
+    if runtime.refresh_observation_discrete_rows(y, p, t, tol, EVENT_UPDATE_MAX_ITERS)? {
         settle_algebraics_and_relation_memory(
             runtime,
             equilibrium_model,
@@ -961,111 +982,6 @@ fn refresh_observation_rows_and_relation_memory(
         )?;
     }
     Ok(())
-}
-
-fn refresh_observation_discrete_rows(
-    model: &solve::SolveModel,
-    runtime_state: &solve_eval::SimulationRuntimeState,
-    y: &mut [f64],
-    p: &mut [f64],
-    t: f64,
-    tol: f64,
-) -> Result<bool, SimError> {
-    if model.problem.discrete.observation_refresh.is_empty() {
-        return Ok(false);
-    }
-    let mut changed_any = false;
-    let event_pre_y = y.to_vec();
-    let event_pre_p = p.to_vec();
-    for _ in 0..EVENT_UPDATE_MAX_ITERS {
-        let changed = apply_observation_discrete_refresh_pass(
-            model,
-            ObservationRefreshPass {
-                runtime_state,
-                event_pre_y: event_pre_y.as_slice(),
-                event_pre_p: event_pre_p.as_slice(),
-                tol,
-            },
-            y,
-            p,
-            t,
-        )?;
-        if !changed {
-            return Ok(changed_any);
-        }
-        changed_any = true;
-    }
-    Err(SimError::SolveIr(
-        "observation-time discrete refresh did not converge".to_string(),
-    ))
-}
-
-struct ObservationRefreshPass<'a> {
-    runtime_state: &'a solve_eval::SimulationRuntimeState,
-    event_pre_y: &'a [f64],
-    event_pre_p: &'a [f64],
-    tol: f64,
-}
-
-fn apply_observation_discrete_refresh_pass(
-    model: &solve::SolveModel,
-    ctx: ObservationRefreshPass<'_>,
-    y: &mut [f64],
-    p: &mut [f64],
-    t: f64,
-) -> Result<bool, SimError> {
-    if model.problem.discrete.observation_refresh.len() != model.problem.discrete.rhs.len() {
-        return Err(SimError::SolveIr(format!(
-            "discrete observation-refresh row count {} does not match discrete RHS row count {}",
-            model.problem.discrete.observation_refresh.len(),
-            model.problem.discrete.rhs.len()
-        )));
-    }
-    let mut changed = false;
-    for (row_idx, row) in model.problem.discrete.rhs.programs.iter().enumerate() {
-        if !model.problem.discrete.observation_refresh[row_idx] {
-            continue;
-        }
-        refresh_observation_pre_params(model, row_idx, &ctx, y, p);
-        let value = solve_eval::eval_row_with_context(
-            row,
-            y,
-            p,
-            t,
-            RowEvalContext {
-                external_tables: Some(model.external_tables.as_slice()),
-                runtime_state: Some(ctx.runtime_state),
-                ..Default::default()
-            },
-        )
-        .map_err(|err| SimError::SolveIr(err.to_string()))?;
-        changed |= apply_discrete_value(
-            model.problem.discrete.update_targets[row_idx],
-            value,
-            y,
-            p,
-            ctx.tol,
-        )?;
-    }
-    Ok(changed)
-}
-
-fn refresh_observation_pre_params(
-    model: &solve::SolveModel,
-    row_idx: usize,
-    ctx: &ObservationRefreshPass<'_>,
-    y: &[f64],
-    p: &mut [f64],
-) {
-    match discrete_row_pre_mode(model, row_idx) {
-        EventPreMode::EventEntry | EventPreMode::Fixed => {
-            write_pre_params_from_sources(model, ctx.event_pre_y, ctx.event_pre_p, p, ctx.tol);
-        }
-        EventPreMode::FollowCurrent => {
-            let snapshot_p = p.to_vec();
-            write_pre_params_from_sources(model, y, snapshot_p.as_slice(), p, ctx.tol);
-        }
-    }
 }
 
 fn visible_values(
@@ -1085,6 +1001,13 @@ fn visible_values(
         },
     )
     .map_err(|err| SimError::SolveIr(err.to_string()))
+}
+
+fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
+    before
+        .iter()
+        .zip(after.iter())
+        .any(|(before, after)| (*before - *after).abs() > tol)
 }
 
 /// True when the model has no discontinuities (zero-crossing roots, scheduled

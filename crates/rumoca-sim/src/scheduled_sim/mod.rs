@@ -1,20 +1,16 @@
-//! Interactive simulation runtime driven by a `SimulationConfig` TOML.
+//! Scheduled simulation loop driven by a `SimulationConfig` TOML.
 //!
 //! Axis crates (input, transport, codec, solver) are composed here into a
 //! running app. Optionally couples to an external process over UDP with
 //! a configured codec; otherwise runs standalone.
 
-pub mod config;
 pub mod devices;
 pub mod executor;
-
-/// Template TOML printed by `rumoca sim init`.
-pub const CONFIG_TEMPLATE: &str = include_str!("template.toml");
 
 use std::path::PathBuf;
 use std::thread;
 
-use crate::runner::config::SimulationConfig;
+use crate::scenario_config::SimulationConfig;
 use crate::{
     DiffsolMethod, SimOptions, SimSolverMode, SimulationDiagnosticError, SimulationSession,
 };
@@ -26,7 +22,7 @@ use rumoca_compile::source_roots::{
 use rumoca_core::{Diagnostic, PrimaryLabel, SourceMap};
 
 #[derive(Debug, thiserror::Error)]
-pub enum RunnerError {
+pub enum ScheduledSimError {
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 
@@ -39,7 +35,7 @@ pub enum RunnerError {
     },
 }
 
-impl RunnerError {
+impl ScheduledSimError {
     pub fn simulation_diagnostic(
         context: impl Into<String>,
         error: SimulationDiagnosticError,
@@ -75,7 +71,7 @@ impl RunnerError {
 }
 
 /// Arguments for the `rumoca sim --config` command.
-pub struct SimArgs {
+pub struct ScheduledSimArgs {
     /// Modelica source code content.
     pub model_source: String,
     /// Path to the source file that supplied `model_source`.
@@ -148,8 +144,8 @@ pub(super) fn compile_model_with_diagnostics(
     }
 }
 
-/// Run the interactive simulation app.
-pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
+/// Run the scheduled scenario simulation loop.
+pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError> {
     eprintln!("rumoca sim");
     eprintln!("  Model: {}", args.model_name);
     eprintln!("  Solver: {}", solver_mode_label(args.solver_mode));
@@ -187,11 +183,10 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
         "Failed to compile Modelica model",
     )?;
 
-    let solver_mode = interactive_solver_mode(args.solver_mode);
     let mut sim_options = SimOptions {
         t_end: args.config.sim.t_end,
         dt: Some(args.config.sim.dt),
-        solver_mode,
+        solver_mode: args.solver_mode,
         diffsol_method: diffsol_method_for_solver_label(&args.solver_label),
         pacing_mode: args.config.effective_pacing_mode(),
         ..Default::default()
@@ -204,7 +199,7 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
     }
     let mut session = SimulationSession::new_with_diagnostics(result.dae.as_ref(), sim_options)
         .map_err(|error| {
-            RunnerError::simulation_diagnostic(
+            ScheduledSimError::simulation_diagnostic(
                 "Failed to create simulation session",
                 error,
                 result.source_map.clone(),
@@ -249,10 +244,6 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
             debug: args.debug,
         },
     )?)
-}
-
-fn interactive_solver_mode(requested: SimSolverMode) -> SimSolverMode {
-    requested
 }
 
 fn diffsol_method_for_solver_label(solver_label: &str) -> DiffsolMethod {

@@ -31,9 +31,9 @@ use rumoca_transport_zenoh::ZenohTransport;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::runner::devices::{self, Devices};
+use crate::scheduled_sim::devices::{self, Devices};
 
-use crate::runner::config::{LockstepConfig, ResetConfig, SimulationConfig};
+use crate::scenario_config::{LockstepConfig, ResetConfig, SimulationConfig};
 
 fn wall_ms_since_unix_epoch() -> Result<f64> {
     Ok(SystemTime::now()
@@ -500,9 +500,9 @@ enum FrameControl {
     Break,
 }
 
-/// Run the interactive simulation app. Blocks the calling thread. In standalone
-/// mode (no `[schema]`/`[receive]`/`[send]` in config) the UDP socket and
-/// codecs are not created and no external-interface coupling happens.
+/// Log the selected schedule. In standalone mode (no `[schema]`/`[receive]`/
+/// `[send]` in config) the UDP socket and codecs are not created and no
+/// external-interface coupling happens.
 fn log_pacing_status(
     mode: SimPacingMode,
     lockstep_schedule: Option<LockstepSchedule>,
@@ -663,7 +663,7 @@ where
 }
 
 /// Emit a machine-parseable readiness marker on stderr once the HTTP server is
-/// up, so an editor launching the interactive viewer can detect when to open the
+/// up, so an editor launching the browser viewer can detect when to open the
 /// webview. Always printed (it is a benign status line); editors grep for it.
 fn notify_editor_viewer_ready(http_port: u16) {
     status_line(&format!(
@@ -1356,7 +1356,7 @@ fn advance_session_to(session: &mut impl SimulationSessionApi, target: f64) -> R
     if dt <= 0.0 {
         return Ok(());
     }
-    let max_advance_dt = session.max_runner_advance_dt().unwrap_or(dt);
+    let max_advance_dt = session.max_schedule_advance_dt().unwrap_or(dt);
     advance_session_with_max_dt(session, dt, max_advance_dt)
 }
 
@@ -1371,7 +1371,7 @@ fn advance_session_with_max_dt(
         return Ok(());
     }
     let max_sub_dt = session
-        .max_runner_advance_dt()
+        .max_schedule_advance_dt()
         .map(|session_dt| session_dt.min(max_advance_dt))
         .unwrap_or(max_advance_dt)
         .min(advance_dt);

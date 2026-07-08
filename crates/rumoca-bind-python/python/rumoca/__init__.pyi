@@ -7,8 +7,9 @@ are typed as ``Any`` so the stub never forces those imports.
 
 from __future__ import annotations
 
+from os import PathLike
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence, TypedDict
 
 from ._magic import (
     load_ipython_extension as load_ipython_extension,
@@ -21,24 +22,12 @@ Solver = Literal["auto", "rk-like", "bdf", "esdirk34", "trbdf2"] | str
 Level = Literal["error", "warning", "note", "help"]
 ParamKind = Literal["tunable", "structural"]
 Input = float | tuple[Any, Any] | Callable[[float], float]
+Pathish = str | Path | PathLike[str]
 
 __all__: Sequence[str]
 
-# ── module-level (delegate to a default Session) ────────────────────────────
-def load(
-    path: str | Path,
-    *,
-    model: str | None = ...,
-    roots: Sequence[str | Path] | None = ...,
-) -> Model: ...
-def loads(
-    source: str,
-    *,
-    model: str | None = ...,
-    filename: str | None = ...,
-    roots: Sequence[str | Path] | None = ...,
-) -> Model: ...
-def validate(path: str | Path, *, model: str | None = ...) -> list[Diagnostic]: ...
+# ── module-level stateless tools ────────────────────────────────────────────
+def validate(path: Pathish, *, model: str | None = ...) -> list[Diagnostic]: ...
 def validate_source(
     source: str, *, model: str | None = ..., filename: str | None = ...
 ) -> list[Diagnostic]: ...
@@ -52,16 +41,31 @@ class Session:
     roots: list[str]
     def __init__(
         self,
-        roots: Sequence[str | Path] | None = ...,
+        roots: Sequence[str] | None = ...,
         *,
-        workspace: str | Path | None = ...,
+        workspace: str | None = ...,
     ) -> None: ...
-    def load(self, path: str | Path, *, model: str | None = ...) -> Model: ...
+    def load(self, path: Pathish, *, model: str | None = ...) -> Model: ...
     def loads(
         self, source: str, *, model: str | None = ..., filename: str | None = ...
     ) -> Model: ...
     @classmethod
-    def from_scenario(cls, path: str | Path) -> tuple[Session, Model, SimConfig]: ...
+    def from_scenario(cls, path: Pathish) -> tuple[Session, Model, SimConfig]: ...
+    def run_scenario(
+        self,
+        path: Pathish,
+        *,
+        overrides: ScenarioOverrides | None = ...,
+    ) -> ScenarioResult: ...
+    def codegen_file(
+        self,
+        path: Pathish,
+        model: str,
+        target: str,
+        output: Pathish,
+        *,
+        roots: Sequence[str] | None = ...,
+    ) -> list[str]: ...
     def clear(self) -> None: ...
 
 # ── the hub ─────────────────────────────────────────────────────────────────
@@ -76,7 +80,7 @@ class Model:
     def structure(self) -> StructuralInfo: ...
     def to_dict(self, stage: Stage = ...) -> dict[str, Any]: ...
     def to_json(self, stage: Stage = ..., *, pretty: bool = ...) -> str: ...
-    def save_json(self, path: str | Path, stage: Stage = ...) -> None: ...
+    def save_json(self, path: Pathish, stage: Stage = ...) -> None: ...
     def render(self, target: str) -> str: ...
     def codegen(self, target: str) -> CodegenResult: ...
     def to_casadi(
@@ -193,6 +197,33 @@ class Result:
     def plot(self, *names: str, ax: Any = ...) -> Any: ...
     def __repr__(self) -> str: ...
 
+ScenarioMode = Literal["as_fast_as_possible", "realtime", "lockstep"]
+class ScenarioOverrides(TypedDict, total=False):
+    t_end: float
+    dt: float
+    solver: str
+    mode: ScenarioMode
+    schedule: ScenarioMode
+    output: Pathish
+    output_path: Pathish
+    output_dir: Pathish
+    debug_log_path: Pathish
+    log_path: Pathish
+
+class ScenarioResult:
+    task: Literal["simulate", "codegen"]
+    status: str
+    model: str | None
+    schedule: str | None
+    output_paths: list[str]
+    termination: str | None
+    diagnostics: list[Diagnostic]
+    metrics: dict[str, Any]
+    result: Result | None
+    codegen: CodegenResult | None
+    def to_dict(self) -> dict[str, Any]: ...
+    def __repr__(self) -> str: ...
+
 class GradientResult:
     model: str
     objective: str
@@ -219,7 +250,7 @@ class CodegenResult:
     paths: list[str]
     def __iter__(self) -> Any: ...
     def __len__(self) -> int: ...
-    def save_all(self, out: str | Path) -> list[str]: ...
+    def save_all(self, out: Pathish) -> list[str]: ...
 
 # ── targets / solvers ───────────────────────────────────────────────────────
 class Target:
