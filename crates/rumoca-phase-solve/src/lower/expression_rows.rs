@@ -1650,18 +1650,20 @@ fn matching_function_output_residual_values(
         is_constructor: false,
         span,
     };
-    let Some(values) = derivative_rhs::function_call_projected_scalars_with_owner(
+    let Some(values) = (match derivative_rhs::function_call_projected_scalars_with_owner(
         &selected_call,
         dae_model,
         structural_bindings,
         span,
-    )?
-    .or(derivative_rhs::project_array_like_scalars_with_owner(
-        &selected_call,
-        dae_model,
-        structural_bindings,
-        span,
-    )?) else {
+    )? {
+        Some(values) => Some(values),
+        None => derivative_rhs::project_array_like_scalars_with_owner(
+            &selected_call,
+            dae_model,
+            structural_bindings,
+            span,
+        )?,
+    }) else {
         return Ok(None);
     };
     if values.len() == scalar_count {

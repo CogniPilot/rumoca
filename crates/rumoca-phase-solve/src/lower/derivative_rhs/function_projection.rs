@@ -10,6 +10,7 @@ use rumoca_ir_dae as dae;
 
 use crate::lower::helpers::is_stream_passthrough_intrinsic;
 use crate::lower::{LowerError, unsupported_at};
+use crate::projection_suffix::parse_output_projection_suffix;
 
 #[path = "function_projection/compile_time.rs"]
 mod compile_time;
@@ -3350,7 +3351,13 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             _ => self.scope_projected_expr_dims(expr, ctx.scope, ctx.span)?,
         };
         if let Some(dims) = dims.filter(|dims| !dims.is_empty()) {
-            let flat_index = projected_child_flat_index(&dims, ctx.flat_index);
+            let flat_index = if dims == ctx.dims {
+                ctx.flat_index
+            } else if scalar_count_for_dims(&dims, "projected child dimensions", ctx.span)? == 1 {
+                0
+            } else {
+                return self.substitute(expr, ctx.scope);
+            };
             return self
                 .project_value(expr, &dims, flat_index, ctx.scope, ctx.depth + 1, ctx.span)?
                 .ok_or_else(|| {
@@ -3453,6 +3460,18 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         depth: usize,
         owner_span: rumoca_core::Span,
     ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        if let Some(indexed_call) =
+            self.indexed_selected_output_call(expr, dims, flat_index, owner_span)?
+        {
+            return self.project_function_call_value(
+                &indexed_call,
+                &[],
+                0,
+                scope,
+                depth + 1,
+                owner_span,
+            );
+        }
         let outputs = match self.function_call_outputs_with_projection_scope(
             expr,
             depth + 1,
@@ -3509,6 +3528,66 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             return Ok(outputs.first().map(|output| output.expr.clone()));
         }
         Ok(outputs.get(flat_index).map(|output| output.expr.clone()))
+    }
+
+    fn indexed_selected_output_call(
+        &self,
+        expr: &rumoca_core::Expression,
+        dims: &[i64],
+        flat_index: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            ..
+        } = expr
+        else {
+            return Ok(None);
+        };
+        if dims.is_empty()
+            || self
+                .dae_model
+                .symbols
+                .functions
+                .contains_key(name.var_name())
+        {
+            return Ok(None);
+        }
+        rumoca_core::find_map_top_level_splits_rev(name.as_str(), |base_name, suffix| {
+            let function = self
+                .dae_model
+                .symbols
+                .functions
+                .get(&rumoca_core::VarName::new(base_name))?;
+            let projection_suffix = parse_output_projection_suffix(suffix)?;
+            if !projection_suffix.indices.is_empty() || projection_suffix.output_field.is_some() {
+                return None;
+            }
+            let output = function
+                .outputs
+                .iter()
+                .find(|output| output.name == projection_suffix.output_name)?;
+            if output.dims.is_empty() || output.dims.as_slice() != dims {
+                return None;
+            }
+            let selector = dae::scalar_name_text_for_flat_index(
+                output.name.as_str(),
+                &output.dims,
+                flat_index,
+            );
+            Some((base_name.to_string(), selector))
+        })
+        .map(|(base_name, selector)| {
+            Ok(Some(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new(format!("{base_name}.{selector}")).into(),
+                args: args.clone(),
+                is_constructor: false,
+                span,
+            }))
+        })
+        .unwrap_or(Ok(None))
     }
 
     fn project_function_call_with_lane_args(
