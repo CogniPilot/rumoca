@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use super::runtime_protection::assignment_var_ref_name;
 use super::{
-    Dae, Expression, OpBinary, VarName, exact_reference_expr_name_in_dae,
+    Dae, Expression, OpBinary, VarName, collect_var_ref_nodes, exact_reference_expr_name_in_dae,
     runtime_partition_or_event_refs_var, unknown_is_fixed,
 };
 
@@ -99,10 +99,13 @@ fn connection_expr_refs_are_live_or_structurally_known(
     eq_rhs: &Expression,
     live_name: &VarName,
 ) -> bool {
-    let mut refs = indexmap::IndexSet::new();
-    eq_rhs.collect_var_refs(&mut refs);
-    refs.iter()
-        .all(|name| name == live_name || connection_alias_ref_is_structurally_known(dae, name))
+    let mut refs = Vec::new();
+    collect_var_ref_nodes(eq_rhs, &mut refs);
+    refs.iter().all(|(name, _)| {
+        name.var_name() == live_name
+            || name.is_generated()
+            || connection_alias_ref_is_structurally_known(dae, name.var_name())
+    })
 }
 
 fn can_eliminate_continuous_connection_alias(
@@ -285,8 +288,10 @@ fn connection_alias_expr_is_structurally_known(
     expr: &Expression,
     visiting: &mut HashSet<String>,
 ) -> bool {
-    let mut refs = indexmap::IndexSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.iter()
-        .all(|name| connection_alias_ref_is_structurally_known_inner(dae, name, visiting))
+    let mut refs = Vec::new();
+    collect_var_ref_nodes(expr, &mut refs);
+    refs.iter().all(|(name, _)| {
+        name.is_generated()
+            || connection_alias_ref_is_structurally_known_inner(dae, name.var_name(), visiting)
+    })
 }

@@ -4,7 +4,8 @@ use rumoca_core::{Literal, OpUnary};
 
 use super::{
     Dae, Expression, OpBinary, Substitution, VarName,
-    apply_substitutions_to_expr_with_derivatives_and_dae,
+    apply_substitutions_to_expr_with_derivatives_and_dae, exact_subscript_index_in_dae,
+    project_index_expr_with_exact_subscripts_in_dae,
 };
 use crate::StructuralError;
 
@@ -21,6 +22,22 @@ pub(super) fn equation_analysis_expr(eq: &rumoca_ir_dae::Equation) -> Expression
         eq.rhs.clone(),
         eq.span,
     )
+}
+
+pub(super) fn canonicalize_exact_indexing_in_continuous_equations(
+    dae: &mut Dae,
+) -> Result<(), StructuralError> {
+    let dae_context = dae.clone();
+    let mut touched_equations = Vec::new();
+    for (index, equation) in dae.continuous.equations.iter_mut().enumerate() {
+        let original_rhs = equation.rhs.clone();
+        equation.rhs = simplify_after_substitution(original_rhs.clone(), &dae_context);
+        if equation.rhs != original_rhs {
+            touched_equations.push(index);
+        }
+    }
+    super::drop_structured_families_touching_equations(dae, &touched_equations);
+    Ok(())
 }
 
 pub(super) fn apply_substitutions_to_remaining_once(
@@ -114,7 +131,7 @@ fn apply_substitutions_in_order_with_derivatives_and_dae(
         Some(dae_context),
         |sub| derivative_replacements.replacement_for(sub),
     )?;
-    Ok(simplify_arithmetic_identities(substituted))
+    Ok(simplify_after_substitution(substituted, dae_context))
 }
 
 /// Fold exact arithmetic identities introduced by substitution.
@@ -127,11 +144,11 @@ fn apply_substitutions_in_order_with_derivatives_and_dae(
 ///
 /// Only handles identities that are mathematically exact across all numeric
 /// types — division-by-zero and `0^0` are intentionally not folded.
-fn simplify_arithmetic_identities(expr: Expression) -> Expression {
+fn simplify_after_substitution(expr: Expression, dae_context: &Dae) -> Expression {
     match expr {
         Expression::Binary { op, lhs, rhs, span } => {
-            let lhs = simplify_arithmetic_identities(*lhs);
-            let rhs = simplify_arithmetic_identities(*rhs);
+            let lhs = simplify_after_substitution(*lhs, dae_context);
+            let rhs = simplify_after_substitution(*rhs, dae_context);
             match op {
                 OpBinary::Add => {
                     if is_numeric_zero(&lhs) {
@@ -173,7 +190,7 @@ fn simplify_arithmetic_identities(expr: Expression) -> Expression {
             }
         }
         Expression::Unary { op, rhs, span } => {
-            let inner = simplify_arithmetic_identities(*rhs);
+            let inner = simplify_after_substitution(*rhs, dae_context);
             if matches!(op, OpUnary::Minus) {
                 // -(-x) → x
                 if let Expression::Unary {
@@ -195,7 +212,57 @@ fn simplify_arithmetic_identities(expr: Expression) -> Expression {
                 span,
             }
         }
+        Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            let base = simplify_after_substitution(*base, dae_context);
+            let subscripts = subscripts
+                .into_iter()
+                .map(|subscript| simplify_subscript_after_substitution(subscript, dae_context))
+                .collect::<Vec<_>>();
+            project_index_expr_with_exact_subscripts_in_dae(dae_context, &base, &subscripts, span)
+                .unwrap_or_else(|| Expression::Index {
+                    base: Box::new(base),
+                    subscripts,
+                    span,
+                })
+        }
+        Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => Expression::VarRef {
+            name,
+            subscripts: subscripts
+                .into_iter()
+                .map(|subscript| simplify_subscript_after_substitution(subscript, dae_context))
+                .collect(),
+            span,
+        },
         _ => expr,
+    }
+}
+
+fn simplify_subscript_after_substitution(
+    subscript: rumoca_core::Subscript,
+    dae_context: &Dae,
+) -> rumoca_core::Subscript {
+    match subscript {
+        rumoca_core::Subscript::Expr { expr, span } => {
+            let expr = simplify_after_substitution(*expr, dae_context);
+            let subscript = rumoca_core::Subscript::Expr {
+                expr: Box::new(expr),
+                span,
+            };
+            if let Some(value) = exact_subscript_index_in_dae(dae_context, &subscript) {
+                rumoca_core::Subscript::Index { value, span }
+            } else {
+                subscript
+            }
+        }
+        other => other,
     }
 }
 

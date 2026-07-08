@@ -657,6 +657,57 @@ fn test_demote_direct_assigned_states_rejects_state_dependent_connection_alias()
 }
 
 #[test]
+fn test_demote_direct_assigned_input_state_from_indexed_state_signal() {
+    let mut dae = Dae::new();
+    let mut x = test_variable("x");
+    x.dims = vec![3];
+    dae.variables.states.insert(VarName::new("x"), x);
+    let mut u1 = test_variable("u1");
+    u1.causality = dae::VariableCausality::Input;
+    dae.variables.states.insert(VarName::new("u1"), u1);
+    let mut u2 = test_variable("u2");
+    u2.causality = dae::VariableCausality::Input;
+    dae.variables.states.insert(VarName::new("u2"), u2);
+    let mut u3 = test_variable("u3");
+    u3.causality = dae::VariableCausality::Input;
+    dae.variables.outputs.insert(VarName::new("u3"), u3);
+
+    dae.continuous
+        .equations
+        .push(eq(sub(der_idx("x", 3), var("dx3"))));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("dx3"), test_variable("dx3"));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("u1"), var_idx("x", 3))));
+    dae.continuous.equations.push(eq(sub(der("u1"), var("u2"))));
+    dae.continuous.equations.push(eq(sub(der("u2"), var("u3"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("direct demotion should succeed");
+
+    assert_eq!(demoted, 2);
+    assert!(!dae.variables.states.contains_key(&VarName::new("u1")));
+    assert!(!dae.variables.states.contains_key(&VarName::new("u2")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("u1")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("u2")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("u1"))),
+        "demotion should rewrite derivative uses of the input connector state"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("u2"))),
+        "demotion should rewrite derivative uses of the derived input connector state"
+    );
+}
+
+#[test]
 fn test_demote_direct_assigned_states_allows_fixed_state_with_extra_value_ref() {
     let mut dae = Dae::new();
     let fixed_span = Span::from_offsets(

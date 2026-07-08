@@ -67,7 +67,7 @@ pub use solve_for_unknown::try_solve_for_unknown;
 use solve_for_unknown::{expr_contains_unknown_in_dae, try_solve_for_unknown_in_dae};
 use substitution_application::{
     apply_substitutions_to_dae_partitions, apply_substitutions_to_remaining_once,
-    equation_analysis_expr,
+    canonicalize_exact_indexing_in_continuous_equations, equation_analysis_expr,
 };
 use substitution_target::{
     expr_contains_derivative_substitution_target, expr_contains_substitution_target,
@@ -440,6 +440,7 @@ fn eliminate_trace_enabled() -> bool {
 ///
 /// ODE equations (containing `der(state)`) are always skipped.
 fn resolve_boundary_equations(dae: &mut Dae) -> Result<EliminationResult, StructuralError> {
+    canonicalize_exact_indexing_in_continuous_equations(dae)?;
     let profile = eliminate_profile_enabled();
     let p_unknowns = maybe_start_timer_if(profile);
     let all_unknowns = collect_boundary_unknowns(dae)?;
@@ -851,8 +852,14 @@ fn scalar_connection_alias_candidate_rank(
     if dae.variables.algebraics.contains_key(var_name) {
         return Ok(Some(0));
     }
-    if dae.variables.outputs.contains_key(var_name) {
-        return Ok(Some(1));
+    if let Some(var) = dae.variables.outputs.get(var_name) {
+        return Ok(Some(
+            if matches!(var.causality, dae::VariableCausality::Input) {
+                1
+            } else {
+                2
+            },
+        ));
     }
     Ok(None)
 }
@@ -1030,6 +1037,7 @@ fn elimination_solution_is_valid(
     if is_output
         && !is_trivial_alias_in_dae(dae, solution)
         && !is_internal_component_output(dae, candidate)
+        && !is_connection_rhs_boundary_input(ctx, candidate, direct_assignment_solution)
     {
         return Ok(false);
     }
@@ -1098,6 +1106,20 @@ fn state_derivative_elimination_is_valid(
                 .direct_definitions
                 .has_other_direct_definition(ctx.eq_idx, candidate)
             && is_derivative_alias_expr(solution))
+}
+
+fn is_connection_rhs_boundary_input(
+    ctx: &EliminationChoiceContext<'_>,
+    candidate: &VarName,
+    direct_assignment_solution: bool,
+) -> bool {
+    direct_assignment_solution
+        && connection_rhs_assignment_target(
+            ctx.dae,
+            ctx.eq_idx,
+            &ctx.dae.continuous.equations[ctx.eq_idx].rhs,
+        )
+        .is_some_and(|target| is_assignment_target(ctx.dae, target, candidate))
 }
 
 fn indexed_multiscalar_slice_solution_is_blocked(
@@ -2099,7 +2121,10 @@ fn exact_subscript_index(subscript: &rumoca_core::Subscript) -> Option<i64> {
     }
 }
 
-fn exact_subscript_index_in_dae(dae: &Dae, subscript: &rumoca_core::Subscript) -> Option<i64> {
+pub(super) fn exact_subscript_index_in_dae(
+    dae: &Dae,
+    subscript: &rumoca_core::Subscript,
+) -> Option<i64> {
     match subscript {
         rumoca_core::Subscript::Index { value, .. } => Some(*value),
         rumoca_core::Subscript::Expr { expr, .. } => exact_index_expr_in_dae(dae, expr),
@@ -2119,6 +2144,9 @@ fn exact_index_expr_in_dae(dae: &Dae, expr: &Expression) -> Option<i64> {
             let lhs = exact_index_expr_in_dae(dae, lhs)?;
             let rhs = exact_index_expr_in_dae(dae, rhs)?;
             exact_binary_index_value(op, lhs, rhs)
+        }
+        Expression::BuiltinCall { function, args, .. } => {
+            exact_builtin_index_value_in_dae(dae, function, args)
         }
         _ => None,
     }
@@ -2161,7 +2189,9 @@ fn exact_binary_index_value(op: &OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
 
 fn exact_builtin_index_value(function: &BuiltinFunction, args: &[Expression]) -> Option<i64> {
     match function {
-        BuiltinFunction::Integer if args.len() == 1 => exact_index_expr(&args[0]),
+        BuiltinFunction::Integer if args.len() == 1 => {
+            exact_real_expr(&args[0]).and_then(finite_floor_i64)
+        }
         BuiltinFunction::Mod if args.len() == 2 => {
             let lhs = exact_index_expr(&args[0])?;
             let rhs = exact_index_expr(&args[1])?;
@@ -2169,6 +2199,120 @@ fn exact_builtin_index_value(function: &BuiltinFunction, args: &[Expression]) ->
         }
         _ => None,
     }
+}
+
+fn exact_builtin_index_value_in_dae(
+    dae: &Dae,
+    function: &BuiltinFunction,
+    args: &[Expression],
+) -> Option<i64> {
+    match function {
+        BuiltinFunction::Integer if args.len() == 1 => {
+            exact_real_expr_in_dae(dae, &args[0]).and_then(finite_floor_i64)
+        }
+        BuiltinFunction::Mod if args.len() == 2 => {
+            let lhs = exact_index_expr_in_dae(dae, &args[0])?;
+            let rhs = exact_index_expr_in_dae(dae, &args[1])?;
+            (rhs != 0).then(|| lhs.rem_euclid(rhs))
+        }
+        _ => exact_builtin_index_value(function, args),
+    }
+}
+
+fn exact_real_expr_in_dae(dae: &Dae, expr: &Expression) -> Option<f64> {
+    if let Some(value) = exact_real_expr(expr) {
+        return Some(value);
+    }
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            fixed_integer_parameter_start(dae, name.var_name()).map(|value| value as f64)
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = exact_real_expr_in_dae(dae, lhs)?;
+            let rhs = exact_real_expr_in_dae(dae, rhs)?;
+            exact_binary_real_value(op, lhs, rhs)
+        }
+        Expression::BuiltinCall { function, args, .. } => {
+            exact_builtin_real_value_in_dae(dae, function, args)
+        }
+        _ => None,
+    }
+}
+
+fn exact_real_expr(expr: &Expression) -> Option<f64> {
+    match expr {
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value as f64),
+        Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if value.is_finite() => Some(*value),
+        Expression::Unary { op, rhs, .. } => match op {
+            OpUnary::Plus => exact_real_expr(rhs),
+            OpUnary::Minus => exact_real_expr(rhs).map(|value| -value),
+            _ => None,
+        },
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = exact_real_expr(lhs)?;
+            let rhs = exact_real_expr(rhs)?;
+            exact_binary_real_value(op, lhs, rhs)
+        }
+        Expression::BuiltinCall { function, args, .. } => exact_builtin_real_value(function, args),
+        _ => None,
+    }
+}
+
+fn exact_binary_real_value(op: &OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
+    match op {
+        OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
+        OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
+        OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
+        OpBinary::Div | OpBinary::DivElem if rhs != 0.0 => Some(lhs / rhs),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+}
+
+fn exact_builtin_real_value(function: &BuiltinFunction, args: &[Expression]) -> Option<f64> {
+    match function {
+        BuiltinFunction::Integer if args.len() == 1 => exact_real_expr(&args[0]).map(f64::floor),
+        BuiltinFunction::Mod if args.len() == 2 => {
+            let lhs = exact_real_expr(&args[0])?;
+            let rhs = exact_real_expr(&args[1])?;
+            (rhs != 0.0).then(|| lhs - (lhs / rhs).floor() * rhs)
+        }
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+}
+
+fn exact_builtin_real_value_in_dae(
+    dae: &Dae,
+    function: &BuiltinFunction,
+    args: &[Expression],
+) -> Option<f64> {
+    match function {
+        BuiltinFunction::Integer if args.len() == 1 => {
+            exact_real_expr_in_dae(dae, &args[0]).map(f64::floor)
+        }
+        BuiltinFunction::Mod if args.len() == 2 => {
+            let lhs = exact_real_expr_in_dae(dae, &args[0])?;
+            let rhs = exact_real_expr_in_dae(dae, &args[1])?;
+            (rhs != 0.0).then(|| lhs - (lhs / rhs).floor() * rhs)
+        }
+        _ => exact_builtin_real_value(function, args),
+    }
+    .filter(|value| value.is_finite())
+}
+
+fn finite_floor_i64(value: f64) -> Option<i64> {
+    let value = value.floor();
+    (value.is_finite() && value >= i64::MIN as f64 && value <= i64::MAX as f64)
+        .then_some(value as i64)
 }
 
 fn fixed_integer_parameter_start(dae: &Dae, name: &VarName) -> Option<i64> {
@@ -2201,9 +2345,17 @@ pub(super) fn substitution_for_var(
 ) -> Result<Substitution, StructuralError> {
     let scope = DaeVariableScope::new(dae);
     let expr = project_scalarized_unknown_solution(&var_name, expr);
+    let var_dims = scope.dims(&var_name)?;
+    let replacement_dims = replacement_expr_dims(dae, &expr).or_else(|err| {
+        if var_dims.is_empty() && is_scalar_external_alias_expr(&expr, &err) {
+            Ok(Vec::new())
+        } else {
+            Err(err)
+        }
+    })?;
     Ok(Substitution {
-        var_dims: scope.dims(&var_name)?,
-        replacement_dims: replacement_expr_dims(dae, &expr)?,
+        var_dims,
+        replacement_dims,
         env_keys: vec![var_name.as_str().to_string()],
         var_ref: scope
             .exact(&var_name)
@@ -2212,6 +2364,15 @@ pub(super) fn substitution_for_var(
         var_name,
         expr,
     })
+}
+
+fn is_scalar_external_alias_expr(expr: &Expression, err: &StructuralError) -> bool {
+    matches!(
+        err,
+        StructuralError::ContractViolation { reason, .. }
+            | StructuralError::UnspannedContractViolation { reason }
+            if reason.contains("missing DAE variable metadata")
+    ) && matches!(expr, Expression::VarRef { subscripts, .. } if subscripts.is_empty())
 }
 
 fn project_scalarized_unknown_solution(var_name: &VarName, expr: Expression) -> Expression {
@@ -3287,6 +3448,23 @@ fn project_replacement_expr_with_subscripts(
         }
         rumoca_core::Subscript::Colon { .. } => None,
     }
+}
+
+pub(super) fn project_index_expr_with_exact_subscripts_in_dae(
+    dae: &Dae,
+    base: &Expression,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Option<Expression> {
+    if subscripts.is_empty() {
+        return Some(base.clone().with_span(span));
+    }
+    let mut exact_subscripts = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let value = exact_subscript_index_in_dae(dae, subscript)?;
+        exact_subscripts.push(rumoca_core::Subscript::Index { value, span });
+    }
+    project_replacement_expr_with_subscripts(base, &exact_subscripts, span)
 }
 
 fn project_replacement_expr_index(

@@ -1165,6 +1165,179 @@ fn test_eliminate_trivial_accepts_runtime_known_assignment_tail_after_output_ali
 }
 
 #[test]
+fn test_boundary_eliminates_connection_rhs_output_from_source_expression() {
+    let mut dae = Dae::new();
+    let mut state = test_dae_variable("x");
+    state.start = Some(lit(0.0));
+    dae.variables.states.insert(VarName::new("x"), state);
+    dae.variables
+        .outputs
+        .insert(VarName::new("sink.u"), test_dae_variable("sink.u"));
+    dae.variables.parameters.insert(
+        VarName::new("source.offset"),
+        test_dae_variable("source.offset"),
+    );
+    dae.variables
+        .discrete_valued
+        .insert(VarName::new("c"), test_dae_variable("c"));
+
+    dae.continuous
+        .equations
+        .push(residual(der(var_ref("x")), var_ref("sink.u"), 1, "ode"));
+    dae.continuous.equations.push(residual(
+        binary(
+            OpBinary::Add,
+            var_ref("source.offset"),
+            Expression::If {
+                branches: vec![(
+                    Expression::VarRef {
+                        name: rumoca_core::Reference::generated("c"),
+                        subscripts: vec![rumoca_core::Subscript::generated_index(1, test_span())],
+                        span: test_span(),
+                    },
+                    lit(0.0),
+                )],
+                else_branch: Box::new(lit(1.0)),
+                span: test_span(),
+            },
+        ),
+        var_ref("sink.u"),
+        1,
+        "connection equation: source.y = sink.u",
+    ));
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert_eq!(result.n_eliminated, 1);
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "sink.u"),
+        "source-driven input port should be substituted"
+    );
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert!(
+        !expr_contains_var(&dae.continuous.equations[0].rhs, &VarName::new("sink.u")),
+        "remaining ODE should reference the source expression directly"
+    );
+    assert!(!dae.variables.outputs.contains_key(&VarName::new("sink.u")));
+}
+
+#[test]
+fn test_boundary_eliminates_input_connected_to_non_dae_source_alias() {
+    let mut dae = Dae::new();
+    let mut state = test_dae_variable("x");
+    state.start = Some(lit(0.0));
+    dae.variables.states.insert(VarName::new("x"), state);
+    let mut sink_u = test_dae_variable("sink.u");
+    sink_u.causality = dae::VariableCausality::Input;
+    dae.variables.outputs.insert(VarName::new("sink.u"), sink_u);
+
+    dae.continuous.equations.push(residual(
+        var_ref("source.y"),
+        var_ref("sink.u"),
+        1,
+        "connection equation: source.y = sink.u",
+    ));
+    dae.continuous
+        .equations
+        .push(residual(der(var_ref("x")), var_ref("sink.u"), 1, "ode"));
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+    let sink_sub = result
+        .substitutions
+        .iter()
+        .find(|sub| sub.var_name.as_str() == "sink.u")
+        .expect("input connected to a source alias should be eliminated");
+
+    assert!(
+        matches!(
+            sink_sub.expr,
+            Expression::VarRef { ref name, ref subscripts, .. }
+                if name.as_str() == "source.y" && subscripts.is_empty()
+        ),
+        "input should resolve to the non-DAE source alias, got {:?}",
+        sink_sub.expr
+    );
+}
+
+#[test]
+fn test_boundary_prefers_connection_input_over_source_output() {
+    let mut dae = Dae::new();
+    let mut source_y = test_dae_variable("source.y");
+    source_y.causality = dae::VariableCausality::Output;
+    dae.variables
+        .outputs
+        .insert(VarName::new("source.y"), source_y);
+    let mut sink_u = test_dae_variable("sink.u");
+    sink_u.causality = dae::VariableCausality::Input;
+    dae.variables.outputs.insert(VarName::new("sink.u"), sink_u);
+    dae.variables
+        .algebraics
+        .insert(VarName::new("consumer.u"), test_dae_variable("consumer.u"));
+
+    dae.continuous.equations.push(residual(
+        var_ref("source.y"),
+        var_ref("sink.u"),
+        1,
+        "connection equation: source.y = sink.u",
+    ));
+    dae.continuous.equations.push(residual(
+        var_ref("consumer.u"),
+        var_ref("sink.u"),
+        1,
+        "consumer equation",
+    ));
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+    let sink_sub = result
+        .substitutions
+        .iter()
+        .find(|sub| sub.var_name.as_str() == "sink.u")
+        .expect("connection input should be eliminated");
+
+    assert!(
+        matches!(
+            sink_sub.expr,
+            Expression::VarRef { ref name, ref subscripts, .. }
+                if name.as_str() == "source.y" && subscripts.is_empty()
+        ),
+        "connection should substitute sink input from source output, got {:?}",
+        sink_sub.expr
+    );
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .all(|sub| sub.var_name.as_str() != "source.y"),
+        "connection alias should preserve the source output"
+    );
+}
+
+#[test]
+fn test_exact_subscript_index_in_dae_resolves_builtin_integer_expression() {
+    let dae = Dae::new();
+    let subscript = rumoca_core::Subscript::Expr {
+        expr: Box::new(binary(
+            OpBinary::Add,
+            binary(
+                OpBinary::Add,
+                builtin(BuiltinFunction::Mod, vec![lit(3.0), lit(2.0)]),
+                builtin(
+                    BuiltinFunction::Integer,
+                    vec![binary(OpBinary::Div, lit(3.0), lit(2.0))],
+                ),
+            ),
+            lit(1.0),
+        )),
+        span: test_span(),
+    };
+
+    assert_eq!(exact_subscript_index_in_dae(&dae, &subscript), Some(3));
+}
+
+#[test]
 fn test_eliminate_trivial_keeps_sampled_value_source_unknown() {
     let mut dae = Dae::new();
     dae.variables

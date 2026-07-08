@@ -4,7 +4,10 @@ use indexmap::IndexSet;
 use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, OpBinary, VarName};
 use rumoca_ir_dae::{self as dae, Dae};
 
-use super::{equation_analysis_expr, exact_reference_expr_name_in_dae, expr_contains_var};
+use super::{
+    collect_var_ref_nodes, equation_analysis_expr, exact_reference_expr_name_in_dae,
+    expr_contains_var,
+};
 
 pub(super) fn runtime_protected_unknown_names(dae: &Dae) -> IndexSet<String> {
     let mut protected = crate::runtime_defined::runtime_defined_continuous_unknown_names(dae);
@@ -297,9 +300,12 @@ pub(super) fn expr_references_any_runtime_discrete_target(
         return false;
     }
 
-    let mut refs: HashSet<VarName> = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.iter().any(|name| {
+    let mut refs = Vec::new();
+    collect_var_ref_nodes(expr, &mut refs);
+    refs.iter().any(|(name, _)| {
+        if name.is_generated() {
+            return false;
+        }
         let raw = name.as_str();
         runtime_defined_discrete_targets.contains(raw)
             || dae::component_base_name(raw)
@@ -308,11 +314,15 @@ pub(super) fn expr_references_any_runtime_discrete_target(
 }
 
 pub(super) fn expr_references_any_discrete_name(dae: &Dae, expr: &Expression) -> bool {
-    let mut refs: HashSet<VarName> = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.iter().any(|name| {
-        dae.variables.discrete_reals.contains_key(name)
-            || dae.variables.discrete_valued.contains_key(name)
+    let mut refs = Vec::new();
+    collect_var_ref_nodes(expr, &mut refs);
+    refs.iter().any(|(name, _)| {
+        if name.is_generated() {
+            return false;
+        }
+        let var_name = name.var_name();
+        dae.variables.discrete_reals.contains_key(var_name)
+            || dae.variables.discrete_valued.contains_key(var_name)
             || dae::component_base_name(name.as_str()).is_some_and(|base| {
                 let base = VarName::new(base.as_str());
                 dae.variables.discrete_reals.contains_key(&base)

@@ -1,4 +1,9 @@
 //! Incidence matrix construction for DAE structural analysis.
+//!
+//! SPEC_0021 file-size exception: incidence currently keeps unknown collection,
+//! exact subscript evaluation, and reference traversal in one place. split plan:
+//! move exact index/subscript evaluation and its regressions into a dedicated
+//! submodule once boundary-elimination and incidence share the same evaluator.
 
 use std::collections::{HashMap, HashSet};
 
@@ -1214,6 +1219,9 @@ impl ConstantEvalContext {
             rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
                 self.eval_scalar_binary(op.clone(), lhs, rhs)
             }
+            rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+                self.eval_scalar_builtin(*function, args)
+            }
             _ => None,
         }
     }
@@ -1234,6 +1242,43 @@ impl ConstantEvalContext {
                 Some(lhs / rhs)
             }
             rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => Some(lhs.powf(rhs)),
+            _ => None,
+        }
+    }
+
+    fn eval_scalar_builtin(
+        &self,
+        function: rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) -> Option<f64> {
+        match (function, args) {
+            (rumoca_core::BuiltinFunction::Abs, [arg]) => Some(self.eval_scalar(arg)?.abs()),
+            (rumoca_core::BuiltinFunction::Floor, [arg])
+            | (rumoca_core::BuiltinFunction::Integer, [arg]) => {
+                Some(self.eval_scalar(arg)?.floor())
+            }
+            (rumoca_core::BuiltinFunction::Ceil, [arg]) => Some(self.eval_scalar(arg)?.ceil()),
+            (rumoca_core::BuiltinFunction::Min, [lhs, rhs]) => {
+                Some(self.eval_scalar(lhs)?.min(self.eval_scalar(rhs)?))
+            }
+            (rumoca_core::BuiltinFunction::Max, [lhs, rhs]) => {
+                Some(self.eval_scalar(lhs)?.max(self.eval_scalar(rhs)?))
+            }
+            (rumoca_core::BuiltinFunction::Div, [lhs, rhs]) => {
+                let lhs = self.eval_scalar(lhs)?;
+                let rhs = self.eval_scalar(rhs)?;
+                (rhs != 0.0).then_some((lhs / rhs).floor())
+            }
+            (rumoca_core::BuiltinFunction::Mod, [lhs, rhs]) => {
+                let lhs = self.eval_scalar(lhs)?;
+                let rhs = self.eval_scalar(rhs)?;
+                (rhs != 0.0).then(|| lhs - (lhs / rhs).floor() * rhs)
+            }
+            (rumoca_core::BuiltinFunction::Rem, [lhs, rhs]) => {
+                let lhs = self.eval_scalar(lhs)?;
+                let rhs = self.eval_scalar(rhs)?;
+                (rhs != 0.0).then(|| lhs - (lhs / rhs).trunc() * rhs)
+            }
             _ => None,
         }
     }
@@ -1500,6 +1545,27 @@ mod tests {
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
             span,
+        }
+    }
+
+    fn div(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        let span = test_span();
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        }
+    }
+
+    fn builtin(
+        function: rumoca_core::BuiltinFunction,
+        args: Vec<rumoca_core::Expression>,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::BuiltinCall {
+            function,
+            args,
+            span: test_span(),
         }
     }
 
@@ -1779,6 +1845,37 @@ mod tests {
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert_eq!(triplets, vec![(0, 9)]);
+    }
+
+    #[test]
+    fn incidence_resolves_builtin_expression_subscripts_to_scalar_unknowns() {
+        let mut dae = dae::Dae::new();
+
+        let mut uu = dae::Variable::new(rumoca_core::VarName::new("uu"), test_span());
+        uu.dims = vec![3];
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("uu"), uu);
+
+        let subscript = add(
+            add(
+                builtin(
+                    rumoca_core::BuiltinFunction::Mod,
+                    vec![int_lit(3), int_lit(2)],
+                ),
+                builtin(
+                    rumoca_core::BuiltinFunction::Integer,
+                    vec![div(int_lit(3), int_lit(2))],
+                ),
+            ),
+            int_lit(1),
+        );
+        dae.continuous
+            .equations
+            .push(eq(sub(index_expr(var("uu"), subscript), lit(0.0))));
+
+        let triplets = build_solver_sparsity_triplets(&dae);
+        assert_eq!(triplets, vec![(0, 2)]);
     }
 
     #[test]

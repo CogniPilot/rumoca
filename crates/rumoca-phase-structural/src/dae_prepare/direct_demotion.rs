@@ -190,6 +190,42 @@ fn defining_expr_references_unsafe_non_state_alias_closure(
     )
 }
 
+fn defining_expr_references_unsafe_non_state_alias_closure_allowing_direct_state_refs(
+    definitions: &DefiningExprIndex,
+    defining_expr: &Expression,
+    state_name_set: &HashSet<String>,
+    non_state_unknown_names: &HashSet<String>,
+    excluded_eq_index: Option<usize>,
+    alias_safety_cache: &mut AliasSafetyCache,
+) -> bool {
+    let mut refs = HashSet::new();
+    defining_expr.collect_var_refs(&mut refs);
+    refs.into_iter().any(|ref_name| {
+        if state_name_set.contains(ref_name.as_str()) {
+            return false;
+        }
+        if !non_state_unknown_names.contains(ref_name.as_str()) {
+            return false;
+        }
+        !non_state_alias_closure_is_state_free(
+            definitions,
+            &ref_name,
+            state_name_set,
+            non_state_unknown_names,
+            excluded_eq_index,
+            &mut HashSet::new(),
+            alias_safety_cache,
+        )
+    })
+}
+
+fn state_is_input_connector(dae: &Dae, state_name: &VarName) -> bool {
+    dae.variables
+        .states
+        .get(state_name)
+        .is_some_and(|var| matches!(var.causality, dae::VariableCausality::Input))
+}
+
 fn apply_direct_demotion_plans(
     dae: &mut Dae,
     substitutions: &HashMap<String, DirectStateDemotionPlan>,
@@ -285,7 +321,9 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_self_der += 1;
         return Ok(None);
     }
-    if !defining_expr_state_derivatives_are_demotable(round, &state_name, &defining_expr)? {
+    if !state_is_input_connector(round.dae, &state_name)
+        && !defining_expr_state_derivatives_are_demotable(round, &state_name, &defining_expr)?
+    {
         counters.n_skip_der_in_defining_expr += 1;
         return Ok(None);
     }
@@ -294,14 +332,26 @@ fn direct_demotion_plan_for_equation(
     // `choose_derivative_replacement`), so mask them before scanning for value
     // dependencies on states or unsafe alias closures.
     let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
-    if defining_expr_references_unsafe_non_state_alias_closure(
-        &round.non_state_defining_exprs,
-        &alias_scan_expr,
-        &round.state_name_set,
-        &round.non_state_unknown_names,
-        Some(eq_index),
-        alias_safety_cache,
-    ) {
+    let unsafe_alias_closure = if state_is_input_connector(round.dae, &state_name) {
+        defining_expr_references_unsafe_non_state_alias_closure_allowing_direct_state_refs(
+            &round.non_state_defining_exprs,
+            &alias_scan_expr,
+            &round.state_name_set,
+            &round.non_state_unknown_names,
+            Some(eq_index),
+            alias_safety_cache,
+        )
+    } else {
+        defining_expr_references_unsafe_non_state_alias_closure(
+            &round.non_state_defining_exprs,
+            &alias_scan_expr,
+            &round.state_name_set,
+            &round.non_state_unknown_names,
+            Some(eq_index),
+            alias_safety_cache,
+        )
+    };
+    if unsafe_alias_closure {
         counters.n_skip_unsafe_non_state_alias += 1;
         return Ok(None);
     }
@@ -1098,7 +1148,8 @@ fn direct_assignment_shape_is_demotable(
         return false;
     };
     if state.size() <= 1 {
-        return !expr_contains_unsliced_vector_ref(defining_expr, dae);
+        return expression_dims(defining_expr, dae).is_some_and(|dims| dims.is_empty())
+            || !expr_contains_unsliced_vector_ref(defining_expr, dae);
     }
     let Some(state_dims) = variable_dims_for_direct_demotion(dae, state_name) else {
         return false;

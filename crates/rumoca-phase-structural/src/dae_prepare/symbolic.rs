@@ -342,6 +342,20 @@ impl<'a> SymbolicDerivativeContext<'a> {
             return Some(real_literal(0.0, span));
         }
         if !subscripts.is_empty()
+            && let Some(dims) = variable_dims_for_name(self.dae, name)
+            && let Some(indices) = static_subscript_indices(subscripts)
+            && let Some(flat_index) = flat_index_from_indices(&dims, &indices)
+        {
+            let scalar_name = VarName::new(dae::scalar_name_text_for_flat_index(
+                name.as_str(),
+                &dims,
+                flat_index,
+            ));
+            if let Some(derivative) = self.der_map.get(scalar_name.as_str()) {
+                return Some(derivative.clone().with_span(span));
+            }
+        }
+        if !subscripts.is_empty()
             && let Some(derivative) = self.der_map.get(name.as_str())
             && let Some(dims) = variable_dims_for_name(self.dae, name)
             && let Some(indices) = static_subscript_indices(subscripts)
