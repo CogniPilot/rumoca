@@ -4,7 +4,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{BinaryOp, Reg};
 
 use crate::lower::{
-    LowerBuilder, LowerError, Scope, derivative_rhs, helpers::format_usize_dims, unsupported_at,
+    LowerBuilder, LowerError, Scope, compile_time, derivative_rhs, helpers::format_usize_dims,
+    unsupported_at,
 };
 
 pub(super) fn scalarized_tuple_residual_operands(
@@ -18,13 +19,20 @@ pub(super) fn scalarized_tuple_residual_operands(
 ) -> Result<Option<Vec<Reg>>, LowerError> {
     let scope = Scope::new();
     if let rumoca_core::Expression::Tuple { elements, .. } = target
-        && let Some(output_groups) =
-            derivative_rhs::function_call_projected_output_groups_with_owner(
+        && let Some(output_groups) = match selected_output_groups_from_declared_shapes(
+            rhs,
+            dae_model,
+            structural_bindings,
+            span,
+        )? {
+            Some(groups) => Some(groups),
+            None => derivative_rhs::function_call_projected_output_groups_with_owner(
                 rhs,
                 dae_model,
                 structural_bindings,
                 span,
-            )?
+            )?,
+        }
     {
         if elements.len() != output_groups.len() {
             return Ok(None);
@@ -87,6 +95,129 @@ pub(super) fn scalarized_tuple_residual_operands(
         values.push(builder.emit_binary_at(BinaryOp::Sub, lhs, rhs, span)?);
     }
     Ok(Some(values))
+}
+
+fn selected_output_groups_from_declared_shapes(
+    rhs: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<Vec<rumoca_core::Expression>>>, LowerError> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        ..
+    } = rhs
+    else {
+        return Ok(None);
+    };
+    let Some(function) = dae_model.symbols.functions.get(name.var_name()) else {
+        return Ok(None);
+    };
+    if !args_are_compile_time_scalars(args, structural_bindings)? {
+        return Ok(None);
+    }
+    let Some(shape_env) = function_call_shape_env(
+        name.as_str(),
+        &function.inputs,
+        args,
+        dae_model,
+        structural_bindings,
+        span,
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut groups = super::expression_vec_with_capacity(
+        function.outputs.len(),
+        "declared selected-output group count",
+        span,
+    )?;
+    for output in &function.outputs {
+        let Some(count) = function_param_scalar_count(output, &shape_env, span)? else {
+            return Ok(None);
+        };
+        let mut group = super::expression_vec_with_capacity(
+            count,
+            "declared selected-output scalar count",
+            span,
+        )?;
+        if count == 1 {
+            group.push(selected_output_expression(
+                dae_model, name, args, output, None, span,
+            ));
+        } else {
+            for index in 1..=count {
+                group.push(selected_output_expression(
+                    dae_model,
+                    name,
+                    args,
+                    output,
+                    Some(index),
+                    span,
+                ));
+            }
+        }
+        groups.push(group);
+    }
+    Ok(Some(groups))
+}
+
+fn args_are_compile_time_scalars(
+    args: &[rumoca_core::Expression],
+    structural_bindings: &IndexMap<String, f64>,
+) -> Result<bool, LowerError> {
+    for arg in args {
+        if static_shape_scalar(arg, &IndexMap::new(), structural_bindings)?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn selected_output_expression(
+    dae_model: &dae::Dae,
+    function_name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    output: &rumoca_core::FunctionParam,
+    one_based_index: Option<usize>,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    let selection_indices = selected_output_eval_indices(output, one_based_index);
+    if let Some(value) = compile_time::eval_selected_function_output(
+        dae_model,
+        function_name.var_name(),
+        output.name.as_str(),
+        &selection_indices,
+        args,
+    ) {
+        return rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span,
+        };
+    }
+    let selector = match one_based_index {
+        Some(index) => format!("{}[{index}]", output.name),
+        None => output.name.to_string(),
+    };
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(format!("{}.{}", function_name.as_str(), selector)).into(),
+        args: args.to_vec(),
+        is_constructor: false,
+        span,
+    }
+}
+
+fn selected_output_eval_indices(
+    output: &rumoca_core::FunctionParam,
+    one_based_index: Option<usize>,
+) -> Vec<i64> {
+    match one_based_index {
+        Some(index) => vec![index as i64],
+        None if output.dims.is_empty() && output.shape_expr.is_empty() => Vec::new(),
+        None => vec![1],
+    }
 }
 
 pub(super) fn scalarized_tuple_residual_binding_count(

@@ -265,6 +265,9 @@ pub(in crate::lower) fn binding_keys_for_subscripted_name(
             if variable_by_name(dae_model, base).is_some() {
                 return Ok(vec![base.to_string()]);
             }
+            if scalarized_variable_name_is_declared(dae_model, base)? {
+                return Ok(vec![base.to_string()]);
+            }
             if let Some(dims) = scalarized_child_dims(dae_model, base, fallback_span)? {
                 return scalar_keys_for_dims(base, &dims, fallback_span);
             }
@@ -311,6 +314,26 @@ pub(in crate::lower) fn binding_keys_for_subscripted_name(
         derivative_vec_with_capacity(selections.len(), "binding slice key depth", span)?;
     collect_slice_keys(base, &selections, span, 0, &mut current, &mut keys)?;
     Ok(keys)
+}
+
+pub(in crate::lower) fn scalarized_variable_name_is_declared(
+    dae_model: &dae::Dae,
+    key: &str,
+) -> Result<bool, LowerError> {
+    let Some(scalar) = rumoca_core::parse_scalar_name(key) else {
+        return Ok(false);
+    };
+    let Some(dims) = variable_dims(dae_model, scalar.base)? else {
+        return Ok(false);
+    };
+    if scalar.indices.len() != dims.len() {
+        return Ok(false);
+    }
+    Ok(scalar
+        .indices
+        .iter()
+        .zip(dims.iter())
+        .all(|(index, dim)| usize::try_from(*index).is_ok_and(|index| index > 0 && index <= *dim)))
 }
 
 pub(in crate::lower) fn scalarized_binding_key(

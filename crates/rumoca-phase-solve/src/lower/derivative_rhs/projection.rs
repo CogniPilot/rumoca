@@ -1615,6 +1615,9 @@ pub(in crate::lower) fn expression_dims_for_subscripted_binding(
     }
 
     if subscripts.is_empty() {
+        if scalarized_variable_name_is_declared(dae_model, base)? {
+            return Ok(Vec::new());
+        }
         if let Some(dims) = scalarized_child_dims(dae_model, base, fallback_span)? {
             return Ok(dims);
         }

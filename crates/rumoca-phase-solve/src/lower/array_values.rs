@@ -1272,7 +1272,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(false);
         };
         let Some(function) = self.lookup_function(name) else {
-            return Ok(false);
+            return Ok(self.selected_output_function_call_is_scalar(name));
         };
         let [output] = function.outputs.as_slice() else {
             return Ok(false);
@@ -1281,6 +1281,23 @@ impl<'a> LowerBuilder<'a> {
             return Ok(false);
         }
         Ok(self.infer_expr_dims(other, scope)?.is_empty())
+    }
+
+    fn selected_output_function_call_is_scalar(&self, name: &rumoca_core::Reference) -> bool {
+        rumoca_core::find_map_top_level_splits_rev(name.as_str(), |base_name, suffix| {
+            let function = self.functions.get(&rumoca_core::VarName::new(base_name))?;
+            let projection_suffix =
+                crate::projection_suffix::parse_output_projection_suffix(suffix)?;
+            let output = function
+                .outputs
+                .iter()
+                .find(|output| output.name == projection_suffix.output_name)?;
+            if output.dims.is_empty() || output.dims.len() == projection_suffix.indices.len() {
+                return Some(());
+            }
+            None
+        })
+        .is_some()
     }
 
     fn lower_binary_array_like_values(

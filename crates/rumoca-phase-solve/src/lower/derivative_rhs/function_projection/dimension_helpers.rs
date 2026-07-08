@@ -448,12 +448,17 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
         {
             let flattened_key = format!("{}_{}", name.as_str(), field);
             if let Some(replacement) = self.scope.full.get(flattened_key.as_str()) {
-                return self.rewrite_expression(replacement).with_span(*span);
+                return self.rewrite_scope_replacement(
+                    flattened_key.as_str(),
+                    replacement,
+                    expr,
+                    *span,
+                );
             }
             if name.as_str().ends_with(&format!("_{field}"))
                 && let Some(replacement) = self.scope.full.get(name.as_str())
             {
-                return self.rewrite_expression(replacement).with_span(*span);
+                return self.rewrite_scope_replacement(name.as_str(), replacement, expr, *span);
             }
         }
         let rumoca_core::Expression::VarRef {
@@ -484,9 +489,6 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             return expr.clone();
         }
         if let Some(replacement) = self.scope.full.get(name.as_str()) {
-            if self.stack.iter().any(|active| active == name.as_str()) {
-                return expr.clone();
-            }
             if let rumoca_core::Expression::VarRef {
                 name: replacement_name,
                 subscripts: replacement_subscripts,
@@ -497,16 +499,18 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             {
                 return replacement.clone().with_span(*span);
             }
-            self.stack.push(name.as_str().to_string());
-            let rewritten = self.rewrite_expression(replacement).with_span(*span);
-            self.stack.pop();
-            return rewritten;
+            return self.rewrite_scope_replacement(name.as_str(), replacement, expr, *span);
         }
         let flattened_name = name.as_str().replace('.', "_");
         if flattened_name != name.as_str()
             && let Some(replacement) = self.scope.full.get(flattened_name.as_str())
         {
-            return self.rewrite_expression(replacement).with_span(*span);
+            return self.rewrite_scope_replacement(
+                flattened_name.as_str(),
+                replacement,
+                expr,
+                *span,
+            );
         }
         if let Some(scalar) = rumoca_core::parse_scalar_name(name.as_str())
             && let Some(values) = self.scope.scalars.get(scalar.base)
@@ -540,6 +544,22 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
 }
 
 impl FunctionScopeSubstituter<'_> {
+    fn rewrite_scope_replacement(
+        &mut self,
+        key: &str,
+        replacement: &rumoca_core::Expression,
+        fallback: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if self.stack.iter().any(|active| active == key) {
+            return fallback.clone().with_span(span);
+        }
+        self.stack.push(key.to_string());
+        let rewritten = self.rewrite_expression(replacement).with_span(span);
+        self.stack.pop();
+        rewritten
+    }
+
     fn substitute_subscripted_var_ref(
         &mut self,
         name: &rumoca_core::Reference,

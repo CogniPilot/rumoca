@@ -93,6 +93,34 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
     owner_span: rumoca_core::Span,
 ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
+    if let Some((call, scalar_index)) = selected_function_output_call(expr, dae_model)? {
+        let Some(outputs) = analysis.top_level_function_call_outputs(
+            &call,
+            inherited_projection_source_span(call.span(), owner_span),
+        )?
+        else {
+            return Ok(None);
+        };
+        let output_expr = outputs
+            .get(scalar_index)
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!(
+                        "selected function output index {} is out of bounds for {} projected outputs",
+                        scalar_index + 1,
+                        outputs.len()
+                    ),
+                    owner_span,
+                )
+            })?
+            .expr
+            .clone();
+        let span = owner_span;
+        let mut values =
+            projection_vec_with_capacity(1, "selected function output scalar count", span)?;
+        values.push(output_expr);
+        return Ok(Some(values));
+    }
     if let Some((call, field)) = function_field_access(expr)
         && let Some(outputs) = analysis.top_level_function_call_outputs(
             call,
@@ -142,35 +170,7 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
     {
         return Ok(Some(values));
     }
-    let Some((call, scalar_index)) = selected_function_output_call(expr, dae_model)? else {
-        return Ok(None);
-    };
-    let Some(outputs) = analysis.top_level_function_call_outputs(
-        &call,
-        inherited_projection_source_span(call.span(), owner_span),
-    )?
-    else {
-        return Ok(None);
-    };
-    let output_expr = outputs
-        .get(scalar_index)
-        .ok_or_else(|| {
-            LowerError::contract_violation(
-                format!(
-                    "selected function output index {} is out of bounds for {} projected outputs",
-                    scalar_index + 1,
-                    outputs.len()
-                ),
-                owner_span,
-            )
-        })?
-        .expr
-        .clone();
-    let span = owner_span;
-    let mut values =
-        projection_vec_with_capacity(1, "selected function output scalar count", span)?;
-    values.push(output_expr);
-    Ok(Some(values))
+    Ok(None)
 }
 
 pub(in crate::lower) fn function_call_projected_output_groups_with_owner(

@@ -969,6 +969,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 if let Some((call, selected_index)) =
                     selected_function_output_call(expr, self.dae_model)?
                 {
+                    if !self.function_call_args_are_compile_time_scalars(args, scope)? {
+                        return Ok(None);
+                    }
                     let Some(outputs) = self.function_call_outputs_with_projection_scope(
                         &call,
                         0,
@@ -1055,6 +1058,19 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             return Ok(Some(value.asinh()));
         }
         Ok(None)
+    }
+
+    fn function_call_args_are_compile_time_scalars(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+    ) -> Result<bool, LowerError> {
+        for arg in args {
+            if self.compile_time_scalar_in_scope(arg, scope)?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     #[allow(clippy::excessive_nesting)]

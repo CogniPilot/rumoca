@@ -189,6 +189,9 @@ fn derivative_terminal_linear_parts(
     ctx: &DerivativeLinearCtx<'_>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<LinearParts>, LowerError> {
+    if let Some(parts) = derivative_projected_function_call_linear_parts(expr, ctx, owner_span)? {
+        return Ok(Some(parts));
+    }
     let Some((name, coeff)) = derivative_term_coefficient(expr, ctx, owner_span)? else {
         return Ok(None);
     };
@@ -197,6 +200,45 @@ fn derivative_terminal_linear_parts(
         linear_index_map_with_capacity(1, "derivative term coefficient count", span)?;
     coefficients.insert(name, coeff);
     Ok(Some((coefficients, None)))
+}
+
+fn derivative_projected_function_call_linear_parts(
+    expr: &rumoca_core::Expression,
+    ctx: &DerivativeLinearCtx<'_>,
+    owner_span: rumoca_core::Span,
+) -> Result<Option<LinearParts>, LowerError> {
+    if !matches!(
+        expr,
+        rumoca_core::Expression::FunctionCall {
+            is_constructor: false,
+            ..
+        }
+    ) {
+        return Ok(None);
+    }
+    let span = linear_expr_or_owner_span(expr, owner_span)?;
+    let values = match function_call_projected_scalars_with_owner(
+        expr,
+        ctx.dae_model,
+        ctx.structural_bindings,
+        span,
+    ) {
+        Ok(values) => values,
+        Err(LowerError::MissingFunction { .. } | LowerError::MissingBinding { .. }) => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    let [projected] = values.as_slice() else {
+        return Ok(None);
+    };
+    if projected == expr {
+        return Ok(None);
+    }
+    derivative_linear_parts_any(projected, ctx, span)
 }
 
 pub(in crate::lower) fn derivative_dot_product_linear_parts(

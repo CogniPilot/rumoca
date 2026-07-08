@@ -17,6 +17,24 @@ pub(super) fn external_table_data(
     Ok(rumoca_eval_dae::all_external_table_data_in_env(&eval_env))
 }
 
+pub(in crate::lower) fn eval_selected_function_output(
+    dae_model: &dae::Dae,
+    function_name: &rumoca_core::VarName,
+    output_name: &str,
+    indices: &[i64],
+    args: &[rumoca_core::Expression],
+) -> Option<f64> {
+    let env = compile_time_eval_env(dae_model);
+    rumoca_eval_dae::eval_selected_function_output_pub::<f64>(
+        function_name,
+        output_name,
+        indices,
+        args,
+        &env,
+    )
+    .ok()
+}
+
 fn structural_bindings_with_eval_env(
     dae_model: &dae::Dae,
 ) -> Result<(IndexMap<String, f64>, rumoca_eval_dae::VarEnv<f64>), LowerError> {

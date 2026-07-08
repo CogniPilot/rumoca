@@ -308,7 +308,6 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     let timer = timing::stage_start();
     let solve_layout = lower_solve_layout_with_var_layout(dae_model, solver_len, &layout)?;
     timing::log_stage("problem.lower_solve_layout", timer);
-
     let timer = timing::stage_start();
     let runtime_tail_updates = runtime_tail_update_names(dae_model)?;
     let runtime_assignment_equations =
@@ -706,7 +705,6 @@ fn lower_initialization_system(
         .map_err(|err| lower_problem_context(err, "collect initial condition updates"))?;
     let update_targets = lower_update_targets_from_equations(dae_model, layout, &update_equations)
         .map_err(|err| lower_problem_context(err, "lower initial update targets"))?;
-
     let residual_rows = lower_initial_residual(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
     let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout)?;
@@ -740,16 +738,17 @@ fn lower_initialization_system(
         &row_targets,
         &residual_equations,
     )?;
+    let update_rhs = solve::ScalarProgramBlock::with_program_spans(
+        lower_initial_update_rhs(dae_model, layout)
+            .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
+        program_spans_for_owned_equations(&update_equations)?,
+    )?;
     Ok(solve::InitializationSolveSystem {
         row_targets,
         projection_indices,
         projection_plan,
         residual,
-        update_rhs: solve::ScalarProgramBlock::with_program_spans(
-            lower_initial_update_rhs(dae_model, layout)
-                .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
-            program_spans_for_owned_equations(&update_equations)?,
-        )?,
+        update_rhs,
         update_targets,
     })
 }
