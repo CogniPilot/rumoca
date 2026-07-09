@@ -398,6 +398,26 @@ fn test_rust_fixed_solve_builtin_target_renders_fixed_derivative_kernel() {
 }
 
 #[test]
+fn test_rust_fixed_solve_builtin_target_rejects_linsolve_render() {
+    let problem = solve_problem_with_two_by_two_linsolve_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let err = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-solve", "model_fixed_solve.rs.jinja"),
+        "TensorDemo",
+    )
+    .expect_err("rust-fixed-solve should reject LinSolve during template rendering");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("unsupported-feature:tensor.linsolve")
+            && message.contains("rust-fixed-solve does not support scalar-fallback LinSolve"),
+        "{message}"
+    );
+}
+
+#[test]
 fn test_rust_fixed_solve_builtin_target_syntax_checks_when_rustc_available() {
     if std::process::Command::new("rustc")
         .arg("--version")

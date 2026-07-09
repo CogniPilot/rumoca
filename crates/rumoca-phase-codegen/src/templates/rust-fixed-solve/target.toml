@@ -9,7 +9,7 @@ completion_message = """Fixed Rust Solve kernel source compiled to: {{ out_dir }
 Compile: rustc --crate-type lib {{ out_dir }}/{{ model_name }}_fixed_solve.rs"""
 
 [capabilities]
-scalar_fallback = false
+scalar_fallback = true
 events = false
 runtime_events = false
 forward_ad = false
@@ -18,6 +18,8 @@ dynamic_control_flow = false
 host_callbacks = false
 
 [capabilities.tensor]
+matmul = "scalar"
+linsolve = "unsupported"
 layout = "row-major"
 supports_dynamic_shapes = false
 sparse = false

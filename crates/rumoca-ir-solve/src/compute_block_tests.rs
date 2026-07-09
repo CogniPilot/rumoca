@@ -376,3 +376,36 @@ fn compute_node_counts_cover_blocks_and_problem() {
     assert_eq!(problem_counts.affine_stencil, 2);
     assert_eq!(problem_counts.tensor_nodes(), 8);
 }
+
+#[test]
+fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
+    let scalar_linsolve = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::LinearSolveComponent {
+                dst: 1,
+                matrix_start: 0,
+                rhs_start: 1,
+                n: 1,
+                component: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ]],
+        fixture_span(),
+    );
+    assert!(scalar_linsolve.uses_linear_solve_component());
+
+    let scalar_block = ComputeBlock {
+        nodes: vec![ComputeNode::ScalarPrograms(scalar_linsolve)],
+    };
+    assert!(scalar_block.uses_linear_solve_component());
+
+    let tensor_block = ComputeBlock {
+        nodes: vec![linsolve_node()],
+    };
+    assert!(tensor_block.uses_linear_solve_component());
+
+    let mut problem = SolveProblem::default();
+    problem.continuous.derivative_rhs = scalar_block;
+    assert!(problem.uses_linear_solve_component());
+}

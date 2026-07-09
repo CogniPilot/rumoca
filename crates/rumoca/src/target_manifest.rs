@@ -539,51 +539,72 @@ fn validate_solve_target_capabilities(
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
     let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
-    if scalar_fallback {
-        return Ok(());
-    }
     let tensor = capabilities.tensor.as_ref();
     let solve = rumoca_sim::lower_solve_problem(&result.dae)
         .context("Lower Solve IR for target capability validation")?;
     let inventory = solve.compute_node_counts();
-    let matmul_capability = tensor.and_then(|tensor| tensor.matmul);
-    let linsolve_capability = tensor.and_then(|tensor| tensor.linsolve);
 
-    if inventory.matmul > 0 && matmul_capability.is_none() && !scalar_fallback {
-        unsupported_tensor_feature(
-            manifest,
-            "tensor.matmul",
-            "MatMul nodes are present but the target does not declare native MatMul support and scalar fallback is disabled",
-        )?;
-    }
-    if inventory.linsolve > 0 && linsolve_capability.is_none() && !scalar_fallback {
-        unsupported_tensor_feature(
-            manifest,
-            "tensor.linsolve",
-            "LinSolve nodes are present but the target does not declare native LinSolve support and scalar fallback is disabled",
-        )?;
-    }
-    if inventory.matmul > 0
-        && matmul_capability == Some(TensorCapability::Scalar)
-        && !scalar_fallback
-    {
-        unsupported_tensor_feature(
-            manifest,
-            "tensor.matmul",
-            "MatMul is configured for scalar fallback but scalar fallback is disabled",
-        )?;
-    }
-    if inventory.linsolve > 0
-        && linsolve_capability == Some(TensorCapability::Scalar)
-        && !scalar_fallback
-    {
-        unsupported_tensor_feature(
-            manifest,
-            "tensor.linsolve",
-            "LinSolve is configured for scalar fallback but scalar fallback is disabled",
-        )?;
-    }
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.matmul",
+        "MatMul",
+        inventory.matmul,
+        tensor.and_then(|tensor| tensor.matmul),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.linsolve",
+        "LinSolve",
+        inventory.linsolve
+            + if solve.uses_linear_solve_component() {
+                1
+            } else {
+                0
+            },
+        tensor.and_then(|tensor| tensor.linsolve),
+        scalar_fallback,
+    )?;
     Ok(())
+}
+
+fn validate_solve_tensor_feature(
+    manifest: &TargetManifest,
+    feature: &str,
+    display_name: &str,
+    count: usize,
+    capability: Option<TensorCapability>,
+    scalar_fallback: bool,
+) -> Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    match capability {
+        Some(TensorCapability::Native) => Ok(()),
+        Some(TensorCapability::Scalar) if scalar_fallback => Ok(()),
+        Some(TensorCapability::Scalar) => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} is configured for scalar fallback but scalar fallback is disabled"
+            ),
+        ),
+        Some(TensorCapability::Unsupported) => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} nodes are present but the target declares {feature} unsupported"
+            ),
+        ),
+        None if scalar_fallback => Ok(()),
+        None => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} nodes are present but the target does not declare native {display_name} support and scalar fallback is disabled"
+            ),
+        ),
+    }
 }
 
 fn unsupported_tensor_feature(
@@ -874,6 +895,22 @@ end TensorTargetDemo;
             .expect("tensor target demo should compile")
     }
 
+    fn compile_matmul_derivative_target_demo() -> CompilationResult {
+        let source = r#"
+model MatMulDerivativeTargetDemo
+  Real x[2](start={1, 2});
+  parameter Real A[2,2] = [1, 0; 0, 2];
+equation
+  der(x) = A * x;
+end MatMulDerivativeTargetDemo;
+"#;
+
+        Compiler::new()
+            .model("MatMulDerivativeTargetDemo")
+            .compile_str(source, "MatMulDerivativeTargetDemo.mo")
+            .expect("MatMul derivative target demo should compile")
+    }
+
     fn compile_scalar_cuda_smoke_demo() -> CompilationResult {
         let source = r#"
 model ScalarCudaSmoke
@@ -928,6 +965,68 @@ matmul = "native"
         let message = err.to_string();
         assert!(message.contains("tensor.linsolve"), "{message}");
         assert!(message.contains("scalar fallback is disabled"), "{message}");
+    }
+
+    #[test]
+    fn rust_fixed_solve_builtin_target_accepts_scalarized_matmul() {
+        let result = compile_matmul_derivative_target_demo();
+        let bundle =
+            TargetBundle::load("rust-fixed-solve").expect("load built-in rust-fixed-solve target");
+        let manifest = bundle
+            .parse_manifest()
+            .expect("parse rust-fixed-solve manifest");
+        let out_dir = tempfile::tempdir().expect("temp output dir");
+
+        compile_manifest_target(
+            &result,
+            "MatMulDerivativeTargetDemo",
+            &bundle,
+            &manifest,
+            Some(out_dir.path().to_path_buf()),
+        )
+        .expect("rust-fixed-solve should render scalarized MatMul derivative sources");
+
+        let generated = std::fs::read_to_string(
+            out_dir
+                .path()
+                .join("MatMulDerivativeTargetDemo_fixed_solve.rs"),
+        )
+        .expect("read generated fixed Rust source");
+        assert!(generated.contains("pub type State = [Scalar; Y_LEN];"));
+        assert!(generated.contains("pub fn derivative_rhs_into"));
+        assert!(!generated.contains("Vec<"));
+    }
+
+    #[test]
+    fn rust_fixed_solve_builtin_target_rejects_linsolve_before_writing_source() {
+        let result = compile_tensor_target_demo();
+        let bundle =
+            TargetBundle::load("rust-fixed-solve").expect("load built-in rust-fixed-solve target");
+        let manifest = bundle
+            .parse_manifest()
+            .expect("parse rust-fixed-solve manifest");
+        let out_dir = tempfile::tempdir().expect("temp output dir");
+
+        let err = compile_manifest_target(
+            &result,
+            "TensorTargetDemo",
+            &bundle,
+            &manifest,
+            Some(out_dir.path().to_path_buf()),
+        )
+        .expect_err("rust-fixed-solve must reject LinSolve before writing source");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("unsupported-feature:tensor.linsolve"),
+            "{message}"
+        );
+        assert!(
+            !out_dir
+                .path()
+                .join("TensorTargetDemo_fixed_solve.rs")
+                .exists(),
+            "target validation must fail before rendering an uncompilable source file"
+        );
     }
 
     #[test]

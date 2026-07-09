@@ -182,6 +182,12 @@ impl ScalarProgramBlock {
             .sum()
     }
 
+    pub fn uses_linear_solve_component(&self) -> bool {
+        self.programs
+            .iter()
+            .any(|program| linear_ops_use_linear_solve_component(program))
+    }
+
     /// Map a dense output slot to the program that produces it.
     ///
     /// `output_indices` may be sparse, so this first maps the output slot to
@@ -771,6 +777,17 @@ impl ComputeBlock {
         counts
     }
 
+    pub fn uses_linear_solve_component(&self) -> bool {
+        self.nodes.iter().any(|node| match node {
+            ComputeNode::ScalarPrograms(block) => block.uses_linear_solve_component(),
+            ComputeNode::LinSolve { .. } => true,
+            ComputeNode::Map { base_ops, .. } | ComputeNode::AffineStencil { base_ops, .. } => {
+                linear_ops_use_linear_solve_component(base_ops)
+            }
+            ComputeNode::MatMul { .. } => false,
+        })
+    }
+
     pub fn tensor_node_count(&self) -> usize {
         self.compute_node_counts().tensor_nodes()
     }
@@ -1211,6 +1228,12 @@ impl SolveProblem {
         counts
     }
 
+    pub fn uses_linear_solve_component(&self) -> bool {
+        self.continuous.implicit_rhs.uses_linear_solve_component()
+            || self.continuous.residual.uses_linear_solve_component()
+            || self.continuous.derivative_rhs.uses_linear_solve_component()
+    }
+
     pub fn validate_shape_contract(&self) -> Result<(), SolveProblemShapeContractError> {
         if self.schema_version != SOLVE_SCHEMA_VERSION {
             return Err(SolveProblemShapeContractError::SchemaVersion {
@@ -1294,6 +1317,11 @@ impl SolveProblem {
         )?;
         Ok(())
     }
+}
+
+fn linear_ops_use_linear_solve_component(ops: &[LinearOp]) -> bool {
+    ops.iter()
+        .any(|op| matches!(op, LinearOp::LinearSolveComponent { .. }))
 }
 
 fn validate_count(
