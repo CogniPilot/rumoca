@@ -1,4 +1,5 @@
 use super::*;
+use crate::lower::lower_scheduled_root_conditions;
 
 #[test]
 fn lower_discrete_rhs_skips_untargeted_condition_rows() {
@@ -212,5 +213,73 @@ fn lower_root_conditions_keep_enum_literal_relations_active() {
     assert!(
         false_output.expect("non-matching enum relation should evaluate") > 0.0,
         "non-matching enum literal equality must be an active false root"
+    );
+}
+
+#[test]
+fn lower_root_conditions_marks_schedule_backed_sample_roots() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+    let mut dt = source_scalar_var("dt");
+    dt.start = Some(real_lit(0.02));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("dt"), dt);
+    dae_model.clocks.schedules.push(dae::ClockSchedule {
+        period_seconds: 0.02,
+        phase_seconds: 0.0,
+        source_span: span,
+    });
+    dae_model
+        .events
+        .scheduled_root_conditions
+        .push(dae::DaeScheduledRootCondition {
+            root_index: 0,
+            period_seconds: 0.02,
+            phase_seconds: 0.0,
+        });
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("c"), source_scalar_var("c"));
+    let relation = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME).into(),
+        args: vec![real_lit(0.0), var("dt")],
+        is_constructor: false,
+        span,
+    };
+    dae_model.conditions.relations.push(relation.clone());
+    dae_model.conditions.equations.push(dae::Equation::explicit(
+        source_ref("c"),
+        relation,
+        span,
+        "schedule-backed sample condition memory",
+    ));
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_root_conditions(&dae_model, &layout).expect("root lowering should succeed");
+    let scheduled_roots = lower_scheduled_root_conditions(&dae_model)
+        .expect("scheduled root lowering should succeed");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(scheduled_roots.len(), 1);
+    assert_eq!(scheduled_roots[0].root_index, 0);
+    assert!((scheduled_roots[0].period_seconds - 0.02).abs() <= 1e-12);
+    assert!((scheduled_roots[0].phase_seconds - 0.0).abs() <= 1e-12);
+    let outputs = [0.0, 0.01, 0.02, 0.04]
+        .into_iter()
+        .map(|time| {
+            let (_, output) = eval_linear_ops(&rows[0], &[], &[], time);
+            output.expect("scheduled sample row should emit an output")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        outputs.iter().any(|value| *value < 0.0),
+        "scheduled sample roots must keep their event-time active value: {outputs:?}"
+    );
+    assert!(
+        outputs.iter().any(|value| *value > 0.0),
+        "scheduled sample roots must not be lowered to an always-active root: {outputs:?}"
     );
 }

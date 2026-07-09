@@ -578,6 +578,8 @@ fn lower_event_partition_for_profile(
         )?,
         root_relation_memory_targets: lower::lower_root_relation_memory_targets(dae_model, layout)
             .map_err(|err| lower_problem_context(err, "lower root relation memory targets"))?,
+        scheduled_root_conditions: lower::lower_scheduled_root_conditions(dae_model)
+            .map_err(|err| lower_problem_context(err, "lower scheduled root conditions"))?,
         scheduled_time_events: dae_model.events.scheduled_time_events.clone(),
         dynamic_time_event_names: dynamic_events::collect_dynamic_time_event_names(dae_model),
         dynamic_time_event_rhs: solve::ScalarProgramBlock::with_program_spans(

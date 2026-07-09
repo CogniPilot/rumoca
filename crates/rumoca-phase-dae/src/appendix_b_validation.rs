@@ -805,6 +805,33 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
         }
     }
 
+    let root_condition_count = dae_model
+        .conditions
+        .relations
+        .len()
+        .checked_add(dae_model.events.synthetic_root_conditions.len())
+        .and_then(|count| count.checked_add(dae_model.clocks.triggered_conditions.len()))
+        .ok_or_else(|| {
+            ToDaeError::runtime_metadata_violation("root condition count overflowed host index")
+        })?;
+    for root in &dae_model.events.scheduled_root_conditions {
+        if root.root_index >= root_condition_count {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "scheduled_root_conditions root index {} is outside {} root conditions",
+                root.root_index, root_condition_count
+            )));
+        }
+        if !root.period_seconds.is_finite()
+            || root.period_seconds <= 0.0
+            || !root.phase_seconds.is_finite()
+        {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "scheduled_root_conditions entry {} has invalid timing period={} phase={}",
+                root.root_index, root.period_seconds, root.phase_seconds
+            )));
+        }
+    }
+
     let mut seen_roots: Vec<&rumoca_core::Expression> = Vec::new();
     for root in &dae_model.events.synthetic_root_conditions {
         if seen_roots.contains(&root) {

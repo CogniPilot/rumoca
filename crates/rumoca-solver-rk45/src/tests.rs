@@ -441,6 +441,204 @@ fn rk45_applies_periodic_event_update() {
 }
 
 #[test]
+fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 3;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec![
+        "sample_a".to_string(),
+        "sample_b".to_string(),
+        "m".to_string(),
+    ];
+    model.problem.solve_layout.relation_memory_parameter_indices = vec![0, 1];
+    model.problem.clocks.periodic_event_schedules = vec![
+        solve::PeriodicEventSchedule {
+            period_seconds: 0.05,
+            phase_seconds: 0.05,
+        },
+        solve::PeriodicEventSchedule {
+            period_seconds: 0.07,
+            phase_seconds: 0.07,
+        },
+    ];
+    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span!(),
+    );
+    model.problem.events.root_relation_memory_targets =
+        vec![Some(solve::scalar_slot_p(0)), Some(solve::scalar_slot_p(1))];
+    model.problem.events.scheduled_root_conditions = vec![
+        solve::ScheduledRootCondition {
+            root_index: 0,
+            period_seconds: 0.05,
+            phase_seconds: 0.05,
+        },
+        solve::ScheduledRootCondition {
+            root_index: 1,
+            period_seconds: 0.07,
+            phase_seconds: 0.07,
+        },
+    ];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
+    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: 10.0,
+            },
+            LinearOp::LoadP { dst: 2, index: 1 },
+            LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 3,
+            },
+            LinearOp::StoreOutput { src: 4 },
+        ]],
+        fixture_span!(),
+    );
+    model.parameters = vec![0.0, 0.0, 0.0];
+    model.visible_names = vec![
+        "x".to_string(),
+        "sample_a".to_string(),
+        "sample_b".to_string(),
+        "m".to_string(),
+    ];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.06,
+            dt: Some(0.06),
+            ..Default::default()
+        },
+    )
+    .expect("rk45 should seed scheduled sample relation memory before event rows");
+
+    assert_eq!(result.data[3], vec![0.0, 1.0]);
+}
+
+#[test]
+fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 4;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec![
+        "__pre__.sample".to_string(),
+        "sample".to_string(),
+        "count".to_string(),
+        "__pre__.count".to_string(),
+    ];
+    model.problem.solve_layout.pre_param_bindings = vec![
+        solve::PreParamBinding {
+            dest_p_index: 0,
+            source: solve::PreParamSource::P { index: 1 },
+        },
+        solve::PreParamBinding {
+            dest_p_index: 3,
+            source: solve::PreParamSource::P { index: 2 },
+        },
+    ];
+    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+        period_seconds: 0.05,
+        phase_seconds: 0.0,
+    }];
+    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(1))];
+    model.problem.events.scheduled_root_conditions = vec![solve::ScheduledRootCondition {
+        root_index: 0,
+        period_seconds: 0.05,
+        phase_seconds: 0.0,
+    }];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
+    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::Fixed];
+    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 1 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            LinearOp::Unary {
+                dst: 2,
+                op: solve::UnaryOp::Not,
+                arg: 1,
+            },
+            LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::And,
+                lhs: 0,
+                rhs: 2,
+            },
+            LinearOp::LoadP { dst: 4, index: 3 },
+            LinearOp::Const { dst: 5, value: 1.0 },
+            LinearOp::Binary {
+                dst: 6,
+                op: solve::BinaryOp::Add,
+                lhs: 4,
+                rhs: 5,
+            },
+            LinearOp::Select {
+                dst: 7,
+                cond: 3,
+                if_true: 6,
+                if_false: 4,
+            },
+            LinearOp::StoreOutput { src: 7 },
+        ]],
+        fixture_span!(),
+    );
+    // Mimic a phase-zero sample that already fired during initialization:
+    // current sample memory is true and count has advanced once.
+    model.parameters = vec![0.0, 1.0, 1.0, 1.0];
+    model.visible_names = vec![
+        "x".to_string(),
+        "__pre__.sample".to_string(),
+        "sample".to_string(),
+        "count".to_string(),
+        "__pre__.count".to_string(),
+    ];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.11,
+            dt: Some(0.05),
+            ..Default::default()
+        },
+    )
+    .expect("rk45 should re-arm scheduled sample relation memory after each tick");
+
+    assert_eq!(result.times, vec![0.0, 0.05, 0.1, 0.11]);
+    assert_eq!(result.data[3], vec![1.0, 2.0, 3.0, 3.0]);
+}
+
+#[test]
 fn rk45_applies_dynamic_time_event_update() {
     let mut model = single_state_model(vec![vec![
         LinearOp::Const { dst: 0, value: 0.0 },

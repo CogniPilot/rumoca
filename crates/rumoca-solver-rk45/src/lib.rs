@@ -14,7 +14,8 @@ use rumoca_solver::{
     BackendState, EventActionOutcome, EventPreMode, RootCrossing, RuntimeEventBoundary,
     RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimResult,
     SimSolverMode, SimTermination, SimulationBackend, SolveStopSchedule, StepUntilOutcome,
-    TimeoutBudget, TimeoutExceeded, commit_pre_params_after_event, convert_variable_meta,
+    TimeoutBudget, TimeoutExceeded, clear_scheduled_root_relation_memory,
+    commit_pre_params_after_event, convert_variable_meta, filter_scheduled_root_crossings,
     process_runtime_event_boundary, root_crossings_with_relation_memory, root_value_crossed,
     runtime_event_horizon, timeline,
 };
@@ -605,10 +606,14 @@ impl<'a> Rk45Backend<'a> {
     }
 
     fn current_solver_y(&self) -> Result<Vec<f64>, SimError> {
+        self.solver_y_at_time(self.public_time_eval_time(self.time))
+    }
+
+    fn solver_y_at_time(&self, time: f64) -> Result<Vec<f64>, SimError> {
         let mut guess = self.solver_y_guess.borrow_mut();
         self.model
             .full_solver_y_with_guess(
-                self.public_time_eval_time(self.time),
+                time,
                 &self.state,
                 &self.params,
                 &mut guess,
@@ -858,12 +863,16 @@ impl<'a> Rk45Backend<'a> {
             self.continuous_eval_time(new_t, context.event_boundary),
             &trial.y_next,
         )?;
-        let crossings = root_crossings_with_relation_memory(
+        let mut crossings = root_crossings_with_relation_memory(
             context.old_roots,
             &new_roots,
             self.atol,
             &self.model.model.problem.events.root_relation_memory_targets,
             &self.params,
+        );
+        filter_scheduled_root_crossings(
+            &mut crossings,
+            &self.model.model.problem.events.scheduled_root_conditions,
         );
         if let Some(crossing) = crossings.first().copied() {
             let root = self.bisect_root(
@@ -1126,6 +1135,7 @@ impl<'a> Rk45Backend<'a> {
         )?;
         self.post_event_eval_time = outcome.right_limit_t;
         self.apply_event_actions(outcome.final_t)?;
+        self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
         self.clear_runtime_caches();
         Ok(Some(
             self.termination
@@ -1238,6 +1248,7 @@ impl SimulationBackend for Rk45Backend<'_> {
             &mut self.params,
             self.atol,
         );
+        self.clear_all_scheduled_root_relation_memory()?;
         self.clear_runtime_caches();
         Ok(())
     }
@@ -1260,11 +1271,12 @@ impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
         event: RuntimeEventStop,
     ) -> Result<(), Self::Error> {
         self.time = event_time.max(self.time);
-        let (event_pre_y, event_pre_p) = self.event_pre_for_update()?;
+        let (event_pre_y, event_pre_p) = self.event_pre_for_update(event_time, event)?;
         self.boundary_event_pre_y = Some(event_pre_y.clone());
         self.boundary_event_pre_p = Some(event_pre_p.clone());
         self.pending_event_pre_y = Some(event_pre_y);
         self.pending_event_pre_p = Some(event_pre_p);
+        self.seed_scheduled_root_relation_overrides(event_time, event)?;
         self.apply_discrete_event_updates(self.time, event)?;
         Ok(())
     }
@@ -1292,17 +1304,88 @@ impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
 }
 
 impl Rk45Backend<'_> {
-    fn event_pre_for_update(&mut self) -> Result<(Vec<f64>, Vec<f64>), SimError> {
-        let event_pre_y = self
-            .pending_event_pre_y
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| self.current_solver_y())?;
-        let event_pre_p = self
-            .pending_event_pre_p
-            .take()
-            .unwrap_or_else(|| self.params.clone());
+    fn event_pre_for_update(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(Vec<f64>, Vec<f64>), SimError> {
+        if let Some(event_pre_y) = self.pending_event_pre_y.take() {
+            let event_pre_p = self
+                .pending_event_pre_p
+                .take()
+                .unwrap_or_else(|| self.params.clone());
+            return Ok((event_pre_y, event_pre_p));
+        }
+        let pre_time = match event.pre_mode {
+            EventPreMode::EventEntry | EventPreMode::Fixed => {
+                timeline::event_left_limit_time(event_time)
+            }
+            EventPreMode::FollowCurrent => self.public_time_eval_time(self.time),
+        };
+        let event_pre_y = self.solver_y_at_time(pre_time)?;
+        let event_pre_p = self.params.clone();
         Ok((event_pre_y, event_pre_p))
+    }
+
+    fn clear_event_entry_scheduled_root_relation_memory(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), SimError> {
+        if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
+            return Ok(());
+        }
+        let root_indices = self.scheduled_root_indices_at_time(event_time);
+        self.clear_scheduled_root_relation_memory(&root_indices)
+    }
+
+    fn clear_all_scheduled_root_relation_memory(&mut self) -> Result<(), SimError> {
+        let root_indices = self
+            .model
+            .model
+            .problem
+            .events
+            .scheduled_root_conditions
+            .iter()
+            .map(|root| root.root_index)
+            .collect::<Vec<_>>();
+        self.clear_scheduled_root_relation_memory(&root_indices)
+    }
+
+    fn clear_scheduled_root_relation_memory(
+        &mut self,
+        root_indices: &[usize],
+    ) -> Result<(), SimError> {
+        clear_scheduled_root_relation_memory(&self.model.model, root_indices, &mut self.params)
+            .map_err(runtime_contract_violation)
+    }
+
+    fn seed_scheduled_root_relation_overrides(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), SimError> {
+        if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
+            return Ok(());
+        }
+        let scheduled_indices = self.scheduled_root_indices_at_time(event_time);
+        if scheduled_indices.is_empty() {
+            return Ok(());
+        }
+        for index in scheduled_indices {
+            self.pending_root_crossings.push(RootCrossing {
+                index,
+                post_relation_memory_value: 1.0,
+            });
+        }
+        Ok(())
+    }
+
+    fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
+        timeline::scheduled_root_indices_at_time(
+            &self.model.model.problem.events.scheduled_root_conditions,
+            event_time,
+        )
     }
 }
 

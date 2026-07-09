@@ -1400,7 +1400,9 @@ impl SolveRuntime {
                     &mut project_algebraics,
                 )?;
             }
-            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            if root_relation_overrides.is_empty() {
+                changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            }
             changed |=
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             changed |= project_algebraics(y, p)?;

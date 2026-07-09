@@ -362,6 +362,12 @@ pub fn lower_root_relation_memory_targets(
     root_conditions::lower_root_relation_memory_targets(dae_model, layout)
 }
 
+pub fn lower_scheduled_root_conditions(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_ir_solve::ScheduledRootCondition>, LowerError> {
+    root_conditions::lower_scheduled_root_conditions(dae_model)
+}
+
 struct LowerBuilder<'a> {
     layout: &'a VarLayout,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,

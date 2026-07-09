@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "x": {},
   "y": {},
   "u": {},
@@ -498,6 +498,7 @@
   "scheduled_time_events": [
     0.1
   ],
+  "scheduled_root_conditions": [],
   "event_actions": [],
   "constructor_exprs": [],
   "schedules": [
