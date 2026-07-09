@@ -16,6 +16,7 @@
 use anyhow::{Context, Result, anyhow};
 use std::env;
 use std::ffi::OsString;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -91,33 +92,43 @@ impl OmcSession {
         })?;
 
         let mut command = build_omc_interactive_command(work_dir, &suffix, omc_threads);
+        let spawn_log_file = work_dir.join(format!("omc_session_{suffix}.log"));
+        let spawn_log = File::create(&spawn_log_file).with_context(|| {
+            format!(
+                "failed to create omc session log '{}'",
+                spawn_log_file.display()
+            )
+        })?;
         // Keep the port file and any scratch output inside our work dir so
         // concurrent worker sessions never collide on the default $TMPDIR file.
         command
             .env("TMPDIR", work_dir)
             .current_dir(work_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::from(
+                spawn_log
+                    .try_clone()
+                    .context("failed to clone omc session log handle")?,
+            ))
+            .stderr(Stdio::from(spawn_log));
         // Put omc in its own process group so that on kill we can also reap the
         // separate simulation executables `simulate(...)` spawns — otherwise a
         // model whose integration hangs leaves a grandchild pegging a CPU core
         // after we kill the omc parent.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        let child = command
+        let mut child = command
             .spawn()
             .context("failed to spawn omc interactive session")?;
 
-        let port_file = match wait_for_port_file(work_dir, &suffix, startup_timeout) {
-            Some(path) => path,
-            None => {
-                let mut child = child;
+        let port_file = match wait_for_port_file(work_dir, &suffix, startup_timeout, &mut child) {
+            Ok(path) => path,
+            Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(anyhow!(
-                    "omc session port file for suffix '{suffix}' did not appear within {:.1}s",
-                    startup_timeout.as_secs_f64()
+                    "{error}; {}",
+                    omc_session_log_tail(&spawn_log_file)
                 ));
             }
         };
@@ -399,21 +410,66 @@ fn unique_session_suffix() -> String {
     format!("rumoca_{}_{seq}_{nanos}", std::process::id())
 }
 
-/// OMC writes its port file as `openmodelica.<user>.port.<suffix>` in `$TMPDIR`.
-/// We point `$TMPDIR` at `work_dir`, so look there and match on the suffix to
-/// avoid depending on the resolved user name.
-fn wait_for_port_file(work_dir: &Path, suffix: &str, timeout: Duration) -> Option<PathBuf> {
+/// OMC writes its port file as `openmodelica.<user>.port.<suffix>` in a temp
+/// directory. We point `TMPDIR` at `work_dir`, but some OpenModelica builds use
+/// the process default temp dir instead, so search both and match on the unique
+/// suffix rather than depending on the resolved user name.
+fn wait_for_port_file(
+    work_dir: &Path,
+    suffix: &str,
+    timeout: Duration,
+    child: &mut Child,
+) -> Result<PathBuf, String> {
     let deadline = Instant::now() + timeout;
     let needle = format!("port.{suffix}");
+    let search_dirs = omc_port_file_search_dirs(work_dir);
     loop {
-        if let Some(path) = find_port_file(work_dir, &needle) {
-            return Some(path);
+        if let Some(path) = find_port_file_in_dirs(&search_dirs, &needle) {
+            return Ok(path);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "omc interactive session exited before writing port file for suffix '{suffix}' (status={status})"
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to poll omc interactive session status: {error}"
+                ));
+            }
         }
         if Instant::now() >= deadline {
-            return None;
+            return Err(format!(
+                "omc session port file for suffix '{suffix}' did not appear within {:.1}s (searched {})",
+                timeout.as_secs_f64(),
+                search_dirs
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         std::thread::sleep(PORT_FILE_POLL);
     }
+}
+
+fn omc_port_file_search_dirs(work_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        work_dir.to_path_buf(),
+        env::temp_dir(),
+        PathBuf::from("/tmp"),
+    ];
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn find_port_file_in_dirs(search_dirs: &[PathBuf], needle: &str) -> Option<PathBuf> {
+    search_dirs
+        .iter()
+        .find_map(|dir| find_port_file(dir, needle))
 }
 
 fn find_port_file(work_dir: &Path, needle: &str) -> Option<PathBuf> {
@@ -423,6 +479,21 @@ fn find_port_file(work_dir: &Path, needle: &str) -> Option<PathBuf> {
         let name = name.to_string_lossy();
         (name.starts_with("openmodelica.") && name.ends_with(needle)).then(|| entry.path())
     })
+}
+
+fn omc_session_log_tail(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return format!("omc session log '{}' is empty", path.display());
+    }
+    const MAX_CHARS: usize = 4000;
+    let tail = if trimmed.len() > MAX_CHARS {
+        &trimmed[trimmed.len() - MAX_CHARS..]
+    } else {
+        trimmed
+    };
+    format!("omc session log '{}': {tail}", path.display())
 }
 
 /// Strip the surrounding quotes OMC puts around string replies and unescape the
@@ -529,5 +600,24 @@ end SimulationResult;"#;
         assert_eq!(unquote_omc_string("\"hello\\nworld\""), "hello\nworld");
         assert_eq!(unquote_omc_string("\"\""), "");
         assert_eq!(unquote_omc_string("bare"), "bare");
+    }
+
+    #[test]
+    fn find_port_file_in_dirs_searches_fallback_temp_dir() {
+        let work = tempfile::tempdir().expect("work tempdir");
+        let fallback = tempfile::tempdir().expect("fallback tempdir");
+        let suffix = "rumoca_test_suffix";
+        let needle = format!("port.{suffix}");
+        let port_file = fallback
+            .path()
+            .join(format!("openmodelica.test-user.port.{suffix}"));
+        std::fs::write(&port_file, "tcp://127.0.0.1:12345\n").expect("write port file");
+
+        let found = find_port_file_in_dirs(
+            &[work.path().to_path_buf(), fallback.path().to_path_buf()],
+            &needle,
+        )
+        .expect("fallback port file should be found");
+        assert_eq!(found, port_file);
     }
 }
