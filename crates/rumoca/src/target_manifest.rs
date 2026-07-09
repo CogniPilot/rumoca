@@ -280,7 +280,8 @@ fn render_manifest_files(
 ) -> Result<Vec<RenderedTargetFile>> {
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        let path = render_manifest_path_template(&file.path, model_identifier)
+        let path = renderer
+            .render(result, &file.path, model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
         let content = render_manifest_template(
@@ -317,26 +318,36 @@ fn render_raw_template(
     let template =
         std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
     let model_identifier = model.replace('.', "_");
-    result
-        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
-        .with_context(|| format!("Render raw template: {target}"))
+    match raw_template_render_context(&template)? {
+        Some(TargetFileRenderContext::FmiModelDescription) => result
+            .render_fmi_model_description_template_str_with_name(&template, &model_identifier)
+            .with_context(|| format!("Render raw FMI modelDescription template: {target}")),
+        None => result
+            .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
+            .with_context(|| format!("Render raw template: {target}")),
+    }
 }
 
-fn render_manifest_path_template(template: &str, model_identifier: &str) -> Result<String> {
-    let mut env = minijinja::Environment::new();
-    env.add_filter("sanitize", |text: String| {
-        text.replace('.', "_")
-            .replace(['[', ','], "_")
-            .replace(']', "")
-    });
-    env.add_template("target-path", template)
-        .map_err(|error| anyhow::anyhow!("Parse target output path template: {error}"))?;
-    let template = env
-        .get_template("target-path")
-        .map_err(|error| anyhow::anyhow!("Load target output path template: {error}"))?;
-    template
-        .render(minijinja::context! { model_name => model_identifier })
-        .map_err(|error| anyhow::anyhow!("Render target output path template: {error}"))
+fn raw_template_render_context(template: &str) -> Result<Option<TargetFileRenderContext>> {
+    for line in template.lines().take(8) {
+        let comment = line
+            .trim()
+            .strip_prefix("{#")
+            .and_then(|line| line.strip_suffix("#}"))
+            .map(str::trim)
+            .map(|line| line.trim_start_matches('-').trim_end_matches('-').trim());
+        let Some(comment) = comment else {
+            continue;
+        };
+        let Some(value) = comment.strip_prefix("rumoca-render-context:") else {
+            continue;
+        };
+        return match value.trim() {
+            "fmi-model-description" => Ok(Some(TargetFileRenderContext::FmiModelDescription)),
+            other => bail!("unknown raw template render context '{other}'"),
+        };
+    }
+    Ok(None)
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -638,7 +649,8 @@ fn write_manifest_file(
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let rendered_rel_path = render_manifest_path_template(&file.path, model_identifier)
+    let rendered_rel_path = renderer
+        .render(result, &file.path, model_identifier)
         .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {

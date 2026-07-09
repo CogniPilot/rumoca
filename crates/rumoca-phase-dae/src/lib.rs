@@ -33,6 +33,9 @@ mod convert;
 mod dae_lowering;
 mod equation_conversion;
 mod errors;
+mod fmi_metadata_values;
+#[cfg(test)]
+mod fmi_metadata_values_tests;
 mod fold_start_values;
 mod initial;
 mod inline_hidden_component_algebraics;

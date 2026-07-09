@@ -54,7 +54,7 @@ pub fn prepare_dae_for_codegen(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError>
 /// parameter overrides.
 pub fn prepare_dae_for_fmi_model_description(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError> {
     let mut prepared = dae.clone();
-    crate::fold_start_values::fold_fmi_start_values_to_literals(&mut prepared)?;
+    crate::fmi_metadata_values::fold_fmi_model_description_values_to_literals(&mut prepared)?;
     Ok(CodegenDae { dae: prepared })
 }
 

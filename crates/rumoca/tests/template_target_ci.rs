@@ -378,6 +378,34 @@ render_context = "fmi-model-description"
     );
 }
 
+#[test]
+fn raw_fmi_model_description_template_declares_render_context() {
+    let fixture = compile_fixture(FMI_START_EXPRESSIONS_MODEL, FMI_START_EXPRESSIONS_SOURCE);
+    let dir = tempfile::tempdir().expect("create raw template dir");
+    let template_path = dir.path().join("modelDescription.xml.jinja");
+    fs::write(
+        &template_path,
+        templates::builtin_template_source("fmi2", "modelDescription.xml.jinja")
+            .expect("fmi2 modelDescription template"),
+    )
+    .expect("write raw FMI template");
+
+    let files = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        template_path.to_str().expect("utf-8 temp path"),
+        Some(TemplateIr::Solve),
+    )
+    .unwrap_or_else(|err| panic!("raw FMI metadata template should render: {err:#}"));
+    let xml = &find_rendered_file(&files, "modelDescription.xml").content;
+
+    assert_no_modelica_start_expression("raw FMI metadata", xml);
+    assert!(
+        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
+        "raw FMI template must opt into the FMI metadata DAE by template directive:\n{xml}"
+    );
+}
+
 fn render_fmi_model_description_xml_for(target: &str, model: &'static str, source: &str) -> String {
     let fixture = compile_fixture(model, source);
     let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
