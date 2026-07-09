@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::fs;
@@ -54,6 +54,29 @@ pub(crate) struct VerifySuiteArgs {
     /// reporting an aggregate pass/fail summary at the end
     #[arg(long)]
     pub(crate) early_exit: bool,
+}
+
+#[derive(Debug, Args, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct VerifyTemplateRuntimeArgs {
+    /// Template backend group to verify. The default runs all backend groups.
+    #[arg(long, value_enum, default_value_t = TemplateRuntimeBackend::All)]
+    pub(crate) backend: TemplateRuntimeBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub(crate) enum TemplateRuntimeBackend {
+    #[default]
+    All,
+    Render,
+    Native,
+    EmbeddedC,
+    Fmi,
+    Casadi,
+    Sympy,
+    Symforce,
+    Onnx,
+    Jax,
+    Julia,
 }
 
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
@@ -298,7 +321,7 @@ pub(crate) enum VerifyCommand {
     /// Workspace tests that mirror the main test matrix
     Workspace(test_cmd::WorkspaceArgs),
     /// Environment-dependent example template runtime checks
-    TemplateRuntimes,
+    TemplateRuntimes(VerifyTemplateRuntimeArgs),
     /// Fetch example Modelica library caches and compile example models
     Examples,
     /// Real VS Code extension-host MSL smoke check
@@ -460,7 +483,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
         VerifyCommand::Workspace(args) => args.run(root),
-        VerifyCommand::TemplateRuntimes => run_template_runtime_checks(root),
+        VerifyCommand::TemplateRuntimes(args) => run_template_runtime_checks(root, args),
         VerifyCommand::Examples => run_examples_smoke(root),
         VerifyCommand::VscodeMsl(args) => run_vscode_editor_msl_smoke(root, args.install_prereqs),
         VerifyCommand::LspMslCompletionTimings(args) => {
@@ -593,9 +616,106 @@ fn run_flamegraph(model: &str, mode: &str, source_root: &Path) -> Result<()> {
     )
 }
 
-fn run_template_runtime_checks(root: &Path) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+struct TemplateRuntimeTestGroup {
+    backend: TemplateRuntimeBackend,
+    test: &'static str,
+    filters: &'static [&'static str],
+}
+
+const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Render,
+        test: "template_target_ci",
+        filters: &[],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Render,
+        test: "standalone_template_regression",
+        filters: &[],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Native,
+        test: "backend_template_runtime_regression",
+        filters: &["native_simulates"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::EmbeddedC,
+        test: "backend_template_runtime_regression",
+        filters: &["embedded_c_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Fmi,
+        test: "backend_template_runtime_regression",
+        filters: &["fmi2_", "fmi3_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Casadi,
+        test: "backend_template_runtime_regression",
+        filters: &["casadi_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Sympy,
+        test: "sympy_template_regression",
+        filters: &[],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Sympy,
+        test: "backend_template_runtime_regression",
+        filters: &["sympy_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Symforce,
+        test: "symforce_template_regression",
+        filters: &[],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Onnx,
+        test: "backend_template_runtime_regression",
+        filters: &["onnx_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Jax,
+        test: "backend_template_runtime_regression",
+        filters: &["jax_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Julia,
+        test: "backend_template_runtime_regression",
+        filters: &["julia_"],
+    },
+];
+
+impl TemplateRuntimeTestGroup {
+    fn matches(self, backend: TemplateRuntimeBackend) -> bool {
+        backend == TemplateRuntimeBackend::All || self.backend == backend
+    }
+}
+
+fn run_template_runtime_checks(root: &Path, args: VerifyTemplateRuntimeArgs) -> Result<()> {
     trim_template_runtime_artifacts(root)?;
 
+    for group in TEMPLATE_RUNTIME_GROUPS
+        .iter()
+        .copied()
+        .filter(|group| group.matches(args.backend))
+    {
+        run_template_runtime_group(root, group)?;
+    }
+    trim_template_runtime_artifacts(root)
+}
+
+fn run_template_runtime_group(root: &Path, group: TemplateRuntimeTestGroup) -> Result<()> {
+    if group.filters.is_empty() {
+        return run_template_runtime_test(root, group.test, None);
+    }
+    for filter in group.filters {
+        run_template_runtime_test(root, group.test, Some(filter))?;
+    }
+    Ok(())
+}
+
+fn run_template_runtime_test(root: &Path, test: &str, filter: Option<&str>) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("test")
         .arg("--verbose")
@@ -606,20 +726,12 @@ fn run_template_runtime_checks(root: &Path) -> Result<()> {
         .arg("--features")
         .arg("template-runtime-tests")
         .arg("--test")
-        .arg("template_target_ci")
-        .arg("--test")
-        .arg("standalone_template_regression")
-        .arg("--test")
-        .arg("sympy_template_regression")
-        .arg("--test")
-        .arg("symforce_template_regression")
-        .arg("--test")
-        .arg("backend_template_runtime_regression")
-        .arg("--")
-        .arg("--nocapture")
-        .current_dir(root);
-    run_status(cmd)?;
-    trim_template_runtime_artifacts(root)
+        .arg(test);
+    if let Some(filter) = filter {
+        cmd.arg(filter);
+    }
+    cmd.arg("--").arg("--nocapture").current_dir(root);
+    run_status(cmd)
 }
 
 fn trim_template_runtime_artifacts(root: &Path) -> Result<()> {

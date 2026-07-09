@@ -11,7 +11,7 @@ use crate::repo_cli_cmd::{
     shell_path_update_guidance, shell_profile_update, xtask_cli_launcher_contents,
     xtask_cli_launcher_path,
 };
-use crate::verify_cmd::VerifyCommand;
+use crate::verify_cmd::{TemplateRuntimeBackend, VerifyCommand};
 use clap::CommandFactory;
 use clap::Parser;
 use clap::error::ErrorKind;
@@ -131,7 +131,33 @@ fn cli_parses_verify_template_runtimes_job() {
     let cli = Cli::try_parse_from(["xtask", "verify", "template-runtimes"])
         .expect("parse verify template-runtimes");
     match cli.command {
-        Commands::Verify(args) => assert_eq!(args.command, VerifyCommand::TemplateRuntimes),
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::All);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_verify_template_runtimes_backend() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "casadi",
+    ])
+    .expect("parse verify template-runtimes --backend casadi");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::Casadi);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
         other => panic!("expected verify command, got {other:?}"),
     }
 }
