@@ -531,6 +531,19 @@ jobs:
           path: target/msl/ModelicaStandardLibrary-4.1.0
           key: msl-v4.1.0-release-zip-layout-v2
 
+      - name: Cache OMC parity checkpoint
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: |
+            target/msl/results/omc_simulation_reference.json
+            target/msl/results/omc_sim_work
+            target/msl/results/sim_traces/omc
+            target/msl/results/omc_parity_cache
+          key: msl-omc-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/ci.yml', 'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            msl-omc-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/ci.yml', 'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json') }}-
+
       - name: Ensure MSL
         shell: bash
         run: |
@@ -553,7 +566,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf target/msl/results
+          mkdir -p target/msl/results
+          find target/msl/results -mindepth 1 -maxdepth 1 \
+            ! -name omc_simulation_reference.json \
+            ! -name omc_sim_work \
+            ! -name sim_traces \
+            ! -name omc_parity_cache \
+            -exec rm -rf {} +
+          rm -rf target/msl/results/sim_traces/rumoca
 
       - name: Run full MSL quality gate
         # Keep the full parity run conservative on standard GitHub-hosted
@@ -646,6 +666,10 @@ jobs:
             target/msl/results/msl_pr_comment.md
             target/msl/results/msl_compatibility_report.md
             target/msl/results/msl_compatibility_report.json
+            target/msl/results/omc_simulation_reference.json
+            target/msl/results/omc_sim_work
+            target/msl/results/sim_traces/omc
+            target/msl/results/omc_parity_cache
             target/msl/results/modelica_test_catalog.md
             target/msl/results/modelica_test_catalog.json
             target/msl/modelicatest-results/msl_results.json

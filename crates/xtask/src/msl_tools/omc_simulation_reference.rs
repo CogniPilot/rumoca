@@ -358,7 +358,23 @@ pub fn run(args: Args) -> Result<()> {
     if cache_valid {
         merge_cached_results_for_resume(&omc_ref_json, &omc_model_names, &mut state.all_results)?;
     }
-    run_session_pending(&args, workers, &paths, &mut state, cache_valid)?;
+    let checkpoint = CheckpointContext {
+        args: &args,
+        paths: &paths,
+        selection: &selection,
+        context: FinalizeContext {
+            omc_version: omc_version.clone(),
+            git_commit: git_commit.clone(),
+            workers,
+            total,
+            n_batches,
+            effective_batch_size,
+            elapsed_seconds: 0.0,
+            cache_key: cache_key.clone(),
+        },
+        started_at: overall_start,
+    };
+    run_session_pending(&args, workers, &paths, &mut state, cache_valid, &checkpoint)?;
     ensure_omc_trace_artifacts(&paths, &mut state.all_results);
     attach_rumoca_runtime(&rumoca_runtimes, &mut state.all_results);
     ensure_target_placeholders(&model_names, &rumoca_runtimes, &mut state.all_results);
@@ -684,6 +700,14 @@ struct SessionWorkerCtx<'a> {
     cpu_core_id: Option<usize>,
 }
 
+struct CheckpointContext<'a> {
+    args: &'a Args,
+    paths: &'a MslPaths,
+    selection: &'a ModelSelection,
+    context: FinalizeContext,
+    started_at: Instant,
+}
+
 /// Persistent-session execution path: the OMC analogue of the rumoca warm
 /// worker queue. Each worker thread owns one [`OmcSession`] that loads the MSL
 /// once, then pulls models from a shared atomic index and simulates them. On a
@@ -695,6 +719,7 @@ fn run_session_pending(
     paths: &MslPaths,
     state: &mut SimRunState,
     reuse_cached: bool,
+    checkpoint: &CheckpointContext<'_>,
 ) -> Result<()> {
     // When the cache is valid (OMC + MSL unchanged, no --force) the cached OMC
     // reference has already been merged into `all_results`, so skip any model
@@ -787,6 +812,7 @@ fn run_session_pending(
             skipped: false,
         });
         state.all_results.insert(outcome.model, outcome.result);
+        write_omc_reference_checkpoint(checkpoint, state)?;
         if completed.is_multiple_of(25) || completed == total {
             println!("  OMC session progress: {completed}/{total} models");
         }
@@ -795,6 +821,75 @@ fn run_session_pending(
         let _ = handle.join();
     }
     Ok(())
+}
+
+fn write_omc_reference_checkpoint(
+    checkpoint: &CheckpointContext<'_>,
+    state: &SimRunState,
+) -> Result<()> {
+    let mut context = checkpoint.context.clone();
+    context.elapsed_seconds = checkpoint.started_at.elapsed().as_secs_f64();
+    let metrics = compute_run_metrics(context.total, state);
+    let payload = json!({
+        "msl_version": MSL_VERSION,
+        "omc_version": context.omc_version,
+        "git_commit": context.git_commit,
+        "cache_key": context.cache_key,
+        "checkpoint": true,
+        "target_selection": {
+            "source_file": checkpoint.selection.source_file.display().to_string(),
+            "rule": checkpoint.selection.rule,
+        },
+        "stop_time": checkpoint.args.stop_time,
+        "use_experiment_stop_time": checkpoint.args.use_experiment_stop_time,
+        "total_models": context.total,
+        "processed": state.all_results.len(),
+        "sim_successful": metrics.sim_successful,
+        "sim_failed": metrics.sim_failed,
+        "sim_timed_out": metrics.sim_timed_out,
+        "simulation_success_rate_percent": round3(metrics.success_rate),
+        "elapsed_seconds": round3(context.elapsed_seconds),
+        "timing": {
+            "selection_seconds": round3(checkpoint.selection.selection_seconds),
+            "batch_size_requested": checkpoint.args.batch_size,
+            "batch_size_effective": context.effective_batch_size,
+            "batch_timeout_seconds": checkpoint.args.batch_timeout_seconds,
+            "workers_requested": checkpoint.args.workers,
+            "workers_used": context.workers,
+            "omc_threads": checkpoint.args.omc_threads,
+            "batches_total": context.n_batches,
+            "batches_ran": metrics.ran_batches,
+            "batches_skipped": metrics.skipped_batches,
+            "batch_elapsed_stats": metrics.batch_stats,
+            "batch_details": state.batch_timings,
+        },
+        "models": state.all_results,
+    });
+    write_checkpoint_json_atomically(
+        &checkpoint
+            .paths
+            .results_dir
+            .join("omc_simulation_reference.json"),
+        &payload,
+    )
+}
+
+fn write_checkpoint_json_atomically(path: &Path, payload: &Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create '{}'", parent.display()))?;
+    }
+    let tmp_path = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let serialized = serde_json::to_string_pretty(payload).context("failed to serialize JSON")?;
+    std::fs::write(&tmp_path, serialized)
+        .with_context(|| format!("failed to write checkpoint '{}'", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to replace checkpoint '{}' with '{}'",
+            path.display(),
+            tmp_path.display()
+        )
+    })
 }
 
 fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {

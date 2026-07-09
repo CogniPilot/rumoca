@@ -955,7 +955,14 @@ fn ensure_simulation_parity_reference(
             &context.omc_version,
             sim_policy,
         )? && simulation_parity_cache_has_required_metrics(&omc_simulation_reference)?;
-    if force_refresh || !canonical_cache_matches {
+    let canonical_cache_can_resume = simulation_parity_cache_can_resume(
+        &omc_simulation_reference,
+        sim_targets,
+        &summary.msl_version,
+        &context.omc_version,
+        sim_policy,
+    )?;
+    if force_refresh || (!canonical_cache_matches && !canonical_cache_can_resume) {
         println!(
             "MSL parity cache miss/incomplete for simulation reference; regenerating {}",
             omc_simulation_reference.display()
@@ -963,7 +970,7 @@ fn ensure_simulation_parity_reference(
         run_simulation_parity_reference_command(context, sim_targets_path, false)?;
     } else {
         println!(
-            "MSL parity cache hit: reusing {} (refreshing Rumoca trace comparison via --resume)",
+            "MSL parity cache hit/resume: reusing {} (refreshing Rumoca trace comparison via --resume)",
             omc_simulation_reference.display()
         );
         run_simulation_parity_reference_command(context, sim_targets_path, true)?;

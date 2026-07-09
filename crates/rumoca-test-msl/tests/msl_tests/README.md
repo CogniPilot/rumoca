@@ -92,6 +92,12 @@ This directory contains helper includes for `tests/msl_tests.rs`.
 - Baseline JSON also captures OMC parity distributions for this set (runtime
   speedup ratio + trace-accuracy min/median/mean/max), populated from
   `omc_simulation_reference.json`.
+- OMC simulation reference generation checkpoints after each model into
+  `target/msl/results/omc_simulation_reference.json`. CI preserves that JSON,
+  `omc_sim_work`, `sim_traces/omc`, and `omc_parity_cache` so a progressing
+  full-library reference run can resume across GitHub-hosted job attempts
+  without dropping models, loosening per-model timeouts, or skipping trace
+  parity.
 - Trace parity excludes known stochastic random-input examples listed in:
   - `tests/msl_tests/msl_trace_compare_exclusions.json`
   - these models remain in compile/balance/sim stats, but are skipped from

@@ -372,6 +372,92 @@ pub(super) fn simulation_parity_cache_matches(
     }))
 }
 
+pub(super) fn simulation_parity_cache_can_resume(
+    path: &Path,
+    target_models: &[String],
+    msl_version: &str,
+    omc_version: &str,
+    policy: SimulationParityCachePolicy,
+) -> io::Result<bool> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let payload: serde_json::Value =
+        serde_json::from_reader(File::open(path)?).map_err(|error| {
+            io::Error::other(format!(
+                "invalid simulation parity JSON ({}): {error}",
+                path.display()
+            ))
+        })?;
+    if payload
+        .get("msl_version")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|cached| canonical_msl_version(cached) != canonical_msl_version(msl_version))
+    {
+        return Ok(false);
+    }
+    if payload
+        .get("omc_version")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|cached| canonical_omc_version(cached) != canonical_omc_version(omc_version))
+    {
+        return Ok(false);
+    }
+    let Some(cached_models) = model_names_from_omc_models_map(&payload) else {
+        return Ok(false);
+    };
+    if cached_models.is_empty() {
+        return Ok(false);
+    }
+    let target_models = normalize_model_names(target_models.to_vec());
+    let target_set = target_models
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if cached_models
+        .iter()
+        .any(|model| !target_set.contains(model))
+    {
+        return Ok(false);
+    }
+    let batch_timeout_seconds = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("batch_timeout_seconds"))
+        .and_then(serde_json::Value::as_u64);
+    if batch_timeout_seconds != Some(policy.batch_timeout_seconds) {
+        return Ok(false);
+    }
+    let workers_used = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("workers_used"))
+        .and_then(serde_json::Value::as_u64);
+    if workers_used != Some(policy.workers as u64) {
+        return Ok(false);
+    }
+    let omc_threads = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("omc_threads"))
+        .and_then(serde_json::Value::as_u64);
+    if omc_threads != Some(policy.omc_threads as u64) {
+        return Ok(false);
+    }
+    let use_experiment_stop_time = payload
+        .get("use_experiment_stop_time")
+        .and_then(serde_json::Value::as_bool);
+    if use_experiment_stop_time != Some(policy.use_experiment_stop_time) {
+        return Ok(false);
+    }
+    let Some(stop_time_override) = policy.stop_time_override else {
+        return Ok(true);
+    };
+    let stop_time = payload.get("stop_time").and_then(serde_json::Value::as_f64);
+    Ok(stop_time.is_some_and(|value| {
+        (value - stop_time_override).abs() <= f64::EPSILON.max(stop_time_override.abs() * 1e-12)
+    }))
+}
+
 pub(super) fn run_msl_tool_command<I, S>(exe: &Path, args: I) -> io::Result<()>
 where
     I: IntoIterator<Item = S>,
