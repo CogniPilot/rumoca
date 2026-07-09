@@ -32,7 +32,7 @@
 //!   9. Indexed array thresholds keep structured subscript information through
 //!      DAE/Solve lowering instead of being treated as opaque names.
 
-use rumoca_sim::{SimOptions, simulate_dae};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 const CONST_THRESHOLD_COUNTER: &str = r#"
 model ConstThresholdCounter
@@ -91,6 +91,16 @@ equation
     count = pre(count) + 1;
   end when;
 end SampleCounter;
+"#;
+
+const ZERO_PHASE_SAMPLE_COUNTER: &str = r#"
+model ZeroPhaseSampleCounter
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when sample(0.0, 0.1) then
+    count = pre(count) + 1;
+  end when;
+end ZeroPhaseSampleCounter;
 "#;
 
 const VECTOR_SELF_RESCHEDULING_COUNTER: &str = r#"
@@ -566,6 +576,68 @@ fn sample_when_accumulator_advances_once_per_tick() {
             (actual - expected).abs() <= 1.0e-9,
             "count at t={t} should be {expected}, got {actual} \
              (sample(start, interval) must fire once per tick)"
+        );
+    }
+}
+
+#[test]
+fn rk_like_sample_when_accumulator_advances_once_per_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleCounter")
+        .compile_str(SAMPLE_COUNTER, "sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate with RK-like solver");
+
+    let checks = [(0.05, 0.0), (0.15, 1.0), (0.25, 2.0), (0.35, 3.0)];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "RK-like count at t={t} should be {expected}, got {actual} \
+             (scheduled sample condition memory must clear between ticks)"
+        );
+    }
+}
+
+#[test]
+fn rk_like_zero_phase_sample_when_accumulator_advances_after_initial_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("ZeroPhaseSampleCounter")
+        .compile_str(ZERO_PHASE_SAMPLE_COUNTER, "zero_phase_sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate with RK-like solver");
+
+    let checks = [
+        (0.00, 1.0),
+        (0.05, 1.0),
+        (0.15, 2.0),
+        (0.25, 3.0),
+        (0.35, 4.0),
+    ];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "RK-like zero-phase count at t={t} should be {expected}, got {actual} \
+             (sample(0, interval) must re-arm after the initialization tick)"
         );
     }
 }

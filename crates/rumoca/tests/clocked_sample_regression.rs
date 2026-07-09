@@ -8,7 +8,7 @@ use rumoca_phase_flatten::flatten_ref;
 use rumoca_phase_instantiate::instantiate_model;
 use rumoca_phase_resolve::resolve;
 use rumoca_phase_typecheck::typecheck_instanced;
-use rumoca_sim::{SimOptions, simulate_dae};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 const SAMPLE_TIME_SOURCE: &str = r#"
 model SampleTime
@@ -159,6 +159,36 @@ fn native_simulation_updates_condition_memory_after_clocked_sample_time() {
     assert!(
         (y[1] - 0.1).abs() <= 1.0e-12,
         "MLS §16.5.1 sample(time) should refresh before dependent if-expression projection at the first clock tick; got {}",
+        y[1]
+    );
+}
+
+#[test]
+fn rk_like_simulation_updates_condition_memory_after_clocked_sample_time() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleTime")
+        .compile_str(SAMPLE_TIME_SOURCE, "sample_time.mo")
+        .expect("clocked sample(time) model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.2,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("clocked sample(time) model should simulate with RK-like solver");
+
+    let y = trace_values(&sim, "ramp.y");
+    assert!(
+        (y[0] - 0.0).abs() <= 1.0e-12,
+        "RK-like condition memory should select the true branch at initialization; got {}",
+        y[0]
+    );
+    assert!(
+        (y[1] - 0.1).abs() <= 1.0e-12,
+        "RK-like sample(time) should refresh before dependent projection at the first clock tick; got {}",
         y[1]
     );
 }

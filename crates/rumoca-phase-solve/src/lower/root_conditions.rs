@@ -84,6 +84,32 @@ pub(super) fn lower_root_relation_memory_targets(
     Ok(targets)
 }
 
+pub(super) fn lower_scheduled_root_conditions(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_ir_solve::ScheduledRootCondition>, LowerError> {
+    let span = root_condition_context_span(dae_model);
+    let root_count = root_condition_count(dae_model, span)?;
+    let mut roots =
+        root_vec_with_capacity(root_count, "scheduled root condition metadata count", span)?;
+    for root in &dae_model.events.scheduled_root_conditions {
+        if root.root_index >= root_count {
+            return Err(root_contract_error(
+                format!(
+                    "scheduled root condition index {} is outside {root_count} root conditions",
+                    root.root_index
+                ),
+                span,
+            ));
+        }
+        roots.push(rumoca_ir_solve::ScheduledRootCondition {
+            root_index: root.root_index,
+            period_seconds: root.period_seconds,
+            phase_seconds: root.phase_seconds,
+        });
+    }
+    Ok(roots)
+}
+
 fn root_condition_count(
     dae_model: &dae::Dae,
     span: Option<rumoca_core::Span>,

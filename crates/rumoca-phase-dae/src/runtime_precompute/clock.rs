@@ -609,6 +609,41 @@ fn requires_static_clock_schedule(expr: &rumoca_core::Expression) -> bool {
     }
 }
 
+pub(super) fn scheduled_sample_root_schedule<'a>(
+    expr: &rumoca_core::Expression,
+    clock_schedules: &'a [dae::ClockSchedule],
+    constants: &HashMap<String, f64>,
+) -> Option<&'a dae::ClockSchedule> {
+    let (period_seconds, phase_seconds) = scheduled_sample_root_timing(expr, constants)?;
+    clock_schedules.iter().find(|schedule| {
+        clock_schedules_equivalent(
+            schedule,
+            &dae::ClockSchedule {
+                period_seconds,
+                phase_seconds,
+                source_span: schedule.source_span,
+            },
+        )
+    })
+}
+
+fn scheduled_sample_root_timing(
+    expr: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+) -> Option<(f64, f64)> {
+    match expr {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args,
+            ..
+        } => sample_start_interval_timing(args, constants),
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            function_sample_start_interval_timing(name.last_segment(), args, constants)
+        }
+        _ => None,
+    }
+}
+
 fn is_non_static_inferred_clock_composition(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,

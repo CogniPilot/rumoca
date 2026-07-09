@@ -114,15 +114,70 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     let prune_start = maybe_start_timer_if(profile);
     prune_unreferenced_condition_memory(dae_model, &compile_time_scalars)?;
     remove_relation_duplicate_synthetic_roots(dae_model, &mut synthetic_roots);
+    let scheduled_root_conditions = collect_scheduled_root_conditions(
+        dae_model,
+        &synthetic_roots,
+        &clock_schedules,
+        &clock_compile_time_scalars,
+    );
     log_runtime_precompute_profile("prune_condition_memory", prune_start);
     dae_model.events.synthetic_root_conditions = synthetic_roots;
     dae_model.events.scheduled_time_events = scheduled_time_events;
+    dae_model.events.scheduled_root_conditions = scheduled_root_conditions;
     dae_model.clocks.constructor_exprs = clock_constructor_exprs;
     dae_model.clocks.schedules = clock_schedules;
     dae_model.clocks.intervals = clock_intervals;
     dae_model.clocks.timings = clock_timings;
     dae_model.clocks.triggered_conditions = triggered_clock_conditions;
     Ok(())
+}
+
+fn collect_scheduled_root_conditions(
+    dae_model: &dae::Dae,
+    synthetic_roots: &[rumoca_core::Expression],
+    clock_schedules: &[dae::ClockSchedule],
+    compile_time_scalars: &HashMap<String, f64>,
+) -> Vec<dae::DaeScheduledRootCondition> {
+    let mut roots = Vec::new();
+    for (root_index, expr) in dae_model.conditions.relations.iter().enumerate() {
+        push_scheduled_root_condition(
+            &mut roots,
+            root_index,
+            expr,
+            clock_schedules,
+            compile_time_scalars,
+        );
+    }
+    let synthetic_offset = dae_model.conditions.relations.len();
+    for (index, expr) in synthetic_roots.iter().enumerate() {
+        push_scheduled_root_condition(
+            &mut roots,
+            synthetic_offset + index,
+            expr,
+            clock_schedules,
+            compile_time_scalars,
+        );
+    }
+    roots
+}
+
+fn push_scheduled_root_condition(
+    roots: &mut Vec<dae::DaeScheduledRootCondition>,
+    root_index: usize,
+    expr: &rumoca_core::Expression,
+    clock_schedules: &[dae::ClockSchedule],
+    compile_time_scalars: &HashMap<String, f64>,
+) {
+    let Some(schedule) =
+        clock::scheduled_sample_root_schedule(expr, clock_schedules, compile_time_scalars)
+    else {
+        return;
+    };
+    roots.push(dae::DaeScheduledRootCondition {
+        root_index,
+        period_seconds: schedule.period_seconds,
+        phase_seconds: schedule.phase_seconds,
+    });
 }
 
 fn remove_relation_duplicate_synthetic_roots(

@@ -238,4 +238,25 @@ mod tests {
         assert!((stop - 0.1).abs() <= 1.0e-15);
         assert_eq!(mode, Some(EventPreMode::EventEntry));
     }
+
+    #[test]
+    fn solve_stop_schedule_includes_clock_event_at_horizon() {
+        let mut problem = solve::SolveProblem::default();
+        problem
+            .clocks
+            .periodic_event_schedules
+            .push(solve::PeriodicEventSchedule {
+                period_seconds: 0.05,
+                phase_seconds: 0.0,
+            });
+        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
+
+        let (first_stop, first_mode) = schedule.next_stop(0.0, 0.05);
+        let (horizon_stop, horizon_mode) = schedule.next_stop(0.05, 0.1);
+
+        assert!((first_stop - 0.05).abs() <= 1.0e-15);
+        assert_eq!(first_mode, Some(EventPreMode::EventEntry));
+        assert!((horizon_stop - 0.1).abs() <= 1.0e-15);
+        assert_eq!(horizon_mode, Some(EventPreMode::EventEntry));
+    }
 }

@@ -127,8 +127,7 @@ pub fn event_time_in_window(event_t: f64, current_t: f64, target_t: f64) -> bool
 pub fn scheduled_time_in_horizon(event_t: f64, t_start: f64, t_end: f64) -> bool {
     event_t.is_finite()
         && (event_t > t_start || sample_time_match_with_tol(event_t, t_start))
-        && event_t < t_end
-        && !sample_time_match_with_tol(event_t, t_end)
+        && (event_t < t_end || sample_time_match_with_tol(event_t, t_end))
 }
 
 pub fn periodic_schedule_matches_time(schedule: &solve::PeriodicEventSchedule, t: f64) -> bool {
@@ -139,6 +138,34 @@ pub fn periodic_schedule_matches_time(schedule: &solve::PeriodicEventSchedule, t
     }
     let ticks = (t - phase) / period;
     ticks >= 0.0 && sample_time_match_with_tol(ticks, ticks.round())
+}
+
+pub fn scheduled_root_matches_time(root: &solve::ScheduledRootCondition, t: f64) -> bool {
+    periodic_schedule_matches_time(
+        &solve::PeriodicEventSchedule {
+            period_seconds: root.period_seconds,
+            phase_seconds: root.phase_seconds,
+        },
+        t,
+    )
+}
+
+pub fn scheduled_root_indices_at_time(
+    roots: &[solve::ScheduledRootCondition],
+    t: f64,
+) -> Vec<usize> {
+    roots
+        .iter()
+        .filter(|root| scheduled_root_matches_time(root, t))
+        .map(|root| root.root_index)
+        .collect()
+}
+
+pub fn scheduled_root_index_is_known(
+    roots: &[solve::ScheduledRootCondition],
+    root_index: usize,
+) -> bool {
+    roots.iter().any(|root| root.root_index == root_index)
 }
 
 pub fn runtime_parameter_index(layout: &solve::SolveLayout, name: &str) -> Option<usize> {

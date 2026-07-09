@@ -1127,6 +1127,32 @@ fn test_runtime_precompute_collects_sample_start_interval_schedule() {
 }
 
 #[test]
+fn test_runtime_precompute_marks_schedule_backed_sample_root_condition() {
+    let mut dae_model = dae::Dae::default();
+    let relation = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME).into(),
+        args: vec![lit(42.0), lit(0.05), lit(0.1)],
+        is_constructor: false,
+        span: test_span(120, 149),
+    };
+    dae_model.conditions.relations.push(relation.clone());
+    dae_model.conditions.equations.push(dae::Equation::explicit(
+        condition_lhs("c", 1),
+        relation,
+        test_span(1, 2),
+        "scheduled sample condition memory",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert_eq!(dae_model.events.scheduled_root_conditions.len(), 1);
+    let root = &dae_model.events.scheduled_root_conditions[0];
+    assert_eq!(root.root_index, 0);
+    assert!((root.period_seconds - 0.1).abs() <= 1e-12);
+    assert!((root.phase_seconds - 0.05).abs() <= 1e-12);
+}
+
+#[test]
 fn test_runtime_precompute_collects_sample_schedule_from_initial_time_parameter() {
     let mut dae_model = dae::Dae::default();
     let mut frequency = dae::Variable::new(
