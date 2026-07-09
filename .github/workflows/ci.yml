@@ -392,6 +392,8 @@ jobs:
     name: Template Runtime Tests
     runs-on: ubuntu-24.04
     env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
       JULIA_DEPOT_PATH: "${{ github.workspace }}/target/julia-depot:"
       JULIA_PKG_PRECOMPILE_AUTO: '0'
       JULIA_PROJECT: ${{ github.workspace }}/infra/julia
@@ -417,6 +419,27 @@ jobs:
           shared-key: template-runtime
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: false
+
+      - name: Reclaim runner disk before template runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp /home/runner/actions-runner/cached 2>/dev/null || true
+          du -sh target target/debug ~/.cargo ~/.rustup /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+
+          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+
+          echo "== disk after cleanup =="
+          df -h . / /tmp /home/runner/actions-runner/cached 2>/dev/null || true
+          du -sh target target/debug ~/.cargo ~/.rustup /home/runner/actions-runner/cached/_diag 2>/dev/null || true
 
       - name: Julia template runtime cache
         uses: actions/cache@v4
