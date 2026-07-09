@@ -409,6 +409,9 @@ pub(super) fn simulation_parity_cache_can_resume(
     if cached_models.is_empty() {
         return Ok(false);
     }
+    if !omc_models_map_has_success(&payload) {
+        return Ok(false);
+    }
     let target_models = normalize_model_names(target_models.to_vec());
     let target_set = target_models
         .into_iter()
@@ -456,6 +459,17 @@ pub(super) fn simulation_parity_cache_can_resume(
     Ok(stop_time.is_some_and(|value| {
         (value - stop_time_override).abs() <= f64::EPSILON.max(stop_time_override.abs() * 1e-12)
     }))
+}
+
+fn omc_models_map_has_success(payload: &serde_json::Value) -> bool {
+    payload
+        .get("models")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|models| {
+            models.values().any(|model| {
+                model.get("status").and_then(serde_json::Value::as_str) == Some("success")
+            })
+        })
 }
 
 pub(super) fn run_msl_tool_command<I, S>(exe: &Path, args: I) -> io::Result<()>

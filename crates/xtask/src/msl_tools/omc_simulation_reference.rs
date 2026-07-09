@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -672,6 +672,12 @@ fn prepare_run_state(model_names: &[String]) -> SimRunState {
     }
 }
 
+/// Message emitted by a persistent session worker.
+enum SessionWorkerMessage {
+    Model(Box<SessionModelOutcome>),
+    Fatal(SessionWorkerFatal),
+}
+
 /// Outcome of simulating one model inside a persistent session worker.
 struct SessionModelOutcome {
     idx: usize,
@@ -681,11 +687,21 @@ struct SessionModelOutcome {
     timed_out: bool,
 }
 
+/// Infrastructure failure that prevents a worker from producing physical model
+/// results. These must not be serialized as per-model OMC failures.
+struct SessionWorkerFatal {
+    worker_idx: usize,
+    model: String,
+    error: String,
+}
+
 /// Shared, immutable context handed to each session worker thread.
 struct SessionWorkerCtx<'a> {
+    worker_idx: usize,
     models: &'a [String],
     next: &'a AtomicUsize,
-    tx: &'a mpsc::Sender<SessionModelOutcome>,
+    cancel: &'a AtomicBool,
+    tx: &'a mpsc::Sender<SessionWorkerMessage>,
     msl_exprs: &'a [String],
     work_dir: &'a Path,
     stop_time: f64,
@@ -769,11 +785,13 @@ fn run_session_pending(
 
     let models = Arc::new(models);
     let next = Arc::new(AtomicUsize::new(0));
-    let (tx, rx) = mpsc::channel::<SessionModelOutcome>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel::<SessionWorkerMessage>();
     let mut handles = Vec::with_capacity(worker_count);
     for worker_idx in 0..worker_count {
         let models = Arc::clone(&models);
         let next = Arc::clone(&next);
+        let cancel = Arc::clone(&cancel);
         let tx = tx.clone();
         let msl_exprs = msl_exprs.clone();
         let work_dir = paths.sim_work_dir.clone();
@@ -783,8 +801,10 @@ fn run_session_pending(
         let cpu_core_id = core_plan.get(worker_idx).copied().flatten();
         handles.push(thread::spawn(move || {
             run_one_session_worker(SessionWorkerCtx {
+                worker_idx,
                 models: &models,
                 next: &next,
+                cancel: &cancel,
                 tx: &tx,
                 msl_exprs: &msl_exprs,
                 work_dir: &work_dir,
@@ -800,8 +820,38 @@ fn run_session_pending(
     }
     drop(tx);
 
+    let result = collect_session_outcomes(rx, &cancel, paths, state, checkpoint, total);
+    for handle in handles {
+        let _ = handle.join();
+    }
+    result
+}
+
+fn collect_session_outcomes(
+    rx: mpsc::Receiver<SessionWorkerMessage>,
+    cancel: &AtomicBool,
+    paths: &MslPaths,
+    state: &mut SimRunState,
+    checkpoint: &CheckpointContext<'_>,
+    total: usize,
+) -> Result<()> {
     let mut completed = 0usize;
-    for outcome in rx {
+    let mut fatal_error: Option<String> = None;
+    for message in rx {
+        if fatal_error.is_some() {
+            continue;
+        }
+        let outcome = match message {
+            SessionWorkerMessage::Model(outcome) => outcome,
+            SessionWorkerMessage::Fatal(fatal) => {
+                cancel.store(true, AtomicOrdering::Relaxed);
+                fatal_error = Some(format!(
+                    "OMC session worker {} could not start for '{}': {}",
+                    fatal.worker_idx, fatal.model, fatal.error
+                ));
+                continue;
+            }
+        };
         completed += 1;
         state.batch_timings.push(BatchTimingDetail {
             batch_idx: outcome.idx,
@@ -812,13 +862,14 @@ fn run_session_pending(
             skipped: false,
         });
         state.all_results.insert(outcome.model, outcome.result);
+        ensure_omc_trace_artifacts(paths, &mut state.all_results);
         write_omc_reference_checkpoint(checkpoint, state)?;
         if completed.is_multiple_of(25) || completed == total {
             println!("  OMC session progress: {completed}/{total} models");
         }
     }
-    for handle in handles {
-        let _ = handle.join();
+    if let Some(error) = fatal_error {
+        bail!("{error}");
     }
     Ok(())
 }
@@ -907,31 +958,27 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
     // batch (one reload per recycle, not per model).
     let mut models_on_session = 0usize;
     loop {
+        if ctx.cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
         let idx = ctx.next.fetch_add(1, AtomicOrdering::Relaxed);
         let Some(model) = ctx.models.get(idx) else {
             break;
         };
         if session.is_none() {
-            match OmcSession::spawn(
-                ctx.work_dir,
-                ctx.msl_exprs,
-                ctx.omc_threads,
-                ctx.startup_timeout,
-                ctx.load_timeout,
-            ) {
+            match spawn_omc_session_with_retries(&ctx) {
                 Ok(spawned) => {
                     session = Some(spawned);
                     models_on_session = 0;
                 }
                 Err(error) => {
-                    let _ = ctx.tx.send(SessionModelOutcome {
-                        idx,
+                    ctx.cancel.store(true, AtomicOrdering::Relaxed);
+                    let _ = ctx.tx.send(SessionWorkerMessage::Fatal(SessionWorkerFatal {
+                        worker_idx: ctx.worker_idx,
                         model: model.clone(),
-                        result: session_error_result(format!("omc session spawn failed: {error}")),
-                        elapsed_seconds: 0.0,
-                        timed_out: false,
-                    });
-                    continue;
+                        error,
+                    }));
+                    break;
                 }
             }
         }
@@ -958,13 +1005,15 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
                 )
             }
         };
-        let _ = ctx.tx.send(SessionModelOutcome {
-            idx,
-            model: model.clone(),
-            result,
-            elapsed_seconds: elapsed,
-            timed_out,
-        });
+        let _ = ctx
+            .tx
+            .send(SessionWorkerMessage::Model(Box::new(SessionModelOutcome {
+                idx,
+                model: model.clone(),
+                result,
+                elapsed_seconds: elapsed,
+                timed_out,
+            })));
         // `session` is still alive only on the success path (timeout/io already
         // took and killed it). Recycle it once it has handled enough models.
         if session.is_some() {
@@ -978,8 +1027,38 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
     }
 }
 
+fn spawn_omc_session_with_retries(ctx: &SessionWorkerCtx<'_>) -> Result<OmcSession, String> {
+    let mut last_error = None;
+    for attempt in 1..=SESSION_SPAWN_MAX_ATTEMPTS {
+        match OmcSession::spawn(
+            ctx.work_dir,
+            ctx.msl_exprs,
+            ctx.omc_threads,
+            ctx.startup_timeout,
+            ctx.load_timeout,
+        ) {
+            Ok(spawned) => return Ok(spawned),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < SESSION_SPAWN_MAX_ATTEMPTS {
+                    eprintln!(
+                        "  OMC session worker {}: spawn attempt {attempt}/{} failed; retrying",
+                        ctx.worker_idx, SESSION_SPAWN_MAX_ATTEMPTS
+                    );
+                    thread::sleep(SESSION_SPAWN_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    Err(last_error
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "OMC session spawn was not attempted".to_string()))
+}
+
 /// Recycle an omc session after this many models to bound its memory growth.
 const SESSION_RECYCLE_MODELS: usize = 25;
+const SESSION_SPAWN_MAX_ATTEMPTS: usize = 2;
+const SESSION_SPAWN_RETRY_DELAY: Duration = Duration::from_secs(15);
 
 /// Build a [`SimModelResult`] from a session simulate outcome, mirroring the
 /// success/error classification of the former script-parsing path.

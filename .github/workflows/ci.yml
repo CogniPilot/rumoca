@@ -532,6 +532,7 @@ jobs:
           key: msl-v4.1.0-release-zip-layout-v2
 
       - name: Cache OMC parity checkpoint
+        id: omc-parity-checkpoint-cache
         uses: actions/cache@v5
         continue-on-error: true
         with:
@@ -543,6 +544,75 @@ jobs:
           key: msl-omc-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/ci.yml', 'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             msl-omc-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/ci.yml', 'crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json') }}-
+
+      - name: Download prior OMC parity checkpoint artifact
+        if: steps.omc-parity-checkpoint-cache.outputs.cache-hit != 'true'
+        id: omc-parity-checkpoint-artifact
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const branch = context.ref.replace('refs/heads/', '');
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: 'ci.yml',
+              branch,
+              status: 'completed',
+              per_page: 20,
+            });
+            for (const run of runs) {
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                owner,
+                repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              const artifact = artifacts.find((item) =>
+                item.name === 'msl-compatibility-report' && !item.expired
+              );
+              if (!artifact) {
+                continue;
+              }
+              const response = await github.rest.actions.downloadArtifact({
+                owner,
+                repo,
+                artifact_id: artifact.id,
+                archive_format: 'zip',
+              });
+              const out = path.join(process.env.RUNNER_TEMP, 'omc-parity-checkpoint.zip');
+              fs.writeFileSync(out, Buffer.from(response.data));
+              core.setOutput('found', 'true');
+              core.setOutput('path', out);
+              core.info(`Downloaded OMC parity checkpoint artifact ${artifact.id} from run ${run.id}.`);
+              return;
+            }
+            core.setOutput('found', 'false');
+            core.info('No prior OMC parity checkpoint artifact found for this commit.');
+
+      - name: Restore prior OMC parity checkpoint artifact
+        if: steps.omc-parity-checkpoint-artifact.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          restore_dir="$RUNNER_TEMP/omc-parity-checkpoint"
+          rm -rf "$restore_dir"
+          mkdir -p "$restore_dir" target/msl/results
+          unzip -q "${{ steps.omc-parity-checkpoint-artifact.outputs.path }}" -d "$restore_dir"
+          for path in \
+            omc_simulation_reference.json \
+            omc_sim_work \
+            sim_traces/omc \
+            omc_parity_cache
+          do
+            if [[ -e "$restore_dir/results/$path" ]]; then
+              mkdir -p "target/msl/results/$(dirname "$path")"
+              rm -rf "target/msl/results/$path"
+              cp -a "$restore_dir/results/$path" "target/msl/results/$path"
+            fi
+          done
 
       - name: Ensure MSL
         shell: bash
