@@ -932,6 +932,8 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quick_xml::Reader;
+    use quick_xml::events::{BytesStart, Event};
     use tempfile::tempdir;
 
     #[test]
@@ -1000,18 +1002,72 @@ mod tests {
             .expect("render FMI modelDescription")
     }
 
+    fn xml_attribute(element: &BytesStart<'_>, name: &str) -> Option<String> {
+        element
+            .attributes()
+            .map(|attribute| attribute.expect("well-formed XML attribute"))
+            .find(|attribute| attribute.key.as_ref() == name.as_bytes())
+            .map(|attribute| {
+                attribute
+                    .unescape_value()
+                    .expect("unescapable XML attribute")
+                    .into_owned()
+            })
+    }
+
+    fn fmi2_real_start(xml: &str, variable_name: &str) -> Option<String> {
+        let mut reader = Reader::from_str(xml);
+        let mut inside_variable = false;
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => return None,
+                Ok(Event::Start(element)) if element.name().as_ref() == b"ScalarVariable" => {
+                    inside_variable =
+                        xml_attribute(&element, "name").as_deref() == Some(variable_name);
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if inside_variable && element.name().as_ref() == b"Real" =>
+                {
+                    return xml_attribute(&element, "start");
+                }
+                Ok(Event::End(element)) if element.name().as_ref() == b"ScalarVariable" => {
+                    inside_variable = false;
+                }
+                Ok(_) => {}
+                Err(err) => panic!("not well-formed FMI2 XML: {err}\n{xml}"),
+            }
+        }
+    }
+
+    fn fmi3_float64_start(xml: &str, variable_name: &str) -> Option<String> {
+        let mut reader = Reader::from_str(xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => return None,
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.name().as_ref() == b"Float64"
+                        && xml_attribute(&element, "name").as_deref() == Some(variable_name) =>
+                {
+                    return xml_attribute(&element, "start");
+                }
+                Ok(_) => {}
+                Err(err) => panic!("not well-formed FMI3 XML: {err}\n{xml}"),
+            }
+        }
+    }
+
     #[test]
     fn test_fmi2_model_description_serializes_start_expressions_as_literals_issue_289() {
         let xml = render_fmi_model_description("fmi2");
 
-        assert!(
-            xml.contains(r#"name="x" valueReference="0" causality="local" variability="continuous" initial="exact">
-      <Real start="5.0""#),
+        assert_eq!(
+            fmi2_real_start(&xml, "x").as_deref(),
+            Some("5.0"),
             "FMI2 x.start should be the folded default literal:\n{xml}"
         );
-        assert!(
-            xml.contains(r#"name="y" valueReference="1" causality="local" variability="continuous" initial="exact">
-      <Real start="5.0""#),
+        assert_eq!(
+            fmi2_real_start(&xml, "y").as_deref(),
+            Some("5.0"),
             "FMI2 y.start should fold a bare parameter reference:\n{xml}"
         );
         assert!(
@@ -1024,12 +1080,14 @@ mod tests {
     fn test_fmi3_model_description_serializes_start_expressions_as_literals_issue_289() {
         let xml = render_fmi_model_description("fmi3");
 
-        assert!(
-            xml.contains(r#"<Float64 name="x" valueReference="0" causality="local" variability="continuous" initial="exact" start="5.0""#),
+        assert_eq!(
+            fmi3_float64_start(&xml, "x").as_deref(),
+            Some("5.0"),
             "FMI3 x.start should be the folded default literal:\n{xml}"
         );
-        assert!(
-            xml.contains(r#"<Float64 name="y" valueReference="1" causality="local" variability="continuous" initial="exact" start="5.0""#),
+        assert_eq!(
+            fmi3_float64_start(&xml, "y").as_deref(),
+            Some("5.0"),
             "FMI3 y.start should fold a bare parameter reference:\n{xml}"
         );
         assert!(
