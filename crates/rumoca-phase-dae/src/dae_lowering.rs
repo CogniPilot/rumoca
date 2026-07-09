@@ -46,6 +46,18 @@ pub fn prepare_dae_for_codegen(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError>
     Ok(CodegenDae { dae: prepared })
 }
 
+/// Prepare a DAE copy for FMI modelDescription XML metadata.
+///
+/// FMI XML start attributes carry concrete values, not Modelica expressions.
+/// This preparation is intentionally separate from runtime codegen prep so FMU
+/// implementation code can still evaluate start expressions after importer
+/// parameter overrides.
+pub fn prepare_dae_for_fmi_model_description(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError> {
+    let mut prepared = dae.clone();
+    crate::fold_start_values::fold_fmi_start_values_to_literals(&mut prepared)?;
+    Ok(CodegenDae { dae: prepared })
+}
+
 // =============================================================================
 // Record function parameter decomposition (DAE level)
 // =============================================================================

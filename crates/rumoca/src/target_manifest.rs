@@ -7,8 +7,8 @@ use std::process::Command;
 use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
-    TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
+    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetFileRenderContext, TargetManifest,
+    TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     validate_dae_target_capabilities,
 };
 #[cfg(feature = "scheduled-sim")]
@@ -280,13 +280,17 @@ fn render_manifest_files(
 ) -> Result<Vec<RenderedTargetFile>> {
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        let path = renderer
-            .render(result, &file.path, model_identifier)
+        let path = render_manifest_path_template(&file.path, model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
-        let content = renderer
-            .render(result, template.as_ref(), model_identifier)
-            .with_context(|| format!("Render target template '{}'", file.template))?;
+        let content = render_manifest_template(
+            result,
+            renderer,
+            file.render_context,
+            template.as_ref(),
+            model_identifier,
+        )
+        .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
             content,
@@ -316,6 +320,23 @@ fn render_raw_template(
     result
         .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
         .with_context(|| format!("Render raw template: {target}"))
+}
+
+fn render_manifest_path_template(template: &str, model_identifier: &str) -> Result<String> {
+    let mut env = minijinja::Environment::new();
+    env.add_filter("sanitize", |text: String| {
+        text.replace('.', "_")
+            .replace(['[', ','], "_")
+            .replace(']', "")
+    });
+    env.add_template("target-path", template)
+        .map_err(|error| anyhow::anyhow!("Parse target output path template: {error}"))?;
+    let template = env
+        .get_template("target-path")
+        .map_err(|error| anyhow::anyhow!("Load target output path template: {error}"))?;
+    template
+        .render(minijinja::context! { model_name => model_identifier })
+        .map_err(|error| anyhow::anyhow!("Render target output path template: {error}"))
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -617,8 +638,7 @@ fn write_manifest_file(
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let rendered_rel_path = renderer
-        .render(result, &file.path, model_identifier)
+    let rendered_rel_path = render_manifest_path_template(&file.path, model_identifier)
         .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {
@@ -626,9 +646,14 @@ fn write_manifest_file(
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = renderer
-        .render(result, template.as_ref(), model_identifier)
-        .with_context(|| format!("Render target template '{}'", file.template))?;
+    let rendered = render_manifest_template(
+        result,
+        renderer,
+        file.render_context,
+        template.as_ref(),
+        model_identifier,
+    )
+    .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
     eprintln!("  wrote {}", output_path.display());
@@ -678,6 +703,21 @@ fn resolve_manifest_renderer(
         return Ok(ManifestRenderer::GalecC(export));
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
+}
+
+fn render_manifest_template(
+    result: &CompilationResult,
+    renderer: &ManifestRenderer,
+    context: Option<TargetFileRenderContext>,
+    template: &str,
+    model_identifier: &str,
+) -> Result<String> {
+    match context {
+        Some(TargetFileRenderContext::FmiModelDescription) => result
+            .render_fmi_model_description_template_str_with_name(template, model_identifier)
+            .map_err(Into::into),
+        None => renderer.render(result, template, model_identifier),
+    }
 }
 
 impl ManifestRenderer {

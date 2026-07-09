@@ -40,9 +40,10 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
-    render_ast_template_with_name, render_dae_template_with_json,
-    render_dae_template_with_json_and_name, render_flat_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_for_fmi_model_description_context,
+    dae_for_solve_template_context, dae_to_template_json, render_ast_template_with_name,
+    render_dae_template_with_json, render_dae_template_with_json_and_name,
+    render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -78,6 +79,9 @@ pub struct CompilationResult {
     /// Cached solve-template renderer for targets that never read the `dae`
     /// template entry.
     solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
+    /// Cached solve renderer whose `dae` entry is prepared for FMI
+    /// modelDescription XML metadata.
+    fmi_model_description_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -110,6 +114,17 @@ fn build_solve_template_renderer_without_dae(
     SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
 }
 
+fn build_fmi_model_description_renderer(
+    dae_model: &Dae,
+) -> Result<SolveTemplateRenderer, CompilerError> {
+    let problem = lower_solve_problem(dae_model)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
+    let template_dae = dae_for_fmi_model_description_context(dae_model)?;
+    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
+        .map_err(CompilerError::TemplateError)
+}
+
 impl CompilationResult {
     pub fn new(
         dae: Dae,
@@ -124,6 +139,7 @@ impl CompilationResult {
             resolved,
             solve_template_renderer: std::sync::OnceLock::new(),
             solve_template_renderer_without_dae: std::sync::OnceLock::new(),
+            fmi_model_description_renderer: std::sync::OnceLock::new(),
         }
     }
 
@@ -383,6 +399,25 @@ impl CompilationResult {
                     "solve template renderer was not initialized after build",
                 ))
             })?;
+        renderer
+            .render_with_name(template, model_name)
+            .map_err(CompilerError::TemplateError)
+    }
+
+    pub fn render_fmi_model_description_template_str_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CompilerError> {
+        if self.fmi_model_description_renderer.get().is_none() {
+            let renderer = build_fmi_model_description_renderer(&self.dae)?;
+            let _ = self.fmi_model_description_renderer.set(renderer);
+        }
+        let renderer = self.fmi_model_description_renderer.get().ok_or_else(|| {
+            CompilerError::TemplateError(CodegenError::template(
+                "FMI modelDescription renderer was not initialized after build",
+            ))
+        })?;
         renderer
             .render_with_name(template, model_name)
             .map_err(CompilerError::TemplateError)
@@ -933,6 +968,74 @@ mod tests {
 
         assert_eq!(result.dae.variables.states.len(), 1);
         assert_eq!(result.balance_detail.state_unknowns, 1);
+    }
+
+    fn fmi_start_expression_source() -> &'static str {
+        r#"
+            model FmiStartExpressions
+                parameter Real p = 2.0;
+                parameter Real q = 3.0;
+                parameter Real r = p + q;
+                Real x(start=p + q, fixed=true);
+                Real y(start=r, fixed=true);
+            equation
+                der(x) = -x;
+                der(y) = -y;
+            end FmiStartExpressions;
+        "#
+    }
+
+    fn render_fmi_model_description(target: &str) -> String {
+        let compiled = Compiler::new()
+            .model("FmiStartExpressions")
+            .compile_str(fmi_start_expression_source(), "FmiStartExpressions.mo")
+            .expect("compile FMI start-expression fixture");
+        let template = rumoca_compile::codegen::templates::builtin_template_source(
+            target,
+            "modelDescription.xml.jinja",
+        )
+        .expect("built-in FMI modelDescription template");
+        compiled
+            .render_fmi_model_description_template_str_with_name(template, "FmiStartExpressions")
+            .expect("render FMI modelDescription")
+    }
+
+    #[test]
+    fn test_fmi2_model_description_serializes_start_expressions_as_literals_issue_289() {
+        let xml = render_fmi_model_description("fmi2");
+
+        assert!(
+            xml.contains(r#"name="x" valueReference="0" causality="local" variability="continuous" initial="exact">
+      <Real start="5.0""#),
+            "FMI2 x.start should be the folded default literal:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"name="y" valueReference="1" causality="local" variability="continuous" initial="exact">
+      <Real start="5.0""#),
+            "FMI2 y.start should fold a bare parameter reference:\n{xml}"
+        );
+        assert!(
+            !xml.contains("p + q") && !xml.contains(r#"start="r""#),
+            "FMI2 modelDescription must not serialize Modelica start expressions:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn test_fmi3_model_description_serializes_start_expressions_as_literals_issue_289() {
+        let xml = render_fmi_model_description("fmi3");
+
+        assert!(
+            xml.contains(r#"<Float64 name="x" valueReference="0" causality="local" variability="continuous" initial="exact" start="5.0""#),
+            "FMI3 x.start should be the folded default literal:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"<Float64 name="y" valueReference="1" causality="local" variability="continuous" initial="exact" start="5.0""#),
+            "FMI3 y.start should fold a bare parameter reference:\n{xml}"
+        );
+        assert!(
+            !xml.contains("p + q") && !xml.contains(r#"start="r""#),
+            "FMI3 modelDescription must not serialize Modelica start expressions:\n{xml}"
+        );
     }
 
     #[test]

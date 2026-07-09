@@ -32,6 +32,33 @@ equation
 end Smoke;
 "#;
 
+const FMI_START_EXPRESSIONS_MODEL: &str = "FmiStartExpressions";
+const FMI_START_EXPRESSIONS_SOURCE: &str = r#"
+model FmiStartExpressions
+  parameter Real p = 2.0;
+  parameter Real q = 3.0;
+  parameter Real r = p + q;
+  Real x(start = p + q, min = p - 1.0, max = q + 5.0, nominal = r, fixed = true);
+  Real y(start = r, fixed = true);
+equation
+  der(x) = -x;
+  der(y) = -y;
+end FmiStartExpressions;
+"#;
+
+const FMI_ARRAY_START_EXPRESSIONS_MODEL: &str = "FmiArrayStartExpressions";
+const FMI_ARRAY_START_EXPRESSIONS_SOURCE: &str = r#"
+model FmiArrayStartExpressions
+  parameter Real p[2] = {1.0, 2.0};
+  Real x[2](start = p, fixed = true);
+  Real y(start = p[2], fixed = true);
+equation
+  der(x[1]) = -x[1];
+  der(x[2]) = -x[2];
+  der(y) = -y;
+end FmiArrayStartExpressions;
+"#;
+
 /// Fixed-sample discrete fixture for targets that reject continuous states:
 /// a parameter, a `pre()` state, an output, and one `when sample(...)` clock.
 const DISCRETE_SMOKE_MODEL: &str = "DiscreteSmoke";
@@ -223,6 +250,166 @@ fn galec_target_rejects_continuous_fixture_via_capability_gate() {
     assert!(
         message.contains("unsupported-feature:continuous_states"),
         "expected the generic continuous_states capability diagnostic, got: {message}"
+    );
+}
+
+#[test]
+fn fmi2_target_model_description_serializes_start_expressions_as_literals_issue_289() {
+    let xml = render_fmi_model_description_xml("fmi2");
+
+    assert!(
+        xml.contains(
+            r#"name="x" valueReference="0" causality="local" variability="continuous" initial="exact">
+      <Real start="5.0""#
+        ),
+        "FMI2 target modelDescription must fold x.start to the default numeric value:\n{xml}"
+    );
+    assert!(
+        xml.contains(
+            r#"name="y" valueReference="1" causality="local" variability="continuous" initial="exact">
+      <Real start="5.0""#
+        ),
+        "FMI2 target modelDescription must fold y.start through parameter r:\n{xml}"
+    );
+    assert!(
+        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
+        "FMI2 target modelDescription must fold numeric XML attributes:\n{xml}"
+    );
+    assert_no_modelica_start_expression("FMI2", &xml);
+}
+
+#[test]
+fn fmi3_target_model_description_serializes_start_expressions_as_literals_issue_289() {
+    let xml = render_fmi_model_description_xml("fmi3");
+
+    assert!(
+        xml.contains(
+            r#"<Float64 name="x" valueReference="0" causality="local" variability="continuous" initial="exact" start="5.0""#
+        ),
+        "FMI3 target modelDescription must fold x.start to the default numeric value:\n{xml}"
+    );
+    assert!(
+        xml.contains(
+            r#"<Float64 name="y" valueReference="1" causality="local" variability="continuous" initial="exact" start="5.0""#
+        ),
+        "FMI3 target modelDescription must fold y.start through parameter r:\n{xml}"
+    );
+    assert!(
+        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
+        "FMI3 target modelDescription must fold numeric XML attributes:\n{xml}"
+    );
+    assert_no_modelica_start_expression("FMI3", &xml);
+}
+
+fn render_fmi_model_description_xml(target: &str) -> String {
+    render_fmi_model_description_xml_for(
+        target,
+        FMI_START_EXPRESSIONS_MODEL,
+        FMI_START_EXPRESSIONS_SOURCE,
+    )
+}
+
+#[test]
+fn fmi2_target_model_description_serializes_array_start_aliases_issue_289() {
+    let xml = render_fmi_model_description_xml_for(
+        "fmi2",
+        FMI_ARRAY_START_EXPRESSIONS_MODEL,
+        FMI_ARRAY_START_EXPRESSIONS_SOURCE,
+    );
+
+    assert_variable_fragment_contains(&xml, "x[1]", r#"start="1.0""#);
+    assert_variable_fragment_contains(&xml, "x[2]", r#"start="2.0""#);
+    assert_variable_fragment_contains(&xml, "y", r#"start="2.0""#);
+    assert_no_modelica_start_expression("FMI2 array", &xml);
+}
+
+#[test]
+fn fmi3_target_model_description_serializes_array_start_aliases_issue_289() {
+    let xml = render_fmi_model_description_xml_for(
+        "fmi3",
+        FMI_ARRAY_START_EXPRESSIONS_MODEL,
+        FMI_ARRAY_START_EXPRESSIONS_SOURCE,
+    );
+
+    assert_variable_fragment_contains(&xml, "x", r#"start="1.0 2.0""#);
+    assert_variable_fragment_contains(&xml, "y", r#"start="2.0""#);
+    assert_no_modelica_start_expression("FMI3 array", &xml);
+}
+
+#[test]
+fn custom_target_declares_fmi_model_description_render_context() {
+    let fixture = compile_fixture(FMI_START_EXPRESSIONS_MODEL, FMI_START_EXPRESSIONS_SOURCE);
+    let dir = tempfile::tempdir().expect("create custom target dir");
+    fs::create_dir(dir.path().join("xml")).expect("create custom template dir");
+    fs::write(
+        dir.path().join("target.toml"),
+        r#"
+version = 1
+ir = "solve"
+name = "custom-fmi-metadata"
+
+[[files]]
+path = "custom/{{ model_name }}.xml"
+template = "xml/custom.xml.jinja"
+render_context = "fmi-model-description"
+"#,
+    )
+    .expect("write custom target manifest");
+    fs::write(
+        dir.path().join("xml/custom.xml.jinja"),
+        templates::builtin_template_source("fmi2", "modelDescription.xml.jinja")
+            .expect("fmi2 modelDescription template"),
+    )
+    .expect("write custom target template");
+
+    let files = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.path().to_str().expect("utf-8 tempdir"),
+        None,
+    )
+    .unwrap_or_else(|err| panic!("custom FMI metadata target should render: {err:#}"));
+    let xml = &find_rendered_file(&files, "custom/FmiStartExpressions.xml").content;
+
+    assert_no_modelica_start_expression("custom FMI metadata", xml);
+    assert!(
+        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
+        "custom target must opt into the FMI metadata DAE by file context:\n{xml}"
+    );
+}
+
+fn render_fmi_model_description_xml_for(target: &str, model: &'static str, source: &str) -> String {
+    let fixture = compile_fixture(model, source);
+    let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+        .unwrap_or_else(|err| panic!("{target} target should render issue 289 fixture: {err:#}"));
+    find_rendered_file(&files, "modelDescription.xml")
+        .content
+        .clone()
+}
+
+fn assert_no_modelica_start_expression(label: &str, xml: &str) {
+    assert!(
+        !xml.contains("p + q")
+            && !xml.contains("p - 1.0")
+            && !xml.contains("q + 5.0")
+            && !xml.contains(r#"start="r""#)
+            && !xml.contains(r#"nominal="r""#)
+            && !xml.contains(r#"start="p""#)
+            && !xml.contains(r#"start="p[2]""#),
+        "{label} target modelDescription must not serialize Modelica start expressions:\n{xml}"
+    );
+}
+
+fn assert_variable_fragment_contains(xml: &str, name: &str, expected: &str) {
+    let marker = format!(r#"name="{name}""#);
+    let start = xml
+        .find(&marker)
+        .unwrap_or_else(|| panic!("expected variable {name} in XML:\n{xml}"));
+    let end = (start + 500).min(xml.len());
+    let fragment = &xml[start..end];
+    assert!(
+        fragment.contains(expected),
+        "expected variable {name} fragment to contain {expected}, got:\n{fragment}"
     );
 }
 
