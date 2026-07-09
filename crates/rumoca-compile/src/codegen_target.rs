@@ -94,6 +94,7 @@ pub struct TensorCapabilities {
 pub enum TensorCapability {
     Native,
     Scalar,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -395,6 +396,7 @@ fn tensor_feature_support(
         Some(TensorCapability::Native) => TargetFeatureSupport::Native,
         Some(TensorCapability::Scalar) if scalar_fallback => TargetFeatureSupport::Scalar,
         Some(TensorCapability::Scalar) => TargetFeatureSupport::Unsupported,
+        Some(TensorCapability::Unsupported) => TargetFeatureSupport::Unsupported,
         None => TargetFeatureSupport::Unknown,
     }
 }
@@ -1178,6 +1180,18 @@ render_context = "fmi-model-description"
             .expect("rust-solve target should be listed");
         assert_eq!(rust_solve.readiness_level, Some(2));
         assert_eq!(rust_solve.matmul, TargetFeatureSupport::Scalar);
+
+        let rust_fixed_solve = matrix
+            .iter()
+            .find(|entry| entry.id == "rust-fixed-solve")
+            .expect("rust-fixed-solve target should be listed");
+        assert_eq!(rust_fixed_solve.readiness_level, Some(2));
+        assert_eq!(rust_fixed_solve.deployment_class.as_deref(), Some("cpu"));
+        assert_eq!(rust_fixed_solve.execution_mode.as_deref(), Some("compiled"));
+        assert_eq!(rust_fixed_solve.matmul, TargetFeatureSupport::Scalar);
+        assert_eq!(rust_fixed_solve.linsolve, TargetFeatureSupport::Unsupported);
+        assert_eq!(rust_fixed_solve.sparse, TargetFeatureSupport::Unsupported);
+        assert_eq!(rust_fixed_solve.dtypes, vec!["f64"]);
 
         let cuda_c = matrix
             .iter()
