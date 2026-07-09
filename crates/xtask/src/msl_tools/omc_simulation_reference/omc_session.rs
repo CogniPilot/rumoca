@@ -91,7 +91,8 @@ impl OmcSession {
             )
         })?;
 
-        let mut command = build_omc_interactive_command(work_dir, &suffix, omc_threads);
+        let (mut command, command_kind) =
+            build_omc_interactive_command(work_dir, &suffix, omc_threads);
         let spawn_log_file = work_dir.join(format!("omc_session_{suffix}.log"));
         let spawn_log = File::create(&spawn_log_file).with_context(|| {
             format!(
@@ -117,6 +118,9 @@ impl OmcSession {
         // after we kill the omc parent.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        if command_kind == OmcCommandKind::Native {
+            configure_native_omc_server_identity(&mut command, work_dir)?;
+        }
         let mut child = command
             .spawn()
             .context("failed to spawn omc interactive session")?;
@@ -278,9 +282,22 @@ impl Drop for OmcSession {
     }
 }
 
-fn build_omc_interactive_command(work_dir: &Path, suffix: &str, omc_threads: usize) -> Command {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OmcCommandKind {
+    Native,
+    DockerWrapper,
+}
+
+fn build_omc_interactive_command(
+    work_dir: &Path,
+    suffix: &str,
+    omc_threads: usize,
+) -> (Command, OmcCommandKind) {
     if omc_command_is_docker_wrapper() {
-        return build_docker_omc_interactive_command(work_dir, suffix, omc_threads);
+        return (
+            build_docker_omc_interactive_command(work_dir, suffix, omc_threads),
+            OmcCommandKind::DockerWrapper,
+        );
     }
     let mut command = Command::new("omc");
     command
@@ -288,7 +305,7 @@ fn build_omc_interactive_command(work_dir: &Path, suffix: &str, omc_threads: usi
         .arg(format!("-z={suffix}"))
         .arg("--locale=C");
     apply_omc_thread_env_to_native_command(&mut command, omc_threads);
-    command
+    (command, OmcCommandKind::Native)
 }
 
 fn build_docker_omc_interactive_command(
@@ -346,6 +363,47 @@ fn apply_omc_thread_env_to_native_command(command: &mut Command, omc_threads: us
     command.env("MKL_NUM_THREADS", &threads);
     command.env("NUMEXPR_NUM_THREADS", &threads);
 }
+
+#[cfg(unix)]
+fn configure_native_omc_server_identity(command: &mut Command, work_dir: &Path) -> Result<()> {
+    if !native_omc_server_must_drop_root(&command_stdout("id", &["-u"])) {
+        return Ok(());
+    }
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+
+    // OpenModelica refuses to expose the unauthenticated server interface as
+    // root. The CI container itself runs as root, so only the OMC server child
+    // is dropped to nobody/nogroup while the Rust gate remains unchanged.
+    std::fs::set_permissions(work_dir, std::fs::Permissions::from_mode(0o777)).with_context(
+        || {
+            format!(
+                "failed to make OMC session work dir writable by unprivileged user '{}'",
+                work_dir.display()
+            )
+        },
+    )?;
+    command.uid(OMC_SERVER_UID);
+    command.gid(OMC_SERVER_GID);
+    command.env("HOME", work_dir);
+    command.env("USER", "nobody");
+    command.env("LOGNAME", "nobody");
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn configure_native_omc_server_identity(_command: &mut Command, _work_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn native_omc_server_must_drop_root(uid_text: &str) -> bool {
+    uid_text.trim() == "0"
+}
+
+#[cfg(unix)]
+const OMC_SERVER_UID: u32 = 65_534;
+#[cfg(unix)]
+const OMC_SERVER_GID: u32 = 65_534;
 
 fn docker_user_arg() -> String {
     format!(
@@ -619,5 +677,12 @@ end SimulationResult;"#;
         )
         .expect("fallback port file should be found");
         assert_eq!(found, port_file);
+    }
+
+    #[test]
+    fn native_omc_server_identity_drop_is_root_only() {
+        assert!(native_omc_server_must_drop_root("0\n"));
+        assert!(!native_omc_server_must_drop_root("1001"));
+        assert!(!native_omc_server_must_drop_root(""));
     }
 }
