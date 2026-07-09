@@ -7,8 +7,8 @@ use std::process::Command;
 use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
-    TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
+    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetFileRenderContext, TargetManifest,
+    TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     validate_dae_target_capabilities,
 };
 #[cfg(feature = "scheduled-sim")]
@@ -284,9 +284,14 @@ fn render_manifest_files(
             .render(result, &file.path, model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
-        let content = renderer
-            .render(result, template.as_ref(), model_identifier)
-            .with_context(|| format!("Render target template '{}'", file.template))?;
+        let content = render_manifest_template(
+            result,
+            renderer,
+            file.render_context,
+            template.as_ref(),
+            model_identifier,
+        )
+        .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
             content,
@@ -313,9 +318,36 @@ fn render_raw_template(
     let template =
         std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
     let model_identifier = model.replace('.', "_");
-    result
-        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
-        .with_context(|| format!("Render raw template: {target}"))
+    match raw_template_render_context(&template)? {
+        Some(TargetFileRenderContext::FmiModelDescription) => result
+            .render_fmi_model_description_template_str_with_name(&template, &model_identifier)
+            .with_context(|| format!("Render raw FMI modelDescription template: {target}")),
+        None => result
+            .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
+            .with_context(|| format!("Render raw template: {target}")),
+    }
+}
+
+fn raw_template_render_context(template: &str) -> Result<Option<TargetFileRenderContext>> {
+    for line in template.lines().take(8) {
+        let comment = line
+            .trim()
+            .strip_prefix("{#")
+            .and_then(|line| line.strip_suffix("#}"))
+            .map(str::trim)
+            .map(|line| line.trim_start_matches('-').trim_end_matches('-').trim());
+        let Some(comment) = comment else {
+            continue;
+        };
+        let Some(value) = comment.strip_prefix("rumoca-render-context:") else {
+            continue;
+        };
+        return match value.trim() {
+            "fmi-model-description" => Ok(Some(TargetFileRenderContext::FmiModelDescription)),
+            other => bail!("unknown raw template render context '{other}'"),
+        };
+    }
+    Ok(None)
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -626,9 +658,14 @@ fn write_manifest_file(
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = renderer
-        .render(result, template.as_ref(), model_identifier)
-        .with_context(|| format!("Render target template '{}'", file.template))?;
+    let rendered = render_manifest_template(
+        result,
+        renderer,
+        file.render_context,
+        template.as_ref(),
+        model_identifier,
+    )
+    .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
     eprintln!("  wrote {}", output_path.display());
@@ -678,6 +715,21 @@ fn resolve_manifest_renderer(
         return Ok(ManifestRenderer::GalecC(export));
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
+}
+
+fn render_manifest_template(
+    result: &CompilationResult,
+    renderer: &ManifestRenderer,
+    context: Option<TargetFileRenderContext>,
+    template: &str,
+    model_identifier: &str,
+) -> Result<String> {
+    match context {
+        Some(TargetFileRenderContext::FmiModelDescription) => result
+            .render_fmi_model_description_template_str_with_name(template, model_identifier)
+            .map_err(Into::into),
+        None => renderer.render(result, template, model_identifier),
+    }
 }
 
 impl ManifestRenderer {

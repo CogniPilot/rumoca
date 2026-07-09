@@ -33,6 +33,9 @@ mod convert;
 mod dae_lowering;
 mod equation_conversion;
 mod errors;
+mod fmi_metadata_values;
+#[cfg(test)]
+mod fmi_metadata_values_tests;
 mod fold_start_values;
 mod initial;
 mod inline_hidden_component_algebraics;
@@ -91,7 +94,8 @@ use when_conversion::convert_when_clause;
 pub use balance::{BalanceError, balance, balance_detail, equations_unknowns, is_balanced};
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
-    prepare_dae_for_codegen, scalarize_phantom_vector_equations,
+    prepare_dae_for_codegen, prepare_dae_for_fmi_model_description,
+    scalarize_phantom_vector_equations,
 };
 pub use errors::{ToDaeError, ToDaeResult};
 // Re-export moved functions so sibling modules can still use `super::`.

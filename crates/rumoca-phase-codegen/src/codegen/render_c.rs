@@ -83,7 +83,15 @@ pub(super) fn render_expr_at_index_function(
         && let Ok(subs) = get_field(&var_ref, "subscripts")
         && subs.len().unwrap_or(0) == 0
     {
-        let base = render_expression(&expr, &cfg)?;
+        let raw_name = var_ref_base_name(&var_ref);
+        if raw_name.is_empty() {
+            return render_expression(&expr, &cfg);
+        }
+        let indexed_ref = format!("{raw_name}[{idx}]");
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
+            return Ok(symbol);
+        }
+        let base = super::emitted_symbol(&raw_name, &cfg)?;
         return Ok(format!("{}_{}", base, idx));
     }
 
@@ -1448,17 +1456,10 @@ fn try_render_indexed_var_ref(
         return no_render_match();
     }
 
-    let Some(raw_name) = get_field(var_ref, "name")
-        .ok()
-        .map(|n| {
-            get_field(&n, "0")
-                .map(|v| super::value_to_string(&v))
-                .unwrap_or_else(|_| super::value_to_string(&n))
-        })
-        .filter(|name| !name.is_empty())
-    else {
+    let raw_name = var_ref_base_name(var_ref);
+    if raw_name.is_empty() {
         return no_render_match();
-    };
+    }
 
     if cfg.subscript_underscore {
         let indexed_ref = format!("{raw_name}[{index}]");
@@ -1867,7 +1868,24 @@ fn var_ref_base_name(var_ref: &Value) -> String {
     let Ok(name) = get_field(var_ref, "name") else {
         return String::new();
     };
-    render_serialized_name(&name)
+    serialized_name_leaf(&name).unwrap_or_else(|| render_serialized_name(&name))
+}
+
+fn serialized_name_leaf(value: &Value) -> Option<String> {
+    if let Some(name) = value.as_str() {
+        return Some(name.to_string());
+    }
+    if let Ok(name) = get_field(value, "name")
+        && let Some(name) = serialized_name_leaf(&name)
+    {
+        return Some(name);
+    }
+    if let Ok(name) = get_field(value, "0")
+        && let Some(name) = serialized_name_leaf(&name)
+    {
+        return Some(name);
+    }
+    None
 }
 
 fn parse_indexed_ref(name: &str) -> Option<(String, usize)> {

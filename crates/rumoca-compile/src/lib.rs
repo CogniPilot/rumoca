@@ -136,21 +136,22 @@ pub mod workspace {
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
-        render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
-        render_dae_template_with_json_and_name, render_dae_template_with_name,
-        render_flat_template_with_name, render_solve_template_with_name,
+        CodegenError, SolveTemplateRenderer, dae_for_fmi_model_description_context,
+        dae_for_solve_template_context, dae_to_template_json, render_ast_template_with_name,
+        render_dae_template, render_dae_template_with_json, render_dae_template_with_json_and_name,
+        render_dae_template_with_name, render_flat_template_with_name,
+        render_solve_template_with_name,
     };
     pub mod targets {
         pub use crate::codegen_target::{
             AssetBundle, BuiltinTargetDescriptor, ChecksumNeed, RenderedTargetFile,
             TargetBuildKind, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
-            TargetFeatureSupport, TargetFile, TargetManifest, TargetTemplateIr,
-            TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability,
-            builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir,
-            ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files,
-            safe_target_join, target_ir_is_dae_renderable, target_manifest_ir,
-            validate_dae_target_capabilities,
+            TargetFeatureSupport, TargetFile, TargetFileRenderContext, TargetManifest,
+            TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability,
+            TensorLayoutCapability, builtin_target_compatibility_matrix,
+            builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
+            parse_target_manifest, render_dae_target_files, safe_target_join,
+            target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
         };
     }
 }

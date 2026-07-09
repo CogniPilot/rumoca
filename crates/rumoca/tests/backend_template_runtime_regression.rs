@@ -679,6 +679,16 @@ fn render_fmi_solve_template(
     template: &str,
     model_name: &str,
 ) -> String {
+    if template == "modelDescription.xml.jinja" {
+        return compiled
+            .render_fmi_model_description_template_str_with_name(
+                templates::builtin_template_source(target, template).unwrap(),
+                model_name,
+            )
+            .unwrap_or_else(|err| {
+                panic!("render {target}:{template} from FMI metadata DAE: {err}")
+            });
+    }
     compiled
         .render_template_str_with_name_and_ir(
             templates::builtin_template_source(target, template).unwrap(),

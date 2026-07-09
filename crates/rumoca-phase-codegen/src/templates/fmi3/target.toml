@@ -11,6 +11,7 @@ Run ./build.sh to compile and package the .fmu"""
 [[files]]
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
+render_context = "fmi-model-description"
 
 [[files]]
 path = "sources/{{ model_name }}.c"

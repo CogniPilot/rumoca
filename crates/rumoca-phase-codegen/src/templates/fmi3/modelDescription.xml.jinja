@@ -1,3 +1,4 @@
+{#- rumoca-render-context: fmi-model-description -#}
 {#- FMI 3.0 Model Exchange modelDescription.xml template. -#}
 {#- Generates FMI metadata from DAE metadata and Solve IR runtime rows. -#}
 {#- Reference: FMI 3.0 specification, §§2.4, 3.2 -#}
@@ -49,13 +50,16 @@
 {%- macro xml_escape(s) -%}
 {{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
 {%- endmacro -%}
+{%- macro float64_attr(attr_name, expr, element_count) -%}
+{% if expr is not none %} {{ attr_name }}="{% if element_count is not none %}{% for i in range(element_count) %}{{ render_expr_at_index(expr, i + 1, cfg) }}{% if not loop.last %} {% endif %}{% endfor %}{% else %}{{ render_expr(expr, cfg) }}{% endif %}"{% endif %}
+{%- endmacro -%}
 {#- Macro: emit a scalar <Float64> variable element (FMI 3.0 style) -#}
 {%- macro float64_var(name, vr, causality, variability, var, initial) -%}
-    <Float64 name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}{% if var.start is not none %} start="{{ render_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}/>
+    <Float64 name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}{{ float64_attr("start", var.start, none) }}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{{ float64_attr("nominal", var.nominal, none) }}{{ float64_attr("min", var.min, none) }}{{ float64_attr("max", var.max, none) }}/>
 {%- endmacro -%}
 {#- Macro: emit an array <Float64> variable with <Dimension> children (FMI 3.0 §2.4.3) -#}
 {%- macro float64_array_var(name, vr, causality, variability, var, initial) -%}
-    <Float64 name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}{% if var.start is not none %} start="{% for i in range(var.dims | product) %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% if not loop.last %} {% endif %}{% endfor %}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}>
+    <Float64 name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}{{ float64_attr("start", var.start, var.dims | product) }}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{{ float64_attr("nominal", var.nominal, var.dims | product) }}{{ float64_attr("min", var.min, var.dims | product) }}{{ float64_attr("max", var.max, var.dims | product) }}>
 {% for d in var.dims %}
         <Dimension start="{{ d }}"/>
 {% endfor %}    </Float64>

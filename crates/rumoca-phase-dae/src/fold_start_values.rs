@@ -18,40 +18,7 @@ use std::collections::HashMap;
 pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeError> {
     // Phase 1: build a name→value map from constants, enum ordinals, and
     // parameter start expressions (fixed-point iteration).
-    let mut values: HashMap<String, ConstValue> = HashMap::new();
-
-    // Seed with enum literal ordinals
-    for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
-        values.insert(name.clone(), ConstValue::Real(*ordinal as f64));
-    }
-
-    // Collect all named start bindings (constants, parameters, inputs, states,
-    // discrete reals, discrete valued, algebraics, outputs)
-    let mut bindings = Vec::new();
-    StartBindingCollector {
-        bindings: &mut bindings,
-    }
-    .visit_dae(dae);
-
-    // Fixed-point iteration: resolve chains like A = B, B = 3.14
-    let max_passes = bindings.len().max(1) * 2;
-    for _ in 0..max_passes {
-        let mut changed = false;
-        for (name, expr) in &bindings {
-            if values.contains_key(name.as_str()) {
-                continue;
-            }
-            if let Some(value) = eval_start_const_expr(expr, &values)
-                && value.is_finite()
-            {
-                values.insert(name.to_string(), value);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let values = collect_foldable_start_values(dae);
 
     // Set of parameter names: a parameter start expression that references
     // another parameter stays symbolic (see below), matching the bare-alias
@@ -154,6 +121,40 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeEr
         }
     }
     Ok(())
+}
+
+fn collect_foldable_start_values(dae: &Dae) -> HashMap<String, ConstValue> {
+    let mut values: HashMap<String, ConstValue> = HashMap::new();
+
+    for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
+        values.insert(name.clone(), ConstValue::Real(*ordinal as f64));
+    }
+
+    let mut bindings = Vec::new();
+    StartBindingCollector {
+        bindings: &mut bindings,
+    }
+    .visit_dae(dae);
+
+    let max_passes = bindings.len().max(1) * 2;
+    for _ in 0..max_passes {
+        let mut changed = false;
+        for (name, expr) in &bindings {
+            if values.contains_key(name.as_str()) {
+                continue;
+            }
+            if let Some(value) = eval_start_const_expr(expr, &values)
+                && value.is_finite()
+            {
+                values.insert(name.to_string(), value);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    values
 }
 
 fn folded_start_span(var: &Variable, start: &Expression) -> Result<Span, ToDaeError> {

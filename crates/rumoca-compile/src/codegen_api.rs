@@ -19,6 +19,20 @@ pub fn dae_for_solve_template_context(dae_model: &dae::Dae) -> Result<dae::Dae, 
         .map_err(|err| CodegenError::template(format!("solve-template DAE preparation: {err}")))
 }
 
+pub fn dae_for_fmi_model_description_context(
+    dae_model: &dae::Dae,
+) -> Result<dae::Dae, CodegenError> {
+    let prepared = dae_for_solve_template_context(dae_model)?;
+    rumoca_phase_dae::prepare_dae_for_fmi_model_description(&prepared)
+        .map(|prepared| prepared.into_dae())
+        .map_err(|err| {
+            CodegenError::dae_preparation_failed(
+                format!("FMI modelDescription DAE preparation: {err}"),
+                err.source_span(),
+            )
+        })
+}
+
 pub fn render_dae_template(dae_model: &dae::Dae, template: &str) -> Result<String, CodegenError> {
     rumoca_phase_codegen::render_template(dae_model, template)
 }

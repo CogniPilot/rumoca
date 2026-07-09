@@ -107,6 +107,7 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
+    pub render_context: Option<TargetFileRenderContext>,
     pub mode: Option<String>,
     /// Stable logical identity of this rendered file within the target
     /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
@@ -121,6 +122,12 @@ pub struct TargetFile {
     /// entry fails loudly at render — declaration and use cannot drift.
     #[serde(default)]
     pub checksums: Vec<ChecksumNeed>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetFileRenderContext {
+    FmiModelDescription,
 }
 
 /// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
@@ -967,8 +974,8 @@ fn is_integer_literal(expr: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        TargetFeatureSupport, TargetManifest, TargetTemplateIr, TensorCapability,
-        TensorLayoutCapability, builtin_target_compatibility_matrix,
+        TargetFeatureSupport, TargetFileRenderContext, TargetManifest, TargetTemplateIr,
+        TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
         ensure_target_has_rendered_files, parse_target_manifest, safe_target_join, templates,
         validate_dae_target_capabilities, validate_target_manifest,
     };
@@ -1079,6 +1086,28 @@ host_callbacks = false
         assert_eq!(capabilities.reverse_ad, Some(false));
         assert_eq!(capabilities.dynamic_control_flow, Some(true));
         assert_eq!(capabilities.host_callbacks, Some(false));
+    }
+
+    #[test]
+    fn target_manifest_parses_file_render_context() {
+        let manifest = super::parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "custom"
+
+[[files]]
+path = "modelDescription.xml"
+template = "modelDescription.xml.jinja"
+render_context = "fmi-model-description"
+"#,
+        )
+        .expect("parse target manifest with file render context");
+
+        assert_eq!(
+            manifest.files[0].render_context,
+            Some(TargetFileRenderContext::FmiModelDescription)
+        );
     }
 
     #[test]
