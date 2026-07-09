@@ -496,9 +496,9 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     # The root-example MSL 4.1 baseline gate covers 575 models and also runs
-    # OMC parity. Keep enough slack for slower shared runners plus artifact
-    # upload/cleanup.
-    timeout-minutes: 180
+    # cold OMC parity references for Rumoca-sim-ok models. Keep this aligned
+    # with the in-process OMC stage watchdog plus build/artifact slack.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
         with:
