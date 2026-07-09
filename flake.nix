@@ -120,6 +120,16 @@
             cp target/release/rumoca-msl-tools $out/bin/rumoca-msl-tools
           '';
         });
+        templateRuntimeShell = extraPackages: craneLib.devShell {
+          inputsFrom = [ rumoca ];
+          packages = extraPackages;
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+            pkgs.gfortran.cc.lib
+            pkgs.stdenv.cc.cc.lib
+            pkgs.zlib
+          ];
+        };
         # xtask itself is NOT built here: after the light-xtask split it carries no
         # compiler deps and compiles per-job in seconds, so build-once buys nothing.
         # The MSL merge and ModelicaTest jobs run reporting through the
@@ -164,5 +174,10 @@
             pkgs.zlib
           ];
         };
+        devShells.ci-template-core = templateRuntimeShell [];
+        devShells.ci-template-python = templateRuntimeShell [ ciPython ];
+        devShells.ci-template-julia = templateRuntimeShell (
+          pkgs.lib.optionals pkgs.stdenv.isLinux [ ciJulia ]
+        );
       });
 }

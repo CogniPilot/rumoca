@@ -389,9 +389,35 @@ jobs:
         run: cargo xtask verify binaries
 
   template-runtime-tests:
-    name: Template Runtime Tests
+    name: Template Runtime (${{ matrix.backend }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: render
+            nix_shell: ci-template-core
+          - backend: native
+            nix_shell: ci-template-core
+          - backend: embedded-c
+            nix_shell: ci-template-core
+          - backend: fmi
+            nix_shell: ci-template-core
+          - backend: casadi
+            nix_shell: ci-template-python
+          - backend: sympy
+            nix_shell: ci-template-python
+          - backend: symforce
+            nix_shell: ci-template-python
+          - backend: onnx
+            nix_shell: ci-template-python
+          - backend: jax
+            nix_shell: ci-template-python
+          - backend: julia
+            nix_shell: ci-template-julia
     env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
       JULIA_DEPOT_PATH: "${{ github.workspace }}/target/julia-depot:"
       JULIA_PKG_PRECOMPILE_AUTO: '0'
       JULIA_PROJECT: ${{ github.workspace }}/infra/julia
@@ -418,7 +444,29 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: false
 
+      - name: Reclaim runner disk before template runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp /home/runner/actions-runner/cached 2>/dev/null || true
+          du -sh target target/debug ~/.cargo ~/.rustup /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+
+          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+
+          echo "== disk after cleanup =="
+          df -h . / /tmp /home/runner/actions-runner/cached 2>/dev/null || true
+          du -sh target target/debug ~/.cargo ~/.rustup /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+
       - name: Julia template runtime cache
+        if: matrix.backend == 'julia'
         uses: actions/cache@v4
         with:
           path: target/julia-depot
@@ -427,29 +475,48 @@ jobs:
             ${{ runner.os }}-julia-template-
 
       - name: Prepare Python template runtime dependencies
+        if: matrix.nix_shell == 'ci-template-python'
+        env:
+          TEMPLATE_BACKEND: ${{ matrix.backend }}
         run: |
-          nix develop --command bash <<'EOF'
+          nix develop .#${{ matrix.nix_shell }} --command bash <<'EOF'
           set -euo pipefail
-          python -m venv target/template-runtime-venv
-          . target/template-runtime-venv/bin/activate
+          venv="target/template-runtime-venv-${TEMPLATE_BACKEND}"
+          python -m venv "$venv"
+          . "$venv/bin/activate"
           python -m pip install --upgrade pip
-          python -m pip install -r infra/python/core-requirements.txt
-          python - <<'PY'
-          import casadi
-          import diffrax
-          import jax
-          import numpy
-          import onnx
-          import onnxruntime
-          import symforce
-          import sympy
-          print("python template runtime deps ok")
-          PY
+          case "$TEMPLATE_BACKEND" in
+            casadi)
+              python -m pip install casadi==3.7.2 numpy==2.4.3
+              python -c 'import casadi, numpy; print("casadi template deps ok")'
+              ;;
+            sympy)
+              python -m pip install sympy==1.14.0
+              python -c 'import sympy; print("sympy template deps ok")'
+              ;;
+            symforce)
+              python -m pip install numpy==2.4.3 scipy==1.17.1 symforce==0.11.0 sympy==1.14.0
+              python -c 'import symforce; print("symforce template deps ok")'
+              ;;
+            onnx)
+              python -m pip install numpy==2.4.3 onnx==1.20.1 onnxruntime==1.24.3
+              python -c 'import numpy, onnx, onnxruntime; print("onnx template deps ok")'
+              ;;
+            jax)
+              python -m pip install diffrax==0.7.2 jax==0.9.2 numpy==2.4.3 scipy==1.17.1
+              python -c 'import diffrax, jax, numpy; print("jax template deps ok")'
+              ;;
+            *)
+              echo "::error::unexpected Python template backend: $TEMPLATE_BACKEND"
+              exit 1
+              ;;
+          esac
           EOF
 
       - name: Prepare Julia template runtime dependencies
+        if: matrix.backend == 'julia'
         run: |
-          nix develop --command bash <<'EOF'
+          nix develop .#${{ matrix.nix_shell }} --command bash <<'EOF'
           set -euo pipefail
           julia --project=infra/julia <<'JL'
           using Pkg
@@ -460,13 +527,18 @@ jobs:
           EOF
 
       - name: Run template runtime checks
+        env:
+          TEMPLATE_BACKEND: ${{ matrix.backend }}
         run: |
-          nix develop --command bash <<'EOF'
+          nix develop .#${{ matrix.nix_shell }} --command bash <<'EOF'
           set -euo pipefail
           mkdir -p target/template-runtimes
           touch target/template-runtimes/strict
-          . target/template-runtime-venv/bin/activate
-          cargo xtask verify template-runtimes
+          venv="target/template-runtime-venv-${TEMPLATE_BACKEND}"
+          if [ -d "$venv" ]; then
+            . "$venv/bin/activate"
+          fi
+          cargo xtask verify template-runtimes --backend "$TEMPLATE_BACKEND"
           EOF
 
   editor-msl-smoke:
