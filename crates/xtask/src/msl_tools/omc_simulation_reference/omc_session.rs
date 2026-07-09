@@ -396,6 +396,7 @@ fn configure_native_omc_server_identity(_command: &mut Command, _work_dir: &Path
     Ok(())
 }
 
+#[cfg(unix)]
 fn native_omc_server_must_drop_root(uid_text: &str) -> bool {
     uid_text.trim() == "0"
 }
@@ -679,6 +680,7 @@ end SimulationResult;"#;
         assert_eq!(found, port_file);
     }
 
+    #[cfg(unix)]
     #[test]
     fn native_omc_server_identity_drop_is_root_only() {
         assert!(native_omc_server_must_drop_root("0\n"));
