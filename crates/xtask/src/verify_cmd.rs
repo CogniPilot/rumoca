@@ -599,6 +599,8 @@ fn run_template_runtime_checks(root: &Path) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("test")
         .arg("--verbose")
+        .arg("--jobs")
+        .arg("1")
         .arg("-p")
         .arg("rumoca")
         .arg("--features")
