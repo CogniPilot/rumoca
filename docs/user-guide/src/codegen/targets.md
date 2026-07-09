@@ -22,7 +22,7 @@ Built-in targets include:
 | `julia-mtk` | dae | symbolic | ModelingToolkit.jl |
 | `symforce` | dae | symbolic | SymForce, with native AD support |
 | `onnx` | dae | symbolic | ONNX graph |
-| `rust-solve` / `c-solve` / `embedded-c` | solve | compiled | Self-contained simulation kernels |
+| `rust-fixed-solve` / `rust-solve` / `c-solve` / `embedded-c` | solve | compiled | Self-contained simulation kernels |
 | `cuda-c` / `cuda-nvrtc-solve-jit` | solve | compiled/JIT | GPU kernels |
 | `wgsl-solve` | solve | compiled | Experimental WebGPU kernels for browser runs |
 | `cranelift-solve-jit` / `mlir` | solve | JIT/compiled | In-process execution backends |

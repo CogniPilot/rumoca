@@ -378,6 +378,71 @@ fn test_rust_solve_builtin_target_syntax_checks_when_rustc_available() {
 }
 
 #[test]
+fn test_rust_fixed_solve_builtin_target_renders_fixed_derivative_kernel() {
+    let problem = solve_problem_with_one_by_one_matmul_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-solve", "model_fixed_solve.rs.jinja"),
+        "TensorDemo",
+    )
+    .expect("rust-fixed-solve template should render");
+
+    assert!(rendered.contains("pub type State = [Scalar; Y_LEN];"));
+    assert!(rendered.contains("pub type Parameters = [Scalar; P_LEN];"));
+    assert!(rendered.contains("pub fn derivative_rhs_into"));
+    assert!(rendered.contains("out[0] ="));
+    assert!(!rendered.contains("Vec<"));
+    assert!(!rendered.contains("to_vec"));
+}
+
+#[test]
+fn test_rust_fixed_solve_builtin_target_syntax_checks_when_rustc_available() {
+    if std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping rust-fixed-solve syntax smoke: rustc not available");
+        return;
+    }
+
+    let problem = solve_problem_with_one_by_one_matmul_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let source = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-solve", "model_fixed_solve.rs.jinja"),
+        "TensorDemo",
+    )
+    .expect("rust-fixed-solve source should render");
+    let dir = std::env::temp_dir().join(format!(
+        "rumoca_rust_fixed_solve_smoke_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create rust-fixed-solve smoke dir");
+    let source_path = dir.join("TensorDemo_fixed_solve.rs");
+    std::fs::write(&source_path, source).expect("write generated rust-fixed-solve source");
+
+    let output = std::process::Command::new("rustc")
+        .arg("--crate-type")
+        .arg("lib")
+        .arg(&source_path)
+        .current_dir(&dir)
+        .output()
+        .expect("run rustc syntax check");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.status.success(),
+        "generated rust-fixed-solve source must pass rustc syntax check\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn test_mlir_builtin_target_renders_tensor_scalar_fallback_rows() {
     let problem = solve_problem_with_one_by_one_matmul_derivative();
     let artifacts = solve::SolveArtifacts::default();

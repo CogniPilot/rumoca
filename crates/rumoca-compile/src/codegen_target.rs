@@ -1150,6 +1150,16 @@ host_callbacks = false
         assert_eq!(rust_solve.readiness_level, Some(2));
         assert_eq!(rust_solve.matmul, TargetFeatureSupport::Scalar);
 
+        let rust_fixed_solve = matrix
+            .iter()
+            .find(|entry| entry.id == "rust-fixed-solve")
+            .expect("rust-fixed-solve target should be listed");
+        assert_eq!(rust_fixed_solve.readiness_level, Some(2));
+        assert_eq!(rust_fixed_solve.deployment_class.as_deref(), Some("cpu"));
+        assert_eq!(rust_fixed_solve.execution_mode.as_deref(), Some("compiled"));
+        assert_eq!(rust_fixed_solve.sparse, TargetFeatureSupport::Unsupported);
+        assert_eq!(rust_fixed_solve.dtypes, vec!["f64"]);
+
         let cuda_c = matrix
             .iter()
             .find(|entry| entry.id == "cuda-c")

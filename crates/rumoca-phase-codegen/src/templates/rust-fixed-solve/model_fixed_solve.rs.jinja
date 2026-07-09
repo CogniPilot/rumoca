@@ -1,0 +1,38 @@
+#![allow(non_snake_case, unused_parens)]
+
+pub type Scalar = f64;
+
+pub const Y_LEN: usize = {{ solve.layout.y_scalars }};
+pub const P_LEN: usize = {{ solve.layout.p_scalars }};
+pub const DERIVATIVE_LEN: usize = {{ solve_blocks.continuous.derivative_rhs.output_count }};
+
+pub type State = [Scalar; Y_LEN];
+pub type Parameters = [Scalar; P_LEN];
+pub type Derivative = [Scalar; DERIVATIVE_LEN];
+
+#[inline]
+pub fn derivative_rhs(time: Scalar, y: &State, p: &Parameters) -> Derivative {
+    let mut out = [0.0; DERIVATIVE_LEN];
+    derivative_rhs_into(time, y, p, &mut out);
+    out
+}
+
+#[inline]
+pub fn derivative_rhs_into(time: Scalar, y: &State, p: &Parameters, out: &mut Derivative) {
+    let _ = time;
+    let _ = y;
+    let _ = p;
+{%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
+{%- set output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices %}
+    out.fill(0.0);
+{%- if solve_blocks.continuous.derivative_rhs.scalar_programs_use_linear_solve_component %}
+    compile_error!("rust-fixed-solve does not support scalar-fallback LinSolve; use rust-solve or add a native fixed-size linsolve target");
+{%- else %}
+{%- set solve_body = render_solve_block_rust(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}", output_indices) %}
+{%- if solve_body %}
+{{ solve_body }}
+{%- else %}
+    let _ = out;
+{%- endif %}
+{%- endif %}
+}
