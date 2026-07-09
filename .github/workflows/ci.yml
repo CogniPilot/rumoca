@@ -490,6 +490,11 @@ jobs:
   msl-quality-gate:
     name: MSL Quality Gate
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/climamind/rumoca-dev:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     # The root-example MSL 4.1 baseline gate covers 575 models and also runs
     # OMC parity. Keep enough slack for slower shared runners plus artifact
     # upload/cleanup.
@@ -503,18 +508,19 @@ jobs:
       - name: Install system dependencies
         run: scripts/ci/apt-install.sh libudev-dev
 
-      - name: Install Rust
+      - name: Verify container toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustc --version
+          cargo --version
+          omc --version
 
       - name: Cache cargo
         uses: actions/cache@v5
         continue-on-error: true
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            /opt/rumoca/cargo/registry
+            /opt/rumoca/cargo/git
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
@@ -542,36 +548,6 @@ jobs:
           rm target/msl/msl-v4.1.0.zip
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
-
-      # Track the latest OpenModelica from the official Ubuntu apt repository
-      # (same channel developers install locally) instead of pinning .deb
-      # versions. The quality-gate context check compares the *numeric release*
-      # only (1.27.0~dev.beta.1 ≡ 1.27.0), so channel rebuilds don't trip the
-      # gate; an actual release bump fails loudly until the baseline is
-      # re-promoted from a CI artifact of the new version.
-      - name: Install OpenModelica
-        shell: bash
-        run: |
-          set -euo pipefail
-          omc_channel="stable"
-          scripts/ci/apt-install.sh --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            clang \
-            cmake \
-            curl \
-            gnupg \
-            libexpat1-dev \
-            liblapack-dev \
-            lsb-release \
-            unzip \
-            zip
-          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
-            | sudo tee /etc/apt/sources.list.d/openmodelica.list
-          scripts/ci/apt-install.sh --no-install-recommends omc
-          omc --version
 
       - name: Clean stale MSL results
         shell: bash
