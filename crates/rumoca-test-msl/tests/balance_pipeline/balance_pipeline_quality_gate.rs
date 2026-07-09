@@ -51,7 +51,7 @@ pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 120;
 /// `simulate()` call. Keep it aligned with the outer parity-stage budget so
 /// slower local or shared runners can finish a progressing reference batch
 /// without weakening any model-level timeout or parity quality gate.
-pub(super) const OMC_SIM_REFERENCE_STAGE_TIMEOUT_SECONDS: u64 = 7200;
+pub(super) const OMC_SIM_REFERENCE_STAGE_TIMEOUT_SECONDS: u64 = 10_800;
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;

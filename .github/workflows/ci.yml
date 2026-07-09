@@ -565,6 +565,8 @@ jobs:
           --sim-parallelism 3
           --sim-worker-memory-mb 2048
           --sim-total-memory-mb 6144
+          --omc-parity-workers 4
+          --omc-sim-reference-batch-timeout-secs 120
           --monitor-interval-secs 10
 
       - name: Generate MSL compatibility report

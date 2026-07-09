@@ -486,7 +486,8 @@ fn last_stage_seconds(report: &MslParityTimingReport) -> f64 {
 
 fn run_simulation_parity_stages(summary: &MslSummary, report: &mut MslParityTimingReport) {
     let parity_start = Instant::now();
-    let _parity_watchdog = StageAbortWatchdog::new("parity_stage", 7200);
+    let _parity_watchdog =
+        StageAbortWatchdog::new("parity_stage", OMC_SIM_REFERENCE_STAGE_TIMEOUT_SECONDS);
     println!("MSL parity stage: ensuring OMC references + trace comparison...");
     run_timed_parity_stage_or_panic(
         report,
