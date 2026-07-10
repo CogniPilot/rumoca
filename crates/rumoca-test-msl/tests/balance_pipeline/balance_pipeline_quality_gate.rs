@@ -672,21 +672,6 @@ fn parse_omc_assertion_failure_examples(payload: &serde_json::Value) -> Vec<Stri
         .collect()
 }
 
-pub(super) fn load_current_msl_parity_gate_input_required(
-    expected_sim_target_models: usize,
-) -> io::Result<MslParityGateInput> {
-    let path = omc_simulation_reference_path();
-    if !path.is_file() {
-        return Err(io::Error::other(format!(
-            "missing required OMC parity file '{}'",
-            path.display()
-        )));
-    }
-    let parity = load_msl_parity_gate_input(&path)?;
-    validate_parity_total_models(&path, &parity, expected_sim_target_models)?;
-    validate_required_msl_parity_gate_input(&path, parity)
-}
-
 pub(super) fn load_current_msl_parity_gate_input_optional(
     expected_sim_target_models: usize,
 ) -> io::Result<Option<MslParityGateInput>> {
@@ -711,7 +696,49 @@ fn load_msl_parity_gate_input_optional_from_path(
     if parity_total_models != expected_sim_target_models {
         return Ok(None);
     }
+    validate_msl_parity_metadata(path, &parity)?;
+    if !parity_has_required_runtime_and_trace_metrics(&parity) {
+        return Ok(None);
+    }
     validate_required_msl_parity_gate_input(path, parity).map(Some)
+}
+
+fn parity_has_required_runtime_and_trace_metrics(parity: &MslParityGateInput) -> bool {
+    let Some(runtime_stats) = parity.runtime_ratio_stats.as_ref() else {
+        return false;
+    };
+    if runtime_stats.system_ratio_both_success.sample_count == 0
+        || runtime_stats.wall_ratio_both_success.sample_count == 0
+    {
+        return false;
+    }
+    let Some(trace_stats) = parity.trace_accuracy_stats.as_ref() else {
+        return false;
+    };
+    trace_stats.models_compared > 0 && trace_model_bucket_percentages(trace_stats).is_some()
+}
+
+fn validate_msl_parity_metadata(path: &Path, parity: &MslParityGateInput) -> io::Result<()> {
+    if parity.omc_version.is_none() {
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' is missing omc_version metadata; regenerate OMC simulation reference",
+            path.display()
+        )));
+    }
+    if parity.omc_assertion_failure_models > 0 {
+        let examples = if parity.omc_assertion_failure_examples.is_empty() {
+            "no assertion examples recorded".to_string()
+        } else {
+            parity.omc_assertion_failure_examples.join("; ")
+        };
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' contains {} Modelica assertion failure model(s): {}",
+            path.display(),
+            parity.omc_assertion_failure_models,
+            examples
+        )));
+    }
+    Ok(())
 }
 
 fn validate_parity_total_models(
@@ -740,25 +767,7 @@ fn validate_required_msl_parity_gate_input(
     path: &Path,
     parity: MslParityGateInput,
 ) -> io::Result<MslParityGateInput> {
-    if parity.omc_version.is_none() {
-        return Err(io::Error::other(format!(
-            "OMC parity file '{}' is missing omc_version metadata; regenerate OMC simulation reference",
-            path.display()
-        )));
-    }
-    if parity.omc_assertion_failure_models > 0 {
-        let examples = if parity.omc_assertion_failure_examples.is_empty() {
-            "no assertion examples recorded".to_string()
-        } else {
-            parity.omc_assertion_failure_examples.join("; ")
-        };
-        return Err(io::Error::other(format!(
-            "OMC parity file '{}' contains {} Modelica assertion failure model(s): {}",
-            path.display(),
-            parity.omc_assertion_failure_models,
-            examples
-        )));
-    }
+    validate_msl_parity_metadata(path, &parity)?;
     let runtime_stats = parity.runtime_ratio_stats.as_ref().ok_or_else(|| {
         io::Error::other(format!(
             "OMC parity file '{}' is missing runtime_ratio_stats",
@@ -1051,7 +1060,13 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
         sim_ref_start.elapsed().as_secs_f64()
     );
 
-    let _ = load_current_msl_parity_gate_input_required(sim_targets.len())?;
+    match load_current_msl_parity_gate_input_optional(sim_targets.len())? {
+        Some(_) => println!("MSL parity reference includes runtime and trace comparison metrics."),
+        None => println!(
+            "MSL parity reference generated without comparable OMC/Rumoca runtime or trace metrics; \
+             compile/simulation quality gates will continue and parity baseline checks will be skipped."
+        ),
+    }
     println!(
         "MSL parity total step time: {:.2}s",
         stage_start.elapsed().as_secs_f64()

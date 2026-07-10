@@ -1269,6 +1269,40 @@ fn optional_parity_input_treats_target_count_mismatch_as_absent() {
 }
 
 #[test]
+fn optional_parity_input_treats_missing_comparison_metrics_as_absent() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("omc_simulation_reference.json");
+    let mut payload = valid_simulation_parity_payload();
+    payload["runtime_comparison"]["ratio_stats"]["system_ratio_both_success"] =
+        serde_json::Value::Null;
+    payload["runtime_comparison"]["ratio_stats"]["wall_ratio_both_success"] =
+        serde_json::Value::Null;
+    payload["trace_comparison"]["models_compared"] = json!(0);
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&payload).expect("serialize payload"),
+    )
+    .expect("write payload");
+
+    let optional = load_msl_parity_gate_input_optional_from_path(&path, 7)
+        .expect("missing comparison metrics should make optional parity absent");
+    assert!(
+        optional.is_none(),
+        "OMC runs with no comparable OMC/Rumoca samples should not hard-fail optional parity"
+    );
+
+    let required = validate_required_msl_parity_gate_input(
+        &path,
+        load_msl_parity_gate_input(&path).expect("load parity input"),
+    )
+    .expect_err("required parity input must still reject missing comparison metrics");
+    assert!(
+        required.to_string().contains("missing runtime_ratio_stats"),
+        "required parity should explain the missing metrics, got {required}"
+    );
+}
+
+#[test]
 fn simulation_parity_cache_requires_runtime_and_trace_metrics() {
     fn write_payload(path: &Path, payload: &Value) {
         std::fs::write(

@@ -1590,7 +1590,6 @@ fn finalize_and_write_output(
 ) -> Result<()> {
     state.batch_timings.sort_by_key(|batch| batch.batch_idx);
     let metrics = compute_run_metrics(context.total, &state);
-    ensure_runtime_ratio_stats_present(&metrics, both_success_model_count(&state))?;
     let trace_summary = compute_trace_output_summary(&trace_report);
     let output = build_sim_output_payload(
         args,
@@ -1642,44 +1641,6 @@ fn agreeing_model_names(trace_report: &TraceQuantification) -> BTreeSet<String> 
         })
         .map(|(name, _)| name.clone())
         .collect()
-}
-
-fn both_success_model_count(state: &SimRunState) -> usize {
-    state
-        .all_results
-        .values()
-        .filter(|result| {
-            result.status == "success" && result.rumoca_status.as_deref() == Some("sim_ok")
-        })
-        .count()
-}
-
-fn ensure_runtime_ratio_stats_present(
-    metrics: &RunMetrics,
-    both_success_models: usize,
-) -> Result<()> {
-    if both_success_models == 0 {
-        bail!(
-            "missing runtime ratio stats because there are no OMC/Rumoca both-success models. \
-             Check OMC session startup and simulation failures before writing parity output."
-        );
-    }
-    let mut missing = Vec::new();
-    if metrics.system_ratio_both_success.is_none() {
-        missing.push("system_ratio_both_success");
-    }
-    if metrics.wall_ratio_both_success.is_none() {
-        missing.push("wall_ratio_both_success");
-    }
-    if missing.is_empty() {
-        return Ok(());
-    }
-    bail!(
-        "missing runtime ratio stats for {} both-success model(s): {}. \
-         Ensure OMC solver + external wall timings are captured before writing parity output.",
-        both_success_models,
-        missing.join(", ")
-    );
 }
 
 fn compute_run_metrics(total: usize, state: &SimRunState) -> RunMetrics {

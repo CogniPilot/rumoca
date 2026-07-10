@@ -418,6 +418,111 @@ fn compute_runtime_ratio_stats_reports_distribution() {
 }
 
 #[test]
+fn output_payload_keeps_empty_parity_diagnostics_when_omc_has_no_successes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let results_dir = temp.path().join("results");
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir: results_dir.clone(),
+        flat_dir: results_dir.join("omc_flat"),
+        work_dir: results_dir.join("omc_work"),
+        sim_work_dir: results_dir.join("omc_sim_work"),
+        omc_trace_dir: results_dir.join("sim_traces").join("omc"),
+        rumoca_trace_dir: results_dir.join("sim_traces").join("rumoca"),
+    };
+    let args = Args {
+        dry_run: false,
+        batch_size: 1,
+        force: false,
+        workers: 1,
+        omc_threads: 1,
+        batch_timeout_seconds: 120,
+        stop_time: 1.0,
+        use_experiment_stop_time: true,
+        max_models: 0,
+        model_regex: None,
+        balance_results_file: None,
+        results_dir: None,
+        target_models_file: None,
+        trace_exclusions_file: None,
+        rumoca_sim_ok_only: true,
+    };
+    let selection = ModelSelection {
+        names: vec!["Modelica.Blocks.Examples.BooleanNetwork1".to_string()],
+        source_file: temp.path().join("targets.json"),
+        rule: "test".to_string(),
+        selection_seconds: 0.0,
+    };
+    let context = FinalizeContext {
+        omc_version: "OpenModelica 1.27.0~dev".to_string(),
+        git_commit: "test".to_string(),
+        workers: 1,
+        total: 1,
+        n_batches: 1,
+        effective_batch_size: 1,
+        elapsed_seconds: 120.0,
+        cache_key: "test-key".to_string(),
+    };
+    let mut all_results = BTreeMap::new();
+    all_results.insert(
+        "Modelica.Blocks.Examples.BooleanNetwork1".to_string(),
+        SimModelResult {
+            status: "timeout".to_string(),
+            error: Some("omc simulate exceeded 120s budget".to_string()),
+            sim_system_seconds: None,
+            total_system_seconds: None,
+            omc_wall_seconds: Some(120.0),
+            result_file: None,
+            trace_file: None,
+            trace_error: None,
+            rumoca_status: Some("sim_ok".to_string()),
+            rumoca_ic_status: Some("ic_ok".to_string()),
+            rumoca_ic_error: None,
+            rumoca_ic_seconds: Some(0.1),
+            rumoca_sim_seconds: Some(0.2),
+            rumoca_sim_build_seconds: Some(0.05),
+            rumoca_sim_run_seconds: Some(0.15),
+            rumoca_sim_wall_seconds: Some(0.3),
+            rumoca_trace_file: Some("sim_traces/rumoca/A.json".to_string()),
+            rumoca_trace_error: None,
+        },
+    );
+    let state = SimRunState {
+        all_results,
+        batch_timings: Vec::new(),
+        pending_models: Vec::new(),
+    };
+    let metrics = compute_run_metrics(context.total, &state);
+    let trace_summary = compute_trace_output_summary(&TraceQuantification::default());
+    let payload = output::build_sim_output_payload(
+        &args,
+        &paths,
+        &selection,
+        &context,
+        &metrics,
+        &trace_summary,
+        &state,
+    );
+
+    assert_eq!(payload["sim_successful"], 0);
+    assert!(payload["runtime_comparison"]["ratio_stats"]["system_ratio_both_success"].is_null());
+    assert!(payload["runtime_comparison"]["ratio_stats"]["wall_ratio_both_success"].is_null());
+    assert_eq!(
+        payload["runtime_comparison"]["diagnostics"]["both_success_model_count"],
+        0
+    );
+    assert_eq!(
+        payload["runtime_comparison"]["diagnostics"]["unavailable_reason"],
+        "no_omc_rumoca_both_success_models"
+    );
+    assert_eq!(
+        payload["runtime_comparison"]["diagnostics"]["runtime_ratio_available"],
+        false
+    );
+}
+
+#[test]
 fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
     let temp = tempfile::tempdir().expect("tempdir");
     let results_dir = temp.path().join("results");

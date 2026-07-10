@@ -399,6 +399,7 @@ fn build_runtime_comparison_payload(metrics: &RunMetrics) -> Value {
         "wall_ratio_all_positive": metrics.wall_ratio_all_positive,
         "wall_ratio_both_success": metrics.wall_ratio_both_success,
     });
+    let diagnostics = build_runtime_comparison_diagnostics(metrics);
     json!({
         "ratio_definition": "omc_over_rumoca_higher_is_better (simulation/wall runtime; this is the SIM-time comparison, distinct from the compile-speed `speedup` in msl_speed_comparison.json)",
         "ratio_metric_system": "omc_timeSimulation_over_rumoca_sim_seconds",
@@ -412,6 +413,41 @@ fn build_runtime_comparison_payload(metrics: &RunMetrics) -> Value {
         "total_rumoca_sim_run_seconds": round3(metrics.total_rumoca_sim_run_seconds),
         "total_rumoca_sim_wall_seconds": round3(metrics.total_rumoca_sim_wall_seconds),
         "ratio_stats": runtime_ratio_stats,
+        "diagnostics": diagnostics,
+    })
+}
+
+fn build_runtime_comparison_diagnostics(metrics: &RunMetrics) -> Value {
+    let both_success_samples = metrics
+        .system_ratio_both_success
+        .as_ref()
+        .map(|stats| stats.sample_count)
+        .or_else(|| {
+            metrics
+                .wall_ratio_both_success
+                .as_ref()
+                .map(|stats| stats.sample_count)
+        })
+        .unwrap_or(0);
+    let mut missing_ratio_stats = Vec::new();
+    if metrics.system_ratio_both_success.is_none() {
+        missing_ratio_stats.push("system_ratio_both_success");
+    }
+    if metrics.wall_ratio_both_success.is_none() {
+        missing_ratio_stats.push("wall_ratio_both_success");
+    }
+    let reason = if missing_ratio_stats.is_empty() {
+        None
+    } else if both_success_samples == 0 {
+        Some("no_omc_rumoca_both_success_models")
+    } else {
+        Some("missing_runtime_ratio_stats")
+    };
+    json!({
+        "both_success_model_count": both_success_samples,
+        "runtime_ratio_available": missing_ratio_stats.is_empty(),
+        "missing_ratio_stats": missing_ratio_stats,
+        "unavailable_reason": reason,
     })
 }
 
