@@ -784,23 +784,51 @@ fn test_fmi3_model_description_exports_dae_inputs_as_inputs() {
 
 #[test]
 fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
+    let cmake = builtin_template("fmi3", "CMakeLists.txt.jinja");
+    let shell = builtin_template("fmi3", "build.sh.jinja");
     assert!(
-        builtin_template("fmi3", "CMakeLists.txt.jinja")
-            .contains(r#"set(FMU_PLATFORM "x86_64-linux")"#),
-        "FMI 3 Linux binaries must use binaries/x86_64-linux"
+        cmake.contains(r#"set(FMU_PLATFORM "${FMU_ARCH}-linux")"#)
+            && cmake.contains(r#"set(FMU_ARCH "aarch64")"#)
+            && cmake.contains(r#"set(FMU_ARCH "x86_64")"#),
+        "FMI 3 CMake packaging must select a standard platform tuple"
     );
     assert!(
-        builtin_template("fmi3", "build.sh.jinja").contains("PLATFORM=x86_64-linux"),
-        "FMI 3 shell build must use binaries/x86_64-linux"
+        shell.contains("PLATFORM=x86_64-linux") && shell.contains("PLATFORM=aarch64-linux"),
+        "FMI 3 shell packaging must support x86_64 and aarch64 Linux"
     );
+    assert!(!cmake.contains("linux64") && !shell.contains("linux64"));
+    assert!(cmake.contains("DESTINATION binaries/${FMU_PLATFORM}"));
+    assert!(shell.contains("rm -f {{ model_name }}.fmu"));
+}
+
+#[test]
+fn test_fmi3_model_description_only_advertises_implemented_capabilities() {
+    let mut dae = dae::Dae::new();
+    dae.variables.parameters.insert(
+        "gain".into(),
+        rumoca_ir_dae::Variable {
+            name: "gain".into(),
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+    let xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi3", "modelDescription.xml.jinja"),
+        "Capabilities",
+    )
+    .unwrap();
+
+    assert!(!xml.contains("providesDirectionalDerivatives"), "{xml}");
+    assert!(!xml.contains("providesAdjointDerivatives"), "{xml}");
     assert!(
-        !builtin_template("fmi3", "CMakeLists.txt.jinja").contains("linux64"),
-        "linux64 is the FMI 2 platform directory, not FMI 3"
+        xml.contains(r#"name="gain" valueReference="0" causality="parameter" variability="fixed""#),
+        "{xml}"
     );
-    assert!(
-        !builtin_template("fmi3", "build.sh.jinja").contains("linux64"),
-        "linux64 is the FMI 2 platform directory, not FMI 3"
-    );
+    assert!(!xml.contains("structuralParameter"), "{xml}");
 }
 
 #[test]
@@ -1080,12 +1108,27 @@ int main(void) {
     fmi3Instance instance = fmi3InstantiateCoSimulation(
         "decay", MODEL_INSTANTIATION_TOKEN, NULL, 0, 0, 0, 0, NULL, 0, NULL, NULL, NULL);
     if (!instance) return 11;
+    if (fmi3EnterConfigurationMode(NULL) != fmi3Error) return 36;
+    if (fmi3EnterConfigurationMode(instance) != fmi3OK) return 37;
+    if (fmi3EnterConfigurationMode(instance) != fmi3Error) return 38;
+    if (fmi3ExitConfigurationMode(instance) != fmi3OK) return 39;
     if (fmi3EnterInitializationMode(instance, 1, 1.0e-8, 0.0, 0, 0.0) != fmi3OK) return 12;
     if (fmi3ExitInitializationMode(instance) != fmi3OK) return 13;
 
     const fmi3ValueReference x_vr = 0;
     fmi3Float64 x = 0.0;
     if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - 1.0) > 1.0e-12) return 14;
+    fmi3Float64 guards[2] = {123.0, 456.0};
+    if (fmi3GetFloat64(instance, &x_vr, 1, guards, 0) != fmi3Error ||
+        guards[0] != 123.0 || guards[1] != 456.0) return 40;
+    if (fmi3GetFloat64(instance, &x_vr, 1, guards, 2) != fmi3Error ||
+        guards[0] != 123.0 || guards[1] != 456.0) return 41;
+    if (fmi3GetFloat64(NULL, &x_vr, 1, &x, 1) != fmi3Error) return 42;
+    if (fmi3SetFloat64(instance, &x_vr, 1, guards, 2) != fmi3Error) return 43;
+    if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - 1.0) > 1.0e-12) return 44;
+    fmi3Float32 x32 = 0.0f;
+    if (fmi3GetFloat32(instance, &x_vr, 1, &x32, 1) != fmi3Error) return 45;
+    if (fmi3GetString(instance, &x_vr, 1, NULL, 1) != fmi3Error) return 46;
 
     fmi3Boolean event_needed = 0, terminate = 0, early = 0;
     fmi3Float64 last = 0.0;

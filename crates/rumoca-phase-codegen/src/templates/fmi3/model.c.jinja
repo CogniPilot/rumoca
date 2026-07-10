@@ -1194,6 +1194,44 @@ static int vr_scalar_count(fmi3ValueReference vr) {
     return 0;
 }
 
+static int settable_float64_scalar_count(fmi3ValueReference vr) {
+#if NVAR_X > 0
+    if (vr >= VR_X && vr < VR_X + NVAR_X) return x_var_count[vr - VR_X];
+#endif
+#if NVAR_U > 0
+    if (vr >= VR_U && vr < VR_U + NVAR_U) return u_var_count[vr - VR_U];
+#endif
+#if NVAR_P > 0
+    if (vr >= VR_P && vr < VR_P + NVAR_P) return p_var_count[vr - VR_P];
+#endif
+#if NVAR_Z > 0
+    if (vr >= VR_Z && vr < VR_Z + NVAR_Z) return z_var_count[vr - VR_Z];
+#endif
+    return 0;
+}
+
+static fmi3Status validate_float64_buffers(
+    const ModelInstance* m,
+    const fmi3ValueReference valueReferences[], size_t nValueReferences,
+    const void* values, size_t nValues,
+    fmi3Boolean for_set)
+{
+    if (!m || (nValueReferences > 0 && !valueReferences) || (nValues > 0 && !values)) {
+        return fmi3Error;
+    }
+    size_t required = 0;
+    for (size_t i = 0; i < nValueReferences; i++) {
+        int count = for_set
+            ? settable_float64_scalar_count(valueReferences[i])
+            : vr_scalar_count(valueReferences[i]);
+        if (count <= 0 || required > nValues || (size_t)count > nValues - required) {
+            return fmi3Error;
+        }
+        required += (size_t)count;
+    }
+    return required == nValues ? fmi3OK : fmi3Error;
+}
+
 /* Helper: get flat offset for a derivative VR (used by directional derivatives) */
 static int xdot_flat_offset_for_vr(fmi3ValueReference vr) {
 #if NVAR_X > 0
@@ -1425,12 +1463,14 @@ FMI3_Export fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
 
 FMI3_Export fmi3Status fmi3EnterConfigurationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->state != modelInstantiated) return fmi3Error;
     m->state = modelConfigurationMode;
     return fmi3OK;
 }
 
 FMI3_Export fmi3Status fmi3ExitConfigurationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->state != modelConfigurationMode) return fmi3Error;
     m->state = modelInstantiated;
     m->dirty_values = 1;  /* Force recomputation after tunable parameter changes */
     return fmi3OK;
@@ -1446,7 +1486,10 @@ FMI3_Export fmi3Status fmi3GetFloat64(
     fmi3Float64 values[], size_t nValues)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
+    if (validate_float64_buffers(
+            m, valueReferences, nValueReferences, values, nValues, 0) != fmi3OK) {
+        return fmi3Error;
+    }
 
     if (m->dirty_values) {
         compute_derivatives(m);
@@ -1469,7 +1512,10 @@ FMI3_Export fmi3Status fmi3SetFloat64(
     const fmi3Float64 values[], size_t nValues)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
+    if (validate_float64_buffers(
+            m, valueReferences, nValueReferences, values, nValues, 1) != fmi3OK) {
+        return fmi3Error;
+    }
 
     size_t val_idx = 0;
     for (size_t i = 0; i < nValueReferences; i++) {
@@ -1482,67 +1528,23 @@ FMI3_Export fmi3Status fmi3SetFloat64(
 }
 
 FMI3_Export fmi3Status fmi3GetFloat32(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, fmi3Float32 value[], size_t nValues) {
-    /* Delegate to Float64 with lossy downcast */
-    ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
-    size_t val_idx = 0;
-    for (size_t i = 0; i < nvr; i++) {
-        fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
-        int count;
-        fmi3Status s = get_float64_by_vr(m, vr[i], tmp, &count);
-        if (s != fmi3OK) return s;
-        for (int j = 0; j < count; j++) value[val_idx++] = (fmi3Float32)tmp[j];
-    }
-    return fmi3OK;
+    (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3SetFloat32(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, const fmi3Float32 value[], size_t nValues) {
-    /* Delegate to Float64 with promotion */
-    ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
-    size_t val_idx = 0;
-    for (size_t i = 0; i < nvr; i++) {
-        int count = vr_scalar_count(vr[i]);
-        fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
-        for (int j = 0; j < count; j++) tmp[j] = (fmi3Float64)value[val_idx++];
-        int dummy;
-        fmi3Status s = set_float64_by_vr(m, vr[i], tmp, &dummy);
-        if (s != fmi3OK) return s;
-    }
-    return fmi3OK;
+    (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3GetInt32(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, fmi3Int32 value[], size_t nValues) {
-    /* Delegate to Float64 with truncation cast */
-    ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
-    size_t val_idx = 0;
-    for (size_t i = 0; i < nvr; i++) {
-        fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
-        int count;
-        fmi3Status s = get_float64_by_vr(m, vr[i], tmp, &count);
-        if (s != fmi3OK) return s;
-        for (int j = 0; j < count; j++) value[val_idx++] = (fmi3Int32)tmp[j];
-    }
-    return fmi3OK;
+    (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3SetInt32(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, const fmi3Int32 value[], size_t nValues) {
-    /* Delegate to Float64 with promotion */
-    ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
-    size_t val_idx = 0;
-    for (size_t i = 0; i < nvr; i++) {
-        int count = vr_scalar_count(vr[i]);
-        fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
-        for (int j = 0; j < count; j++) tmp[j] = (fmi3Float64)value[val_idx++];
-        int dummy;
-        fmi3Status s = set_float64_by_vr(m, vr[i], tmp, &dummy);
-        if (s != fmi3OK) return s;
-    }
-    return fmi3OK;
+    (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
+    return fmi3Error;
 }
 
 {#- DAE variables are currently represented as Float64. Export the complete
@@ -1575,35 +1577,13 @@ FMI3_Export fmi3Status fmi3Set{{ kind.name }}(
 
 {% endfor %}
 FMI3_Export fmi3Status fmi3GetBoolean(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, fmi3Boolean value[], size_t nValues) {
-    /* Delegate to Float64 with boolean cast */
-    ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
-    if (m->dirty_values) compute_derivatives(m);
-    size_t val_idx = 0;
-    for (size_t i = 0; i < nvr; i++) {
-        fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
-        int count;
-        fmi3Status s = get_float64_by_vr(m, vr[i], tmp, &count);
-        if (s != fmi3OK) return s;
-        for (int j = 0; j < count; j++) value[val_idx++] = (tmp[j] != 0.0);
-    }
-    return fmi3OK;
+    (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3SetBoolean(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, const fmi3Boolean value[], size_t nValues) {
-    /* Delegate to Float64 with boolean-to-double cast */
-    ModelInstance* m = (ModelInstance*)instance;
-    (void)nValues;
-    size_t val_idx = 0;
-    for (size_t i = 0; i < nvr; i++) {
-        int count = vr_scalar_count(vr[i]);
-        fmi3Float64 tmp[N_REALS > 0 ? N_REALS : 1];
-        for (int j = 0; j < count; j++) tmp[j] = value[val_idx++] ? 1.0 : 0.0;
-        int dummy;
-        fmi3Status s = set_float64_by_vr(m, vr[i], tmp, &dummy);
-        if (s != fmi3OK) return s;
-    }
-    return fmi3OK;
+    (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
+    return fmi3Error;
 }
 
 /* =========================================================================
@@ -1617,6 +1597,7 @@ FMI3_Export fmi3Status fmi3GetClock(
 {
 #if N_CLOCKS > 0
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || (nValueReferences > 0 && (!valueReferences || !values))) return fmi3Error;
     for (size_t i = 0; i < nValueReferences; i++) {
         fmi3ValueReference vr = valueReferences[i];
         if (vr >= VR_CLK && vr < VR_CLK + N_CLOCKS) {
@@ -1639,6 +1620,7 @@ FMI3_Export fmi3Status fmi3SetClock(
 {
 #if N_CLOCKS > 0
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || (nValueReferences > 0 && (!valueReferences || !values))) return fmi3Error;
     for (size_t i = 0; i < nValueReferences; i++) {
         fmi3ValueReference vr = valueReferences[i];
         if (vr >= VR_CLK && vr < VR_CLK + N_CLOCKS) {
@@ -1662,7 +1644,9 @@ FMI3_Export fmi3Status fmi3GetIntervalDecimal(
 {
 #if N_CLOCKS > 0
     ModelInstance* m = (ModelInstance*)instance;
-    (void)m;
+    if (!m || (nValueReferences > 0 && (!valueReferences || !intervals || !qualifiers))) {
+        return fmi3Error;
+    }
     for (size_t i = 0; i < nValueReferences; i++) {
         fmi3ValueReference vr = valueReferences[i];
         if (vr >= VR_CLK && vr < VR_CLK + N_CLOCKS) {
@@ -1750,22 +1734,22 @@ FMI3_Export fmi3Status fmi3EvaluateDiscreteStates(fmi3Instance instance) {
 
 FMI3_Export fmi3Status fmi3GetString(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, fmi3String value[], size_t nValues) {
     (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
-    return fmi3OK;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3SetString(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, const fmi3String value[], size_t nValues) {
     (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
-    return fmi3OK;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3GetBinary(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, size_t sizes[], fmi3Binary values[], size_t nValues) {
     (void)instance; (void)vr; (void)nvr; (void)sizes; (void)values; (void)nValues;
-    return fmi3OK;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3SetBinary(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, const size_t sizes[], const fmi3Binary values[], size_t nValues) {
     (void)instance; (void)vr; (void)nvr; (void)sizes; (void)values; (void)nValues;
-    return fmi3OK;
+    return fmi3Error;
 }
 
 FMI3_Export fmi3Status fmi3GetNumberOfVariableDependencies(
@@ -1796,6 +1780,7 @@ FMI3_Export fmi3Status fmi3GetVariableDependencies(
 
 FMI3_Export fmi3Status fmi3SetTime(fmi3Instance instance, fmi3Float64 time) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->is_co_simulation || !isfinite(time)) return fmi3Error;
     m->time = time;
     m->dirty_values = 1;
     return fmi3OK;
@@ -1806,7 +1791,8 @@ FMI3_Export fmi3Status fmi3SetContinuousStates(
     const fmi3Float64 continuousStates[], size_t nContinuousStates)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    if (nContinuousStates != N_STATES) return fmi3Error;
+    if (!m || m->is_co_simulation || nContinuousStates != N_STATES ||
+        (nContinuousStates > 0 && !continuousStates)) return fmi3Error;
 
     memcpy(m->x, continuousStates, nContinuousStates * sizeof(fmi3Float64));
     m->dirty_values = 1;
@@ -1818,7 +1804,8 @@ FMI3_Export fmi3Status fmi3GetContinuousStates(
     fmi3Float64 continuousStates[], size_t nContinuousStates)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    if (nContinuousStates != N_STATES) return fmi3Error;
+    if (!m || m->is_co_simulation || nContinuousStates != N_STATES ||
+        (nContinuousStates > 0 && !continuousStates)) return fmi3Error;
 
     memcpy(continuousStates, m->x, nContinuousStates * sizeof(fmi3Float64));
     return fmi3OK;
@@ -1829,7 +1816,8 @@ FMI3_Export fmi3Status fmi3GetContinuousStateDerivatives(
     fmi3Float64 derivatives[], size_t nContinuousStates)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    if (nContinuousStates != N_DERIVATIVES) return fmi3Error;
+    if (!m || m->is_co_simulation || nContinuousStates != N_DERIVATIVES ||
+        (nContinuousStates > 0 && !derivatives)) return fmi3Error;
 
     if (m->dirty_values) {
         compute_derivatives(m);
@@ -1845,7 +1833,8 @@ FMI3_Export fmi3Status fmi3GetEventIndicators(
     fmi3Float64 eventIndicators[], size_t nEventIndicators)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    if (nEventIndicators != N_EVENT_INDICATORS) return fmi3Error;
+    if (!m || m->is_co_simulation || nEventIndicators != N_EVENT_INDICATORS ||
+        (nEventIndicators > 0 && !eventIndicators)) return fmi3Error;
 
     compute_event_indicators(m);
     memcpy(eventIndicators, m->event_indicators, nEventIndicators * sizeof(fmi3Float64));
@@ -1854,6 +1843,7 @@ FMI3_Export fmi3Status fmi3GetEventIndicators(
 
 FMI3_Export fmi3Status fmi3EnterEventMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || (m->is_co_simulation && !m->event_mode_used)) return fmi3Error;
     m->state = modelEventMode;
     m->is_new_event_iteration = 1;
     return fmi3OK;
@@ -1869,6 +1859,11 @@ FMI3_Export fmi3Status fmi3UpdateDiscreteStates(
     fmi3Float64* nextEventTime)
 {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->state != modelEventMode || !discreteStatesNeedUpdate ||
+        !terminateSimulation || !nominalsOfContinuousStatesChanged ||
+        !valuesOfContinuousStatesChanged || !nextEventTimeDefined || !nextEventTime) {
+        return fmi3Error;
+    }
 
     /* Save pre-values before discrete update */
     memcpy(m->pre_z, m->z, sizeof(m->z));
@@ -1948,6 +1943,7 @@ FMI3_Export fmi3Status fmi3UpdateDiscreteStates(
 
 FMI3_Export fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->is_co_simulation || m->state != modelEventMode) return fmi3Error;
     m->state = modelContinuousTimeMode;
 
     /* Save event indicators for zero-crossing detection */
@@ -1974,6 +1970,8 @@ FMI3_Export fmi3Status fmi3CompletedIntegratorStep(
 {
     (void)noSetFMUStatePriorToCurrentPoint;
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->is_co_simulation || m->state != modelContinuousTimeMode ||
+        !enterEventMode || !terminateSimulation) return fmi3Error;
 
     *enterEventMode = 0;
     *terminateSimulation = 0;
@@ -2010,8 +2008,8 @@ FMI3_Export fmi3Status fmi3GetNominalsOfContinuousStates(
     fmi3Float64 nominals[], size_t nContinuousStates)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    (void)m;
-    if (nContinuousStates != N_STATES) return fmi3Error;
+    if (!m || m->is_co_simulation || nContinuousStates != N_STATES ||
+        (nContinuousStates > 0 && !nominals)) return fmi3Error;
 
     /* Unpack parameters and constants so nominal expressions can reference them */
 {{ unpack_vars(dae.p, "m->p") }}
@@ -2038,7 +2036,7 @@ FMI3_Export fmi3Status fmi3GetNumberOfEventIndicators(
     fmi3Instance instance,
     size_t* nEventIndicators)
 {
-    (void)instance;
+    if (!instance || !nEventIndicators) return fmi3Error;
     *nEventIndicators = N_EVENT_INDICATORS;
     return fmi3OK;
 }
@@ -2047,7 +2045,7 @@ FMI3_Export fmi3Status fmi3GetNumberOfContinuousStates(
     fmi3Instance instance,
     size_t* nContinuousStates)
 {
-    (void)instance;
+    if (!instance || !nContinuousStates) return fmi3Error;
     *nContinuousStates = N_STATES;
     return fmi3OK;
 }
@@ -2118,8 +2116,8 @@ FMI3_Export fmi3Status fmi3SetFMUState(fmi3Instance instance, fmi3FMUState FMUSt
 }
 
 FMI3_Export fmi3Status fmi3FreeFMUState(fmi3Instance instance, fmi3FMUState* FMUState) {
-    (void)instance;
-    if (FMUState && *FMUState) {
+    if (!instance || !FMUState) return fmi3Error;
+    if (*FMUState) {
         free(*FMUState);
         *FMUState = NULL;
     }
@@ -2127,22 +2125,19 @@ FMI3_Export fmi3Status fmi3FreeFMUState(fmi3Instance instance, fmi3FMUState* FMU
 }
 
 FMI3_Export fmi3Status fmi3SerializedFMUStateSize(fmi3Instance instance, fmi3FMUState FMUState, size_t* size) {
-    (void)instance;
-    if (!FMUState || !size) return fmi3Error;
+    if (!instance || !FMUState || !size) return fmi3Error;
     *size = sizeof(ModelInstance);
     return fmi3OK;
 }
 
 FMI3_Export fmi3Status fmi3SerializeFMUState(fmi3Instance instance, fmi3FMUState FMUState, fmi3Byte serializedState[], size_t size) {
-    (void)instance;
-    if (!FMUState || !serializedState || size != sizeof(ModelInstance)) return fmi3Error;
+    if (!instance || !FMUState || !serializedState || size != sizeof(ModelInstance)) return fmi3Error;
     memcpy(serializedState, (ModelInstance*)FMUState, sizeof(ModelInstance));
     return fmi3OK;
 }
 
 FMI3_Export fmi3Status fmi3DeserializeFMUState(fmi3Instance instance, const fmi3Byte serializedState[], size_t size, fmi3FMUState* FMUState) {
-    (void)instance;
-    if (!serializedState || !FMUState || size != sizeof(ModelInstance)) return fmi3Error;
+    if (!instance || !serializedState || !FMUState || size != sizeof(ModelInstance)) return fmi3Error;
     ModelInstance* copy = (ModelInstance*)malloc(sizeof(ModelInstance));
     if (!copy) return fmi3Error;
     memcpy(copy, serializedState, sizeof(ModelInstance));
@@ -2166,7 +2161,8 @@ FMI3_Export fmi3Status fmi3GetDirectionalDerivative(
     fmi3Float64 sensitivity[], size_t nSensitivity)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    (void)m;
+    if (!m || (nUnknowns > 0 && !unknowns) || (nKnowns > 0 && !knowns) ||
+        (nSeed > 0 && !seed) || (nSensitivity > 0 && !sensitivity)) return fmi3Error;
     for (size_t si = 0; si < nSensitivity; si++) sensitivity[si] = 0.0;
 
     if (N_SOLVE_JACOBIAN_ROWS == 0) return fmi3Error;
@@ -2213,7 +2209,8 @@ FMI3_Export fmi3Status fmi3GetAdjointDerivative(
     fmi3Float64 sensitivity[], size_t nSensitivity)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    (void)m;
+    if (!m || (nUnknowns > 0 && !unknowns) || (nKnowns > 0 && !knowns) ||
+        (nSeed > 0 && !seed) || (nSensitivity > 0 && !sensitivity)) return fmi3Error;
     for (size_t si = 0; si < nSensitivity; si++) sensitivity[si] = 0.0;
 
     if (N_SOLVE_JACOBIAN_ROWS == 0) return fmi3Error;
@@ -2555,6 +2552,7 @@ FMI3_Export fmi3Status fmi3ActivateModelPartition(
  * ========================================================================= */
 
 FMI3_Export fmi3Status fmi3SetDebugLogging(fmi3Instance instance, fmi3Boolean loggingOn, size_t nCategories, const fmi3String categories[]) {
-    (void)instance; (void)loggingOn; (void)nCategories; (void)categories;
+    if (!instance || (nCategories > 0 && !categories)) return fmi3Error;
+    (void)loggingOn; (void)nCategories; (void)categories;
     return fmi3OK;
 }

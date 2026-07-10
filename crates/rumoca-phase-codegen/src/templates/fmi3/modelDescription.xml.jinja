@@ -102,7 +102,7 @@
 {% if dae.model_description %}    description="{{ xml_escape(dae.model_description) }}"
 {% endif %}    generationTool="Rumoca">
 
-  <ModelExchange modelIdentifier="{{ model_name | sanitize }}" providesDirectionalDerivatives="true" providesAdjointDerivatives="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
+  <ModelExchange modelIdentifier="{{ model_name | sanitize }}" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
 
 {% if cosim_supported %}  <CoSimulation modelIdentifier="{{ model_name | sanitize }}" canHandleVariableCommunicationStepSize="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
 {% endif %}
@@ -150,14 +150,14 @@
 {{ emit_var(name, ns_vr.offset, "output", "continuous", var, "calculated") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
-{#- Parameters (p) — tunable params get variability="tunable",
-    non-tunable get causality="structuralParameter" variability="fixed" (FMI 3.0 §2.4.7) -#}
+{#- Parameters (p). Array dimensions are emitted as fixed Dimension starts, so
+    ordinary fixed Modelica parameters are not FMI structural parameters. -#}
 {% set ns_vr = namespace(offset=vr_p) %}
 {% for name, var in dae.p | items %}
 {% if var.is_tunable %}
 {{ emit_var(name, ns_vr.offset, "parameter", "tunable", var, "exact") }}
 {% else %}
-{{ emit_var(name, ns_vr.offset, "structuralParameter", "fixed", var, "exact") }}
+{{ emit_var(name, ns_vr.offset, "parameter", "fixed", var, "exact") }}
 {% endif %}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
