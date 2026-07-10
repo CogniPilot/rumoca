@@ -525,7 +525,19 @@ fn prune_unreferenced_local_algebraics(dae: &mut dae::Dae) {
         referenced.contains(name)
             || variable.causality != dae::VariableCausality::Local
             || variable.origin != dae::VariableOrigin::Source
+            || !is_structured_prune_candidate(variable)
     });
+}
+
+fn is_structured_prune_candidate(variable: &dae::Variable) -> bool {
+    !variable.dims.is_empty()
+        || variable
+            .component_ref
+            .as_ref()
+            .is_some_and(|component_ref| {
+                component_ref.parts.len() > 1
+                    || component_ref.parts.iter().any(|part| !part.subs.is_empty())
+            })
 }
 
 fn collect_dae_referenced_var_names(dae: &dae::Dae) -> HashSet<VarName> {

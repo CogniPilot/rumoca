@@ -24,13 +24,21 @@ fn der_ref(name: &str) -> Expression {
 #[test]
 fn prune_unreferenced_local_algebraics_keeps_referenced_and_public_vars() {
     let mut dae = dae::Dae::new();
-    for name in ["used", "unused", "public_out"] {
+    for name in ["used", "unused_scalar", "unused_structured", "public_out"] {
         let mut variable = dae::Variable::new(VarName::new(name), Span::DUMMY);
         variable.origin = dae::VariableOrigin::Source;
         dae.variables
             .algebraics
             .insert(VarName::new(name), variable);
     }
+    dae.variables
+        .algebraics
+        .get_mut(&VarName::new("unused_structured"))
+        .expect("fixture variable exists")
+        .component_ref = rumoca_core::component_reference_from_flat_name(
+        &VarName::new("unused_structured.field"),
+        Span::DUMMY,
+    );
     dae.variables
         .algebraics
         .get_mut(&VarName::new("public_out"))
@@ -54,7 +62,12 @@ fn prune_unreferenced_local_algebraics_keeps_referenced_and_public_vars() {
     assert!(
         !dae.variables
             .algebraics
-            .contains_key(&VarName::new("unused"))
+            .contains_key(&VarName::new("unused_structured"))
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("unused_scalar"))
     );
 }
 

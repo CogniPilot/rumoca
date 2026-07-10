@@ -3047,16 +3047,25 @@ fn substitute_scalar_var_ref(
     if let Some(scoped_live_ref) = scoped_live_var_ref(key, span, env) {
         return Ok(Some(scoped_live_ref));
     }
-    if !env.scope.is_empty()
-        && name.target_def_id().is_some()
-        && let Some(expr) = substitute_direct_scoped_def_id_scalar_var_ref(name, span, env)?
-    {
-        return Ok(Some(expr));
-    }
     let has_array_shape = reference_has_array_shape(name, key, env.ctx, env.scope);
     if env.prefer_scoped_parameters
         && !env.scope.is_empty()
         && let Some(expr) = substitute_scoped_scalar_var_ref(key, span, env)?
+    {
+        return Ok(Some(expr));
+    }
+    if !env.prefer_scoped_parameters
+        && !env.scope.is_empty()
+        && let Some(expr) = substitute_scoped_scalar_var_ref(key, span, env)?
+    {
+        return Ok(Some(expr));
+    }
+    if let Some(expr) = substitute_alias_resolved_scalar_var_ref(key, span, env)? {
+        return Ok(Some(expr));
+    }
+    if !env.scope.is_empty()
+        && name.target_def_id().is_some()
+        && let Some(expr) = substitute_direct_scoped_def_id_scalar_var_ref(name, span, env)?
     {
         return Ok(Some(expr));
     }
@@ -3097,13 +3106,6 @@ fn substitute_scalar_var_ref(
             env.prefer_scoped_parameters,
         )?));
     }
-    if !env.prefer_scoped_parameters
-        && !env.scope.is_empty()
-        && let Some(expr) = substitute_scoped_scalar_var_ref(key, span, env)?
-    {
-        return Ok(Some(expr));
-    }
-
     substitute_alias_resolved_scalar_var_ref(key, span, env)
 }
 
@@ -3120,6 +3122,9 @@ fn substitute_direct_scoped_def_id_scalar_var_ref(
     span: rumoca_core::Span,
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    if !env.scope.is_empty() && name.as_str().starts_with(&format!("{}.", env.scope)) {
+        return Ok(None);
+    }
     let key = def_id_scoped_lookup_key(name);
     if key.contains('.') {
         return Ok(None);
