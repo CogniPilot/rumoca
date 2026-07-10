@@ -1021,15 +1021,35 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
     *causal
         .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/causal_steps")
         .unwrap() = serde_json::json!([{"row": 1, "y_index": 1}]);
-    let error = render_template_with_dae_json_and_name(
+    let rendered = render_template_with_dae_json_and_name(
         &causal,
         builtin_template("fmi3", "model.c.jinja"),
         "M",
     )
-    .expect_err("FMI3 projection must reject causal steps it cannot emit");
+    .expect("unsupported causal projection must use the DAE fallback");
     assert!(
-        error.to_string().contains("without causal steps"),
-        "{error}"
+        !rendered.contains("const int y_index = 1;")
+            && !rendered.contains("The Solve-IR projection writes"),
+        "{rendered}"
+    );
+
+    let mut multi_row = dae_json.clone();
+    *multi_row
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/rows")
+        .unwrap() = serde_json::json!([1, 1]);
+    *multi_row
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/y_indices")
+        .unwrap() = serde_json::json!([1, 1]);
+    let rendered = render_template_with_dae_json_and_name(
+        &multi_row,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect("unsupported multi-row projection must use the DAE fallback");
+    assert!(
+        !rendered.contains("const int y_index = 1;")
+            && !rendered.contains("The Solve-IR projection writes"),
+        "{rendered}"
     );
 
     let mut unmatched = dae_json;
