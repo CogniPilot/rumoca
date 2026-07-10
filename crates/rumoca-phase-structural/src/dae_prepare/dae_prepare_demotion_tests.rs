@@ -2114,6 +2114,86 @@ fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
 }
 
 #[test]
+fn test_constrained_dummy_reduction_differentiates_function_defined_position_constraint() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("direct.phi"), test_variable("direct.phi"));
+    let mut inverse_phi = test_variable("inverse.phi");
+    inverse_phi.state_select = rumoca_core::StateSelect::Prefer;
+    dae.variables
+        .states
+        .insert(VarName::new("inverse.phi"), inverse_phi);
+    for name in ["direct.w", "inverse.w"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+
+    let mut position = rumoca_core::Function::new("position", Span::DUMMY);
+    let mut q_qd_qdd = function_param("q_qd_qdd");
+    q_qd_qdd.dims = vec![3];
+    position.inputs.push(q_qd_qdd);
+    position.inputs.push(function_param("dummy"));
+    position.outputs.push(function_param("q"));
+    position.body.push(rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference::from_flat_segments("q", Span::DUMMY, None),
+        value: index_expr(var("q_qd_qdd"), 1),
+        span: Span::DUMMY,
+    });
+    dae.symbols
+        .functions
+        .insert(VarName::new("position"), position);
+
+    dae.continuous
+        .equations
+        .push(eq(sub(der("direct.phi"), var("direct.w"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("inverse.phi"), var("inverse.w"))));
+    dae.continuous.equations.push(eq(sub(
+        var("inverse.phi"),
+        call(
+            "position",
+            vec![
+                array(vec![var("direct.phi"), var("direct.w"), real(0.0)]),
+                var("time"),
+            ],
+        ),
+    )));
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("function-defined position constraint should reduce");
+
+    assert_eq!(demoted, 1);
+    assert!(
+        !dae.variables
+            .states
+            .contains_key(&VarName::new("inverse.phi")),
+        "position-constrained dummy state should be demoted"
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("inverse.phi"))
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("inverse.phi"))),
+        "der(inverse.phi) should be replaced by the function-derived velocity"
+    );
+    assert!(
+        dae.continuous.equations.iter().any(|eq| {
+            expr_contains_var(&eq.rhs, &VarName::new("direct.w"))
+                && expr_contains_var(&eq.rhs, &VarName::new("inverse.w"))
+        }),
+        "the derivative row should become the physical velocity constraint"
+    );
+}
+
+#[test]
 fn test_constrained_dummy_state_names_maps_singleton_array_component_state() {
     let mut dae = Dae::new();
     let mut x = test_variable("x");

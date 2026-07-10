@@ -512,6 +512,11 @@ fn expression_scalarization_name(expr: &Expression) -> Option<String> {
         Expression::VarRef {
             name, subscripts, ..
         } => scalarization_var_ref_name(name, subscripts),
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. }
+            if elements.len() == 1 =>
+        {
+            expression_scalarization_name(elements.first()?)
+        }
         Expression::Index {
             base, subscripts, ..
         } => {

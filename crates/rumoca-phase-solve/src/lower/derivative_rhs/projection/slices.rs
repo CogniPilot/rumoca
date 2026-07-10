@@ -34,6 +34,12 @@ pub(in crate::lower) fn slice_selections(
     owner_span: rumoca_core::Span,
 ) -> Result<Vec<Vec<usize>>, LowerError> {
     let span = subscript_list_span_or_owner(subscripts, owner_span)?;
+    let subscripts = normalize_overspecified_scalar_slice_subscripts(
+        subscripts,
+        dims,
+        structural_bindings,
+        span,
+    )?;
     if subscripts.len() > dims.len() {
         let span = subscripts
             .get(dims.len())
@@ -62,6 +68,29 @@ pub(in crate::lower) fn slice_selections(
         )?);
     }
     Ok(selections)
+}
+
+fn normalize_overspecified_scalar_slice_subscripts<'a>(
+    subscripts: &'a [rumoca_core::Subscript],
+    dims: &[usize],
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<&'a [rumoca_core::Subscript], LowerError> {
+    if subscripts.len() <= dims.len() {
+        return Ok(subscripts);
+    }
+    let (declared_subscripts, extra_subscripts) = subscripts.split_at(dims.len());
+    for (subscript, dim) in declared_subscripts.iter().zip(dims.iter().copied()) {
+        if slice_subscript_indices(subscript, dim, structural_bindings, span)?.len() != 1 {
+            return Ok(subscripts);
+        }
+    }
+    for subscript in extra_subscripts {
+        if compile_time_subscript_index_with_owner(subscript, structural_bindings, span)? != 1 {
+            return Ok(subscripts);
+        }
+    }
+    Ok(declared_subscripts)
 }
 
 pub(in crate::lower) fn slice_subscript_indices(

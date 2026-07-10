@@ -2,7 +2,6 @@ use super::*;
 
 pub(super) struct BoundaryScanCtx<'a> {
     pub(super) dae: &'a Dae,
-    pub(super) state_names: &'a [VarName],
     pub(super) unknown_index: &'a BoundaryUnknownIndex<'a>,
     pub(super) state_derivative_matcher: &'a DerivativeNameMatcher,
     pub(super) runtime_protected_unknowns: &'a IndexSet<String>,
@@ -142,7 +141,6 @@ fn scan_boundary_equation(
     if live.is_empty() {
         let mut zero_unknown_ctx = ZeroUnknownEliminationCtx {
             dae: ctx.dae,
-            state_names: ctx.state_names,
             unknown_index: ctx.unknown_index,
             resolved: &state.resolved,
             runtime_protected_unknowns: ctx.runtime_protected_unknowns,

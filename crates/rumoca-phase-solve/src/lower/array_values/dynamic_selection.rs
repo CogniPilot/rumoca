@@ -523,6 +523,8 @@ impl<'a> LowerBuilder<'a> {
         span: rumoca_core::Span,
         scope: &Scope,
     ) -> Result<Vec<Vec<usize>>, LowerError> {
+        let subscripts =
+            self.normalize_overspecified_scalar_slice_subscripts(subscripts, shape, span, scope)?;
         if subscripts.len() > shape.len() {
             return Err(unsupported_at(
                 "array slice has more subscripts than dimensions",
@@ -543,6 +545,58 @@ impl<'a> LowerBuilder<'a> {
             )?);
         }
         Ok(selections)
+    }
+
+    fn normalize_overspecified_scalar_slice_subscripts<'s>(
+        &self,
+        subscripts: &'s [rumoca_core::Subscript],
+        shape: &[usize],
+        span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<&'s [rumoca_core::Subscript], LowerError> {
+        if subscripts.len() <= shape.len() {
+            return Ok(subscripts);
+        }
+        let (declared_subscripts, extra_subscripts) = subscripts.split_at(shape.len());
+        for (subscript, dim) in declared_subscripts.iter().zip(shape.iter().copied()) {
+            if self.slice_subscript_indices(subscript, dim, scope)?.len() != 1 {
+                return Ok(subscripts);
+            }
+        }
+        for subscript in extra_subscripts {
+            if self.singleton_compile_time_subscript_index(subscript, span, scope)? != Some(1) {
+                return Ok(subscripts);
+            }
+        }
+        Ok(declared_subscripts)
+    }
+
+    fn singleton_compile_time_subscript_index(
+        &self,
+        subscript: &rumoca_core::Subscript,
+        span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<Option<usize>, LowerError> {
+        match subscript {
+            rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+                crate::lower::helpers::positive_i64_index(*value, *span).map(Some)
+            }
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                let const_scope = self.compile_time_slice_bindings(scope);
+                self.eval_compile_time_positive_index_at(
+                    expr,
+                    &const_scope,
+                    "array singleton projection subscript",
+                    span,
+                )
+                .map(Some)
+            }
+            rumoca_core::Subscript::Colon { .. } => Ok(None),
+            _ => Err(unsupported_at(
+                "non-positive subscript is unsupported".to_string(),
+                subscript.span(),
+            )),
+        }
     }
 
     pub(in crate::lower) fn slice_subscript_indices(

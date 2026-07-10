@@ -1,6 +1,295 @@
 use super::*;
 
 #[test]
+fn test_substitute_indexed_use_site_keeps_projected_scalar_replacement() {
+    let mut dae = Dae::new();
+    let mut u = test_dae_variable("block.u");
+    u.dims = vec![1];
+    dae.variables.algebraics.insert(VarName::new("block.u"), u);
+    let mut y = test_dae_variable("block.y");
+    y.dims = vec![3];
+    dae.variables.outputs.insert(VarName::new("block.y"), y);
+
+    let substitution =
+        substitution_for_var(&dae, VarName::new("block.u"), var_ref_idx("block.y", 2))
+            .expect("projected vector output should be a valid scalar replacement");
+
+    let rewritten = resolve_substitutions_in_expr(&var_ref_idx("block.u", 1), &[substitution])
+        .expect("substitution should rewrite indexed use site");
+
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = rewritten
+    else {
+        panic!("rewritten expression should remain a VarRef");
+    };
+    assert_eq!(name.as_str(), "block.y");
+    assert_eq!(subscripts.len(), 1, "replacement must not become y[2,1]");
+    assert!(
+        matches!(
+            &subscripts[0],
+            rumoca_core::Subscript::Index { value: 2, .. }
+        ),
+        "replacement should preserve the projected physical element"
+    );
+}
+
+#[test]
+fn test_substitute_indexed_use_site_keeps_index_expression_scalar_replacement() {
+    let substitution = Substitution {
+        var_name: VarName::new("block.u"),
+        var_ref: None,
+        expr: Expression::Index {
+            base: Box::new(var_ref("block.y")),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 2,
+                span: Span::DUMMY,
+            }],
+            span: Span::DUMMY,
+        },
+        var_dims: vec![1],
+        replacement_dims: Vec::new(),
+        env_keys: vec!["block.u".to_string()],
+    };
+
+    let rewritten = resolve_substitutions_in_expr(&var_ref_idx("block.u", 1), &[substitution])
+        .expect("substitution should rewrite indexed use site");
+
+    let Expression::Index {
+        base, subscripts, ..
+    } = rewritten
+    else {
+        panic!("rewritten expression should remain the projected scalar Index");
+    };
+    let Expression::VarRef {
+        name,
+        subscripts: base_subscripts,
+        ..
+    } = base.as_ref()
+    else {
+        panic!("index base should remain a VarRef");
+    };
+    assert_eq!(name.as_str(), "block.y");
+    assert!(base_subscripts.is_empty());
+    assert_eq!(subscripts.len(), 1, "replacement must not become y[2,1]");
+    assert!(matches!(
+        &subscripts[0],
+        rumoca_core::Subscript::Index { value: 2, .. }
+    ));
+}
+
+#[test]
+fn test_eliminate_trivial_rejects_multiscalar_array_solution_for_scalar_target() {
+    let mut dae = Dae::new();
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("scalar_array_solution.mo"),
+        1,
+        12,
+    );
+    let mut y = test_dae_variable("y");
+    y.dims = vec![3];
+    dae.variables.outputs.insert(VarName::new("y"), y);
+    for name in ["a", "b", "c"] {
+        dae.variables
+            .parameters
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref_idx("y", 2)),
+            rhs: Box::new(Expression::Array {
+                elements: vec![var_ref("a"), var_ref("b"), var_ref("c")],
+                is_matrix: false,
+                span,
+            }),
+            span,
+        },
+        span,
+        origin: "scalar target cannot equal vector".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("elimination should reject invalid solution");
+
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert!(dae.variables.outputs.contains_key(&VarName::new("y")));
+}
+
+#[test]
+fn test_eliminate_trivial_resolves_scalarized_internal_output_element_alias() {
+    let mut dae = Dae::new();
+    let mut y = test_dae_variable("block.multiplex.y");
+    y.dims = vec![3];
+    dae.variables
+        .outputs
+        .insert(VarName::new("block.multiplex.y"), y);
+    dae.variables.algebraics.insert(
+        VarName::new("block.multiplex.u3"),
+        test_dae_variable("block.multiplex.u3"),
+    );
+    dae.variables
+        .states
+        .insert(VarName::new("body.w"), test_dae_variable("body.w"));
+    dae.variables
+        .states
+        .insert(VarName::new("body.phi"), test_dae_variable("body.phi"));
+
+    dae.continuous.equations.push(residual(
+        var_ref_idx("block.multiplex.y", 3),
+        var_ref("block.multiplex.u3"),
+        1,
+        "equation from block.multiplex",
+    ));
+    dae.continuous.equations.push(residual(
+        var_ref("body.phi"),
+        Expression::FunctionCall {
+            name: reference("Move.position"),
+            args: vec![
+                array(vec![
+                    var_ref("body.phi"),
+                    var_ref("body.w"),
+                    var_ref_idx("block.multiplex.y", 3),
+                ]),
+                var_ref("time"),
+            ],
+            is_constructor: false,
+            span: Span::DUMMY,
+        },
+        1,
+        "equation from block.move",
+    ));
+    dae.continuous.equations.push(residual(
+        der(var_ref("body.w")),
+        var_ref_idx("block.multiplex.y", 3),
+        1,
+        "connection equation: body.a = block.multiplex.u3[1]",
+    ));
+
+    let result = eliminate_trivial(&mut dae)
+        .expect("scalarized internal output element should be eligible for substitution");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "block.multiplex.y[3]"),
+        "expected scalarized output element substitution, got {:?}",
+        result.substitutions
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_var(&eq.rhs, &VarName::new("block.multiplex.y[3]"))),
+        "remaining equations should not retain the eliminated scalarized output element"
+    );
+}
+
+#[test]
+fn test_eliminate_trivial_resolves_internal_output_torque_definition() {
+    let mut dae = Dae::new();
+    dae.variables.outputs.insert(
+        VarName::new("adapter.tau2"),
+        test_dae_variable("adapter.tau2"),
+    );
+    for name in [
+        "spring.c",
+        "spring.phi_rel",
+        "spring.w_rel",
+        "body.J",
+        "body.a",
+    ] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+
+    let spring_torque = binary(
+        OpBinary::Add,
+        binary(
+            OpBinary::Mul,
+            var_ref("spring.c"),
+            var_ref("spring.phi_rel"),
+        ),
+        binary(OpBinary::Mul, real(100.0), var_ref("spring.w_rel")),
+    );
+    dae.continuous.equations.push(residual(
+        var_ref("adapter.tau2"),
+        spring_torque,
+        1,
+        "equation from adapter.torqueSensor",
+    ));
+    dae.continuous.equations.push(residual(
+        binary(OpBinary::Mul, var_ref("body.J"), var_ref("body.a")),
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs: Box::new(var_ref("adapter.tau2")),
+            span: Span::DUMMY,
+        },
+        1,
+        "equation from body",
+    ));
+
+    let result =
+        eliminate_trivial(&mut dae).expect("internal output torque should be substitutable");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "adapter.tau2"),
+        "expected adapter.tau2 substitution, got {:?}",
+        result.substitutions
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_var(&eq.rhs, &VarName::new("adapter.tau2"))),
+        "remaining equations should not retain adapter.tau2"
+    );
+}
+
+#[test]
+fn test_scalar_blt_solution_rejects_multiscalar_array_solution_for_scalar_target() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_dae_variable("y"));
+    for name in ["a", "b", "c"] {
+        dae.variables
+            .parameters
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    dae.continuous.equations.push(residual(
+        var_ref("y"),
+        array(vec![var_ref("a"), var_ref("b"), var_ref("c")]),
+        1,
+        "scalar target cannot equal vector through BLT",
+    ));
+
+    let state_names = Vec::<VarName>::new();
+    let state_derivative_matcher = DerivativeNameMatcher::from_var_names(state_names.iter());
+    let result = structural_ok(scalar_blt_solution(
+        &dae,
+        &EquationRef(0),
+        &UnknownId::Variable(VarName::new("y")),
+        &IndexSet::new(),
+        &HashSet::new(),
+        &state_derivative_matcher,
+        &[],
+    ));
+
+    assert!(
+        result.is_none(),
+        "BLT scalar elimination must reject scalar-to-vector substitutions"
+    );
+}
+
+#[test]
 fn test_elimination_substitution_differentiates_scalar_alias_in_derivative_call() {
     let mut dae = Dae::new();
     let span = Span::from_offsets(

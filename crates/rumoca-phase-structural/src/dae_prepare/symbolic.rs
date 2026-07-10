@@ -702,25 +702,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 base,
                 subscripts,
                 span,
-            } => {
-                let d_base = self.differentiate(base, active_functions)?;
-                if expression_is_zero_value(&d_base) {
-                    return Some(real_literal(0.0, *span));
-                }
-                let Some(base_dims) = expression_dims(&d_base, self.dae) else {
-                    return Some(Expression::Index {
-                        base: Box::new(d_base),
-                        subscripts: subscripts.clone(),
-                        span: *span,
-                    });
-                };
-                if base_dims.is_empty() {
-                    return Some(d_base);
-                }
-                let indices = static_subscript_indices(subscripts)?;
-                let flat_index = flat_index_from_indices(&base_dims, &indices)?;
-                project_flat_index_with_span(&d_base, &base_dims, flat_index, Some(*span))
-            }
+            } => self.differentiate_index(base, subscripts, *span, active_functions),
             Expression::FieldAccess { base, field, span } => {
                 if let Some(name) = self.canonical_field_access_var_name(base, field) {
                     return self.differentiate_variable(&name, &[], *span);
@@ -775,6 +757,39 @@ impl<'a> SymbolicDerivativeContext<'a> {
             }
             _ => None,
         }
+    }
+
+    fn differentiate_index(
+        &self,
+        base: &Expression,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+        active_functions: &mut Vec<VarName>,
+    ) -> Option<Expression> {
+        if let Some(base_dims) = expression_dims(base, self.dae)
+            && let Some(indices) = static_subscript_indices(subscripts)
+            && let Some(flat_index) = flat_index_from_indices(&base_dims, &indices)
+            && let Some(projected) = project_flat_index(base, &base_dims, flat_index)
+        {
+            return self.differentiate(&projected, active_functions);
+        }
+        let d_base = self.differentiate(base, active_functions)?;
+        if expression_is_zero_value(&d_base) {
+            return Some(real_literal(0.0, span));
+        }
+        let Some(base_dims) = expression_dims(&d_base, self.dae) else {
+            return Some(Expression::Index {
+                base: Box::new(d_base),
+                subscripts: subscripts.to_vec(),
+                span,
+            });
+        };
+        if base_dims.is_empty() {
+            return Some(d_base);
+        }
+        let indices = static_subscript_indices(subscripts)?;
+        let flat_index = flat_index_from_indices(&base_dims, &indices)?;
+        project_flat_index_with_span(&d_base, &base_dims, flat_index, Some(span))
     }
 
     /// Differentiate `der(arg)` one order higher: take `arg`'s first derivative

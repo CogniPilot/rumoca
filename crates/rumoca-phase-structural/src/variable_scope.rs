@@ -211,6 +211,7 @@ impl<'a> DaeVariableScope<'a> {
 
     fn indexed_descendant_aggregate_dims(&self, name: &VarName) -> Option<Vec<i64>> {
         let mut max_indices: Vec<i64> = Vec::new();
+        let mut descendant_dims: Option<Vec<i64>> = None;
         let mut matched = false;
         for variable in self.all_variables() {
             let Some(component_ref) = &variable.component_ref else {
@@ -231,8 +232,17 @@ impl<'a> DaeVariableScope<'a> {
             for (slot, index) in max_indices.iter_mut().zip(indices) {
                 *slot = (*slot).max(index);
             }
+            match &descendant_dims {
+                Some(dims) if dims != &variable.dims => return None,
+                Some(_) => {}
+                None => descendant_dims = Some(variable.dims.clone()),
+            }
         }
-        (matched && !max_indices.is_empty()).then_some(max_indices)
+        if !matched || max_indices.is_empty() {
+            return None;
+        }
+        max_indices.extend(descendant_dims.unwrap_or_default());
+        Some(max_indices)
     }
 
     fn exact_reference(&self, name: &Reference) -> Option<&'a dae::Variable> {
@@ -722,6 +732,43 @@ mod tests {
                 .dims(&VarName::new("machine.plug.pin.i"))
                 .expect("aggregate shape should be inferred from scalar descendants"),
             vec![3]
+        );
+    }
+
+    #[test]
+    fn aggregate_dims_append_descendant_variable_dimensions() {
+        let span = test_span();
+        let mut dae_model = dae::Dae::default();
+        for component_index in [1, 2] {
+            dae_model.variables.algebraics.insert(
+                VarName::new(format!(
+                    "springDamper.angleToTorque1.move_w[{component_index}].u"
+                )),
+                dae::Variable {
+                    name: VarName::new(format!(
+                        "springDamper.angleToTorque1.move_w[{component_index}].u"
+                    )),
+                    dims: vec![2],
+                    component_ref: Some(component_ref_with_span(
+                        vec![
+                            part("springDamper", Vec::new()),
+                            part("angleToTorque1", Vec::new()),
+                            part("move_w", vec![index(component_index)]),
+                            part("u", Vec::new()),
+                        ],
+                        span,
+                    )),
+                    ..rumoca_ir_dae::Variable::empty_with_span(span)
+                },
+            );
+        }
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert_eq!(
+            scope
+                .dims(&VarName::new("springDamper.angleToTorque1.move_w.u"))
+                .expect("aggregate shape should include component and leaf variable dimensions"),
+            vec![2, 2]
         );
     }
 

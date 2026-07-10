@@ -718,6 +718,56 @@ fn substitute_var_subscripted_replacement_uses_reference_span_when_replacement_i
 }
 
 #[test]
+fn substitute_var_does_not_double_project_already_indexed_alias_replacement() {
+    let expr = var_ref("u[1]");
+    let substitution = Substitution {
+        var_name: VarName::new("u[1]"),
+        var_ref: Some(reference("u[1]")),
+        expr: var_ref_idx("y", 1),
+        var_dims: Vec::new(),
+        replacement_dims: vec![2],
+        env_keys: vec!["u[1]".to_string()],
+    };
+
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &[substitution]));
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "y"
+                    && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 1, .. }])
+        ),
+        "already-indexed scalar alias replacement must not gain a second subscript"
+    );
+}
+
+#[test]
+fn substitute_var_does_not_double_project_indexed_replacement_for_aggregate_use_site() {
+    let expr = var_ref("u[1]");
+    let substitution = Substitution {
+        var_name: VarName::new("u"),
+        var_ref: Some(reference("u")),
+        expr: var_ref_idx("y", 1),
+        var_dims: vec![1],
+        replacement_dims: vec![2],
+        env_keys: vec!["u".to_string()],
+    };
+
+    let result = structural_ok(apply_substitutions_to_expr(&expr, &[substitution]));
+
+    assert!(
+        matches!(
+            &result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "y"
+                    && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 1, .. }])
+        ),
+        "aggregate use-site indexing must not double-project an already-indexed replacement: {result:?}"
+    );
+}
+
+#[test]
 fn substitute_var_rejects_unspanned_embedded_array_alias_projection() {
     let expr = Expression::VarRef {
         name: dummy_reference("arr[2]"),

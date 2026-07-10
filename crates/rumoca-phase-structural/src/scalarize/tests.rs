@@ -784,6 +784,63 @@ fn scalarize_matrix_vector_product_uses_row_dot_product() {
 }
 
 #[test]
+fn scalarize_vector_residual_projects_single_column_matrix_rhs_lanes() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[3]));
+    for name in ["u1", "u2", "u3"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(VarName::new(name), variable(name, &[1]));
+    }
+    let lhs = Expression::Array {
+        elements: vec![var("y")],
+        is_matrix: true,
+        span: test_span(),
+    };
+    let rhs = Expression::Array {
+        elements: vec![
+            Expression::Array {
+                elements: vec![var("u1")],
+                is_matrix: true,
+                span: test_span(),
+            },
+            Expression::Array {
+                elements: vec![var("u2")],
+                is_matrix: true,
+                span: test_span(),
+            },
+            Expression::Array {
+                elements: vec![var("u3")],
+                is_matrix: true,
+                span: test_span(),
+            },
+        ],
+        is_matrix: true,
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(lhs, rhs, 3, test_span()));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 3);
+    for (idx, expected_rhs) in ["u1", "u2", "u3"].into_iter().enumerate() {
+        let eq = &dae_model.continuous.equations[idx];
+        assert_eq!(residual_lhs_ref(eq), Some(("y", vec![(idx + 1) as i64])));
+        let Expression::Binary { rhs, .. } = &eq.rhs else {
+            panic!("expected residual subtraction");
+        };
+        assert_eq!(rhs.as_ref(), &var(expected_rhs));
+    }
+}
+
+#[test]
 fn scalarize_projected_function_output_keeps_array_argument_whole() {
     let mut dae_model = dae::Dae::default();
     dae_model

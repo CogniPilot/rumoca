@@ -1164,16 +1164,17 @@ impl<'a> LowerBuilder<'a> {
         let Some(shape) = self.layout.shape(name) else {
             return Ok(None);
         };
-        if shape.len() != subscripts.len() {
+        if subscripts.len() < shape.len() {
             return Ok(None);
         }
 
         let mut indices = crate::lower_vec_with_capacity(
-            subscripts.len(),
+            shape.len(),
             "singleton subscript index count",
             subscript_span_with_owner(subscripts, owner_span),
         )?;
-        for (subscript, dim) in subscripts.iter().zip(shape.iter().copied()) {
+        let (declared_subscripts, extra_subscripts) = subscripts.split_at(shape.len());
+        for (subscript, dim) in declared_subscripts.iter().zip(shape.iter().copied()) {
             let index = match subscript {
                 rumoca_core::Subscript::Index { value, span } if *value > 0 => {
                     positive_i64_index(*value, span_or_owner(*span, owner_span))?
@@ -1199,6 +1200,29 @@ impl<'a> LowerBuilder<'a> {
                 });
             }
             indices.push(index);
+        }
+        for subscript in extra_subscripts {
+            let index = match subscript {
+                rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+                    positive_i64_index(*value, span_or_owner(*span, owner_span))?
+                }
+                rumoca_core::Subscript::Expr { expr, span } => {
+                    match static_singleton_subscript_index(expr, span_or_owner(*span, owner_span))?
+                    {
+                        Some(value) => value,
+                        None => return Ok(None),
+                    }
+                }
+                rumoca_core::Subscript::Colon { .. } => return Ok(None),
+                _ => {
+                    return Err(LowerError::Unsupported {
+                        reason: "non-positive subscript is unsupported".to_string(),
+                    });
+                }
+            };
+            if index != 1 {
+                return Ok(None);
+            }
         }
         Ok(Some(indices))
     }

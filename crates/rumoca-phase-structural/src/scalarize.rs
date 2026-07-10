@@ -1567,10 +1567,19 @@ fn residual_lhs_var_ref(expr: &Expression) -> Option<(&Reference, Vec<Subscript>
     else {
         return None;
     };
-    match lhs.as_ref() {
+    residual_lhs_var_ref_from_expr(lhs.as_ref())
+}
+
+fn residual_lhs_var_ref_from_expr(expr: &Expression) -> Option<(&Reference, Vec<Subscript>)> {
+    match expr {
         Expression::VarRef {
             name, subscripts, ..
         } => Some((name, subscripts.clone())),
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. }
+            if elements.len() == 1 =>
+        {
+            residual_lhs_var_ref_from_expr(elements.first()?)
+        }
         Expression::Index {
             base, subscripts, ..
         } => {

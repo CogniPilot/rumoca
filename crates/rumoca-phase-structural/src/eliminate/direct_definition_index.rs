@@ -46,6 +46,26 @@ impl DirectDefinitionIndex {
             .is_some_and(|targets| targets.iter().any(|target| target == candidate));
         count > usize::from(current_has_definition)
     }
+
+    pub(super) fn has_other_non_connection_direct_definition(
+        &self,
+        dae: &dae::Dae,
+        current_eq_idx: usize,
+        candidate: &VarName,
+    ) -> bool {
+        self.per_equation
+            .iter()
+            .enumerate()
+            .any(|(eq_idx, targets)| {
+                eq_idx != current_eq_idx
+                    && targets.iter().any(|target| target == candidate)
+                    && !dae
+                        .continuous
+                        .equations
+                        .get(eq_idx)
+                        .is_some_and(|eq| eq.origin.contains("connection"))
+            })
+    }
 }
 
 fn direct_assignment_targets(expr: &Expression) -> IndexSet<VarName> {

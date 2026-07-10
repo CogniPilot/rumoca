@@ -10,7 +10,8 @@ use super::diagnostics::SimulationDiagnosticError;
 use super::entry::{lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing};
 use super::probe::{eval_dae_at, jacobian_for_dae};
 use super::structural_lowering::{
-    metadata_attachment_lower_error, structurally_lower_dae_for_simulation,
+    metadata_attachment_lower_error, prepare_dae_after_boundary_elimination,
+    structurally_lower_dae_for_simulation,
 };
 
 fn sim_source_span(source: u64, start: usize, end: usize) -> Span {
@@ -308,6 +309,75 @@ fn simulation_structural_lowering_demotes_vector_state_with_only_alias_rows() {
             .variables
             .algebraics
             .contains_key(&VarName::new("imc.is"))
+    );
+}
+
+#[test]
+fn post_boundary_prep_demotes_newly_exposed_exact_state_alias() {
+    let mut dae = dae::Dae::new();
+    dae.variables.states.insert(
+        VarName::new("direct.w"),
+        dae::Variable::new(VarName::new("direct.w"), fixture_span()),
+    );
+    dae.variables.states.insert(
+        VarName::new("inverse.w"),
+        dae::Variable::new(VarName::new("inverse.w"), fixture_span()),
+    );
+    dae.variables.algebraics.insert(
+        VarName::new("drive"),
+        dae::Variable::new(VarName::new("drive"), fixture_span()),
+    );
+    dae.variables.algebraics.insert(
+        VarName::new("inverse.a"),
+        dae::Variable::new(VarName::new("inverse.a"), fixture_span()),
+    );
+
+    dae.continuous
+        .equations
+        .push(eq(sub(der(var("direct.w")), var("drive"))));
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var("inverse.w"), var("direct.w")),
+        span: fixture_span(),
+        origin: "post-boundary state alias".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: Some(reference("inverse.a")),
+        rhs: der(var("inverse.w")),
+        span: fixture_span(),
+        origin: "post-boundary derivative alias".to_string(),
+        scalar_count: 1,
+    });
+
+    let changed = prepare_dae_after_boundary_elimination(&mut dae, &[])
+        .expect("post-boundary exact aliases should demote duplicate states");
+
+    assert!(changed);
+    assert!(dae.variables.states.contains_key(&VarName::new("direct.w")));
+    assert!(
+        !dae.variables
+            .states
+            .contains_key(&VarName::new("inverse.w"))
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("inverse.w"))
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|eq| !rumoca_ir_dae::expr_contains_der_of(&eq.rhs, &VarName::new("inverse.w"))),
+        "post-boundary prep must rewrite derivative users to the canonical state"
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|eq| rumoca_ir_dae::expr_contains_der_of(&eq.rhs, &VarName::new("direct.w"))),
+        "canonical state derivative should remain represented after alias rewrite"
     );
 }
 

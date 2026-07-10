@@ -84,11 +84,25 @@ pub(super) fn expr_contains_indexed_multiscalar_slice_ref(
                     name.as_str()
                 ),
             })?;
-        if !var_ref_is_scalar_after_subscripts(&name, &subscripts, reference_span, dae)? {
-            return Ok(true);
+        match var_ref_is_scalar_after_subscripts(&name, &subscripts, reference_span, dae) {
+            Ok(false) => return Ok(true),
+            Ok(true) => {}
+            Err(StructuralError::ContractViolation { reason, .. })
+            | Err(StructuralError::UnspannedContractViolation { reason })
+                if is_overspecified_indexed_reference_contract(&reason) =>
+            {
+                return Ok(true);
+            }
+            Err(err) => return Err(err),
         }
     }
     Ok(false)
+}
+
+fn is_overspecified_indexed_reference_contract(reason: &str) -> bool {
+    reason.starts_with("indexed DAE reference ")
+        && reason.contains(" has ")
+        && reason.contains(" subscripts for dimensions ")
 }
 
 fn reference_touches_continuous_unknown(dae: &Dae, name: &VarName) -> bool {
@@ -140,4 +154,37 @@ fn strip_embedded_subscripts(name: &str) -> Option<String> {
         }
     }
     (depth == 0 && stripped != name).then_some(stripped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{Reference, Span, Subscript};
+    use rumoca_ir_dae as dae;
+
+    #[test]
+    fn overspecified_vector_projection_is_classified_as_indexed_slice() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            VarName::new("x"),
+            dae::Variable {
+                name: VarName::new("x"),
+                dims: vec![2],
+                ..dae::Variable::empty_with_span(Span::DUMMY)
+            },
+        );
+        let expr = Expression::VarRef {
+            name: Reference::from_var_name(VarName::new("x")),
+            subscripts: vec![
+                Subscript::index(1, Span::DUMMY),
+                Subscript::index(1, Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        };
+
+        assert!(
+            expr_contains_indexed_multiscalar_slice_ref(&expr, &dae_model)
+                .expect("slice classifier should not fatal on overspecified projection")
+        );
+    }
 }

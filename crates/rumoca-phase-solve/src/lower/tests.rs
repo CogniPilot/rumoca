@@ -1264,6 +1264,42 @@ fn index_over_stream_passthrough_uses_argument_bindings() {
 }
 
 #[test]
+fn scalar_var_ref_consumes_singleton_projection_after_array_element_selection() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), {
+            let mut variable = dae::Variable {
+                name: rumoca_core::VarName::new("y"),
+                dims: vec![3],
+                ..dae::Variable::empty_with_span(span)
+            };
+            variable.origin = dae::VariableOrigin::Generated;
+            variable
+        });
+    let layout = build_var_layout(&dae_model).expect("vector layout should build");
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("y"),
+        subscripts: vec![
+            rumoca_core::Subscript::index(2, span),
+            rumoca_core::Subscript::index(1, span),
+        ],
+        span,
+    };
+
+    let reg = builder
+        .lower_expr(&expr, &Scope::new(), 0)
+        .expect("scalarized vector element should accept trailing singleton projection");
+    let (regs, _) = eval_linear_ops(&builder.ops, &[10.0, 20.0, 30.0], &[], 0.0);
+
+    assert!((read_reg(&regs, reg) - 20.0).abs() < 1e-12);
+}
+
+#[test]
 fn zero_length_function_input_accepts_unknown_rank_empty_actual() {
     let span = lower_test_span();
     let mut function = rumoca_core::Function::new("Pkg.zeroLength", span);

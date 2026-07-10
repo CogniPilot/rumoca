@@ -1,4 +1,5 @@
 use super::*;
+use crate::build_var_layout;
 
 fn unspanned_array_values_test_span() -> rumoca_core::Span {
     rumoca_core::Span::DUMMY
@@ -227,6 +228,88 @@ fn lower_array_like_values_lowers_modelica_array_constructor_call() -> Result<()
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::Const { dst: 1, value: 2.0 },
         ]
+    );
+    Ok(())
+}
+
+#[test]
+fn slice_binding_keys_consume_singleton_projection_after_scalar_selection() -> Result<(), LowerError>
+{
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("array_slice_singleton_projection.mo"),
+        8,
+        16,
+    );
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), {
+            let mut variable = dae::Variable {
+                name: rumoca_core::VarName::new("y"),
+                dims: vec![3],
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            };
+            variable.origin = dae::VariableOrigin::Generated;
+            variable
+        });
+    let layout = build_var_layout(&dae_model)?;
+    let functions = IndexMap::new();
+    let builder = LowerBuilder::new(&layout, &functions);
+    let keys = builder
+        .slice_binding_keys(
+            "y",
+            &[
+                rumoca_core::Subscript::index(2, span),
+                rumoca_core::Subscript::index(1, span),
+            ],
+            span,
+            &Scope::new(),
+        )?
+        .expect("declared scalar selection followed by singleton projection should resolve");
+
+    assert_eq!(keys, vec!["y[2]"]);
+    Ok(())
+}
+
+#[test]
+fn slice_binding_keys_reject_non_singleton_extra_projection() -> Result<(), LowerError> {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("array_slice_non_singleton_projection.mo"),
+        8,
+        16,
+    );
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), {
+            let mut variable = dae::Variable {
+                name: rumoca_core::VarName::new("y"),
+                dims: vec![3],
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            };
+            variable.origin = dae::VariableOrigin::Generated;
+            variable
+        });
+    let layout = build_var_layout(&dae_model)?;
+    let functions = IndexMap::new();
+    let builder = LowerBuilder::new(&layout, &functions);
+    let err = builder
+        .slice_binding_keys(
+            "y",
+            &[
+                rumoca_core::Subscript::index(2, span),
+                rumoca_core::Subscript::index(2, span),
+            ],
+            span,
+            &Scope::new(),
+        )
+        .expect_err("non-singleton extra projection must remain a shape error");
+
+    assert_eq!(
+        err.reason(),
+        "array slice has more subscripts than dimensions"
     );
     Ok(())
 }

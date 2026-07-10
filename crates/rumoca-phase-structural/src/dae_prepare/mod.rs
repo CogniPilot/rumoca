@@ -147,7 +147,7 @@ fn split_linear_target(
     context_span: Span,
 ) -> Option<(i32, Expression)> {
     let span = expr.span().unwrap_or(context_span);
-    if expr_refers_to_var(expr, target) {
+    if expression_is_linear_target_ref(expr, target) {
         return Some((1, zero_expr(span)));
     }
 
@@ -183,6 +183,13 @@ fn split_linear_target(
         }
         _ => None,
     }
+}
+
+fn expression_is_linear_target_ref(expr: &Expression, target: &VarName) -> bool {
+    matches!(
+        expr,
+        Expression::VarRef { .. } | Expression::Index { .. } | Expression::FieldAccess { .. }
+    ) && expression_exact_name(expr).is_some_and(|name| name == target.as_str())
 }
 
 fn extract_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression> {
@@ -1369,6 +1376,14 @@ pub fn try_extract_state_alias_pair(rhs: &Expression) -> Option<(VarName, VarNam
     Some((VarName::new(lhs_name), VarName::new(rhs_name)))
 }
 
+fn try_extract_state_alias_pair_from_equation(eq: &Equation) -> Option<(VarName, VarName)> {
+    if let Some(lhs) = eq.lhs.as_ref() {
+        let rhs_name = expression_exact_name(&eq.rhs)?;
+        return Some((VarName::new(lhs.as_str()), VarName::new(rhs_name)));
+    }
+    try_extract_state_alias_pair(&eq.rhs)
+}
+
 fn state_select_rank(state_select: rumoca_core::StateSelect) -> u8 {
     match state_select {
         rumoca_core::StateSelect::Never => 0,
@@ -1560,7 +1575,7 @@ pub fn demote_exact_alias_component_states(dae: &mut Dae) -> Result<usize, Struc
         .continuous
         .equations
         .iter()
-        .filter_map(|eq| try_extract_state_alias_pair(&eq.rhs))
+        .filter_map(try_extract_state_alias_pair_from_equation)
         .filter(|(a, b)| a != b)
         .collect();
     if alias_pairs.is_empty() {
@@ -1687,7 +1702,7 @@ pub fn demote_alias_states_without_der(dae: &mut Dae) -> Result<usize, Structura
         .continuous
         .equations
         .iter()
-        .filter_map(|eq| try_extract_state_alias_pair(&eq.rhs))
+        .filter_map(try_extract_state_alias_pair_from_equation)
     {
         if !(state_name_set.contains(a.as_str()) || state_name_set.contains(b.as_str())) {
             continue;

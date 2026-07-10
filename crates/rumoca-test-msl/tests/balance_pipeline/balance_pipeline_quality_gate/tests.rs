@@ -1194,6 +1194,7 @@ fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
 fn valid_simulation_parity_payload() -> Value {
     json!({
         "total_models": 7,
+        "omc_version": "OpenModelica 1.26.1",
         "runtime_comparison": { "ratio_stats": {
             "system_ratio_both_success": {
                 "sample_count": 5,
@@ -1236,6 +1237,35 @@ fn valid_simulation_parity_payload() -> Value {
             }
         }
     })
+}
+
+#[test]
+fn optional_parity_input_treats_target_count_mismatch_as_absent() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("omc_simulation_reference.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&valid_simulation_parity_payload()).expect("serialize payload"),
+    )
+    .expect("write payload");
+
+    let optional = load_msl_parity_gate_input_optional_from_path(&path, 1)
+        .expect("stale optional parity input should not error");
+    assert!(
+        optional.is_none(),
+        "stale optional parity input should be ignored for focused snapshots"
+    );
+
+    let stale = validate_parity_total_models(
+        &path,
+        &load_msl_parity_gate_input(&path).expect("load parity input"),
+        1,
+    )
+    .expect_err("required parity input must reject a stale target count");
+    assert!(
+        stale.to_string().contains("is stale"),
+        "required parity input should still explain the stale reference, got {stale}"
+    );
 }
 
 #[test]

@@ -52,77 +52,24 @@ fn binding_expressions_for_subscripted_reference(
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<Vec<rumoca_core::Expression>, LowerError> {
     if let Some(dims) = variable_dims(dae_model, name.as_str())? {
-        let selections = if subscripts.is_empty() {
-            let mut selections = derivative_vec_with_capacity(
-                dims.len(),
-                "derivative slice selection dimension count",
-                span,
-            )?;
-            for dim in dims {
-                selections.push(one_based_index_range(
-                    dim,
-                    "derivative full-slice index count",
-                    span,
-                )?);
-            }
-            selections
-        } else {
-            slice_selections(subscripts, &dims, structural_bindings, span)?
-        };
-        let expression_count = slice_selection_count(&selections, span)?;
-        let mut expressions = derivative_vec_with_capacity(
-            expression_count,
-            "derivative slice expression count",
-            span,
-        )?;
-        let mut current =
-            derivative_vec_with_capacity(selections.len(), "derivative slice index depth", span)?;
-        collect_slice_reference_expressions(
+        return collect_regular_slice_binding_expressions(
             name,
+            &dims,
+            subscripts,
+            structural_bindings,
             span,
-            &selections,
-            0,
-            &mut current,
-            &mut expressions,
-        )?;
-        return Ok(expressions);
+        );
     }
 
     if let Some(dims) = scalarized_child_dims(dae_model, name.as_str(), span)? {
-        let selections = if subscripts.is_empty() {
-            let mut selections = derivative_vec_with_capacity(
-                dims.len(),
-                "scalarized derivative slice selection dimension count",
-                span,
-            )?;
-            for dim in dims {
-                selections.push(one_based_index_range(
-                    dim,
-                    "scalarized derivative full-slice index count",
-                    span,
-                )?);
-            }
-            selections
-        } else {
-            slice_selections(subscripts, &dims, structural_bindings, span)?
-        };
-        let key_count = slice_selection_count(&selections, span)?;
-        let mut keys =
-            derivative_vec_with_capacity(key_count, "scalarized derivative slice key count", span)?;
-        let mut current =
-            derivative_vec_with_capacity(selections.len(), "derivative slice key depth", span)?;
-        collect_slice_keys(name.as_str(), &selections, span, 0, &mut current, &mut keys)?;
-        let mut expressions = derivative_vec_with_capacity(
-            keys.len(),
-            "scalarized derivative slice expression count",
+        return collect_scalarized_slice_binding_expressions(
+            dae_model,
+            name,
+            &dims,
+            subscripts,
+            structural_bindings,
             span,
-        )?;
-        for key in keys {
-            let variable = variable_by_name(dae_model, &key)
-                .ok_or_else(|| LowerError::MissingBinding { name: key.clone() })?;
-            expressions.push(dae_variable_ref_expr(&key, variable, span, Vec::new())?);
-        }
-        return Ok(expressions);
+        );
     }
 
     if subscripts.is_empty() {
@@ -138,6 +85,17 @@ fn binding_expressions_for_subscripted_reference(
         );
     }
 
+    if let Some(variable) = variable_by_name(dae_model, name.as_str())
+        && variable.dims.is_empty()
+        && subscript_indices_are_all_singleton(subscripts, structural_bindings, span)?
+    {
+        return single_expression_vec(
+            dae_variable_ref_expr(name.as_str(), variable, span, Vec::new())?,
+            "derivative scalar singleton binding expression count",
+            span,
+        );
+    }
+
     let indices = binding_subscript_indices(name, subscripts, structural_bindings, span)?;
     let scalarized_key = dae::format_subscript_key(name.as_str(), &indices);
     let variable =
@@ -149,6 +107,99 @@ fn binding_expressions_for_subscripted_reference(
         "derivative scalarized binding expression count",
         span,
     )
+}
+
+fn collect_regular_slice_binding_expressions(
+    name: &rumoca_core::Reference,
+    dims: &[usize],
+    subscripts: &[rumoca_core::Subscript],
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_core::Expression>, LowerError> {
+    let selections = binding_slice_selections(
+        dims,
+        subscripts,
+        structural_bindings,
+        "derivative slice selection dimension count",
+        "derivative full-slice index count",
+        span,
+    )?;
+    let expression_count = slice_selection_count(&selections, span)?;
+    let mut expressions =
+        derivative_vec_with_capacity(expression_count, "derivative slice expression count", span)?;
+    let mut current =
+        derivative_vec_with_capacity(selections.len(), "derivative slice index depth", span)?;
+    collect_slice_reference_expressions(
+        name,
+        span,
+        &selections,
+        0,
+        &mut current,
+        &mut expressions,
+    )?;
+    Ok(expressions)
+}
+
+fn collect_scalarized_slice_binding_expressions(
+    dae_model: &dae::Dae,
+    name: &rumoca_core::Reference,
+    dims: &[usize],
+    subscripts: &[rumoca_core::Subscript],
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_core::Expression>, LowerError> {
+    let selections = binding_slice_selections(
+        dims,
+        subscripts,
+        structural_bindings,
+        "scalarized derivative slice selection dimension count",
+        "scalarized derivative full-slice index count",
+        span,
+    )?;
+    let key_count = slice_selection_count(&selections, span)?;
+    let mut keys =
+        derivative_vec_with_capacity(key_count, "scalarized derivative slice key count", span)?;
+    let mut current =
+        derivative_vec_with_capacity(selections.len(), "derivative slice key depth", span)?;
+    collect_slice_keys(name.as_str(), &selections, span, 0, &mut current, &mut keys)?;
+    let mut expressions = derivative_vec_with_capacity(
+        keys.len(),
+        "scalarized derivative slice expression count",
+        span,
+    )?;
+    for key in keys {
+        let variable = variable_by_name(dae_model, &key)
+            .ok_or_else(|| LowerError::MissingBinding { name: key.clone() })?;
+        expressions.push(dae_variable_ref_expr(&key, variable, span, Vec::new())?);
+    }
+    Ok(expressions)
+}
+
+fn binding_slice_selections(
+    dims: &[usize],
+    subscripts: &[rumoca_core::Subscript],
+    structural_bindings: &IndexMap<String, f64>,
+    capacity_context: &'static str,
+    range_context: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<Vec<usize>>, LowerError> {
+    if !subscripts.is_empty() {
+        return slice_selections(subscripts, dims, structural_bindings, span);
+    }
+    let mut selections = derivative_vec_with_capacity(dims.len(), capacity_context, span)?;
+    for dim in dims {
+        selections.push(one_based_index_range(*dim, range_context, span)?);
+    }
+    Ok(selections)
+}
+
+fn subscript_indices_are_all_singleton(
+    subscripts: &[rumoca_core::Subscript],
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
+    let indices = compile_time_subscript_indices_with_owner(subscripts, structural_bindings, span)?;
+    Ok(indices.iter().all(|index| *index == 1))
 }
 
 fn binding_subscript_indices(
@@ -293,6 +344,12 @@ pub(in crate::lower) fn binding_keys_for_subscripted_name(
             )?;
             collect_slice_keys(base, &selections, span, 0, &mut current, &mut keys)?;
             return Ok(keys);
+        }
+        if (variable_by_name(dae_model, base).is_some()
+            || scalarized_variable_name_is_declared(dae_model, base)?)
+            && subscript_indices_are_all_singleton(subscripts, structural_bindings, span)?
+        {
+            return Ok(vec![base.to_string()]);
         }
         let scalarized_key =
             scalarized_binding_key(base, subscripts, structural_bindings, fallback_span)?;

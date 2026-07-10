@@ -113,6 +113,156 @@ fn derivative_slice_subscript_bounds_error_reports_subscript_span() {
 }
 
 #[test]
+fn derivative_slice_accepts_trailing_singleton_after_scalar_selection() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("derivative_slice_singleton.mo"),
+        8,
+        16,
+    );
+    let selections = slice_selections(
+        &[
+            rumoca_core::Subscript::index(3, span),
+            rumoca_core::Subscript::index(1, span),
+        ],
+        &[3],
+        &IndexMap::new(),
+        span,
+    )
+    .expect("trailing singleton after scalar vector selection should be consumed");
+
+    assert_eq!(selections, vec![vec![3]]);
+}
+
+#[test]
+fn derivative_slice_rejects_non_singleton_extra_subscript() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("derivative_slice_bad_extra.mo"),
+        8,
+        16,
+    );
+    let err = slice_selections(
+        &[
+            rumoca_core::Subscript::index(3, span),
+            rumoca_core::Subscript::index(2, span),
+        ],
+        &[3],
+        &IndexMap::new(),
+        span,
+    )
+    .expect_err("non-singleton extra subscript should remain invalid");
+
+    assert_eq!(
+        err.reason(),
+        "array derivative slice has more subscripts than dimensions"
+    );
+}
+
+#[test]
+fn binding_expression_consumes_singleton_subscript_on_scalarized_variable() -> Result<(), LowerError>
+{
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("derivative_scalarized_singleton_binding.mo"),
+        8,
+        16,
+    );
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y[2]"), {
+            let mut variable = dae::Variable {
+                name: rumoca_core::VarName::new("y[2]"),
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            };
+            variable.origin = dae::VariableOrigin::Generated;
+            variable
+        });
+    let expr = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("y[2]"),
+        subscripts: vec![rumoca_core::Subscript::index(1, span)],
+        span,
+    };
+
+    let bindings = expression_binding_expressions(&expr, &dae_model, &IndexMap::new(), span)?
+        .expect("scalarized variable should resolve");
+
+    assert_eq!(bindings.len(), 1);
+    assert!(matches!(
+        &bindings[0],
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "y[2]" && subscripts.is_empty()
+    ));
+    Ok(())
+}
+
+#[test]
+fn binding_keys_consume_singleton_subscript_on_scalarized_variable() -> Result<(), LowerError> {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("derivative_scalarized_singleton_key.mo"),
+        8,
+        16,
+    );
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y[2]"), {
+            let mut variable = dae::Variable {
+                name: rumoca_core::VarName::new("y[2]"),
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            };
+            variable.origin = dae::VariableOrigin::Generated;
+            variable
+        });
+    let keys = binding_keys_for_subscripted_name(
+        "y[2]",
+        &[rumoca_core::Subscript::index(1, span)],
+        &dae_model,
+        &IndexMap::new(),
+        span,
+    )?;
+
+    assert_eq!(keys, vec!["y[2]"]);
+    Ok(())
+}
+
+#[test]
+fn binding_keys_consume_singleton_subscript_after_vector_scalar_selection() -> Result<(), LowerError>
+{
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("derivative_vector_singleton_key.mo"),
+        8,
+        16,
+    );
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), {
+            let mut variable = dae::Variable {
+                name: rumoca_core::VarName::new("y"),
+                dims: vec![3],
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            };
+            variable.origin = dae::VariableOrigin::Generated;
+            variable
+        });
+    let keys = binding_keys_for_subscripted_name(
+        "y",
+        &[
+            rumoca_core::Subscript::index(2, span),
+            rumoca_core::Subscript::index(1, span),
+        ],
+        &dae_model,
+        &IndexMap::new(),
+        span,
+    )?;
+
+    assert_eq!(keys, vec!["y[2]"]);
+    Ok(())
+}
+
+#[test]
 fn scalar_binding_indexed_dimension_error_reports_subscript_span() -> Result<(), String> {
     let subscript_span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(

@@ -684,6 +684,62 @@ pub(super) fn load_current_msl_parity_gate_input_required(
     }
     let parity = load_msl_parity_gate_input(&path)?;
     validate_parity_total_models(&path, &parity, expected_sim_target_models)?;
+    validate_required_msl_parity_gate_input(&path, parity)
+}
+
+pub(super) fn load_current_msl_parity_gate_input_optional(
+    expected_sim_target_models: usize,
+) -> io::Result<Option<MslParityGateInput>> {
+    let path = omc_simulation_reference_path();
+    load_msl_parity_gate_input_optional_from_path(&path, expected_sim_target_models)
+}
+
+fn load_msl_parity_gate_input_optional_from_path(
+    path: &Path,
+    expected_sim_target_models: usize,
+) -> io::Result<Option<MslParityGateInput>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let parity = load_msl_parity_gate_input(path)?;
+    let Some(parity_total_models) = parity.total_models else {
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' is missing total_models/models metadata",
+            path.display()
+        )));
+    };
+    if parity_total_models != expected_sim_target_models {
+        return Ok(None);
+    }
+    validate_required_msl_parity_gate_input(path, parity).map(Some)
+}
+
+fn validate_parity_total_models(
+    path: &Path,
+    parity: &MslParityGateInput,
+    expected_sim_target_models: usize,
+) -> io::Result<()> {
+    let parity_total_models = parity.total_models.ok_or_else(|| {
+        io::Error::other(format!(
+            "OMC parity file '{}' is missing total_models/models metadata",
+            path.display()
+        ))
+    })?;
+    if parity_total_models != expected_sim_target_models {
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' is stale: total_models={} but current sim_target_models={}; regenerate OMC simulation reference for the active target set",
+            path.display(),
+            parity_total_models,
+            expected_sim_target_models
+        )));
+    }
+    Ok(())
+}
+
+fn validate_required_msl_parity_gate_input(
+    path: &Path,
+    parity: MslParityGateInput,
+) -> io::Result<MslParityGateInput> {
     if parity.omc_version.is_none() {
         return Err(io::Error::other(format!(
             "OMC parity file '{}' is missing omc_version metadata; regenerate OMC simulation reference",
@@ -738,38 +794,6 @@ pub(super) fn load_current_msl_parity_gate_input_required(
         )));
     }
     Ok(parity)
-}
-
-pub(super) fn load_current_msl_parity_gate_input_optional(
-    expected_sim_target_models: usize,
-) -> io::Result<Option<MslParityGateInput>> {
-    let path = omc_simulation_reference_path();
-    if !path.is_file() {
-        return Ok(None);
-    }
-    load_current_msl_parity_gate_input_required(expected_sim_target_models).map(Some)
-}
-
-fn validate_parity_total_models(
-    path: &Path,
-    parity: &MslParityGateInput,
-    expected_sim_target_models: usize,
-) -> io::Result<()> {
-    let parity_total_models = parity.total_models.ok_or_else(|| {
-        io::Error::other(format!(
-            "OMC parity file '{}' is missing total_models/models metadata",
-            path.display()
-        ))
-    })?;
-    if parity_total_models != expected_sim_target_models {
-        return Err(io::Error::other(format!(
-            "OMC parity file '{}' is stale: total_models={} but current sim_target_models={}; regenerate OMC simulation reference for the active target set",
-            path.display(),
-            parity_total_models,
-            expected_sim_target_models
-        )));
-    }
-    Ok(())
 }
 
 pub(super) fn resolve_msl_tools_exe_inner() -> Result<PathBuf, String> {
