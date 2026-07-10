@@ -21,11 +21,11 @@
         "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
         "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
         "unsigned", "void", "volatile", "while", "inline", "restrict",
-        "m", "t", "time", "i", "n", "arr", "s", "sz", "ModelInstance", "Complex",
+        "m", "t", "i", "n", "arr", "s", "sz", "ModelInstance", "Complex",
         "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
     ]
 } %}
-{% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy, dae.symbol_aliases) %}
+{% set symbols = target_symbols(dae.symbol_refs + ["time"], c_symbol_policy, dae.symbol_aliases) %}
 {% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
 {% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
 {% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}
@@ -35,6 +35,23 @@
 {% set solve_derivative_rows = solve_blocks.continuous.derivative_rhs.scalar_programs.programs if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else (solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else []) %}
 {% set solve_derivative_output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.derivative_rhs is defined and solve_blocks.continuous.derivative_rhs.scalar_programs is defined else (solve.continuous.derivative_rhs.output_indices if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.output_indices is defined else []) %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
+{% set solve_implicit_programs = solve_blocks.continuous.implicit_rhs.scalar_programs.programs if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.implicit_rhs is defined and solve_blocks.continuous.implicit_rhs.scalar_programs is defined else [] %}
+{% set solve_implicit_output_indices = solve_blocks.continuous.implicit_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.implicit_rhs is defined and solve_blocks.continuous.implicit_rhs.scalar_programs is defined else [] %}
+{% set solve_projection_blocks = solve.continuous.algebraic_projection_plan.blocks if solve is defined and solve.continuous is defined and solve.continuous.algebraic_projection_plan is defined and solve.continuous.algebraic_projection_plan.blocks is defined else [] %}
+{% set solve_state_count = solve.solve_layout.state_scalar_count if solve is defined and solve.solve_layout is defined and solve.solve_layout.state_scalar_count is defined else 0 %}
+{# A scalar BLT plan has exact unit-slope assignment rows and needs one pass.
+   Retain the DAE evaluator as a compatibility fallback for coupled blocks. #}
+{% set solve_projection = namespace(fast=solve_projection_blocks | length > 0, cursor=0) %}
+{% for block in solve_projection_blocks %}
+{% if block.rows | length != 1 or block.y_indices | length != 1 %}{% set solve_projection.fast = false %}{% endif %}
+{% endfor %}
+{% for program in solve_implicit_programs %}
+{% set output_count = store_output_count([program]) %}
+{% for ordinal in range(output_count) %}
+{% if solve_implicit_output_indices[solve_projection.cursor + ordinal] >= solve_state_count and output_count != 1 %}{% set solve_projection.fast = false %}{% endif %}
+{% endfor %}
+{% set solve_projection.cursor = solve_projection.cursor + output_count %}
+{% endfor %}
 {% set solve_full_jacobian_rows = solve_full_jacobian_rows if solve_full_jacobian_rows is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else []) %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
@@ -669,7 +686,7 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% if func.outputs[0].dims %}
 {% set output_sz = func.outputs[0].dims | product %}
 {% for i in range(output_sz) %}
-static double {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name ~ "[" ~ (i + 1) ~ "]") }}({{ function_param_list(func) }});
+static double {{ symbol(symbols, source_ref(func_name ~ "." ~ func.outputs[0].name, func.outputs[0].dims, i + 1)) }}({{ function_param_list(func) }});
 {% endfor %}
 {% else %}
 static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }});
@@ -685,7 +702,7 @@ static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }});
 {% if func.outputs[0].dims %}
 {% set output_sz = func.outputs[0].dims | product %}
 {% for i in range(output_sz) %}
-static double {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name ~ "[" ~ (i + 1) ~ "]") }}({{ function_param_list(func) }}) {
+static double {{ symbol(symbols, source_ref(func_name ~ "." ~ func.outputs[0].name, func.outputs[0].dims, i + 1)) }}({{ function_param_list(func) }}) {
 {{ function_body(func_name, func, symbol(symbols, source_ref(func.outputs[0].name, func.outputs[0].dims, i + 1))) }}
 }
 {% endfor %}
@@ -863,7 +880,35 @@ static void initialize_defaults(ModelInstance* m) {
 /* =========================================================================
  * Compute algebraic variables from f_x equations
  * ========================================================================= */
+{% if solve_projection.fast %}
+static double __rumoca_implicit_row(const ModelInstance* m, int output_index) {
+    switch (output_index) {
+{% set output = namespace(cursor=0) %}
+{% for program in solve_implicit_programs %}
+{% set output_count = store_output_count([program]) %}
+{% if output_count == 1 %}
+    case {{ solve_implicit_output_indices[output.cursor] }}:
+        return {{ render_solve_row_c(program, solve_row_c_cfg) }};
+{% endif %}
+{% set output.cursor = output.cursor + output_count %}
+{% endfor %}
+    default:
+        return NAN;
+    }
+}
+{% endif %}
+
 static void compute_algebraics(ModelInstance* m) {
+{% if solve_projection.fast %}
+{% for block in solve_projection_blocks %}
+    {
+        const int row = {{ block.rows[0] }};
+        const int y_index = {{ block.y_indices[0] }};
+        const double residual = __rumoca_implicit_row(m, row);
+        __rumoca_solve_set_y(m, y_index, __rumoca_solve_y(m, y_index) - residual);
+    }
+{% endfor %}
+{% else %}
 {% if dae.y | length > 0 or dae.w | length > 0 %}
     const double t = m->time;
     const double time = m->time;
@@ -922,6 +967,7 @@ static void compute_algebraics(ModelInstance* m) {
 {% else %}
     (void)m;
 {% endif %}
+{% endif %}
 }
 
 /* =========================================================================
@@ -963,11 +1009,13 @@ static void compute_derivatives(ModelInstance* m) {
 {{ render_solve_block_c(solve_derivative_rows, solve_row_c_cfg, "m->xdot[{}] = {}", solve_derivative_output_indices) }}
 {% endif %}
 
-    /* Re-compute algebraics after derivatives (resolves derivative aliases) */
+{% if not solve_projection.fast %}
+    /* The DAE fallback may contain derivative aliases. */
     compute_algebraics(m);
 
     /* Outputs may depend on algebraics, including array-valued function projections. */
     compute_outputs(m);
+{% endif %}
 
     m->dirty_values = 0;
 }
@@ -976,6 +1024,10 @@ static void compute_derivatives(ModelInstance* m) {
  * Compute output variables (w)
  * ========================================================================= */
 static void compute_outputs(ModelInstance* m) {
+{% if solve_projection.fast %}
+    /* The Solve-IR projection writes the algebraic and output Y segments. */
+    (void)m;
+{% else %}
 {% if dae.w | length > 0 %}
     const double t = m->time;
     const double time = m->time;
@@ -1006,6 +1058,7 @@ static void compute_outputs(ModelInstance* m) {
 {% endfor %}
 {% else %}
     (void)m;
+{% endif %}
 {% endif %}
 }
 
@@ -2063,10 +2116,48 @@ FMI3_EXPORT fmi3Status fmi3GetAdjointDerivative(
 /* =========================================================================
  * FMI 3.0 API — Co-Simulation (§4.2)
  *
- * Built-in adaptive Dormand-Prince RK45 integrator for standalone
- * Co-Simulation use. For production-grade solver control, prefer Model
- * Exchange with an external solver.
+ * Fixed-step RK4 is the default for deterministic, lockstep Co-Simulation.
+ * Define RUMOCA_FMI3_COSIM_ADAPTIVE_RK45 to retain adaptive Dormand-Prince
+ * stepping. For production-grade solver control, prefer Model Exchange with
+ * an external solver.
  * ========================================================================= */
+
+static void rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]);
+
+static fmi3Status rk4_integrate(ModelInstance* m, double t_start, double t_stop) {
+#if N_STATES > 0
+    if (t_stop < t_start) return fmi3Error;
+    if (t_stop == t_start) return fmi3OK;
+
+    const double h = t_stop - t_start;
+    fmi3Float64 x0[N_STATES];
+    fmi3Float64 x_stage[N_STATES];
+    fmi3Float64 k1[N_STATES];
+    fmi3Float64 k2[N_STATES];
+    fmi3Float64 k3[N_STATES];
+    fmi3Float64 k4[N_STATES];
+    memcpy(x0, m->x, N_STATES * sizeof(fmi3Float64));
+
+    rk45_eval(m, t_start, x0, k1);
+    for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + 0.5 * h * k1[i];
+    rk45_eval(m, t_start + 0.5 * h, x_stage, k2);
+    for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + 0.5 * h * k2[i];
+    rk45_eval(m, t_start + 0.5 * h, x_stage, k3);
+    for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + h * k3[i];
+    rk45_eval(m, t_stop, x_stage, k4);
+
+    for (int i = 0; i < N_STATES; i++) {
+        m->x[i] = x0[i] + h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+    }
+    m->time = t_stop;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    return fmi3OK;
+#else
+    (void)m; (void)t_start; (void)t_stop;
+    return fmi3OK;
+#endif
+}
 
 #define RK45_ABS_TOL 1.0e-7
 #define RK45_REL_TOL 1.0e-5
@@ -2237,7 +2328,11 @@ FMI3_EXPORT fmi3Status fmi3DoStep(
     const double t_end = currentCommunicationPoint + communicationStepSize;
     fmi3IntermediateUpdateCallback cb = (fmi3IntermediateUpdateCallback)m->intermediateUpdate;
 
+#ifdef RUMOCA_FMI3_COSIM_ADAPTIVE_RK45
     fmi3Status status = rk45_integrate(m, currentCommunicationPoint, t_end);
+#else
+    fmi3Status status = rk4_integrate(m, currentCommunicationPoint, t_end);
+#endif
     if (status != fmi3OK) {
         if (eventHandlingNeeded) *eventHandlingNeeded = 0;
         if (terminateSimulation) *terminateSimulation = 1;

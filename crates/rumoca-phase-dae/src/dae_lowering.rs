@@ -15,6 +15,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 type Dae = dae::Dae;
 type RecordArgMap = HashMap<String, Vec<(usize, Vec<String>)>>;
 
+#[derive(Default)]
+struct ArrayParamMap {
+    by_def_id: HashMap<rumoca_core::DefId, Vec<usize>>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
 /// DAE value prepared for code generators that need DAE-level convenience
 /// rewrites without mutating the simulation DAE.
 #[derive(Debug, Clone)]
@@ -462,27 +468,27 @@ fn is_obviously_scalar(expr: &rumoca_core::Expression) -> bool {
 /// Insert size arguments for variable-size array params at DAE call sites.
 /// Must NOT be called before simulation — only before codegen rendering.
 pub fn insert_array_size_args_dae(dae: &mut Dae) -> Result<(), ToDaeError> {
-    let array_param_map: HashMap<String, Vec<usize>> = dae
-        .symbols
-        .functions
-        .iter()
-        .filter_map(|(name, func)| {
-            let indices: Vec<usize> = func
-                .inputs
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| !p.dims.is_empty())
-                .map(|(i, _)| i)
-                .collect();
-            if indices.is_empty() {
-                None
-            } else {
-                Some((name.as_str().to_string(), indices))
-            }
-        })
-        .collect();
+    let mut array_param_map = ArrayParamMap::default();
+    for (name, func) in &dae.symbols.functions {
+        let indices: Vec<usize> = func
+            .inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.dims.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        if indices.is_empty() {
+            continue;
+        }
+        if let Some(def_id) = func.def_id {
+            array_param_map.by_def_id.insert(def_id, indices.clone());
+        }
+        array_param_map
+            .by_name
+            .insert(name.as_str().to_string(), indices);
+    }
 
-    if array_param_map.is_empty() {
+    if array_param_map.by_name.is_empty() {
         return Ok(());
     }
 
@@ -507,7 +513,7 @@ mod record_lowering_tests;
 
 fn insert_size_args_dae_stmt(
     stmt: &mut rumoca_core::Statement,
-    map: &HashMap<String, Vec<usize>>,
+    map: &ArrayParamMap,
 ) -> Result<(), ToDaeError> {
     let mut rewriter = DaeSizeArgInserter { map, error: None };
     *stmt = rewriter.rewrite_statement(stmt);
@@ -518,7 +524,7 @@ fn insert_size_args_dae_stmt(
 }
 
 struct DaeSizeArgInserter<'a> {
-    map: &'a HashMap<String, Vec<usize>>,
+    map: &'a ArrayParamMap,
     error: Option<ToDaeError>,
 }
 
@@ -535,7 +541,7 @@ impl ExpressionRewriter for DaeSizeArgInserter<'_> {
         } = expr
         {
             let mut args = self.rewrite_expressions(args);
-            if let Some(array_indices) = self.map.get(name.as_str())
+            if let Some(array_indices) = array_param_indices_for_call(self.map, name)
                 && let Err(error) = insert_dae_size_args(&mut args, array_indices, *span)
             {
                 return self.record_error(error, expr);
@@ -565,6 +571,17 @@ impl DaeSizeArgInserter<'_> {
 impl StatementRewriter for DaeSizeArgInserter<'_> {}
 
 impl DaeExpressionRewriter for DaeSizeArgInserter<'_> {}
+
+fn array_param_indices_for_call<'a>(
+    map: &'a ArrayParamMap,
+    call_name: &rumoca_core::Reference,
+) -> Option<&'a Vec<usize>> {
+    call_name
+        .component_ref()
+        .and_then(|reference| reference.def_id)
+        .and_then(|def_id| map.by_def_id.get(&def_id))
+        .or_else(|| map.by_name.get(call_name.as_str()))
+}
 
 fn insert_dae_size_args(
     args: &mut Vec<rumoca_core::Expression>,

@@ -287,7 +287,11 @@ fn add_function_output_projection_refs(
             let selector = if count == 1 {
                 output.name.as_str().to_string()
             } else {
-                format!("{}[{}]", output.name.as_str(), element_idx)
+                format!(
+                    "{}[{}]",
+                    output.name.as_str(),
+                    source_subscript_suffix(&dims, element_idx)?
+                )
             };
             refs.insert(format!("{func_name}.{selector}"));
         }

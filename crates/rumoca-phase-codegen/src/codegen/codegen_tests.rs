@@ -591,12 +591,16 @@ fn test_dae_template_json_includes_projected_function_output_refs() {
         .collect::<Vec<_>>();
 
     assert!(
-        refs.contains(&"LieGroup.SO3.rotationMatrix.R[1]"),
+        refs.contains(&"LieGroup.SO3.rotationMatrix.R[1,1]"),
         "first projected array-output function symbol should be allocated: {refs:?}",
     );
     assert!(
-        refs.contains(&"LieGroup.SO3.rotationMatrix.R[9]"),
+        refs.contains(&"LieGroup.SO3.rotationMatrix.R[3,3]"),
         "last projected array-output function symbol should be allocated: {refs:?}",
+    );
+    assert!(
+        !refs.contains(&"LieGroup.SO3.rotationMatrix.R[1]"),
+        "multidimensional function outputs must preserve source subscripts: {refs:?}",
     );
 }
 
@@ -954,6 +958,62 @@ fn test_fmi3_derivative_api_renders_from_solver_ad_ir() {
     assert!(
         !rendered.contains("Finite-difference") && !rendered.contains("finite-difference"),
         "FMI3 derivative APIs should consume solve AD rows, not finite differences"
+    );
+}
+
+#[test]
+fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
+    let mut dae = dae::Dae::new();
+    dae.variables
+        .states
+        .insert("x".into(), dae::Variable::new("x".into(), fixture_span()));
+    dae.variables
+        .algebraics
+        .insert("y".into(), dae::Variable::new("y".into(), fixture_span()));
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    let implicit = solve::ScalarProgramBlock::with_output_indices(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::Const { dst: 1, value: 2.0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        vec![fixture_span()],
+        vec![1],
+    )
+    .unwrap();
+    let mut problem = solve::SolveProblem::default();
+    problem.solve_layout.state_scalar_count = 1;
+    problem.solve_layout.algebraic_scalar_count = 1;
+    problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(implicit);
+    problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![solve::AlgebraicProjectionBlock {
+            rows: vec![1],
+            y_indices: vec![1],
+            causal_steps: Vec::new(),
+        }],
+    };
+    let object = dae_json.as_object_mut().unwrap();
+    object.insert("__ir_kind".to_string(), serde_json::json!("solve"));
+    object.insert("solve".to_string(), serde_json::to_value(problem).unwrap());
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(rendered.contains("static double __rumoca_implicit_row"));
+    assert!(rendered.contains("case 1:"), "{rendered}");
+    assert!(rendered.contains("__rumoca_solve_y(m, y_index) - residual"));
+    assert!(
+        rendered.contains("The Solve-IR projection writes the algebraic and output Y segments")
     );
 }
 

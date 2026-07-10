@@ -806,6 +806,18 @@ fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
 }
 
 #[test]
+fn test_fmi3_cosimulation_defaults_to_fixed_rk4() {
+    let template = builtin_template("fmi3", "model.c.jinja");
+    assert!(template.contains("static fmi3Status rk4_integrate"));
+    assert!(template.contains("#ifdef RUMOCA_FMI3_COSIM_ADAPTIVE_RK45"));
+    assert!(template.contains("rk4_integrate(m, currentCommunicationPoint, t_end)"));
+    assert!(
+        builtin_template("fmi3", "build.sh.jinja").contains("-O3"),
+        "the packaged FMU build should optimize the lockstep integration path"
+    );
+}
+
+#[test]
 fn test_render_dae_equation_via_template() {
     // Test render_equation function via template with a simple DAE
     // that has residual equations (the common case from todae)
