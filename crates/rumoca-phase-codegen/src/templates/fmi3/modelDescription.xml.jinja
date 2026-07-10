@@ -46,6 +46,10 @@
 {%- set n_clocks = dae.clock_schedules | default([]) | length -%}
 {%- set vr_clk   = vr_m + nvar_m -%}
 {%- set n_total  = vr_clk + n_clocks -%}
+{%- set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] -%}
+{%- set solve_dynamic_time_rows = solve.events.dynamic_time_event_rhs.programs if solve is defined and solve.events is defined and solve.events.dynamic_time_event_rhs is defined and solve.events.dynamic_time_event_rhs.programs is defined else [] -%}
+{%- set solve_event_actions = solve.events.actions if solve is defined and solve.events is defined and solve.events.actions is defined else [] -%}
+{%- set cosim_supported = solve_root_rows | length == 0 and solve_dynamic_time_rows | length == 0 and solve_event_actions | length == 0 and dae.relation | default([]) | length == 0 and dae.synthetic_root_conditions | default([]) | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 and dae.z | length == 0 and dae.m | length == 0 -%}
 {#- Macro: XML-escape a string -#}
 {%- macro xml_escape(s) -%}
 {{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
@@ -89,7 +93,8 @@
 
   <ModelExchange modelIdentifier="{{ model_name | sanitize }}" providesDirectionalDerivatives="true" providesAdjointDerivatives="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
 
-  <CoSimulation modelIdentifier="{{ model_name | sanitize }}" canHandleVariableCommunicationStepSize="true" canReturnEarlyAfterIntermediateUpdate="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
+{% if cosim_supported %}  <CoSimulation modelIdentifier="{{ model_name | sanitize }}" canHandleVariableCommunicationStepSize="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
+{% endif %}
 
   <LogCategories>
     <Category name="logAll"/>

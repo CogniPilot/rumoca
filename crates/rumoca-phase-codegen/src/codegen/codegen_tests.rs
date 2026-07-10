@@ -1016,6 +1016,36 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
     assert!(
         rendered.contains("The Solve-IR projection writes the algebraic and output Y segments")
     );
+
+    let mut causal = dae_json.clone();
+    *causal
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/causal_steps")
+        .unwrap() = serde_json::json!([{"row": 1, "y_index": 1}]);
+    let error = render_template_with_dae_json_and_name(
+        &causal,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect_err("FMI3 projection must reject causal steps it cannot emit");
+    assert!(
+        error.to_string().contains("without causal steps"),
+        "{error}"
+    );
+
+    let mut unmatched = dae_json;
+    *unmatched
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/rows/0")
+        .unwrap() = serde_json::json!(99);
+    let error = render_template_with_dae_json_and_name(
+        &unmatched,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect_err("FMI3 projection must reject rows without a scalar producer");
+    assert!(
+        error.to_string().contains("has no scalar producer"),
+        "{error}"
+    );
 }
 
 #[test]

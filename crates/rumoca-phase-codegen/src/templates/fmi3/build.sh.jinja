@@ -17,7 +17,8 @@ case "$(uname -s)" in
 esac
 
 mkdir -p binaries/$PLATFORM
-cc -shared -fPIC -O3 -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
+: "${CFLAGS:=-O2}"
+cc -shared -fPIC $CFLAGS -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
 
 zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
 echo "Created {{ model_name }}.fmu"

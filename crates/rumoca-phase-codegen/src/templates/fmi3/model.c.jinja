@@ -28,6 +28,9 @@
 {% set symbols = target_symbols(dae.symbol_refs + ["time"], c_symbol_policy, dae.symbol_aliases) %}
 {% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
 {% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
+{% set solve_dynamic_time_rows = solve.events.dynamic_time_event_rhs.programs if solve is defined and solve.events is defined and solve.events.dynamic_time_event_rhs is defined and solve.events.dynamic_time_event_rhs.programs is defined else [] %}
+{% set solve_event_actions = solve.events.actions if solve is defined and solve.events is defined and solve.events.actions is defined else [] %}
+{% set cosim_supported = solve_root_rows | length == 0 and solve_dynamic_time_rows | length == 0 and solve_event_actions | length == 0 and dae.relation | default([]) | length == 0 and dae.synthetic_root_conditions | default([]) | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 and dae.z | length == 0 and dae.m | length == 0 %}
 {% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}
 {% set solve_discrete_rows = solve.discrete.rhs.programs if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined and solve.discrete.rhs.programs is defined else [] %}
 {% set solve_discrete_targets = solve.discrete.update_targets if solve is defined and solve.discrete is defined and solve.discrete.update_targets is defined else [] %}
@@ -39,19 +42,9 @@
 {% set solve_implicit_output_indices = solve_blocks.continuous.implicit_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.implicit_rhs is defined and solve_blocks.continuous.implicit_rhs.scalar_programs is defined else [] %}
 {% set solve_projection_blocks = solve.continuous.algebraic_projection_plan.blocks if solve is defined and solve.continuous is defined and solve.continuous.algebraic_projection_plan is defined and solve.continuous.algebraic_projection_plan.blocks is defined else [] %}
 {% set solve_state_count = solve.solve_layout.state_scalar_count if solve is defined and solve.solve_layout is defined and solve.solve_layout.state_scalar_count is defined else 0 %}
-{# A scalar BLT plan with direct target assignments needs one pass.
-   Retain the DAE evaluator as a compatibility fallback for coupled blocks. #}
-{% set solve_projection = namespace(fast=solve_projection_blocks | length > 0, cursor=0) %}
-{% for block in solve_projection_blocks %}
-{% if block.rows | length != 1 or block.y_indices | length != 1 %}{% set solve_projection.fast = false %}{% endif %}
-{% endfor %}
-{% for program in solve_implicit_programs %}
-{% set output_count = store_output_count([program]) %}
-{% for ordinal in range(output_count) %}
-{% if solve_implicit_output_indices[solve_projection.cursor + ordinal] >= solve_state_count and output_count != 1 %}{% set solve_projection.fast = false %}{% endif %}
-{% endfor %}
-{% set solve_projection.cursor = solve_projection.cursor + output_count %}
-{% endfor %}
+{# Rust validates and prepares the projection schedule before C emission. #}
+{% set solve_projection_schedule = fmi3_scalar_projection_schedule(solve_projection_blocks, solve_implicit_programs, solve_implicit_output_indices, solve_state_count) %}
+{% set solve_projection_fast = solve_projection_schedule | length > 0 %}
 {% set solve_full_jacobian_rows = solve_full_jacobian_rows if solve_full_jacobian_rows is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else []) %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
 {% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
@@ -321,6 +314,10 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define N_PERIODIC_CLOCKS {{ dae.clock_schedules | default([]) | length }}
 #define N_TRIGGERED_CLOCKS {{ dae.triggered_clock_conditions | default([]) | length }}
 #define N_CLOCKS         (N_PERIODIC_CLOCKS + N_TRIGGERED_CLOCKS)
+#define N_STATIC_TIME_EVENTS {{ dae.scheduled_time_events | default([]) | length }}
+#define N_DYNAMIC_TIME_EVENTS {{ solve_dynamic_time_rows | length }}
+#define N_EVENT_ACTIONS  {{ solve_event_actions | length }}
+#define RUMOCA_COSIM_SUPPORTED {{ 1 if cosim_supported else 0 }}
 #define N_REALS          (N_STATES + N_DERIVATIVES + N_ALGEBRAICS + N_INPUTS + N_OUTPUTS + N_PARAMETERS + N_DISCRETE_REAL)
 #define N_SOLVE_Y        (N_STATES + N_ALGEBRAICS + N_OUTPUTS)
 #define N_SOLVE_P        (N_PARAMETERS + N_INPUTS + N_DISCRETE_REAL + N_DISCRETE_VAL)
@@ -403,9 +400,10 @@ typedef enum {
     modelInitializationMode = 1 << 2,
     modelContinuousTimeMode = 1 << 3,
     modelEventMode         = 1 << 4,
-    modelTerminated        = 1 << 5,
-    modelError             = 1 << 6,
-    modelConfigurationMode = 1 << 7
+    modelStepMode          = 1 << 5,
+    modelTerminated        = 1 << 6,
+    modelError             = 1 << 7,
+    modelConfigurationMode = 1 << 8
 } ModelState;
 
 typedef struct {
@@ -427,10 +425,13 @@ typedef struct {
     fmi3Boolean  dirty_values;
     fmi3Boolean  is_new_event_iteration;
     fmi3Boolean  root_event_pending;
+    fmi3Boolean  evaluation_error;
     fmi3String   instance_name;
     fmi3String   instantiation_token;
     fmi3Boolean  is_co_simulation;
+    fmi3Boolean  event_mode_used;
     fmi3Boolean  early_return_allowed;
+    fmi3Float64  relative_tolerance;
     fmi3InstanceEnvironment instance_environment;
     void*        intermediateUpdate;  /* fmi3IntermediateUpdateCallback */
 #if N_CLOCKS > 0
@@ -719,6 +720,8 @@ static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }}) 
  * ========================================================================= */
 static void initialize_defaults(ModelInstance* m) {
     m->time = 0.0;
+    m->evaluation_error = 0;
+    m->relative_tolerance = 1.0e-5;
     double time = 0.0;
 
     /* Phase 1: Forward-declare local aliases for ALL variables so that start
@@ -881,21 +884,17 @@ static void initialize_defaults(ModelInstance* m) {
  * Compute algebraic variables from f_x equations
  * ========================================================================= */
 static void compute_algebraics(ModelInstance* m) {
-{% if solve_projection.fast %}
-{% for block in solve_projection_blocks %}
-{% set assignment = namespace(cursor=0, found=false) %}
-{% for program in solve_implicit_programs %}
-{% set output_count = store_output_count([program]) %}
-{% if output_count == 1 and solve_implicit_output_indices[assignment.cursor] == block.rows[0] %}
+{% if solve_projection_fast %}
+{% for assignment in solve_projection_schedule %}
     {
-        const int y_index = {{ block.y_indices[0] }};
-        const double value = {{ render_solve_target_assignment_c(program, block.y_indices[0], solve_row_c_cfg) }};
+        const int y_index = {{ assignment.y_index }};
+        const double value = {{ render_solve_target_assignment_c(solve_implicit_programs[assignment.program_index], assignment.y_index, solve_row_c_cfg) }};
+        if (!isfinite(value)) {
+            m->evaluation_error = 1;
+            return;
+        }
         __rumoca_solve_set_y(m, y_index, value);
     }
-{% set assignment.found = true %}
-{% endif %}
-{% set assignment.cursor = assignment.cursor + output_count %}
-{% endfor %}
 {% endfor %}
 {% else %}
 {% if dae.y | length > 0 or dae.w | length > 0 %}
@@ -963,6 +962,7 @@ static void compute_algebraics(ModelInstance* m) {
  * Compute derivatives (f_x equations)
  * ========================================================================= */
 static void compute_derivatives(ModelInstance* m) {
+    m->evaluation_error = 0;
     /* Compute algebraics first (derivatives may depend on them) */
     compute_algebraics(m);
 
@@ -998,7 +998,7 @@ static void compute_derivatives(ModelInstance* m) {
 {{ render_solve_block_c(solve_derivative_rows, solve_row_c_cfg, "m->xdot[{}] = {}", solve_derivative_output_indices) }}
 {% endif %}
 
-{% if not solve_projection.fast %}
+{% if not solve_projection_fast %}
     /* The DAE fallback may contain derivative aliases. */
     compute_algebraics(m);
 
@@ -1013,7 +1013,7 @@ static void compute_derivatives(ModelInstance* m) {
  * Compute output variables (w)
  * ========================================================================= */
 static void compute_outputs(ModelInstance* m) {
-{% if solve_projection.fast %}
+{% if solve_projection_fast %}
     /* The Solve-IR projection writes the algebraic and output Y segments. */
     (void)m;
 {% else %}
@@ -1333,7 +1333,8 @@ FMI3_EXPORT fmi3Instance fmi3InstantiateModelExchange(
     (void)instanceEnvironment;
     (void)logMessage;
 
-    if (strcmp(instantiationToken, MODEL_INSTANTIATION_TOKEN) != 0) {
+    if (!instanceName || !instantiationToken ||
+        strcmp(instantiationToken, MODEL_INSTANTIATION_TOKEN) != 0) {
         return NULL;
     }
 
@@ -1366,12 +1367,13 @@ FMI3_EXPORT fmi3Instance fmi3InstantiateCoSimulation(
     (void)resourcePath;
     (void)visible;
     (void)loggingOn;
-    (void)eventModeUsed;
     (void)requiredIntermediateVariables;
-    (void)nRequiredIntermediateVariables;
     (void)logMessage;
 
-    if (strcmp(instantiationToken, MODEL_INSTANTIATION_TOKEN) != 0) {
+    if (!instanceName || !instantiationToken || !RUMOCA_COSIM_SUPPORTED ||
+        eventModeUsed || earlyReturnAllowed ||
+        nRequiredIntermediateVariables != 0 ||
+        strcmp(instantiationToken, MODEL_INSTANTIATION_TOKEN) != 0) {
         return NULL;
     }
 
@@ -1380,6 +1382,7 @@ FMI3_EXPORT fmi3Instance fmi3InstantiateCoSimulation(
     m->instance_name = instanceName;
     m->instantiation_token = instantiationToken;
     m->is_co_simulation = 1;
+    m->event_mode_used = eventModeUsed;
     m->early_return_allowed = earlyReturnAllowed;
     m->instance_environment = instanceEnvironment;
     m->intermediateUpdate = (void*)intermediateUpdate;
@@ -1404,19 +1407,21 @@ FMI3_EXPORT fmi3Status fmi3EnterInitializationMode(
     fmi3Boolean  stopTimeDefined,
     fmi3Float64  stopTime)
 {
-    (void)toleranceDefined;
-    (void)tolerance;
-    (void)stopTimeDefined;
-    (void)stopTime;
-
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->state != modelInstantiated || !isfinite(startTime) ||
+        (toleranceDefined && (!isfinite(tolerance) || tolerance <= 0.0)) ||
+        (stopTimeDefined && (!isfinite(stopTime) || stopTime < startTime))) {
+        return fmi3Error;
+    }
     m->time = startTime;
+    m->relative_tolerance = toleranceDefined ? tolerance : 1.0e-5;
     m->state = modelInitializationMode;
     return fmi3OK;
 }
 
 FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || m->state != modelInitializationMode) return fmi3Error;
 
     /* Seed pre-values from initialized discrete state before evaluating any initial discrete updates. */
     memcpy(m->pre_z, m->z, sizeof(m->z));
@@ -1429,10 +1434,14 @@ FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
 
     /* Compute initial derivatives and outputs */
     compute_derivatives(m);
+    if (m->evaluation_error) {
+        m->state = modelError;
+        return fmi3Error;
+    }
     compute_event_indicators(m);
     memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
 
-    m->state = modelEventMode;
+    m->state = m->is_co_simulation && !m->event_mode_used ? modelStepMode : modelEventMode;
     return fmi3OK;
 }
 
@@ -1464,6 +1473,7 @@ FMI3_EXPORT fmi3Status fmi3GetFloat64(
     if (m->dirty_values) {
         compute_derivatives(m);
     }
+    if (m->evaluation_error) return fmi3Error;
 
     size_t val_idx = 0;
     for (size_t i = 0; i < nValueReferences; i++) {
@@ -1727,6 +1737,7 @@ FMI3_EXPORT fmi3Status fmi3GetContinuousStateDerivatives(
     if (m->dirty_values) {
         compute_derivatives(m);
     }
+    if (m->evaluation_error) return fmi3Error;
 
     memcpy(derivatives, m->xdot, nContinuousStates * sizeof(fmi3Float64));
     return fmi3OK;
@@ -1849,6 +1860,15 @@ FMI3_EXPORT fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance instance) {
     return fmi3OK;
 }
 
+FMI3_EXPORT fmi3Status fmi3EnterStepMode(fmi3Instance instance) {
+    ModelInstance* m = (ModelInstance*)instance;
+    if (!m || !m->is_co_simulation || !m->event_mode_used || m->state != modelEventMode) {
+        return fmi3Error;
+    }
+    m->state = modelStepMode;
+    return fmi3OK;
+}
+
 FMI3_EXPORT fmi3Status fmi3CompletedIntegratorStep(
     fmi3Instance instance,
     fmi3Boolean  noSetFMUStatePriorToCurrentPoint,
@@ -1941,12 +1961,14 @@ FMI3_EXPORT fmi3Status fmi3GetNumberOfContinuousStates(
 
 FMI3_EXPORT fmi3Status fmi3Terminate(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m) return fmi3Error;
     m->state = modelTerminated;
     return fmi3OK;
 }
 
 FMI3_EXPORT fmi3Status fmi3Reset(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m) return fmi3Error;
     initialize_defaults(m);
     m->state = modelInstantiated;
     return fmi3OK;
@@ -1958,17 +1980,42 @@ FMI3_EXPORT fmi3Status fmi3Reset(fmi3Instance instance) {
 
 FMI3_EXPORT fmi3Status fmi3GetFMUState(fmi3Instance instance, fmi3FMUState* FMUState) {
     ModelInstance* m = (ModelInstance*)instance;
+    if (!m || !FMUState) return fmi3Error;
     ModelInstance* copy = (ModelInstance*)malloc(sizeof(ModelInstance));
     if (!copy) return fmi3Error;
     memcpy(copy, m, sizeof(ModelInstance));
+    copy->instance_name = NULL;
+    copy->instantiation_token = NULL;
+    copy->instance_environment = NULL;
+    copy->intermediateUpdate = NULL;
     *FMUState = (fmi3FMUState)copy;
     return fmi3OK;
 }
 
 FMI3_EXPORT fmi3Status fmi3SetFMUState(fmi3Instance instance, fmi3FMUState FMUState) {
     ModelInstance* m = (ModelInstance*)instance;
-    if (!FMUState) return fmi3Error;
+    if (!m || !FMUState) return fmi3Error;
+    const fmi3String instance_name = m->instance_name;
+    const fmi3String instantiation_token = m->instantiation_token;
+    const fmi3InstanceEnvironment instance_environment = m->instance_environment;
+    void* const intermediate_update = m->intermediateUpdate;
+    const fmi3Boolean is_co_simulation = m->is_co_simulation;
+    const fmi3Boolean event_mode_used = m->event_mode_used;
+    const fmi3Boolean early_return_allowed = m->early_return_allowed;
+    const ModelInstance* saved = (const ModelInstance*)FMUState;
+    if (saved->is_co_simulation != is_co_simulation ||
+        saved->event_mode_used != event_mode_used ||
+        saved->early_return_allowed != early_return_allowed) {
+        return fmi3Error;
+    }
     memcpy(m, (ModelInstance*)FMUState, sizeof(ModelInstance));
+    m->instance_name = instance_name;
+    m->instantiation_token = instantiation_token;
+    m->instance_environment = instance_environment;
+    m->intermediateUpdate = intermediate_update;
+    m->is_co_simulation = is_co_simulation;
+    m->event_mode_used = event_mode_used;
+    m->early_return_allowed = early_return_allowed;
     m->dirty_values = 1;
     return fmi3OK;
 }
@@ -1983,24 +2030,29 @@ FMI3_EXPORT fmi3Status fmi3FreeFMUState(fmi3Instance instance, fmi3FMUState* FMU
 }
 
 FMI3_EXPORT fmi3Status fmi3SerializedFMUStateSize(fmi3Instance instance, fmi3FMUState FMUState, size_t* size) {
-    (void)instance; (void)FMUState;
+    (void)instance;
+    if (!FMUState || !size) return fmi3Error;
     *size = sizeof(ModelInstance);
     return fmi3OK;
 }
 
 FMI3_EXPORT fmi3Status fmi3SerializeFMUState(fmi3Instance instance, fmi3FMUState FMUState, fmi3Byte serializedState[], size_t size) {
     (void)instance;
-    if (!FMUState || size < sizeof(ModelInstance)) return fmi3Error;
+    if (!FMUState || !serializedState || size != sizeof(ModelInstance)) return fmi3Error;
     memcpy(serializedState, (ModelInstance*)FMUState, sizeof(ModelInstance));
     return fmi3OK;
 }
 
 FMI3_EXPORT fmi3Status fmi3DeserializeFMUState(fmi3Instance instance, const fmi3Byte serializedState[], size_t size, fmi3FMUState* FMUState) {
     (void)instance;
-    if (size < sizeof(ModelInstance)) return fmi3Error;
+    if (!serializedState || !FMUState || size != sizeof(ModelInstance)) return fmi3Error;
     ModelInstance* copy = (ModelInstance*)malloc(sizeof(ModelInstance));
     if (!copy) return fmi3Error;
     memcpy(copy, serializedState, sizeof(ModelInstance));
+    copy->instance_name = NULL;
+    copy->instantiation_token = NULL;
+    copy->instance_environment = NULL;
+    copy->intermediateUpdate = NULL;
     *FMUState = (fmi3FMUState)copy;
     return fmi3OK;
 }
@@ -2105,16 +2157,27 @@ FMI3_EXPORT fmi3Status fmi3GetAdjointDerivative(
 /* =========================================================================
  * FMI 3.0 API — Co-Simulation (§4.2)
  *
- * Fixed-step RK4 is the default for deterministic, lockstep Co-Simulation.
- * Define RUMOCA_FMI3_COSIM_ADAPTIVE_RK45 to retain adaptive Dormand-Prince
- * stepping. For production-grade solver control, prefer Model Exchange with
- * an external solver.
+ * Adaptive Dormand-Prince stepping is the portable default. Deterministic
+ * lockstep users can define RUMOCA_FMI3_COSIM_FIXED_RK4 and optionally
+ * RUMOCA_FMI3_COSIM_RK4_MAX_STEP when building the FMU. For production-grade
+ * solver control, prefer Model Exchange with an external solver.
  * ========================================================================= */
 
-static void rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]);
+static fmi3Status rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]);
+
+static fmi3Status restore_integration_point(ModelInstance* m, const fmi3Float64 x[], double t) {
+#if N_STATES > 0
+    memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
+#else
+    (void)x;
+#endif
+    m->time = t;
+    m->dirty_values = 1;
+    return fmi3Error;
+}
 
 #ifndef RUMOCA_FMI3_COSIM_RK4_MAX_STEP
-#define RUMOCA_FMI3_COSIM_RK4_MAX_STEP 4.0e-3
+#define RUMOCA_FMI3_COSIM_RK4_MAX_STEP INFINITY
 #endif
 
 static fmi3Status rk4_integrate(ModelInstance* m, double t_start, double t_stop) {
@@ -2130,18 +2193,20 @@ static fmi3Status rk4_integrate(ModelInstance* m, double t_start, double t_stop)
     fmi3Float64 k3[N_STATES];
     fmi3Float64 k4[N_STATES];
     double t = t_start;
+    double last_step_start = t_start;
     while (t < t_stop) {
         const double h = fmin(RUMOCA_FMI3_COSIM_RK4_MAX_STEP, t_stop - t);
         const double t_next = t + h;
+        last_step_start = t;
         memcpy(x0, m->x, N_STATES * sizeof(fmi3Float64));
 
-        rk45_eval(m, t, x0, k1);
+        if (rk45_eval(m, t, x0, k1) != fmi3OK) return restore_integration_point(m, x0, t);
         for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + 0.5 * h * k1[i];
-        rk45_eval(m, t + 0.5 * h, x_stage, k2);
+        if (rk45_eval(m, t + 0.5 * h, x_stage, k2) != fmi3OK) return restore_integration_point(m, x0, t);
         for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + 0.5 * h * k2[i];
-        rk45_eval(m, t + 0.5 * h, x_stage, k3);
+        if (rk45_eval(m, t + 0.5 * h, x_stage, k3) != fmi3OK) return restore_integration_point(m, x0, t);
         for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + h * k3[i];
-        rk45_eval(m, t_next, x_stage, k4);
+        if (rk45_eval(m, t_next, x_stage, k4) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             m->x[i] = x0[i] + h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
@@ -2151,27 +2216,37 @@ static fmi3Status rk4_integrate(ModelInstance* m, double t_start, double t_stop)
     m->time = t_stop;
     m->dirty_values = 1;
     compute_derivatives(m);
+    if (m->evaluation_error) return restore_integration_point(m, x0, last_step_start);
     return fmi3OK;
 #else
-    (void)m; (void)t_start; (void)t_stop;
+    (void)t_start;
+    m->time = t_stop;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
     return fmi3OK;
 #endif
 }
 
 #define RK45_ABS_TOL 1.0e-7
-#define RK45_REL_TOL 1.0e-5
 #define RK45_MIN_STEP 1.0e-9
 #define RK45_MAX_STEP 2.0e-2
 
-static void rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]) {
+static fmi3Status rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]) {
 #if N_STATES > 0
     memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
     m->time = t;
     m->dirty_values = 1;
     compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
     memcpy(dxdt, m->xdot, N_STATES * sizeof(fmi3Float64));
+    for (int i = 0; i < N_STATES; i++) {
+        if (!isfinite(dxdt[i])) return fmi3Error;
+    }
+    return fmi3OK;
 #else
     (void)m; (void)t; (void)x; (void)dxdt;
+    return fmi3OK;
 #endif
 }
 
@@ -2210,29 +2285,26 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
         }
         if (h < RK45_MIN_STEP) {
             h = t_stop - t;
-            if (h < RK45_MIN_STEP) {
-                h = RK45_MIN_STEP;
-            }
         }
 
-        rk45_eval(m, t, x0, k1);
+        if (rk45_eval(m, t, x0, k1) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             x_stage[i] = x0[i] + h * (1.0 / 5.0) * k1[i];
         }
-        rk45_eval(m, t + h * (1.0 / 5.0), x_stage, k2);
+        if (rk45_eval(m, t + h * (1.0 / 5.0), x_stage, k2) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             x_stage[i] = x0[i] + h * ((3.0 / 40.0) * k1[i] + (9.0 / 40.0) * k2[i]);
         }
-        rk45_eval(m, t + h * (3.0 / 10.0), x_stage, k3);
+        if (rk45_eval(m, t + h * (3.0 / 10.0), x_stage, k3) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             x_stage[i] = x0[i] + h * ((44.0 / 45.0) * k1[i]
                                       - (56.0 / 15.0) * k2[i]
                                       + (32.0 / 9.0) * k3[i]);
         }
-        rk45_eval(m, t + h * (4.0 / 5.0), x_stage, k4);
+        if (rk45_eval(m, t + h * (4.0 / 5.0), x_stage, k4) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             x_stage[i] = x0[i] + h * ((19372.0 / 6561.0) * k1[i]
@@ -2240,7 +2312,7 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
                                       + (64448.0 / 6561.0) * k3[i]
                                       - (212.0 / 729.0) * k4[i]);
         }
-        rk45_eval(m, t + h * (8.0 / 9.0), x_stage, k5);
+        if (rk45_eval(m, t + h * (8.0 / 9.0), x_stage, k5) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             x_stage[i] = x0[i] + h * ((9017.0 / 3168.0) * k1[i]
@@ -2249,7 +2321,7 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
                                       + (49.0 / 176.0) * k4[i]
                                       - (5103.0 / 18656.0) * k5[i]);
         }
-        rk45_eval(m, t + h, x_stage, k6);
+        if (rk45_eval(m, t + h, x_stage, k6) != fmi3OK) return restore_integration_point(m, x0, t);
 
         for (int i = 0; i < N_STATES; i++) {
             x5[i] = x0[i] + h * ((35.0 / 384.0) * k1[i]
@@ -2258,7 +2330,7 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
                                  - (2187.0 / 6784.0) * k5[i]
                                  + (11.0 / 84.0) * k6[i]);
         }
-        rk45_eval(m, t + h, x5, k7);
+        if (rk45_eval(m, t + h, x5, k7) != fmi3OK) return restore_integration_point(m, x0, t);
 
         double err_norm = 0.0;
         for (int i = 0; i < N_STATES; i++) {
@@ -2268,7 +2340,7 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
                                  - (92097.0 / 339200.0) * k5[i]
                                  + (187.0 / 2100.0) * k6[i]
                                  + (1.0 / 40.0) * k7[i]);
-            double scale = RK45_ABS_TOL + RK45_REL_TOL * fmax(fabs(x0[i]), fabs(x5[i]));
+            double scale = RK45_ABS_TOL + m->relative_tolerance * fmax(fabs(x0[i]), fabs(x5[i]));
             double e = (x5[i] - x4[i]) / scale;
             err_norm += e * e;
         }
@@ -2277,8 +2349,7 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
         if (!isfinite(err_norm)) {
             h *= 0.2;
             if (h < RK45_MIN_STEP) {
-                memcpy(m->x, x0, N_STATES * sizeof(fmi3Float64));
-                return fmi3Error;
+                return restore_integration_point(m, x0, t);
             }
             continue;
         }
@@ -2304,9 +2375,14 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
     m->time = t_stop;
     m->dirty_values = 1;
     compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
     return fmi3OK;
 #else
-    (void)m; (void)t_start; (void)t_stop;
+    (void)t_start;
+    m->time = t_stop;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
     return fmi3OK;
 #endif
 }
@@ -2324,44 +2400,35 @@ FMI3_EXPORT fmi3Status fmi3DoStep(
     (void)noSetFMUStatePriorToCurrentPoint;
     ModelInstance* m = (ModelInstance*)instance;
 
-    const double t_end = currentCommunicationPoint + communicationStepSize;
-    fmi3IntermediateUpdateCallback cb = (fmi3IntermediateUpdateCallback)m->intermediateUpdate;
+    if (eventHandlingNeeded) *eventHandlingNeeded = 0;
+    if (terminateSimulation) *terminateSimulation = 0;
+    if (earlyReturn) *earlyReturn = 0;
+    if (lastSuccessfulTime) *lastSuccessfulTime = m ? m->time : currentCommunicationPoint;
 
-#ifdef RUMOCA_FMI3_COSIM_ADAPTIVE_RK45
-    fmi3Status status = rk45_integrate(m, currentCommunicationPoint, t_end);
-#else
+    if (!m || !m->is_co_simulation || m->state != modelStepMode ||
+        !isfinite(currentCommunicationPoint) || !isfinite(communicationStepSize) ||
+        communicationStepSize <= 0.0 ||
+        fabs(currentCommunicationPoint - m->time) >
+            1.0e-12 * fmax(1.0, fmax(fabs(currentCommunicationPoint), fabs(m->time)))) {
+        return fmi3Error;
+    }
+
+    const double t_end = currentCommunicationPoint + communicationStepSize;
+    if (!isfinite(t_end)) return fmi3Error;
+
+#ifdef RUMOCA_FMI3_COSIM_FIXED_RK4
     fmi3Status status = rk4_integrate(m, currentCommunicationPoint, t_end);
+#else
+    fmi3Status status = rk45_integrate(m, currentCommunicationPoint, t_end);
 #endif
     if (status != fmi3OK) {
-        if (eventHandlingNeeded) *eventHandlingNeeded = 0;
-        if (terminateSimulation) *terminateSimulation = 1;
-        if (earlyReturn) *earlyReturn = 0;
+        m->state = modelError;
         if (lastSuccessfulTime) *lastSuccessfulTime = m->time;
         return status;
     }
 
-    /* Intermediate update callback (FMI 3.0 §4.2.3) */
-    if (cb) {
-        fmi3Boolean earlyReturnRequested = 0;
-        fmi3Float64 earlyReturnTime = t_end;
-        cb(m->instance_environment, t_end, 0, 0, 1, 1,
-           m->early_return_allowed, &earlyReturnRequested, &earlyReturnTime);
-        if (earlyReturnRequested && m->early_return_allowed) {
-            m->time = earlyReturnTime;
-            m->dirty_values = 1;
-            compute_derivatives(m);
-            if (eventHandlingNeeded) *eventHandlingNeeded = 0;
-            if (terminateSimulation) *terminateSimulation = 0;
-            if (earlyReturn) *earlyReturn = 1;
-            if (lastSuccessfulTime) *lastSuccessfulTime = earlyReturnTime;
-            return fmi3OK;
-        }
-    }
-
-    if (eventHandlingNeeded) *eventHandlingNeeded = 0;
-    if (terminateSimulation) *terminateSimulation = 0;
-    if (earlyReturn) *earlyReturn = 0;
     if (lastSuccessfulTime) *lastSuccessfulTime = t_end;
+    m->state = modelStepMode;
 
     return fmi3OK;
 }

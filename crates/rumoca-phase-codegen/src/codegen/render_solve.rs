@@ -73,7 +73,7 @@ impl SolveRowValue {
         Self { rows, index }
     }
 
-    fn ops(&self) -> &[solve::LinearOp] {
+    pub(in crate::codegen) fn ops(&self) -> &[solve::LinearOp] {
         &self.rows[self.index]
     }
 }

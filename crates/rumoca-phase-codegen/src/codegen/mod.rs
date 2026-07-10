@@ -21,6 +21,7 @@ use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
 use std::path::Path;
 
+mod fmi3_projection;
 mod render_c;
 mod render_dae_modelica;
 mod render_expr;
@@ -30,6 +31,7 @@ mod render_stmt;
 mod solve_lazy;
 mod symbol_alloc;
 
+use fmi3_projection::fmi3_scalar_projection_schedule_function;
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
@@ -1222,6 +1224,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_expr", render_expr_function);
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
+    env.add_function(
+        "fmi3_scalar_projection_schedule",
+        fmi3_scalar_projection_schedule_function,
+    );
     env.add_function(
         "render_solve_target_assignment_c",
         render_solve_target_assignment_c_function,
