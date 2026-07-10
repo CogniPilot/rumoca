@@ -104,7 +104,7 @@ fn assert_root_snapshot_before_relation_memory_commit(target: &str, rendered: &s
 
 fn assert_fmi3_initial_updates_refresh_pre_params(rendered: &str) {
     let init = rendered
-        .split("FMI3_EXPORT fmi3Status fmi3ExitInitializationMode")
+        .split("FMI3_Export fmi3Status fmi3ExitInitializationMode")
         .nth(1)
         .expect("FMI3 template should have an initialization exit");
     let first_snapshot_pos = init

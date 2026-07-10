@@ -787,7 +787,7 @@ fn test_fmi3_initial_builtin_tracks_initialization_mode() {
 fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
     let template = builtin_template("fmi3", "model.c.jinja");
     let exit_initialization = template
-        .split("FMI3_EXPORT fmi3Status fmi3ExitInitializationMode")
+        .split("FMI3_Export fmi3Status fmi3ExitInitializationMode")
         .nth(1)
         .expect("FMI 3 template should define exit initialization");
 
@@ -821,6 +821,31 @@ fn test_fmi3_cosimulation_uses_opt_in_fixed_rk4() {
         builtin_template("fmi3", "build.sh.jinja").contains("${CFLAGS:=-O2}"),
         "the packaged FMU build should allow a caller-selected integration policy"
     );
+}
+
+#[test]
+fn test_fmi3_uses_official_fmi_3_0_2_headers() {
+    let model = builtin_template("fmi3", "model.c.jinja");
+    let driver = builtin_template("fmi3", "test_driver.c.jinja");
+    let platform = builtin_template("fmi3", "fmi3PlatformTypes.h.jinja");
+    let function_types = builtin_template("fmi3", "fmi3FunctionTypes.h.jinja");
+    let manifest = crate::templates::builtin_target("fmi3")
+        .expect("builtin FMI 3 target")
+        .manifest;
+
+    assert!(model.contains("#include \"fmi3Functions.h\""));
+    assert!(driver.contains("#include \"fmi3Functions.h\""));
+    assert!(!model.contains("typedef int          fmi3Boolean;"));
+    assert!(platform.contains("typedef            bool fmi3Boolean;"));
+    assert!(platform.contains("typedef const fmi3Byte* fmi3Binary;"));
+    assert!(!function_types.contains("clocksTicked"));
+    for header in [
+        "fmi3PlatformTypes.h.jinja",
+        "fmi3FunctionTypes.h.jinja",
+        "fmi3Functions.h.jinja",
+    ] {
+        assert!(manifest.contains(header), "FMI 3 target omits {header}");
+    }
 }
 
 #[test]
@@ -937,7 +962,7 @@ fn compile_and_run_fmi3_cosim(
 ) {
     let binary = dir.join(name);
     let output = std::process::Command::new("cc")
-        .args(["-std=c11", "-O2"])
+        .args(["-std=c11", "-O2", "-Wall", "-Wextra"])
         .args(extra_flags)
         .arg(source_path)
         .args(["-lm", "-o"])
@@ -957,6 +982,16 @@ fn compile_and_run_fmi3_cosim(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn write_fmi3_headers(dir: &std::path::Path) {
+    for (template, output) in [
+        ("fmi3PlatformTypes.h.jinja", "fmi3PlatformTypes.h"),
+        ("fmi3FunctionTypes.h.jinja", "fmi3FunctionTypes.h"),
+        ("fmi3Functions.h.jinja", "fmi3Functions.h"),
+    ] {
+        std::fs::write(dir.join(output), builtin_template("fmi3", template)).unwrap();
+    }
 }
 
 #[test]
@@ -1032,6 +1067,7 @@ int main(void) {
     let dir = std::env::temp_dir().join(format!("rumoca_fmi3_cosim_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    write_fmi3_headers(&dir);
     let source_path = dir.join("decay.c");
     std::fs::write(&source_path, source).unwrap();
 
