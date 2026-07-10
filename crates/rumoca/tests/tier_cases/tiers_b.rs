@@ -994,10 +994,10 @@ end Wrapper;
             r.dae.metadata.oc_break_edge_scalar_count, 1,
             "Should detect 1 break edge when root class and sub-component both have VCG branches"
         );
-        // balance=2 because the wrapper has open external connectors that generate
-        // redundant flow equations. The VCG correctly detects 1 break edge.
-        // Real MSL models that use this pattern are balanced by interface flow counting.
-        assert_eq!(r.balance, 2);
+        assert_eq!(
+            r.balance, 0,
+            "open external connector flows are balanced by interface flow counting"
+        );
     }
 
     /// Array overconstrained connectors should derive optional VCG edges per element.

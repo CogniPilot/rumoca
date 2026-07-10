@@ -380,6 +380,8 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
     let component_defined_targets =
         collect_component_defined_targets_for_balance(dae_model, &continuous_unknown_symbols);
     let component_defined_symbols = BalanceSymbolSet::new(dae_model, &component_defined_targets);
+    let explicitly_constrained_unconnected_flows =
+        collect_explicitly_constrained_unconnected_flows(dae_model, &continuous_unknown_symbols);
     dae_model
         .continuous
         .equations
@@ -392,6 +394,7 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
                 &input_symbols,
                 &output_symbols,
                 &component_defined_symbols,
+                &explicitly_constrained_unconnected_flows,
             )
         })
         .map(|eq| eq.scalar_count)
@@ -405,7 +408,15 @@ fn equation_counts_for_balance(
     input_names: &BalanceSymbolSet,
     output_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
+    explicitly_constrained_unconnected_flows: &HashSet<rumoca_core::VarName>,
 ) -> bool {
+    if unconnected_flow_anchor_is_explicitly_constrained(
+        dae_model,
+        eq,
+        explicitly_constrained_unconnected_flows,
+    ) {
+        return false;
+    }
     if eq.origin.starts_with("binding equation for")
         && is_non_constraining_binding_alias(
             eq,
@@ -467,6 +478,202 @@ fn equation_counts_for_balance(
     }
     // Preserve explicit user equations constraining interface inputs.
     equation_references_input(eq, input_names)
+}
+
+fn collect_explicitly_constrained_unconnected_flows(
+    dae_model: &dae::Dae,
+    continuous_unknowns: &BalanceSymbolSet,
+) -> HashSet<rumoca_core::VarName> {
+    let mut constrained = HashSet::new();
+    for eq in &dae_model.continuous.equations {
+        if unconnected_flow_origin_variable(&eq.origin).is_some() {
+            continue;
+        }
+        append_normalized_expression_names(&eq.rhs, &mut constrained);
+        if let Some(lhs) = &eq.lhs {
+            constrained.insert(lhs.var_name().clone());
+        }
+    }
+    constrained
+        .into_iter()
+        .filter(|name| continuous_unknowns.matches_name(name))
+        .collect()
+}
+
+fn unconnected_flow_anchor_is_explicitly_constrained(
+    dae_model: &dae::Dae,
+    eq: &dae::Equation,
+    explicitly_constrained_unconnected_flows: &HashSet<rumoca_core::VarName>,
+) -> bool {
+    let Some(variable_name) = unconnected_flow_origin_variable(&eq.origin) else {
+        return false;
+    };
+    let variable_name = rumoca_core::VarName::new(variable_name);
+    explicitly_constrained_unconnected_flows.contains(&variable_name)
+        && is_top_level_connector_member_variable(dae_model, &variable_name)
+}
+
+fn unconnected_flow_origin_variable(origin: &str) -> Option<&str> {
+    origin
+        .strip_prefix("unconnected flow: ")
+        .and_then(|value| value.strip_suffix(" = 0"))
+}
+
+fn is_top_level_connector_member_variable(
+    dae_model: &dae::Dae,
+    variable_name: &rumoca_core::VarName,
+) -> bool {
+    find_variable(dae_model, variable_name)
+        .and_then(|variable| variable.component_ref.as_ref())
+        .is_some_and(|component_ref| component_ref.parts.len() == 2)
+}
+
+fn append_normalized_expression_names(
+    expr: &rumoca_core::Expression,
+    names: &mut HashSet<rumoca_core::VarName>,
+) {
+    if let Some(name) = normalized_expression_name(expr) {
+        names.insert(rumoca_core::VarName::new(name));
+    }
+
+    match expr {
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            append_normalized_expression_names(lhs, names);
+            append_normalized_expression_names(rhs, names);
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => {
+            append_normalized_expression_names(rhs, names);
+        }
+        rumoca_core::Expression::VarRef { subscripts, .. } => {
+            append_normalized_subscript_names(subscripts, names);
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            append_normalized_expression_names(base, names);
+            append_normalized_subscript_names(subscripts, names);
+        }
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            append_normalized_expression_names(base, names);
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => {
+            for arg in args {
+                append_normalized_expression_names(arg, names);
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                append_normalized_expression_names(condition, names);
+                append_normalized_expression_names(value, names);
+            }
+            append_normalized_expression_names(else_branch, names);
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            append_normalized_expression_names(start, names);
+            if let Some(step) = step {
+                append_normalized_expression_names(step, names);
+            }
+            append_normalized_expression_names(end, names);
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            append_normalized_expression_names(expr, names);
+            for index in indices {
+                append_normalized_expression_names(&index.range, names);
+            }
+            if let Some(filter) = filter {
+                append_normalized_expression_names(filter, names);
+            }
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn append_normalized_subscript_names(
+    subscripts: &[rumoca_core::Subscript],
+    names: &mut HashSet<rumoca_core::VarName>,
+) {
+    for subscript in subscripts {
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            append_normalized_expression_names(expr, names);
+        }
+    }
+}
+
+fn normalized_expression_name(expr: &rumoca_core::Expression) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => append_subscript_suffix(name.var_name().as_str().to_string(), subscripts),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => append_subscript_suffix(normalized_expression_name(base)?, subscripts),
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            Some(format!("{}.{field}", normalized_expression_name(base)?))
+        }
+        _ => None,
+    }
+}
+
+fn append_subscript_suffix(base: String, subscripts: &[rumoca_core::Subscript]) -> Option<String> {
+    if subscripts.is_empty() {
+        return Some(base);
+    }
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        match subscript {
+            rumoca_core::Subscript::Index { value, .. } => indices.push(value.to_string()),
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                indices.push(eval_constant_integer_expr(expr)?.to_string());
+            }
+            rumoca_core::Subscript::Colon { .. } => return None,
+        }
+    }
+    Some(format!("{base}[{}]", indices.join(",")))
+}
+
+fn eval_constant_integer_expr(expr: &rumoca_core::Expression) -> Option<i64> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            let value = eval_constant_integer_expr(rhs)?;
+            match op {
+                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(value),
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => value.checked_neg(),
+                _ => None,
+            }
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = eval_constant_integer_expr(lhs)?;
+            let rhs = eval_constant_integer_expr(rhs)?;
+            match op {
+                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs.checked_add(rhs),
+                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs.checked_sub(rhs),
+                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => lhs.checked_mul(rhs),
+                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
+                    (rhs != 0 && lhs % rhs == 0).then_some(lhs / rhs)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn is_redundant_connection_alias(
