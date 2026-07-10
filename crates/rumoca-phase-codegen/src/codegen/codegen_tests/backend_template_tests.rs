@@ -881,6 +881,32 @@ fn test_fmi3_uses_official_fmi_3_0_2_headers() {
 }
 
 #[test]
+fn test_fmi3_exports_complete_standard_symbol_surface() {
+    let generated = render_template_with_name(
+        &dae::Dae::new(),
+        builtin_template("fmi3", "model.c.jinja"),
+        "CompleteApi",
+    )
+    .expect("render FMI 3 API");
+    let functions = builtin_template("fmi3", "fmi3Functions.h.jinja");
+
+    for line in functions
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("FMI3_Export "))
+    {
+        let symbol = line
+            .strip_suffix(';')
+            .and_then(|line| line.split_whitespace().last())
+            .expect("official FMI function declaration");
+        assert!(
+            generated.contains(&format!("{symbol}(")),
+            "generated FMI library omits {symbol}"
+        );
+    }
+}
+
+#[test]
 fn test_fmi3_model_description_only_advertises_cosim_for_eventless_models() {
     let template = builtin_template("fmi3", "modelDescription.xml.jinja");
     let eventless = dae::Dae::new();

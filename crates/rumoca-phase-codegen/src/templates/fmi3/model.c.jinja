@@ -1353,6 +1353,24 @@ FMI3_Export fmi3Instance fmi3InstantiateCoSimulation(
     return (fmi3Instance)m;
 }
 
+FMI3_Export fmi3Instance fmi3InstantiateScheduledExecution(
+    fmi3String instanceName,
+    fmi3String instantiationToken,
+    fmi3String resourcePath,
+    fmi3Boolean visible,
+    fmi3Boolean loggingOn,
+    fmi3InstanceEnvironment instanceEnvironment,
+    fmi3LogMessageCallback logMessage,
+    fmi3ClockUpdateCallback clockUpdate,
+    fmi3LockPreemptionCallback lockPreemption,
+    fmi3UnlockPreemptionCallback unlockPreemption)
+{
+    (void)instanceName; (void)instantiationToken; (void)resourcePath;
+    (void)visible; (void)loggingOn; (void)instanceEnvironment;
+    (void)logMessage; (void)clockUpdate; (void)lockPreemption; (void)unlockPreemption;
+    return NULL;
+}
+
 FMI3_Export void fmi3FreeInstance(fmi3Instance instance) {
     if (instance) {
         free(instance);
@@ -1527,6 +1545,35 @@ FMI3_Export fmi3Status fmi3SetInt32(fmi3Instance instance, const fmi3ValueRefere
     return fmi3OK;
 }
 
+{#- DAE variables are currently represented as Float64. Export the complete
+    FMI symbol surface, but fail closed for integer types not represented by
+    the generated modelDescription. -#}
+{% for kind in [
+    {"name": "Int8", "type": "fmi3Int8"},
+    {"name": "UInt8", "type": "fmi3UInt8"},
+    {"name": "Int16", "type": "fmi3Int16"},
+    {"name": "UInt16", "type": "fmi3UInt16"},
+    {"name": "UInt32", "type": "fmi3UInt32"},
+    {"name": "Int64", "type": "fmi3Int64"},
+    {"name": "UInt64", "type": "fmi3UInt64"}
+] %}
+FMI3_Export fmi3Status fmi3Get{{ kind.name }}(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, {{ kind.type }} values[], size_t nValues)
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences; (void)values; (void)nValues;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3Set{{ kind.name }}(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, const {{ kind.type }} values[], size_t nValues)
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences; (void)values; (void)nValues;
+    return fmi3Error;
+}
+
+{% endfor %}
 FMI3_Export fmi3Status fmi3GetBoolean(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, fmi3Boolean value[], size_t nValues) {
     /* Delegate to Float64 with boolean cast */
     ModelInstance* m = (ModelInstance*)instance;
@@ -1633,6 +1680,74 @@ FMI3_Export fmi3Status fmi3GetIntervalDecimal(
 #endif
 }
 
+FMI3_Export fmi3Status fmi3GetIntervalFraction(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, fmi3UInt64 counters[], fmi3UInt64 resolutions[],
+    fmi3IntervalQualifier qualifiers[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences;
+    (void)counters; (void)resolutions; (void)qualifiers;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3GetShiftDecimal(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, fmi3Float64 shifts[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences; (void)shifts;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3GetShiftFraction(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, fmi3UInt64 counters[], fmi3UInt64 resolutions[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences;
+    (void)counters; (void)resolutions;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3SetIntervalDecimal(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, const fmi3Float64 intervals[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences; (void)intervals;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3SetIntervalFraction(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, const fmi3UInt64 counters[],
+    const fmi3UInt64 resolutions[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences;
+    (void)counters; (void)resolutions;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3SetShiftDecimal(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, const fmi3Float64 shifts[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences; (void)shifts;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3SetShiftFraction(
+    fmi3Instance instance, const fmi3ValueReference valueReferences[],
+    size_t nValueReferences, const fmi3UInt64 counters[],
+    const fmi3UInt64 resolutions[])
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences;
+    (void)counters; (void)resolutions;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3EvaluateDiscreteStates(fmi3Instance instance) {
+    (void)instance;
+    return fmi3Error;
+}
+
 FMI3_Export fmi3Status fmi3GetString(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, fmi3String value[], size_t nValues) {
     (void)instance; (void)vr; (void)nvr; (void)value; (void)nValues;
     return fmi3OK;
@@ -1651,6 +1766,28 @@ FMI3_Export fmi3Status fmi3GetBinary(fmi3Instance instance, const fmi3ValueRefer
 FMI3_Export fmi3Status fmi3SetBinary(fmi3Instance instance, const fmi3ValueReference vr[], size_t nvr, const size_t sizes[], const fmi3Binary values[], size_t nValues) {
     (void)instance; (void)vr; (void)nvr; (void)sizes; (void)values; (void)nValues;
     return fmi3OK;
+}
+
+FMI3_Export fmi3Status fmi3GetNumberOfVariableDependencies(
+    fmi3Instance instance, fmi3ValueReference valueReference, size_t* nDependencies)
+{
+    (void)instance; (void)valueReference; (void)nDependencies;
+    return fmi3Error;
+}
+
+FMI3_Export fmi3Status fmi3GetVariableDependencies(
+    fmi3Instance instance,
+    fmi3ValueReference dependent,
+    size_t elementIndicesOfDependent[],
+    fmi3ValueReference independents[],
+    size_t elementIndicesOfIndependents[],
+    fmi3DependencyKind dependencyKinds[],
+    size_t nDependencies)
+{
+    (void)instance; (void)dependent; (void)elementIndicesOfDependent;
+    (void)independents; (void)elementIndicesOfIndependents;
+    (void)dependencyKinds; (void)nDependencies;
+    return fmi3Error;
 }
 
 /* =========================================================================
@@ -2347,6 +2484,19 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
 #endif
 }
 
+FMI3_Export fmi3Status fmi3GetOutputDerivatives(
+    fmi3Instance instance,
+    const fmi3ValueReference valueReferences[],
+    size_t nValueReferences,
+    const fmi3Int32 orders[],
+    fmi3Float64 values[],
+    size_t nValues)
+{
+    (void)instance; (void)valueReferences; (void)nValueReferences;
+    (void)orders; (void)values; (void)nValues;
+    return fmi3Error;
+}
+
 FMI3_Export fmi3Status fmi3DoStep(
     fmi3Instance instance,
     fmi3Float64  currentCommunicationPoint,
@@ -2391,6 +2541,13 @@ FMI3_Export fmi3Status fmi3DoStep(
     m->state = modelStepMode;
 
     return fmi3OK;
+}
+
+FMI3_Export fmi3Status fmi3ActivateModelPartition(
+    fmi3Instance instance, fmi3ValueReference clockReference, fmi3Float64 activationTime)
+{
+    (void)instance; (void)clockReference; (void)activationTime;
+    return fmi3Error;
 }
 
 /* =========================================================================
