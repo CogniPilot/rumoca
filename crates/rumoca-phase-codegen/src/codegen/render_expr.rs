@@ -405,12 +405,17 @@ pub(crate) fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
 }
 
 pub(crate) fn subscript_index_value(index: &Value) -> Result<i64, minijinja::Error> {
-    if let Some(value) = index.as_i64() {
-        return Ok(value);
+    let mut value = index.clone();
+    for _ in 0..4 {
+        if let Some(index) = value.as_i64() {
+            return Ok(index);
+        }
+        let Ok(nested) = get_field(&value, "value") else {
+            break;
+        };
+        value = nested;
     }
-    get_field(index, "value")?
-        .as_i64()
-        .ok_or_else(|| render_err("subscript Index value is not an integer"))
+    Err(render_err("subscript Index value is not an integer"))
 }
 
 fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {

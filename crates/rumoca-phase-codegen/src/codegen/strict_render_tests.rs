@@ -120,8 +120,8 @@ fn test_render_var_ref_unwraps_spanned_literal_subscripts() {
     "VarRef": {
         "name": "R",
         "subscripts": [
-            {"Expr": {"Literal": {"value": {"Integer": {"value": 1, "span": {"source": 1, "start": 2, "end": 3}}}}}},
-            {"Expr": {"Literal": {"value": {"Integer": {"value": 2, "span": {"source": 1, "start": 4, "end": 5}}}}}}
+            {"Index": {"value": {"value": 1, "span": {"source": 1, "start": 2, "end": 3}}}},
+            {"Index": {"value": {"value": 2, "span": {"source": 1, "start": 4, "end": 5}}}}
         ]
     }
 }, {"subscript_underscore": true}) }}
