@@ -1009,9 +1009,10 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
     )
     .unwrap();
 
-    assert!(rendered.contains("static double __rumoca_implicit_row"));
-    assert!(rendered.contains("case 1:"), "{rendered}");
-    assert!(rendered.contains("__rumoca_solve_y(m, y_index) - residual"));
+    assert!(!rendered.contains("static double __rumoca_implicit_row"));
+    assert!(rendered.contains("const int y_index = 1;"), "{rendered}");
+    assert!(rendered.contains("const double value = 2.0;"), "{rendered}");
+    assert!(rendered.contains("__rumoca_solve_set_y(m, y_index, value)"));
     assert!(
         rendered.contains("The Solve-IR projection writes the algebraic and output Y segments")
     );

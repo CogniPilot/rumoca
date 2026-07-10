@@ -844,8 +844,12 @@ struct TargetAssignmentScratchRequest<'a> {
     scratch: &'a mut RowEvalScratch,
 }
 
-#[derive(Clone, Copy)]
-enum TargetAssignmentShape {
+/// Scalar Solve-IR row shape that can update one solver-Y slot directly.
+///
+/// Code generators use the same analysis as the interpreter so compiled
+/// projection sweeps preserve assignment-row semantics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TargetAssignmentShape {
     Direct {
         target_y_index: usize,
         expr_reg: u32,
@@ -863,7 +867,7 @@ enum TargetAssignmentShape {
 }
 
 impl TargetAssignmentShape {
-    fn target_y_index(self) -> usize {
+    pub fn target_y_index(self) -> usize {
         match self {
             Self::Direct { target_y_index, .. } | Self::Affine { target_y_index, .. } => {
                 target_y_index
@@ -871,7 +875,7 @@ impl TargetAssignmentShape {
         }
     }
 
-    fn expr_eval_len(self) -> usize {
+    pub fn expr_eval_len(self) -> usize {
         match self {
             Self::Direct { expr_eval_len, .. } | Self::Affine { expr_eval_len, .. } => {
                 expr_eval_len
@@ -912,7 +916,8 @@ impl TargetAssignmentShape {
     }
 }
 
-fn target_assignment_shape(
+/// Recognize a scalar row that can be evaluated as `target = expression`.
+pub fn target_assignment_shape(
     row: &[LinearOp],
 ) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
     if ScalarProgramBlock::program_output_count(row) > 1 {

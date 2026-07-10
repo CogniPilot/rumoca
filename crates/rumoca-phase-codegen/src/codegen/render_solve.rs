@@ -33,9 +33,9 @@ pub(super) use dense_solve_render::{
     render_solve_block_py_function, render_solve_block_rust_function,
     render_solve_pre_param_binding_c_function, render_solve_row_c_function,
     render_solve_row_output_wgsl_function, render_solve_row_rust_function,
-    render_solve_row_wgsl_function, render_solve_slot_assign_c_function, required_bool_field,
-    required_string_field, required_usize_field, solve_block_output_count_function,
-    validate_linsolve_render_shape,
+    render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
+    render_solve_target_assignment_c_function, required_bool_field, required_string_field,
+    required_usize_field, solve_block_output_count_function, validate_linsolve_render_shape,
 };
 #[cfg(test)]
 pub(super) use dense_solve_render::{MatMulRenderShape, solve_output_targets};
@@ -95,6 +95,82 @@ impl Object for SolveRowValue {
 
 fn render_solve_row_c(row: &Value, cfg: &SolveRowCConfig) -> RenderResult {
     render_solve_row_for(row, cfg, SolveRowDialect::C)
+}
+
+fn render_solve_target_assignment_c(
+    row: &Value,
+    target_y_index: usize,
+    cfg: &SolveRowCConfig,
+) -> RenderResult {
+    let Some(typed) = row.downcast_object_ref::<SolveRowValue>() else {
+        return Err(render_err(
+            "target-assignment rendering requires a typed scalar Solve-IR row",
+        ));
+    };
+    render_solve_target_assignment_typed_c(typed.ops(), target_y_index, cfg)
+}
+
+fn render_solve_target_assignment_typed_c(
+    ops: &[solve::LinearOp],
+    target_y_index: usize,
+    cfg: &SolveRowCConfig,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut output = None;
+    for op in ops {
+        output = render_solve_op_typed(op, cfg, SolveRowDialect::C, &mut regs, output)?;
+    }
+    let output = output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))?;
+    let shape = rumoca_eval_solve::target_assignment_shape(ops)
+        .map_err(|error| render_err(format!("invalid target-assignment row: {error}")))?;
+    match shape {
+        Some(rumoca_eval_solve::TargetAssignmentShape::Direct {
+            target_y_index: shape_target,
+            expr_reg,
+            ..
+        }) if shape_target == target_y_index => solve_reg(
+            &regs,
+            solve_reg_index(expr_reg, "target-assignment expression register")?,
+        ),
+        Some(rumoca_eval_solve::TargetAssignmentShape::Affine {
+            target_y_index: shape_target,
+            offset_reg,
+            coefficient_reg,
+            offset_scale,
+            coefficient_scale,
+            ..
+        }) if shape_target == target_y_index => {
+            let offset = solve_reg(
+                &regs,
+                solve_reg_index(offset_reg, "target-assignment offset register")?,
+            )?;
+            let coefficient = coefficient_reg
+                .map(|reg| {
+                    solve_reg(
+                        &regs,
+                        solve_reg_index(reg, "target-assignment coefficient register")?,
+                    )
+                })
+                .transpose()?
+                .unwrap_or_else(|| "1.0".to_string());
+            Ok(format!(
+                "(-({offset_scale:?} * ({offset})) / ({coefficient_scale:?} * ({coefficient})))"
+            ))
+        }
+        Some(shape) => Err(render_err(format!(
+            "Solve-IR assignment targets y[{}], not projection y[{target_y_index}]",
+            shape.target_y_index()
+        ))),
+        None if !ops.iter().any(
+            |op| matches!(op, solve::LinearOp::LoadY { index, .. } if *index == target_y_index),
+        ) =>
+        {
+            Ok(output)
+        }
+        None => Err(render_err(format!(
+            "Solve-IR row cannot directly assign projection y[{target_y_index}]"
+        ))),
+    }
 }
 
 fn render_solve_row_for(

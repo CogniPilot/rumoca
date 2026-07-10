@@ -38,8 +38,9 @@ use render_solve::{
     render_solve_pre_param_binding_c_function, render_solve_row_c_function,
     render_solve_row_output_wgsl_function, render_solve_row_rust_function,
     render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
-    render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
-    render_wgsl_native_family_inventory_json_function, solve_block_output_count_function,
+    render_solve_target_assignment_c_function, render_wgsl_kernel_schedule_json_function,
+    render_wgsl_kernel_workgroup_total_function, render_wgsl_native_family_inventory_json_function,
+    solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
@@ -1221,6 +1222,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_expr", render_expr_function);
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
+    env.add_function(
+        "render_solve_target_assignment_c",
+        render_solve_target_assignment_c_function,
+    );
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
     env.add_function("render_solve_block_c", render_solve_block_c_function);
     env.add_function("render_solve_block_rust", render_solve_block_rust_function);
