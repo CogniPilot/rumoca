@@ -21,6 +21,7 @@ use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
 use std::path::Path;
 
+mod fmi3_projection;
 mod render_c;
 mod render_dae_modelica;
 mod render_expr;
@@ -30,6 +31,7 @@ mod render_stmt;
 mod solve_lazy;
 mod symbol_alloc;
 
+use fmi3_projection::fmi3_scalar_projection_schedule_function;
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
@@ -38,8 +40,9 @@ use render_solve::{
     render_solve_pre_param_binding_c_function, render_solve_row_c_function,
     render_solve_row_output_wgsl_function, render_solve_row_rust_function,
     render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
-    render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
-    render_wgsl_native_family_inventory_json_function, solve_block_output_count_function,
+    render_solve_target_assignment_c_function, render_wgsl_kernel_schedule_json_function,
+    render_wgsl_kernel_workgroup_total_function, render_wgsl_native_family_inventory_json_function,
+    solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
@@ -287,7 +290,11 @@ fn add_function_output_projection_refs(
             let selector = if count == 1 {
                 output.name.as_str().to_string()
             } else {
-                format!("{}[{}]", output.name.as_str(), element_idx)
+                format!(
+                    "{}[{}]",
+                    output.name.as_str(),
+                    source_subscript_suffix(&dims, element_idx)?
+                )
             };
             refs.insert(format!("{func_name}.{selector}"));
         }
@@ -1217,6 +1224,14 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_expr", render_expr_function);
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
+    env.add_function(
+        "fmi3_scalar_projection_schedule",
+        fmi3_scalar_projection_schedule_function,
+    );
+    env.add_function(
+        "render_solve_target_assignment_c",
+        render_solve_target_assignment_c_function,
+    );
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
     env.add_function("render_solve_block_c", render_solve_block_c_function);
     env.add_function("render_solve_block_rust", render_solve_block_rust_function);

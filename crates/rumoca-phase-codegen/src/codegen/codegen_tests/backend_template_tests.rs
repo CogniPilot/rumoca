@@ -655,15 +655,25 @@ fn test_casadi_sx_template_uses_scalar_counts_and_defines_derivatives() {
 #[test]
 fn test_fmi3_model_description_uses_fmi3_schema_order() {
     let mut dae = dae::Dae::new();
+    let span =
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2);
     dae.variables.states.insert(
         "x".into(),
         rumoca_ir_dae::Variable {
             name: "x".into(),
-            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                rumoca_core::SourceId::from_source_name(file!()),
-                1,
-                2,
-            ))
+            ..rumoca_ir_dae::Variable::empty_with_span(span)
+        },
+    );
+    dae.variables.outputs.insert(
+        "y".into(),
+        rumoca_ir_dae::Variable {
+            name: "y".into(),
+            unit: Some("m/s".into()),
+            start: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span,
+            }),
+            ..rumoca_ir_dae::Variable::empty_with_span(span)
         },
     );
 
@@ -680,7 +690,29 @@ fn test_fmi3_model_description_uses_fmi3_schema_order() {
         .find("<ModelStructure>")
         .expect("FMI3 XML should contain ModelStructure");
 
-    assert!(model_variables < model_structure, "{xml}");
+    let unit_definitions = xml
+        .find("<UnitDefinitions>")
+        .expect("FMI3 XML should contain UnitDefinitions");
+    assert!(
+        unit_definitions < model_variables && model_variables < model_structure,
+        "{xml}"
+    );
+    assert!(
+        xml.contains(r#"<Unit name="s"><BaseUnit s="1"/></Unit>"#),
+        "{xml}"
+    );
+    assert!(xml.contains(r#"<Unit name="m/s"></Unit>"#), "{xml}");
+    assert!(xml.contains(r#"<Float64 name="y" valueReference="2" causality="output" variability="continuous" initial="calculated" unit="m/s"/>"#), "{xml}");
+    assert!(!xml.contains(r#"initial="calculated" start="#), "{xml}");
+    assert!(xml.contains(r#"<Float64 name="time" valueReference="3" causality="independent" variability="continuous" unit="s"/>"#), "{xml}");
+    assert!(
+        xml.contains(r#"<InitialUnknown valueReference="1"/>"#),
+        "{xml}"
+    );
+    assert!(
+        xml.contains(r#"<InitialUnknown valueReference="2"/>"#),
+        "{xml}"
+    );
     assert!(
         !xml.contains("<BuildConfiguration"),
         "FMI 3 build configuration belongs in sources/buildDescription.xml:\n{xml}"
@@ -752,23 +784,51 @@ fn test_fmi3_model_description_exports_dae_inputs_as_inputs() {
 
 #[test]
 fn test_fmi3_build_templates_use_fmi3_platform_directory_names() {
+    let cmake = builtin_template("fmi3", "CMakeLists.txt.jinja");
+    let shell = builtin_template("fmi3", "build.sh.jinja");
     assert!(
-        builtin_template("fmi3", "CMakeLists.txt.jinja")
-            .contains(r#"set(FMU_PLATFORM "x86_64-linux")"#),
-        "FMI 3 Linux binaries must use binaries/x86_64-linux"
+        cmake.contains(r#"set(FMU_PLATFORM "${FMU_ARCH}-linux")"#)
+            && cmake.contains(r#"set(FMU_ARCH "aarch64")"#)
+            && cmake.contains(r#"set(FMU_ARCH "x86_64")"#),
+        "FMI 3 CMake packaging must select a standard platform tuple"
     );
     assert!(
-        builtin_template("fmi3", "build.sh.jinja").contains("PLATFORM=x86_64-linux"),
-        "FMI 3 shell build must use binaries/x86_64-linux"
+        shell.contains("PLATFORM=x86_64-linux") && shell.contains("PLATFORM=aarch64-linux"),
+        "FMI 3 shell packaging must support x86_64 and aarch64 Linux"
     );
+    assert!(!cmake.contains("linux64") && !shell.contains("linux64"));
+    assert!(cmake.contains("DESTINATION binaries/${FMU_PLATFORM}"));
+    assert!(shell.contains("rm -f {{ model_name }}.fmu"));
+}
+
+#[test]
+fn test_fmi3_model_description_only_advertises_implemented_capabilities() {
+    let mut dae = dae::Dae::new();
+    dae.variables.parameters.insert(
+        "gain".into(),
+        rumoca_ir_dae::Variable {
+            name: "gain".into(),
+            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+    let xml = render_template_with_name(
+        &dae,
+        builtin_template("fmi3", "modelDescription.xml.jinja"),
+        "Capabilities",
+    )
+    .unwrap();
+
+    assert!(!xml.contains("providesDirectionalDerivatives"), "{xml}");
+    assert!(!xml.contains("providesAdjointDerivatives"), "{xml}");
     assert!(
-        !builtin_template("fmi3", "CMakeLists.txt.jinja").contains("linux64"),
-        "linux64 is the FMI 2 platform directory, not FMI 3"
+        xml.contains(r#"name="gain" valueReference="0" causality="parameter" variability="fixed""#),
+        "{xml}"
     );
-    assert!(
-        !builtin_template("fmi3", "build.sh.jinja").contains("linux64"),
-        "linux64 is the FMI 2 platform directory, not FMI 3"
-    );
+    assert!(!xml.contains("structuralParameter"), "{xml}");
 }
 
 #[test]
@@ -787,7 +847,7 @@ fn test_fmi3_initial_builtin_tracks_initialization_mode() {
 fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
     let template = builtin_template("fmi3", "model.c.jinja");
     let exit_initialization = template
-        .split("FMI3_EXPORT fmi3Status fmi3ExitInitializationMode")
+        .split("FMI3_Export fmi3Status fmi3ExitInitializationMode")
         .nth(1)
         .expect("FMI 3 template should define exit initialization");
 
@@ -803,6 +863,333 @@ fn test_fmi3_exit_initialization_seeds_pre_discrete_values() {
         exit_initialization.contains("compute_discrete_updates(m);"),
         "FMI 3 exit initialization should evaluate initial discrete updates"
     );
+}
+
+#[test]
+fn test_fmi3_cosimulation_uses_opt_in_fixed_rk4() {
+    let template = builtin_template("fmi3", "model.c.jinja");
+    assert!(template.contains("static fmi3Status rk4_integrate"));
+    assert!(template.contains("#ifdef RUMOCA_FMI3_COSIM_FIXED_RK4"));
+    assert!(template.contains("rk4_integrate(m, currentCommunicationPoint, t_end)"));
+    assert!(template.contains("rk45_integrate(m, currentCommunicationPoint, t_end)"));
+    assert!(template.contains("#define RUMOCA_FMI3_COSIM_RK4_MAX_STEP INFINITY"));
+    assert!(
+        !template.contains("#define RUMOCA_FMI3_COSIM_RK4_MAX_STEP 4.0e-3"),
+        "the generic backend must not embed a vehicle-specific RK4 step"
+    );
+    assert!(
+        builtin_template("fmi3", "build.sh.jinja").contains("${CFLAGS:=-O2}"),
+        "the packaged FMU build should allow a caller-selected integration policy"
+    );
+}
+
+#[test]
+fn test_fmi3_uses_official_fmi_3_0_2_headers() {
+    let model = builtin_template("fmi3", "model.c.jinja");
+    let driver = builtin_template("fmi3", "test_driver.c.jinja");
+    let platform = builtin_template("fmi3", "fmi3PlatformTypes.h.jinja");
+    let function_types = builtin_template("fmi3", "fmi3FunctionTypes.h.jinja");
+    let manifest = crate::templates::builtin_target("fmi3")
+        .expect("builtin FMI 3 target")
+        .manifest;
+
+    assert!(model.contains("#include \"fmi3Functions.h\""));
+    assert!(driver.contains("#include \"fmi3Functions.h\""));
+    assert!(!model.contains("typedef int          fmi3Boolean;"));
+    assert!(platform.contains("typedef            bool fmi3Boolean;"));
+    assert!(platform.contains("typedef const fmi3Byte* fmi3Binary;"));
+    assert!(!function_types.contains("clocksTicked"));
+    for header in [
+        "fmi3PlatformTypes.h.jinja",
+        "fmi3FunctionTypes.h.jinja",
+        "fmi3Functions.h.jinja",
+    ] {
+        assert!(manifest.contains(header), "FMI 3 target omits {header}");
+    }
+}
+
+#[test]
+fn test_fmi3_exports_complete_standard_symbol_surface() {
+    let generated = render_template_with_name(
+        &dae::Dae::new(),
+        builtin_template("fmi3", "model.c.jinja"),
+        "CompleteApi",
+    )
+    .expect("render FMI 3 API");
+    let functions = builtin_template("fmi3", "fmi3Functions.h.jinja");
+
+    for line in functions
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("FMI3_Export "))
+    {
+        let symbol = line
+            .strip_suffix(';')
+            .and_then(|line| line.split_whitespace().last())
+            .expect("official FMI function declaration");
+        assert!(
+            generated.contains(&format!("{symbol}(")),
+            "generated FMI library omits {symbol}"
+        );
+    }
+}
+
+#[test]
+fn test_fmi3_model_description_only_advertises_cosim_for_eventless_models() {
+    let template = builtin_template("fmi3", "modelDescription.xml.jinja");
+    let eventless = dae::Dae::new();
+    let eventless_xml = render_template_with_name(&eventless, template, "Eventless").unwrap();
+    assert!(eventless_xml.contains("<CoSimulation"), "{eventless_xml}");
+    assert!(!eventless_xml.contains("canReturnEarlyAfterIntermediateUpdate"));
+    let c_template = builtin_template("fmi3", "model.c.jinja");
+    let eventless_c = render_template_with_name(&eventless, c_template, "Eventless").unwrap();
+    assert!(
+        eventless_c.contains("#define RUMOCA_COSIM_SUPPORTED 1"),
+        "{eventless_c}"
+    );
+
+    let mut discrete = dae::Dae::new();
+    discrete.variables.discrete_reals.insert(
+        "z".into(),
+        dae::Variable {
+            name: "z".into(),
+            ..dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name(file!()),
+                1,
+                2,
+            ))
+        },
+    );
+    let discrete_xml = render_template_with_name(&discrete, template, "Discrete").unwrap();
+    assert!(!discrete_xml.contains("<CoSimulation"), "{discrete_xml}");
+    assert!(discrete_xml.contains("<ModelExchange"), "{discrete_xml}");
+    let discrete_c = render_template_with_name(&discrete, c_template, "Discrete").unwrap();
+    assert!(
+        discrete_c.contains("#define RUMOCA_COSIM_SUPPORTED 0"),
+        "{discrete_c}"
+    );
+}
+
+fn fmi3_decay_fixture() -> serde_json::Value {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fmi3_decay_fixture.mo"),
+        1,
+        2,
+    );
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        "x".into(),
+        dae::Variable {
+            name: "x".into(),
+            start: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            }),
+            ..dae::Variable::empty_with_span(span)
+        },
+    );
+    model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Der,
+                args: vec![rumoca_core::Expression::VarRef {
+                    name: "x".into(),
+                    subscripts: Vec::new(),
+                    span,
+                }],
+                span,
+            }),
+            rhs: Box::new(rumoca_core::Expression::Unary {
+                op: rumoca_core::OpUnary::Minus,
+                rhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: "x".into(),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                span,
+            }),
+            span,
+        },
+        span,
+        origin: "test".into(),
+        scalar_count: 1,
+    });
+    let mut json = dae_template_json(&model).unwrap();
+    json.as_object_mut().unwrap().insert(
+        "solve".to_string(),
+        serde_json::json!({
+            "continuous": {
+                "derivative_rhs": {
+                    "programs": [[
+                        {"LoadY": {"dst": 0, "index": 0}},
+                        {"Unary": {"dst": 1, "op": "Neg", "arg": 0}},
+                        {"StoreOutput": {"src": 1}}
+                    ]],
+                    "output_indices": [0]
+                }
+            },
+            "events": {
+                "root_conditions": {"programs": []},
+                "dynamic_time_event_rhs": {"programs": []},
+                "actions": []
+            }
+        }),
+    );
+    json
+}
+
+fn compile_and_run_fmi3_cosim(
+    source_path: &std::path::Path,
+    dir: &std::path::Path,
+    name: &str,
+    extra_flags: &[&str],
+) {
+    let binary = dir.join(name);
+    let output = std::process::Command::new("cc")
+        .args(["-std=c11", "-O2", "-Wall", "-Wextra"])
+        .args(extra_flags)
+        .arg(source_path)
+        .args(["-lm", "-o"])
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{name} FMI3 C compile failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{name} FMI3 Co-Simulation runtime exited {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_fmi3_headers(dir: &std::path::Path) {
+    for (template, output) in [
+        ("fmi3PlatformTypes.h.jinja", "fmi3PlatformTypes.h"),
+        ("fmi3FunctionTypes.h.jinja", "fmi3FunctionTypes.h"),
+        ("fmi3Functions.h.jinja", "fmi3Functions.h"),
+    ] {
+        std::fs::write(dir.join(output), builtin_template("fmi3", template)).unwrap();
+    }
+}
+
+#[test]
+fn test_fmi3_cosimulation_runtime_and_state_roundtrip() {
+    if std::process::Command::new("cc")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping FMI3 Co-Simulation runtime test: cc not available");
+        return;
+    }
+    let generated = render_template_with_dae_json_and_name(
+        &fmi3_decay_fixture(),
+        builtin_template("fmi3", "model.c.jinja"),
+        "Decay",
+    )
+    .unwrap();
+    let driver = r#"
+int main(void) {
+    fmi3Instance rejected = fmi3InstantiateCoSimulation(
+        "early", MODEL_INSTANTIATION_TOKEN, NULL, 0, 0, 0, 1, NULL, 0, NULL, NULL, NULL);
+    if (rejected != NULL) return 10;
+    rejected = fmi3InstantiateCoSimulation(
+        "events", MODEL_INSTANTIATION_TOKEN, NULL, 0, 0, 1, 0, NULL, 0, NULL, NULL, NULL);
+    if (rejected != NULL) return 33;
+
+    fmi3Instance instance = fmi3InstantiateCoSimulation(
+        "decay", MODEL_INSTANTIATION_TOKEN, NULL, 0, 0, 0, 0, NULL, 0, NULL, NULL, NULL);
+    if (!instance) return 11;
+    if (fmi3EnterConfigurationMode(NULL) != fmi3Error) return 36;
+    if (fmi3EnterConfigurationMode(instance) != fmi3OK) return 37;
+    if (fmi3EnterConfigurationMode(instance) != fmi3Error) return 38;
+    if (fmi3ExitConfigurationMode(instance) != fmi3OK) return 39;
+    if (fmi3EnterInitializationMode(instance, 1, 1.0e-8, 0.0, 0, 0.0) != fmi3OK) return 12;
+    if (fmi3ExitInitializationMode(instance) != fmi3OK) return 13;
+
+    const fmi3ValueReference x_vr = 0;
+    fmi3Float64 x = 0.0;
+    if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - 1.0) > 1.0e-12) return 14;
+    fmi3Float64 guards[2] = {123.0, 456.0};
+    if (fmi3GetFloat64(instance, &x_vr, 1, guards, 0) != fmi3Error ||
+        guards[0] != 123.0 || guards[1] != 456.0) return 40;
+    if (fmi3GetFloat64(instance, &x_vr, 1, guards, 2) != fmi3Error ||
+        guards[0] != 123.0 || guards[1] != 456.0) return 41;
+    if (fmi3GetFloat64(NULL, &x_vr, 1, &x, 1) != fmi3Error) return 42;
+    if (fmi3SetFloat64(instance, &x_vr, 1, guards, 2) != fmi3Error) return 43;
+    if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - 1.0) > 1.0e-12) return 44;
+    fmi3Float32 x32 = 0.0f;
+    if (fmi3GetFloat32(instance, &x_vr, 1, &x32, 1) != fmi3Error) return 45;
+    if (fmi3GetString(instance, &x_vr, 1, NULL, 1) != fmi3Error) return 46;
+
+    fmi3Boolean event_needed = 0, terminate = 0, early = 0;
+    fmi3Float64 last = 0.0;
+    if (fmi3DoStep(instance, 0.0, 0.1, 1, &event_needed, &terminate, &early, &last) != fmi3OK) return 15;
+    if (event_needed || terminate || early || fabs(last - 0.1) > 1.0e-12) return 16;
+    if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - exp(-0.1)) > 2.0e-7) return 17;
+    const fmi3ValueReference time_vr = VR_TIME;
+    fmi3Float64 reported_time = 0.0;
+    if (fmi3GetFloat64(instance, &time_vr, 1, &reported_time, 1) != fmi3OK ||
+        fabs(reported_time - 0.1) > 1.0e-12) return 35;
+
+    fmi3FMUState state = NULL;
+    if (fmi3GetFMUState(instance, &state) != fmi3OK || !state) return 18;
+    size_t state_size = 0;
+    if (fmi3SerializedFMUStateSize(instance, state, &state_size) != fmi3OK || state_size == 0) return 19;
+    fmi3Byte* bytes = (fmi3Byte*)malloc(state_size);
+    if (!bytes || fmi3SerializeFMUState(instance, state, bytes, state_size) != fmi3OK) return 20;
+    if (fmi3SerializeFMUState(instance, state, bytes, state_size + 1) != fmi3Error) return 34;
+    if (fmi3FreeFMUState(instance, &state) != fmi3OK || state != NULL) return 21;
+
+    if (fmi3DoStep(instance, 0.1, 0.1, 1, &event_needed, &terminate, &early, &last) != fmi3OK) return 22;
+    fmi3Float64 advanced = 0.0;
+    if (fmi3GetFloat64(instance, &x_vr, 1, &advanced, 1) != fmi3OK) return 23;
+    if (fmi3DeserializeFMUState(instance, bytes, state_size, &state) != fmi3OK || !state) return 24;
+    free(bytes);
+    if (fmi3SetFMUState(instance, state) != fmi3OK) return 25;
+    if (fmi3FreeFMUState(instance, &state) != fmi3OK) return 26;
+    if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - exp(-0.1)) > 2.0e-7) return 27;
+    if (!(advanced < x)) return 28;
+
+    if (fmi3DoStep(instance, 0.0, 0.1, 1, &event_needed, &terminate, &early, &last) != fmi3Error) return 29;
+    if (fabs(last - 0.1) > 1.0e-12) return 30;
+    if (fmi3DoStep(instance, 0.1, 0.1, 1, &event_needed, &terminate, &early, &last) != fmi3OK) return 31;
+
+    if (fmi3Terminate(instance) != fmi3OK) return 32;
+    fmi3FreeInstance(instance);
+    return 0;
+}
+"#;
+    let source = format!("{generated}\n{driver}");
+    let dir = std::env::temp_dir().join(format!("rumoca_fmi3_cosim_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_fmi3_headers(&dir);
+    let source_path = dir.join("decay.c");
+    std::fs::write(&source_path, source).unwrap();
+
+    for (name, extra_flags) in [
+        ("adaptive", Vec::<&str>::new()),
+        ("fixed-default", vec!["-DRUMOCA_FMI3_COSIM_FIXED_RK4"]),
+        (
+            "fixed",
+            vec![
+                "-DRUMOCA_FMI3_COSIM_FIXED_RK4",
+                "-DRUMOCA_FMI3_COSIM_RK4_MAX_STEP=1.0e-3",
+            ],
+        ),
+    ] {
+        compile_and_run_fmi3_cosim(&source_path, &dir, name, &extra_flags);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

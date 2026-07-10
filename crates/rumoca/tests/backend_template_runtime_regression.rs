@@ -360,6 +360,22 @@ fn compile_and_run_c(sources: &[(&str, &str)], args: &[&str]) -> String {
         .expect("create temp dir");
     let binary_path = dir.path().join("test_model");
 
+    if sources
+        .iter()
+        .any(|(_, content)| content.contains("\"fmi3Functions.h\""))
+    {
+        for (template, filename) in [
+            ("fmi3PlatformTypes.h.jinja", "fmi3PlatformTypes.h"),
+            ("fmi3FunctionTypes.h.jinja", "fmi3FunctionTypes.h"),
+            ("fmi3Functions.h.jinja", "fmi3Functions.h"),
+        ] {
+            let content = templates::builtin_template_source("fmi3", template)
+                .unwrap_or_else(|| panic!("load built-in FMI3 header {template}"));
+            fs::write(dir.path().join(filename), content)
+                .unwrap_or_else(|_| panic!("write {filename}"));
+        }
+    }
+
     let mut src_paths = Vec::new();
     for (filename, content) in sources {
         let path = dir.path().join(filename);
@@ -899,7 +915,8 @@ fn fmi3_directional_derivative() {
 
     let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ParamDecay");
 
-    // Verify XML advertises directional derivatives
+    // The generic model-description context cannot prove that Solve-IR AD rows
+    // are available, so it must not over-advertise this optional capability.
     let xml = render_fmi_solve_template(
         &compiled,
         "fmi3",
@@ -907,8 +924,8 @@ fn fmi3_directional_derivative() {
         "ParamDecay",
     );
     assert!(
-        xml.contains(r#"providesDirectionalDerivatives="true""#),
-        "expected providesDirectionalDerivatives in XML"
+        !xml.contains("providesDirectionalDerivatives"),
+        "unexpected providesDirectionalDerivatives in XML"
     );
 
     // Build a driver that calls fmi3GetDirectionalDerivative
@@ -1084,7 +1101,8 @@ fn fmi3_adjoint_derivative() {
 
     let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ParamDecay");
 
-    // Verify XML advertises adjoint derivatives
+    // The generic model-description context cannot prove that Solve-IR AD rows
+    // are available, so it must not over-advertise this optional capability.
     let xml = render_fmi_solve_template(
         &compiled,
         "fmi3",
@@ -1092,8 +1110,8 @@ fn fmi3_adjoint_derivative() {
         "ParamDecay",
     );
     assert!(
-        xml.contains(r#"providesAdjointDerivatives="true""#),
-        "expected providesAdjointDerivatives in XML"
+        !xml.contains("providesAdjointDerivatives"),
+        "unexpected providesAdjointDerivatives in XML"
     );
 
     let driver_c = r#"
@@ -1280,20 +1298,22 @@ int main(void) {
     euler_steps(inst, &t, &x, 500, dt);
     double x_second = x;
 
-    /* Also test typed access (Float32, Int32, Boolean) */
+    /* The generated model declares only Float64 variables. Other typed
+       accessors must fail closed rather than reinterpret Float64 storage. */
     fmi3ValueReference vr_x = 0;
-    fmi3Float32 f32_val;
-    fmi3GetFloat32(inst, &vr_x, 1, &f32_val, 1);
-    fmi3Int32 i32_val;
-    fmi3GetInt32(inst, &vr_x, 1, &i32_val, 1);
-    fmi3Boolean bool_val;
-    fmi3GetBoolean(inst, &vr_x, 1, &bool_val, 1);
+    fmi3Float32 f32_val = 0.0f;
+    fmi3Status f32_get = fmi3GetFloat32(inst, &vr_x, 1, &f32_val, 1);
+    fmi3Int32 i32_val = 0;
+    fmi3Status i32_get = fmi3GetInt32(inst, &vr_x, 1, &i32_val, 1);
+    fmi3Boolean bool_val = 0;
+    fmi3Status bool_get = fmi3GetBoolean(inst, &vr_x, 1, &bool_val, 1);
 
-    /* Float32 set round-trip */
+    fmi3Float64 f64_before;
+    fmi3GetContinuousStates(inst, &f64_before, 1);
     fmi3Float32 f32_set = 1.5f;
-    fmi3SetFloat32(inst, &vr_x, 1, &f32_set, 1);
-    fmi3Float64 f64_check;
-    fmi3GetContinuousStates(inst, &f64_check, 1);
+    fmi3Status f32_set_status = fmi3SetFloat32(inst, &vr_x, 1, &f32_set, 1);
+    fmi3Float64 f64_after;
+    fmi3GetContinuousStates(inst, &f64_after, 1);
 
     double err = fabs(x_first - x_second);
     double scale = fabs(x_first) > 1.0 ? fabs(x_first) : 1.0;
@@ -1301,13 +1321,17 @@ int main(void) {
     printf("x_first=%.10g\n", x_first);
     printf("x_second=%.10g\n", x_second);
     printf("error=%.10g\n", err / scale);
-    printf("f32_val=%.6g\n", (double)f32_val);
-    printf("i32_val=%d\n", i32_val);
-    printf("bool_val=%d\n", bool_val);
-    printf("f32_roundtrip_err=%.6g\n", fabs(f64_check - 1.5));
+    printf("f32_get=%d\n", f32_get);
+    printf("i32_get=%d\n", i32_get);
+    printf("bool_get=%d\n", bool_get);
+    printf("f32_set=%d\n", f32_set_status);
+    printf("f32_set_state_error=%.6g\n", fabs(f64_after - f64_before));
 
     fmi3FreeInstance(inst);
-    int ok = (err / scale < 1e-10) && (fabs(f64_check - 1.5) < 0.01);
+    int ok = (err / scale < 1e-10)
+        && f32_get == fmi3Error && i32_get == fmi3Error
+        && bool_get == fmi3Error && f32_set_status == fmi3Error
+        && fabs(f64_after - f64_before) < 1e-12;
     return ok ? 0 : 1;
 }
 "#;
@@ -1430,14 +1454,14 @@ int main(void) {
 }
 
 // ============================================================================
-// FMI 3.0 — Structural parameters in XML
+// FMI 3.0 — Fixed parameters in XML
 //
-// Verify that non-tunable parameters get causality="structuralParameter"
-// and tunable parameters get causality="parameter" variability="tunable".
+// Verify that ordinary non-tunable parameters remain fixed parameters and are
+// not mislabeled as structural parameters, while tunable parameters stay tunable.
 // ============================================================================
 
 #[test]
-fn fmi3_structural_parameter_xml() {
+fn fmi3_fixed_parameter_xml() {
     let compiled = compile_model(TUNABLE_PARAM_SOURCE, "TunableParam");
     let xml = render_fmi_solve_template(
         &compiled,
@@ -1451,11 +1475,12 @@ fn fmi3_structural_parameter_xml() {
         xml.contains(r#"causality="parameter""#) && xml.contains(r#"variability="tunable""#),
         "expected tunable parameter for k:\n{xml}"
     );
-    // n (Integer, non-tunable) should be structural parameter
+    // n (Integer, non-tunable) is an ordinary fixed parameter.
     assert!(
-        xml.contains(r#"causality="structuralParameter""#),
-        "expected structuralParameter for n:\n{xml}"
+        xml.contains(r#"name="n" valueReference="2" causality="parameter" variability="fixed""#),
+        "expected fixed parameter for n:\n{xml}"
     );
+    assert!(!xml.contains("structuralParameter"), "{xml}");
 }
 
 // ============================================================================

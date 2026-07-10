@@ -4,7 +4,14 @@ set -e
 cd "$(dirname "$0")"
 
 case "$(uname -s)" in
-  Linux*)   PLATFORM=x86_64-linux; LIB_EXT=so ;;
+  Linux*)
+    case "$(uname -m)" in
+      x86_64|amd64)   PLATFORM=x86_64-linux ;;
+      arm64|aarch64)  PLATFORM=aarch64-linux ;;
+      *) echo "Unsupported Linux architecture: $(uname -m)"; exit 1 ;;
+    esac
+    LIB_EXT=so
+    ;;
   Darwin*)
     case "$(uname -m)" in
       arm64|aarch64) PLATFORM=aarch64-darwin ;;
@@ -12,12 +19,20 @@ case "$(uname -s)" in
     esac
     LIB_EXT=dylib
     ;;
-  MINGW*|MSYS*|CYGWIN*) PLATFORM=x86_64-windows; LIB_EXT=dll ;;
+  MINGW*|MSYS*|CYGWIN*)
+    case "$(uname -m)" in
+      arm64|aarch64) PLATFORM=aarch64-windows ;;
+      *)             PLATFORM=x86_64-windows ;;
+    esac
+    LIB_EXT=dll
+    ;;
   *) echo "Unknown platform"; exit 1 ;;
 esac
 
 mkdir -p binaries/$PLATFORM
-cc -shared -fPIC -O2 -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
+: "${CFLAGS:=-O2}"
+cc -shared -fPIC $CFLAGS -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
 
+rm -f {{ model_name }}.fmu
 zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
 echo "Created {{ model_name }}.fmu"

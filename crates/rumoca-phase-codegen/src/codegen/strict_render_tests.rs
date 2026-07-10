@@ -113,6 +113,24 @@ fn test_render_var_ref_requires_name() {
 }
 
 #[test]
+fn test_render_var_ref_unwraps_spanned_literal_subscripts() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_expr({
+    "VarRef": {
+        "name": "R",
+        "subscripts": [
+            {"Index": {"value": {"value": 1, "span": {"source": 1, "start": 2, "end": 3}}}},
+            {"Index": {"value": {"value": 2, "span": {"source": 1, "start": 4, "end": 5}}}}
+        ]
+    }
+}, {"subscript_underscore": true}) }}
+"#;
+    let rendered = render_template(&dae, template).expect("spanned subscripts should render");
+    assert_eq!(rendered.trim(), "R_1_2");
+}
+
+#[test]
 fn test_render_builtin_requires_function_name() {
     let dae = dae::Dae::new();
     let template = r#"
@@ -1325,6 +1343,28 @@ fn test_render_component_reference_subscript_reports_render_error() {
         msg.contains("UnsupportedSubscriptExpr"),
         "expected strict component-reference subscript diagnostic, got: {msg}"
     );
+}
+
+#[test]
+fn test_render_component_reference_unwraps_spanned_index() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{% set stmt = {"Assignment": {
+    "comp": {
+        "parts": [{
+            "ident": "R",
+            "subs": [
+                {"Index": {"value": 1, "span": {"source": 1, "start": 2, "end": 3}}},
+                {"Index": {"value": 2, "span": {"source": 1, "start": 4, "end": 5}}}
+            ]
+        }]
+    },
+    "value": {"Literal": {"value": {"Real": 1.0}}}
+}} %}
+{{ render_statement(stmt, {"if_style": "ternary", "subscript_underscore": true}, "") }}
+"#;
+    let rendered = render_template(&dae, template).expect("spanned target indices should render");
+    assert_eq!(rendered.trim(), "R_1_2 = 1.0;");
 }
 
 #[test]

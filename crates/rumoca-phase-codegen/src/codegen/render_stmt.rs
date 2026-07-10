@@ -7,7 +7,7 @@
 
 use super::render_expr::{
     get_binop_string, get_field, get_unop_string, is_exp_op, is_mul_elem_op, is_variant,
-    render_args, render_expression,
+    render_args, render_expression, subscript_index_value,
 };
 use super::{ExprConfig, IfStyle, RenderResult, render_vec_with_capacity};
 use crate::errors::render_err;
@@ -850,7 +850,7 @@ fn render_part_subscripts(part: &Value, cfg: &ExprConfig) -> RenderResult {
 /// Render an AST subscript.
 fn render_ast_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Ok(index) = get_field(sub, "Index") {
-        return Ok(index.to_string());
+        return Ok(subscript_index_value(&index)?.to_string());
     }
     if let Ok(expr) = get_field(sub, "Expr") {
         return render_expression(&expr, cfg);

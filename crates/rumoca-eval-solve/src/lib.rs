@@ -48,7 +48,10 @@ pub use jacobian::{
     JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
 };
 use linear_solve::{solve_component_op, solve_component_unchecked};
-pub use prepared::{PreparedComputeBlock, PreparedScalarProgramBlock};
+pub use prepared::{
+    PreparedComputeBlock, PreparedScalarProgramBlock, TargetAssignmentShape,
+    target_assignment_shape,
+};
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,

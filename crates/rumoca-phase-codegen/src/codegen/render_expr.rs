@@ -405,12 +405,17 @@ pub(crate) fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
 }
 
 pub(crate) fn subscript_index_value(index: &Value) -> Result<i64, minijinja::Error> {
-    if let Some(value) = index.as_i64() {
-        return Ok(value);
+    let mut value = index.clone();
+    for _ in 0..4 {
+        if let Some(index) = value.as_i64() {
+            return Ok(index);
+        }
+        let Ok(nested) = get_field(&value, "value") else {
+            break;
+        };
+        value = nested;
     }
-    get_field(index, "value")?
-        .as_i64()
-        .ok_or_else(|| render_err("subscript Index value is not an integer"))
+    Err(render_err("subscript Index value is not an integer"))
 }
 
 fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -799,6 +804,7 @@ pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
 fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
     let literal_value = get_field(literal, "value").unwrap_or_else(|_| literal.clone());
     if let Ok(real) = get_field(&literal_value, "Real") {
+        let real = spanned_literal_value(real);
         if cfg.float_literals {
             let s = real.to_string();
             return Ok(render_c_float_literal(&s));
@@ -806,12 +812,14 @@ fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(real.to_string());
     }
     if let Ok(int) = get_field(&literal_value, "Integer") {
+        let int = spanned_literal_value(int);
         if cfg.float_literals {
             return Ok(format!("{}.0f", int));
         }
         return Ok(int.to_string());
     }
     if let Ok(b) = get_field(&literal_value, "Boolean") {
+        let b = spanned_literal_value(b);
         return Ok(if b.is_true() {
             cfg.true_val.clone()
         } else {
@@ -819,11 +827,16 @@ fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
         });
     }
     if let Ok(s) = get_field(&literal_value, "String") {
+        let s = spanned_literal_value(s);
         return Ok(format!("\"{}\"", s));
     }
     Err(render_err(format!(
         "unhandled literal variant: {literal_value}"
     )))
+}
+
+fn spanned_literal_value(value: Value) -> Value {
+    get_field(&value, "value").unwrap_or(value)
 }
 
 fn render_c_float_literal(literal_text: &str) -> String {
