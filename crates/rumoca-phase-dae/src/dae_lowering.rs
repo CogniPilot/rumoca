@@ -2636,15 +2636,15 @@ fn record_array_member_slice_index(
         rumoca_core::Subscript::Colon { .. } => {
             one_based_scalar_index(k, span, "DAE record-array member slice subscript")
         }
-        rumoca_core::Subscript::Expr { expr, .. } => scalarized_comprehension_index_value(expr, k)
-            .ok_or_else(|| {
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            scalarized_record_array_subscript_index(expr, k).ok_or_else(|| {
                 ToDaeError::runtime_metadata_violation(
-                    "record-array member slice requires a literal range subscript".to_string(),
+                    "record-array member slice requires a compile-time integer or range subscript"
+                        .to_string(),
                 )
-            }),
-        rumoca_core::Subscript::Index { .. } => Err(ToDaeError::runtime_metadata_violation(
-            "record-array member slice requires a range subscript".to_string(),
-        )),
+            })
+        }
+        rumoca_core::Subscript::Index { value, .. } => Ok(*value),
     }
 }
 
@@ -2681,12 +2681,42 @@ fn scalarized_comprehension_index_value(range: &rumoca_core::Expression, k: usiz
     else {
         return None;
     };
-    let start = integer_literal_value(start)?;
+    let start = integer_constant_value(start)?;
     let step = match step.as_deref() {
-        Some(step) => integer_literal_value(step)?,
+        Some(step) => integer_constant_value(step)?,
         None => 1,
     };
     Some(start + (k as i64) * step)
+}
+
+fn scalarized_record_array_subscript_index(
+    expr: &rumoca_core::Expression,
+    k: usize,
+) -> Option<i64> {
+    integer_constant_value(expr).or_else(|| scalarized_comprehension_index_value(expr, k))
+}
+
+fn integer_constant_value(expr: &rumoca_core::Expression) -> Option<i64> {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            let value = integer_constant_value(rhs)?;
+            match op {
+                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(value),
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => value.checked_neg(),
+                _ => None,
+            }
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = integer_constant_value(lhs)?;
+            let rhs = integer_constant_value(rhs)?;
+            rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+        }
+        _ => None,
+    }
 }
 
 fn integer_literal_value(expr: &rumoca_core::Expression) -> Option<i64> {
@@ -4007,6 +4037,15 @@ impl RhsProjectionCtx<'_> {
         field: &str,
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::Expression, ToDaeError> {
+        if let Some(projected) = scalarize_record_array_member_slice_at(
+            base,
+            field,
+            span,
+            self.k,
+            self.record_array_fields,
+        )? {
+            return Ok(projected);
+        }
         if let Some(projected) =
             project_record_array_field_rhs_at(base, field, span, self.k, self.record_array_fields)?
         {

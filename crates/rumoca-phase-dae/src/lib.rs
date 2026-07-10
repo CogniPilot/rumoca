@@ -65,6 +65,7 @@ use dae_lowering::sort_parameters_by_start_dependency;
 use indexmap::{IndexMap, IndexSet};
 use path_utils::subscript_fallback_chain;
 use reference_validation::{validate_dae_constructor_field_selections, validate_dae_references};
+use rumoca_core::ExpressionVisitor;
 #[cfg(test)]
 use rumoca_core::strip_subscript;
 use rumoca_core::timing::{maybe_elapsed_seconds, maybe_start_timer_if};
@@ -490,6 +491,14 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "reference_validation", || {
         validate_dae_references(dae, &known_flat_var_names)
     })?;
+    run_todae_phase(
+        todae_subphase_timing,
+        "prune_unreferenced_algebraics",
+        || {
+            prune_unreferenced_local_algebraics(dae);
+            Ok::<(), ToDaeError>(())
+        },
+    )?;
     if ir_boundary_validation_enabled() {
         dae.validate_shape_contract().map_err(|err| {
             ToDaeError::runtime_contract_violation_at(
@@ -508,6 +517,93 @@ fn finalize_lowered_dae(
     }
 
     Ok(())
+}
+
+fn prune_unreferenced_local_algebraics(dae: &mut dae::Dae) {
+    let referenced = collect_dae_referenced_var_names(dae);
+    dae.variables.algebraics.retain(|name, variable| {
+        referenced.contains(name)
+            || variable.causality != dae::VariableCausality::Local
+            || variable.origin != dae::VariableOrigin::Source
+    });
+}
+
+fn collect_dae_referenced_var_names(dae: &dae::Dae) -> HashSet<VarName> {
+    let mut collector = DaeVarRefCollector {
+        names: HashSet::new(),
+    };
+    collector.collect_equations(&dae.continuous.equations);
+    collector.collect_equations(&dae.initialization.equations);
+    collector.collect_equations(&dae.discrete.real_updates);
+    collector.collect_equations(&dae.discrete.valued_updates);
+    collector.collect_equations(&dae.conditions.equations);
+    collector.collect_expressions(&dae.conditions.relations);
+    collector.collect_expressions(&dae.events.synthetic_root_conditions);
+    for action in &dae.events.event_actions {
+        collector.visit_expression(&action.condition);
+    }
+    collector.collect_expressions(&dae.clocks.constructor_exprs);
+    collector.collect_expressions(&dae.clocks.triggered_conditions);
+    collector.collect_variable_attributes(&dae.variables);
+    collector.names
+}
+
+struct DaeVarRefCollector {
+    names: HashSet<VarName>,
+}
+
+impl DaeVarRefCollector {
+    fn collect_equations(&mut self, equations: &[dae::Equation]) {
+        for equation in equations {
+            if let Some(lhs) = &equation.lhs {
+                self.names.insert(lhs.var_name().clone());
+            }
+            self.visit_expression(&equation.rhs);
+        }
+    }
+
+    fn collect_expressions(&mut self, expressions: &[Expression]) {
+        for expression in expressions {
+            self.visit_expression(expression);
+        }
+    }
+
+    fn collect_variable_attributes(&mut self, variables: &dae::DaeVariables) {
+        self.collect_variable_partition_attributes(&variables.states);
+        self.collect_variable_partition_attributes(&variables.algebraics);
+        self.collect_variable_partition_attributes(&variables.inputs);
+        self.collect_variable_partition_attributes(&variables.outputs);
+        self.collect_variable_partition_attributes(&variables.parameters);
+        self.collect_variable_partition_attributes(&variables.constants);
+        self.collect_variable_partition_attributes(&variables.discrete_reals);
+        self.collect_variable_partition_attributes(&variables.discrete_valued);
+    }
+
+    fn collect_variable_partition_attributes(
+        &mut self,
+        variables: &IndexMap<VarName, dae::Variable>,
+    ) {
+        for variable in variables.values() {
+            for expression in [
+                variable.start.as_ref(),
+                variable.min.as_ref(),
+                variable.max.as_ref(),
+                variable.nominal.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.visit_expression(expression);
+            }
+        }
+    }
+}
+
+impl ExpressionVisitor for DaeVarRefCollector {
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        self.names.insert(name.var_name().clone());
+        self.walk_var_ref(name, subscripts);
+    }
 }
 
 fn ir_boundary_validation_enabled() -> bool {

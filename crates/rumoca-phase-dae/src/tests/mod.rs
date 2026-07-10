@@ -22,6 +22,43 @@ fn der_ref(name: &str) -> Expression {
 }
 
 #[test]
+fn prune_unreferenced_local_algebraics_keeps_referenced_and_public_vars() {
+    let mut dae = dae::Dae::new();
+    for name in ["used", "unused", "public_out"] {
+        let mut variable = dae::Variable::new(VarName::new(name), Span::DUMMY);
+        variable.origin = dae::VariableOrigin::Source;
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+    }
+    dae.variables
+        .algebraics
+        .get_mut(&VarName::new("public_out"))
+        .expect("fixture variable exists")
+        .causality = dae::VariableCausality::Output;
+    dae.continuous.equations.push(dae::Equation::explicit(
+        VarName::new("used"),
+        var_ref("source"),
+        Span::DUMMY,
+        "test equation",
+    ));
+
+    prune_unreferenced_local_algebraics(&mut dae);
+
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("used")));
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("public_out"))
+    );
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("unused"))
+    );
+}
+
+#[test]
 fn overconstrained_derivative_alias_rewrite_targets_root_state() {
     let mut dae = dae::Dae::new();
     dae.continuous.equations.push(dae::Equation::residual(

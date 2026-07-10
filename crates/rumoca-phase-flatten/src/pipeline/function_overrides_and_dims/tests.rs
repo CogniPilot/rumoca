@@ -1065,15 +1065,56 @@ fn inherited_replaceable_function_call_keeps_declaration_modifier_actuals() {
     assert_eq!(*value, rumoca_core::Literal::Real(0.8));
 }
 
+#[test]
+fn component_scope_inherits_nested_replaceable_function_default_alias() {
+    let (tree, _) = replaceable_efficiency_fixture();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let partial_pump_def = class_index
+        .get_by_qualified_name("Modelica.Fluid.Machines.BaseClasses.PartialPump")
+        .and_then(|class_def| class_def.def_id)
+        .expect("partial pump def id");
+    let mut overlay = InstanceOverlay::new();
+    let pump_id = overlay.alloc_id();
+    overlay.add_component(rumoca_ir_ast::InstanceData {
+        instance_id: pump_id,
+        qualified_name: QualifiedName::from_ident("pump"),
+        type_def_id: Some(partial_pump_def),
+        ..rumoca_ir_ast::InstanceData::default()
+    });
+
+    let override_map = build_component_override_map(
+        &overlay,
+        &tree,
+        &class_index,
+        "Modelica.Fluid.Machines.BaseClasses.PartialPump",
+    )
+    .expect("component override map");
+    let (_, override_functions) = override_context_for_scope("pump", &override_map);
+    let target = override_functions
+        .get("efficiencyCharacteristic")
+        .expect("expected inherited replaceable function default in pump scope");
+
+    assert_eq!(
+        target.name,
+        "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency"
+    );
+    assert_eq!(target.modifier_args.len(), 1);
+    assert_eq!(target.modifier_args[0].name, "eta_nominal");
+}
+
 fn replaceable_efficiency_fixture() -> (ClassTree, DefId) {
     let base_efficiency_def = DefId::new(1);
     let constant_efficiency_def = DefId::new(2);
     let efficiency_characteristic_def = DefId::new(3);
+    let partial_pump_def = DefId::new(4);
 
     let pump_characteristics =
         replaceable_efficiency_pump_characteristics(base_efficiency_def, constant_efficiency_def);
-    let partial_pump =
-        replaceable_efficiency_partial_pump(efficiency_characteristic_def, constant_efficiency_def);
+    let partial_pump = replaceable_efficiency_partial_pump(
+        partial_pump_def,
+        efficiency_characteristic_def,
+        constant_efficiency_def,
+    );
     let modelica = replaceable_efficiency_modelica_tree(pump_characteristics, partial_pump);
     let mut tree = ClassTree::new();
     tree.definitions
@@ -1083,6 +1124,7 @@ fn replaceable_efficiency_fixture() -> (ClassTree, DefId) {
         &mut tree,
         base_efficiency_def,
         constant_efficiency_def,
+        partial_pump_def,
         efficiency_characteristic_def,
     );
     (tree, efficiency_characteristic_def)
@@ -1112,6 +1154,7 @@ fn replaceable_efficiency_pump_characteristics(
 }
 
 fn replaceable_efficiency_partial_pump(
+    partial_pump_def: DefId,
     efficiency_characteristic_def: DefId,
     constant_efficiency_def: DefId,
 ) -> ClassDef {
@@ -1128,6 +1171,7 @@ fn replaceable_efficiency_partial_pump(
     });
 
     let mut partial_pump = class("PartialPump", ClassType::Model);
+    partial_pump.def_id = Some(partial_pump_def);
     partial_pump.classes.insert(
         "efficiencyCharacteristic".to_string(),
         efficiency_characteristic,
@@ -1178,6 +1222,7 @@ fn register_replaceable_efficiency_names(
     tree: &mut ClassTree,
     base_efficiency_def: DefId,
     constant_efficiency_def: DefId,
+    partial_pump_def: DefId,
     efficiency_characteristic_def: DefId,
 ) {
     tree.def_map.insert(
@@ -1187,6 +1232,10 @@ fn register_replaceable_efficiency_names(
     tree.def_map.insert(
         constant_efficiency_def,
         "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency".to_string(),
+    );
+    tree.def_map.insert(
+        partial_pump_def,
+        "Modelica.Fluid.Machines.BaseClasses.PartialPump".to_string(),
     );
     tree.def_map.insert(
         efficiency_characteristic_def,

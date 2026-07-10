@@ -386,7 +386,6 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
         .iter()
         .filter(|eq| {
             equation_counts_for_balance(
-                dae_model,
                 eq,
                 &continuous_unknown_symbols,
                 &input_symbols,
@@ -399,7 +398,6 @@ pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -
 }
 
 fn equation_counts_for_balance(
-    dae_model: &dae::Dae,
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
     input_names: &BalanceSymbolSet,
@@ -430,17 +428,16 @@ fn equation_counts_for_balance(
         return false;
     }
     if is_connection_origin(eq.origin.as_str())
-        && is_redundant_connection_alias(
-            dae_model,
-            eq,
-            continuous_unknowns,
-            component_defined_targets,
-        )
+        && is_input_forwarding_connection_alias(eq, continuous_unknowns, input_names)
     {
         return false;
     }
     if is_connection_origin(eq.origin.as_str())
-        && is_input_forwarding_connection_alias(eq, continuous_unknowns, input_names)
+        && is_component_defined_connection_to_non_unknown(
+            eq,
+            continuous_unknowns,
+            component_defined_targets,
+        )
     {
         return false;
     }
@@ -469,27 +466,21 @@ fn equation_counts_for_balance(
     equation_references_input(eq, input_names)
 }
 
-fn is_redundant_connection_alias(
-    _dae_model: &dae::Dae,
+fn is_component_defined_connection_to_non_unknown(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
 ) -> bool {
     let refs = eq_binary_var_refs(&eq.rhs);
-    if refs.len() != 2 {
+    let [lhs, rhs] = refs.as_slice() else {
         return false;
-    }
-    let lhs = refs[0];
-    let rhs = refs[1];
+    };
 
     let lhs_component_defined = component_defined_targets.matches_reference(lhs);
     let rhs_component_defined = component_defined_targets.matches_reference(rhs);
     let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
     let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
 
-    if lhs_component_defined && rhs_component_defined {
-        return true;
-    }
     (lhs_component_defined && !rhs_is_continuous_unknown)
         || (rhs_component_defined && !lhs_is_continuous_unknown)
 }

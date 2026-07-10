@@ -1746,16 +1746,27 @@ fn append_stream_connection_sets_for_group(
     interface_stream_vars: &IndexSet<rumoca_core::VarName>,
     result: &mut Vec<ConnectionSet>,
     span: rumoca_core::Span,
-) {
+) -> usize {
     if vars.len() < 2 {
-        return;
+        return 0;
     }
 
     let touches_top_level = stream_set_touches_top_level_connector(flat, &vars);
     let (mut defined_streams, mut undefined_streams) =
         classify_stream_vars_by_presence(flat, vars, existing_lhs_vars);
     if undefined_streams.is_empty() {
-        return;
+        if defined_streams.len() >= 3 {
+            defined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
+            let scalar_count = stream_connection_set_scalar_count(flat, &defined_streams);
+            result.push(ConnectionSet {
+                variables: defined_streams,
+                kind: ConnectionKind::Stream,
+                scope: String::new(),
+                span,
+            });
+            return scalar_count;
+        }
+        return 0;
     }
 
     undefined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
@@ -1765,7 +1776,7 @@ fn append_stream_connection_sets_for_group(
     let (referenced_streams, mut still_undefined) =
         classify_stream_vars_by_presence(flat, undefined_streams, refs);
     if still_undefined.is_empty() {
-        return;
+        return 0;
     }
 
     defined_streams.extend(referenced_streams);
@@ -1793,24 +1804,48 @@ fn append_stream_connection_sets_for_group(
         }
         if touches_top_level && !top_level_streams.is_empty() {
             top_level_streams.push(anchor);
+            let scalar_count = stream_connection_set_scalar_count(flat, &top_level_streams);
             result.push(ConnectionSet {
                 variables: top_level_streams,
                 kind: ConnectionKind::Stream,
                 scope: String::new(),
                 span,
             });
+            return scalar_count;
         }
-        return;
+        return 0;
     }
 
     if still_undefined.len() >= 2 {
+        let scalar_count = stream_connection_set_scalar_count(flat, &still_undefined);
         result.push(ConnectionSet {
             variables: still_undefined,
             kind: ConnectionKind::Stream,
             scope: String::new(),
             span,
         });
+        return scalar_count;
     }
+    0
+}
+
+fn stream_connection_set_scalar_count(flat: &flat::Model, vars: &[rumoca_core::VarName]) -> usize {
+    vars.iter()
+        .filter_map(|var| flat.variables.get(var))
+        .filter(|var| var.stream && var.is_primitive)
+        .map(|var| stream_interface_scalar_size(&var.dims))
+        .sum()
+}
+
+fn stream_interface_scalar_size(dims: &[i64]) -> usize {
+    if dims.is_empty() {
+        return 1;
+    }
+    if dims.iter().any(|&dim| dim <= 0) {
+        return 0;
+    }
+    dims.iter()
+        .fold(1usize, |acc, &dim| acc.saturating_mul(dim as usize))
 }
 
 fn stream_alias_target_needs_connection_equation(
@@ -1956,11 +1991,10 @@ fn build_connection_sets(
         let mut existing_var_refs: Option<std::collections::HashSet<rumoca_core::VarName>> = None;
         let interface_stream_vars =
             collect_interface_stream_vars(connections, flat, prefix_children, var_index);
-        stream_interface_equation_count = interface_stream_vars.len();
         for (_root, vars) in stream_sets {
             raw_stream_groups.push(vars.clone());
             let span = representative_connection_span(&vars, &var_first_span, flat)?;
-            append_stream_connection_sets_for_group(
+            stream_interface_equation_count += append_stream_connection_sets_for_group(
                 flat,
                 vars,
                 &existing_lhs_vars,

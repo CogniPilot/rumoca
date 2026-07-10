@@ -3047,6 +3047,12 @@ fn substitute_scalar_var_ref(
     if let Some(scoped_live_ref) = scoped_live_var_ref(key, span, env) {
         return Ok(Some(scoped_live_ref));
     }
+    if !env.scope.is_empty()
+        && name.target_def_id().is_some()
+        && let Some(expr) = substitute_direct_scoped_def_id_scalar_var_ref(name, span, env)?
+    {
+        return Ok(Some(expr));
+    }
     let has_array_shape = reference_has_array_shape(name, key, env.ctx, env.scope);
     if env.prefer_scoped_parameters
         && !env.scope.is_empty()
@@ -3099,6 +3105,54 @@ fn substitute_scalar_var_ref(
     }
 
     substitute_alias_resolved_scalar_var_ref(key, span, env)
+}
+
+fn def_id_scoped_lookup_key(name: &rumoca_core::Reference) -> &str {
+    if crate::path_utils::is_nested_name(name.as_str()) {
+        name.last_segment()
+    } else {
+        name.as_str()
+    }
+}
+
+fn substitute_direct_scoped_def_id_scalar_var_ref(
+    name: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let key = def_id_scoped_lookup_key(name);
+    if key.contains('.') {
+        return Ok(None);
+    }
+    let candidate = format!("{}.{}", env.scope, key);
+    if env.live_vars.contains(&candidate)
+        || inline_index_base_is_live_or_local(&candidate, env.live_vars, env.locals)
+    {
+        return Ok(Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(candidate),
+            subscripts: vec![],
+            span,
+        }));
+    }
+    let candidate_has_array_shape = env
+        .ctx
+        .array_dimensions
+        .get(&candidate)
+        .is_some_and(|dims| !dims.is_empty());
+    if !candidate_has_array_shape
+        && let Some(literal) = evaluated_scalar_parameter_literal(&candidate, span, env.ctx)
+    {
+        return Ok(Some(literal));
+    }
+    let Some(value) = resolve_constant_value_expr(&candidate, env.ctx) else {
+        return Ok(None);
+    };
+    if candidate_has_array_shape && !constant_expr_preserves_array_shape(value) {
+        return Ok(None);
+    }
+    let candidate_scope = parent_component_scope(&candidate);
+    substitute_resolved_constant_expr(&candidate, value, span, env.with_scope(&candidate_scope))
+        .map(Some)
 }
 
 fn substitute_flat_variable_value_ref(

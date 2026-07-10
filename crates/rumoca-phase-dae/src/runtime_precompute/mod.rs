@@ -195,7 +195,32 @@ fn prune_unreferenced_condition_memory(
     dae_model.conditions.relations = kept_relations;
     dae_model.conditions.equations = kept_conditions;
     rewrite_condition_memory_references(dae_model, &condition_name, &replacements)?;
+    resize_condition_memory_variables(dae_model, &condition_name);
     Ok(())
+}
+
+fn resize_condition_memory_variables(dae_model: &mut dae::Dae, condition_name: &str) {
+    let condition_len = dae_model.conditions.relations.len() as i64;
+    let condition_key = rumoca_core::VarName::new(condition_name);
+    let pre_condition_key = rumoca_core::VarName::new(format!("__pre__.{condition_name}"));
+    resize_condition_memory_variable(
+        dae_model.variables.discrete_valued.get_mut(&condition_key),
+        condition_len,
+    );
+    resize_condition_memory_variable(
+        dae_model.variables.parameters.get_mut(&pre_condition_key),
+        condition_len,
+    );
+}
+
+fn resize_condition_memory_variable(variable: Option<&mut dae::Variable>, condition_len: i64) {
+    let Some(variable) = variable else {
+        return;
+    };
+    variable.dims = vec![condition_len];
+    if let Some(rumoca_core::Expression::Array { elements, .. }) = &mut variable.start {
+        elements.truncate(condition_len.max(0) as usize);
+    }
 }
 
 fn condition_memory_can_be_direct(

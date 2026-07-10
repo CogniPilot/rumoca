@@ -916,6 +916,191 @@ fn test_parameter_declaration_binding_promotes_builtin_default_start() {
 }
 
 #[test]
+fn declaration_binding_source_for_flattening_preserves_single_part_ref() {
+    let original = make_comp_ref_expr(&["nNodes"]);
+    let resolved = make_int_expr(2);
+    let mut comp = make_component("n", "Integer", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    comp.is_structural = true;
+    let mut n_nodes = make_component("nNodes", "Integer", None);
+    n_nodes.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("nNodes".to_string(), n_nodes);
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_ident("nNodes"),
+        ast::ModificationValue::with_source_scope_and_prefixes(
+            make_int_expr(20),
+            Some(make_comp_ref_expr(&["nNodes"])),
+            None,
+            false,
+            true,
+        ),
+    );
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    )
+    .expect("final modified single-part sibling reference source should be preserved");
+
+    assert!(matches!(
+        source,
+        ast::Expression::ComponentReference(cref) if cref.to_string() == "nNodes"
+    ));
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_skips_non_sibling_single_part_ref() {
+    let original = make_comp_ref_expr(&["nNodes"]);
+    let resolved = make_int_expr(2);
+    let comp = make_component("n", "Integer", None);
+    let mod_env = ast::ModificationEnvironment::new();
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &IndexMap::default(),
+        &mod_env,
+    );
+
+    assert_eq!(source, None);
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_skips_unmodified_sibling_single_part_ref() {
+    let original = make_comp_ref_expr(&["nNodes"]);
+    let resolved = make_int_expr(2);
+    let mut comp = make_component("n", "Integer", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    comp.is_structural = true;
+    let mut n_nodes = make_component("nNodes", "Integer", None);
+    n_nodes.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("nNodes".to_string(), n_nodes);
+    let mod_env = ast::ModificationEnvironment::new();
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    );
+
+    assert_eq!(source, None);
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_preserves_literal_modified_single_part_ref() {
+    let original = make_comp_ref_expr(&["nNodes"]);
+    let resolved = make_int_expr(2);
+    let mut comp = make_component("n", "Integer", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    comp.is_structural = true;
+    let mut n_nodes = make_component("nNodes", "Integer", None);
+    n_nodes.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("nNodes".to_string(), n_nodes);
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_ident("nNodes"),
+        ast::ModificationValue::with_source_scope_and_prefixes(
+            make_int_expr(20),
+            Some(make_int_expr(20)),
+            None,
+            false,
+            true,
+        ),
+    );
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    );
+
+    assert!(matches!(
+        source,
+        Some(ast::Expression::ComponentReference(cref)) if cref.to_string() == "nNodes"
+    ));
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_skips_non_final_single_part_ref() {
+    let original = make_comp_ref_expr(&["nNodes"]);
+    let resolved = make_int_expr(2);
+    let mut comp = make_component("p", "Integer", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut n_nodes = make_component("nNodes", "Integer", None);
+    n_nodes.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("nNodes".to_string(), n_nodes);
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_ident("nNodes"),
+        ast::ModificationValue::with_source_scope(
+            make_int_expr(20),
+            Some(make_comp_ref_expr(&["nNodes"])),
+            None,
+        ),
+    );
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    );
+
+    assert_eq!(source, None);
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_preserves_final_parameter_source_sibling_ref() {
+    let original = make_comp_ref_expr(&["nNodes"]);
+    let resolved = make_int_expr(2);
+    let mut comp = make_component("n", "Integer", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut n_nodes = make_component("nNodes", "Integer", None);
+    n_nodes.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("nNodes".to_string(), n_nodes);
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_ident("nNodes"),
+        ast::ModificationValue::with_source_scope_and_prefixes(
+            make_int_expr(20),
+            Some(make_comp_ref_expr(&["nNodes"])),
+            None,
+            false,
+            true,
+        ),
+    );
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    )
+    .expect("single-part final parameter source sibling should be preserved");
+
+    assert!(matches!(
+        source,
+        ast::Expression::ComponentReference(cref) if cref.to_string() == "nNodes"
+    ));
+}
+
+#[test]
 fn test_parameter_declaration_binding_does_not_override_explicit_start() {
     let mut comp = make_component("p", "Real", None);
     comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));

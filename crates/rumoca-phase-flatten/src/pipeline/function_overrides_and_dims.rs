@@ -158,7 +158,7 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
         );
     }
 
-    collect_nested_package_aliases_for_class(
+    collect_nested_receiver_aliases_for_class(
         tree,
         class_index,
         class_def,
@@ -191,7 +191,7 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
     }
 }
 
-fn collect_nested_package_aliases_for_class(
+fn collect_nested_receiver_aliases_for_class(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     class_def: &rumoca_ir_ast::ClassDef,
@@ -200,31 +200,37 @@ fn collect_nested_package_aliases_for_class(
     overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
 ) {
     for (alias, nested) in &class_def.classes {
-        if nested.class_type != rumoca_core::ClassType::Package {
+        if !is_receiver_alias_type(&nested.class_type) {
             continue;
         }
         let Some(target_ref) =
-            nested_package_alias_target_ref(tree, class_index, nested, class_scope)
+            nested_receiver_alias_target_ref(tree, class_index, nested, class_scope)
         else {
             continue;
         };
-        if target_ref.class_def.class_type == rumoca_core::ClassType::Package {
+        if is_receiver_alias_type(&target_ref.class_def.class_type) {
             let active_alias = active_aliases && leaf_segment(&target_ref.name) != alias;
+            let modifier_args = nested_receiver_alias_modifier_args(nested);
             overrides.insert(
                 alias.clone(),
-                OverrideTarget::from_resolved(alias.clone(), target_ref, active_alias),
+                OverrideTarget::from_resolved_with_modifier_args(
+                    alias.clone(),
+                    target_ref,
+                    active_alias,
+                    modifier_args,
+                ),
             );
         }
     }
 }
 
-fn nested_package_alias_target_ref<'a>(
+fn nested_receiver_alias_target_ref<'a>(
     tree: &'a ClassTree,
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
     class_def: &rumoca_ir_ast::ClassDef,
     class_scope: &str,
 ) -> Option<ResolvedClassRef<'a>> {
-    if !is_package_alias_definition(class_def) {
+    if !is_nested_receiver_alias_definition(class_def) {
         return None;
     }
     let ext = class_def.extends.first()?;
@@ -245,7 +251,7 @@ fn nested_package_alias_target_ref<'a>(
     })
 }
 
-fn is_package_alias_definition(class_def: &rumoca_ir_ast::ClassDef) -> bool {
+fn is_nested_receiver_alias_definition(class_def: &rumoca_ir_ast::ClassDef) -> bool {
     class_def.extends.len() == 1
         && class_def.imports.is_empty()
         && class_def.classes.is_empty()
@@ -256,6 +262,21 @@ fn is_package_alias_definition(class_def: &rumoca_ir_ast::ClassDef) -> bool {
         && class_def.initial_algorithms.is_empty()
         && class_def.enum_literals.is_empty()
         && class_def.external.is_none()
+}
+
+fn nested_receiver_alias_modifier_args(
+    class_def: &rumoca_ir_ast::ClassDef,
+) -> Vec<FunctionModifierArg> {
+    class_def
+        .extends
+        .first()
+        .map(|ext| {
+            ext.modifications
+                .iter()
+                .filter_map(|modification| function_modifier_arg_from_ast(&modification.expr))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_extends_redeclare_aliases_for_class(
@@ -409,7 +430,7 @@ fn resolve_package_alias_chain<'a>(
         }
         let current = resolved_class_ref_for_def_id(tree, class_index, current_def_id)?;
         if current.class_def.class_type != rumoca_core::ClassType::Package
-            || !is_package_alias_definition(current.class_def)
+            || !is_nested_receiver_alias_definition(current.class_def)
         {
             return Some(current);
         }

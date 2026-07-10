@@ -38,6 +38,29 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn var_ref_with_target_def_id(path: &str, def_id: rumoca_core::DefId) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            path,
+            rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: rumoca_core::split_path_with_indices(path)
+                    .into_iter()
+                    .map(|ident| rumoca_core::ComponentRefPart {
+                        ident: ident.to_string(),
+                        span: rumoca_core::Span::DUMMY,
+                        subs: vec![],
+                    })
+                    .collect(),
+                def_id: Some(def_id),
+            },
+        ),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn named_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new(format!(
@@ -83,6 +106,68 @@ fn substitute_known_constants_prefers_integer_parameter_binding_over_stale_real_
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(20),
             span: test_span(),
+        }
+    );
+}
+
+#[test]
+fn substitute_known_constants_prefers_scoped_instance_for_def_id_sibling_parameter() {
+    let n_nodes_def = rumoca_core::DefId::new(42);
+    let mut ctx = Context::new();
+    ctx.parameter_values.insert("nNodes".to_string(), 2);
+    ctx.parameter_values.insert("pipe.nNodes".to_string(), 20);
+    ctx.target_def_names
+        .insert(n_nodes_def, "nNodes".to_string());
+
+    let substituted = substitute_known_constants_expr(
+        var_ref_with_target_def_id("nNodes", n_nodes_def),
+        &ctx,
+        &std::collections::HashSet::default(),
+        &std::collections::HashSet::default(),
+        "pipe",
+    )
+    .unwrap();
+
+    assert_eq!(
+        substituted,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(20),
+            span: rumoca_core::Span::DUMMY,
+        }
+    );
+}
+
+#[test]
+fn substitute_known_constants_prefers_scoped_instance_for_class_qualified_def_id_parameter() {
+    let n_nodes_def = rumoca_core::DefId::new(43);
+    let mut ctx = Context::new();
+    ctx.parameter_values.insert(
+        "Modelica.Fluid.Pipes.BaseClasses.PartialTwoPortFlow.nNodes".to_string(),
+        2,
+    );
+    ctx.parameter_values.insert("pipe.nNodes".to_string(), 20);
+    ctx.target_def_names.insert(
+        n_nodes_def,
+        "Modelica.Fluid.Pipes.BaseClasses.PartialTwoPortFlow.nNodes".to_string(),
+    );
+
+    let substituted = substitute_known_constants_expr(
+        var_ref_with_target_def_id(
+            "Modelica.Fluid.Pipes.BaseClasses.PartialTwoPortFlow.nNodes",
+            n_nodes_def,
+        ),
+        &ctx,
+        &std::collections::HashSet::default(),
+        &std::collections::HashSet::default(),
+        "pipe",
+    )
+    .unwrap();
+
+    assert_eq!(
+        substituted,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(20),
+            span: rumoca_core::Span::DUMMY,
         }
     );
 }

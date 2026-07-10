@@ -447,6 +447,126 @@ fn test_outside_stream_connectors_are_counted_without_equality_aliases() {
 }
 
 #[test]
+fn test_internal_stream_connectors_without_anchor_are_counted() {
+    let mut flat = flat::Model::new();
+    for name in [
+        "wrapper.a.port.p",
+        "wrapper.a.port.m_flow",
+        "wrapper.a.port.h_outflow",
+        "wrapper.b.port.p",
+        "wrapper.b.port.m_flow",
+        "wrapper.b.port.h_outflow",
+    ] {
+        let mut variable = flat::Variable {
+            name: rumoca_core::VarName::new(name),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        };
+        if name.ends_with(".m_flow") {
+            variable.flow = true;
+        }
+        if name.ends_with(".h_outflow") {
+            variable.stream = true;
+        }
+        flat.add_variable(rumoca_core::VarName::new(name), variable);
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("wrapper.a.port"),
+            b: ast::QualifiedName::from_dotted("wrapper.b.port"),
+            connector_type: None,
+            span: Span::DUMMY,
+            scope: "wrapper".to_string(),
+        }],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("internal stream connector processing");
+
+    assert_eq!(flat.stream_interface_equation_count, 2);
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("wrapper.a.port.h_outflow"))
+            .is_some_and(|var| var.connected)
+    );
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("wrapper.b.port.h_outflow"))
+            .is_some_and(|var| var.connected)
+    );
+}
+
+#[test]
+fn test_multiway_stream_connectors_with_component_defined_outflow_are_counted() {
+    let mut flat = flat::Model::new();
+    for name in ["a.h_outflow", "b.h_outflow", "c.h_outflow"] {
+        let var_name = rumoca_core::VarName::new(name);
+        flat.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name.clone(),
+                stream: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        flat.add_equation(flat::Equation::new(
+            create_equality_residual(
+                var_to_expr(&var_name, test_provenance_span()),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span: test_span(),
+                },
+                test_provenance_span(),
+            ),
+            test_span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: name.to_string(),
+            },
+        ));
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: ast::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("a.h_outflow"),
+                b: ast::QualifiedName::from_dotted("b.h_outflow"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: String::new(),
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("a.h_outflow"),
+                b: ast::QualifiedName::from_dotted("c.h_outflow"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: String::new(),
+            },
+        ],
+        ..Default::default()
+    });
+
+    process_connections(&mut flat, &overlay, false).expect("multiway stream connector processing");
+
+    assert_eq!(flat.stream_interface_equation_count, 3);
+    for name in ["a.h_outflow", "b.h_outflow", "c.h_outflow"] {
+        assert!(
+            flat.variables
+                .get(&rumoca_core::VarName::new(name))
+                .is_some_and(|var| var.connected),
+            "{name} should be marked connected"
+        );
+    }
+}
+
+#[test]
 fn test_stream_internal_dynbal_port_alias_is_not_generated() {
     let mut flat = flat::Model::new();
     for name in [
