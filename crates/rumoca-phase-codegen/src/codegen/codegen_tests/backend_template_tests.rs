@@ -655,15 +655,25 @@ fn test_casadi_sx_template_uses_scalar_counts_and_defines_derivatives() {
 #[test]
 fn test_fmi3_model_description_uses_fmi3_schema_order() {
     let mut dae = dae::Dae::new();
+    let span =
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2);
     dae.variables.states.insert(
         "x".into(),
         rumoca_ir_dae::Variable {
             name: "x".into(),
-            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                rumoca_core::SourceId::from_source_name(file!()),
-                1,
-                2,
-            ))
+            ..rumoca_ir_dae::Variable::empty_with_span(span)
+        },
+    );
+    dae.variables.outputs.insert(
+        "y".into(),
+        rumoca_ir_dae::Variable {
+            name: "y".into(),
+            unit: Some("m/s".into()),
+            start: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span,
+            }),
+            ..rumoca_ir_dae::Variable::empty_with_span(span)
         },
     );
 
@@ -680,7 +690,29 @@ fn test_fmi3_model_description_uses_fmi3_schema_order() {
         .find("<ModelStructure>")
         .expect("FMI3 XML should contain ModelStructure");
 
-    assert!(model_variables < model_structure, "{xml}");
+    let unit_definitions = xml
+        .find("<UnitDefinitions>")
+        .expect("FMI3 XML should contain UnitDefinitions");
+    assert!(
+        unit_definitions < model_variables && model_variables < model_structure,
+        "{xml}"
+    );
+    assert!(
+        xml.contains(r#"<Unit name="s"><BaseUnit s="1"/></Unit>"#),
+        "{xml}"
+    );
+    assert!(xml.contains(r#"<Unit name="m/s"></Unit>"#), "{xml}");
+    assert!(xml.contains(r#"<Float64 name="y" valueReference="2" causality="output" variability="continuous" initial="calculated" unit="m/s"/>"#), "{xml}");
+    assert!(!xml.contains(r#"initial="calculated" start="#), "{xml}");
+    assert!(xml.contains(r#"<Float64 name="time" valueReference="3" causality="independent" variability="continuous" unit="s"/>"#), "{xml}");
+    assert!(
+        xml.contains(r#"<InitialUnknown valueReference="1"/>"#),
+        "{xml}"
+    );
+    assert!(
+        xml.contains(r#"<InitialUnknown valueReference="2"/>"#),
+        "{xml}"
+    );
     assert!(
         !xml.contains("<BuildConfiguration"),
         "FMI 3 build configuration belongs in sources/buildDescription.xml:\n{xml}"
@@ -1034,6 +1066,10 @@ int main(void) {
     if (fmi3DoStep(instance, 0.0, 0.1, 1, &event_needed, &terminate, &early, &last) != fmi3OK) return 15;
     if (event_needed || terminate || early || fabs(last - 0.1) > 1.0e-12) return 16;
     if (fmi3GetFloat64(instance, &x_vr, 1, &x, 1) != fmi3OK || fabs(x - exp(-0.1)) > 2.0e-7) return 17;
+    const fmi3ValueReference time_vr = VR_TIME;
+    fmi3Float64 reported_time = 0.0;
+    if (fmi3GetFloat64(instance, &time_vr, 1, &reported_time, 1) != fmi3OK ||
+        fabs(reported_time - 0.1) > 1.0e-12) return 35;
 
     fmi3FMUState state = NULL;
     if (fmi3GetFMUState(instance, &state) != fmi3OK || !state) return 18;

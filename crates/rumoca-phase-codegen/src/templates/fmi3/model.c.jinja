@@ -345,6 +345,7 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define VR_Z      (VR_P + NVAR_P)
 #define VR_M      (VR_Z + NVAR_Z)
 #define VR_CLK    (VR_M + NVAR_M)
+#define VR_TIME   (VR_CLK + N_CLOCKS)
 
 {#- Macro: generate flat offset and element count lookup tables for a partition -#}
 {% macro vr_lookup_table(vars, prefix) %}
@@ -1114,6 +1115,11 @@ static fmi3Status get_float64_by_vr(const ModelInstance* m, fmi3ValueReference v
         return fmi3OK;
     }
 #endif
+    if (vr == VR_TIME) {
+        *count = 1;
+        values[0] = m->time;
+        return fmi3OK;
+    }
     *count = 0;
     return fmi3Error;
 }
@@ -1184,6 +1190,7 @@ static int vr_scalar_count(fmi3ValueReference vr) {
 #if NVAR_M > 0
     if (vr >= VR_M && vr < VR_M + NVAR_M) return m_var_count[vr - VR_M];
 #endif
+    if (vr == VR_TIME) return 1;
     return 0;
 }
 
