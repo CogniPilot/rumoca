@@ -486,15 +486,34 @@ fn collect_explicitly_constrained_unconnected_flows(
 ) -> HashSet<rumoca_core::VarName> {
     let mut constrained = HashSet::new();
     for eq in &dae_model.continuous.equations {
-        if unconnected_flow_origin_variable(&eq.origin).is_some() {
+        if equation_origin_cannot_explicitly_constrain_unconnected_flow(&eq.origin) {
             continue;
         }
-        append_normalized_expression_names(&eq.rhs, &mut constrained);
-        if let Some(lhs) = &eq.lhs {
-            constrained.insert(lhs.var_name().clone());
-        }
+        constrained.extend(continuous_unknown_names_in_equation(
+            eq,
+            continuous_unknowns,
+        ));
     }
     constrained
+}
+
+fn equation_origin_cannot_explicitly_constrain_unconnected_flow(origin: &str) -> bool {
+    unconnected_flow_origin_variable(origin).is_some()
+        || is_connection_origin(origin)
+        || origin.starts_with("explicit connection equation:")
+        || origin.starts_with("binding equation for")
+}
+
+fn continuous_unknown_names_in_equation(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+) -> HashSet<rumoca_core::VarName> {
+    let mut names = HashSet::new();
+    append_normalized_expression_names(&eq.rhs, &mut names);
+    if let Some(lhs) = &eq.lhs {
+        names.insert(lhs.var_name().clone());
+    }
+    names
         .into_iter()
         .filter(|name| continuous_unknowns.matches_name(name))
         .collect()
@@ -724,6 +743,10 @@ fn count_surplus_component_alias_scalars(dae_model: &dae::Dae) -> usize {
                 &continuous_unknown_symbols,
                 &output_symbols,
                 &component_defined_symbols,
+            ) || is_surplus_component_equation_alias(
+                eq,
+                &continuous_unknown_symbols,
+                &output_symbols,
             ) || is_surplus_component_vector_forwarding_alias(
                 eq,
                 &continuous_unknown_symbols,
@@ -765,7 +788,47 @@ fn is_surplus_component_binding_alias(
     };
     continuous_unknowns.matches_reference(lhs)
         && continuous_unknowns.matches_reference(rhs)
-        && (output_names.matches_reference(lhs) || component_defined_targets.matches_reference(lhs))
+        && (output_names.matches_reference(lhs)
+            || component_defined_targets.matches_reference(lhs)
+            || is_simple_continuous_binding_alias(eq, continuous_unknowns))
+}
+
+fn is_simple_continuous_binding_alias(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+) -> bool {
+    let refs = eq_binary_var_refs(&eq.rhs);
+    let [lhs, rhs] = refs.as_slice() else {
+        return false;
+    };
+    continuous_unknowns.matches_reference(lhs) && continuous_unknowns.matches_reference(rhs)
+}
+
+fn is_surplus_component_equation_alias(
+    eq: &dae::Equation,
+    continuous_unknowns: &BalanceSymbolSet,
+    output_names: &BalanceSymbolSet,
+) -> bool {
+    if !eq.origin.starts_with("equation from ") {
+        return false;
+    }
+    let refs = eq_binary_var_refs(&eq.rhs);
+    let [lhs, rhs] = refs.as_slice() else {
+        return false;
+    };
+    continuous_unknowns.matches_reference(lhs)
+        && continuous_unknowns.matches_reference(rhs)
+        && (output_names.matches_reference(lhs) || same_top_level_component(lhs, rhs))
+}
+
+fn same_top_level_component(lhs: &rumoca_core::Reference, rhs: &rumoca_core::Reference) -> bool {
+    let Some(lhs_root) = lhs.var_name().as_str().split('.').next() else {
+        return false;
+    };
+    let Some(rhs_root) = rhs.var_name().as_str().split('.').next() else {
+        return false;
+    };
+    lhs_root == rhs_root && lhs.var_name().as_str().contains('.')
 }
 
 fn collect_component_defined_targets_for_balance(
