@@ -54,6 +54,38 @@ pub(super) fn is_surplus_component_vector_forwarding_alias(
     lhs_is_forwarding_target(lhs) && lhs_matches_symbols(lhs, continuous_unknowns)
 }
 
+pub(super) fn is_surplus_overconstrained_derivative_alias(eq: &dae::Equation) -> bool {
+    if eq.scalar_count != 1 || !eq.origin.starts_with("overconstrained derivative alias:") {
+        return false;
+    }
+    let Some((lhs, rhs)) = eq_binary_lhs_rhs(&eq.rhs) else {
+        return false;
+    };
+    let Some(lhs_name) = derivative_alias_reference_name(lhs) else {
+        return false;
+    };
+    let Some(rhs_name) = derivative_alias_reference_name(rhs) else {
+        return false;
+    };
+    lhs_name.as_str().ends_with(".reference.gamma")
+        && rhs_name.as_str().ends_with(".reference.gamma")
+}
+
+fn derivative_alias_reference_name(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName> {
+    let rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Der,
+        args,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    expression_var_name(arg)
+}
+
 fn lhs_is_forwarding_target(expr: &rumoca_core::Expression) -> bool {
     matches!(
         expr,

@@ -19,7 +19,7 @@ mod balance_alias;
 use balance_alias::{
     is_absent_lhs_component_alias, is_input_forwarding_connection_alias,
     is_non_constraining_binding_alias, is_surplus_component_vector_forwarding_alias,
-    is_vector_forwarding_alias,
+    is_surplus_overconstrained_derivative_alias, is_vector_forwarding_alias,
 };
 
 pub type BalanceResult<T> = Result<T, BalanceError>;
@@ -752,7 +752,7 @@ fn count_surplus_component_alias_scalars(dae_model: &dae::Dae) -> usize {
                 &continuous_unknown_symbols,
                 &output_symbols,
                 &component_defined_symbols,
-            )
+            ) || is_surplus_overconstrained_derivative_alias(eq)
         })
         .map(|eq| eq.scalar_count)
         .sum()

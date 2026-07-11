@@ -95,6 +95,33 @@ fn binary_residual_eq_with_count(
     }
 }
 
+fn der_ref(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Der,
+        args: vec![rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new(name).into(),
+            subscripts: vec![],
+            span: test_span(),
+        }],
+        span: test_span(),
+    }
+}
+
+fn overconstrained_derivative_alias_eq(lhs_name: &str, rhs_name: &str) -> dae::Equation {
+    dae::Equation {
+        lhs: None,
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(der_ref(lhs_name)),
+            rhs: Box::new(der_ref(rhs_name)),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: format!("overconstrained derivative alias: {lhs_name} = {rhs_name}"),
+        scalar_count: 1,
+    }
+}
+
 fn structured_reference(name: &str) -> rumoca_core::Reference {
     let var_name = rumoca_core::VarName::new(name);
     let component_ref = rumoca_core::component_reference_from_flat_name(&var_name, test_span())
@@ -766,6 +793,73 @@ fn balance_spends_component_vector_forwarding_only_against_surplus() {
         );
     }
     assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -3);
+}
+
+#[test]
+fn balance_spends_overconstrained_derivative_aliases_only_against_surplus() {
+    let mut dae = dae::Dae::default();
+    for name in ["branch.port.reference.gamma", "root.port.reference.gamma"] {
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), algebraic_var(name));
+    }
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "branch.port.reference.gamma",
+        "branch_driver",
+        "component equation",
+        1,
+    ));
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "root.port.reference.gamma",
+        "root_driver",
+        "component equation",
+        1,
+    ));
+    dae.continuous
+        .equations
+        .push(overconstrained_derivative_alias_eq(
+            "branch.port.reference.gamma",
+            "root.port.reference.gamma",
+        ));
+
+    assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
+
+    for name in ["unclosed_a", "unclosed_b"] {
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), algebraic_var(name));
+    }
+    assert_eq!(balance(&dae).expect("valid DAE balance fixture"), -1);
+}
+
+#[test]
+fn balance_does_not_spend_overconstrained_origin_without_derivative_alias_shape() {
+    let mut dae = dae::Dae::default();
+    for name in ["branch.port.reference.gamma", "root.port.reference.gamma"] {
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), algebraic_var(name));
+    }
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "branch.port.reference.gamma",
+        "branch_driver",
+        "component equation",
+        1,
+    ));
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "root.port.reference.gamma",
+        "root_driver",
+        "component equation",
+        1,
+    ));
+    dae.continuous.equations.push(binary_residual_eq_with_count(
+        "branch.port.reference.gamma",
+        "root.port.reference.gamma",
+        "overconstrained derivative alias: branch.port.reference.gamma = root.port.reference.gamma",
+        1,
+    ));
+
+    assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 1);
 }
 
 #[test]
