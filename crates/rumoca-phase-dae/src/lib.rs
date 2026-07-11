@@ -433,6 +433,10 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "fold_start_values", || {
         fold_start_values::fold_start_values_to_literals(dae)
     })?;
+    run_todae_phase(todae_subphase_timing, "fold_package_constants", || {
+        fold_start_values::fold_known_package_constants_to_literals(dae);
+        Ok::<(), ToDaeError>(())
+    })?;
 
     // Reorder algebraics so any algebraic used in another's defining
     // equation appears first. Pure reorder, no information loss; lets
