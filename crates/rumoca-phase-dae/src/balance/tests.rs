@@ -95,6 +95,41 @@ fn binary_residual_eq_with_count(
     }
 }
 
+fn structured_reference(name: &str) -> rumoca_core::Reference {
+    let var_name = rumoca_core::VarName::new(name);
+    let component_ref = rumoca_core::component_reference_from_flat_name(&var_name, test_span())
+        .expect("structured component reference");
+    rumoca_core::Reference::with_component_reference(name, component_ref)
+}
+
+fn binary_residual_eq_with_structured_refs(
+    lhs_name: &str,
+    rhs_name: &str,
+    origin: &str,
+    scalar_count: usize,
+) -> dae::Equation {
+    dae::Equation {
+        lhs: Some(structured_reference(lhs_name)),
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: structured_reference(lhs_name),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            rhs: Box::new(rumoca_core::Expression::VarRef {
+                name: structured_reference(rhs_name),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: origin.to_string(),
+        scalar_count,
+    }
+}
+
 fn connection_assignment_with_rhs_index(
     lhs_name: &str,
     rhs_name: &str,
@@ -875,12 +910,14 @@ fn balance_spends_simple_continuous_component_equation_aliases_only_against_surp
         "component equation",
         2,
     ));
-    dae.continuous.equations.push(binary_residual_eq_with_count(
-        "comp.alias",
-        "comp.source",
-        "equation from comp.alias",
-        1,
-    ));
+    dae.continuous
+        .equations
+        .push(binary_residual_eq_with_structured_refs(
+            "comp.alias",
+            "comp.source",
+            "equation from comp.alias",
+            1,
+        ));
 
     assert_eq!(balance(&dae).expect("valid DAE balance fixture"), 0);
 

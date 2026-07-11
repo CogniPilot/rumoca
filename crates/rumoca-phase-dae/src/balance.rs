@@ -822,13 +822,11 @@ fn is_surplus_component_equation_alias(
 }
 
 fn same_top_level_component(lhs: &rumoca_core::Reference, rhs: &rumoca_core::Reference) -> bool {
-    let Some(lhs_root) = lhs.var_name().as_str().split('.').next() else {
-        return false;
-    };
-    let Some(rhs_root) = rhs.var_name().as_str().split('.').next() else {
-        return false;
-    };
-    lhs_root == rhs_root && lhs.var_name().as_str().contains('.')
+    let lhs_parts = lhs.parts();
+    let rhs_parts = rhs.parts();
+    lhs_parts.len() > 1
+        && rhs_parts.len() > 1
+        && lhs_parts.first().map(|part| &part.ident) == rhs_parts.first().map(|part| &part.ident)
 }
 
 fn collect_component_defined_targets_for_balance(
