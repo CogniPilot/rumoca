@@ -586,10 +586,24 @@ fn apply_materialized_function_outputs<T: SimFloat>(
         let Some(output_name) = output_names.get(idx) else {
             break;
         };
-        let Some(values) = by_name.get(output_name) else {
+        let Some(materialized_output) = by_name.get(output_name) else {
             return Err(EvalError::MissingBinding {
                 name: output_name.clone(),
             });
+        };
+        let values = match materialized_output {
+            eval::MaterializedOutput::Values(values) => values,
+            eval::MaterializedOutput::Record((fields, field_dims)) => {
+                let target_key = component_ref_to_string(target, env)?;
+                for (suffix, value) in fields {
+                    env.set(&format!("{target_key}.{suffix}"), *value);
+                }
+                let dims = std::sync::Arc::make_mut(&mut env.dims);
+                for (suffix, field_dims) in field_dims {
+                    dims.insert(format!("{target_key}.{suffix}"), field_dims.clone());
+                }
+                continue;
+            }
         };
         if let Some(slice_target) = resolve_array_slice_target(target, env)? {
             write_array_slice_values(&slice_target, values, env)?;

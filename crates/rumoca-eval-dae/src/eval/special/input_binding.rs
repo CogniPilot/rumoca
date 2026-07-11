@@ -530,7 +530,7 @@ pub(super) fn resolved_array_input_dims<T: SimFloat>(
 ) -> Result<Option<Vec<i64>>, EvalError> {
     if !param.shape_expr.is_empty() {
         return infer_dynamic_array_input_dims(
-            &param.shape_expr,
+            param,
             arg_expr,
             caller_env,
             local_env,
@@ -548,17 +548,24 @@ pub(super) fn resolved_array_input_dims<T: SimFloat>(
 }
 
 pub(super) fn infer_dynamic_array_input_dims<T: SimFloat>(
-    shape_expr: &[Subscript],
+    param: &FunctionParam,
     arg_expr: &Expression,
     caller_env: &VarEnv<T>,
     local_env: &VarEnv<T>,
     value_count: usize,
 ) -> Result<Vec<i64>, EvalError> {
+    let shape_expr = &param.shape_expr;
     let mut dims = Vec::with_capacity(shape_expr.len());
     let mut dynamic_indices = Vec::new();
     for subscript in shape_expr {
         match subscript {
             Subscript::Index { value, .. } => dims.push(*value),
+            // A self-referential shape (`A[:, size(A, 1)]`) is determined by
+            // the argument: the param is not bound while its own dims resolve.
+            Subscript::Expr { expr, .. } if expr_references_name(expr, &param.name) => {
+                dynamic_indices.push(dims.len());
+                dims.push(0);
+            }
             Subscript::Expr { expr, .. } => dims.push(eval_shape_expr_dim(expr, local_env)?),
             Subscript::Colon { .. } => {
                 dynamic_indices.push(dims.len());
@@ -575,6 +582,30 @@ pub(super) fn infer_dynamic_array_input_dims<T: SimFloat>(
     )?;
     validate_array_input_dims(&dims, value_count)?;
     Ok(dims)
+}
+
+fn expr_references_name(expr: &Expression, name: &str) -> bool {
+    struct NameFinder<'a> {
+        name: &'a str,
+        found: bool,
+    }
+    impl rumoca_core::ExpressionVisitor for NameFinder<'_> {
+        fn visit_expression(&mut self, expr: &Expression) {
+            if self.found {
+                return;
+            }
+            if let Expression::VarRef { name, .. } = expr
+                && name.as_str() == self.name
+            {
+                self.found = true;
+                return;
+            }
+            self.walk_expression(expr);
+        }
+    }
+    let mut finder = NameFinder { name, found: false };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut finder, expr);
+    finder.found
 }
 
 pub(super) fn infer_dynamic_array_input_dims_from_declared(

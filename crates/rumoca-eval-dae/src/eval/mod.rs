@@ -101,7 +101,8 @@ use special::{
     resolve_user_function_target,
 };
 pub use special::{
-    MaterializedOutputs, RecordOutputFields, deterministic_automatic_global_seed,
+    MaterializedOutput, MaterializedOutputs, RecordOutputFields,
+    deterministic_automatic_global_seed,
     eval_builtin_pub, eval_condition_as_root,
     eval_function_call_pub, eval_function_call_pub_dae, eval_selected_function_output_pub,
     eval_selected_function_output_pub_dae, eval_user_function_array_output_pub,

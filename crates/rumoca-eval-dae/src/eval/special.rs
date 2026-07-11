@@ -697,7 +697,70 @@ pub fn eval_user_function_record_output_pub<T: SimFloat>(
         return Ok(None);
     }
     let (_, _, local_env) = eval_user_function_local_env(name, args, env)?;
-    let prefix = format!("{}.", output.name);
+    Ok(Some(record_output_fields_from_local_env(
+        &output.name,
+        &local_env,
+    )))
+}
+
+/// One materialized function output: flat values or record field entries.
+pub enum MaterializedOutput<T> {
+    Values(Vec<T>),
+    Record(RecordOutputFields<T>),
+}
+
+/// Materialized function outputs as `(output name, materialized value)` pairs.
+pub type MaterializedOutputs<T> = Vec<(String, MaterializedOutput<T>)>;
+
+pub fn eval_user_function_outputs_pub<T: SimFloat>(
+    name: &VarName,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Result<Option<MaterializedOutputs<T>>, EvalError> {
+    let Some(function) = resolve_user_function(name.as_str(), env) else {
+        return Ok(None);
+    };
+    if function.external.is_some() || function.body.is_empty() {
+        return Ok(None);
+    }
+    let (_, outputs, local_env) = eval_user_function_local_env(name, args, env)?;
+    let mut materialized = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        if output.type_class == Some(rumoca_core::ClassType::Record) {
+            let fields = record_output_fields_from_local_env(&output.name, &local_env);
+            if fields.0.is_empty() {
+                return Err(EvalError::MissingBinding {
+                    name: output.name.clone(),
+                });
+            }
+            materialized.push((output.name, MaterializedOutput::Record(fields)));
+            continue;
+        }
+        let values = if local_env
+            .dims
+            .get(output.name.as_str())
+            .is_some_and(|dims| !dims.is_empty())
+        {
+            array_values_from_env_name_generic(output.name.as_str(), &local_env)?.ok_or_else(
+                || EvalError::MissingBinding {
+                    name: output.name.clone(),
+                },
+            )?
+        } else {
+            vec![local_env.require(output.name.as_str())?]
+        };
+        materialized.push((output.name, MaterializedOutput::Values(values)));
+    }
+    Ok(Some(materialized))
+}
+
+/// Record output field values and dims bound under `{output_name}.` in the
+/// function's local evaluation scope.
+fn record_output_fields_from_local_env<T: SimFloat>(
+    output_name: &str,
+    local_env: &VarEnv<T>,
+) -> RecordOutputFields<T> {
+    let prefix = format!("{output_name}.");
     let values = local_env
         .vars
         .iter()
@@ -714,42 +777,7 @@ pub fn eval_user_function_record_output_pub<T: SimFloat>(
                 .map(|suffix| (suffix.to_string(), dims.clone()))
         })
         .collect::<Vec<_>>();
-    Ok(Some((values, dims)))
-}
-
-/// Materialized function outputs as `(output name, flattened values)` pairs.
-pub type MaterializedOutputs<T> = Vec<(String, Vec<T>)>;
-
-pub fn eval_user_function_outputs_pub<T: SimFloat>(
-    name: &VarName,
-    args: &[Expression],
-    env: &VarEnv<T>,
-) -> Result<Option<MaterializedOutputs<T>>, EvalError> {
-    let Some(function) = resolve_user_function(name.as_str(), env) else {
-        return Ok(None);
-    };
-    if function.external.is_some() || function.body.is_empty() {
-        return Ok(None);
-    }
-    let (_, outputs, local_env) = eval_user_function_local_env(name, args, env)?;
-    let mut materialized = Vec::with_capacity(outputs.len());
-    for output in outputs {
-        let values = if local_env
-            .dims
-            .get(output.name.as_str())
-            .is_some_and(|dims| !dims.is_empty())
-        {
-            array_values_from_env_name_generic(output.name.as_str(), &local_env)?.ok_or_else(
-                || EvalError::MissingBinding {
-                    name: output.name.clone(),
-                },
-            )?
-        } else {
-            vec![local_env.require(output.name.as_str())?]
-        };
-        materialized.push((output.name, values));
-    }
-    Ok(Some(materialized))
+    (values, dims)
 }
 
 fn eval_user_function_local_env<T: SimFloat>(
