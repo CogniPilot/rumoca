@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createInputRuntime } from "../runtime/rumoca_interactive.js";
+import {
+  createInputRuntime,
+  createViewerSignalReader,
+  takeRuntimeControlSignal,
+} from "../runtime/rumoca_interactive.js";
 
 function keyEvent(key) {
   return {
@@ -105,4 +109,90 @@ test("held keyboard signal actions fire once per key press", () => {
   assert.equal(input.keyUp(keyEvent("r")), true);
   assert.equal(input.keyDown(keyEvent("r")), true);
   assert.equal(input.takeSignal("reset"), true);
+});
+
+test("runtime reset and quit signals are consumed without waiting for a simulation tick", () => {
+  const config = {
+    input: {
+      keyboard: {
+        keys: {
+          r: { action: "signal", signal: "restart" },
+          q: { action: "signal", signal: "halt" },
+        },
+      },
+    },
+    reset: {
+      on_signal: "restart",
+      reset_locals: true,
+      reset_session: true,
+    },
+    quit: { on_signal: "halt" },
+  };
+  const input = createInputRuntime(config);
+
+  input.keyDown(keyEvent("r"));
+  assert.deepEqual(takeRuntimeControlSignal(config, input), {
+    action: "reset",
+    resetLocals: true,
+    resetSession: true,
+  });
+  assert.equal(takeRuntimeControlSignal(config, input), null);
+
+  input.keyUp(keyEvent("r"));
+  input.keyDown(keyEvent("q"));
+  assert.deepEqual(takeRuntimeControlSignal(config, input), { action: "quit" });
+  assert.equal(takeRuntimeControlSignal(config, input), null);
+});
+
+test("viewer refresh reads one stable snapshot of only configured model signals", () => {
+  const config = {
+    locals: {
+      stick: { type: "float", default: 0.25 },
+    },
+    signals: {
+      viewer: {
+        duplicate: "model:vehicle.x",
+        frame: "runtime:frame_num",
+        local: "local:stick",
+        position: "model:vehicle.x",
+        raw: "vehicle.y",
+        simulation_time: "model:time",
+      },
+    },
+  };
+  const input = createInputRuntime(config);
+  const reads = [];
+  let time = 4;
+  const values = new Map([
+    ["vehicle.x", 12],
+    ["vehicle.y", -3],
+    ["unused", 99],
+  ]);
+  const session = {
+    time: () => time,
+    get(name) {
+      reads.push(name);
+      return values.get(name);
+    },
+    state_json() {
+      throw new Error("the full simulation state must not be serialized");
+    },
+  };
+
+  const readViewerSignals = createViewerSignalReader(config, input, session);
+  const target = new Map([["stale", 1]]);
+  const snapshot = readViewerSignals(7, target);
+  time = 8;
+  values.set("vehicle.x", 20);
+
+  assert.strictEqual(snapshot, target);
+  assert.deepEqual(reads, ["vehicle.x", "vehicle.y"]);
+  assert.deepEqual(Object.fromEntries(snapshot), {
+    duplicate: 12,
+    frame: 7,
+    local: 0.25,
+    position: 12,
+    raw: -3,
+    simulation_time: 4,
+  });
 });

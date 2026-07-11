@@ -1432,12 +1432,250 @@ fn test_runtime_precompute_assigns_clock_interval_to_algebraic_alias_chain() {
         test_span(1, 2),
         "controller_input_alias",
     ));
-
     populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
     assert!((dae_model.clocks.intervals["sample2.clock"] - 0.1).abs() <= 1e-12);
     assert!((dae_model.clocks.intervals["sample2.y"] - 0.1).abs() <= 1e-12);
     assert!((dae_model.clocks.intervals["feedback.y"] - 0.1).abs() <= 1e-12);
     assert!((dae_model.clocks.intervals["PI.u"] - 0.1).abs() <= 1e-12);
+}
+
+#[test]
+fn test_runtime_precompute_propagates_clock_across_indexed_vector_and_previous() {
+    let mut dae_model = dae::Dae::default();
+    let mut sampled = dae::Variable::new(rumoca_core::VarName::new("sampled"), test_span(1, 2));
+    sampled.dims = vec![2];
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(sampled.name.clone(), sampled);
+    for name in ["delay1.u", "delay1.y", "delay2.u", "delay2.y"] {
+        dae_model.variables.discrete_reals.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name), test_span(1, 2)),
+        );
+    }
+    dae_model.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("clock"),
+        dae::Variable::new(rumoca_core::VarName::new("clock"), test_span(1, 2)),
+    );
+
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("clock"),
+            clock_call(0.02),
+            test_span(1, 2),
+            "clock_source",
+        ));
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("sampled"),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sample,
+                args: vec![var("u"), var("clock")],
+                span: test_span(1, 2),
+            },
+            test_span(1, 2),
+            "sampled_vector",
+        ));
+    for (delay, index) in [("delay1", 1), ("delay2", 2)] {
+        dae_model
+            .discrete
+            .real_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new(format!("{delay}.u")),
+                condition_memory_ref("sampled", index),
+                test_span(1, 2),
+                "indexed_vector_alias",
+            ));
+        dae_model
+            .discrete
+            .real_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new(format!("{delay}.y")),
+                var(&format!("__pre__.{delay}.u")),
+                test_span(1, 2),
+                "clocked_previous_value",
+            ));
+    }
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    for name in ["sampled", "delay1.u", "delay1.y", "delay2.u", "delay2.y"] {
+        assert!((dae_model.clocks.intervals[name] - 0.02).abs() <= 1e-12);
+    }
+}
+
+#[test]
+fn test_runtime_precompute_propagates_uniform_clock_through_vector_alias_projection() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["sampled", "alias"] {
+        let mut variable = dae::Variable::new(rumoca_core::VarName::new(name), test_span(1, 2));
+        variable.dims = vec![2];
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(variable.name.clone(), variable);
+    }
+    for name in ["delay.u", "delay.y"] {
+        dae_model.variables.discrete_reals.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name), test_span(1, 2)),
+        );
+    }
+
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("sampled"),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sample,
+                args: vec![var("u"), clock_call(0.02)],
+                span: test_span(1, 2),
+            },
+            test_span(1, 2),
+            "direct_clocked_vector",
+        ));
+    dae_model.continuous.equations.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("alias"),
+        var("sampled"),
+        test_span(1, 2),
+        "untimed_vector_alias",
+    ));
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("delay.u"),
+            condition_memory_ref("alias", 1),
+            test_span(1, 2),
+            "indexed_alias_consumer",
+        ));
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("delay.y"),
+            var("__pre__.delay.u"),
+            test_span(1, 2),
+            "previous_consumer",
+        ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    for name in ["sampled", "alias", "delay.u", "delay.y"] {
+        assert!((dae_model.clocks.intervals[name] - 0.02).abs() <= 1e-12);
+    }
+}
+
+#[test]
+fn test_runtime_precompute_keeps_distinct_clocks_for_array_elements() {
+    let mut dae_model = dae::Dae::default();
+    let mut sampled = dae::Variable::new(rumoca_core::VarName::new("sampled"), test_span(1, 2));
+    sampled.dims = vec![2];
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(sampled.name.clone(), sampled);
+    for name in ["clock1", "clock2"] {
+        dae_model.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name), test_span(1, 2)),
+        );
+    }
+    for (name, period) in [("clock1", 0.1), ("clock2", 0.2)] {
+        dae_model
+            .discrete
+            .valued_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new(name),
+                clock_call(period),
+                test_span(1, 2),
+                "independent_clock_source",
+            ));
+    }
+    for (index, clock) in [(1, "clock1"), (2, "clock2")] {
+        dae_model.discrete.real_updates.push(dae::Equation {
+            lhs: Some(condition_lhs("sampled", index)),
+            rhs: rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sample,
+                args: vec![var("u"), var(clock)],
+                span: test_span(1, 2),
+            },
+            span: test_span(1, 2),
+            origin: "independently_clocked_array_element".to_string(),
+            scalar_count: 1,
+        });
+    }
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!(!dae_model.clocks.intervals.contains_key("sampled"));
+    assert!((dae_model.clocks.intervals["sampled[1]"] - 0.1).abs() <= 1e-12);
+    assert!((dae_model.clocks.intervals["sampled[2]"] - 0.2).abs() <= 1e-12);
+}
+
+#[test]
+fn test_runtime_precompute_promotes_equal_element_clocks_to_uniform_array() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["sampled", "alias"] {
+        let mut variable = dae::Variable::new(rumoca_core::VarName::new(name), test_span(1, 2));
+        variable.dims = vec![2];
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(variable.name.clone(), variable);
+    }
+    for name in ["clock1", "clock2"] {
+        dae_model.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name), test_span(1, 2)),
+        );
+        dae_model
+            .discrete
+            .valued_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new(name),
+                clock_call(0.1),
+                test_span(1, 2),
+                "uniform_clock_source",
+            ));
+    }
+    for (index, clock) in [(1, "clock1"), (2, "clock2")] {
+        dae_model.discrete.real_updates.push(dae::Equation {
+            lhs: Some(condition_lhs("sampled", index)),
+            rhs: rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sample,
+                args: vec![var("u"), var(clock)],
+                span: test_span(1, 2),
+            },
+            span: test_span(1, 2),
+            origin: "uniformly_clocked_array_element".to_string(),
+            scalar_count: 1,
+        });
+    }
+    dae_model.continuous.equations.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("alias"),
+        var("sampled"),
+        test_span(1, 2),
+        "whole_array_alias",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    for name in ["sampled", "alias"] {
+        let interval = dae_model.clocks.intervals.get(name).unwrap_or_else(|| {
+            panic!(
+                "missing {name}; intervals={:?}",
+                dae_model.clocks.intervals.keys().collect::<Vec<_>>()
+            )
+        });
+        assert!((*interval - 0.1).abs() <= 1e-12);
+    }
 }
 
 #[test]

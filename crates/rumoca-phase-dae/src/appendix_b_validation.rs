@@ -782,14 +782,7 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
                 "clock interval for `{name}` must be finite and positive, got {interval}",
             )));
         }
-        let key = rumoca_core::VarName::new(name);
-        if !dae_model.variables.discrete_reals.contains_key(&key)
-            && !dae_model.variables.discrete_valued.contains_key(&key)
-            && !dae_model.variables.algebraics.contains_key(&key)
-            && !dae_model.variables.outputs.contains_key(&key)
-            && !dae_model.variables.inputs.contains_key(&key)
-            && !dae_model.variables.states.contains_key(&key)
-        {
+        if !is_runtime_variable_name(dae_model, &rumoca_core::VarName::new(name)) {
             return Err(ToDaeError::runtime_metadata_violation(format!(
                 "clock interval key `{name}` must reference a runtime variable in DAE",
             )));
@@ -843,6 +836,43 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
     }
 
     Ok(())
+}
+
+fn is_runtime_variable_name(dae_model: &dae::Dae, name: &rumoca_core::VarName) -> bool {
+    if runtime_variable(dae_model, name).is_some() {
+        return true;
+    }
+
+    let flat_name = dae_to_flat_var_name(name);
+    let Some(scalar) = rumoca_core::parse_scalar_name(flat_name.as_str()) else {
+        return false;
+    };
+    let base = flat_to_dae_var_name(&rumoca_core::VarName::new(scalar.base));
+    let Some(variable) = runtime_variable(dae_model, &base) else {
+        return false;
+    };
+
+    scalar.indices.len() == variable.dims.len()
+        && scalar
+            .indices
+            .iter()
+            .zip(&variable.dims)
+            .all(|(index, dim)| (1..=*dim).contains(index))
+}
+
+fn runtime_variable<'a>(
+    dae_model: &'a dae::Dae,
+    name: &rumoca_core::VarName,
+) -> Option<&'a dae::Variable> {
+    dae_model
+        .variables
+        .discrete_reals
+        .get(name)
+        .or_else(|| dae_model.variables.discrete_valued.get(name))
+        .or_else(|| dae_model.variables.algebraics.get(name))
+        .or_else(|| dae_model.variables.outputs.get(name))
+        .or_else(|| dae_model.variables.inputs.get(name))
+        .or_else(|| dae_model.variables.states.get(name))
 }
 
 #[cfg(test)]
@@ -1357,5 +1387,70 @@ mod tests {
 
         validate_appendix_b_invariants(&dae_model)
             .expect("clock interval metadata should accept algebraic clocked variables");
+    }
+
+    #[test]
+    fn runtime_metadata_accepts_clock_interval_for_declared_array_element() {
+        let mut dae_model = dae::Dae::default();
+        let mut sampled = dae::Variable::new(
+            rumoca_core::VarName::new("sampled"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
+        sampled.dims = vec![2];
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(sampled.name.clone(), sampled);
+        dae_model
+            .clocks
+            .intervals
+            .insert("sampled[1]".to_string(), 0.1);
+
+        validate_appendix_b_invariants(&dae_model)
+            .expect("clock interval metadata should accept a declared array element");
+    }
+
+    #[test]
+    fn runtime_metadata_rejects_clock_interval_for_out_of_bounds_array_element() {
+        let mut dae_model = dae::Dae::default();
+        let mut sampled = dae::Variable::new(
+            rumoca_core::VarName::new("sampled"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
+        sampled.dims = vec![2];
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(sampled.name.clone(), sampled);
+        dae_model
+            .clocks
+            .intervals
+            .insert("sampled[3]".to_string(), 0.1);
+
+        let err = validate_appendix_b_invariants(&dae_model)
+            .expect_err("clock interval metadata must reject an out-of-bounds array element");
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    }
+
+    #[test]
+    fn runtime_metadata_rejects_clock_interval_for_wrong_rank_array_element() {
+        let mut dae_model = dae::Dae::default();
+        let mut sampled = dae::Variable::new(
+            rumoca_core::VarName::new("sampled"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
+        sampled.dims = vec![2];
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(sampled.name.clone(), sampled);
+        dae_model
+            .clocks
+            .intervals
+            .insert("sampled[1,1]".to_string(), 0.1);
+
+        let err = validate_appendix_b_invariants(&dae_model)
+            .expect_err("clock interval metadata must reject a wrong-rank array element");
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
     }
 }

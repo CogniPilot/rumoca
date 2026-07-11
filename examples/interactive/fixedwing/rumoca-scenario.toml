@@ -1,4 +1,4 @@
-source_roots = ["../../../target/cmm/CMM-v0.0.2"]
+source_roots = ["../../../target/cmm/CMM-a642c381"]
 
 [input]
 mode = "auto"

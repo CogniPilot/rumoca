@@ -306,8 +306,8 @@ jobs:
         continue-on-error: true
         id: cmm-cache
         with:
-          path: target/cmm/CMM-v0.0.2
-          key: cmm-v0.0.2-ec233a25a0875d2ba1d07f4199a25c8eeb86694d3f9867394d2ae50e41574508
+          path: target/cmm/CMM-a642c381
+          key: cmm-a642c381-ca47391811532c89300e52bb8ce53ee4bfd6d6d8412d54e2f13f11387f44dcc3
 
       - name: Ensure MSL
         shell: bash
@@ -1544,7 +1544,7 @@ jobs:
 
           cargo xtask repo modelica-deps ensure
           mkdir -p gh-pages/target/cmm
-          cp -a target/cmm/CMM-v0.0.2 gh-pages/target/cmm/
+          cp -a target/cmm/CMM-a642c381 gh-pages/target/cmm/
 
           cargo xtask docs build --book user
           cargo xtask docs build --book dev
