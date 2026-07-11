@@ -3242,9 +3242,12 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             }
         }
 
-        async function loadScenarioParameterMetadata(wasm, effectiveSourceRootPaths) {
+        async function loadScenarioParameterMetadata(wasm, effectiveSourceRootPaths, selection = {}) {
             const source = editor.getValue();
-            const modelName = trimMaybeString(scenarioConfig?.model?.name) || modelOverride || inferModelName(wasm, source);
+            const modelName = trimMaybeString(selection.modelName)
+                || trimMaybeString(scenarioConfig?.model?.name)
+                || modelOverride
+                || inferModelName(wasm, source);
             if (!source || !modelName) {
                 return [];
             }
@@ -3293,6 +3296,11 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }
 
         async function handleScenarioConfigRequest(method, payload = {}) {
+            if (method === 'parameterMetadata') {
+                const wasm = await loadWasm();
+                const effectiveSourceRootPaths = await widget.sourceRootPaths(wasm);
+                return await loadScenarioParameterMetadata(wasm, effectiveSourceRootPaths, payload);
+            }
             if (method === 'save') {
                 return await saveScenarioConfigEdits(payload?.edits);
             }
@@ -3729,7 +3737,17 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 host.className = 'rumoca-live-interactive-host';
                 const help = document.createElement('div');
                 help.className = 'rumoca-live-interactive-help';
-                help.textContent = 'Press Capture, then use W/S for throttle, arrows for roll/pitch, A/D for yaw, Space to arm, C for camera, H for HUD, R to reset, Q to stop. Esc releases input capture.';
+                const keyboardHelp = Array.isArray(scenarioConfig?.viewer?.controls?.keyboard)
+                    ? scenarioConfig.viewer.controls.keyboard
+                        .map((control) => {
+                            const keys = trimMaybeString(control?.keys);
+                            const action = trimMaybeString(control?.action);
+                            return keys && action ? `${keys}: ${action}` : '';
+                        })
+                        .filter(Boolean)
+                        .join(', ')
+                    : '';
+                help.textContent = `Press Capture to enable mouse and configured keys${keyboardHelp ? ` (${keyboardHelp})` : ''}. Move to orbit/tilt, middle or right drag to pan, wheel to zoom, and Esc to release.`;
                 shell.append(host, help);
                 output.replaceChildren(shell);
                 output.hidden = false;

@@ -136,7 +136,7 @@
           },
           "default": [],
           "scope": "resource",
-          "markdownDescription": "Workspace Modelica path entries containing source roots such as MSL or CMM. Repository-relative paths are supported, for example `target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0` and `target/cmm/CMM-v0.0.2`. These are added to `MODELICAPATH` for import resolution."
+          "markdownDescription": "Workspace Modelica path entries containing source roots such as MSL or CMM. Repository-relative paths are supported, for example `target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0` and `target/cmm/CMM-a642c381`. These are added to `MODELICAPATH` for import resolution."
         },
         "rumoca.collapseAnnotations": {
           "type": "boolean",

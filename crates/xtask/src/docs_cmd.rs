@@ -32,9 +32,9 @@ const DOCS_SOURCE_ROOTS: &[DocsSourceRoot] = &[
         ],
     },
     DocsSourceRoot {
-        key: "target/cmm/CMM-v0.0.2",
-        source: "target/cmm/CMM-v0.0.2",
-        matches: &["target/cmm/CMM-v0.0.2", "CMM-v0.0.2"],
+        key: "target/cmm/CMM-a642c381",
+        source: "target/cmm/CMM-a642c381",
+        matches: &["target/cmm/CMM-a642c381", "CMM-a642c381"],
     },
 ];
 

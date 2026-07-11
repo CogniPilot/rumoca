@@ -41,6 +41,16 @@ test("book live runner merges inherited workspace roots outside scenario setting
     /parameterMetadata/,
     "book settings should pass parameter metadata to the shared GUI"
   );
+
+  const settingsHost = liveSource.slice(
+    liveSource.indexOf("async function handleScenarioConfigRequest"),
+    liveSource.indexOf("async function applyScenarioText")
+  );
+  assert.match(
+    settingsHost,
+    /method === 'parameterMetadata'/,
+    "book settings should serve parameter metadata refresh requests from the shared GUI"
+  );
 });
 
 test("book live runner allows dependency-free examples without staged roots", async () => {

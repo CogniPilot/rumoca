@@ -176,7 +176,7 @@ cargo xtask repo modelica-deps ensure
 The repository examples declare shared library roots in
 `examples/rumoca-workspace.toml`, using repository-relative paths such as
 `../target/msl/ModelicaStandardLibrary-4.1.0` and
-`../target/cmm/CMM-v0.0.2`. Rumoca loads that visible workspace file in VS Code,
+`../target/cmm/CMM-a642c381`. Rumoca loads that visible workspace file in VS Code,
 the playground, docs live examples, and native tooling.
 
 Scenario TOMLs may also declare top-level `source_roots` for dependencies that

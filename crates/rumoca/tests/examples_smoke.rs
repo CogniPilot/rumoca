@@ -5,6 +5,10 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
+#[path = "examples_smoke/reusable_booster_guidance_tests.rs"]
+mod reusable_booster_guidance_tests;
+#[path = "examples_smoke/reusable_booster_landing_tests.rs"]
+mod reusable_booster_landing_tests;
 #[path = "examples_smoke/solve_tensor_smoke_tests.rs"]
 mod solve_tensor_smoke_tests;
 
@@ -540,7 +544,7 @@ fn quadrotor_acro_config_creates_rk_session_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro config runtime regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };
@@ -579,7 +583,7 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro roll response regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };
@@ -641,7 +645,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro attitude regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };
@@ -666,10 +670,10 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
         ("vehicle.omega[1]", 1.0),
         ("vehicle.omega[2]", 0.0),
         ("vehicle.omega[3]", 0.0),
-        ("vehicle.attitude.q[1]", 1.0),
-        ("vehicle.attitude.q[2]", 0.0),
-        ("vehicle.attitude.q[3]", 0.0),
-        ("vehicle.attitude.q[4]", 0.0),
+        ("vehicle.q[1]", 1.0),
+        ("vehicle.q[2]", 0.0),
+        ("vehicle.q[3]", 0.0),
+        ("vehicle.q[4]", 0.0),
     ] {
         let index = solve_state_index(&sim_solve, name);
         derivative_probe_state[index] = value;
@@ -683,7 +687,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             32,
         )
         .expect("QuadrotorAcro derivative probe should evaluate");
-    let q2_dot = derivative_probe[solve_state_index(&sim_solve, "vehicle.attitude.q[2]")];
+    let q2_dot = derivative_probe[solve_state_index(&sim_solve, "vehicle.q[2]")];
     assert!(
         q2_dot > 0.4,
         "unit roll rate at identity attitude should drive quaternion roll component; q2_dot={q2_dot}"

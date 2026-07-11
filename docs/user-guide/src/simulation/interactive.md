@@ -53,6 +53,24 @@ cargo run -p rumoca --release -- \
   sim -c examples/interactive/fixedwing/rumoca-scenario.toml
 ```
 
+### Reusable Booster Autonomous Landing
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/interactive/reusable_booster/rumoca-scenario.toml
+```
+
+Native run:
+
+```bash
+cargo xtask repo modelica-deps ensure
+cargo run -p rumoca --release -- \
+  sim -c examples/interactive/reusable_booster/rumoca-scenario.toml
+```
+
+See [Reusable Booster Autonomous Landing](./reusable-booster-landing.md) for the
+differential-flatness planner, `SE_2(3)` controller, gimbal/RCS allocation, and
+visualization details.
+
 The CLI prints the HTTP and WebSocket endpoints for the viewer. Open the
 HTTP URL in a browser if it does not open automatically. Use release builds
 — interactive simulation is real-time work.

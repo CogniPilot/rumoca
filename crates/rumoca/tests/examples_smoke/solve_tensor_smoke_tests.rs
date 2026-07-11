@@ -4,8 +4,8 @@ use rumoca_phase_codegen::{render_solve_template_with_name, templates};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
 
 pub(super) fn cached_cmm_root() -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.2");
-    root.join("LieGroup/package.mo").is_file().then_some(root)
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-a642c381");
+    root.join("LieGroups/package.mo").is_file().then_some(root)
 }
 
 fn max_scalar_row_ops(block: &ComputeBlock) -> usize {
@@ -501,7 +501,7 @@ fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro tensor regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };

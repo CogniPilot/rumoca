@@ -74,6 +74,9 @@ test("runtime re-exports the GALEC helper", () => {
     path.resolve("runtime", "rumoca_runtime.js"),
     "utf8",
   );
-  assert.match(runtimeSource, /import \{ renderGalecTargetFiles \} from '\.\/rumoca_galec\.js'/);
+  assert.match(
+    runtimeSource,
+    /import \{[^}]*\brenderGalecTargetFiles\b[^}]*\} from '\.\/rumoca_galec\.js'/s,
+  );
   assert.match(runtimeSource, /export async function renderGalecFilesWithRuntime/);
 });

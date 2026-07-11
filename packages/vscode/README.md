@@ -96,7 +96,7 @@ To use external Modelica packages like the Modelica Standard Library, configure 
 {
   "rumoca.sourceRootPaths": [
     "target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0",
-    "target/cmm/CMM-v0.0.2"
+    "target/cmm/CMM-a642c381"
   ]
 }
 ```

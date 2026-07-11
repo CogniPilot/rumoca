@@ -1,0 +1,13 @@
+source_roots = ["../../../target/cmm/CMM-a642c381"]
+
+[rumoca]
+version = "1"
+task = "codegen"
+
+[model]
+file = "ReusableBoosterLanding.mo"
+name = "ReusableBoosterEmbeddedControlLaw"
+
+[codegen]
+target = "galec-production"
+output_dir = "gen/reusable_booster_controller_efmu"

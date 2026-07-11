@@ -131,6 +131,14 @@ function ensureInteractiveRuntimeStyles(ownerDocument) {
   border-color: #37b7ff;
   background: rgba(0, 103, 168, 0.88);
 }
+.rumoca-interactive-controls .rumoca-interactive-run-state[data-state="finished"] {
+  border-color: #f2c14f;
+  color: #ffe7a3;
+}
+.rumoca-interactive-controls .rumoca-interactive-run-state[data-state="failed"] {
+  border-color: #f06a6a;
+  color: #ffc1c1;
+}
 @media (max-width: 640px) {
   .rumoca-interactive-controls button,
   .rumoca-interactive-controls .rumoca-interactive-key-echo {
@@ -491,7 +499,20 @@ export function createInputRuntime(config) {
   };
 }
 
-function createViewerRuntime({ THREE, container, viewerSignals, assetBaseUrl, pointer, config }) {
+export function takeRuntimeControlSignal(config, input) {
+  const resetSignal = trimMaybeString(config?.reset?.on_signal);
+  if (resetSignal && input.takeSignal(resetSignal)) {
+    return {
+      action: 'reset',
+      resetLocals: Boolean(config?.reset?.reset_locals),
+      resetSession: Boolean(config?.reset?.reset_session),
+    };
+  }
+  const quitSignal = trimMaybeString(config?.quit?.on_signal) || 'quit';
+  return input.takeSignal(quitSignal) ? { action: 'quit' } : null;
+}
+
+function createViewerRuntime({ THREE, container, viewerSignals, assetBaseUrl, pointer, config, input }) {
   const ownerDocument = container.ownerDocument || document;
   const ownerWindow = ownerDocument.defaultView || globalThis;
   const canvas = ownerDocument.createElement('canvas');
@@ -701,6 +722,14 @@ function createViewerRuntime({ THREE, container, viewerSignals, assetBaseUrl, po
     cam,
     frames: frameMatrices,
     get: (name) => viewerSignals.get(name),
+    getLocal: (name) => input?.locals?.get(name),
+    setLocal(name, value) {
+      if (!input?.locals?.has(name)) {
+        return false;
+      }
+      input.locals.set(name, value);
+      return true;
+    },
     motors: {},
     pointer,
     renderer,
@@ -854,34 +883,60 @@ function buildModelInputs(config, input, session, runtime) {
   ]);
 }
 
-function buildViewerSignals(config, input, session, runtime) {
-  const result = new Map();
-  for (const [name, route] of sortedEntries(config?.signals?.viewer)) {
-    result.set(name, routeValue(route, input.locals, session, runtime));
+function selectedModelSignalNames(config, locals) {
+  const names = new Set();
+  for (const [, route] of sortedEntries(config?.signals?.viewer)) {
+    const source = typeof route === 'string' ? route : route?.from;
+    const text = trimMaybeString(source);
+    if (!text || text === 'model:time' || text.startsWith('local:') || text.startsWith('runtime:')) {
+      continue;
+    }
+    const name = text.startsWith('model:') ? text.slice('model:'.length) : text;
+    if (name && (text.startsWith('model:') || !locals.has(name))) {
+      names.add(name);
+    }
   }
-  return result;
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+
+export function createViewerSignalReader(config, input, session) {
+  const signalNames = selectedModelSignalNames(config, input.locals);
+  const routes = sortedEntries(config?.signals?.viewer);
+  const values = new Map();
+  let snapshotTime = 0;
+  const snapshot = {
+    time: () => snapshotTime,
+    get: (name) => values.get(name),
+  };
+  return (frameNum, result = new Map()) => {
+    snapshotTime = finiteNumber(session.time(), 0);
+    values.clear();
+    for (const name of signalNames) {
+      values.set(name, session.get(name));
+    }
+    const runtime = input.runtimeFields(frameNum, snapshotTime);
+    result.clear();
+    for (const [name, route] of routes) {
+      result.set(name, routeValue(route, input.locals, snapshot, runtime));
+    }
+    return result;
+  };
 }
 
 export function scenarioUsesInputRuntime(config) {
   return Boolean(config?.input);
 }
 
-export async function createInteractiveSimulation(options) {
+async function createInteractiveSession(options, onStatus) {
   const {
     wasm,
-    THREE,
     source,
     modelName,
     config,
     sourceRootCacheUrl = '',
     sourceRoots = '{}',
     workspaceSources = '{}',
-    container,
-    scriptText = '',
-    assetBaseUrl = '',
-    onStatus = () => {},
-    onError = () => {},
-  } = options || {};
+  } = options;
   if (!wasm || typeof wasm.WasmSimulationSession !== 'function') {
     throw new Error('Interactive simulation sessions are missing from this WASM package.');
   }
@@ -900,10 +955,9 @@ export async function createInteractiveSimulation(options) {
     onStatus('syncing workspace sources');
     wasm.sync_workspace_sources(workspaceSources);
   }
-  const input = createInputRuntime(config || {});
   onStatus('compiling session');
   const simConfig = config?.sim || {};
-  const session = wasm.WasmSimulationSession.withOptions(
+  return wasm.WasmSimulationSession.withOptions(
     source,
     modelName,
     finiteNumber(simConfig.t_end, 0),
@@ -912,8 +966,10 @@ export async function createInteractiveSimulation(options) {
     finiteNumber(simConfig.atol, 0),
     finiteNumber(simConfig.rtol, 0),
   );
-  const viewerSignals = new Map();
-  const pointer = {
+}
+
+function createPointerState() {
+  return {
     captured: false,
     buttons: 0,
     x: 0,
@@ -923,74 +979,101 @@ export async function createInteractiveSimulation(options) {
     wheel: 0,
     pointerType: '',
   };
-  const viewer = createViewerRuntime({ THREE, container, viewerSignals, assetBaseUrl, pointer, config });
-  const scene = compileSceneScript(scriptText, viewer.api);
-  onStatus('initializing scene');
-  if (typeof scene.onInit === 'function') {
-    await Promise.resolve(scene.onInit(viewer.api));
+}
+
+class InteractiveSimulationController {
+  constructor(context) {
+    Object.assign(this, context);
+    this.simDt = Math.max(0.001, finiteNumber(this.config?.sim?.dt, 0.01));
+    this.pacingMode = normalizePacingMode(this.config?.sim?.mode);
+    this.frameNum = 0;
+    this.running = false;
+    this.raf = null;
+    this.scheduledWithTimeout = false;
+    this.lastTime = 0;
+    this.accumulator = 0;
+    this.speedRatio = 0;
+    this.ui = { updatePacing: () => {}, updateRunState: () => {} };
+    this.readViewerSignals = createViewerSignalReader(this.config, this.input, this.session);
+    this.tick = this.tick.bind(this);
   }
-  onStatus('ready');
 
-  const simDt = Math.max(0.001, finiteNumber(config?.sim?.dt, 0.01));
-  let pacingMode = normalizePacingMode(config?.sim?.mode);
-  let frameNum = 0;
-  let running = false;
-  let raf = null;
-  let lastTime = 0;
-  let accumulator = 0;
-  let speedRatio = 0;
-  let updateCaptureUi = () => {};
-  let updatePacingUi = () => {};
-  let updateFullscreenUi = () => {};
+  setUi(ui) {
+    this.ui = ui;
+  }
 
-  function refreshViewerSignals() {
-    viewerSignals.clear();
-    const nextSignals = buildViewerSignals(
-      config,
-      input,
-      session,
-      input.runtimeFields(frameNum, session.time()),
-    );
-    for (const [name, value] of nextSignals) {
-      viewerSignals.set(name, value);
+  currentPacingMode() {
+    return this.pacingMode;
+  }
+
+  currentSpeedRatio() {
+    return this.speedRatio;
+  }
+
+  refreshViewerSignals() {
+    this.readViewerSignals(this.frameNum, this.viewerSignals);
+  }
+
+  stopAnimation() {
+    this.running = false;
+    if (this.raf !== null) {
+      if (this.scheduledWithTimeout) {
+        this.viewer.ownerWindow.clearTimeout(this.raf);
+      } else {
+        this.viewer.ownerWindow.cancelAnimationFrame(this.raf);
+      }
+      this.raf = null;
     }
   }
 
-  function stopAnimation() {
-    running = false;
-    if (raf !== null) {
-      ownerWindow.cancelAnimationFrame(raf);
-      raf = null;
+  scheduleNextTick() {
+    if (this.pacingMode === 'as_fast_as_possible') {
+      this.scheduledWithTimeout = true;
+      this.raf = this.viewer.ownerWindow.setTimeout(() => this.tick(performance.now()), 0);
+    } else {
+      this.scheduledWithTimeout = false;
+      this.raf = this.viewer.ownerWindow.requestAnimationFrame(this.tick);
     }
   }
 
-  function reportRuntimeError(error) {
-    stopAnimation();
+  reportRuntimeError(error) {
+    this.stopAnimation();
     const message = error?.message || error || 'Interactive simulation runtime error';
-    onStatus(`failed: ${message}`);
-    onError(error);
+    this.ui.updateRunState('Failed', 'failed');
+    this.onStatus(`failed: ${message}`);
+    this.onError(error);
   }
 
-  function statusLine() {
-    const inputMode = input.runtimeFields(frameNum, session.time()).input_mode;
-    return `live t=${session.time().toFixed(2)} s · ${pacingModeLabel(pacingMode)} · ${speedRatioLabel(speedRatio)} · ${inputMode}`;
+  statusLine() {
+    const inputMode = this.input.runtimeFields(this.frameNum, this.session.time()).input_mode;
+    return `live t=${this.session.time().toFixed(2)} s · ${pacingModeLabel(this.pacingMode)} · ${speedRatioLabel(this.speedRatio)} · ${inputMode}`;
   }
 
-  function simulationFinished() {
-    const end = session.end_time();
+  simulationFinished() {
+    const end = this.session.end_time();
     const tolerance = 1e-12 * (1 + Math.abs(end));
-    return session.time() >= end - tolerance;
+    return this.session.time() >= end - tolerance;
   }
 
-  function recordSpeed(simAdvanced, wallDt) {
+  recordSpeed(simAdvanced, wallDt) {
     if (wallDt <= 0) {
       return;
     }
     const instant = Math.max(0, simAdvanced) / wallDt;
-    speedRatio = speedRatio === 0 ? instant : (speedRatio * 0.82 + instant * 0.18);
+    this.speedRatio = this.speedRatio === 0 ? instant : (this.speedRatio * 0.82 + instant * 0.18);
   }
 
-  function resetSimulation(options = {}) {
+  renderFrame() {
+    if (typeof this.scene.onFrame === 'function') {
+      this.scene.onFrame(this.viewer.api);
+    }
+    this.pointer.dx = 0;
+    this.pointer.dy = 0;
+    this.pointer.wheel = 0;
+    this.viewer.render();
+  }
+
+  resetSimulation(options = {}) {
     const {
       resetLocals = true,
       resetSession = true,
@@ -998,460 +1081,630 @@ export async function createInteractiveSimulation(options) {
       statusText = 'reset',
     } = options;
     if (resetLocals) {
-      input.resetLocals();
+      this.input.resetLocals();
     }
-    input.releaseKeys();
+    this.input.releaseKeys();
     if (resetSession) {
-      session.reset();
+      this.session.reset();
     }
-    frameNum = 0;
-    accumulator = 0;
-    lastTime = 0;
-    speedRatio = 0;
-    refreshViewerSignals();
+    this.frameNum = 0;
+    this.accumulator = 0;
+    this.lastTime = 0;
+    this.speedRatio = 0;
+    this.refreshViewerSignals();
     if (render) {
-      viewer.render();
+      this.renderFrame();
     }
-    updatePacingUi();
-    onStatus(statusText);
+    this.ui.updatePacing();
+    this.ui.updateRunState('Reset', 'reset');
+    this.onStatus(statusText);
   }
 
-  function togglePacingMode() {
-    pacingMode = pacingMode === 'realtime' ? 'as_fast_as_possible' : 'realtime';
-    accumulator = 0;
-    lastTime = 0;
-    speedRatio = 0;
-    updatePacingUi();
-    onStatus(statusLine());
-    return pacingMode;
+  togglePacingMode() {
+    this.pacingMode = this.pacingMode === 'realtime' ? 'as_fast_as_possible' : 'realtime';
+    this.accumulator = 0;
+    this.lastTime = 0;
+    this.speedRatio = 0;
+    this.ui.updatePacing();
+    this.onStatus(this.statusLine());
+    return this.pacingMode;
   }
 
-  function routeFrame(dt) {
-    input.update(dt);
-    if (config?.reset?.on_signal && input.takeSignal(config.reset.on_signal)) {
-      resetSimulation({
-        resetLocals: Boolean(config.reset.reset_locals),
-        resetSession: Boolean(config.reset.reset_session),
-        render: false,
+  applyRuntimeControlSignal(control, options = {}) {
+    if (control?.action === 'reset') {
+      const wasRunning = this.running;
+      const resume = Boolean(options.resume) && !this.running;
+      this.resetSimulation({
+        resetLocals: control.resetLocals,
+        resetSession: control.resetSession,
+        render: Boolean(options.render),
         statusText: 'reset',
       });
+      if (resume) {
+        this.startAnimation();
+      } else if (wasRunning) {
+        this.ui.updateRunState('Running', 'running');
+      }
+      return true;
     }
-    if (input.takeSignal(trimMaybeString(config?.quit?.on_signal) || 'quit')) {
-      stopAnimation();
-      onStatus('stopped');
+    if (control?.action === 'quit') {
+      this.stopAnimation();
+      this.ui.updateRunState('Stopped', 'stopped');
+      this.onStatus('stopped');
+      return true;
+    }
+    return false;
+  }
+
+  routeFrame(dt) {
+    this.input.update(dt);
+    const control = takeRuntimeControlSignal(this.config, this.input);
+    if (control?.action === 'reset') {
+      this.applyRuntimeControlSignal(control, { render: false });
+    } else if (control?.action === 'quit') {
+      this.applyRuntimeControlSignal(control);
       return false;
     }
-    const runtime = input.runtimeFields(frameNum, session.time());
-    for (const [name, value] of buildModelInputs(config, input, session, runtime)) {
-      session.set_input(name, finiteNumber(value, 0));
+    const runtime = this.input.runtimeFields(this.frameNum, this.session.time());
+    for (const [name, value] of buildModelInputs(this.config, this.input, this.session, runtime)) {
+      this.session.set_input(name, finiteNumber(value, 0));
     }
-    if (typeof session.step === 'function') {
-      session.step(simDt);
+    if (typeof this.session.step === 'function') {
+      this.session.step(this.simDt);
     } else {
-      session.advance_to(Math.min(session.time() + simDt, session.end_time()));
+      this.session.advance_to(Math.min(this.session.time() + this.simDt, this.session.end_time()));
     }
-    refreshViewerSignals();
-    frameNum += 1;
-    if (simulationFinished()) {
-      stopAnimation();
-      onStatus('finished');
+    this.frameNum += 1;
+    if (this.simulationFinished()) {
+      this.stopAnimation();
+      this.refreshViewerSignals();
+      this.renderFrame();
+      this.ui.updatePacing();
+      this.ui.updateRunState('Finished', 'finished');
+      this.onStatus('finished');
       return false;
     }
     return true;
   }
 
-  function tick(now) {
+  tick(now) {
     try {
-      tickFrame(now);
+      this.tickFrame(now);
     } catch (error) {
-      reportRuntimeError(error);
+      this.reportRuntimeError(error);
     }
   }
 
-  function tickFrame(now) {
-    if (!running) {
+  tickFrame(now) {
+    if (!this.running) {
       return;
     }
-    if (lastTime === 0) {
-      lastTime = now;
+    if (this.lastTime === 0) {
+      this.lastTime = now;
     }
-    const wallDt = Math.min(0.08, Math.max(0, (now - lastTime) / 1000));
-    lastTime = now;
+    const wallDt = Math.min(0.08, Math.max(0, (now - this.lastTime) / 1000));
+    this.lastTime = now;
     let simAdvanced = 0;
     let steps = 0;
-    if (pacingMode === 'as_fast_as_possible') {
+    if (this.pacingMode === 'as_fast_as_possible') {
       const started = performance.now();
       do {
-        if (!routeFrame(simDt)) {
+        if (!this.routeFrame(this.simDt)) {
           return;
         }
-        simAdvanced += simDt;
+        simAdvanced += this.simDt;
         steps += 1;
-      } while (steps < 250 && performance.now() - started < 12);
+      } while (steps < 500 && performance.now() - started < 30);
     } else {
-      accumulator += wallDt;
-      while (accumulator >= simDt && steps < 8) {
-        if (!routeFrame(simDt)) {
+      this.accumulator += wallDt;
+      while (this.accumulator >= this.simDt && steps < 8) {
+        if (!this.routeFrame(this.simDt)) {
           return;
         }
-        accumulator -= simDt;
-        simAdvanced += simDt;
+        this.accumulator -= this.simDt;
+        simAdvanced += this.simDt;
         steps += 1;
       }
     }
-    recordSpeed(simAdvanced, wallDt);
-    if (typeof scene.onFrame === 'function') {
-      scene.onFrame(viewer.api);
-    }
-    pointer.dx = 0;
-    pointer.dy = 0;
-    pointer.wheel = 0;
-    viewer.render();
-    updatePacingUi();
-    onStatus(statusLine());
-    raf = ownerWindow.requestAnimationFrame(tick);
+    this.refreshViewerSignals();
+    this.recordSpeed(simAdvanced, wallDt);
+    this.renderFrame();
+    this.ui.updatePacing();
+    this.onStatus(this.statusLine());
+    this.scheduleNextTick();
   }
 
-  let inputCaptureActive = false;
-  let lastCapturedKey = '';
-  let pointerLockExitReleasesCapture = true;
-  const eventCaptureOptions = { capture: true, passive: false };
-  const ownerDocument = viewer.ownerDocument;
-  const ownerWindow = viewer.ownerWindow;
-  container.classList.add('rumoca-interactive-root');
-  ensureInteractiveRuntimeStyles(ownerDocument);
-  const keyDown = (event) => {
-    if (!event.repeat && handleViewerKeyDown(event)) {
+  startAnimation() {
+    if (this.running) {
+      return;
+    }
+    try {
+      this.refreshViewerSignals();
+      this.renderFrame();
+      this.running = true;
+      this.ui.updateRunState('Running', 'running');
+      this.lastTime = 0;
+      this.scheduleNextTick();
+    } catch (error) {
+      this.reportRuntimeError(error);
+    }
+  }
+
+  start() {
+    this.startAnimation();
+  }
+
+  stop() {
+    this.stopAnimation();
+    this.ui.updateRunState('Stopped', 'stopped');
+    this.onStatus('stopped');
+  }
+
+  reset() {
+    const wasRunning = this.running;
+    this.resetSimulation({ resetLocals: true, resetSession: true });
+    if (!wasRunning) {
+      this.startAnimation();
+    } else {
+      this.ui.updateRunState('Running', 'running');
+    }
+  }
+}
+
+class InteractiveControls {
+  constructor(context) {
+    Object.assign(this, context);
+    this.ownerDocument = this.viewer.ownerDocument;
+    this.ownerWindow = this.viewer.ownerWindow;
+    this.inputCaptureActive = false;
+    this.lastCapturedKey = '';
+    this.pointerLockExitReleasesCapture = true;
+    this.eventCaptureOptions = { capture: true, passive: false };
+    this.handlers = this.createHandlers();
+    this.createElements();
+    this.controller.setUi({
+      updatePacing: () => this.updatePacingUi(),
+      updateRunState: (label, state) => this.updateRunStateUi(label, state),
+    });
+    this.install();
+  }
+
+  createHandlers() {
+    return {
+      captureKeyDown: (event) => this.captureKeyDown(event),
+      captureKeyUp: (event) => this.captureKeyUp(event),
+      captureKeyPress: (event) => this.captureKeyPress(event),
+      capturePointerDown: (event) => this.capturePointerDown(event),
+      capturePointerEvent: (event) => this.capturePointerEvent(event),
+      captureWheel: (event) => this.captureWheel(event),
+      focus: () => this.focus(),
+      handlePointerLockChange: () => this.handlePointerLockChange(),
+      keyDown: (event) => this.keyDown(event),
+      keyUp: (event) => this.input.keyUp(event),
+      releaseCapture: () => this.setCaptureActive(false),
+      resize: () => this.viewer.render(),
+      updateFullscreenUi: () => this.updateFullscreenUi(),
+    };
+  }
+
+  applyInputKeyDown(event) {
+    if (event.repeat && this.input.hasKeyboardBinding(event)) {
       event.preventDefault();
       return true;
     }
-    return input.keyDown(event);
-  };
-  const keyUp = (event) => input.keyUp(event);
-  const updatePointerFromEvent = (event) => {
-    const rect = viewer.canvas.getBoundingClientRect();
-    pointer.buttons = event.buttons || 0;
-    pointer.pointerType = trimMaybeString(event.pointerType);
-    pointer.x = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
-    pointer.y = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
-    pointer.dx += finiteNumber(event.movementX, 0);
-    pointer.dy += finiteNumber(event.movementY, 0);
-  };
-  const requestPointerCapture = () => {
-    if (ownerDocument.pointerLockElement === viewer.canvas || typeof viewer.canvas.requestPointerLock !== 'function') {
+    const handled = this.input.keyDown(event);
+    if (handled) {
+      this.controller.applyRuntimeControlSignal(takeRuntimeControlSignal(this.config, this.input), {
+        render: true,
+        resume: true,
+      });
+    }
+    return handled;
+  }
+
+  keyDown(event) {
+    if (!event.repeat && this.handleViewerKeyDown(event)) {
+      event.preventDefault();
+      return true;
+    }
+    return this.applyInputKeyDown(event);
+  }
+
+  updatePointerFromEvent(event) {
+    const rect = this.viewer.canvas.getBoundingClientRect();
+    this.pointer.buttons = event.buttons || 0;
+    this.pointer.pointerType = trimMaybeString(event.pointerType);
+    this.pointer.x = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
+    this.pointer.y = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
+    this.pointer.dx += finiteNumber(event.movementX, 0);
+    this.pointer.dy += finiteNumber(event.movementY, 0);
+  }
+
+  requestPointerCapture() {
+    if (this.ownerDocument.pointerLockElement === this.viewer.canvas
+        || typeof this.viewer.canvas.requestPointerLock !== 'function') {
       return;
     }
     try {
-      viewer.canvas.requestPointerLock();
+      this.viewer.canvas.requestPointerLock();
     } catch {
-      pointer.captured = false;
+      this.pointer.captured = false;
     }
-  };
-  const releasePointerCapture = () => {
-    if (ownerDocument.pointerLockElement !== viewer.canvas || typeof ownerDocument.exitPointerLock !== 'function') {
+  }
+
+  releasePointerCapture() {
+    if (this.ownerDocument.pointerLockElement !== this.viewer.canvas
+        || typeof this.ownerDocument.exitPointerLock !== 'function') {
       return;
     }
-    pointerLockExitReleasesCapture = false;
-    ownerDocument.exitPointerLock();
+    this.pointerLockExitReleasesCapture = false;
+    this.ownerDocument.exitPointerLock();
     queueMicrotask(() => {
-      pointerLockExitReleasesCapture = true;
+      this.pointerLockExitReleasesCapture = true;
     });
-  };
-  const fullscreenElement = () => ownerDocument.fullscreenElement || ownerDocument.webkitFullscreenElement || null;
-  const isFullscreenActive = () => {
-    const activeElement = fullscreenElement();
-    return activeElement === container || container.contains(activeElement);
-  };
-  const setFullscreenActive = async (active) => {
+  }
+
+  isFullscreenActive() {
+    const activeElement = this.ownerDocument.fullscreenElement
+      || this.ownerDocument.webkitFullscreenElement
+      || null;
+    return activeElement === this.container || this.container.contains(activeElement);
+  }
+
+  async setFullscreenActive(active) {
     try {
       if (active) {
-        if (!isFullscreenActive()) {
-          const request = container.requestFullscreen || container.webkitRequestFullscreen;
+        if (!this.isFullscreenActive()) {
+          const request = this.container.requestFullscreen || this.container.webkitRequestFullscreen;
           if (typeof request === 'function') {
-            await Promise.resolve(request.call(container));
+            await Promise.resolve(request.call(this.container));
           }
         }
-      } else if (isFullscreenActive()) {
-        const exit = ownerDocument.exitFullscreen || ownerDocument.webkitExitFullscreen;
+      } else if (this.isFullscreenActive()) {
+        const exit = this.ownerDocument.exitFullscreen || this.ownerDocument.webkitExitFullscreen;
         if (typeof exit === 'function') {
-          await Promise.resolve(exit.call(ownerDocument));
+          await Promise.resolve(exit.call(this.ownerDocument));
         }
       }
     } finally {
-      updateFullscreenUi();
-      focus();
-      viewer.render();
+      this.updateFullscreenUi();
+      this.focus();
+      this.viewer.render();
     }
-  };
-  const toggleFullscreen = () => {
-    setFullscreenActive(!isFullscreenActive()).catch((error) => {
-      onStatus(`fullscreen unavailable: ${error?.message || error}`);
+  }
+
+  toggleFullscreen() {
+    this.setFullscreenActive(!this.isFullscreenActive()).catch((error) => {
+      this.onStatus(`fullscreen unavailable: ${error?.message || error}`);
     });
-  };
-  const setCaptureActive = (active, options = {}) => {
-    inputCaptureActive = Boolean(active);
-    if (!inputCaptureActive) {
-      input.releaseKeys();
-      pointer.buttons = 0;
+  }
+
+  setCaptureActive(active, options = {}) {
+    this.inputCaptureActive = Boolean(active);
+    if (!this.inputCaptureActive) {
+      this.input.releaseKeys();
+      this.pointer.buttons = 0;
       if (!options.keepPointerLock) {
-        releasePointerCapture();
+        this.releasePointerCapture();
       }
     } else if (options.requestPointerLock) {
-      requestPointerCapture();
+      this.requestPointerCapture();
     }
-    updateCaptureUi(inputCaptureActive);
-  };
-  const handleViewerKeyDown = (event) => {
+    this.updateCaptureUi(this.inputCaptureActive);
+  }
+
+  handleViewerKeyDown(event) {
     if (event.repeat) {
       return false;
     }
     const key = normalizedKeyboardKey(event);
     if (key === 'c') {
-      lastCapturedKey = `camera ${viewer.cycleCamera()}`;
-      updateCaptureUi(inputCaptureActive);
+      this.lastCapturedKey = `camera ${this.viewer.cycleCamera()}`;
+      this.updateCaptureUi(this.inputCaptureActive);
       return true;
     }
     if (key === 'h') {
-      lastCapturedKey = `hud ${viewer.toggleHud() ? 'on' : 'off'}`;
-      updateCaptureUi(inputCaptureActive);
+      this.lastCapturedKey = `hud ${this.viewer.toggleHud() ? 'on' : 'off'}`;
+      this.updateCaptureUi(this.inputCaptureActive);
       return true;
     }
     if (key === 't') {
-      lastCapturedKey = `time ${pacingModeLabel(togglePacingMode())}`;
-      updateCaptureUi(inputCaptureActive);
+      this.lastCapturedKey = `time ${pacingModeLabel(this.controller.togglePacingMode())}`;
+      this.updateCaptureUi(this.inputCaptureActive);
       return true;
     }
     if (key === 'f') {
-      lastCapturedKey = 'fullscreen';
-      toggleFullscreen();
-      updateCaptureUi(inputCaptureActive);
+      this.lastCapturedKey = 'fullscreen';
+      this.toggleFullscreen();
+      this.updateCaptureUi(this.inputCaptureActive);
       return true;
     }
     return false;
-  };
-  const captureKeyDown = (event) => {
-    if (!inputCaptureActive) {
+  }
+
+  captureKeyDown(event) {
+    if (!this.inputCaptureActive) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
     if (normalizedKeyboardKey(event) === 'Escape') {
-      setCaptureActive(false);
+      this.setCaptureActive(false);
       return;
     }
-    lastCapturedKey = normalizedKeyboardKey(event);
-    if (handleViewerKeyDown(event)) {
+    this.lastCapturedKey = normalizedKeyboardKey(event);
+    if (this.handleViewerKeyDown(event)) {
       return;
     }
-    if (input.hasKeyboardBinding(event)) {
-      updateCaptureUi(true);
-      input.keyDown(event);
+    if (this.input.hasKeyboardBinding(event)) {
+      this.updateCaptureUi(true);
+      this.applyInputKeyDown(event);
     }
-  };
-  const captureKeyUp = (event) => {
-    if (!inputCaptureActive) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-    if (input.hasKeyboardBinding(event)) {
-      input.keyUp(event);
-    }
-  };
-  const captureKeyPress = (event) => {
-    if (!inputCaptureActive) {
+  }
+
+  captureKeyUp(event) {
+    if (!this.inputCaptureActive) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-  };
-  const capturePointerEvent = (event) => {
-    if (!inputCaptureActive) {
+    if (this.input.hasKeyboardBinding(event)) {
+      this.input.keyUp(event);
+    }
+  }
+
+  captureKeyPress(event) {
+    if (!this.inputCaptureActive) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  capturePointerEvent(event) {
+    if (!this.inputCaptureActive) {
       return;
     }
     if (event.target?.closest?.('.rumoca-interactive-controls')) {
       return;
     }
-    updatePointerFromEvent(event);
+    this.updatePointerFromEvent(event);
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-  };
-  const captureWheel = (event) => {
-    if (!inputCaptureActive) {
+  }
+
+  captureWheel(event) {
+    if (!this.inputCaptureActive) {
       return;
     }
-    pointer.wheel += finiteNumber(event.deltaY, 0);
+    this.pointer.wheel += finiteNumber(event.deltaY, 0);
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-  };
-  const handlePointerLockChange = () => {
-    pointer.captured = ownerDocument.pointerLockElement === viewer.canvas;
-    if (!pointer.captured && inputCaptureActive && pointerLockExitReleasesCapture) {
-      setCaptureActive(false, { keepPointerLock: true });
+  }
+
+  handlePointerLockChange() {
+    this.pointer.captured = this.ownerDocument.pointerLockElement === this.viewer.canvas;
+    if (!this.pointer.captured && this.inputCaptureActive && this.pointerLockExitReleasesCapture) {
+      this.setCaptureActive(false, { keepPointerLock: true });
     } else {
-      updateCaptureUi(inputCaptureActive);
+      this.updateCaptureUi(this.inputCaptureActive);
     }
-  };
-  const releaseCapture = () => {
-    setCaptureActive(false);
-  };
-  const focus = () => {
-    container.focus({ preventScroll: true });
-  };
-  const capturePointerDown = (event) => {
+  }
+
+  focus() {
+    this.container.focus({ preventScroll: true });
+  }
+
+  capturePointerDown(event) {
     if (event.target?.closest?.('.rumoca-interactive-controls')) {
       return;
     }
-    if (container.contains(event.target)) {
-      focus();
-      if (inputCaptureActive) {
-        capturePointerEvent(event);
+    if (this.container.contains(event.target)) {
+      this.focus();
+      if (this.inputCaptureActive) {
+        this.capturePointerEvent(event);
       }
     } else {
-      releaseCapture();
+      this.setCaptureActive(false);
     }
-  };
-  const controls = ownerDocument.createElement('div');
-  controls.className = 'rumoca-interactive-controls';
-  const captureToggle = ownerDocument.createElement('button');
-  captureToggle.type = 'button';
-  captureToggle.className = 'rumoca-interactive-capture-toggle';
-  captureToggle.title = 'Capture keyboard and mouse input. Press Escape to release capture.';
-  const pacingToggle = ownerDocument.createElement('button');
-  pacingToggle.type = 'button';
-  pacingToggle.className = 'rumoca-interactive-pacing-toggle';
-  pacingToggle.title = 'Toggle simulation pacing. Shortcut: T.';
-  const speedReadout = ownerDocument.createElement('span');
-  speedReadout.className = 'rumoca-interactive-key-echo rumoca-interactive-speed-readout';
-  const fullscreenToggle = ownerDocument.createElement('button');
-  fullscreenToggle.type = 'button';
-  fullscreenToggle.className = 'rumoca-interactive-fullscreen-toggle';
-  fullscreenToggle.title = 'Toggle fullscreen. Shortcut: F.';
-  updateCaptureUi = (active) => {
-    captureToggle.textContent = active
-      ? `Release: Esc${lastCapturedKey ? ` · ${keyDisplayName(lastCapturedKey)}` : ''}${pointer.captured ? ' · mouse' : ''}`
+  }
+
+  createElement(tag, className, title = '') {
+    const element = this.ownerDocument.createElement(tag);
+    element.className = className;
+    if (tag === 'button') {
+      element.type = 'button';
+      element.title = title;
+    }
+    return element;
+  }
+
+  createElements() {
+    this.controls = this.createElement('div', 'rumoca-interactive-controls');
+    this.captureToggle = this.createElement(
+      'button',
+      'rumoca-interactive-capture-toggle',
+      'Capture input. Move to orbit, drag middle/right to pan, wheel to zoom, Escape to release.',
+    );
+    this.pacingToggle = this.createElement(
+      'button',
+      'rumoca-interactive-pacing-toggle',
+      'Toggle simulation pacing. Shortcut: T.',
+    );
+    this.speedReadout = this.createElement('span', 'rumoca-interactive-key-echo rumoca-interactive-speed-readout');
+    this.runStateReadout = this.createElement('span', 'rumoca-interactive-key-echo rumoca-interactive-run-state');
+    this.fullscreenToggle = this.createElement(
+      'button',
+      'rumoca-interactive-fullscreen-toggle',
+      'Toggle fullscreen. Shortcut: F.',
+    );
+    for (const element of [
+      this.captureToggle,
+      this.pacingToggle,
+      this.runStateReadout,
+      this.speedReadout,
+      this.fullscreenToggle,
+    ]) {
+      this.controls.appendChild(element);
+    }
+  }
+
+  updateCaptureUi(active) {
+    this.captureToggle.textContent = active
+      ? `Release: Esc${this.lastCapturedKey ? ` · ${keyDisplayName(this.lastCapturedKey)}` : ''}${this.pointer.captured ? ' · mouse' : ''}`
       : 'Capture';
-    captureToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
-    controls.classList.toggle('is-capturing', active);
-  };
-  updatePacingUi = () => {
-    const label = pacingModeLabel(pacingMode);
-    pacingToggle.textContent = label === 'fast' ? 'Fast' : 'Realtime';
-    pacingToggle.setAttribute('aria-pressed', pacingMode === 'as_fast_as_possible' ? 'true' : 'false');
-    pacingToggle.classList.toggle('is-fast', pacingMode === 'as_fast_as_possible');
-    speedReadout.textContent = `Speed ${speedRatioLabel(speedRatio)}`;
-  };
-  updateFullscreenUi = () => {
-    const active = isFullscreenActive();
-    fullscreenToggle.textContent = active ? 'Exit Fullscreen' : 'Fullscreen';
-    fullscreenToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
-    fullscreenToggle.classList.toggle('is-fullscreen', active);
-  };
-  captureToggle.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setCaptureActive(!inputCaptureActive, { requestPointerLock: true });
-    container.focus({ preventScroll: true });
+    this.captureToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
+    this.controls.classList.toggle('is-capturing', active);
+  }
+
+  updatePacingUi() {
+    const mode = this.controller.currentPacingMode();
+    const label = pacingModeLabel(mode);
+    this.pacingToggle.textContent = label === 'fast' ? 'Fast' : 'Realtime';
+    this.pacingToggle.setAttribute('aria-pressed', mode === 'as_fast_as_possible' ? 'true' : 'false');
+    this.pacingToggle.classList.toggle('is-fast', mode === 'as_fast_as_possible');
+    this.speedReadout.textContent = `Speed ${speedRatioLabel(this.controller.currentSpeedRatio())}`;
+  }
+
+  updateFullscreenUi() {
+    const active = this.isFullscreenActive();
+    this.fullscreenToggle.textContent = active ? 'Exit Fullscreen' : 'Fullscreen';
+    this.fullscreenToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
+    this.fullscreenToggle.classList.toggle('is-fullscreen', active);
+  }
+
+  updateRunStateUi(label, state = 'ready') {
+    this.runStateReadout.textContent = `State ${label}`;
+    this.runStateReadout.dataset.state = state;
+  }
+
+  installElementHandlers() {
+    this.captureToggle.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setCaptureActive(!this.inputCaptureActive, { requestPointerLock: true });
+      this.focus();
+    });
+    this.pacingToggle.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.controller.togglePacingMode();
+      this.focus();
+    });
+    this.fullscreenToggle.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.toggleFullscreen();
+    });
+  }
+
+  install() {
+    this.container.classList.add('rumoca-interactive-root');
+    ensureInteractiveRuntimeStyles(this.ownerDocument);
+    this.installElementHandlers();
+    this.updateCaptureUi(false);
+    this.updatePacingUi();
+    this.updateFullscreenUi();
+    this.updateRunStateUi('Ready', 'ready');
+    this.container.appendChild(this.controls);
+    this.container.tabIndex = 0;
+    this.viewer.canvas.tabIndex = -1;
+    this.registerListeners('addEventListener');
+    this.focus();
+  }
+
+  registerListeners(method) {
+    const h = this.handlers;
+    this.container[method]('keydown', h.keyDown);
+    this.container[method]('keyup', h.keyUp);
+    this.container[method]('pointerdown', h.focus);
+    this.viewer.canvas[method]('pointerdown', h.focus);
+    this.ownerWindow[method]('keydown', h.captureKeyDown, true);
+    this.ownerWindow[method]('keyup', h.captureKeyUp, true);
+    this.ownerWindow[method]('keypress', h.captureKeyPress, true);
+    this.ownerDocument[method]('keydown', h.captureKeyDown, true);
+    this.ownerDocument[method]('keyup', h.captureKeyUp, true);
+    this.ownerDocument[method]('keypress', h.captureKeyPress, true);
+    this.ownerDocument[method]('pointerdown', h.capturePointerDown, true);
+    this.ownerDocument[method]('pointermove', h.capturePointerEvent, true);
+    this.ownerDocument[method]('pointerup', h.capturePointerEvent, true);
+    this.ownerDocument[method]('pointercancel', h.capturePointerEvent, true);
+    this.ownerDocument[method]('wheel', h.captureWheel, this.eventCaptureOptions);
+    this.ownerDocument[method]('pointerlockchange', h.handlePointerLockChange);
+    this.ownerDocument[method]('fullscreenchange', h.updateFullscreenUi);
+    this.ownerDocument[method]('webkitfullscreenchange', h.updateFullscreenUi);
+    this.ownerWindow[method]('blur', h.releaseCapture);
+    this.ownerWindow[method]('resize', h.resize);
+  }
+
+  dispose() {
+    this.registerListeners('removeEventListener');
+    this.releasePointerCapture();
+  }
+}
+
+export async function createInteractiveSimulation(options) {
+  const {
+    THREE,
+    config = {},
+    container,
+    scriptText = '',
+    assetBaseUrl = '',
+    onStatus = () => {},
+    onError = () => {},
+  } = options || {};
+  const input = createInputRuntime(config);
+  const session = await createInteractiveSession(options || {}, onStatus);
+  const viewerSignals = new Map();
+  const pointer = createPointerState();
+  const viewer = createViewerRuntime({
+    THREE,
+    container,
+    viewerSignals,
+    assetBaseUrl,
+    pointer,
+    config,
+    input,
   });
-  pacingToggle.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    togglePacingMode();
-    container.focus({ preventScroll: true });
+  const scene = compileSceneScript(scriptText, viewer.api);
+  onStatus('initializing scene');
+  if (typeof scene.onInit === 'function') {
+    await Promise.resolve(scene.onInit(viewer.api));
+  }
+  onStatus('ready');
+  const controller = new InteractiveSimulationController({
+    config,
+    input,
+    session,
+    viewer,
+    scene,
+    pointer,
+    viewerSignals,
+    onStatus,
+    onError,
   });
-  fullscreenToggle.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    toggleFullscreen();
+  const controls = new InteractiveControls({
+    config,
+    input,
+    viewer,
+    pointer,
+    container,
+    controller,
+    onStatus,
   });
-  controls.appendChild(captureToggle);
-  controls.appendChild(pacingToggle);
-  controls.appendChild(speedReadout);
-  controls.appendChild(fullscreenToggle);
-  updateCaptureUi(false);
-  updatePacingUi();
-  updateFullscreenUi();
-  container.appendChild(controls);
-  container.tabIndex = 0;
-  viewer.canvas.tabIndex = -1;
-  container.addEventListener('keydown', keyDown);
-  container.addEventListener('keyup', keyUp);
-  container.addEventListener('pointerdown', focus);
-  viewer.canvas.addEventListener('pointerdown', focus);
-  ownerWindow.addEventListener('keydown', captureKeyDown, true);
-  ownerWindow.addEventListener('keyup', captureKeyUp, true);
-  ownerWindow.addEventListener('keypress', captureKeyPress, true);
-  ownerDocument.addEventListener('keydown', captureKeyDown, true);
-  ownerDocument.addEventListener('keyup', captureKeyUp, true);
-  ownerDocument.addEventListener('keypress', captureKeyPress, true);
-  ownerDocument.addEventListener('pointerdown', capturePointerDown, true);
-  ownerDocument.addEventListener('pointermove', capturePointerEvent, true);
-  ownerDocument.addEventListener('pointerup', capturePointerEvent, true);
-  ownerDocument.addEventListener('pointercancel', capturePointerEvent, true);
-  ownerDocument.addEventListener('wheel', captureWheel, eventCaptureOptions);
-  ownerDocument.addEventListener('pointerlockchange', handlePointerLockChange);
-  ownerDocument.addEventListener('fullscreenchange', updateFullscreenUi);
-  ownerDocument.addEventListener('webkitfullscreenchange', updateFullscreenUi);
-  ownerWindow.addEventListener('blur', releaseCapture);
-  container.focus({ preventScroll: true });
-  const resize = () => viewer.render();
-  ownerWindow.addEventListener('resize', resize);
 
   return {
-    start() {
-      if (running) {
-        return;
-      }
-      try {
-        refreshViewerSignals();
-        if (typeof scene.onFrame === 'function') {
-          scene.onFrame(viewer.api);
-        }
-        pointer.dx = 0;
-        pointer.dy = 0;
-        pointer.wheel = 0;
-        viewer.render();
-        running = true;
-        lastTime = 0;
-        raf = ownerWindow.requestAnimationFrame(tick);
-      } catch (error) {
-        reportRuntimeError(error);
-      }
-    },
-    stop() {
-      stopAnimation();
-    },
+    start: () => controller.start(),
+    stop: () => controller.stop(),
     dispose() {
-      this.stop();
-      container.removeEventListener('keydown', keyDown);
-      container.removeEventListener('keyup', keyUp);
-      container.removeEventListener('pointerdown', focus);
-      viewer.canvas.removeEventListener('pointerdown', focus);
-      ownerWindow.removeEventListener('keydown', captureKeyDown, true);
-      ownerWindow.removeEventListener('keyup', captureKeyUp, true);
-      ownerWindow.removeEventListener('keypress', captureKeyPress, true);
-      ownerDocument.removeEventListener('keydown', captureKeyDown, true);
-      ownerDocument.removeEventListener('keyup', captureKeyUp, true);
-      ownerDocument.removeEventListener('keypress', captureKeyPress, true);
-      ownerDocument.removeEventListener('pointerdown', capturePointerDown, true);
-      ownerDocument.removeEventListener('pointermove', capturePointerEvent, true);
-      ownerDocument.removeEventListener('pointerup', capturePointerEvent, true);
-      ownerDocument.removeEventListener('pointercancel', capturePointerEvent, true);
-      ownerDocument.removeEventListener('wheel', captureWheel, eventCaptureOptions);
-      ownerDocument.removeEventListener('pointerlockchange', handlePointerLockChange);
-      ownerDocument.removeEventListener('fullscreenchange', updateFullscreenUi);
-      ownerDocument.removeEventListener('webkitfullscreenchange', updateFullscreenUi);
-      ownerWindow.removeEventListener('blur', releaseCapture);
-      ownerWindow.removeEventListener('resize', resize);
-      releasePointerCapture();
+      controller.stop();
+      controls.dispose();
     },
-    reset() {
-      resetSimulation({ resetLocals: true, resetSession: true });
-    },
+    reset: () => controller.reset(),
   };
 }
