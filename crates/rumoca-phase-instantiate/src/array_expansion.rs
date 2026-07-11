@@ -2,7 +2,10 @@ use super::inheritance::resolve_effective_components_for_eval;
 use super::instantiate_component;
 use super::source_scope::component_declaration_source_scope;
 use super::type_overrides::TypeOverrideMap;
-use super::{InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components};
+use super::{
+    InstantiateContext, InstantiateError, InstantiateResult, find_class_in_tree,
+    get_effective_components,
+};
 use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -840,9 +843,16 @@ pub(super) fn index_binding_for_element(
             });
         };
         let mut new_ref = cref.clone();
+        let subscripts = project_array_selection_for_element(
+            tree,
+            parent_components,
+            new_ref.parts[pos].subs.as_deref(),
+            indices,
+            binding.span(),
+        )?;
         new_ref.parts[pos] = ast::ComponentRefPart {
             ident: new_ref.parts[pos].ident.clone(),
-            subs: Some(make_subscripts()),
+            subs: Some(subscripts),
         };
         return Ok(ast::Expression::ComponentReference(new_ref));
     }
@@ -941,25 +951,147 @@ fn index_component_reference_array_part(
     let Some(pos) = find_array_part(tree, parent_components, &cref.parts)? else {
         return Ok(None);
     };
-    let subscripts = indices
-        .iter()
-        .map(|&i| {
-            ast::Subscript::Expression(ast::Expression::Terminal {
-                terminal_type: ast::TerminalType::UnsignedInteger,
-                token: rumoca_core::Token {
-                    text: i.to_string().into(),
-                    ..rumoca_core::Token::default()
-                },
-                span: expr.span(),
-            })
-        })
-        .collect();
     let mut indexed = cref.clone();
+    let subscripts = project_array_selection_for_element(
+        tree,
+        parent_components,
+        indexed.parts[pos].subs.as_deref(),
+        indices,
+        expr.span(),
+    )?;
     indexed.parts[pos] = ast::ComponentRefPart {
         ident: indexed.parts[pos].ident.clone(),
         subs: Some(subscripts),
     };
     Ok(Some(ast::Expression::ComponentReference(indexed)))
+}
+
+fn generated_integer_subscript(value: i64, span: rumoca_core::Span) -> ast::Subscript {
+    ast::Subscript::Expression(ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedInteger,
+        token: rumoca_core::Token {
+            text: value.to_string().into(),
+            ..rumoca_core::Token::default()
+        },
+        span,
+    })
+}
+
+/// Compose an array-component element index with an existing array selection.
+///
+/// For example, the first element of `source[2:n, :]` is `source[2, :]`, not
+/// `source[1, :]`. Fixed scalar subscripts do not consume a result dimension;
+/// ranges and colons do. This is the subscript composition required by MLS
+/// section 10.5 when a non-`each` modifier is distributed over a component
+/// array.
+fn project_array_selection_for_element(
+    tree: &ast::ClassTree,
+    effective_components: &IndexMap<String, ast::Component>,
+    selection: Option<&[ast::Subscript]>,
+    result_indices: &[i64],
+    span: rumoca_core::Span,
+) -> InstantiateResult<Vec<ast::Subscript>> {
+    let Some(selection) = selection else {
+        return Ok(result_indices
+            .iter()
+            .copied()
+            .map(|index| generated_integer_subscript(index, span))
+            .collect());
+    };
+
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: &ast::ModificationEnvironment::default(),
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let mut result_index = result_indices.iter().copied();
+    let mut projected = Vec::with_capacity(selection.len().saturating_add(result_indices.len()));
+    for subscript in selection {
+        match subscript {
+            ast::Subscript::Expression(ast::Expression::Range {
+                start,
+                step,
+                end,
+                span: range_span,
+            }) => {
+                let Some(element_index) = result_index.next() else {
+                    projected.push(subscript.clone());
+                    continue;
+                };
+                let start_value = try_eval_integer_expr(&eval_ctx, start).ok_or_else(|| {
+                    InstantiateError::structural_param_error(
+                        "array modifier range".to_string(),
+                        "range start is not structurally evaluable".to_string(),
+                        *range_span,
+                    )
+                })?;
+                let step_value = step
+                    .as_deref()
+                    .map(|value| try_eval_integer_expr(&eval_ctx, value))
+                    .unwrap_or(Some(1))
+                    .ok_or_else(|| {
+                        InstantiateError::structural_param_error(
+                            "array modifier range".to_string(),
+                            "range step is not structurally evaluable".to_string(),
+                            *range_span,
+                        )
+                    })?;
+                let end_value = try_eval_integer_expr(&eval_ctx, end).ok_or_else(|| {
+                    InstantiateError::structural_param_error(
+                        "array modifier range".to_string(),
+                        "range end is not structurally evaluable".to_string(),
+                        *range_span,
+                    )
+                })?;
+                let offset = element_index.checked_sub(1).ok_or_else(|| {
+                    InstantiateError::array_dim_mismatch(
+                        "array modifier selection".to_string(),
+                        "a positive one-based element index".to_string(),
+                        element_index.to_string(),
+                        *range_span,
+                    )
+                })?;
+                let selected = offset
+                    .checked_mul(step_value)
+                    .and_then(|value| start_value.checked_add(value))
+                    .ok_or_else(|| {
+                        InstantiateError::array_dim_mismatch(
+                            "array modifier selection".to_string(),
+                            "an index representable as Integer".to_string(),
+                            "integer overflow".to_string(),
+                            *range_span,
+                        )
+                    })?;
+                let in_range = if step_value > 0 {
+                    selected <= end_value
+                } else if step_value < 0 {
+                    selected >= end_value
+                } else {
+                    false
+                };
+                if !in_range {
+                    return Err(InstantiateError::array_dim_mismatch(
+                        "array modifier selection".to_string(),
+                        format!("an element of {start_value}:{step_value}:{end_value}"),
+                        selected.to_string(),
+                        *range_span,
+                    )
+                    .into());
+                }
+                projected.push(generated_integer_subscript(selected, *range_span));
+            }
+            ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+                projected.push(result_index.next().map_or_else(
+                    || subscript.clone(),
+                    |index| generated_integer_subscript(index, span),
+                ));
+            }
+            ast::Subscript::Expression(_) => projected.push(subscript.clone()),
+        }
+    }
+    projected.extend(result_index.map(|index| generated_integer_subscript(index, span)));
+    Ok(projected)
 }
 
 fn index_array_comprehension_for_element(
@@ -1751,5 +1883,58 @@ mod tests {
             panic!("expected integer index");
         };
         assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_component_ref_modifier_composes_shifted_and_strided_range_selection() {
+        let mut parent_components = IndexMap::default();
+        parent_components.insert(
+            "source".to_string(),
+            ast::Component {
+                name: "source".to_string(),
+                shape: vec![8, 2],
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+        let binding = ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: make_token("source"),
+                subs: Some(vec![
+                    ast::Subscript::Expression(ast::Expression::Range {
+                        start: Arc::new(make_int_expr(2)),
+                        step: Some(Arc::new(make_int_expr(2))),
+                        end: Arc::new(make_int_expr(8)),
+                        span: test_span(),
+                    }),
+                    ast::Subscript::Range {
+                        token: make_token(":"),
+                    },
+                ]),
+            }],
+            def_id: None,
+            span: test_span(),
+        });
+
+        let projected = index_binding_for_element(
+            &ast::ClassTree::default(),
+            &parent_components,
+            &binding,
+            &[3],
+        )
+        .expect("range selection should be projected");
+        let ast::Expression::ComponentReference(reference) = projected else {
+            panic!("expected component reference");
+        };
+        let subscripts = reference.parts[0]
+            .subs
+            .as_ref()
+            .expect("projected subscripts");
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
+        else {
+            panic!("expected scalarized range index");
+        };
+        assert_eq!(token.text.as_ref(), "6");
+        assert!(matches!(subscripts[1], ast::Subscript::Range { .. }));
     }
 }

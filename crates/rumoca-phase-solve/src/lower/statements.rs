@@ -1,17 +1,61 @@
 use indexmap::{IndexMap, IndexSet};
-use rumoca_ir_solve::{BinaryOp, Reg, ScalarSlot};
+use rumoca_ir_solve::{BinaryOp, Reg};
 
 use super::fft::checked_fft_frequency_count;
 use super::function_projection::format_subscript_binding_key;
 use super::helpers::*;
 use super::{
     BREAK_FLAG_BINDING, LocalIndexedBinding, LowerBuilder, LowerError, RETURN_FLAG_BINDING, Scope,
-    generated_scope_key, generated_scope_key_name, size_binding_key, unsupported_at,
-    upsert_local_indexed_binding,
+    generated_scope_key, generated_scope_key_name, unsupported_at, upsert_local_indexed_binding,
 };
 
 const MAX_INLINE_WHILE_ITERS: usize = 128;
+const MAX_SYMBOLIC_FOR_VALUES: usize = 4096;
 
+/// Symbolic iteration candidates: `(index value, runtime membership guard)`.
+type SymbolicIterValues = Vec<(f64, Option<Reg>)>;
+
+/// Bounded candidate count of a symbolic for-loop interval domain.
+fn checked_symbolic_domain_count(
+    domain_start: i64,
+    domain_end: i64,
+    domain_step: i64,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let count = if domain_step > 0 && domain_start <= domain_end {
+        domain_end
+            .checked_sub(domain_start)
+            .and_then(|distance| distance.checked_add(1))
+    } else if domain_step < 0 && domain_start >= domain_end {
+        domain_start
+            .checked_sub(domain_end)
+            .and_then(|distance| distance.checked_add(1))
+    } else {
+        Some(0)
+    }
+    .and_then(|count| usize::try_from(count).ok())
+    .ok_or_else(|| unsupported_at("symbolic for-loop domain is too large", span))?;
+    if count > MAX_SYMBOLIC_FOR_VALUES {
+        return Err(unsupported_at(
+            format!(
+                "symbolic for-loop domain has {count} values; maximum is {MAX_SYMBOLIC_FOR_VALUES}"
+            ),
+            span,
+        ));
+    }
+    Ok(count)
+}
+
+/// Recursion state for `lower_for_iterations`.
+pub(super) struct ForIterationCtx {
+    pub(super) call_depth: usize,
+    /// Index-variable nesting depth into `indices`.
+    pub(super) depth: usize,
+    /// Conjunction of enclosing symbolic-iteration guards.
+    pub(super) active_guard: Option<Reg>,
+}
+
+mod compile_time;
 #[cfg(test)]
 mod tests;
 
@@ -271,7 +315,17 @@ impl<'a> LowerBuilder<'a> {
 
         let mut const_scope = self.local_const_bindings.clone();
         let returned = scope.with_frame(|scope| {
-            self.lower_for_iterations(indices, equations, scope, &mut const_scope, call_depth, 0)
+            self.lower_for_iterations(
+                indices,
+                equations,
+                scope,
+                &mut const_scope,
+                ForIterationCtx {
+                    call_depth,
+                    depth: 0,
+                    active_guard: None,
+                },
+            )
         });
         if let Some(reg) = saved_break {
             scope.insert(break_key.clone(), reg);
@@ -313,26 +367,49 @@ impl<'a> LowerBuilder<'a> {
         equations: &[rumoca_core::Statement],
         scope: &mut Scope,
         const_scope: &mut IndexMap<String, f64>,
-        call_depth: usize,
-        depth: usize,
+        ctx: ForIterationCtx,
     ) -> Result<bool, LowerError> {
+        let ForIterationCtx {
+            call_depth,
+            depth,
+            active_guard,
+        } = ctx;
         if depth >= indices.len() {
             let saved_bindings =
                 std::mem::replace(&mut self.local_const_bindings, const_scope.clone());
-            let result = self.lower_statements(equations, scope, call_depth);
+            let result = if let Some(guard) = active_guard {
+                self.lower_guarded_for_body(equations, scope, call_depth, guard)
+            } else {
+                self.lower_statements(equations, scope, call_depth)
+            };
             self.local_const_bindings = saved_bindings;
             return result;
         }
 
         let iter = &indices[depth];
-        let iter_values = self.eval_for_index_values(&iter.range, const_scope)?;
+        let iter_values = match self.eval_for_index_values(&iter.range, const_scope) {
+            Ok(values) => values
+                .into_iter()
+                .map(|value| (value, None))
+                .collect::<Vec<_>>(),
+            Err(compile_time_error) => self
+                .lower_symbolic_for_index_values(&iter.range, scope, const_scope, call_depth)?
+                .ok_or(compile_time_error)?,
+        };
         if iter_values.is_empty() {
             return Ok(false);
         }
 
-        for value in iter_values {
+        for (value, value_guard) in iter_values {
             let iter_span = self.statement_expr_span(&iter.range)?;
             let iter_reg = self.emit_const_at(value, iter_span)?;
+            let iteration_guard = match (active_guard, value_guard) {
+                (Some(outer), Some(inner)) => {
+                    Some(self.emit_binary_at(BinaryOp::And, outer, inner, iter_span)?)
+                }
+                (Some(guard), None) | (None, Some(guard)) => Some(guard),
+                (None, None) => None,
+            };
             let returned = scope.with_frame(|scope| {
                 scope.insert_scoped(generated_scope_key(&iter.ident), iter_reg)?;
                 const_scope.insert(iter.ident.clone(), value);
@@ -341,8 +418,11 @@ impl<'a> LowerBuilder<'a> {
                     equations,
                     scope,
                     const_scope,
-                    call_depth,
-                    depth + 1,
+                    ForIterationCtx {
+                        call_depth,
+                        depth: depth + 1,
+                        active_guard: iteration_guard,
+                    },
                 );
                 const_scope.shift_remove(&iter.ident);
                 result
@@ -355,353 +435,157 @@ impl<'a> LowerBuilder<'a> {
         Ok(false)
     }
 
-    pub(super) fn eval_for_index_values(
-        &self,
+    fn lower_guarded_for_body(
+        &mut self,
+        equations: &[rumoca_core::Statement],
+        scope: &mut Scope,
+        call_depth: usize,
+        guard: Reg,
+    ) -> Result<bool, LowerError> {
+        let span = equations
+            .first()
+            .map(|statement| self.statement_source_span(statement))
+            .transpose()?
+            .or(self.source_context_span)
+            .ok_or_else(|| LowerError::UnspannedContractViolation {
+                reason: "guarded for-loop body has no source span".to_string(),
+            })?;
+        let entry_scope = scope.clone();
+        let entry_indexed = self.local_indexed_bindings.clone();
+        let (body_scope, body_indexed) = self.with_local_lower_frame(|builder| {
+            let mut body_scope = entry_scope.clone();
+            let _returned = builder.lower_statements(equations, &mut body_scope, call_depth)?;
+            Ok((body_scope, builder.local_indexed_bindings.clone()))
+        })?;
+
+        *scope = merge_while_iteration_scope(self, guard, span, &entry_scope, &body_scope)?;
+        self.merge_branch_indexed_bindings(
+            &entry_indexed,
+            &[guard],
+            &[span],
+            &[body_indexed],
+            &entry_indexed,
+            span,
+        )?;
+        // A return/break inside a runtime-guarded iteration is represented by
+        // the merged control flag.  It must not stop compile-time unrolling of
+        // the remaining possible iterations.
+        Ok(false)
+    }
+
+    fn lower_symbolic_for_index_values(
+        &mut self,
         range: &rumoca_core::Expression,
+        scope: &Scope,
         const_scope: &IndexMap<String, f64>,
-    ) -> Result<Vec<f64>, LowerError> {
-        match range {
-            rumoca_core::Expression::Range {
-                start,
-                step,
-                end,
-                span,
-            } => {
-                let step_span = step.as_deref().and_then(rumoca_core::Expression::span);
-                let start = self.eval_compile_time_int(start, const_scope, "for range start")?;
-                let end = self.eval_compile_time_int(end, const_scope, "for range end")?;
-                let step = if let Some(step_expr) = step.as_ref() {
-                    self.eval_compile_time_int(step_expr, const_scope, "for range step")?
-                } else {
-                    1
-                };
-                if step == 0 {
-                    return Err(unsupported_at(
-                        "for range step cannot be zero",
-                        step_span.unwrap_or(*span),
-                    ));
-                }
-
-                Ok(build_range_values(start, end, step))
+        call_depth: usize,
+    ) -> Result<Option<SymbolicIterValues>, LowerError> {
+        let rumoca_core::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } = range
+        else {
+            return Ok(None);
+        };
+        let Some((start_min, start_max)) = self.integer_expr_interval(start, const_scope)? else {
+            return Ok(None);
+        };
+        let Some((end_min, end_max)) = self.integer_expr_interval(end, const_scope)? else {
+            return Ok(None);
+        };
+        let step_span = step.as_deref().and_then(rumoca_core::Expression::span);
+        let step = if let Some(step_expr) = step {
+            match self.eval_compile_time_int(step_expr, const_scope, "for range step") {
+                Ok(step) => step,
+                Err(_) => return Ok(None),
             }
-            rumoca_core::Expression::Array { elements, .. } => {
-                let mut values = crate::lower_vec_with_capacity(
-                    elements.len(),
-                    "for range array values",
-                    self.statement_expr_span(range)?,
-                )?;
-                for element in elements {
-                    let v = self.eval_compile_time_int(
-                        element,
-                        const_scope,
-                        "for range array element",
-                    )?;
-                    values.push(v as f64);
-                }
-                Ok(values)
-            }
-            _ => {
-                let value =
-                    self.eval_compile_time_int(range, const_scope, "for range expression")?;
-                Ok(vec![value as f64])
-            }
-        }
-    }
-
-    pub(super) fn eval_compile_time_int(
-        &self,
-        expr: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-        context: &str,
-    ) -> Result<i64, LowerError> {
-        self.eval_compile_time_int_with_context_span(expr, const_scope, context, None)
-    }
-
-    pub(super) fn eval_compile_time_int_at(
-        &self,
-        expr: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-        context: &str,
-        context_span: rumoca_core::Span,
-    ) -> Result<i64, LowerError> {
-        self.eval_compile_time_int_with_context_span(
-            expr,
-            const_scope,
-            context,
-            (!context_span.is_dummy()).then_some(context_span),
-        )
-    }
-
-    fn eval_compile_time_int_with_context_span(
-        &self,
-        expr: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-        context: &str,
-        context_span: Option<rumoca_core::Span>,
-    ) -> Result<i64, LowerError> {
-        let value = self.eval_compile_time_expr(expr, const_scope)?;
-        let span = expr.span().or(context_span);
-        checked_compile_time_i64(value, context, span)
-    }
-
-    pub(super) fn eval_compile_time_expr(
-        &self,
-        expr: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        match expr {
-            rumoca_core::Expression::Literal { value: lit, .. } => eval_literal(lit),
-            rumoca_core::Expression::VarRef {
-                name,
-                subscripts,
-                span,
-                ..
-            } => self.eval_compile_time_var_ref(name, subscripts, *span, const_scope),
-            rumoca_core::Expression::Unary { op, rhs, .. } => {
-                self.eval_compile_time_unary(op, rhs, const_scope)
-            }
-            rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-                self.eval_compile_time_binary(op, lhs, rhs, expr, const_scope)
-            }
-            rumoca_core::Expression::If {
-                branches,
-                else_branch,
-                ..
-            } => self.eval_compile_time_if(branches, else_branch, const_scope),
-            rumoca_core::Expression::BuiltinCall {
-                function,
-                args,
-                span,
-            } => self.eval_compile_time_builtin(*function, args, *span, const_scope),
-            rumoca_core::Expression::FunctionCall {
-                name, args, span, ..
-            } => self.eval_compile_time_function_call(name, args, *span, const_scope),
-            rumoca_core::Expression::ArrayComprehension { .. }
-            | rumoca_core::Expression::Tuple { .. }
-            | rumoca_core::Expression::FieldAccess { .. }
-            | rumoca_core::Expression::Index { .. }
-            | rumoca_core::Expression::Range { .. }
-            | rumoca_core::Expression::Array { .. }
-            | rumoca_core::Expression::Empty { .. } => Err(unsupported_at(
-                "unsupported expression in for-loop range",
-                self.statement_expr_span(expr)?,
-            )),
-        }
-    }
-
-    pub(super) fn eval_compile_time_var_ref(
-        &self,
-        name: &rumoca_core::Reference,
-        subscripts: &[rumoca_core::Subscript],
-        span: rumoca_core::Span,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        if subscripts.is_empty()
-            && let Some(value) = const_scope.get(name.as_str())
-        {
-            return Ok(*value);
-        }
-        let key = compile_time_var_key(name, subscripts, const_scope, span)?;
-        if let Some(value) = self.structural_bindings.get(key.as_str()) {
-            return Ok(*value);
-        }
-        if let Some(start) = self
-            .variable_starts
-            .and_then(|starts| starts.get(key.as_str()))
-            .filter(|start| !start_metadata_refers_to_key(start, key.as_str()))
-            && let Ok(value) = self.eval_compile_time_expr(start, const_scope)
-        {
-            return Ok(value);
-        }
-        match self.layout.binding(key.as_str()) {
-            Some(ScalarSlot::Constant(value)) => Ok(value),
-            Some(_) | None => Err(unsupported_at(
-                format!("for-loop range expression requires compile-time constant `{key}`"),
-                span,
-            )),
-        }
-    }
-
-    pub(super) fn eval_compile_time_unary(
-        &self,
-        op: &rumoca_core::OpUnary,
-        rhs: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        let value = self.eval_compile_time_expr(rhs, const_scope)?;
-        match op {
-            rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Ok(-value),
-            rumoca_core::OpUnary::Plus
-            | rumoca_core::OpUnary::DotPlus
-            | rumoca_core::OpUnary::Empty => Ok(value),
-            rumoca_core::OpUnary::Not => Ok(if value == 0.0 { 1.0 } else { 0.0 }),
-        }
-    }
-
-    pub(super) fn eval_compile_time_binary(
-        &self,
-        op: &rumoca_core::OpBinary,
-        lhs: &rumoca_core::Expression,
-        rhs: &rumoca_core::Expression,
-        expr: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        let l = self.eval_compile_time_expr(lhs, const_scope)?;
-        let r = self.eval_compile_time_expr(rhs, const_scope)?;
-        match op {
-            rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Ok(l + r),
-            rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Ok(l - r),
-            rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Ok(l * r),
-            rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => Ok(l / r),
-            rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => Ok(l.powf(r)),
-            rumoca_core::OpBinary::Lt => Ok(bool_to_f64(l < r)),
-            rumoca_core::OpBinary::Le => Ok(bool_to_f64(l <= r)),
-            rumoca_core::OpBinary::Gt => Ok(bool_to_f64(l > r)),
-            rumoca_core::OpBinary::Ge => Ok(bool_to_f64(l >= r)),
-            rumoca_core::OpBinary::Eq => Ok(bool_to_f64((l - r).abs() < f64::EPSILON)),
-            rumoca_core::OpBinary::Neq => Ok(bool_to_f64((l - r).abs() >= f64::EPSILON)),
-            rumoca_core::OpBinary::And => Ok(bool_to_f64(l != 0.0 && r != 0.0)),
-            rumoca_core::OpBinary::Or => Ok(bool_to_f64(l != 0.0 || r != 0.0)),
-            rumoca_core::OpBinary::Assign | rumoca_core::OpBinary::Empty => Err(unsupported_at(
-                "unsupported operator in for-loop range expression",
-                self.statement_expr_span(expr)?,
-            )),
-        }
-    }
-
-    pub(super) fn eval_compile_time_if(
-        &self,
-        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-        else_branch: &rumoca_core::Expression,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        for (cond, value) in branches {
-            let condition = self.eval_compile_time_expr(cond, const_scope)?;
-            if condition != 0.0 {
-                return self.eval_compile_time_expr(value, const_scope);
-            }
-        }
-        self.eval_compile_time_expr(else_branch, const_scope)
-    }
-
-    pub(super) fn eval_compile_time_builtin(
-        &self,
-        function: rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-        span: rumoca_core::Span,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        if matches!(function, rumoca_core::BuiltinFunction::Size) {
-            return self.eval_compile_time_size(args, span, const_scope);
-        }
-        let arg0 = eval_builtin_arg(self, args, 0, const_scope)?;
-        match function {
-            rumoca_core::BuiltinFunction::Abs => Ok(arg0.abs()),
-            rumoca_core::BuiltinFunction::Sign => Ok(arg0.signum()),
-            rumoca_core::BuiltinFunction::Sqrt => Ok(arg0.sqrt()),
-            rumoca_core::BuiltinFunction::Floor | rumoca_core::BuiltinFunction::Integer => {
-                Ok(arg0.floor())
-            }
-            rumoca_core::BuiltinFunction::Ceil => Ok(arg0.ceil()),
-            rumoca_core::BuiltinFunction::Min => {
-                let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
-                Ok(arg0.min(arg1))
-            }
-            rumoca_core::BuiltinFunction::Max => {
-                let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
-                Ok(arg0.max(arg1))
-            }
-            rumoca_core::BuiltinFunction::Mod => {
-                let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
-                if arg1 == 0.0 {
-                    return Err(unsupported_at(
-                        "mod() denominator cannot be zero in for-loop range expression",
-                        args.get(1)
-                            .and_then(rumoca_core::Expression::span)
-                            .unwrap_or(span),
-                    ));
-                }
-                Ok(arg0 - (arg0 / arg1).floor() * arg1)
-            }
-            rumoca_core::BuiltinFunction::Div => {
-                let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
-                if arg1 == 0.0 {
-                    return Err(unsupported_at(
-                        "div() denominator cannot be zero in for-loop range expression",
-                        args.get(1)
-                            .and_then(rumoca_core::Expression::span)
-                            .unwrap_or(span),
-                    ));
-                }
-                Ok((arg0 / arg1).floor())
-            }
-            rumoca_core::BuiltinFunction::Rem => {
-                let arg1 = eval_builtin_arg(self, args, 1, const_scope)?;
-                if arg1 == 0.0 {
-                    return Err(unsupported_at(
-                        "rem() denominator cannot be zero in for-loop range expression",
-                        args.get(1)
-                            .and_then(rumoca_core::Expression::span)
-                            .unwrap_or(span),
-                    ));
-                }
-                Ok(arg0 % arg1)
-            }
-            _ => Err(unsupported_at(
-                format!(
-                    "builtin `{}` is unsupported in for-loop range expression",
-                    function.name()
-                ),
-                span,
-            )),
-        }
-    }
-
-    pub(super) fn eval_compile_time_size(
-        &self,
-        args: &[rumoca_core::Expression],
-        span: rumoca_core::Span,
-        const_scope: &IndexMap<String, f64>,
-    ) -> Result<f64, LowerError> {
-        let dim = if let Some(dim_expr) = args.get(1) {
-            positive_size_dimension(
-                self.eval_compile_time_int(dim_expr, const_scope, "size dimension")?,
-                self.statement_expr_or_context_span(dim_expr, span)?,
-            )?
         } else {
             1
         };
-        let Some(expr) = args.first() else {
-            return Err(unsupported_at("size() requires an array expression", span));
-        };
-        let rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } = expr
-        else {
-            let dims = self.infer_expr_dims(expr, &Scope::new())?;
-            return dims
-                .get(dim - 1)
-                .copied()
-                .map(|value| value as f64)
-                .ok_or_else(|| {
-                    unsupported_at(
-                        format!(
-                            "size() in for-loop range requires known expression dimension {dim}"
-                        ),
-                        expr.span().unwrap_or(span),
-                    )
-                });
-        };
-        if !subscripts.is_empty() {
-            return Ok(1.0);
+        if step == 0 {
+            return Err(unsupported_at(
+                "for range step cannot be zero",
+                step_span.unwrap_or(*span),
+            ));
         }
-        let key = size_binding_key(name.as_str(), dim);
-        self.structural_bindings
-            .get(key.as_str())
-            .copied()
-            .ok_or_else(|| LowerError::ForRangeUnknownDimension {
-                name: name.as_str().to_string(),
-            })
+
+        let (domain_start, domain_end, domain_step) = if step > 0 {
+            (start_min, end_max, 1)
+        } else {
+            (start_max, end_min, -1)
+        };
+        let count =
+            checked_symbolic_domain_count(domain_start, domain_end, domain_step, *span)?;
+
+        let start_reg = self.lower_expr(start, scope, call_depth)?;
+        let end_reg = self.lower_expr(end, scope, call_depth)?;
+        let mut values =
+            crate::lower_vec_with_capacity(count, "symbolic for-loop candidate count", *span)?;
+        for candidate in build_range_values(domain_start, domain_end, domain_step) {
+            let candidate_reg = self.emit_const_at(candidate, *span)?;
+            let within_start = if step > 0 {
+                self.emit_compare_at(
+                    rumoca_ir_solve::CompareOp::Ge,
+                    candidate_reg,
+                    start_reg,
+                    *span,
+                )?
+            } else {
+                self.emit_compare_at(
+                    rumoca_ir_solve::CompareOp::Le,
+                    candidate_reg,
+                    start_reg,
+                    *span,
+                )?
+            };
+            let within_end = if step > 0 {
+                self.emit_compare_at(
+                    rumoca_ir_solve::CompareOp::Le,
+                    candidate_reg,
+                    end_reg,
+                    *span,
+                )?
+            } else {
+                self.emit_compare_at(
+                    rumoca_ir_solve::CompareOp::Ge,
+                    candidate_reg,
+                    end_reg,
+                    *span,
+                )?
+            };
+            let mut guard = self.emit_binary_at(BinaryOp::And, within_start, within_end, *span)?;
+            if step.unsigned_abs() != 1 {
+                let aligned =
+                    self.emit_step_alignment_guard(candidate_reg, start_reg, step, *span)?;
+                guard = self.emit_binary_at(BinaryOp::And, guard, aligned, *span)?;
+            }
+            values.push((candidate, Some(guard)));
+        }
+        Ok(Some(values))
+    }
+
+    /// Emit a guard that `candidate` is `start + k*|step|` for integer `k`.
+    fn emit_step_alignment_guard(
+        &mut self,
+        candidate_reg: Reg,
+        start_reg: Reg,
+        step: i64,
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        let delta = if step > 0 {
+            self.emit_binary_at(BinaryOp::Sub, candidate_reg, start_reg, span)?
+        } else {
+            self.emit_binary_at(BinaryOp::Sub, start_reg, candidate_reg, span)?
+        };
+        let modulus = self.emit_const_at(step.unsigned_abs() as f64, span)?;
+        let quotient = self.emit_binary_at(BinaryOp::Div, delta, modulus, span)?;
+        let quotient_floor = self.emit_unary_at(rumoca_ir_solve::UnaryOp::Floor, quotient, span)?;
+        let multiple = self.emit_binary_at(BinaryOp::Mul, quotient_floor, modulus, span)?;
+        let remainder = self.emit_binary_at(BinaryOp::Sub, delta, multiple, span)?;
+        let zero = self.emit_const_at(0.0, span)?;
+        self.emit_compare_at(rumoca_ir_solve::CompareOp::Eq, remainder, zero, span)
     }
 
     /// Returns `true` when lowering should stop due to `return`.
@@ -1873,34 +1757,6 @@ fn checked_usize_dims_to_i64(
         })?);
     }
     Ok(converted)
-}
-
-fn checked_compile_time_i64(
-    value: f64,
-    context: &str,
-    span: Option<rumoca_core::Span>,
-) -> Result<i64, LowerError> {
-    if !value.is_finite() {
-        return Err(unsupported_with_optional_span(
-            format!("{context} is not finite"),
-            span,
-        ));
-    }
-    let rounded = value.round();
-    if (rounded - value).abs() > 1e-9 {
-        return Err(unsupported_with_optional_span(
-            format!("{context} must evaluate to an integer"),
-            span,
-        ));
-    }
-    if rounded < i64::MIN as f64 || rounded >= i64::MAX as f64 {
-        return Err(unsupported_with_optional_span(
-            format!("{context} overflows i64"),
-            span,
-        ));
-    }
-    // Bounds and integrality are checked above; Rust has no TryFrom<f64>.
-    Ok(rounded as i64)
 }
 
 fn unsupported_with_optional_span(

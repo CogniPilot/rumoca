@@ -200,6 +200,108 @@ fn test_record_function_equation_expands_to_declared_fields() {
 }
 
 #[test]
+fn test_record_function_equation_skips_zero_sized_fields() {
+    let mut flat_model = flat::Model::new();
+    let alpha = primitive_variable_with_parts(
+        "R.alpha",
+        vec![("R", vec![]), ("alpha", vec![])],
+        rumoca_core::DefId::new(101),
+    );
+    flat_model.variables.insert(alpha.name.clone(), alpha);
+
+    let mut constructor = rumoca_core::Function::new("MarkerRecord", fixture_span());
+    constructor.is_constructor = true;
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("alpha", "Real", fixture_span())
+            .with_def_id(rumoca_core::DefId::new(101)),
+    );
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("interfaceMarker", "Real", fixture_span())
+            .with_dims(vec![0])
+            .with_def_id(rumoca_core::DefId::new(102)),
+    );
+    flat_model
+        .functions
+        .insert(constructor.name.clone(), constructor);
+
+    let mut function = rumoca_core::Function::new("markerIdentity", fixture_span());
+    let mut output = rumoca_core::FunctionParam::new("result", "MarkerRecord", fixture_span());
+    output.type_class = Some(rumoca_core::ClassType::Record);
+    function.add_output(output);
+    flat_model.functions.insert(function.name.clone(), function);
+
+    let equation = flat::Equation::new(
+        residual(
+            var_ref_with_parts("R", vec![("R", vec![])]),
+            call("markerIdentity"),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "body".to_string(),
+        },
+    );
+
+    let expanded = expand_record_field_equation(&equation, &flat_model)
+        .unwrap()
+        .expect("non-empty record fields should still expand");
+    assert_eq!(expanded.len(), 1);
+    assert!(format!("{:?}", expanded[0].residual).contains("R.alpha"));
+}
+
+#[test]
+fn test_record_function_equation_expands_nested_flattened_record_fields() {
+    let mut flat_model = flat::Model::new();
+    let q_def = rumoca_core::DefId::new(303);
+    let q = primitive_variable_with_dims_and_parts(
+        "R.rotation.q",
+        vec![4],
+        vec![("R", vec![]), ("rotation", vec![]), ("q", vec![])],
+        q_def,
+    );
+    flat_model.variables.insert(q.name.clone(), q);
+    flat_model
+        .symbol_ancestry
+        .insert(q_def, vec![rumoca_core::DefId::new(203)]);
+
+    let mut constructor = rumoca_core::Function::new("PoseRecord", fixture_span());
+    constructor.is_constructor = true;
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("rotation_q", "Real", fixture_span())
+            .with_dims(vec![4])
+            .with_def_id(rumoca_core::DefId::new(203)),
+    );
+    flat_model
+        .functions
+        .insert(constructor.name.clone(), constructor);
+
+    let mut function = rumoca_core::Function::new("poseIdentity", fixture_span());
+    let mut output = rumoca_core::FunctionParam::new("result", "PoseRecord", fixture_span());
+    output.type_class = Some(rumoca_core::ClassType::Record);
+    function.add_output(output);
+    flat_model.functions.insert(function.name.clone(), function);
+
+    let equation = flat::Equation::new(
+        residual(
+            var_ref_with_parts("R", vec![("R", vec![])]),
+            call("poseIdentity"),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "body".to_string(),
+        },
+    );
+
+    let expanded = expand_record_field_equation(&equation, &flat_model)
+        .unwrap()
+        .expect("nested primitive record field should expand");
+    assert_eq!(expanded.len(), 1);
+    assert_eq!(expanded[0].scalar_count, 4);
+    let rendered = format!("{:?}", expanded[0].residual);
+    assert!(rendered.contains("rotation"));
+    assert!(rendered.contains("field: \"q\""));
+}
+
+#[test]
 fn test_record_function_equation_expands_array_fields_by_component_ref() {
     let mut flat_model = flat::Model::new();
     for (name, parts, def_id) in [

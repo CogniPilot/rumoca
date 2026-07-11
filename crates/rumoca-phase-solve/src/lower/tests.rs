@@ -1115,6 +1115,8 @@ fn function_param(name: &str) -> rumoca_core::FunctionParam {
         dims: vec![],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }
@@ -1129,6 +1131,8 @@ fn function_param_with_dims(name: &str, dims: &[i64]) -> rumoca_core::FunctionPa
         dims: dims.to_vec(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }

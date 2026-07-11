@@ -744,6 +744,23 @@ fn validates_flat_boundary_allows_constructors_without_body() {
 }
 
 #[test]
+fn record_function_signature_keeps_constructor_as_structural_dependency() {
+    let mut function = rumoca_core::Function::new("Pkg.makePose", Span::DUMMY);
+    function.add_output(
+        rumoca_core::FunctionParam::new("pose", "Pkg.Pose", test_span())
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+
+    let dependencies = collect_function_dep_requests(&function);
+    assert!(
+        dependencies
+            .iter()
+            .any(|dependency| dependency.name == "Pkg.Pose"),
+        "record constructors carry field identity and shape metadata needed after flattening"
+    );
+}
+
+#[test]
 fn validates_flat_boundary_allows_output_binding_functions() {
     let mut flat = flat::Model::new();
     let mut function =

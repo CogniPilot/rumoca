@@ -776,6 +776,14 @@ pub struct FunctionParam {
     pub dims: Vec<i64>,
     pub shape_expr: Vec<Subscript>,
     pub default: Option<Expression>,
+    /// Optional lower bound from the parameter declaration (for example
+    /// `Integer i(min=1)`).  Function lowering must retain this metadata so
+    /// finite runtime integer domains can be lowered without an interpreter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<Expression>,
+    /// Optional upper bound from the parameter declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<Expression>,
     pub description: Option<String>,
 }
 
@@ -790,6 +798,8 @@ impl FunctionParam {
             dims: Vec::new(),
             shape_expr: Vec::new(),
             default: None,
+            min: None,
+            max: None,
             description: None,
         }
     }
@@ -806,6 +816,12 @@ impl FunctionParam {
 
     pub fn with_span(mut self, span: Span) -> Self {
         self.span = span;
+        self
+    }
+
+    pub fn with_bounds(mut self, min: Option<Expression>, max: Option<Expression>) -> Self {
+        self.min = min;
+        self.max = max;
         self
     }
 

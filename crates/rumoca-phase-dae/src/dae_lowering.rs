@@ -75,12 +75,11 @@ pub(crate) fn record_constructor_fields_from_metadata<'a, I>(
 where
     I: IntoIterator<Item = (&'a rumoca_core::VarName, &'a rumoca_core::Function)>,
 {
+    // Record params carry their canonical qualified type name (resolved at
+    // flatten function metadata collection), so the constructor lookup is exact.
     functions
         .into_iter()
-        .find(|(name, function)| {
-            function.is_constructor
-                && rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
-        })
+        .find(|(name, function)| function.is_constructor && name.as_str() == type_name)
         .map(|(_, function)| function.inputs.clone())
         .filter(|fields| !fields.is_empty())
 }
@@ -143,6 +142,8 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError>
                     dims: vec![],
                     shape_expr: Vec::new(),
                     default: None,
+                    min: None,
+                    max: None,
                     description: None,
                 });
             }

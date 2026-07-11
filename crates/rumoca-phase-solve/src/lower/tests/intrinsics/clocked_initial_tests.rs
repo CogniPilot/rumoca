@@ -744,6 +744,8 @@ fn lower_function_local_structural_symmetric_orientation() {
             ],
             span: test_span(),
         }),
+        min: None,
+        max: None,
         description: None,
     });
     function.locals.push(rumoca_core::FunctionParam {
@@ -766,6 +768,8 @@ fn lower_function_local_structural_symmetric_orientation() {
             is_constructor: false,
             span: test_span(),
         }),
+        min: None,
+        max: None,
         description: None,
     });
     function.body = vec![

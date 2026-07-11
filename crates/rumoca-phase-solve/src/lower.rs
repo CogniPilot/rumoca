@@ -386,6 +386,10 @@ struct LowerBuilder<'a> {
     known_empty_local_arrays: IndexSet<String>,
     guarded_uninitialized_locals: IndexSet<String>,
     local_const_bindings: IndexMap<String, f64>,
+    /// Finite declared domains for runtime Integer function parameters.
+    /// These are scoped with an inlined function call and are used to lower
+    /// dynamic `for` ranges to guarded straight-line solve IR.
+    local_integer_bounds: IndexMap<String, (i64, i64)>,
     function_closures: IndexMap<ComponentReferenceKey, FunctionClosure>,
     is_initial_mode: bool,
     value_mode: ValueMode,
@@ -486,6 +490,7 @@ impl<'a> LowerBuilder<'a> {
             known_empty_local_arrays: IndexSet::new(),
             guarded_uninitialized_locals: IndexSet::new(),
             local_const_bindings: IndexMap::new(),
+            local_integer_bounds: IndexMap::new(),
             function_closures: IndexMap::new(),
             is_initial_mode: metadata.is_initial_mode,
             value_mode: ValueMode::Current,
@@ -553,6 +558,7 @@ impl<'a> LowerBuilder<'a> {
             known_empty_local_arrays: IndexSet::new(),
             guarded_uninitialized_locals: self.guarded_uninitialized_locals.clone(),
             local_const_bindings: self.local_const_bindings.clone(),
+            local_integer_bounds: self.local_integer_bounds.clone(),
             function_closures: self.function_closures.clone(),
             is_initial_mode: self.is_initial_mode,
             value_mode: self.value_mode,

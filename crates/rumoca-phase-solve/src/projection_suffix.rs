@@ -46,6 +46,37 @@ pub(crate) fn parse_output_projection_suffix(suffix: &str) -> Option<OutputProje
     })
 }
 
+pub(crate) fn record_output_field_param<'a>(
+    functions: &'a indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    output: &'a rumoca_core::FunctionParam,
+    field_path: &str,
+) -> Option<&'a rumoca_core::FunctionParam> {
+    if output.type_class != Some(rumoca_core::ClassType::Record) || field_path.is_empty() {
+        return None;
+    }
+    let mut record_type = output.type_name.as_str();
+    let fields = crate::path_utils::segments(field_path);
+    let mut selected = None;
+    for (index, field_name) in fields.iter().enumerate() {
+        let constructor = functions.get(&rumoca_core::VarName::new(record_type))?;
+        if !constructor.is_constructor {
+            return None;
+        }
+        let field = constructor
+            .inputs
+            .iter()
+            .find(|input| input.name == *field_name)?;
+        selected = Some(field);
+        if index + 1 < fields.len() {
+            if field.type_class != Some(rumoca_core::ClassType::Record) {
+                return None;
+            }
+            record_type = field.type_name.as_str();
+        }
+    }
+    selected
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

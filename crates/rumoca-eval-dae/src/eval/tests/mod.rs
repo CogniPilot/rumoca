@@ -81,6 +81,28 @@ fn dae_var(name: &str) -> rumoca_core::Expression {
 }
 
 #[test]
+fn array_evaluation_supports_partial_matrix_var_ref_indexing() {
+    let mut env = VarEnv::new();
+    env.dims = std::sync::Arc::new(IndexMap::from([("waypoints".to_string(), vec![3, 2])]));
+    set_array_entries(
+        &mut env,
+        "waypoints",
+        &[3, 2],
+        &[0.0, 1.0, 10.0, 11.0, 20.0, 21.0],
+    );
+    let row = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("waypoints"),
+        subscripts: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_values::<f64>(&row, &env).unwrap(),
+        vec![10.0, 11.0]
+    );
+}
+
+#[test]
 fn var_scope_child_falls_through_and_shadows_without_parent_copy() {
     let mut parent = VarScope::new();
     parent.insert("a".to_string(), 1.0);
@@ -1188,6 +1210,12 @@ fn test_eval_array_values_expands_range() {
     };
     let descending = rumoca_core::Expression::Range {
         start: Box::new(int_lit(4)),
+        step: Some(Box::new(int_lit(-1))),
+        end: Box::new(int_lit(1)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let empty = rumoca_core::Expression::Range {
+        start: Box::new(int_lit(4)),
         step: None,
         end: Box::new(int_lit(1)),
         span: rumoca_core::Span::DUMMY,
@@ -1195,8 +1223,10 @@ fn test_eval_array_values_expands_range() {
 
     let up = eval_array_values::<f64>(&ascending, &env);
     let down = eval_array_values::<f64>(&descending, &env);
+    let empty_values = eval_array_values::<f64>(&empty, &env);
     assert_eq!(up, Ok(vec![1.0, 2.0, 3.0, 4.0]));
     assert_eq!(down, Ok(vec![4.0, 3.0, 2.0, 1.0]));
+    assert_eq!(empty_values, Ok(Vec::new()));
 }
 
 fn user_function_with_default_output(name: &str, output_value: f64) -> rumoca_core::Function {

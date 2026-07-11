@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use rumoca_ir_dae as dae;
 
 use crate::projection_maps::{
-    build_component_index_projection_map, build_function_output_projection_map, output_scalar_count,
+    RecordFieldProjectionMap, build_component_index_projection_map,
+    build_function_output_projection_map, build_record_field_projection_map, output_scalar_count,
 };
 
 mod projection;
@@ -261,6 +262,7 @@ pub struct IndexProjectionContext<'a> {
     complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     component_index_map: &'a HashMap<String, HashMap<usize, String>>,
     function_output_index_map: &'a HashMap<String, HashMap<usize, String>>,
+    record_field_projection_map: &'a RecordFieldProjectionMap,
 }
 
 impl<'a> IndexProjectionContext<'a> {
@@ -274,6 +276,7 @@ impl<'a> IndexProjectionContext<'a> {
             complex_fields: self.complex_fields,
             component_index_map: self.component_index_map,
             function_output_index_map: self.function_output_index_map,
+            record_field_projection_map: self.record_field_projection_map,
         }
     }
 
@@ -812,14 +815,65 @@ impl<'a> IndexProjectionContext<'a> {
                 subscripts: subscripts.clone(),
                 span: *span,
             }),
-            Expression::FieldAccess { base, field, .. } => {
+            Expression::FieldAccess { base, field, span } => {
                 if let Some(projected) = self.project_record_array_member_slice(base, field)? {
                     return Ok(projected);
                 }
-                Ok(expr.clone())
+                if let Some(projected) = self.project_record_function_field(expr) {
+                    return Ok(projected);
+                }
+                if self.i == 0 {
+                    return Ok(expr.clone());
+                }
+                Ok(Expression::Index {
+                    base: Box::new(expr.clone()),
+                    subscripts: vec![generated_index_subscript(
+                        self.i,
+                        *span,
+                        "structural record-field projection subscript",
+                    )?],
+                    span: *span,
+                })
             }
             _ => Ok(expr.clone()),
         }
+    }
+
+    fn project_record_function_field(&self, expr: &Expression) -> Option<Expression> {
+        fn selected_call<'a>(
+            expr: &'a Expression,
+            fields: &mut Vec<&'a str>,
+        ) -> Option<(&'a Reference, &'a [Expression], bool, Span)> {
+            match expr {
+                Expression::FieldAccess { base, field, .. } => {
+                    let call = selected_call(base, fields)?;
+                    fields.push(field);
+                    Some(call)
+                }
+                Expression::FunctionCall {
+                    name,
+                    args,
+                    is_constructor,
+                    span,
+                } if !is_constructor => Some((name, args, *is_constructor, *span)),
+                _ => None,
+            }
+        }
+
+        let mut fields = Vec::new();
+        let (name, args, is_constructor, span) = selected_call(expr, &mut fields)?;
+        let field_path = fields.join(".");
+        let selector = self
+            .record_field_projection_map
+            .get(name.as_str())?
+            .get(&field_path)?
+            .get(&self.i)?;
+        Some(Expression::FunctionCall {
+            name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), selector)),
+            args: args.to_vec(),
+            is_constructor,
+            span,
+        })
     }
 
     fn project_function_call(
@@ -1226,6 +1280,7 @@ pub fn index_into_expr(
 ) -> Result<Expression, StructuralError> {
     let structural_values = HashMap::new();
     let var_spans = HashMap::new();
+    let record_field_projection_map = HashMap::new();
     IndexProjectionContext {
         i,
         context_span: expr.span().filter(|span| !span.is_dummy()),
@@ -1235,6 +1290,7 @@ pub fn index_into_expr(
         complex_fields,
         component_index_map,
         function_output_index_map,
+        record_field_projection_map: &record_field_projection_map,
     }
     .project(expr)
 }
@@ -1246,6 +1302,7 @@ pub struct ExpressionScalarizationContext {
     complex_fields: HashMap<String, [Option<String>; 2]>,
     component_index_map: HashMap<String, HashMap<usize, String>>,
     function_output_index_map: HashMap<String, HashMap<usize, String>>,
+    record_field_projection_map: RecordFieldProjectionMap,
 }
 
 pub fn build_expression_scalarization_context(
@@ -1260,6 +1317,7 @@ pub fn build_expression_scalarization_context(
         complex_fields: build_complex_field_map(dae),
         component_index_map: build_component_index_projection_map(dae),
         function_output_index_map: build_function_output_projection_map(dae)?,
+        record_field_projection_map: build_record_field_projection_map(dae)?,
     })
 }
 
@@ -1283,6 +1341,7 @@ pub fn scalarize_expression_rows(
                 complex_fields: &ctx.complex_fields,
                 component_index_map: &ctx.component_index_map,
                 function_output_index_map: &ctx.function_output_index_map,
+                record_field_projection_map: &ctx.record_field_projection_map,
             }
             .project(expr)
         })
@@ -1663,6 +1722,7 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     let complex_fields = build_complex_field_map(dae);
     let component_index_map = build_component_index_projection_map(dae);
     let function_output_index_map = build_function_output_projection_map(dae)?;
+    let record_field_projection_map = build_record_field_projection_map(dae)?;
     let projection = ScalarProjectionContext {
         context_span: None,
         var_dims: &var_dims,
@@ -1671,6 +1731,7 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
         complex_fields: &complex_fields,
         component_index_map: &component_index_map,
         function_output_index_map: &function_output_index_map,
+        record_field_projection_map: &record_field_projection_map,
     };
     let scalar_names = build_output_names(dae)?;
     let mut expanded = Vec::new();

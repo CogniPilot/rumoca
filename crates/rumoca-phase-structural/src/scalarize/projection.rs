@@ -13,6 +13,7 @@ pub(super) struct ScalarProjectionContext<'a> {
     pub(super) complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     pub(super) component_index_map: &'a HashMap<String, HashMap<usize, String>>,
     pub(super) function_output_index_map: &'a HashMap<String, HashMap<usize, String>>,
+    pub(super) record_field_projection_map: &'a super::RecordFieldProjectionMap,
 }
 
 impl ScalarProjectionContext<'_> {
@@ -25,6 +26,7 @@ impl ScalarProjectionContext<'_> {
             complex_fields: self.complex_fields,
             component_index_map: self.component_index_map,
             function_output_index_map: self.function_output_index_map,
+            record_field_projection_map: self.record_field_projection_map,
         }
     }
 
@@ -38,6 +40,7 @@ impl ScalarProjectionContext<'_> {
             complex_fields: self.complex_fields,
             component_index_map: self.component_index_map,
             function_output_index_map: self.function_output_index_map,
+            record_field_projection_map: self.record_field_projection_map,
         }
     }
 

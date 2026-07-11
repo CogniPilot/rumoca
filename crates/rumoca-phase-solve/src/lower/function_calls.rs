@@ -598,6 +598,30 @@ impl<'a> LowerBuilder<'a> {
         )
     }
 
+    /// Bind a declared default when the call omits the input. Defaults are
+    /// lowered in the callee's own (partially bound) input scope.
+    fn bind_default_function_input(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        function_name: &str,
+        input: &rumoca_core::FunctionParam,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
+        let Some(default) = input.default.as_ref() else {
+            return Ok(false);
+        };
+        let local_scope = state.scope.clone();
+        self.bind_function_input_arg_or_closure(
+            state,
+            function_name,
+            input,
+            default,
+            &local_scope,
+            call_depth,
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn bind_function_inputs_for_name(
         &mut self,
         function_name: &str,
@@ -685,26 +709,23 @@ impl<'a> LowerBuilder<'a> {
                 )?;
                 continue;
             }
-            if let Some(default) = input.default.as_ref() {
-                let local_scope = scope.clone();
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    default,
-                    &local_scope,
-                    call_depth + 1,
-                )?;
+            if self.bind_default_function_input(
+                FunctionInputBindState {
+                    scope: &mut scope,
+                    const_scope: &mut const_scope,
+                    const_bindings: &mut const_bindings,
+                },
+                function_name,
+                input,
+                call_depth + 1,
+            )? {
                 continue;
             }
 
             return missing_required_function_input(function_name, input);
         }
 
+        self.record_function_integer_bounds(inputs, &const_scope)?;
         Ok(FunctionInputBindings {
             scope,
             const_bindings,
@@ -925,10 +946,43 @@ impl<'a> LowerBuilder<'a> {
             )?;
         }
 
+        self.record_function_integer_bounds(inputs, &const_scope)?;
         Ok(FunctionInputBindings {
             scope,
             const_bindings,
         })
+    }
+
+    fn record_function_integer_bounds(
+        &mut self,
+        inputs: &[rumoca_core::FunctionParam],
+        const_scope: &IndexMap<String, f64>,
+    ) -> Result<(), LowerError> {
+        for input in inputs {
+            let (Some(min_expr), Some(max_expr)) = (&input.min, &input.max) else {
+                continue;
+            };
+            let (Ok(min), Ok(max)) = (
+                self.eval_compile_time_int(min_expr, const_scope, "function Integer lower bound"),
+                self.eval_compile_time_int(max_expr, const_scope, "function Integer upper bound"),
+            ) else {
+                // Symbolic bounds remain valid parameter metadata, but they do
+                // not establish a finite compile-time domain for unrolling.
+                continue;
+            };
+            if min > max {
+                return Err(unsupported_at(
+                    format!(
+                        "function parameter `{}` has invalid Integer bounds {min}:{max}",
+                        input.name
+                    ),
+                    input.span,
+                ));
+            }
+            self.local_integer_bounds
+                .insert(input.name.clone(), (min, max));
+        }
+        Ok(())
     }
 
     fn record_constructor_fields(
@@ -1706,6 +1760,7 @@ impl<'a> LowerBuilder<'a> {
             known_empty_local_arrays: self.known_empty_local_arrays.clone(),
             guarded_uninitialized_locals: self.guarded_uninitialized_locals.clone(),
             local_const_bindings: self.local_const_bindings.clone(),
+            local_integer_bounds: self.local_integer_bounds.clone(),
             function_closures: self.function_closures.clone(),
         };
         let result = f(self);
@@ -1715,6 +1770,7 @@ impl<'a> LowerBuilder<'a> {
         self.known_empty_local_arrays = frame.known_empty_local_arrays;
         self.guarded_uninitialized_locals = frame.guarded_uninitialized_locals;
         self.local_const_bindings = frame.local_const_bindings;
+        self.local_integer_bounds = frame.local_integer_bounds;
         self.function_closures = frame.function_closures;
         result
     }

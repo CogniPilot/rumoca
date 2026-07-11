@@ -13,6 +13,8 @@ fn complex_output_param(name: &str) -> rumoca_core::FunctionParam {
         dims: vec![],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }

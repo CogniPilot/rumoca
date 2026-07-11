@@ -1863,6 +1863,8 @@ mod tests {
             dims,
             shape_expr: Vec::new(),
             default: None,
+            min: None,
+            max: None,
             description: None,
         }
     }

@@ -30,6 +30,12 @@ pub enum EvalError {
         statement: &'static str,
         max_iterations: usize,
     },
+    AssertionFailed {
+        message: String,
+    },
+    Terminated {
+        message: String,
+    },
     ShortRuntimeVector {
         vector: &'static str,
         expected: usize,
@@ -67,6 +73,10 @@ impl std::fmt::Display for EvalError {
                 f,
                 "{statement} statement exceeded DAE evaluation iteration limit of {max_iterations}"
             ),
+            Self::AssertionFailed { message } => {
+                write!(f, "Modelica assertion failed: {message}")
+            }
+            Self::Terminated { message } => write!(f, "Modelica terminate: {message}"),
             Self::ShortRuntimeVector {
                 vector,
                 expected,
@@ -316,6 +326,46 @@ fn expression_is_array_like<T: SimFloat>(
             name, subscripts, ..
         } if subscripts.is_empty() => Ok(encoded_slice_field_values(name.as_str(), env)?.is_some()
             || array_values_from_env_name_generic::<T>(name.as_str(), env)?.is_some()),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            // A subscripted reference stays array-valued when it slices an
+            // axis (`m[i, :]`) or omits trailing axes (`m[i]` on a matrix).
+            let Some(dims) = env.dims.get(name.as_str()) else {
+                return Ok(false);
+            };
+            Ok(subscripts.iter().any(subscript_is_slice) || dims.len() > subscripts.len())
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            if subscripts.iter().any(subscript_is_slice) {
+                return Ok(true);
+            }
+            let dims = try_infer_runtime_expr_dims(base, env)?;
+            Ok(dims.len() > subscripts.len())
+        }
+        rumoca_core::Expression::Binary {
+            op:
+                rumoca_core::OpBinary::Add
+                | rumoca_core::OpBinary::AddElem
+                | rumoca_core::OpBinary::Sub
+                | rumoca_core::OpBinary::SubElem
+                | rumoca_core::OpBinary::Mul
+                | rumoca_core::OpBinary::MulElem
+                | rumoca_core::OpBinary::Div
+                | rumoca_core::OpBinary::DivElem
+                | rumoca_core::OpBinary::Exp
+                | rumoca_core::OpBinary::ExpElem,
+            lhs,
+            rhs,
+            ..
+        } => {
+            // Arithmetic stays array-valued when either operand is an array;
+            // the binary array evaluator reduces scalar cases (dot products).
+            Ok(expression_is_array_like(lhs, env)? || expression_is_array_like(rhs, env)?)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => expression_is_array_like(rhs, env),
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
             match try_eval_field_access_array_values(base, field, env) {
                 Ok(_) => Ok(true),
@@ -520,7 +570,29 @@ fn bind_user_function_input_for_validation<T: SimFloat>(
         } else {
             eval_array_values::<T>(arg, env)?
         };
-        bind_aggregate_input_for_validation(local_env, &input.name, &input.dims, values)?;
+        // Size-expression dims arrive as placeholder values (e.g.
+        // `P[size(x, 1), size(x, 1)]`); recover the concrete shape from the
+        // parameter's shape expression (earlier inputs are already bound in
+        // `local_env`) or from the actual argument, like the binding path.
+        let resolved_dims = match special::resolved_function_param_dims(input, local_env) {
+            Ok(dims) => dims.filter(|dims| dims.iter().all(|dim| *dim > 0)),
+            // Shape expressions can reference inputs validation has not
+            // bound; fall through to argument-based inference.
+            Err(_) => None,
+        };
+        let declared_dims = if input.dims.iter().all(|dim| *dim > 0) {
+            input.dims.clone()
+        } else if let Some(dims) = resolved_dims {
+            dims
+        } else {
+            match special::infer_array_arg_dims(arg, env, values.len()) {
+                Ok(dims) => dims,
+                // Keep the declared placeholders: a single unknown axis is
+                // still inferred from the value count below.
+                Err(_) => input.dims.clone(),
+            }
+        };
+        bind_aggregate_input_for_validation(local_env, &input.name, &declared_dims, values)?;
         return Ok(true);
     }
     if copy_record_function_output_fields(local_env, input, arg, env)? {
@@ -890,6 +962,13 @@ pub(in crate::eval) fn validate_array_argument<T: SimFloat>(
             }
             validate_array_argument(else_branch, env)
         }
+        rumoca_core::Expression::ArrayComprehension { .. }
+        | rumoca_core::Expression::Index { .. } => eval_array_values(expr, env).map(|_| ()),
+        // Array-valued arithmetic (e.g. `pose.position - {1.0, 0.0}`) is
+        // validated by the same array evaluator that later binds the value.
+        rumoca_core::Expression::Binary { .. } | rumoca_core::Expression::Unary { .. } => {
+            eval_array_like_values::<T>(expr, env).map(|_| ())
+        }
         rumoca_core::Expression::BuiltinCall { function, args, .. }
             if args.len() == 1 && builtin_accepts_array_argument(*function) =>
         {
@@ -956,10 +1035,8 @@ fn validate_range_argument<T: SimFloat>(
     let end_v = eval_expr::<T>(end, env)?.real();
     let step_v = if let Some(step) = step {
         eval_expr::<T>(step, env)?.real()
-    } else if end_v >= start_v {
-        1.0
     } else {
-        -1.0
+        1.0
     };
     if !start_v.is_finite()
         || !end_v.is_finite()
@@ -1057,7 +1134,7 @@ fn flat_index_from_dims(dims: &[usize], indices: &[usize]) -> Option<usize> {
     Some(flat_index)
 }
 
-fn try_eval_index_subscripts<T: SimFloat>(
+pub(super) fn try_eval_index_subscripts<T: SimFloat>(
     subscripts: &[rumoca_core::Subscript],
     env: &VarEnv<T>,
 ) -> Result<Vec<usize>, EvalError> {
@@ -1390,6 +1467,34 @@ fn try_eval_field_access<T: SimFloat>(
         return Err(EvalError::MissingBinding { name: key });
     }
 
+    if matches!(base, rumoca_core::Expression::FieldAccess { .. })
+        && let Some((name, args, fields)) = function_call_field_path(base, field)
+    {
+        let function =
+            env.functions
+                .get(name.as_str())
+                .ok_or_else(|| EvalError::MissingFunction {
+                    name: name.to_string(),
+                })?;
+        let output = function
+            .outputs
+            .first()
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "record function output",
+            })?;
+        let output_path = if fields.first().is_some_and(|field| field == &output.name) {
+            fields.join(".")
+        } else {
+            format!("{}.{}", output.name, fields.join("."))
+        };
+        return eval_user_function_output_path_pub(
+            name.var_name(),
+            args,
+            output_path.as_str(),
+            env,
+        );
+    }
+
     if let rumoca_core::Expression::FunctionCall {
         name,
         args,
@@ -1668,11 +1773,190 @@ pub(super) fn try_eval_vector_values<T: SimFloat>(
             Ok(array_values_from_env_name_generic(name.as_str(), env)?
                 .filter(|values| values.len() > 1))
         }
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => {
+            // A subscripted selection is a vector when exactly one axis stays
+            // free: an explicit slice (`m[i, :]`, `m[2:4]`) or one omitted
+            // trailing axis (`m[i]` on a matrix selects row `i`, MLS §10.5).
+            let Some(dims) = env.dims.get(name.as_str()) else {
+                return Ok(None);
+            };
+            let explicit_slices = subscripts.iter().filter(|s| subscript_is_slice(s)).count();
+            let omitted_axes = dims.len().saturating_sub(subscripts.len());
+            if explicit_slices + omitted_axes != 1 {
+                return Ok(None);
+            }
+            let base = rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: vec![],
+                span: *span,
+            };
+            let values = eval_index_array_values(&base, subscripts, env)?;
+            Ok((values.len() > 1).then_some(values))
+        }
         rumoca_core::Expression::Array { is_matrix, .. } if !*is_matrix => {
             let values = eval_array_values(expr, env)?;
             Ok((values.len() > 1).then_some(values))
         }
+        rumoca_core::Expression::FieldAccess { .. } => {
+            let Some(path) = try_eval_field_access_path(expr, env)? else {
+                return Ok(None);
+            };
+            let Some(dims) = env.dims.get(path.as_str()) else {
+                return Ok(None);
+            };
+            if dims.len() != 1 || dims[0] <= 1 {
+                return Ok(None);
+            }
+            Ok(array_values_from_env_name_generic(path.as_str(), env)?
+                .filter(|values| values.len() > 1))
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let values = eval_index_array_values(base, subscripts, env)?;
+            Ok((values.len() > 1).then_some(values))
+        }
+        rumoca_core::Expression::Unary { op, rhs, .. } => {
+            let Some(values) = try_eval_vector_values(rhs, env)? else {
+                return Ok(None);
+            };
+            let values = values
+                .into_iter()
+                .map(|value| match op {
+                    rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => -value,
+                    rumoca_core::OpUnary::Plus
+                    | rumoca_core::OpUnary::DotPlus
+                    | rumoca_core::OpUnary::Empty => value,
+                    rumoca_core::OpUnary::Not => T::from_bool(!value.to_bool()),
+                })
+                .collect();
+            Ok(Some(values))
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            try_eval_vector_binary_values(op, lhs, rhs, env)
+        }
         _ => Ok(None),
+    }
+}
+
+fn subscript_is_slice(subscript: &rumoca_core::Subscript) -> bool {
+    match subscript {
+        rumoca_core::Subscript::Colon { .. } => true,
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+        }
+        rumoca_core::Subscript::Index { .. } => false,
+    }
+}
+
+fn try_eval_vector_binary_values<T: SimFloat>(
+    op: &rumoca_core::OpBinary,
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<T>>, EvalError> {
+    let lhs_values = try_eval_vector_values(lhs, env)?;
+    let rhs_values = try_eval_vector_values(rhs, env)?;
+
+    match (lhs_values, rhs_values) {
+        (Some(lhs), Some(rhs)) => {
+            if matches!(op, rumoca_core::OpBinary::Mul) {
+                // Plain vector multiplication is a scalar dot product, not a
+                // vector-valued expression.
+                return Ok(None);
+            }
+            if lhs.len() != rhs.len() {
+                return Err(EvalError::ShapeMismatch {
+                    context: "vector binary expression",
+                    expected: lhs.len(),
+                    actual: rhs.len(),
+                });
+            }
+            if !matches!(
+                op,
+                rumoca_core::OpBinary::Add
+                    | rumoca_core::OpBinary::AddElem
+                    | rumoca_core::OpBinary::Sub
+                    | rumoca_core::OpBinary::SubElem
+                    | rumoca_core::OpBinary::MulElem
+                    | rumoca_core::OpBinary::Div
+                    | rumoca_core::OpBinary::DivElem
+                    | rumoca_core::OpBinary::Exp
+                    | rumoca_core::OpBinary::ExpElem
+            ) {
+                return Ok(None);
+            }
+            let values = lhs
+                .into_iter()
+                .zip(rhs)
+                .map(|(lhs, rhs)| match op {
+                    rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs + rhs,
+                    rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs - rhs,
+                    rumoca_core::OpBinary::MulElem => lhs * rhs,
+                    rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => lhs / rhs,
+                    rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => lhs.powf(rhs),
+                    _ => unreachable!("vector operator filtered above"),
+                })
+                .collect::<Vec<_>>();
+            Ok(Some(values))
+        }
+        (Some(values), None) => {
+            // MLS §10.6.4: `vector * matrix` is a matrix product, so try it
+            // before treating the non-vector side as a scalar.
+            if matches!(op, rumoca_core::OpBinary::Mul)
+                && let Some(product) = eval_vector_matrix_product(lhs, rhs, env)?
+            {
+                return Ok(Some(product));
+            }
+            let scalar = eval_expr(rhs, env)?;
+            let mapped = match op {
+                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => {
+                    values.into_iter().map(|value| value + scalar).collect()
+                }
+                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => {
+                    values.into_iter().map(|value| value - scalar).collect()
+                }
+                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => {
+                    values.into_iter().map(|value| value * scalar).collect()
+                }
+                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
+                    values.into_iter().map(|value| value / scalar).collect()
+                }
+                rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => {
+                    values.into_iter().map(|value| value.powf(scalar)).collect()
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(mapped))
+        }
+        (None, Some(values)) => {
+            // MLS §10.6.4: `matrix * vector` is a matrix product, so try it
+            // before treating the non-vector side as a scalar.
+            if matches!(op, rumoca_core::OpBinary::Mul)
+                && let Some(product) = eval_matrix_vector_product(lhs, rhs, env)?
+            {
+                return Ok(Some(product));
+            }
+            let scalar = eval_expr(lhs, env)?;
+            let mapped = match op {
+                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => {
+                    values.into_iter().map(|value| scalar + value).collect()
+                }
+                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => {
+                    values.into_iter().map(|value| scalar - value).collect()
+                }
+                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => {
+                    values.into_iter().map(|value| scalar * value).collect()
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(mapped))
+        }
+        (None, None) => Ok(None),
     }
 }
 

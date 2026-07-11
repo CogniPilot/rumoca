@@ -1329,6 +1329,18 @@ fn resolve_function_in_package_chain_class<'a>(
         }
 
         let package_class = class_index.get_by_qualified_name(package_name)?;
+        // MLS §7.3: an extends-clause class redeclare replaces the inherited
+        // member, so it wins over the (possibly partial) lexical base member.
+        if let Some(target) = crate::pipeline::extends_class_redeclare_target(
+            tree,
+            class_index,
+            package_class,
+            package_name,
+            function_leaf,
+        ) && is_callable_class_type(&target.class_type)
+        {
+            return Some((target, direct));
+        }
         for ext in &package_class.extends {
             let base_name = ext.base_name.to_string();
             let resolved_base = ext
@@ -1366,7 +1378,7 @@ pub(crate) fn collect_function_dep_requests(func: &rumoca_core::Function) -> Vec
         .chain(func.outputs.iter())
         .chain(func.locals.iter())
     {
-        if func.is_constructor && param.type_class == Some(rumoca_core::ClassType::Record) {
+        if param.type_class == Some(rumoca_core::ClassType::Record) {
             deps.insert(FunctionRequest::from_name(param.type_name.clone()));
         }
         if let Some(default) = &param.default {
@@ -1597,13 +1609,20 @@ fn convert_callable<'tree>(
         )
         .map(Some),
         class_type if is_callable_class_type(class_type) => {
-            Ok(Some(convert_constructor_signature(
+            let mut constructor = convert_constructor_signature(
                 class_index,
                 class_def,
                 qualified_name,
                 source_map,
                 def_map,
-            )?))
+            )?;
+            contextualize_record_param_type_names(
+                tree,
+                class_index,
+                qualified_name,
+                &mut constructor,
+            );
+            Ok(Some(constructor))
         }
         _ => Ok(None),
     }
@@ -1724,11 +1743,49 @@ fn convert_function<'tree>(
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
     rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
+    contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func);
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }
 
     Ok(func)
+}
+
+/// Rewrite record-typed parameter type names to the exposed qualified names
+/// resolved in the callable's own scope (redeclare-aware, like body calls).
+///
+/// Downstream record decomposition and output projection perform exact
+/// constructor lookups keyed by these names, so a record param must carry the
+/// concrete resolved type name rather than source-relative text.
+fn contextualize_record_param_type_names(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    exposed_name: &str,
+    func: &mut rumoca_core::Function,
+) {
+    for param in func
+        .inputs
+        .iter_mut()
+        .chain(func.outputs.iter_mut())
+        .chain(func.locals.iter_mut())
+    {
+        if param.type_class != Some(rumoca_core::ClassType::Record) {
+            continue;
+        }
+        let Some(resolution) = resolve_function_class_with_scope(
+            tree,
+            class_index,
+            &param.type_name,
+            Some(exposed_name),
+        ) else {
+            continue;
+        };
+        if resolution.class_def.class_type == rumoca_core::ClassType::Record
+            && resolution.exposed_name != param.type_name
+        {
+            param.type_name = resolution.exposed_name;
+        }
+    }
 }
 
 fn function_initial_import_map<'tree>(

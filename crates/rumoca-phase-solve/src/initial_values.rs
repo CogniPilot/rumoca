@@ -164,7 +164,9 @@ fn initial_seed_error_is_non_evaluable(error: &EvalError) -> bool {
         EvalError::ShapeMismatch { .. }
         | EvalError::InvalidShape { .. }
         | EvalError::StatementIterationLimit { .. }
-        | EvalError::ShortRuntimeVector { .. } => false,
+        | EvalError::ShortRuntimeVector { .. }
+        | EvalError::AssertionFailed { .. }
+        | EvalError::Terminated { .. } => false,
     }
 }
 

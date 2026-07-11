@@ -82,9 +82,25 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
                 }
                 Ok(vec![eval_expr(expr, env)?])
             }
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } => eval_index_array_values(
+                &rumoca_core::Expression::VarRef {
+                    name: name.clone(),
+                    subscripts: vec![],
+                    span: *span,
+                },
+                subscripts,
+                env,
+            ),
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
                 try_eval_field_access_array_values(base, field, env)
             }
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => eval_index_array_values(base, subscripts, env),
             rumoca_core::Expression::BuiltinCall { function, args, .. } => {
                 try_eval_builtin_array_like_values(expr, *function, args, env)
             }
@@ -108,6 +124,128 @@ pub(super) fn eval_array_like_values<T: SimFloat>(
             _ => Ok(vec![eval_expr(expr, env)?]),
         },
     )
+}
+
+pub(super) fn eval_index_array_values<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let dims = try_infer_runtime_expr_dims(base, env)?;
+    if dims.is_empty() || subscripts.len() > dims.len() {
+        return Err(EvalError::ShapeMismatch {
+            context: "array slice rank",
+            expected: dims.len(),
+            actual: subscripts.len(),
+        });
+    }
+    let base_values = eval_array_values(base, env)?;
+    let mut selections = Vec::with_capacity(dims.len());
+    for (axis, extent) in dims.iter().copied().enumerate() {
+        let selection = match subscripts.get(axis) {
+            Some(rumoca_core::Subscript::Index { value, .. }) => {
+                vec![checked_array_selection_index(*value as f64, extent)?]
+            }
+            Some(rumoca_core::Subscript::Expr { expr, .. })
+                if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
+            {
+                eval_array_values(expr.as_ref(), env)?
+                    .into_iter()
+                    .map(|value| checked_array_selection_index(value.real(), extent))
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            Some(rumoca_core::Subscript::Expr { expr, .. }) => vec![checked_array_selection_index(
+                eval_expr::<T>(expr, env)?.real(),
+                extent,
+            )?],
+            Some(rumoca_core::Subscript::Colon { .. }) | None => (1..=extent).collect(),
+        };
+        selections.push(selection);
+    }
+
+    let selection_dims = selections.iter().map(Vec::len).collect::<Vec<_>>();
+    let total = selection_dims
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent));
+    let total = total.ok_or(EvalError::UnsupportedExpression {
+        kind: "array slice dimensions",
+    })?;
+    let mut values = Vec::with_capacity(total);
+    for flat_index in 0..total {
+        let selected_subscripts = flat_index_to_usize_subscripts(&selection_dims, flat_index)?;
+        let actual_subscripts = selected_subscripts
+            .iter()
+            .enumerate()
+            .map(|(axis, selected)| selections[axis][selected - 1])
+            .collect::<Vec<_>>();
+        let base_index = subscripts_to_flat_index(&dims, &actual_subscripts)?;
+        values.push(
+            *base_values
+                .get(base_index)
+                .ok_or(EvalError::ShapeMismatch {
+                    context: "array slice source",
+                    expected: base_values.len(),
+                    actual: base_index + 1,
+                })?,
+        );
+    }
+    Ok(values)
+}
+
+fn checked_array_selection_index(value: f64, extent: usize) -> Result<usize, EvalError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "array slice index",
+        });
+    }
+    usize::try_from(value as i64)
+        .ok()
+        .filter(|index| *index >= 1 && *index <= extent)
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "array slice index",
+        })
+}
+
+fn flat_index_to_usize_subscripts(
+    dims: &[usize],
+    flat_index: usize,
+) -> Result<Vec<usize>, EvalError> {
+    let dims = dims
+        .iter()
+        .map(|dim| {
+            i64::try_from(*dim).map_err(|_| EvalError::UnsupportedExpression {
+                kind: "array slice dimensions",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    dae::flat_index_to_subscripts(&dims, flat_index).ok_or(EvalError::UnsupportedExpression {
+        kind: "array slice index",
+    })
+}
+
+fn subscripts_to_flat_index(dims: &[usize], subscripts: &[usize]) -> Result<usize, EvalError> {
+    if dims.len() != subscripts.len() {
+        return Err(EvalError::ShapeMismatch {
+            context: "array slice index rank",
+            expected: dims.len(),
+            actual: subscripts.len(),
+        });
+    }
+    dims.iter()
+        .zip(subscripts)
+        .try_fold(0usize, |flat_index, (extent, subscript)| {
+            if *subscript < 1 || *subscript > *extent {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "array slice index",
+                });
+            }
+            flat_index
+                .checked_mul(*extent)
+                .and_then(|value| value.checked_add(*subscript - 1))
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "array slice index",
+                })
+        })
 }
 
 fn with_expr_span<T>(
@@ -270,10 +408,8 @@ fn try_eval_range_values<T: SimFloat>(
     let end_v = eval_expr::<T>(end, env)?.real();
     let step_v = if let Some(step_expr) = step {
         eval_expr::<T>(step_expr, env)?.real()
-    } else if end_v >= start_v {
-        1.0
     } else {
-        -1.0
+        1.0
     };
     if !start_v.is_finite()
         || !end_v.is_finite()
@@ -616,17 +752,26 @@ fn eval_function_call_matrix_values<T: SimFloat>(
     let Some(output) = function.outputs.first() else {
         return Ok(None);
     };
-    if output.dims.len() < 2 {
+    if output.dims.len() < 2 && output.shape_expr.len() < 2 {
         return Ok(None);
     }
-    let rows = usize::try_from(output.dims[0])
-        .ok()
+    let dims = resolve_user_function_output_dims_pub(name.var_name(), args, None, env)?.ok_or(
+        EvalError::UnsupportedExpression {
+            kind: "function output shape",
+        },
+    )?;
+    let rows = dims
+        .first()
+        .copied()
+        .and_then(|value| usize::try_from(value).ok())
         .filter(|rows| *rows > 0)
         .ok_or(EvalError::UnsupportedExpression {
             kind: "function output shape",
         })?;
-    let cols = usize::try_from(output.dims[1])
-        .ok()
+    let cols = dims
+        .get(1)
+        .copied()
+        .and_then(|value| usize::try_from(value).ok())
         .filter(|cols| *cols > 0)
         .ok_or(EvalError::UnsupportedExpression {
             kind: "function output shape",
@@ -753,7 +898,7 @@ pub(super) fn eval_symmetric_values<T: SimFloat>(
     Ok(Some(out))
 }
 
-fn eval_matrix_vector_product<T: SimFloat>(
+pub(super) fn eval_matrix_vector_product<T: SimFloat>(
     lhs: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -775,7 +920,7 @@ fn eval_matrix_vector_product<T: SimFloat>(
     ))
 }
 
-fn eval_vector_matrix_product<T: SimFloat>(
+pub(super) fn eval_vector_matrix_product<T: SimFloat>(
     lhs: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -849,6 +994,9 @@ pub(super) fn eval_binary_array_values<T: SimFloat>(
 ) -> Result<Option<Vec<T>>, EvalError> {
     match op {
         OpBinary::Mul => {
+            if let Some(value) = try_eval_vector_dot_product(lhs, rhs, env)? {
+                return Ok(Some(vec![value]));
+            }
             if let Some(values) = eval_matrix_matrix_product(lhs, rhs, env)? {
                 return Ok(Some(values));
             }
@@ -883,6 +1031,9 @@ fn try_eval_binary_array_values<T: SimFloat>(
 ) -> Result<Vec<T>, EvalError> {
     match op {
         OpBinary::Mul => {
+            if let Some(value) = try_eval_vector_dot_product(lhs, rhs, env)? {
+                return Ok(vec![value]);
+            }
             if let Some(values) = eval_matrix_matrix_product(lhs, rhs, env)? {
                 return Ok(values);
             }
@@ -1452,6 +1603,13 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
             is_constructor: false,
             ..
         } => function_call_runtime_dims(name, args, values.len(), env)?,
+        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
+            builtin_call_runtime_dims(*function, args, values.len(), env)?
+        }
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            binary_expr_runtime_dims(op, lhs, rhs, values.len(), env)?
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => try_infer_runtime_expr_dims(rhs, env)?,
         rumoca_core::Expression::Array { .. }
         | rumoca_core::Expression::Tuple { .. }
         | rumoca_core::Expression::Range { .. }
@@ -1461,18 +1619,101 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     Ok(dims)
 }
 
-fn checked_runtime_dims(dims: &[i64]) -> Result<Option<Vec<usize>>, EvalError> {
-    if dims.is_empty() {
-        return Ok(None);
+/// Result shape of an array-valued binary expression (MLS §10.6).
+///
+/// Elementwise and scalar-broadcast operators preserve the array operand's
+/// shape; `Mul` follows matrix-product shape rules.
+fn binary_expr_runtime_dims<T: SimFloat>(
+    op: &rumoca_core::OpBinary,
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    value_count: usize,
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    let (lhs_dims, rhs_dims) = match (
+        try_infer_runtime_expr_dims(lhs, env),
+        try_infer_runtime_expr_dims(rhs, env),
+    ) {
+        (Ok(lhs_dims), Ok(rhs_dims)) => (lhs_dims, rhs_dims),
+        // Operand shapes the inferencer cannot express fall back to the
+        // flat value count, matching the pre-existing generic behavior.
+        _ => return Ok(runtime_vector_dims(value_count)),
+    };
+    if matches!(op, rumoca_core::OpBinary::Mul) {
+        return Ok(match (lhs_dims.as_slice(), rhs_dims.as_slice()) {
+            ([rows, _], [_, cols]) => vec![*rows, *cols],
+            ([rows, _], [_]) => vec![*rows],
+            ([_], [_, cols]) => vec![*cols],
+            ([_], [_]) => Vec::new(), // vector dot product is a scalar
+            ([], _) => rhs_dims.clone(),
+            (_, []) => lhs_dims.clone(),
+            _ => runtime_vector_dims(value_count),
+        });
     }
-    dims.iter()
-        .map(|dim| {
-            usize::try_from(*dim).map_err(|_| EvalError::UnsupportedExpression {
-                kind: "array dimensions",
-            })
+    Ok(if lhs_dims.is_empty() { rhs_dims } else { lhs_dims })
+}
+
+/// Runtime result shape for shape-defining builtin calls (MLS §10.3).
+fn builtin_call_runtime_dims<T: SimFloat>(
+    function: rumoca_core::BuiltinFunction,
+    args: &[rumoca_core::Expression],
+    value_count: usize,
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    use rumoca_core::BuiltinFunction as B;
+    let usize_arg = |expr: &rumoca_core::Expression| -> Result<usize, EvalError> {
+        let value = eval_expr::<T>(expr, env)?.real();
+        if !value.is_finite() || value.fract() != 0.0 || value < 0.0 {
+            return Err(EvalError::UnsupportedExpression {
+                kind: "builtin dimension argument",
+            });
+        }
+        Ok(value as usize)
+    };
+    fn single_arg(
+        args: &[rumoca_core::Expression],
+    ) -> Result<&rumoca_core::Expression, EvalError> {
+        args.first().ok_or(EvalError::UnsupportedExpression {
+            kind: "builtin dimension arity",
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+    }
+    match function {
+        B::Identity => {
+            let n = usize_arg(single_arg(args)?)?;
+            Ok(vec![n, n])
+        }
+        B::Zeros | B::Ones => args.iter().map(usize_arg).collect(),
+        B::Fill => args.iter().skip(1).map(usize_arg).collect(),
+        B::Diagonal => {
+            let n = eval_array_like_values::<T>(single_arg(args)?, env)?.len();
+            Ok(vec![n, n])
+        }
+        B::Transpose => {
+            let mut dims = try_infer_runtime_expr_dims(single_arg(args)?, env)?;
+            if dims.len() != 2 {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "transpose operand shape",
+                });
+            }
+            dims.reverse();
+            Ok(dims)
+        }
+        B::Symmetric => try_infer_runtime_expr_dims(single_arg(args)?, env),
+        B::OuterProduct => {
+            let rows = eval_array_like_values::<T>(single_arg(args)?, env)?.len();
+            let cols = eval_array_like_values::<T>(
+                args.get(1).ok_or(EvalError::UnsupportedExpression {
+                    kind: "builtin dimension arity",
+                })?,
+                env,
+            )?
+            .len();
+            Ok(vec![rows, cols])
+        }
+        B::Skew => Ok(vec![3, 3]),
+        B::Cross => Ok(vec![3]),
+        _ => Ok(runtime_vector_dims(value_count)),
+    }
 }
 
 fn function_call_runtime_dims<T: SimFloat>(
@@ -1522,7 +1763,24 @@ fn function_call_runtime_dims<T: SimFloat>(
                 kind: "function output shape",
             })?,
     };
-    Ok(checked_runtime_dims(&output.dims)?.unwrap_or_else(|| runtime_vector_dims(value_count)))
+    let dims = resolve_user_function_output_dims_pub(
+        &resolved_name,
+        args,
+        Some(output.name.as_str()),
+        env,
+    )?;
+    Ok(dims
+        .map(|dims| {
+            dims.into_iter()
+                .map(|dim| {
+                    usize::try_from(dim).map_err(|_| EvalError::UnsupportedExpression {
+                        kind: "function output shape",
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_else(|| runtime_vector_dims(value_count)))
 }
 
 fn runtime_vector_dims(len: usize) -> Vec<usize> {

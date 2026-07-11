@@ -62,8 +62,8 @@ mod clock_eval;
 mod distribution_clock;
 use array_helpers::{
     array_values_from_env_name, array_values_from_env_name_generic, encoded_slice_field_values,
-    eval_unary_builtin_array_values, flattened_field_access_name, infer_dims_from_values,
-    try_eval_field_access_array_values,
+    eval_unary_builtin_array_values, flattened_field_access_name, function_call_field_path,
+    infer_dims_from_values, try_eval_field_access_array_values,
 };
 // Public for `rumoca-jit-dae` — the JIT emits calls into these runtime
 // helpers when generating machine code for table-lookup expressions.
@@ -101,21 +101,40 @@ use special::{
     resolve_user_function_target,
 };
 pub use special::{
-    deterministic_automatic_global_seed, eval_builtin_pub, eval_condition_as_root,
+    MaterializedOutputs, RecordOutputFields, deterministic_automatic_global_seed,
+    eval_builtin_pub, eval_condition_as_root,
     eval_function_call_pub, eval_function_call_pub_dae, eval_selected_function_output_pub,
     eval_selected_function_output_pub_dae, eval_user_function_array_output_pub,
-    eval_user_function_output_path_pub, is_runtime_special_function_name,
-    is_runtime_special_function_short_name, modelica_strings_hash_string,
-    resolve_function_call_outputs_pub, resolve_function_call_outputs_pub_dae,
+    eval_user_function_output_array_path_pub, eval_user_function_output_path_pub,
+    eval_user_function_outputs_pub, eval_user_function_record_output_pub,
+    is_runtime_special_function_name, is_runtime_special_function_short_name,
+    modelica_strings_hash_string, resolve_function_call_outputs_pub,
+    resolve_function_call_outputs_pub_dae, resolve_user_function_output_dims_pub,
 };
 mod eval_expr_impl;
 use array_eval::{
     declared_dims, eval_array_like_f64_values, eval_array_like_values, eval_binary_array_values,
-    eval_columns_arg, eval_cross_values, eval_linspace_values, eval_matrix_index,
-    eval_matrix_literal_rows, eval_outer_product_values, eval_skew_values, eval_symmetric_values,
-    eval_transpose_values, reshape_flat_matrix, try_eval_cat_values, try_infer_runtime_expr_dims,
+    eval_columns_arg, eval_cross_values, eval_index_array_values, eval_linspace_values,
+    eval_matrix_index, eval_matrix_literal_rows, eval_matrix_vector_product,
+    eval_outer_product_values, eval_skew_values, eval_vector_matrix_product,
+    eval_symmetric_values, eval_transpose_values, reshape_flat_matrix, try_eval_cat_values,
+    try_infer_runtime_expr_dims,
 };
 pub use array_eval::{eval_array_values, eval_matrix_values, eval_shaped_array_values};
+
+pub(crate) fn infer_runtime_expr_dims<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    try_infer_runtime_expr_dims(expr, env)
+}
+
+pub(crate) fn eval_field_access_path<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<String>, EvalError> {
+    try_eval_field_access_path(expr, env)
+}
 use eval_expr_impl::*;
 pub use eval_expr_impl::{EvalError, eval_expr};
 mod runtime_env;

@@ -8,8 +8,11 @@ use super::distribution_clock::{
 };
 use super::*;
 
+mod input_binding;
 mod runtime_specials;
 mod state_accessors;
+use input_binding::*;
+pub(in crate::eval) use input_binding::infer_array_arg_dims;
 pub(super) use runtime_specials::*;
 pub use runtime_specials::{
     deterministic_automatic_global_seed, is_runtime_special_function_name,
@@ -184,10 +187,56 @@ fn seed_resolved_function_scope_dims<T: SimFloat>(
         };
         std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims);
     }
+    seed_record_field_dims(local_env, params);
     Ok(())
 }
 
-fn resolved_function_param_dims<T: SimFloat>(
+fn seed_record_field_dims<T: SimFloat>(local_env: &mut VarEnv<T>, params: &[FunctionParam]) {
+    let mut field_dims = Vec::new();
+    for param in params {
+        collect_record_field_dims(
+            &param.name,
+            param,
+            local_env,
+            &mut Vec::new(),
+            &mut field_dims,
+        );
+    }
+    let dims = std::sync::Arc::make_mut(&mut local_env.dims);
+    dims.extend(field_dims);
+}
+
+fn collect_record_field_dims<T: SimFloat>(
+    prefix: &str,
+    param: &FunctionParam,
+    env: &VarEnv<T>,
+    type_stack: &mut Vec<String>,
+    field_dims: &mut Vec<(String, Vec<i64>)>,
+) {
+    if param.type_class != Some(rumoca_core::ClassType::Record)
+        || type_stack.iter().any(|name| name == &param.type_name)
+    {
+        return;
+    }
+    let Some(constructor) = env.functions.get(param.type_name.as_str()).or_else(|| {
+        env.functions
+            .values()
+            .find(|candidate| candidate.name.last_segment() == param.type_name)
+    }) else {
+        return;
+    };
+    type_stack.push(param.type_name.clone());
+    for field in &constructor.inputs {
+        let field_path = format!("{prefix}.{}", field.name);
+        if !field.dims.is_empty() {
+            field_dims.push((field_path.clone(), field.dims.clone()));
+        }
+        collect_record_field_dims(&field_path, field, env, type_stack, field_dims);
+    }
+    type_stack.pop();
+}
+
+pub(in crate::eval) fn resolved_function_param_dims<T: SimFloat>(
     param: &FunctionParam,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<i64>>, EvalError> {
@@ -240,723 +289,6 @@ fn eval_shape_expr_dim<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Resul
         });
     }
     Ok(value as i64)
-}
-
-fn bind_user_function_inputs<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    function_name: &str,
-    inputs: &[FunctionParam],
-    args: &[Expression],
-    caller_env: &VarEnv<T>,
-) -> Result<(), EvalError> {
-    let (named_args, positional_args) = split_named_and_positional_call_args(args);
-    let mut positional_idx = 0usize;
-    for param in inputs {
-        let arg_expr = named_args.get(param.name.as_str()).copied().or_else(|| {
-            let next = positional_args.get(positional_idx).copied();
-            if next.is_some() {
-                positional_idx += 1;
-            }
-            next
-        });
-
-        if let Some(arg_expr) = arg_expr {
-            if bind_function_input_alias(local_env, function_name, param, arg_expr, caller_env)? {
-                continue;
-            }
-            if copy_record_constructor_input_fields(local_env, param, arg_expr, caller_env)? {
-                continue;
-            }
-            if let Ok(value) = eval_expr::<T>(arg_expr, caller_env) {
-                bind_function_scalar_input(local_env, function_name, &param.name, value);
-            }
-            if let Some(arg_path) = try_eval_field_access_path(arg_expr, caller_env)? {
-                copy_selected_input_fields(local_env, &param.name, &arg_path, caller_env)?;
-            }
-            let _ = copy_record_function_output_fields(local_env, param, arg_expr, caller_env)?;
-            copy_array_input_entries(local_env, param, arg_expr, caller_env)?;
-            continue;
-        }
-
-        let Some(default_expr) = &param.default else {
-            return Err(EvalError::MissingBinding {
-                name: param.name.clone(),
-            });
-        };
-        if bind_function_input_alias(local_env, function_name, param, default_expr, caller_env)? {
-            continue;
-        }
-        let val = eval_expr::<T>(default_expr, local_env)?;
-        bind_function_scalar_input(local_env, function_name, &param.name, val);
-    }
-    Ok(())
-}
-
-fn copy_record_constructor_input_fields<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    if param.type_class != Some(rumoca_core::ClassType::Record) {
-        return Ok(false);
-    }
-    let Expression::FunctionCall {
-        args,
-        is_constructor,
-        ..
-    } = arg_expr
-    else {
-        return Ok(false);
-    };
-    if !is_constructor {
-        return Ok(false);
-    }
-
-    let mut explicit_fields = IndexMap::new();
-    for arg in args {
-        let Some((field, value_expr)) = decode_named_constructor_arg(arg) else {
-            continue;
-        };
-        let value = eval_expr::<T>(value_expr, caller_env)?;
-        local_env.set(&format!("{}.{field}", param.name), value);
-        explicit_fields.insert(field.to_string(), value);
-    }
-    let copied_start_fields =
-        copy_record_constructor_start_fields(local_env, param, &explicit_fields, caller_env)?;
-    Ok(!explicit_fields.is_empty() || copied_start_fields)
-}
-
-fn copy_record_constructor_start_fields<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    explicit_fields: &IndexMap<String, T>,
-    caller_env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    if explicit_fields.is_empty() {
-        return Ok(false);
-    }
-    let prefixes = matching_record_constructor_prefixes(explicit_fields, caller_env)?;
-    let fields = consensus_start_fields(&prefixes, explicit_fields, caller_env)?;
-    let mut copied = false;
-    for (field, value) in fields {
-        local_env.set(&format!("{}.{field}", param.name), value);
-        copied = true;
-    }
-    Ok(copied)
-}
-
-fn matching_record_constructor_prefixes<T: SimFloat>(
-    explicit_fields: &IndexMap<String, T>,
-    env: &VarEnv<T>,
-) -> Result<Vec<String>, EvalError> {
-    let Some((field, value)) = explicit_fields.first() else {
-        return Ok(Vec::new());
-    };
-    let mut candidates = Vec::new();
-    let suffix = format!(".{field}");
-    for key in env.start_exprs.keys() {
-        let Some(prefix) = key.strip_suffix(suffix.as_str()) else {
-            continue;
-        };
-        if record_prefix_matches_constructor_fields(prefix, explicit_fields, env)?
-            && eval_record_start_field(prefix, field, env)?
-                .is_some_and(|field_value| field_value.eq_approx(*value))
-        {
-            candidates.push(prefix.to_string());
-        }
-    }
-    Ok(candidates)
-}
-
-fn record_prefix_matches_constructor_fields<T: SimFloat>(
-    prefix: &str,
-    explicit_fields: &IndexMap<String, T>,
-    env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    for (field, expected) in explicit_fields {
-        let Some(actual) = eval_record_start_field(prefix, field, env)? else {
-            return Ok(false);
-        };
-        if !actual.eq_approx(*expected) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn consensus_start_fields<T: SimFloat>(
-    prefixes: &[String],
-    explicit_fields: &IndexMap<String, T>,
-    env: &VarEnv<T>,
-) -> Result<IndexMap<String, T>, EvalError> {
-    let mut fields: IndexMap<String, T> = IndexMap::new();
-    for prefix in prefixes {
-        let start_prefix = format!("{prefix}.");
-        for key in env.start_exprs.keys() {
-            let Some(field) = key.strip_prefix(start_prefix.as_str()) else {
-                continue;
-            };
-            if explicit_fields.contains_key(field) {
-                continue;
-            }
-            let Some(value) = eval_record_start_field(prefix, field, env)? else {
-                continue;
-            };
-            if let Some(existing) = fields.get(field)
-                && !existing.eq_approx(value)
-            {
-                return Err(EvalError::InvalidShape {
-                    context: "record constructor start field",
-                    reason: format!(
-                        "ambiguous flattened defaults for omitted constructor field `{field}`"
-                    ),
-                });
-            }
-            fields.insert(field.to_string(), value);
-        }
-    }
-    Ok(fields)
-}
-
-fn eval_record_start_field<T: SimFloat>(
-    prefix: &str,
-    field: &str,
-    env: &VarEnv<T>,
-) -> Result<Option<T>, EvalError> {
-    let key = format!("{prefix}.{field}");
-    if let Some(value) = env.get_optional(key.as_str()) {
-        return Ok(Some(value));
-    }
-    let Some(start_expr) = env.start_exprs.get(key.as_str()) else {
-        return Ok(None);
-    };
-    match eval_expr::<T>(start_expr, env) {
-        Ok(value) => Ok(Some(value)),
-        Err(err) if err.missing_binding_name().is_some() => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-fn copy_array_literal_vector_entries<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    elements: &[Expression],
-    caller_env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    if elements.is_empty() {
-        return Ok(false);
-    }
-    if param.shape_expr.is_empty()
-        && let Some(expected) = concrete_param_size(&param.dims)
-        && expected != elements.len()
-    {
-        return Err(EvalError::ShapeMismatch {
-            context: "function array input",
-            expected,
-            actual: elements.len(),
-        });
-    }
-
-    let selection_field = selected_component_field_in_current_call(caller_env);
-    let values = elements
-        .iter()
-        .map(|element| eval_expr::<T>(element, caller_env))
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    let shape = vec![elements.len() as i64];
-    set_array_entries(local_env, &param.name, &shape, &values);
-    if let Some(field) = selection_field {
-        set_array_entries(
-            local_env,
-            &format!("{}.{field}", param.name),
-            &shape,
-            &values,
-        );
-    }
-    let dims = std::sync::Arc::make_mut(&mut local_env.dims);
-    dims.insert(param.name.clone(), shape.clone());
-    if let Some(field) = selection_field {
-        dims.insert(format!("{}.{field}", param.name), shape);
-    }
-    Ok(true)
-}
-
-fn copy_array_literal_matrix_entries<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    rows: &[Expression],
-    caller_env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    if rows.is_empty() {
-        return Ok(false);
-    }
-
-    let mut max_cols = 0usize;
-    let mut actual = 0usize;
-    let mut values = Vec::new();
-    let selection_field = selected_component_field_in_current_call(caller_env);
-    for row_expr in rows {
-        let row_values: Vec<&Expression> = match row_expr {
-            Expression::Array { elements, .. } => elements.iter().collect(),
-            _ => vec![row_expr],
-        };
-        max_cols = max_cols.max(row_values.len());
-        actual += row_values.len();
-        for value_expr in row_values {
-            let value = eval_expr::<T>(value_expr, caller_env)?;
-            values.push(value);
-        }
-    }
-
-    if max_cols == 0 {
-        return Ok(false);
-    }
-    if let Some(expected) = concrete_param_size(&param.dims)
-        && expected != actual
-    {
-        return Err(EvalError::ShapeMismatch {
-            context: "function matrix input",
-            expected,
-            actual,
-        });
-    }
-    let shape = vec![rows.len() as i64, max_cols as i64];
-    set_array_entries(local_env, &param.name, &shape, &values);
-    if let Some(field) = selection_field {
-        set_array_entries(
-            local_env,
-            &format!("{}.{field}", param.name),
-            &shape,
-            &values,
-        );
-    }
-    let dims = std::sync::Arc::make_mut(&mut local_env.dims);
-    dims.insert(param.name.clone(), shape.clone());
-    if let Some(field) = selection_field {
-        dims.insert(format!("{}.{field}", param.name), shape);
-    }
-    Ok(true)
-}
-
-fn selected_component_field_in_current_call<T: SimFloat>(env: &VarEnv<T>) -> Option<&'static str> {
-    let caller = current_function_call_name(&env.runtime)?;
-    complex_field_selection_from_path(&caller)
-}
-
-fn copy_array_literal_input_entries<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    let Expression::Array {
-        elements,
-        is_matrix,
-        ..
-    } = arg_expr
-    else {
-        return Ok(false);
-    };
-
-    if *is_matrix {
-        copy_array_literal_matrix_entries(local_env, param, elements, caller_env)
-    } else {
-        copy_array_literal_vector_entries(local_env, param, elements, caller_env)
-    }
-}
-
-fn is_pre_like_call_name(name: &rumoca_core::Reference) -> bool {
-    let short = name.last_segment();
-    short.eq_ignore_ascii_case("pre") || short.eq_ignore_ascii_case("previous")
-}
-
-fn pre_like_array_source_name<T: SimFloat>(
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-) -> Result<Option<String>, EvalError> {
-    let pre_arg = match arg_expr {
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Pre,
-            args,
-            ..
-        } => args.first(),
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor: false,
-            ..
-        } if is_pre_like_call_name(name) => args.first(),
-        _ => None,
-    };
-    let Some(pre_arg) = pre_arg else {
-        return Ok(None);
-    };
-    match pre_arg {
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => Ok(Some(name.as_str().to_string())),
-        _ => try_eval_field_access_path(pre_arg, caller_env),
-    }
-}
-
-fn lookup_pre_binding<T: SimFloat>(name: &str) -> Option<T> {
-    if let Some(value) = lookup_pre_value(name) {
-        return Some(T::from_f64(value));
-    }
-    None
-}
-
-fn collect_pre_array_values<T: SimFloat>(
-    source_name: &str,
-    dims: &[i64],
-) -> Result<Vec<T>, EvalError> {
-    let expected = concrete_param_size(dims).ok_or(EvalError::UnsupportedExpression {
-        kind: "pre array input shape",
-    })?;
-    let mut values = Vec::with_capacity(expected);
-    for flat_index in 0..expected {
-        let key = dae::scalar_name_text_for_flat_index(source_name, dims, flat_index);
-        let value = lookup_pre_binding::<T>(&key)
-            .or_else(|| {
-                (flat_index == 0)
-                    .then(|| lookup_pre_binding::<T>(source_name))
-                    .flatten()
-            })
-            .ok_or_else(|| EvalError::MissingBinding { name: key.clone() })?;
-        values.push(value);
-    }
-    Ok(values)
-}
-
-fn source_array_dims<T: SimFloat>(
-    param: &FunctionParam,
-    source_name: &str,
-    caller_env: &VarEnv<T>,
-) -> Result<Vec<i64>, EvalError> {
-    if let Some(dims) = caller_env.dims.get(source_name).cloned() {
-        return Ok(dims);
-    }
-    if concrete_param_size(&param.dims).is_some() {
-        return Ok(param.dims.clone());
-    }
-    Err(EvalError::UnsupportedExpression {
-        kind: "function array input argument shape",
-    })
-}
-
-fn copy_array_input_entries<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-) -> Result<(), EvalError> {
-    let param_name = param.name.as_str();
-    if param.dims.is_empty() && param.shape_expr.is_empty() {
-        return Ok(());
-    }
-    if copy_array_literal_input_entries(local_env, param, arg_expr, caller_env)? {
-        return Ok(());
-    }
-
-    let trace_array_bind = crate::trace::sim_or_introspect_enabled();
-    let pre_source_name = pre_like_array_source_name(arg_expr, caller_env)?;
-    let use_pre_values = pre_source_name.is_some();
-    let source_name = match pre_source_name {
-        Some(source_name) => Some(source_name),
-        None => match arg_expr {
-            Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => Some(name.as_str().to_string()),
-            _ => try_eval_field_access_path(arg_expr, caller_env)?,
-        },
-    };
-    let Some(source_name) = source_name else {
-        return bind_evaluated_array_input(local_env, param, arg_expr, caller_env);
-    };
-
-    let dims = source_array_dims(param, &source_name, caller_env)?;
-    let values = if use_pre_values {
-        collect_pre_array_values(&source_name, &dims)?
-    } else {
-        array_values_from_env_name_generic(source_name.as_str(), caller_env)?.ok_or_else(|| {
-            EvalError::MissingBinding {
-                name: source_name.clone(),
-            }
-        })?
-    };
-    validate_array_input_dims(&dims, values.len())?;
-    set_array_entries(local_env, param_name, &dims, &values);
-    std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims.clone());
-
-    if trace_array_bind && source_name.contains("timeTable.table") {
-        let t11 = env_array_sample(caller_env, &source_name, &[1, 1]);
-        let t21 = env_array_sample(caller_env, &source_name, &[2, 1]);
-        let t22 = env_array_sample(caller_env, &source_name, &[2, 2]);
-        tracing::debug!(
-            target: "rumoca_eval_dae::sim",
-            "function array-arg bind source='{}' param='{}' copied_entries={} dims={:?} base_present={} sample_entries=[1,1]={:?} [2,1]={:?} [2,2]={:?}",
-            source_name,
-            param_name,
-            values.len(),
-            caller_env.dims.get(&source_name),
-            caller_env.vars.contains_key(&source_name),
-            t11,
-            t21,
-            t22
-        );
-    }
-    Ok(())
-}
-
-fn env_array_sample<T: SimFloat>(env: &VarEnv<T>, name: &str, subscripts: &[usize]) -> Option<T> {
-    env.vars
-        .get(&dae::format_subscript_key(name, subscripts))
-        .copied()
-}
-
-fn bind_evaluated_array_input<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-) -> Result<(), EvalError> {
-    let values = eval_array_like_values::<T>(arg_expr, caller_env)?;
-    let Some(dims) =
-        resolved_array_input_dims(param, arg_expr, caller_env, local_env, values.len())?
-    else {
-        return Ok(());
-    };
-    let expected = concrete_param_size(&dims).ok_or(EvalError::UnsupportedExpression {
-        kind: "function array input shape",
-    })?;
-    if values.len() != expected {
-        return Err(EvalError::ShapeMismatch {
-            context: "function array input",
-            expected,
-            actual: values.len(),
-        });
-    }
-    set_array_entries(local_env, &param.name, &dims, &values);
-    std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims);
-    Ok(())
-}
-
-fn resolved_array_input_dims<T: SimFloat>(
-    param: &FunctionParam,
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-    local_env: &VarEnv<T>,
-    value_count: usize,
-) -> Result<Option<Vec<i64>>, EvalError> {
-    if !param.shape_expr.is_empty() {
-        return infer_dynamic_array_input_dims(
-            &param.shape_expr,
-            arg_expr,
-            caller_env,
-            local_env,
-            value_count,
-        )
-        .map(Some);
-    }
-    if concrete_param_size(&param.dims).is_some() {
-        return Ok(Some(param.dims.clone()));
-    }
-    if !param.dims.is_empty() && param.dims.iter().any(|dim| *dim < 0) {
-        return infer_dynamic_array_input_dims_from_declared(&param.dims, value_count).map(Some);
-    }
-    Ok(None)
-}
-
-fn infer_dynamic_array_input_dims<T: SimFloat>(
-    shape_expr: &[Subscript],
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-    local_env: &VarEnv<T>,
-    value_count: usize,
-) -> Result<Vec<i64>, EvalError> {
-    let mut dims = Vec::with_capacity(shape_expr.len());
-    let mut dynamic_indices = Vec::new();
-    for subscript in shape_expr {
-        match subscript {
-            Subscript::Index { value, .. } => dims.push(*value),
-            Subscript::Expr { expr, .. } => dims.push(eval_shape_expr_dim(expr, local_env)?),
-            Subscript::Colon { .. } => {
-                dynamic_indices.push(dims.len());
-                dims.push(0);
-            }
-        }
-    }
-    fill_dynamic_array_input_dims(
-        &mut dims,
-        &dynamic_indices,
-        arg_expr,
-        caller_env,
-        value_count,
-    )?;
-    validate_array_input_dims(&dims, value_count)?;
-    Ok(dims)
-}
-
-fn infer_dynamic_array_input_dims_from_declared(
-    declared_dims: &[i64],
-    value_count: usize,
-) -> Result<Vec<i64>, EvalError> {
-    let mut dims = declared_dims.to_vec();
-    let dynamic_indices = dims
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, dim)| (*dim <= 0).then_some(idx))
-        .collect::<Vec<_>>();
-    fill_dynamic_array_input_dims_from_count(&mut dims, &dynamic_indices, value_count)?;
-    validate_array_input_dims(&dims, value_count)?;
-    Ok(dims)
-}
-
-fn fill_dynamic_array_input_dims<T: SimFloat>(
-    dims: &mut [i64],
-    dynamic_indices: &[usize],
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-    value_count: usize,
-) -> Result<(), EvalError> {
-    if dynamic_indices.is_empty() {
-        return Ok(());
-    }
-    if dynamic_indices.len() == 1 {
-        return fill_dynamic_array_input_dims_from_count(dims, dynamic_indices, value_count);
-    }
-    let arg_dims = infer_array_arg_dims(arg_expr, caller_env, value_count)?;
-    if arg_dims.len() != dims.len() {
-        return Err(EvalError::ShapeMismatch {
-            context: "function array input rank",
-            expected: dims.len(),
-            actual: arg_dims.len(),
-        });
-    }
-    for idx in dynamic_indices {
-        dims[*idx] = arg_dims[*idx];
-    }
-    Ok(())
-}
-
-fn fill_dynamic_array_input_dims_from_count(
-    dims: &mut [i64],
-    dynamic_indices: &[usize],
-    value_count: usize,
-) -> Result<(), EvalError> {
-    let known_product = dims
-        .iter()
-        .enumerate()
-        .filter(|(idx, dim)| !dynamic_indices.contains(idx) && **dim > 0)
-        .try_fold(1usize, |acc, (_, dim)| {
-            usize::try_from(*dim)
-                .ok()
-                .and_then(|dim| acc.checked_mul(dim))
-        })
-        .ok_or(EvalError::UnsupportedExpression {
-            kind: "function array input shape",
-        })?;
-    if dynamic_indices.len() != 1
-        || known_product == 0
-        || !value_count.is_multiple_of(known_product)
-    {
-        return Err(EvalError::ShapeMismatch {
-            context: "function array input shape",
-            expected: known_product,
-            actual: value_count,
-        });
-    }
-    let inferred = value_count / known_product;
-    if inferred == 0 {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "empty dynamic function array input",
-        });
-    }
-    dims[dynamic_indices[0]] = inferred as i64;
-    Ok(())
-}
-
-fn infer_array_arg_dims<T: SimFloat>(
-    arg_expr: &Expression,
-    caller_env: &VarEnv<T>,
-    value_count: usize,
-) -> Result<Vec<i64>, EvalError> {
-    match arg_expr {
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => {
-            caller_env
-                .dims
-                .get(name.as_str())
-                .cloned()
-                .ok_or(EvalError::UnsupportedExpression {
-                    kind: "function array input argument shape",
-                })
-        }
-        Expression::Array {
-            elements,
-            is_matrix: true,
-            ..
-        } => {
-            let cols = elements
-                .iter()
-                .map(|element| {
-                    eval_array_values::<T>(element, caller_env).map(|values| values.len())
-                })
-                .collect::<Result<Vec<_>, EvalError>>()?
-                .into_iter()
-                .max()
-                .ok_or(EvalError::UnsupportedExpression {
-                    kind: "matrix literal shape",
-                })?;
-            Ok(vec![elements.len() as i64, cols as i64])
-        }
-        Expression::Array { .. }
-        | Expression::Tuple { .. }
-        | Expression::Range { .. }
-        | Expression::ArrayComprehension { .. } => Ok(vec![value_count as i64]),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Cross,
-            ..
-        } => Ok(vec![3]),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Skew,
-            ..
-        } => Ok(vec![3, 3]),
-        _ => Err(EvalError::UnsupportedExpression {
-            kind: "function array input argument shape",
-        }),
-    }
-}
-
-fn validate_array_input_dims(dims: &[i64], value_count: usize) -> Result<(), EvalError> {
-    if dims.is_empty() || dims.iter().any(|dim| *dim < 0) {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "function array input shape",
-        });
-    }
-    let expected = concrete_param_size(dims).ok_or(EvalError::UnsupportedExpression {
-        kind: "function array input shape",
-    })?;
-    if expected != value_count {
-        return Err(EvalError::ShapeMismatch {
-            context: "function array input shape",
-            expected,
-            actual: value_count,
-        });
-    }
-    Ok(())
-}
-
-fn concrete_param_size(dims: &[i64]) -> Option<usize> {
-    if dims.is_empty() {
-        return None;
-    }
-    dims.iter().try_fold(1usize, |acc, dim| {
-        usize::try_from(*dim)
-            .ok()
-            .and_then(|dim| acc.checked_mul(dim))
-    })
 }
 
 fn initialize_user_function_scope_values<T: SimFloat>(
@@ -1110,6 +442,7 @@ fn trace_function_call_inputs<T: SimFloat>(
     for input in inputs {
         let name = input.name.as_str();
         let dim = local_env.dims.get(name).cloned();
+        let scalar = local_env.vars.get(name).copied();
         let first = env_array_sample(local_env, name, &[1]);
         let second = env_array_sample(local_env, name, &[2]);
         let first_base = dae::format_subscript_key(name, &[1]);
@@ -1120,8 +453,9 @@ fn trace_function_call_inputs<T: SimFloat>(
         let second_im = local_env.vars.get(&format!("{second_base}.im")).copied();
         tracing::debug!(
             target: "rumoca_eval_dae::function_inputs",
-            "function-call input {} dims={:?} {}[1]={:?} {}[2]={:?} {}[1].re={:?} {}[2].re={:?} {}[1].im={:?} {}[2].im={:?}",
+            "function-call input {} value={:?} dims={:?} {}[1]={:?} {}[2]={:?} {}[1].re={:?} {}[2].re={:?} {}[1].im={:?} {}[2].im={:?}",
             name,
+            scalar.map(|value| value.real()),
             dim,
             name,
             first,
@@ -1308,13 +642,114 @@ pub fn eval_user_function_output_path_pub<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
     let (_, _, local_env) = eval_user_function_local_env(name, args, env)?;
+    let value =
+        local_env
+            .vars
+            .get(output_path)
+            .copied()
+            .ok_or_else(|| EvalError::MissingBinding {
+                name: output_path.to_string(),
+            })?;
+    Ok(value)
+}
+
+/// Evaluate every scalar element of an array-valued path below a user-function
+/// output.  Record outputs may be nested to arbitrary depth; `output_path` is
+/// the fully qualified path in the function-local environment (for example,
+/// `result.pose.position`).
+pub fn eval_user_function_output_array_path_pub<T: SimFloat>(
+    name: &VarName,
+    args: &[Expression],
+    output_path: &str,
+    env: &VarEnv<T>,
+) -> Result<Vec<T>, EvalError> {
+    let (_, _, local_env) = eval_user_function_local_env(name, args, env)?;
+    if let Some(values) =
+        super::array_helpers::array_values_from_env_name_generic(output_path, &local_env)?
+    {
+        return Ok(values);
+    }
     local_env
         .vars
         .get(output_path)
         .copied()
+        .map(|value| vec![value])
         .ok_or_else(|| EvalError::MissingBinding {
             name: output_path.to_string(),
         })
+}
+
+/// Record function output: `(field suffix, value)` pairs plus per-field dims.
+pub type RecordOutputFields<T> = (Vec<(String, T)>, Vec<(String, Vec<i64>)>);
+
+pub fn eval_user_function_record_output_pub<T: SimFloat>(
+    name: &VarName,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Result<Option<RecordOutputFields<T>>, EvalError> {
+    let Some(function) = resolve_user_function(name.as_str(), env) else {
+        return Ok(None);
+    };
+    let Some(output) = function.outputs.first() else {
+        return Ok(None);
+    };
+    if output.type_class != Some(rumoca_core::ClassType::Record) {
+        return Ok(None);
+    }
+    let (_, _, local_env) = eval_user_function_local_env(name, args, env)?;
+    let prefix = format!("{}.", output.name);
+    let values = local_env
+        .vars
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix(prefix.as_str())
+                .map(|suffix| (suffix.to_string(), *value))
+        })
+        .collect::<Vec<_>>();
+    let dims = local_env
+        .dims
+        .iter()
+        .filter_map(|(key, dims)| {
+            key.strip_prefix(prefix.as_str())
+                .map(|suffix| (suffix.to_string(), dims.clone()))
+        })
+        .collect::<Vec<_>>();
+    Ok(Some((values, dims)))
+}
+
+/// Materialized function outputs as `(output name, flattened values)` pairs.
+pub type MaterializedOutputs<T> = Vec<(String, Vec<T>)>;
+
+pub fn eval_user_function_outputs_pub<T: SimFloat>(
+    name: &VarName,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Result<Option<MaterializedOutputs<T>>, EvalError> {
+    let Some(function) = resolve_user_function(name.as_str(), env) else {
+        return Ok(None);
+    };
+    if function.external.is_some() || function.body.is_empty() {
+        return Ok(None);
+    }
+    let (_, outputs, local_env) = eval_user_function_local_env(name, args, env)?;
+    let mut materialized = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        let values = if local_env
+            .dims
+            .get(output.name.as_str())
+            .is_some_and(|dims| !dims.is_empty())
+        {
+            array_values_from_env_name_generic(output.name.as_str(), &local_env)?.ok_or_else(
+                || EvalError::MissingBinding {
+                    name: output.name.clone(),
+                },
+            )?
+        } else {
+            vec![local_env.require(output.name.as_str())?]
+        };
+        materialized.push((output.name, values));
+    }
+    Ok(Some(materialized))
 }
 
 fn eval_user_function_local_env<T: SimFloat>(
@@ -1356,13 +791,29 @@ fn eval_user_function_local_env<T: SimFloat>(
 
     let mut local_env = build_local_function_env(env);
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
+    let trace_call = function_trace_match_enabled(name.as_str(), resolved_name.as_str());
+    trace_function_call_summary(
+        trace_call,
+        name,
+        &resolved_name,
+        &FunctionCallSummary {
+            args_len: args.len(),
+            inputs_len: inputs.len(),
+            outputs_len: outputs.len(),
+            locals_len: locals.len(),
+            body_len: body.len(),
+            is_external: false,
+        },
+    );
     with_function_call_stack(&env.runtime, name.as_str(), || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
+        trace_function_call_inputs(trace_call, &local_env, &inputs);
         initialize_user_function_scope_values(&mut local_env, &outputs, &locals)?;
         crate::statement::eval_statements(&body, &mut local_env)
     })?;
+    trace_function_call_outputs(trace_call, &local_env, &outputs);
     cache_user_function_outputs(env, &resolved_name, args, &outputs, &local_env);
     Ok((resolved_name, outputs, local_env))
 }
@@ -1411,6 +862,55 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
     })?;
     cache_user_function_outputs(env, &resolved_name, args, &outputs, &local_env);
     collect_function_array_output(&output, &local_env)
+}
+
+pub fn resolve_user_function_output_dims_pub<T: SimFloat>(
+    name: &VarName,
+    args: &[Expression],
+    output_name: Option<&str>,
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<i64>>, EvalError> {
+    let (resolved_name, selection) =
+        resolve_user_function_target(name.as_str(), env).ok_or_else(|| {
+            EvalError::MissingFunction {
+                name: name.to_string(),
+            }
+        })?;
+    let function = resolve_user_function(resolved_name.as_str(), env).ok_or_else(|| {
+        EvalError::MissingFunction {
+            name: resolved_name.to_string(),
+        }
+    })?;
+    let selected_name = output_name.or_else(|| selection.as_ref().map(|item| item.output_name()));
+    let output = match selected_name {
+        Some(selected_name) => function
+            .outputs
+            .iter()
+            .find(|output| output.name == selected_name),
+        None => function.outputs.first(),
+    }
+    .ok_or(EvalError::UnsupportedExpression {
+        kind: "function output shape",
+    })?;
+    if output.dims.is_empty() && output.shape_expr.is_empty() {
+        return Ok(None);
+    }
+
+    let mut local_env = build_local_function_env(env);
+    seed_static_function_scope_dims(
+        &mut local_env,
+        &function.inputs,
+        &function.outputs,
+        &function.locals,
+    );
+    bind_user_function_inputs(
+        &mut local_env,
+        resolved_name.as_str(),
+        &function.inputs,
+        args,
+        env,
+    )?;
+    resolved_function_param_dims(output, &local_env)
 }
 
 fn selected_array_output_param(

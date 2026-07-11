@@ -540,16 +540,8 @@ impl RecordFieldSpec {
         self.param.default.clone()
     }
 
-    fn field_access(
-        &self,
-        base: rumoca_core::Expression,
-        span: rumoca_core::Span,
-    ) -> rumoca_core::Expression {
-        rumoca_core::Expression::FieldAccess {
-            base: Box::new(base),
-            field: self.param.name.clone(),
-            span,
-        }
+    fn is_statically_empty(&self) -> bool {
+        !self.param.dims.is_empty() && self.param.dims.contains(&0)
     }
 
     fn matches_component_ref(
@@ -622,7 +614,9 @@ fn constructor_field_arg(
 
 fn rhs_field_expression(
     rhs: &rumoca_core::Expression,
+    lhs_name: &rumoca_core::Reference,
     field: &RecordFieldSpec,
+    field_vars: &[&flat::Variable],
     index: usize,
     flat: &flat::Model,
     equation_span: rumoca_core::Span,
@@ -646,7 +640,29 @@ fn rhs_field_expression(
         Some(span) => span,
         None => equation_span,
     };
-    field.field_access(rhs.clone(), span)
+    let mut selected = rhs.clone();
+    let lhs_part_count = lhs_name
+        .component_ref()
+        .map(|reference| reference.parts.len())
+        .unwrap_or(0);
+    if let Some(field_ref) = field_vars
+        .first()
+        .and_then(|variable| variable.component_ref.as_ref())
+    {
+        for part in field_ref.parts.iter().skip(lhs_part_count) {
+            selected = rumoca_core::Expression::FieldAccess {
+                base: Box::new(selected),
+                field: part.ident.clone(),
+                span,
+            };
+        }
+        return selected;
+    }
+    rumoca_core::Expression::FieldAccess {
+        base: Box::new(selected),
+        field: field.param.name.clone(),
+        span,
+    }
 }
 
 fn reference_for_variable(field_var: &flat::Variable) -> rumoca_core::Reference {
@@ -713,7 +729,7 @@ fn component_ref_matches_record_field(
 ) -> bool {
     let lhs_parts = lhs_ref.parts.as_slice();
     let field_parts = field_ref.parts.as_slice();
-    if field_parts.len() != lhs_parts.len() + 1
+    if field_parts.len() <= lhs_parts.len()
         || !field.matches_component_ref(field_ref, symbol_ancestry)
     {
         return false;
@@ -861,6 +877,78 @@ fn record_field_variables<'a>(
         .collect())
 }
 
+fn component_ref_is_record_descendant(
+    lhs_ref: &rumoca_core::ComponentReference,
+    field_ref: &rumoca_core::ComponentReference,
+) -> bool {
+    let lhs_parts = lhs_ref.parts.as_slice();
+    let field_parts = field_ref.parts.as_slice();
+    if field_parts.len() <= lhs_parts.len() {
+        return false;
+    }
+    let Some(lhs_leaf_index) = lhs_parts.len().checked_sub(1) else {
+        return false;
+    };
+    let field_leaf = &field_parts[field_parts.len() - 1];
+    lhs_parts.iter().enumerate().all(|(index, lhs_part)| {
+        let field_part = &field_parts[index];
+        lhs_part.ident == field_part.ident
+            && if index == lhs_leaf_index {
+                record_owner_subscripts_match(lhs_part, field_part, field_leaf)
+            } else {
+                subscripts_match_semantically(&lhs_part.subs, &field_part.subs)
+            }
+    })
+}
+
+fn record_descendant_field_groups<'a>(
+    lhs_ref: &rumoca_core::Reference,
+    flat: &'a flat::Model,
+    span: rumoca_core::Span,
+) -> Result<Vec<Vec<&'a flat::Variable>>, ToDaeError> {
+    let Some(lhs_component_ref) = lhs_ref.component_ref() else {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "record equation for `{}` has no structured component reference",
+                lhs_ref.as_str()
+            ),
+            span,
+        ));
+    };
+    let lhs_part_count = lhs_component_ref.parts.len();
+    let mut groups: IndexMap<
+        Vec<String>,
+        Vec<(&flat::Variable, &rumoca_core::ComponentReference)>,
+    > = IndexMap::new();
+    for variable in flat.variables.values() {
+        let Some(field_ref) = variable.component_ref.as_ref() else {
+            continue;
+        };
+        if !component_ref_is_record_descendant(lhs_component_ref, field_ref) {
+            continue;
+        }
+        let field_path = field_ref.parts[lhs_part_count..]
+            .iter()
+            .map(|part| part.ident.clone())
+            .collect::<Vec<_>>();
+        groups
+            .entry(field_path)
+            .or_default()
+            .push((variable, field_ref));
+    }
+    Ok(groups
+        .into_values()
+        .map(|mut variables| {
+            variables
+                .sort_by_key(|(_, field_ref)| record_field_sort_key(lhs_component_ref, field_ref));
+            variables
+                .into_iter()
+                .map(|(variable, _)| variable)
+                .collect()
+        })
+        .collect())
+}
+
 fn record_field_expansion_error(
     lhs_name: &rumoca_core::Reference,
     field: &RecordFieldSpec,
@@ -906,6 +994,35 @@ pub(crate) fn expand_record_field_equation(
         return Ok(None);
     }
 
+    let record_function_result = match rhs.as_ref() {
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: false,
+            ..
+        } => flat.functions.get(name.var_name()).is_some_and(|function| {
+            matches!(function.outputs.as_slice(), [output]
+                if output.type_class == Some(rumoca_core::ClassType::Record))
+        }),
+        _ => false,
+    };
+    if record_function_result && record_field_specs_for_rhs(rhs, flat).is_none() {
+        let field_groups = record_descendant_field_groups(lhs_name, flat, *lhs_span)?;
+        let mut equations = Vec::new();
+        for field_vars in field_groups {
+            equations.push(flat::Equation::new_array(
+                field_residual(
+                    field_lhs_expression(&field_vars, eq.span),
+                    rhs_field_expression_from_variables(rhs, lhs_name, &field_vars, eq.span),
+                    eq.span,
+                ),
+                eq.span,
+                eq.origin.clone(),
+                field_scalar_count(&field_vars),
+            ));
+        }
+        return Ok(Some(equations));
+    }
+
     let Some(field_specs) = record_field_specs_for_rhs(rhs, flat) else {
         return Ok(None);
     };
@@ -913,13 +1030,16 @@ pub(crate) fn expand_record_field_equation(
     for (index, field) in field_specs.iter().enumerate() {
         let field_vars = record_field_variables(lhs_name, field, flat, *lhs_span)?;
         if field_vars.is_empty() {
+            if field.is_statically_empty() {
+                continue;
+            }
             return Err(record_field_expansion_error(lhs_name, field, eq.span));
         }
         let scalar_count = field_scalar_count(&field_vars);
         equations.push(flat::Equation::new_array(
             field_residual(
                 field_lhs_expression(&field_vars, eq.span),
-                rhs_field_expression(rhs, field, index, flat, eq.span),
+                rhs_field_expression(rhs, lhs_name, field, &field_vars, index, flat, eq.span),
                 eq.span,
             ),
             eq.span,
@@ -929,6 +1049,33 @@ pub(crate) fn expand_record_field_equation(
     }
 
     Ok((!equations.is_empty()).then_some(equations))
+}
+
+fn rhs_field_expression_from_variables(
+    rhs: &rumoca_core::Expression,
+    lhs_name: &rumoca_core::Reference,
+    field_vars: &[&flat::Variable],
+    equation_span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    let span = rhs.span().unwrap_or(equation_span);
+    let mut selected = rhs.clone();
+    let lhs_part_count = lhs_name
+        .component_ref()
+        .map(|reference| reference.parts.len())
+        .unwrap_or(0);
+    if let Some(field_ref) = field_vars
+        .first()
+        .and_then(|variable| variable.component_ref.as_ref())
+    {
+        for part in field_ref.parts.iter().skip(lhs_part_count) {
+            selected = rumoca_core::Expression::FieldAccess {
+                base: Box::new(selected),
+                field: part.ident.clone(),
+                span,
+            };
+        }
+    }
+    selected
 }
 
 fn route_classified_equation(

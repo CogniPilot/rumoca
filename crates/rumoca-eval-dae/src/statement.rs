@@ -58,12 +58,18 @@ fn eval_assignment_statement<T: SimFloat>(
     value: &rumoca_core::Expression,
     env: &mut VarEnv<T>,
 ) -> Result<(), EvalError> {
+    if assign_array_slice(comp, value, env)? {
+        return Ok(());
+    }
     let name = component_ref_to_string(comp, env)?;
     let has_explicit_subscripts = comp.parts.iter().any(|part| !part.subs.is_empty());
     if !has_explicit_subscripts && materialize_constructor_assignment(&name, value, env)? {
         return Ok(());
     }
-    if !has_explicit_subscripts && materialize_record_alias_assignment(&name, value, env) {
+    if !has_explicit_subscripts && materialize_record_alias_assignment(&name, value, env)? {
+        return Ok(());
+    }
+    if materialize_record_function_assignment(&name, value, env)? {
         return Ok(());
     }
     if !has_explicit_subscripts
@@ -71,10 +77,26 @@ fn eval_assignment_statement<T: SimFloat>(
         && !dims.is_empty()
     {
         let values = eval::eval_array_values(value, env)?;
-        if values.len() > 1 {
-            eval::set_array_entries(env, &name, &dims, &values);
-            return Ok(());
-        }
+        eval::set_array_entries(env, &name, &dims, &values);
+        return Ok(());
+    }
+    if !has_explicit_subscripts
+        && name.contains('.')
+        && let Ok(inferred_dims) = eval::infer_runtime_expr_dims(value, env)
+        && !inferred_dims.is_empty()
+    {
+        let dims = inferred_dims
+            .into_iter()
+            .map(|dim| {
+                i64::try_from(dim).map_err(|_| EvalError::UnsupportedExpression {
+                    kind: "inferred assignment dimensions",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let values = eval::eval_array_values(value, env)?;
+        std::sync::Arc::make_mut(&mut env.dims).insert(name.clone(), dims.clone());
+        eval::set_array_entries(env, &name, &dims, &values);
+        return Ok(());
     }
     let val = eval::eval_statement_value(value, env)?;
     maybe_log_introspect_assignment(&name, val);
@@ -82,22 +104,210 @@ fn eval_assignment_statement<T: SimFloat>(
     Ok(())
 }
 
+fn assign_array_slice<T: SimFloat>(
+    comp: &rumoca_core::ComponentReference,
+    value: &rumoca_core::Expression,
+    env: &mut VarEnv<T>,
+) -> Result<bool, EvalError> {
+    let Some(target) = resolve_array_slice_target(comp, env)? else {
+        return Ok(false);
+    };
+    let values = eval::eval_shaped_array_values(value, env, target.total)?;
+    write_array_slice_values(&target, &values, env)?;
+    Ok(true)
+}
+
+struct ArraySliceTarget {
+    base_name: String,
+    selections: Vec<Vec<usize>>,
+    selection_dims: Vec<i64>,
+    total: usize,
+}
+
+fn resolve_array_slice_target<T: SimFloat>(
+    comp: &rumoca_core::ComponentReference,
+    env: &VarEnv<T>,
+) -> Result<Option<ArraySliceTarget>, EvalError> {
+    let Some(last) = comp.parts.last() else {
+        return Ok(None);
+    };
+    let has_slice = last.subs.iter().any(|subscript| {
+        matches!(subscript, rumoca_core::Subscript::Colon { .. })
+            || matches!(subscript, rumoca_core::Subscript::Expr { expr, .. }
+                if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }))
+    });
+    if !has_slice {
+        return Ok(None);
+    }
+    if comp.parts[..comp.parts.len() - 1]
+        .iter()
+        .any(|part| !part.subs.is_empty())
+    {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "slice assignment through an indexed aggregate",
+        });
+    }
+
+    let base_name = comp
+        .parts
+        .iter()
+        .map(|part| part.ident.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
+    let dims =
+        env.dims
+            .get(base_name.as_str())
+            .cloned()
+            .ok_or_else(|| EvalError::MissingBinding {
+                name: format!("{base_name} dimensions"),
+            })?;
+    if last.subs.len() > dims.len() {
+        return Err(EvalError::ShapeMismatch {
+            context: "slice assignment rank",
+            expected: dims.len(),
+            actual: last.subs.len(),
+        });
+    }
+
+    let mut selections = Vec::with_capacity(dims.len());
+    for (axis, dim) in dims.iter().enumerate() {
+        let extent = usize::try_from(*dim).map_err(|_| EvalError::UnsupportedExpression {
+            kind: "slice assignment dimensions",
+        })?;
+        let selection = match last.subs.get(axis) {
+            Some(rumoca_core::Subscript::Index { value, .. }) => {
+                vec![positive_slice_index(*value, extent)?]
+            }
+            Some(rumoca_core::Subscript::Expr { expr, .. })
+                if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
+            {
+                eval::eval_array_values(expr.as_ref(), env)?
+                    .into_iter()
+                    .map(|item| finite_slice_index(item.real(), extent))
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            Some(rumoca_core::Subscript::Expr { expr, .. }) => {
+                vec![finite_slice_index(
+                    eval::eval_expr::<T>(expr, env)?.real(),
+                    extent,
+                )?]
+            }
+            Some(rumoca_core::Subscript::Colon { .. }) | None => (1..=extent).collect(),
+        };
+        selections.push(selection);
+    }
+
+    let selection_dims = selections
+        .iter()
+        .map(|selection| {
+            i64::try_from(selection.len()).map_err(|_| EvalError::UnsupportedExpression {
+                kind: "slice assignment dimensions",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total = selection_dims.iter().try_fold(1usize, |count, extent| {
+        usize::try_from(*extent)
+            .ok()
+            .and_then(|extent| count.checked_mul(extent))
+    });
+    let total = total.ok_or(EvalError::UnsupportedExpression {
+        kind: "slice assignment dimensions",
+    })?;
+    Ok(Some(ArraySliceTarget {
+        base_name,
+        selections,
+        selection_dims,
+        total,
+    }))
+}
+
+fn write_array_slice_values<T: SimFloat>(
+    target: &ArraySliceTarget,
+    values: &[T],
+    env: &mut VarEnv<T>,
+) -> Result<(), EvalError> {
+    if values.len() != target.total {
+        return Err(EvalError::ShapeMismatch {
+            context: "slice assignment value",
+            expected: target.total,
+            actual: values.len(),
+        });
+    }
+    for (flat_index, item) in values.iter().enumerate() {
+        let selection_index =
+            rumoca_ir_dae::flat_index_to_subscripts(&target.selection_dims, flat_index).ok_or(
+                EvalError::UnsupportedExpression {
+                    kind: "slice assignment index",
+                },
+            )?;
+        let actual_index = selection_index
+            .iter()
+            .enumerate()
+            .map(|(axis, index)| target.selections[axis][index - 1])
+            .collect::<Vec<_>>();
+        env.set(
+            &rumoca_ir_dae::format_subscript_key(target.base_name.as_str(), &actual_index),
+            *item,
+        );
+    }
+    Ok(())
+}
+
+fn positive_slice_index(value: i64, extent: usize) -> Result<usize, EvalError> {
+    usize::try_from(value)
+        .ok()
+        .filter(|index| *index >= 1 && *index <= extent)
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "slice assignment index",
+        })
+}
+
+fn finite_slice_index(value: f64, extent: usize) -> Result<usize, EvalError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "slice assignment index",
+        });
+    }
+    positive_slice_index(value as i64, extent)
+}
+
+fn materialize_record_function_assignment<T: SimFloat>(
+    target: &str,
+    value: &rumoca_core::Expression,
+    env: &mut VarEnv<T>,
+) -> Result<bool, EvalError> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        ..
+    } = value
+    else {
+        return Ok(false);
+    };
+    let Some((values, field_dims)) =
+        eval::eval_user_function_record_output_pub(name.var_name(), args, env)?
+    else {
+        return Ok(false);
+    };
+    for (suffix, field_value) in values {
+        env.set(&format!("{target}.{suffix}"), field_value);
+    }
+    let dims = std::sync::Arc::make_mut(&mut env.dims);
+    for (suffix, value) in field_dims {
+        dims.insert(format!("{target}.{suffix}"), value);
+    }
+    Ok(true)
+}
+
 fn materialize_record_alias_assignment<T: SimFloat>(
     target: &str,
     value: &rumoca_core::Expression,
     env: &mut VarEnv<T>,
-) -> bool {
-    let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = value
-    else {
-        return false;
+) -> Result<bool, EvalError> {
+    let Some(source) = eval::eval_field_access_path(value, env)? else {
+        return Ok(false);
     };
-    if !subscripts.is_empty() {
-        return false;
-    }
-
-    let source = name.as_str();
     let source_prefix = format!("{source}.");
     let target_prefix = format!("{target}.");
     let selected = env
@@ -109,17 +319,17 @@ fn materialize_record_alias_assignment<T: SimFloat>(
         })
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     for (field_name, field_value) in selected {
         env.set(&field_name, field_value);
     }
-    if let Some(value) = env.vars.get(source).copied() {
+    if let Some(value) = env.vars.get(source.as_str()).copied() {
         env.set(target, value);
     }
-    copy_record_alias_dims(target, source, env);
-    true
+    copy_record_alias_dims(target, source.as_str(), env);
+    Ok(true)
 }
 
 fn copy_record_alias_dims<T: SimFloat>(target: &str, source: &str, env: &mut VarEnv<T>) {
@@ -363,6 +573,55 @@ fn maybe_log_function_call_summary(
     }
 }
 
+fn apply_materialized_function_outputs<T: SimFloat>(
+    materialized: eval::MaterializedOutputs<T>,
+    outputs: &[rumoca_core::ComponentReference],
+    output_names: &[String],
+    env: &mut VarEnv<T>,
+) -> Result<(), EvalError> {
+    let by_name = materialized
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    for (idx, target) in outputs.iter().enumerate() {
+        let Some(output_name) = output_names.get(idx) else {
+            break;
+        };
+        let Some(values) = by_name.get(output_name) else {
+            return Err(EvalError::MissingBinding {
+                name: output_name.clone(),
+            });
+        };
+        if let Some(slice_target) = resolve_array_slice_target(target, env)? {
+            write_array_slice_values(&slice_target, values, env)?;
+            continue;
+        }
+        let target_key = component_ref_to_string(target, env)?;
+        if values.len() == 1 {
+            env.set(&target_key, values[0]);
+            continue;
+        }
+        let dims = env.dims.get(target_key.as_str()).cloned().ok_or_else(|| {
+            EvalError::MissingBinding {
+                name: format!("{target_key} dimensions"),
+            }
+        })?;
+        let expected = dims.iter().try_fold(1usize, |count, extent| {
+            usize::try_from(*extent)
+                .ok()
+                .and_then(|extent| count.checked_mul(extent))
+        });
+        if expected != Some(values.len()) {
+            return Err(EvalError::ShapeMismatch {
+                context: "function output assignment",
+                expected: expected.unwrap_or(0),
+                actual: values.len(),
+            });
+        }
+        eval::set_array_entries(env, &target_key, &dims, values);
+    }
+    Ok(())
+}
+
 fn apply_selected_function_outputs<T: SimFloat>(
     func_name: &rumoca_core::VarName,
     args: &[rumoca_core::Expression],
@@ -375,6 +634,11 @@ fn apply_selected_function_outputs<T: SimFloat>(
     else {
         return Ok(false);
     };
+
+    if let Some(materialized) = eval::eval_user_function_outputs_pub(&resolved_name, args, env)? {
+        apply_materialized_function_outputs(materialized, outputs, &output_names, env)?;
+        return Ok(true);
+    }
 
     let mut assigned_outputs = 0usize;
     for (idx, target) in outputs.iter().enumerate() {
@@ -469,6 +733,25 @@ fn eval_function_call_statement<T: SimFloat>(
     env: &mut VarEnv<T>,
 ) -> Result<(), EvalError> {
     let func_name = comp.to_var_name();
+    match func_name.last_segment() {
+        "assert" => {
+            let condition = args.first().ok_or(EvalError::UnsupportedExpression {
+                kind: "assert statement without condition",
+            })?;
+            if eval::eval_expr::<T>(condition, env)?.to_bool() {
+                return Ok(());
+            }
+            return Err(EvalError::AssertionFailed {
+                message: statement_message(args.get(1), "assertion failed"),
+            });
+        }
+        "terminate" => {
+            return Err(EvalError::Terminated {
+                message: statement_message(args.first(), "simulation terminated"),
+            });
+        }
+        _ => {}
+    }
     let trace_algorithm_calls = trace_algorithm_calls_enabled();
     maybe_log_function_call_header(trace_algorithm_calls, &func_name, outputs.len());
 
@@ -483,6 +766,16 @@ fn eval_function_call_statement<T: SimFloat>(
         env.set(&target_key, result);
     }
     Ok(())
+}
+
+fn statement_message(expr: Option<&rumoca_core::Expression>, fallback: &str) -> String {
+    match expr {
+        Some(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(message),
+            ..
+        }) => message.clone(),
+        _ => fallback.to_string(),
+    }
 }
 
 /// Evaluate a single statement.
@@ -658,10 +951,92 @@ mod tests {
         }
     }
 
+    fn string_lit(value: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value.to_string()),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn call_statement(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Statement {
+        rumoca_core::Statement::FunctionCall {
+            comp: comp_ref(&[name]),
+            args,
+            outputs: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     #[test]
     fn test_eval_empty_statements() {
         let mut env = VarEnv::<f64>::new();
         eval_statements(&[], &mut env).expect("empty statements should evaluate");
+    }
+
+    #[test]
+    fn true_assert_statement_allows_function_evaluation_to_continue() {
+        let mut env = VarEnv::<f64>::new();
+        eval_statements(
+            &[call_statement(
+                "assert",
+                vec![bool_lit(true), string_lit("must not fail")],
+            )],
+            &mut env,
+        )
+        .expect("a satisfied Modelica assert is a no-op");
+    }
+
+    #[test]
+    fn false_assert_statement_reports_its_modelica_message() {
+        let mut env = VarEnv::<f64>::new();
+        let err = eval_statements(
+            &[call_statement(
+                "assert",
+                vec![bool_lit(false), string_lit("radius must be positive")],
+            )],
+            &mut env,
+        )
+        .expect_err("a failed Modelica assert must stop function evaluation");
+        assert_eq!(
+            err,
+            EvalError::AssertionFailed {
+                message: "radius must be positive".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn assignment_infers_nested_record_array_shape_from_expression() {
+        let mut env = VarEnv::<f64>::new();
+        let rhs = rumoca_core::Expression::If {
+            branches: vec![(
+                bool_lit(true),
+                rumoca_core::Expression::Array {
+                    elements: vec![real(1.0), real(2.0), real(3.0)],
+                    is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
+                },
+            )],
+            else_branch: Box::new(rumoca_core::Expression::Array {
+                elements: vec![real(4.0), real(5.0), real(6.0)],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        };
+        eval_statements(
+            &[rumoca_core::Statement::Assignment {
+                comp: comp_ref(&["result", "pose", "position"]),
+                value: rhs,
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect("record-array assignments should infer their rank and extent");
+
+        assert_eq!(env.dims.get("result.pose.position"), Some(&vec![3]));
+        assert_eq!(env_value(&env, "result.pose.position[1]"), 1.0);
+        assert_eq!(env_value(&env, "result.pose.position[3]"), 3.0);
     }
 
     #[test]
@@ -932,6 +1307,82 @@ mod tests {
 
         assert_eq!(env_value(&env, "out1"), 2.5);
         assert_eq!(env_value(&env, "out2"), 5.0);
+    }
+
+    #[test]
+    fn function_call_statement_assigns_array_output_to_slice() {
+        let mut env = VarEnv::<f64>::new();
+        let mut functions = indexmap::IndexMap::new();
+
+        let mut f = rumoca_core::Function::new("Pkg.vectorPair", rumoca_core::Span::DUMMY);
+        f.add_input(rumoca_core::FunctionParam::new(
+            "u",
+            "Real",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(
+            rumoca_core::FunctionParam::new(
+                "values",
+                "Real",
+                rumoca_core::Span::source_free_serde_default(),
+            )
+            .with_dims(vec![2]),
+        );
+        f.add_output(rumoca_core::FunctionParam::new(
+            "accepted",
+            "Boolean",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.body = vec![
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref(&["values"]),
+                value: rumoca_core::Expression::Array {
+                    elements: vec![
+                        var("u"),
+                        rumoca_core::Expression::Binary {
+                            op: rumoca_core::OpBinary::Add,
+                            lhs: Box::new(var("u")),
+                            rhs: Box::new(real(1.0)),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    ],
+                    is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
+                },
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref(&["accepted"]),
+                value: bool_lit(true),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ];
+        functions.insert("Pkg.vectorPair".to_string(), f);
+        env.functions = std::sync::Arc::new(functions);
+
+        eval::set_array_entries(&mut env, "matrix", &[3, 2], &[0.0; 6]);
+        std::sync::Arc::make_mut(&mut env.dims).insert("matrix".to_string(), vec![3, 2]);
+        let mut slice = comp_ref(&["matrix"]);
+        slice.parts[0].subs = vec![
+            rumoca_core::Subscript::generated_index(2, rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::colon(rumoca_core::Span::DUMMY),
+        ];
+
+        eval_statements(
+            &[rumoca_core::Statement::FunctionCall {
+                comp: comp_ref(&["Pkg", "vectorPair"]),
+                args: vec![real(5.0)],
+                outputs: vec![slice, comp_ref(&["accepted"])],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            &mut env,
+        )
+        .expect("array function output should assign to a matrix row slice");
+
+        assert_eq!(env_value(&env, "matrix[2,1]"), 5.0);
+        assert_eq!(env_value(&env, "matrix[2,2]"), 6.0);
+        assert_eq!(env_value(&env, "matrix[1,1]"), 0.0);
+        assert_eq!(env_value(&env, "accepted"), 1.0);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::lower::{
     helpers::{format_i64_dims, format_usize_dims, positive_i64_index},
     unsupported_at,
 };
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
 
 use super::*;
 
@@ -649,6 +649,13 @@ fn project_index_expression_scalar(
     ctx: &ProjectionContext<'_>,
 ) -> Result<Option<rumoca_core::Expression>, LowerError> {
     let base_dims = expression_result_dims(base, ctx.dae_model, ctx.structural_bindings, span)?;
+    tracing::debug!(
+        target: "rumoca_phase_solve::projection",
+        ?base,
+        ?subscripts,
+        ?base_dims,
+        "projecting indexed scalar expression"
+    );
     let selections = slice_selections(subscripts, &base_dims, ctx.structural_bindings, span)?;
     let mut result_dims =
         derivative_vec_with_capacity(selections.len(), "indexed expression result rank", span)?;
@@ -1602,17 +1609,23 @@ fn projected_declared_function_output_dims_split(
         }
         None => return Ok(None),
     };
-    if let Some(field) = projection_suffix.output_field.as_deref()
-        && (!function_output_is_complex_record(output) || !matches!(field, "re" | "im"))
-    {
-        return Ok(None);
-    }
-    let output_span = if output.span.is_dummy() {
+    let projected_output = match projection_suffix.output_field.as_deref() {
+        Some(field) => match record_output_field_param(&dae_model.symbols.functions, output, field)
+        {
+            Some(field_output) => field_output,
+            None if function_output_is_complex_record(output) && matches!(field, "re" | "im") => {
+                output
+            }
+            None => return Ok(None),
+        },
+        None => output,
+    };
+    let output_span = if projected_output.span.is_dummy() {
         span
     } else {
-        output.span
+        projected_output.span
     };
-    let dims = declared_output_concrete_dims(output, output_name, output_span)?;
+    let dims = declared_output_concrete_dims(projected_output, output_name, output_span)?;
     projected_output_remaining_dims(&dims, &projection_suffix.indices, output_name, span).map(Some)
 }
 

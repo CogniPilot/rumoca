@@ -372,6 +372,28 @@ pub(super) fn convert_component_to_param(
         param = param.with_dims(param_dims);
     }
 
+    // Preserve declared scalar bounds on function parameters.  Besides being
+    // part of the parameter contract, finite Integer bounds allow solve
+    // lowering to turn a runtime-bounded Modelica loop into guarded straight-
+    // line code suitable for differentiation and efficient repeated solves.
+    let lower_bound = component
+        .modifications
+        .get("min")
+        .map(|expr| {
+            let qualified = qualify_function_expr(expr, imports, locals);
+            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+        })
+        .transpose()?;
+    let upper_bound = component
+        .modifications
+        .get("max")
+        .map(|expr| {
+            let qualified = qualify_function_expr(expr, imports, locals);
+            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+        })
+        .transpose()?;
+    param = param.with_bounds(lower_bound, upper_bound);
+
     // Use explicit declaration binding (`= expr`) for default function inputs.
     // Fall back to `start` when no declaration binding is available.
     if component.has_explicit_binding {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
 
 #[derive(Debug, Clone)]
 pub(super) struct FunctionOutputProjection {
@@ -60,29 +60,33 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 return Ok(None);
             };
-        if let Some(field) = output_field.as_deref()
-            && (!output_is_complex_record(output) || !matches!(field, "re" | "im"))
-        {
-            return Ok(None);
-        }
+        let projected_output = match output_field.as_deref() {
+            Some(field) => match record_output_field_param(self.functions, output, field) {
+                Some(field_output) => field_output,
+                None if output_is_complex_record(output) && matches!(field, "re" | "im") => output,
+                None => return Ok(None),
+            },
+            None => output,
+        };
 
-        let indices = if output_has_dynamic_dims(output) {
+        let indices = if output_has_dynamic_dims(projected_output) {
             let Some(indices) = normalize_dynamic_projection_indices(&raw_indices, span)? else {
                 return Ok(None);
             };
             indices
         } else {
-            let Some(indices) = normalize_projection_indices(&output.dims, &raw_indices, span)?
+            let Some(indices) =
+                normalize_projection_indices(&projected_output.dims, &raw_indices, span)?
             else {
                 return Ok(None);
             };
             indices
         };
-        let scope_indices = if output_has_dynamic_dims(output) {
+        let scope_indices = if output_has_dynamic_dims(projected_output) {
             copy_projection_indices(&raw_indices, span)?
         } else {
             let Some(indices) =
-                scope_indices_for_projection(&output.dims, &raw_indices, &indices, span)?
+                scope_indices_for_projection(&projected_output.dims, &raw_indices, &indices, span)?
             else {
                 return Ok(None);
             };

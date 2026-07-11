@@ -226,6 +226,8 @@ fn function_param_with_type_span(
         dims: dims.to_vec(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }
@@ -1039,6 +1041,8 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
             is_matrix: true,
             span: lower_test_span(),
         }),
+        min: None,
+        max: None,
         description: None,
     });
     matrix_fn.body.push(rumoca_core::Statement::Assignment {
@@ -1190,6 +1194,8 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
         dims: vec![0],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     any_true.outputs.push(rumoca_core::FunctionParam {
@@ -1201,6 +1207,8 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
         dims: vec![],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     any_true.body.push(rumoca_core::Statement::Assignment {

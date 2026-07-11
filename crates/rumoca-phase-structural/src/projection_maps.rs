@@ -5,6 +5,8 @@ use rumoca_ir_dae as dae;
 
 use crate::StructuralError;
 
+pub type RecordFieldProjectionMap = HashMap<String, HashMap<String, HashMap<usize, String>>>;
+
 fn extract_first_component_index(name: &rumoca_core::VarName) -> Option<usize> {
     for segment in name.segments() {
         if let Some(scalar) = rumoca_core::parse_scalar_name(segment) {
@@ -192,6 +194,93 @@ pub fn build_function_output_projection_map(
         }
         if !by_index.is_empty() {
             map.insert(function_name.as_str().to_string(), by_index);
+        }
+    }
+    Ok(map)
+}
+
+fn append_record_field_projection(
+    dae: &dae::Dae,
+    record_type: &str,
+    selector_prefix: &str,
+    field_prefix: &str,
+    fields: &mut HashMap<String, HashMap<usize, String>>,
+    active_types: &mut Vec<String>,
+) -> Result<(), StructuralError> {
+    if active_types.iter().any(|active| active == record_type) {
+        return Ok(());
+    }
+    let Some(constructor) = dae.symbols.functions.iter().find_map(|(name, function)| {
+        (function.is_constructor && name.as_str() == record_type).then_some(function)
+    }) else {
+        return Ok(());
+    };
+    active_types.push(record_type.to_string());
+    for field in &constructor.inputs {
+        let field_path = if field_prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{field_prefix}.{}", field.name)
+        };
+        let selector = format!("{selector_prefix}.{}", field.name);
+        if field.type_class == Some(rumoca_core::ClassType::Record) {
+            append_record_field_projection(
+                dae,
+                &field.type_name,
+                &selector,
+                &field_path,
+                fields,
+                active_types,
+            )?;
+            continue;
+        }
+        let count = output_scalar_count(&field.dims, field.span)?;
+        let by_index = fields.entry(field_path).or_default();
+        if count <= 1 {
+            by_index.insert(1, selector);
+            continue;
+        }
+        for element_index in 1..=count {
+            by_index.insert(
+                element_index,
+                dae::scalar_name_text_for_flat_index(&selector, &field.dims, element_index - 1),
+            );
+        }
+    }
+    active_types.pop();
+    Ok(())
+}
+
+/// Map array fields of record-valued function results to scalar output paths.
+///
+/// For a function returning `Pose pose` with `Real position[2]`, this records
+/// `position -> {1: pose.position[1], 2: pose.position[2]}`. Record schemas are
+/// read from their retained constructor functions and may be nested.
+pub fn build_record_field_projection_map(
+    dae: &dae::Dae,
+) -> Result<RecordFieldProjectionMap, StructuralError> {
+    let mut map = HashMap::new();
+    for (function_name, function) in &dae.symbols.functions {
+        if function.is_constructor {
+            continue;
+        }
+        let Some(output) = function.outputs.first() else {
+            continue;
+        };
+        if output.type_class != Some(rumoca_core::ClassType::Record) {
+            continue;
+        }
+        let mut fields = HashMap::new();
+        append_record_field_projection(
+            dae,
+            &output.type_name,
+            &output.name,
+            "",
+            &mut fields,
+            &mut Vec::new(),
+        )?;
+        if !fields.is_empty() {
+            map.insert(function_name.as_str().to_string(), fields);
         }
     }
     Ok(map)

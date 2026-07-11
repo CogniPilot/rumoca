@@ -34,13 +34,23 @@ pub(in crate::lower) fn slice_selections(
     owner_span: rumoca_core::Span,
 ) -> Result<Vec<Vec<usize>>, LowerError> {
     let span = subscript_list_span_or_owner(subscripts, owner_span)?;
+    tracing::debug!(
+        target: "rumoca_phase_solve::projection",
+        ?subscripts,
+        ?dims,
+        "projecting array slice"
+    );
     if subscripts.len() > dims.len() {
         let span = subscripts
             .get(dims.len())
             .map(|subscript| span_or_owner(subscript_span(subscript), span))
             .unwrap_or(span);
         return Err(unsupported_at(
-            "array derivative slice has more subscripts than dimensions",
+            format!(
+                "array derivative slice rank {} exceeds base rank {} for dimensions {dims:?}",
+                subscripts.len(),
+                dims.len()
+            ),
             span,
         ));
     }

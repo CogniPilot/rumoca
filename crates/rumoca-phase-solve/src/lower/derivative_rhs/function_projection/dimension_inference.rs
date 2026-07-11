@@ -1,6 +1,6 @@
 use super::compile_time::{compile_time_binary, compile_time_var_key, literal_to_f64};
 use super::*;
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
 
 impl<'a> FunctionProjectionAnalysis<'a> {
     // SPEC_0021: Exception - function projection dimension inference keeps
@@ -409,12 +409,23 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         else {
             return Ok(None);
         };
-        if projection_suffix.output_field.is_some()
-            && !rumoca_core::qualified_type_name_matches(&output.type_name, "Complex")
-        {
-            return Ok(None);
-        }
-        projected_declared_output_dims(output, &projection_suffix.indices, span)
+        let projected_output = match projection_suffix.output_field.as_deref() {
+            Some(field) => {
+                match record_output_field_param(&self.dae_model.symbols.functions, output, field) {
+                    Some(field_output) => field_output,
+                    None if rumoca_core::qualified_type_name_matches(
+                        &output.type_name,
+                        "Complex",
+                    ) && matches!(field, "re" | "im") =>
+                    {
+                        output
+                    }
+                    None => return Ok(None),
+                }
+            }
+            None => output,
+        };
+        projected_declared_output_dims(projected_output, &projection_suffix.indices, span)
     }
 
     pub(super) fn reference_with_dae_component_ref(

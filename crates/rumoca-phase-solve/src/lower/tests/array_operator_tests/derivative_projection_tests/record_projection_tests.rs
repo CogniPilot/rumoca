@@ -251,6 +251,8 @@ fn projection_function_param(
         dims: dims.to_vec(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }

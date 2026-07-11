@@ -127,6 +127,8 @@ fn add_any_true_function(dae: &mut Dae) {
         dims: vec![0],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     function.outputs.push(rumoca_core::FunctionParam {
@@ -138,6 +140,8 @@ fn add_any_true_function(dae: &mut Dae) {
         dims: Vec::new(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     dae.symbols
@@ -915,6 +919,8 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
         dims: vec![2],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     dae.symbols

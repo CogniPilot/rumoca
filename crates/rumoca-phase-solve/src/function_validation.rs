@@ -4,7 +4,7 @@ use rumoca_eval_dae as eval;
 use rumoca_ir_dae as dae;
 
 use crate::lower::NAMED_FUNCTION_ARG_PREFIX;
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
 
 type BuiltinFunction = rumoca_core::BuiltinFunction;
 type ComponentReference = rumoca_core::ComponentReference;
@@ -31,7 +31,11 @@ fn resolve_dae_function_by_key<'a>(
         return Some(function);
     }
 
-    fn projection_matches_output(function: &rumoca_core::Function, suffix: &str) -> bool {
+    fn projection_matches_output(
+        functions: &indexmap::IndexMap<VarName, rumoca_core::Function>,
+        function: &rumoca_core::Function,
+        suffix: &str,
+    ) -> bool {
         let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
             return false;
         };
@@ -44,17 +48,17 @@ fn resolve_dae_function_by_key<'a>(
             return false;
         };
 
-        if let Some(field) = projection_suffix.output_field.as_deref() {
-            if !output_is_complex_record(output) {
-                return false;
-            }
-            if !matches!(field, "re" | "im") {
-                return false;
-            }
-        }
+        let projected_output = match projection_suffix.output_field.as_deref() {
+            Some(field) => match record_output_field_param(functions, output, field) {
+                Some(field_output) => field_output,
+                None if output_is_complex_record(output) && matches!(field, "re" | "im") => output,
+                None => return false,
+            },
+            None => output,
+        };
 
         let indices = projection_suffix.indices;
-        if output.dims.is_empty() {
+        if projected_output.dims.is_empty() {
             return indices.is_empty();
         }
 
@@ -62,13 +66,14 @@ fn resolve_dae_function_by_key<'a>(
             return true;
         }
 
-        if output.dims.iter().any(|dim| *dim < 0)
-            || (!output.shape_expr.is_empty() && output.dims.iter().any(|dim| *dim <= 0))
+        if projected_output.dims.iter().any(|dim| *dim < 0)
+            || (!projected_output.shape_expr.is_empty()
+                && projected_output.dims.iter().any(|dim| *dim <= 0))
         {
             return true;
         }
 
-        let Some(total) = output.dims.iter().try_fold(1usize, |acc, dim| {
+        let Some(total) = projected_output.dims.iter().try_fold(1usize, |acc, dim| {
             usize::try_from(*dim)
                 .ok()
                 .and_then(|dim| acc.checked_mul(dim))
@@ -81,20 +86,20 @@ fn resolve_dae_function_by_key<'a>(
             return idx >= 1 && idx <= total;
         }
 
-        if indices.len() != output.dims.len() {
+        if indices.len() != projected_output.dims.len() {
             return false;
         }
 
         indices
             .iter()
-            .zip(output.dims.iter())
+            .zip(projected_output.dims.iter())
             .all(|(idx, dim)| dimension_index_in_bounds(*idx, *dim))
     }
 
     rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
         let base_var = VarName::new(base_name);
         let function = dae.symbols.functions.get(&base_var)?;
-        if projection_matches_output(function, suffix) {
+        if projection_matches_output(&dae.symbols.functions, function, suffix) {
             Some(function)
         } else {
             None

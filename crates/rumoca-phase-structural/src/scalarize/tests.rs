@@ -609,6 +609,7 @@ fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
         function_output_index_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
     };
     let expr = Expression::Array {
         elements: vec![
@@ -678,6 +679,7 @@ fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
         function_output_index_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
     };
     let expr = Expression::Array {
         elements: vec![
@@ -807,6 +809,118 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
             span: rumoca_core::Span::DUMMY,
         }
     );
+}
+
+#[test]
+fn scalarize_array_field_of_record_function_result_selects_each_component() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[2]));
+
+    let mut function = rumoca_core::Function::new("Path.sample", test_span());
+    function.add_output(rumoca_core::FunctionParam::new(
+        "state",
+        "Path.State",
+        test_span(),
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Path.sample"), function);
+
+    let call = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Path.sample"),
+        args: vec![],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let field = Expression::FieldAccess {
+        base: Box::new(call.clone()),
+        field: "firstDerivative".to_string(),
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(eq("y", field.clone(), 2));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 2);
+    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
+        assert_eq!(equation.lhs, lhs(&format!("y[{}]", offset + 1)));
+        assert_eq!(
+            equation.rhs,
+            Expression::Index {
+                base: Box::new(field.clone()),
+                subscripts: vec![Subscript::generated_index(offset as i64 + 1, test_span())],
+                span: test_span(),
+            }
+        );
+    }
+}
+
+#[test]
+fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[2]));
+
+    let mut constructor = rumoca_core::Function::new("Path.State", test_span());
+    constructor.is_constructor = true;
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("firstDerivative", "Real", test_span()).with_dims(vec![2]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Path.State"), constructor);
+
+    let mut function = rumoca_core::Function::new("Path.sample", test_span());
+    let mut state = rumoca_core::FunctionParam::new("state", "Path.State", test_span());
+    state.type_class = Some(rumoca_core::ClassType::Record);
+    function.add_output(state);
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Path.sample"), function);
+
+    let call = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Path.sample"),
+        args: vec![],
+        is_constructor: false,
+        span: test_span(),
+    };
+    dae_model.continuous.equations.push(eq(
+        "y",
+        Expression::FieldAccess {
+            base: Box::new(call),
+            field: "firstDerivative".to_string(),
+            span: test_span(),
+        },
+        2,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
+        assert_eq!(
+            equation.rhs,
+            Expression::FunctionCall {
+                name: rumoca_core::Reference::new(format!(
+                    "Path.sample.state.firstDerivative[{}]",
+                    offset + 1
+                )),
+                args: vec![],
+                is_constructor: false,
+                span: test_span(),
+            }
+        );
+    }
 }
 
 #[test]
