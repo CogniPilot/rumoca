@@ -1084,9 +1084,11 @@ fn test_time_table_next_event_periodic_wrap() {
 fn test_time_table_interpolation_coefficients_match_interaction1_edges() {
     let mut env = VarEnv::<f64>::new();
     let mut functions = IndexMap::new();
+    let mut coefficients = interaction_time_table_coeff_function();
+    set_test_function_instance(&mut coefficients, 0);
     functions.insert(
         "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients".to_string(),
-        interaction_time_table_coeff_function(),
+        coefficients,
     );
     env.functions = Arc::new(functions);
     env.start_exprs = Arc::new(IndexMap::from([(
@@ -1109,29 +1111,37 @@ fn test_time_table_interpolation_coefficients_match_interaction1_edges() {
     ];
 
     let a = eval_expr_value::<f64>(
-        &fn_call(
+        &resolved_fn_call(
             "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients.a",
+            "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients",
+            0,
             args.clone(),
         ),
         &env,
     );
     let b = eval_expr_value::<f64>(
-        &fn_call(
+        &resolved_fn_call(
             "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients.b",
+            "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients",
+            0,
             args.clone(),
         ),
         &env,
     );
     let next_event = eval_expr_value::<f64>(
-        &fn_call(
+        &resolved_fn_call(
             "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients.nextEventScaled",
+            "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients",
+            0,
             args.clone(),
         ),
         &env,
     );
     let next = eval_expr_value::<f64>(
-        &fn_call(
+        &resolved_fn_call(
             "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients.next",
+            "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients",
+            0,
             args,
         ),
         &env,

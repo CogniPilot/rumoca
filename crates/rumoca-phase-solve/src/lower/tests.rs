@@ -3,15 +3,18 @@
 // behavior families into focused test modules with shared fixtures.
 
 use super::{
-    Scope, expression_rows::lower_expression_rows_with_mode, lower_derivative_rhs,
-    lower_derivative_rhs_scalar_programs, lower_discrete_rhs, lower_expression,
+    Scope, expression_rows::lower_expression_rows_with_mode,
+    lower_derivative_rhs as lower_derivative_rhs_impl,
+    lower_derivative_rhs_scalar_programs as lower_derivative_rhs_scalar_programs_impl,
+    lower_discrete_rhs as lower_discrete_rhs_impl, lower_expression as lower_expression_impl,
     lower_expression_rows_from_expressions_with_runtime_metadata,
-    lower_initial_expression_rows_from_expressions, lower_initial_residual, lower_residual,
-    lower_root_conditions, lower_runtime_assignment_rhs,
+    lower_initial_expression_rows_from_expressions, lower_initial_residual,
+    lower_residual as lower_residual_impl, lower_root_conditions, lower_runtime_assignment_rhs,
 };
 use crate::layout::build_var_layout;
 use crate::lower_solve_problem;
 use indexmap::IndexMap;
+use rumoca_core::{ExpressionRewriter, StatementRewriter};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, ComputeNode, LinearOp, Reg, ScalarSlot, UnaryOp, VarLayout,
@@ -817,6 +820,181 @@ fn source_fixture_def_id(name: &str) -> rumoca_core::DefId {
         hash.wrapping_mul(16_777_619) ^ u32::from(byte)
     });
     rumoca_core::DefId::new(hash.max(1))
+}
+
+fn test_function_instance_id(name: &str) -> rumoca_core::FunctionInstanceId {
+    rumoca_core::FunctionInstanceId::new(source_fixture_def_id(name).index())
+}
+
+fn test_function(name: &str, span: rumoca_core::Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new(name, span);
+    function.instance_id = Some(test_function_instance_id(name));
+    function
+}
+
+struct TestFunctionReferenceResolver<'a> {
+    functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+}
+
+impl ExpressionRewriter for TestFunctionReferenceResolver<'_> {
+    fn rewrite_expression(
+        &mut self,
+        expression: &rumoca_core::Expression,
+    ) -> rumoca_core::Expression {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } = expression
+        else {
+            return self.walk_expression(expression);
+        };
+        let args = self.rewrite_expressions(args);
+        let parsed;
+        let reference = if let Some(reference) = name.component_ref() {
+            reference
+        } else {
+            let Some(reference) =
+                rumoca_core::component_reference_from_flat_name(name.var_name(), lower_test_span())
+            else {
+                return expression.clone();
+            };
+            parsed = reference;
+            &parsed
+        };
+        let resolved = self
+            .functions
+            .values()
+            .filter_map(|function| {
+                let parts = function.name.segments();
+                (reference.parts.len() >= parts.len()
+                    && reference.parts[..parts.len()]
+                        .iter()
+                        .zip(&parts)
+                        .all(|(actual, expected)| actual.ident == *expected))
+                .then_some((parts.len(), function))
+            })
+            .max_by_key(|(part_count, _)| *part_count);
+        let Some((base_part_count, function)) = resolved else {
+            return rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        };
+        let Some(instance_id) = function.instance_id else {
+            return expression.clone();
+        };
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(reference.clone())
+                .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                    instance_id,
+                    base_part_count,
+                }),
+            args,
+            is_constructor: *is_constructor,
+            span: *span,
+        }
+    }
+}
+
+impl StatementRewriter for TestFunctionReferenceResolver<'_> {}
+
+impl dae::visitor::DaeExpressionRewriter for TestFunctionReferenceResolver<'_> {}
+
+fn resolved_test_dae(dae_model: &dae::Dae) -> dae::Dae {
+    let mut resolved = dae_model.clone();
+    for function in resolved.symbols.functions.values_mut() {
+        function
+            .instance_id
+            .get_or_insert_with(|| test_function_instance_id(function.name.as_str()));
+    }
+    let functions = resolved.symbols.functions.clone();
+    dae::visitor::DaeExpressionRewriter::rewrite_dae(
+        &mut TestFunctionReferenceResolver {
+            functions: &functions,
+        },
+        &mut resolved,
+    );
+    let mut rewriter = TestFunctionReferenceResolver {
+        functions: &functions,
+    };
+    for function in resolved.symbols.functions.values_mut() {
+        rewrite_test_function(function, &mut rewriter);
+    }
+    resolved
+}
+
+fn rewrite_test_function(
+    function: &mut rumoca_core::Function,
+    rewriter: &mut TestFunctionReferenceResolver<'_>,
+) {
+    for param in function
+        .inputs
+        .iter_mut()
+        .chain(function.outputs.iter_mut())
+        .chain(function.locals.iter_mut())
+    {
+        if let Some(default) = &mut param.default {
+            *default = rewriter.rewrite_expression(default);
+        }
+        for shape_expr in &mut param.shape_expr {
+            if let rumoca_core::Subscript::Expr { expr, .. } = shape_expr {
+                **expr = rewriter.rewrite_expression(expr);
+            }
+        }
+    }
+    for statement in &mut function.body {
+        *statement = rewriter.rewrite_statement(statement);
+    }
+}
+
+fn lower_residual(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+) -> Result<Vec<Vec<LinearOp>>, super::LowerError> {
+    lower_residual_impl(&resolved_test_dae(dae_model), layout)
+}
+
+fn lower_derivative_rhs(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+) -> Result<rumoca_ir_solve::ComputeBlock, super::LowerError> {
+    lower_derivative_rhs_impl(&resolved_test_dae(dae_model), layout)
+}
+
+fn lower_derivative_rhs_scalar_programs(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+) -> Result<Vec<Vec<LinearOp>>, super::LowerError> {
+    lower_derivative_rhs_scalar_programs_impl(&resolved_test_dae(dae_model), layout)
+}
+
+fn lower_discrete_rhs(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+) -> Result<Vec<Vec<LinearOp>>, super::LowerError> {
+    lower_discrete_rhs_impl(&resolved_test_dae(dae_model), layout)
+}
+
+fn lower_expression(
+    expression: &rumoca_core::Expression,
+    layout: &VarLayout,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> Result<super::LoweredExpression, super::LowerError> {
+    let mut functions = functions.clone();
+    for function in functions.values_mut() {
+        function
+            .instance_id
+            .get_or_insert_with(|| test_function_instance_id(function.name.as_str()));
+    }
+    let expression = TestFunctionReferenceResolver {
+        functions: &functions,
+    }
+    .rewrite_expression(expression);
+    lower_expression_impl(&expression, layout, &functions)
 }
 
 fn insert_pre_parameter(dae_model: &mut dae::Dae, name: &str, dims: &[i64]) {

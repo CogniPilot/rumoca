@@ -545,7 +545,7 @@ fn lower_expression_rejects_guarded_assignment_without_prior_binding() {
         .states
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut maybe_return = rumoca_core::Function::new("My.maybeReturn", lower_test_span());
+    let mut maybe_return = test_function("My.maybeReturn", lower_test_span());
     maybe_return.inputs.push(function_param("u"));
     maybe_return.outputs.push(function_param("out"));
     maybe_return.body = vec![
@@ -603,7 +603,7 @@ fn lower_expression_allows_dead_local_assignment_after_return() {
         .states
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut maybe_return = rumoca_core::Function::new("My.localAfterReturn", lower_test_span());
+    let mut maybe_return = test_function("My.localAfterReturn", lower_test_span());
     maybe_return.inputs.push(function_param("u"));
     maybe_return.outputs.push(function_param("out"));
     maybe_return.locals.push(function_param("tmp"));
@@ -772,7 +772,7 @@ fn lower_expression_inlines_user_function_for_statement() {
 #[test]
 fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
     let mut dae_model = dae::Dae::default();
-    let mut pick_row = rumoca_core::Function::new("My.pickRow", lower_test_span());
+    let mut pick_row = test_function("My.pickRow", lower_test_span());
     pick_row.inputs = vec![
         function_param_with_dims("R_T", &[3, 3]),
         function_param_with_dims("sequence", &[3]),
@@ -854,7 +854,7 @@ fn lower_expression_inlines_user_function_while_statement() {
         .states
         .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
 
-    let mut repeat_while = rumoca_core::Function::new("My.repeatWhile", lower_test_span());
+    let mut repeat_while = test_function("My.repeatWhile", lower_test_span());
     repeat_while.inputs.push(function_param("u"));
     repeat_while.outputs.push(function_param("out"));
     repeat_while.locals.push(function_param("i"));
@@ -1324,7 +1324,7 @@ fn lower_expression_maps_namespaced_intrinsic_function_call() {
 
 #[test]
 fn lower_expression_binds_scalarized_record_function_inputs() {
-    let mut inner = rumoca_core::Function::new("My.recordInputSum", lower_test_span());
+    let mut inner = test_function("My.recordInputSum", lower_test_span());
     inner.inputs.push(rumoca_core::FunctionParam::new(
         "state",
         "Medium.ThermodynamicState",
@@ -1337,7 +1337,7 @@ fn lower_expression_binds_scalarized_record_function_inputs() {
         span: lower_test_span(),
     });
 
-    let mut outer = rumoca_core::Function::new("My.forwardRecordInput", lower_test_span());
+    let mut outer = test_function("My.forwardRecordInput", lower_test_span());
     outer.inputs.push(rumoca_core::FunctionParam::new(
         "state",
         "Medium.ThermodynamicState",

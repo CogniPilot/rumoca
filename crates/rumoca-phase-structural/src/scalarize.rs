@@ -7,8 +7,10 @@ use crate::projection_maps::{
     build_function_output_projection_map, build_record_field_projection_map, output_scalar_count,
 };
 
+mod function_maps;
 mod projection;
 mod shape;
+use function_maps::{build_dynamic_function_output_map, build_function_output_dims_map};
 #[cfg(test)]
 use projection::is_complex_field_scalar_name;
 use projection::{
@@ -1408,62 +1410,6 @@ pub struct ExpressionScalarizationContext {
     function_output_dims_map: HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>,
     dynamic_function_output_map: HashMap<rumoca_core::FunctionInstanceId, String>,
     record_field_projection_map: RecordFieldProjectionMap,
-}
-
-fn build_dynamic_function_output_map(
-    dae: &Dae,
-) -> Result<HashMap<rumoca_core::FunctionInstanceId, String>, StructuralError> {
-    dae.symbols
-        .functions
-        .values()
-        .filter_map(|function| {
-            let [output] = function.outputs.as_slice() else {
-                return None;
-            };
-            output.dims.iter().any(|dim| *dim <= 0).then(|| {
-                function
-                    .instance_id
-                    .map(|instance_id| (instance_id, output.name.clone()))
-                    .ok_or_else(|| {
-                        structural_contract_violation(
-                            format!(
-                                "function `{}` lacks flattened instance identity",
-                                function.name
-                            ),
-                            function.span,
-                        )
-                    })
-            })
-        })
-        .collect()
-}
-
-fn build_function_output_dims_map(
-    dae: &Dae,
-) -> Result<HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>, StructuralError> {
-    dae.symbols
-        .functions
-        .values()
-        .filter_map(|function| {
-            let [output] = function.outputs.as_slice() else {
-                return None;
-            };
-            (output.dims.is_empty() || output.dims.iter().all(|dim| *dim > 0)).then(|| {
-                function
-                    .instance_id
-                    .map(|instance_id| (instance_id, output.dims.clone()))
-                    .ok_or_else(|| {
-                        structural_contract_violation(
-                            format!(
-                                "function `{}` lacks flattened instance identity",
-                                function.name
-                            ),
-                            function.span,
-                        )
-                    })
-            })
-        })
-        .collect()
 }
 
 pub fn build_expression_scalarization_context(

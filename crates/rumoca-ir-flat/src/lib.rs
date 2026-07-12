@@ -28,9 +28,9 @@ use convert_from_ast::{
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     BuiltinFunction, Causality, ClassType, ComponentReference, ComprehensionTemplate, DefId,
-    Expression, ForIndex, Function, FunctionShapeContractError, Reference, RegularForFamily, Span,
-    StateSelect, Statement, StatementBlock, StructuredIndexDomain, Subscript, TypeId, VarName,
-    Variability,
+    Expression, ForIndex, Function, FunctionInstanceId, FunctionShapeContractError, Reference,
+    RegularForFamily, Span, StateSelect, Statement, StatementBlock, StructuredIndexDomain,
+    Subscript, TypeId, VarName, Variability,
 };
 #[cfg(test)]
 use rumoca_core::{ComprehensionIndex, Literal};
@@ -200,7 +200,14 @@ impl Model {
     }
 
     /// Add a function definition to the model.
-    pub fn add_function(&mut self, func: Function) {
+    pub fn add_function(&mut self, mut func: Function) {
+        if func.instance_id.is_none() {
+            func.instance_id = self
+                .functions
+                .get(&func.name)
+                .and_then(|existing| existing.instance_id)
+                .or_else(|| next_function_instance_id(&self.functions));
+        }
         self.functions.insert(func.name.clone(), func);
     }
 
@@ -280,6 +287,18 @@ impl Model {
         }
         Ok(())
     }
+}
+
+fn next_function_instance_id(functions: &VarNameIndexMap<Function>) -> Option<FunctionInstanceId> {
+    let Some(last) = functions
+        .values()
+        .filter_map(|function| function.instance_id)
+        .map(FunctionInstanceId::index)
+        .max()
+    else {
+        return Some(FunctionInstanceId::new(0));
+    };
+    last.checked_add(1).map(FunctionInstanceId::new)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -557,6 +576,28 @@ mod variable_shape_contract_tests {
                 name: VarName::new("stored"),
                 span: test_span(),
             })
+        );
+    }
+
+    #[test]
+    fn add_function_assigns_stable_distinct_exposure_identities() {
+        let mut model = Model::new();
+        model.add_function(Function::new("Pkg.A.f", test_span()));
+        model.add_function(Function::new("Pkg.B.f", test_span()));
+
+        let a_id = model.functions[&VarName::new("Pkg.A.f")]
+            .instance_id
+            .expect("first exposure identity");
+        let b_id = model.functions[&VarName::new("Pkg.B.f")]
+            .instance_id
+            .expect("second exposure identity");
+        assert_ne!(a_id, b_id);
+
+        model.add_function(Function::new("Pkg.A.f", test_span()));
+        assert_eq!(
+            model.functions[&VarName::new("Pkg.A.f")].instance_id,
+            Some(a_id),
+            "replacing an exposed definition must preserve its identity"
         );
     }
 

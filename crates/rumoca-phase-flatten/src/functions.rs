@@ -651,13 +651,6 @@ pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), 
 pub(crate) fn canonicalize_collected_function_calls(
     flat: &mut flat::Model,
 ) -> Result<(), FlattenError> {
-    let mut next_instance_id = 0u32;
-    for function in flat.functions.values_mut() {
-        function.instance_id = Some(rumoca_core::FunctionInstanceId::new(next_instance_id));
-        next_instance_id = next_instance_id.checked_add(1).ok_or_else(|| {
-            FlattenError::internal("flattened function instance identity space exhausted")
-        })?;
-    }
     let canonical_functions = flat
         .functions
         .values()
@@ -817,46 +810,29 @@ impl CollectedFunctionCallCanonicalizer {
                 .iter()
                 .find(|function| function.instance_id == resolved.instance_id);
         }
-        if let Some(component_name) = reference.component_ref().map(component_ref_name)
-            && let Some(function) = self
-                .canonical_functions
-                .iter()
-                .find(|function| function.name == component_name)
+        if reference
+            .component_ref()
+            .is_some_and(|component_ref| component_ref.to_var_name() != *reference.var_name())
         {
-            return Some(function);
+            return None;
         }
+        let exact = self
+            .canonical_functions
+            .iter()
+            .find(|function| function.name == reference.var_name().as_str());
         if let Some(def_id) = reference.target_def_id() {
             let mut matches = self
                 .canonical_functions
                 .iter()
                 .filter(|function| function.def_id == Some(def_id));
             let first = matches.next()?;
-            if let Some(second) = matches.next() {
-                return std::iter::once(first)
-                    .chain(std::iter::once(second))
-                    .chain(matches)
-                    .find(|function| function.name == reference.as_str());
+            let second = matches.next();
+            if let Some(exact) = exact {
+                return (exact.def_id == Some(def_id)).then_some(exact);
             }
-            return Some(first);
+            return second.is_none().then_some(first);
         }
-        self.canonical_function_for_name(reference.as_str())
-    }
-
-    fn canonical_function_for_name(&self, name: &str) -> Option<&CanonicalFunction> {
-        if let Some(function) = self
-            .canonical_functions
-            .iter()
-            .find(|candidate| candidate.name == name)
-        {
-            return Some(function);
-        }
-        let suffix = format!(".{name}");
-        let mut matches = self
-            .canonical_functions
-            .iter()
-            .filter(|candidate| candidate.name.ends_with(&suffix));
-        let first = matches.next()?;
-        matches.next().is_none().then_some(first)
+        exact
     }
 }
 

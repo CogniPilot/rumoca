@@ -720,6 +720,7 @@ fn test_eval_function_call_uses_structured_indexed_output_selection() {
     let mut funcs = IndexMap::new();
 
     let mut random_like = rumoca_core::Function::new("Pkg.randomLike", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut random_like, 0);
     random_like.add_input(
         rumoca_core::FunctionParam::new(
             "seedIn",
@@ -777,13 +778,19 @@ fn test_eval_function_call_uses_structured_indexed_output_selection() {
     );
     assert_eq!(
         eval_expr::<f64>(
-            &index_expr(fn_call("Pkg.randomLike.seedOut", args.clone()), 2),
+            &index_expr(
+                resolved_fn_call("Pkg.randomLike.seedOut", "Pkg.randomLike", 0, args.clone(),),
+                2,
+            ),
             &env
         ),
         Ok(22.0)
     );
     assert_eq!(
-        eval_expr::<f64>(&fn_call("Pkg.randomLike.seedOut[2]", vec![]), &env),
+        eval_expr::<f64>(
+            &resolved_fn_call("Pkg.randomLike.seedOut[2]", "Pkg.randomLike", 0, vec![],),
+            &env,
+        ),
         Err(EvalError::MissingBinding {
             name: "Pkg.randomLike.seedIn".to_string()
         })
@@ -947,6 +954,7 @@ fn test_eval_field_access_scalar_selects_record_function_output() {
     let mut funcs = IndexMap::new();
 
     let mut params = rumoca_core::Function::new("Pkg.Params", rumoca_core::Span::DUMMY);
+    params.def_id = Some(rumoca_core::DefId::new(200));
     params.is_constructor = true;
     params.add_input(rumoca_core::FunctionParam::new(
         "gain",
@@ -967,7 +975,8 @@ fn test_eval_field_access_scalar_selects_record_function_output() {
             "Params",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(200)),
     );
     make_params.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("p"),
@@ -1000,6 +1009,7 @@ fn test_eval_field_access_scalar_selects_record_function_output_field_assignment
     let mut funcs = IndexMap::new();
 
     let mut params = rumoca_core::Function::new("Pkg.Params", rumoca_core::Span::DUMMY);
+    params.def_id = Some(rumoca_core::DefId::new(201));
     params.is_constructor = true;
     params.add_input(rumoca_core::FunctionParam::new(
         "gain",
@@ -1015,7 +1025,8 @@ fn test_eval_field_access_scalar_selects_record_function_output_field_assignment
             "Params",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(201)),
     );
     make_params.body = vec![rumoca_core::Statement::Assignment {
         comp: rumoca_core::ComponentReference {
@@ -1290,6 +1301,7 @@ fn test_eval_function_call_selected_complex_output_components() {
     let mut funcs = IndexMap::new();
 
     let mut f = rumoca_core::Function::new("Pkg.powerOfJ", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 0);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
@@ -1310,11 +1322,17 @@ fn test_eval_function_call_selected_complex_output_components() {
     env.functions = std::sync::Arc::new(funcs);
 
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.powerOfJ.x.re", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.powerOfJ.x.re", "Pkg.powerOfJ", 0, vec![]),
+            &env,
+        ),
         2.0
     );
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.powerOfJ.x.im", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.powerOfJ.x.im", "Pkg.powerOfJ", 0, vec![]),
+            &env,
+        ),
         -3.0
     );
 }
@@ -1325,6 +1343,7 @@ fn test_eval_function_call_selected_complex_output_from_single_arg_constructor()
     let mut funcs = IndexMap::new();
 
     let mut f = rumoca_core::Function::new("Pkg.singleArgComplex", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 0);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
@@ -1345,11 +1364,27 @@ fn test_eval_function_call_selected_complex_output_from_single_arg_constructor()
     env.functions = std::sync::Arc::new(funcs);
 
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.singleArgComplex.x.re", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call(
+                "Pkg.singleArgComplex.x.re",
+                "Pkg.singleArgComplex",
+                0,
+                vec![],
+            ),
+            &env,
+        ),
         1.0
     );
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.singleArgComplex.x.im", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call(
+                "Pkg.singleArgComplex.x.im",
+                "Pkg.singleArgComplex",
+                0,
+                vec![],
+            ),
+            &env,
+        ),
         0.0
     );
 }
@@ -1365,6 +1400,7 @@ fn test_eval_function_call_selected_complex_output_from_plain_complex_call() {
     );
 
     let mut f = rumoca_core::Function::new("Pkg.plainComplex", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 1);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
@@ -1385,11 +1421,17 @@ fn test_eval_function_call_selected_complex_output_from_plain_complex_call() {
     env.functions = std::sync::Arc::new(funcs);
 
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.plainComplex.x.re", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.plainComplex.x.re", "Pkg.plainComplex", 1, vec![]),
+            &env,
+        ),
         2.0
     );
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.plainComplex.x.im", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.plainComplex.x.im", "Pkg.plainComplex", 1, vec![]),
+            &env,
+        ),
         -3.0
     );
 }
@@ -1400,6 +1442,7 @@ fn test_eval_function_call_selected_complex_output_uses_component_var_ref() {
     let mut funcs = IndexMap::new();
 
     let mut f = rumoca_core::Function::new("Pkg.negJ", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 0);
     f.add_output(rumoca_core::FunctionParam::new(
         "x",
         "Modelica.ComplexMath.Complex",
@@ -1421,11 +1464,17 @@ fn test_eval_function_call_selected_complex_output_uses_component_var_ref() {
     env.set("j.im", 1.0);
 
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.negJ.x.re", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.negJ.x.re", "Pkg.negJ", 0, vec![]),
+            &env,
+        ),
         0.0
     );
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.negJ.x.im", vec![]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.negJ.x.im", "Pkg.negJ", 0, vec![]),
+            &env,
+        ),
         -1.0
     );
 }

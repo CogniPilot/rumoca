@@ -1,7 +1,7 @@
 use super::*;
 
 fn function_with_array_input(name: &str, dims: Vec<i64>) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new(name, lower_test_span());
+    let mut function = test_function(name, lower_test_span());
     function.inputs.push(
         rumoca_core::FunctionParam::new("u", "Real", lower_test_span())
             .with_dims(dims)
@@ -82,7 +82,7 @@ fn lower_expression_reports_negative_local_array_shape_with_subscript_span() {
         18,
     );
     let mut functions = IndexMap::new();
-    let mut function = rumoca_core::Function::new("Pkg.localNegativeShape", lower_test_span());
+    let mut function = test_function("Pkg.localNegativeShape", lower_test_span());
     function.outputs.push(rumoca_core::FunctionParam::new(
         "y",
         "Real",

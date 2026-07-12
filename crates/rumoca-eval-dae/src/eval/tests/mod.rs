@@ -198,6 +198,33 @@ fn fn_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expre
     }
 }
 
+fn resolved_fn_call(
+    name: &str,
+    base_name: &str,
+    instance_id: u32,
+    args: Vec<rumoca_core::Expression>,
+) -> rumoca_core::Expression {
+    let component_ref = rumoca_core::component_reference_from_flat_name(
+        &rumoca_core::VarName::new(name),
+        rumoca_core::Span::DUMMY,
+    )
+    .expect("structured function reference");
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(component_ref)
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(instance_id),
+                base_part_count: rumoca_core::VarName::new(base_name).segments().len(),
+            }),
+        args,
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn set_test_function_instance(function: &mut rumoca_core::Function, instance_id: u32) {
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(instance_id));
+}
+
 fn named_ctor_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new(format!("__rumoca_named_arg__.{name}")),
@@ -295,6 +322,7 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
     let mut functions = IndexMap::new();
 
     let mut orientation = Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
+    orientation.def_id = Some(rumoca_core::DefId::new(100));
     orientation.is_constructor = true;
     orientation.add_input(
         FunctionParam::new("T", "Real", rumoca_core::Span::source_free_serde_default())
@@ -321,7 +349,8 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
             "Orientation",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(100)),
     );
     from_q.body = vec![Statement::Assignment {
         comp: comp_ref("R"),

@@ -497,20 +497,11 @@ fn record_field_specs_for_call(
     is_constructor: bool,
     flat: &flat::Model,
 ) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
-    let function = if let Some(resolved) = name.resolved_function() {
+    let function = name.resolved_function().and_then(|resolved| {
         flat.functions
             .values()
             .find(|function| function.instance_id == Some(resolved.instance_id))
-    } else {
-        #[cfg(test)]
-        {
-            flat.functions.get(name.var_name())
-        }
-        #[cfg(not(test))]
-        {
-            None
-        }
-    };
+    });
     let Some(function) = function else {
         return Ok(None);
     };

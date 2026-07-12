@@ -190,6 +190,7 @@ fn test_eval_user_function_binds_record_input_fields_from_record_function_output
     let mut funcs = IndexMap::new();
 
     let mut state = rumoca_core::Function::new("Pkg.State", rumoca_core::Span::DUMMY);
+    state.def_id = Some(rumoca_core::DefId::new(300));
     state.is_constructor = true;
     state.add_input(rumoca_core::FunctionParam::new(
         "p",
@@ -210,7 +211,8 @@ fn test_eval_user_function_binds_record_input_fields_from_record_function_output
             "State",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(300)),
     );
     make_state.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("out"),
@@ -234,7 +236,8 @@ fn test_eval_user_function_binds_record_input_fields_from_record_function_output
             "State",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(300)),
     );
     metric.add_output(
         rumoca_core::FunctionParam::new(
@@ -298,6 +301,7 @@ fn test_eval_function_record_field_array_uses_first_element_in_scalar_context() 
     let mut funcs = IndexMap::new();
 
     let mut state = rumoca_core::Function::new("Pkg.State", rumoca_core::Span::DUMMY);
+    state.def_id = Some(rumoca_core::DefId::new(301));
     state.is_constructor = true;
     state.add_input(rumoca_core::FunctionParam::new(
         "p",
@@ -321,7 +325,8 @@ fn test_eval_function_record_field_array_uses_first_element_in_scalar_context() 
             "State",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(301)),
     );
     make_state.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("out"),

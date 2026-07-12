@@ -356,7 +356,7 @@ fn lower_expression_handles_projected_complex_division_over_array_literal_in_sca
 fn lower_expression_handles_projected_complex_output_with_array_literal_field_input() {
     let mut functions = IndexMap::new();
     let span = lower_test_span();
-    let mut function = rumoca_core::Function::new("Pkg.pickFirstComplexField", span);
+    let mut function = test_function("Pkg.pickFirstComplexField", span);
     function.inputs.push(
         rumoca_core::FunctionParam::new("c", "Modelica.ComplexMath.Complex", lower_test_span())
             .with_dims(vec![1]),
@@ -446,7 +446,7 @@ fn lower_expression_handles_projected_complex_output_with_array_literal_field_in
 fn lower_expression_handles_projected_complex_sum_with_encoded_slice_varref() {
     let mut functions = IndexMap::new();
     let span = lower_test_span();
-    let mut function = rumoca_core::Function::new("Pkg.sumComplexEncoded", lower_test_span());
+    let mut function = test_function("Pkg.sumComplexEncoded", lower_test_span());
     function.inputs.push(
         rumoca_core::FunctionParam::new("v", "Modelica.ComplexMath.Complex", lower_test_span())
             .with_dims(vec![3]),
@@ -545,7 +545,7 @@ fn lower_expression_handles_projected_complex_sum_with_encoded_slice_varref() {
 #[test]
 fn lower_expression_rejects_complex_array_input_width_mismatch_with_span() {
     let mut functions = IndexMap::new();
-    let mut function = rumoca_core::Function::new("Pkg.sumComplexEncoded", lower_test_span());
+    let mut function = test_function("Pkg.sumComplexEncoded", lower_test_span());
     function.inputs.push(
         rumoca_core::FunctionParam::new("v", "Modelica.ComplexMath.Complex", lower_test_span())
             .with_dims(vec![3]),

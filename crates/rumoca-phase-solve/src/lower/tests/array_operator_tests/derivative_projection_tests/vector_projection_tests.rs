@@ -47,7 +47,7 @@ fn lower_derivative_rhs_extracts_dot_product_with_vector_function_derivative() {
         )
     };
 
-    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", lower_test_span());
+    let mut resolve2 = test_function("Pkg.resolve2", lower_test_span());
     resolve2.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve2.inputs.push(function_param_with_dims("v1", &[3]));
     resolve2.outputs.push(function_param_with_dims("v2", &[3]));
@@ -152,7 +152,7 @@ fn lower_derivative_rhs_projects_transposed_matrix_function_derivative() {
         span: lower_test_span(),
     };
 
-    let mut resolve1 = rumoca_core::Function::new("Pkg.resolve1", lower_test_span());
+    let mut resolve1 = test_function("Pkg.resolve1", lower_test_span());
     resolve1.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve1.inputs.push(function_param_with_dims("v2", &[3]));
     resolve1.outputs.push(function_param_with_dims("v1", &[3]));
@@ -238,7 +238,7 @@ fn lower_derivative_rhs_projects_vector_function_derivative_divided_by_scalar() 
         binary(rumoca_core::OpBinary::Div, lhs, rhs)
     };
 
-    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", lower_test_span());
+    let mut resolve2 = test_function("Pkg.resolve2", lower_test_span());
     resolve2.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve2.inputs.push(function_param_with_dims("v1", &[3]));
     resolve2.outputs.push(function_param_with_dims("v2", &[3]));
@@ -410,7 +410,7 @@ fn register_structural_if_vector_functions(dae_model: &mut dae::Dae) {
 }
 
 fn length_function() -> rumoca_core::Function {
-    let mut length = rumoca_core::Function::new("Pkg.length", lower_test_span());
+    let mut length = test_function("Pkg.length", lower_test_span());
     length.inputs.push(function_param_with_dims("v", &[3]));
     length.outputs.push(function_param("result"));
     length.body.push(projection_assignment(
@@ -424,7 +424,7 @@ fn length_function() -> rumoca_core::Function {
 }
 
 fn normalize_with_assert_function() -> rumoca_core::Function {
-    let mut normalize = rumoca_core::Function::new("Pkg.normalizeWithAssert", lower_test_span());
+    let mut normalize = test_function("Pkg.normalizeWithAssert", lower_test_span());
     normalize.inputs.push(function_param_with_dims("v", &[3]));
     normalize
         .outputs
@@ -451,7 +451,7 @@ fn normalize_with_assert_function() -> rumoca_core::Function {
 }
 
 fn gravity_function() -> rumoca_core::Function {
-    let mut gravity = rumoca_core::Function::new("Pkg.gravity", lower_test_span());
+    let mut gravity = test_function("Pkg.gravity", lower_test_span());
     gravity.inputs.push(function_param_with_dims("r", &[3]));
     gravity.inputs.push(function_param("mode"));
     gravity.inputs.push(function_param_with_dims("g", &[3]));

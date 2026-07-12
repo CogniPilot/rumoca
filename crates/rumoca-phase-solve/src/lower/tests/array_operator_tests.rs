@@ -377,7 +377,7 @@ fn lower_expression_selects_dynamic_scalarized_record_field_index() {
 #[test]
 fn lower_residual_projects_unflagged_complex_constructor_in_scalarized_record_row() {
     let mut dae_model = dae::Dae::default();
-    let mut complex_ctor = rumoca_core::Function::new("Complex", lower_test_span());
+    let mut complex_ctor = test_function("Complex", lower_test_span());
     complex_ctor.is_constructor = true;
     complex_ctor.inputs.push(rumoca_core::FunctionParam::new(
         "re",

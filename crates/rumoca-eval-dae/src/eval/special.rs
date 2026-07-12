@@ -118,47 +118,6 @@ pub(in crate::eval) fn resolve_user_function_reference_target<T: SimFloat>(
     if resolve_user_function(requested.as_str(), env).is_some() {
         return Some((VarName::new(requested.as_str()), None));
     }
-    #[cfg(test)]
-    {
-        rumoca_core::find_map_top_level_splits_rev(requested.as_str(), |base_name, suffix| {
-            let function = resolve_user_function(base_name, env)?;
-            let component_ref = rumoca_core::component_reference_from_flat_name(
-                &rumoca_core::VarName::new(suffix),
-                rumoca_core::Span::DUMMY,
-            )?;
-            let output = component_ref.parts.first()?;
-            function
-                .outputs
-                .iter()
-                .any(|candidate| candidate.name == output.ident)
-                .then_some(())?;
-            let indices = component_ref
-                .parts
-                .last()?
-                .subs
-                .iter()
-                .map(|subscript| match subscript {
-                    rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()?;
-            let output_path = rumoca_core::ComponentPath::from_parts(
-                component_ref.parts.iter().map(|part| part.ident.as_str()),
-            );
-            let mut selection = OutputSelection::new(output_path.as_str(), &indices);
-            selection.complex_component =
-                component_ref
-                    .parts
-                    .last()
-                    .and_then(|part| match part.ident.as_str() {
-                        "re" => Some("re"),
-                        "im" => Some("im"),
-                        _ => None,
-                    });
-            Some((VarName::new(base_name), Some(selection)))
-        })
-    }
-    #[cfg(not(test))]
     None
 }
 
@@ -311,25 +270,6 @@ fn seed_record_field_dims<T: SimFloat>(
 #[derive(Clone, PartialEq, Eq)]
 enum RecordTypeKey {
     Identity(rumoca_core::DefId),
-    #[cfg(test)]
-    SyntheticName(String),
-}
-
-#[cfg(test)]
-fn synthetic_record_constructor<'a, T: SimFloat>(
-    param: &FunctionParam,
-    env: &'a VarEnv<T>,
-) -> Result<&'a Function, EvalError> {
-    env.functions
-        .get(param.type_name.as_str())
-        .or_else(|| {
-            env.functions.values().find(|candidate| {
-                candidate.is_constructor && candidate.name.last_segment() == param.type_name
-            })
-        })
-        .ok_or_else(|| EvalError::MissingFunction {
-            name: format!("record constructor for `{}`", param.type_name),
-        })
 }
 
 fn collect_record_field_dims<T: SimFloat>(
@@ -359,21 +299,10 @@ fn collect_record_field_dims<T: SimFloat>(
             })?;
         (constructor, type_key)
     } else {
-        #[cfg(test)]
-        {
-            let constructor = synthetic_record_constructor(param, env)?;
-            (
-                constructor,
-                RecordTypeKey::SyntheticName(param.type_name.clone()),
-            )
+        return Err(EvalError::MissingFunction {
+            name: format!("record constructor identity for `{}`", param.type_name),
         }
-        #[cfg(not(test))]
-        {
-            return Err(EvalError::MissingFunction {
-                name: format!("record constructor identity for `{}`", param.type_name),
-            }
-            .with_span_if_missing(param.span));
-        }
+        .with_span_if_missing(param.span));
     };
     type_stack.push(type_key);
     for field in &constructor.inputs {

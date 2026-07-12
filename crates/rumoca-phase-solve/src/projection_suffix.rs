@@ -14,18 +14,6 @@ pub(crate) fn resolve_function_reference<'a>(
             .iter()
             .find(|(_, function)| function.instance_id == Some(resolved.instance_id));
     }
-    #[cfg(test)]
-    {
-        if let Some(exact) = functions.get_key_value(name.var_name()) {
-            return Some(exact);
-        }
-        let mut candidates = functions
-            .iter()
-            .filter(|(_, function)| test_projection_suffix(function, name).is_some());
-        let candidate = candidates.next()?;
-        candidates.next().is_none().then_some(candidate)
-    }
-    #[cfg(not(test))]
     None
 }
 
@@ -41,11 +29,6 @@ pub(crate) fn output_projection_suffix(
             .get(resolved.base_part_count..)?;
         return parse_output_projection_suffix(suffix);
     }
-    #[cfg(test)]
-    {
-        parse_output_projection_suffix(&test_projection_suffix(function, name)?)
-    }
-    #[cfg(not(test))]
     None
 }
 
@@ -76,31 +59,6 @@ fn parse_output_projection_suffix(
         output_fields: suffix[1..].iter().map(|part| part.ident.clone()).collect(),
         indices,
     })
-}
-
-#[cfg(test)]
-fn test_projection_suffix(
-    function: &rumoca_core::Function,
-    name: &rumoca_core::Reference,
-) -> Option<Vec<rumoca_core::ComponentRefPart>> {
-    let parsed;
-    let component_ref = if let Some(component_ref) = name.component_ref() {
-        component_ref
-    } else {
-        parsed = rumoca_core::component_reference_from_flat_name(
-            name.var_name(),
-            rumoca_core::Span::DUMMY,
-        )?;
-        &parsed
-    };
-    let function_parts = function.name.segments();
-    let base_part_count = function_parts.len();
-    (component_ref.parts.len() > base_part_count
-        && component_ref.parts[..base_part_count]
-            .iter()
-            .zip(function_parts)
-            .all(|(part, expected)| part.ident == expected))
-    .then(|| component_ref.parts[base_part_count..].to_vec())
 }
 
 pub(crate) fn record_output_field_param<'a>(

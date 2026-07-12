@@ -113,11 +113,6 @@ fn resolve_projected_dae_function<'a>(
             return Some(function);
         }
     } else {
-        #[cfg(test)]
-        if name.var_name() == &function.name {
-            return Some(function);
-        }
-        #[cfg(not(test))]
         return None;
     }
     let suffix = output_projection_suffix(function, name)?;
@@ -250,6 +245,7 @@ mod dynamic_projection_tests {
                 }]),
         );
         function.body.push(rumoca_core::Statement::Return { span });
+        function.instance_id = Some(rumoca_core::FunctionInstanceId::new(700));
         function
     }
 
@@ -269,6 +265,10 @@ mod dynamic_projection_tests {
                 )
                 .expect("structured projected function reference"),
             )
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(700),
+                base_part_count: 2,
+            })
         };
         validate_sim_function_call_name(&dae, &projected("Pkg.f.y"), &aliases)
             .expect("aggregate dynamic output projection should validate");
@@ -1198,6 +1198,7 @@ mod tests {
         );
         let mut dae = Dae::default();
         let mut constructor = rumoca_core::Function::new("Pkg.Record", span);
+        constructor.instance_id = Some(rumoca_core::FunctionInstanceId::new(701));
         constructor
             .inputs
             .push(rumoca_core::FunctionParam::new("known", "Real", span));
@@ -1206,7 +1207,17 @@ mod tests {
             .insert(VarName::new("Pkg.Record"), constructor);
         let expr = Expression::FieldAccess {
             base: Box::new(Expression::FunctionCall {
-                name: VarName::new("Pkg.Record").into(),
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::component_reference_from_flat_name(
+                        &VarName::new("Pkg.Record"),
+                        span,
+                    )
+                    .expect("structured constructor reference"),
+                )
+                .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                    instance_id: rumoca_core::FunctionInstanceId::new(701),
+                    base_part_count: 2,
+                }),
                 args: Vec::new(),
                 is_constructor: true,
                 span,

@@ -1,5 +1,22 @@
 use super::*;
 
+fn resolved_function_reference(
+    name: &str,
+    base_name: &str,
+    instance_id: u32,
+    span: rumoca_core::Span,
+) -> rumoca_core::Reference {
+    let component_ref =
+        rumoca_core::component_reference_from_flat_name(&rumoca_core::VarName::new(name), span)
+            .expect("structured function reference");
+    rumoca_core::Reference::from_component_reference(component_ref).with_resolved_function(
+        rumoca_core::ResolvedFunctionReference {
+            instance_id: rumoca_core::FunctionInstanceId::new(instance_id),
+            base_part_count: rumoca_core::VarName::new(base_name).segments().len(),
+        },
+    )
+}
+
 #[test]
 fn checked_projection_offset_rejects_host_index_overflow_with_span() -> Result<(), String> {
     let span = rumoca_core::Span::from_offsets(
@@ -426,6 +443,7 @@ fn expression_result_dims_accepts_declared_scalar_function_output() -> Result<()
     );
     let mut dae_model = dae::Dae::new();
     let mut function = rumoca_core::Function::new("Pkg.scalar", span);
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(801));
     function
         .outputs
         .push(rumoca_core::FunctionParam::new("y", "Real", span));
@@ -434,7 +452,7 @@ fn expression_result_dims_accepts_declared_scalar_function_output() -> Result<()
         .functions
         .insert(rumoca_core::VarName::new("Pkg.scalar"), function);
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Pkg.scalar"),
+        name: resolved_function_reference("Pkg.scalar", "Pkg.scalar", 801, span),
         args: Vec::new(),
         is_constructor: false,
         span,
@@ -514,6 +532,7 @@ fn expression_result_dims_accepts_unflagged_constructor_symbol() -> Result<(), L
     );
     let mut dae_model = dae::Dae::new();
     let mut constructor = rumoca_core::Function::new("Complex", span);
+    constructor.instance_id = Some(rumoca_core::FunctionInstanceId::new(802));
     constructor.is_constructor = true;
     constructor
         .inputs
@@ -526,7 +545,7 @@ fn expression_result_dims_accepts_unflagged_constructor_symbol() -> Result<(), L
         .functions
         .insert(rumoca_core::VarName::new("Complex"), constructor);
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Complex"),
+        name: resolved_function_reference("Complex", "Complex", 802, span),
         args: Vec::new(),
         is_constructor: false,
         span,
@@ -549,6 +568,7 @@ fn expression_result_dims_accepts_projected_matrix_function_output() -> Result<(
     );
     let mut dae_model = dae::Dae::new();
     let mut function = rumoca_core::Function::new("Pkg.mat9", span);
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(803));
     function.outputs.push(
         rumoca_core::FunctionParam::new("M", "Real", span)
             .with_dims(vec![9, 9])
@@ -559,13 +579,7 @@ fn expression_result_dims_accepts_projected_matrix_function_output() -> Result<(
         .functions
         .insert(rumoca_core::VarName::new("Pkg.mat9"), function);
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::from_component_reference(
-            rumoca_core::component_reference_from_flat_name(
-                &rumoca_core::VarName::new("Pkg.mat9.M[1,1]"),
-                span,
-            )
-            .expect("structured projected function reference"),
-        ),
+        name: resolved_function_reference("Pkg.mat9.M[1,1]", "Pkg.mat9", 803, span),
         args: Vec::new(),
         is_constructor: false,
         span,

@@ -34,7 +34,7 @@ fn insert_complex_constructor(
     dae_model: &mut dae::Dae,
     im_default: Option<rumoca_core::Expression>,
 ) {
-    let mut complex_ctor = rumoca_core::Function::new("Complex", lower_test_span());
+    let mut complex_ctor = test_function("Complex", lower_test_span());
     complex_ctor.inputs.push(rumoca_core::FunctionParam::new(
         "re",
         "Real",
@@ -71,7 +71,7 @@ fn complex_call(
 }
 
 fn conj_like_function() -> rumoca_core::Function {
-    let mut conj_like = rumoca_core::Function::new("My.conjLike", lower_test_span());
+    let mut conj_like = test_function("My.conjLike", lower_test_span());
     conj_like.inputs.push(rumoca_core::FunctionParam::new(
         "c1",
         "Complex",
@@ -137,7 +137,7 @@ fn lower_function_call_does_not_fold_self_referential_start_metadata() {
         .variable_starts
         .insert("x".to_string(), var("x"));
 
-    let mut identity = rumoca_core::Function::new("My.identity", lower_test_span());
+    let mut identity = test_function("My.identity", lower_test_span());
     identity.inputs.push(function_param("u"));
     identity.outputs.push(function_param("y"));
     identity.body.push(rumoca_core::Statement::Assignment {
@@ -226,7 +226,7 @@ fn var_matrix_index_expr(
 
 #[test]
 fn lower_expression_binds_function_local_array_defaults() {
-    let mut function = rumoca_core::Function::new("Pkg.localArray", lower_test_span());
+    let mut function = test_function("Pkg.localArray", lower_test_span());
     function.outputs.push(rumoca_core::FunctionParam::new(
         "y",
         "Real",
@@ -272,7 +272,7 @@ fn lower_expression_binds_function_local_array_defaults() {
 
 #[test]
 fn lower_expression_binds_named_record_constructor_input_fields() {
-    let mut function = rumoca_core::Function::new("Pkg.recordInput", lower_test_span());
+    let mut function = test_function("Pkg.recordInput", lower_test_span());
     function.inputs.push(rumoca_core::FunctionParam {
         type_class: Some(rumoca_core::ClassType::Record),
         type_name: "Pkg.Data".to_string(),
@@ -300,7 +300,7 @@ fn lower_expression_binds_named_record_constructor_input_fields() {
 
     // The record constructor must be registered: solve refuses to fabricate
     // field metadata for unregistered constructors (SPEC_0008).
-    let mut constructor = rumoca_core::Function::new("Pkg.Data", lower_test_span());
+    let mut constructor = test_function("Pkg.Data", lower_test_span());
     constructor.is_constructor = true;
     constructor.inputs.push(rumoca_core::FunctionParam::new(
         "name",
@@ -363,7 +363,7 @@ fn lower_expression_binds_named_record_constructor_input_fields() {
 #[test]
 fn lower_expression_projects_record_output_assigned_from_if_constructor() {
     let span = lower_test_span();
-    let mut function = rumoca_core::Function::new("Pkg.recordIf", lower_test_span());
+    let mut function = test_function("Pkg.recordIf", lower_test_span());
     function.inputs.push(rumoca_core::FunctionParam::new(
         "u",
         "Real",
@@ -424,7 +424,7 @@ fn lower_expression_projects_record_output_assigned_from_if_constructor() {
 
 #[test]
 fn lower_expression_projects_only_requested_record_output_field() {
-    let mut function = rumoca_core::Function::new("Pkg.recordIf", lower_test_span());
+    let mut function = test_function("Pkg.recordIf", lower_test_span());
     let span = lower_test_span();
     function.outputs.push(rumoca_core::FunctionParam {
         type_class: Some(rumoca_core::ClassType::Record),
@@ -663,7 +663,7 @@ fn lower_expression_binds_singleton_array_actual_to_scalar_formal_lane() {
         scalar_var("residual"),
     );
 
-    let mut pressure_loss = rumoca_core::Function::new("pressureLoss", lower_test_span());
+    let mut pressure_loss = test_function("pressureLoss", lower_test_span());
     pressure_loss.inputs.push(rumoca_core::FunctionParam::new(
         "diameter",
         "Real",
@@ -814,7 +814,7 @@ fn lower_expression_binds_record_function_result_to_record_input() {
         .algebraics
         .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
 
-    let mut state_ctor = rumoca_core::Function::new("My.State", lower_test_span());
+    let mut state_ctor = test_function("My.State", lower_test_span());
     state_ctor.is_constructor = true;
     state_ctor.inputs.push(function_param("p"));
     state_ctor.inputs.push(function_param("T"));
@@ -824,7 +824,7 @@ fn lower_expression_binds_record_function_result_to_record_input() {
         .functions
         .insert(state_ctor.name.clone(), state_ctor);
 
-    let mut make_state = rumoca_core::Function::new("My.makeState", lower_test_span());
+    let mut make_state = test_function("My.makeState", lower_test_span());
     make_state.inputs.push(function_param("p"));
     make_state.inputs.push(function_param("T"));
     make_state.outputs.push(record_param("state", "My.State"));
@@ -845,7 +845,7 @@ fn lower_expression_binds_record_function_result_to_record_input() {
         .functions
         .insert(make_state.name.clone(), make_state);
 
-    let mut temperature = rumoca_core::Function::new("My.temperature", lower_test_span());
+    let mut temperature = test_function("My.temperature", lower_test_span());
     temperature.inputs.push(record_param("state", "My.State"));
     temperature.outputs.push(function_param("T"));
     temperature.body.push(rumoca_core::Statement::Assignment {
@@ -904,7 +904,7 @@ fn lower_expression_binds_record_function_result_to_flattened_record_inputs() {
         .algebraics
         .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
 
-    let mut state_ctor = rumoca_core::Function::new("My.State", lower_test_span());
+    let mut state_ctor = test_function("My.State", lower_test_span());
     state_ctor.is_constructor = true;
     state_ctor.inputs.push(function_param("p"));
     state_ctor.inputs.push(function_param("T"));
@@ -914,7 +914,7 @@ fn lower_expression_binds_record_function_result_to_flattened_record_inputs() {
         .functions
         .insert(state_ctor.name.clone(), state_ctor);
 
-    let mut make_state = rumoca_core::Function::new("My.makeState", lower_test_span());
+    let mut make_state = test_function("My.makeState", lower_test_span());
     make_state.inputs.push(function_param("p"));
     make_state.inputs.push(function_param("T"));
     make_state.outputs.push(record_param("state", "My.State"));
@@ -935,7 +935,7 @@ fn lower_expression_binds_record_function_result_to_flattened_record_inputs() {
         .functions
         .insert(make_state.name.clone(), make_state);
 
-    let mut enthalpy = rumoca_core::Function::new("My.specificEnthalpy", lower_test_span());
+    let mut enthalpy = test_function("My.specificEnthalpy", lower_test_span());
     enthalpy.inputs.push(function_param("state_p"));
     enthalpy.inputs.push(function_param("state_T"));
     enthalpy.outputs.push(function_param("h"));
@@ -987,7 +987,7 @@ fn lower_expression_binds_same_named_local_record_actual_to_record_input() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut make_local = rumoca_core::Function::new("My.makeLocal", span);
+    let mut make_local = test_function("My.makeLocal", span);
     make_local.inputs.push(function_param("u"));
     make_local
         .outputs
@@ -1007,7 +1007,7 @@ fn lower_expression_binds_same_named_local_record_actual_to_record_input() {
         .functions
         .insert(make_local.name.clone(), make_local);
 
-    let mut use_local = rumoca_core::Function::new("My.useLocal", span);
+    let mut use_local = test_function("My.useLocal", span);
     use_local.inputs.push(record_param("f", "My.LocalRecord"));
     use_local.outputs.push(record_param("aux", "My.AuxRecord"));
     use_local.body.push(rumoca_core::Statement::Assignment {
@@ -1024,7 +1024,7 @@ fn lower_expression_binds_same_named_local_record_actual_to_record_input() {
         .functions
         .insert(use_local.name.clone(), use_local);
 
-    let mut build_aux = rumoca_core::Function::new("My.buildAux", span);
+    let mut build_aux = test_function("My.buildAux", span);
     build_aux.inputs.push(function_param("u"));
     build_aux.outputs.push(record_param("aux", "My.AuxRecord"));
     build_aux.locals.push(record_param("f", "My.LocalRecord"));
@@ -1095,7 +1095,7 @@ fn lower_expression_projects_record_field_from_function_result() {
         .algebraics
         .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
 
-    let mut state_ctor = rumoca_core::Function::new("My.State", lower_test_span());
+    let mut state_ctor = test_function("My.State", lower_test_span());
     state_ctor.is_constructor = true;
     state_ctor.inputs.push(function_param("p"));
     state_ctor.inputs.push(function_param("T"));
@@ -1105,7 +1105,7 @@ fn lower_expression_projects_record_field_from_function_result() {
         .functions
         .insert(state_ctor.name.clone(), state_ctor);
 
-    let mut make_state = rumoca_core::Function::new("My.makeState", lower_test_span());
+    let mut make_state = test_function("My.makeState", lower_test_span());
     make_state.inputs.push(function_param("p"));
     make_state.inputs.push(function_param("T"));
     make_state.outputs.push(record_param("state", "My.State"));
@@ -1160,7 +1160,7 @@ fn lower_expression_projects_single_output_function_by_output_name() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut temperature = rumoca_core::Function::new("My.temperature", lower_test_span());
+    let mut temperature = test_function("My.temperature", lower_test_span());
     temperature.inputs.push(function_param("u"));
     temperature.outputs.push(function_param("T"));
     temperature.body.push(rumoca_core::Statement::Assignment {
@@ -1211,7 +1211,7 @@ fn lower_expression_projects_multi_output_scalar_inside_binary() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut pair = rumoca_core::Function::new("My.pair", lower_test_span());
+    let mut pair = test_function("My.pair", lower_test_span());
     pair.inputs.push(function_param("u"));
     pair.outputs.push(function_param("first"));
     pair.outputs.push(function_param("second"));
@@ -1303,7 +1303,7 @@ fn projected_function_output_reads_array_assigned_in_if_branches() {
 
     let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
-    let mut from_quat = rumoca_core::Function::new("My.fromQuat", span);
+    let mut from_quat = test_function("My.fromQuat", span);
     from_quat.inputs.push(function_param_with_dims("q", &[4]));
     from_quat.outputs.push(function_param_with_dims("r", &[3]));
     from_quat.locals.push(function_param_with_dims("q_n", &[4]));
@@ -1383,7 +1383,7 @@ fn function_reads_initialized_array_element_reassigned_in_runtime_if() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut choose = rumoca_core::Function::new("My.chooseArrayElement", span);
+    let mut choose = test_function("My.chooseArrayElement", span);
     choose.inputs.push(function_param("u"));
     choose.outputs.push(function_param("out"));
     choose
@@ -1451,7 +1451,7 @@ fn runtime_if_assignment_invalidates_stale_constant_index() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut choose = rumoca_core::Function::new("My.chooseDynamicIndex", span);
+    let mut choose = test_function("My.chooseDynamicIndex", span);
     choose.inputs.push(function_param("u"));
     choose.outputs.push(function_param("out"));
     choose.locals.push(
@@ -1530,7 +1530,7 @@ fn function_selects_runtime_local_matrix_row_slice() {
         ],
         span,
     };
-    let mut row_sum = rumoca_core::Function::new("My.runtimeRowSum", span);
+    let mut row_sum = test_function("My.runtimeRowSum", span);
     row_sum.inputs.push(function_param("row"));
     row_sum.outputs.push(function_param("out"));
     row_sum
@@ -1622,7 +1622,7 @@ fn function_assigns_runtime_local_matrix_row_slice() {
         span,
     };
 
-    let mut row_update = rumoca_core::Function::new("My.runtimeRowUpdate", span);
+    let mut row_update = test_function("My.runtimeRowUpdate", span);
     row_update.inputs.push(function_param("row"));
     row_update.outputs.push(function_param("out"));
     row_update
@@ -1672,7 +1672,7 @@ fn function_output_shape_uses_scalar_actual_for_callee_input_name() {
     let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
 
-    let mut square = rumoca_core::Function::new("My.dynamicSquare", span);
+    let mut square = test_function("My.dynamicSquare", span);
     square
         .inputs
         .push(rumoca_core::FunctionParam::new("n", "Integer", span));
@@ -1696,7 +1696,7 @@ fn function_output_shape_uses_scalar_actual_for_callee_input_name() {
         .functions
         .insert(square.name.clone(), square);
 
-    let mut wrapper = rumoca_core::Function::new("My.squareSum", span);
+    let mut wrapper = test_function("My.squareSum", span);
     wrapper.outputs.push(function_param("out"));
     wrapper.locals.push(
         rumoca_core::FunctionParam::new("dimension", "Integer", span).with_default(int_lit(2)),
@@ -1762,7 +1762,7 @@ fn return_guard_preserves_prior_multidimensional_output_assignment() {
         is_matrix: true,
         span,
     };
-    let mut choose = rumoca_core::Function::new("My.matrixReturn", span);
+    let mut choose = test_function("My.matrixReturn", span);
     choose.inputs.push(function_param("u"));
     choose
         .outputs
@@ -1833,7 +1833,7 @@ fn lower_expression_projects_record_field_from_forwarded_function_result() {
         .algebraics
         .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
 
-    let mut state_ctor = rumoca_core::Function::new("My.State", lower_test_span());
+    let mut state_ctor = test_function("My.State", lower_test_span());
     state_ctor.is_constructor = true;
     state_ctor.inputs.push(function_param("p"));
     state_ctor.inputs.push(function_param("T"));
@@ -1843,7 +1843,7 @@ fn lower_expression_projects_record_field_from_forwarded_function_result() {
         .functions
         .insert(state_ctor.name.clone(), state_ctor);
 
-    let mut make_state = rumoca_core::Function::new("My.makeState", lower_test_span());
+    let mut make_state = test_function("My.makeState", lower_test_span());
     make_state.inputs.push(function_param("p"));
     make_state.inputs.push(function_param("T"));
     make_state.outputs.push(record_param("state", "My.State"));
@@ -1864,7 +1864,7 @@ fn lower_expression_projects_record_field_from_forwarded_function_result() {
         .functions
         .insert(make_state.name.clone(), make_state);
 
-    let mut forward_state = rumoca_core::Function::new("My.forwardState", lower_test_span());
+    let mut forward_state = test_function("My.forwardState", lower_test_span());
     forward_state.inputs.push(function_param("p"));
     forward_state.inputs.push(function_param("T"));
     forward_state
@@ -1918,7 +1918,7 @@ fn record_function_output_field_preserves_declared_matrix_shape() {
     let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
 
-    let mut state_ctor = rumoca_core::Function::new("My.MatrixState", span);
+    let mut state_ctor = test_function("My.MatrixState", span);
     state_ctor.is_constructor = true;
     state_ctor
         .inputs
@@ -1931,7 +1931,7 @@ fn record_function_output_field_preserves_declared_matrix_shape() {
         .functions
         .insert(state_ctor.name.clone(), state_ctor);
 
-    let mut make_state = rumoca_core::Function::new("My.makeMatrixState", span);
+    let mut make_state = test_function("My.makeMatrixState", span);
     make_state
         .outputs
         .push(record_param("state", "My.MatrixState"));
@@ -1991,7 +1991,7 @@ fn function_assigns_record_result_to_record_array_element() {
         .algebraics
         .insert(rumoca_core::VarName::new("which"), scalar_var("which"));
 
-    let mut candidate_ctor = rumoca_core::Function::new("My.Candidate", span);
+    let mut candidate_ctor = test_function("My.Candidate", span);
     candidate_ctor.is_constructor = true;
     candidate_ctor.inputs.push(function_param("length"));
     candidate_ctor
@@ -2002,7 +2002,7 @@ fn function_assigns_record_result_to_record_array_element() {
         .functions
         .insert(candidate_ctor.name.clone(), candidate_ctor);
 
-    let mut make_candidate = rumoca_core::Function::new("My.makeCandidate", span);
+    let mut make_candidate = test_function("My.makeCandidate", span);
     make_candidate.inputs.push(function_param("length"));
     make_candidate
         .outputs
@@ -2019,7 +2019,7 @@ fn function_assigns_record_result_to_record_array_element() {
         .functions
         .insert(make_candidate.name.clone(), make_candidate);
 
-    let mut select = rumoca_core::Function::new("My.selectCandidate", span);
+    let mut select = test_function("My.selectCandidate", span);
     select.inputs.push(function_param("which"));
     select.outputs.push(function_param("out"));
     select
@@ -2271,7 +2271,7 @@ fn lower_projected_function_output_skips_synthetic_array_size_actuals() {
         .parameters
         .insert(rumoca_core::VarName::new("gain"), scalar_var("gain"));
 
-    let mut function = rumoca_core::Function::new("F", lower_test_span());
+    let mut function = test_function("F", lower_test_span());
     function.inputs = vec![
         function_param_with_dims("q", &[4]),
         function_param_with_dims("omega", &[3]),
@@ -2468,7 +2468,7 @@ fn lower_expression_rebinds_flattened_record_input_components() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();
 
-    let mut orientation = rumoca_core::Function::new("My.Orientation", span);
+    let mut orientation = test_function("My.Orientation", span);
     orientation.is_constructor = true;
     orientation.inputs.push(
         rumoca_core::FunctionParam::new("T", "Real", lower_test_span()).with_dims(vec![3, 3]),
@@ -2481,7 +2481,7 @@ fn lower_expression_rebinds_flattened_record_input_components() {
         .functions
         .insert(orientation.name.clone(), orientation);
 
-    let mut resolve1 = rumoca_core::Function::new("My.resolve1", span);
+    let mut resolve1 = test_function("My.resolve1", span);
     resolve1.add_input(
         rumoca_core::FunctionParam::new("R", "My.Orientation", lower_test_span())
             .with_type_class(rumoca_core::ClassType::Record),
@@ -2541,7 +2541,7 @@ fn lower_expression_rejects_unknown_record_constructor_input_field_with_span() {
     );
     let mut dae_model = dae::Dae::default();
 
-    let mut orientation = rumoca_core::Function::new("My.Orientation", span);
+    let mut orientation = test_function("My.Orientation", span);
     orientation.is_constructor = true;
     orientation.inputs.push(
         rumoca_core::FunctionParam::new("T", "Real", lower_test_span()).with_dims(vec![3, 3]),
@@ -2554,7 +2554,7 @@ fn lower_expression_rejects_unknown_record_constructor_input_field_with_span() {
         .functions
         .insert(orientation.name.clone(), orientation);
 
-    let mut use_orientation = rumoca_core::Function::new("My.useOrientation", span);
+    let mut use_orientation = test_function("My.useOrientation", span);
     use_orientation.add_input(
         rumoca_core::FunctionParam::new("R", "My.Orientation", lower_test_span())
             .with_type_class(rumoca_core::ClassType::Record),

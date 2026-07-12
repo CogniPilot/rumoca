@@ -91,7 +91,7 @@ fn ast_comp_ref(parts: &[&str]) -> ast::ComponentReference {
 }
 
 #[test]
-fn canonicalize_collected_function_calls_uses_unique_suffix_match() {
+fn canonicalize_collected_function_calls_does_not_recover_hierarchy_from_suffix() {
     let mut flat = flat::Model::new();
     let mut function = rumoca_core::Function::new("Modelica.Math.Polynomials.fitting", Span::DUMMY);
     function
@@ -116,7 +116,8 @@ fn canonicalize_collected_function_calls_uses_unique_suffix_match() {
     let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
         panic!("expected function call residual");
     };
-    assert_eq!(name.as_str(), "Modelica.Math.Polynomials.fitting");
+    assert_eq!(name.as_str(), "Polynomials.fitting");
+    assert_eq!(name.resolved_function(), None);
 }
 
 #[test]
@@ -171,7 +172,7 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
 }
 
 #[test]
-fn canonicalize_collected_function_calls_prefers_structured_exposed_function_name() {
+fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_identity() {
     let function_def_id = rumoca_core::DefId::new(43);
     let mut flat = flat::Model::new();
     let mut partial = rumoca_core::Function::new(
@@ -226,10 +227,11 @@ fn canonicalize_collected_function_calls_prefers_structured_exposed_function_nam
     };
     assert_eq!(
         name.as_str(),
-        "Modelica.Media.Air.ReferenceMoistAir.setState_pTX"
+        "Modelica.Media.Interfaces.PartialMedium.setState_pTX"
     );
     assert_eq!(name.target_def_id(), Some(function_def_id));
     assert_eq!(name.component_ref(), Some(&component_ref));
+    assert_eq!(name.resolved_function(), None);
 }
 
 #[test]
@@ -243,7 +245,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
 
     let mut when = flat::WhenClause::new(
         rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::new("Events.trip"),
+            name: rumoca_core::Reference::new("Pkg.Events.trip"),
             args: vec![],
             is_constructor: false,
             span: Span::DUMMY,
@@ -253,7 +255,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
     when.add_equation(flat::WhenEquation::Conditional {
         branches: vec![(
             rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::new("Events.trip"),
+                name: rumoca_core::Reference::new("Pkg.Events.trip"),
                 args: vec![],
                 is_constructor: false,
                 span: Span::DUMMY,
@@ -261,7 +263,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
             vec![flat::WhenEquation::FunctionCallOutputs {
                 outputs: vec![rumoca_core::VarName::new("y")],
                 function: rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::new("Events.trip"),
+                    name: rumoca_core::Reference::new("Pkg.Events.trip"),
                     args: vec![],
                     is_constructor: false,
                     span: Span::DUMMY,
@@ -273,7 +275,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         else_branch: vec![flat::WhenEquation::Assign {
             target: rumoca_core::VarName::new("y"),
             value: rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::new("Events.trip"),
+                name: rumoca_core::Reference::new("Pkg.Events.trip"),
                 args: vec![],
                 is_constructor: false,
                 span: Span::DUMMY,

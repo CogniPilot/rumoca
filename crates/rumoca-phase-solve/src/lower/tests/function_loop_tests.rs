@@ -109,7 +109,7 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
 #[test]
 fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
     let mut dae_model = dae::Dae::default();
-    let mut sum = rumoca_core::Function::new("My.sumViaLocalSize", lower_test_span());
+    let mut sum = test_function("My.sumViaLocalSize", lower_test_span());
     sum.inputs.push(function_param_with_dims("u", &[0]));
     sum.outputs.push(function_param("out"));
     sum.locals.push(
@@ -163,7 +163,7 @@ fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
 #[test]
 fn lower_expression_unrolls_for_loop_over_assigned_local_integer() {
     let mut dae_model = dae::Dae::default();
-    let mut function = rumoca_core::Function::new("My.assignedLoopBound", lower_test_span());
+    let mut function = test_function("My.assignedLoopBound", lower_test_span());
     function.outputs.push(function_param("out"));
     function.locals.push(rumoca_core::FunctionParam::new(
         "solveRow",
@@ -214,7 +214,7 @@ fn lower_expression_unrolls_for_loop_over_assigned_local_integer() {
 fn lower_expression_uses_assigned_local_integer_in_comprehension_range() {
     let span = lower_test_span();
     let mut dae_model = dae::Dae::default();
-    let mut function = rumoca_core::Function::new("My.assignedComprehensionBound", span);
+    let mut function = test_function("My.assignedComprehensionBound", span);
     function.outputs.push(function_param("out"));
     function
         .locals
@@ -267,7 +267,7 @@ fn lower_expression_uses_assigned_local_integer_in_comprehension_range() {
 #[test]
 fn lower_expression_reads_array_value_assigned_in_for_loop() {
     let mut dae_model = dae::Dae::default();
-    let mut function = rumoca_core::Function::new("My.arrayLoopAssignment", lower_test_span());
+    let mut function = test_function("My.arrayLoopAssignment", lower_test_span());
     function.outputs.push(function_param("out"));
     function
         .locals
@@ -327,7 +327,7 @@ fn runtime_if_inside_for_invalidates_pre_loop_constant_index() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
-    let mut function = rumoca_core::Function::new("My.loopSelectedIndex", span);
+    let mut function = test_function("My.loopSelectedIndex", span);
     function.inputs.push(function_param("u"));
     function.outputs.push(function_param("out"));
     function.locals.push(
@@ -400,7 +400,7 @@ fn runtime_if_inside_for_invalidates_pre_loop_constant_index() {
 #[test]
 fn lower_expression_uses_function_local_size_in_fill_dimension() {
     let mut dae_model = dae::Dae::default();
-    let mut count_fill = rumoca_core::Function::new("My.countFill", lower_test_span());
+    let mut count_fill = test_function("My.countFill", lower_test_span());
     count_fill.inputs.push(function_param_with_dims("u", &[0]));
     count_fill.outputs.push(function_param("out"));
     count_fill.locals.push(
@@ -446,7 +446,7 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
 #[test]
 fn lower_expression_unrolls_for_loop_over_qualified_real_fft_sample_points() {
     let mut dae_model = dae::Dae::default();
-    let mut count = rumoca_core::Function::new("My.fftPointCount", lower_test_span());
+    let mut count = test_function("My.fftPointCount", lower_test_span());
     count.outputs.push(function_param("out"));
     count.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("out"),
@@ -508,7 +508,7 @@ fn lower_expression_uses_actual_matrix_shape_for_function_input_size() {
     );
 
     let span = lower_test_span();
-    let mut row_count = rumoca_core::Function::new("My.rowCount", span);
+    let mut row_count = test_function("My.rowCount", span);
     row_count.inputs.push(
         rumoca_core::FunctionParam::new("table", "Real", span)
             .with_dims(vec![0, 2])
