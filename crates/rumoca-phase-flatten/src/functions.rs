@@ -26,12 +26,14 @@ use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
 
 mod call_args;
+mod constant_overrides;
 mod constructor_signature;
 mod function_metadata;
 mod function_output_validation;
 #[cfg(test)]
 mod tests;
 pub(crate) use call_args::validate_flat_function_call_args;
+use constant_overrides::active_constant_def_overrides;
 use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
 use function_metadata::*;
 pub(crate) use function_metadata::{
@@ -52,6 +54,7 @@ use crate::source_spans::required_location_span;
 pub(crate) struct FunctionRequest {
     pub(crate) name: String,
     pub(crate) target_def_id: Option<rumoca_core::DefId>,
+    target_instance_id: Option<rumoca_core::FunctionInstanceId>,
     component_ref: Option<rumoca_core::ComponentReference>,
 }
 
@@ -65,6 +68,9 @@ impl FunctionRequest {
         Self {
             name,
             target_def_id: reference.target_def_id(),
+            target_instance_id: reference
+                .resolved_function()
+                .map(|resolved| resolved.instance_id),
             component_ref,
         }
     }
@@ -73,6 +79,7 @@ impl FunctionRequest {
         Self {
             name: component_ref_name(reference),
             target_def_id: reference.def_id,
+            target_instance_id: None,
             component_ref: Some(reference.clone()),
         }
     }
@@ -84,6 +91,7 @@ impl FunctionRequest {
         Self {
             name,
             target_def_id: reference.def_id,
+            target_instance_id: None,
             component_ref: Some(ast_component_ref_to_core(reference)),
         }
     }
@@ -92,6 +100,16 @@ impl FunctionRequest {
         Self {
             name,
             target_def_id: None,
+            target_instance_id: None,
+            component_ref: None,
+        }
+    }
+
+    fn from_type_param(param: &rumoca_core::FunctionParam) -> Self {
+        Self {
+            name: param.type_name.clone(),
+            target_def_id: param.type_def_id,
+            target_instance_id: None,
             component_ref: None,
         }
     }
@@ -153,6 +171,7 @@ struct FunctionIdentitySet {
 #[derive(Clone)]
 struct FunctionIdentity {
     def_id: Option<rumoca_core::DefId>,
+    instance_id: Option<rumoca_core::FunctionInstanceId>,
     name: String,
 }
 
@@ -160,6 +179,7 @@ impl FunctionIdentitySet {
     fn insert_request(&mut self, request: &FunctionRequest) -> bool {
         self.insert_identity(FunctionIdentity {
             def_id: request.target_def_id,
+            instance_id: request.target_instance_id,
             name: request.name.clone(),
         })
     }
@@ -167,14 +187,20 @@ impl FunctionIdentitySet {
     fn insert_function(&mut self, function: &rumoca_core::Function) -> bool {
         self.insert_identity(FunctionIdentity {
             def_id: function.def_id,
+            instance_id: function.instance_id,
             name: function.name.as_str().to_string(),
         })
     }
 
     fn contains_function(&self, function: &rumoca_core::Function) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| same_function_identity(entry, function.def_id, function.name.as_str()))
+        self.entries.iter().any(|entry| {
+            same_function_identity(
+                entry,
+                function.def_id,
+                function.instance_id,
+                function.name.as_str(),
+            )
+        })
     }
 
     fn contains_name(&self, name: &str) -> bool {
@@ -182,11 +208,9 @@ impl FunctionIdentitySet {
     }
 
     fn insert_identity(&mut self, identity: FunctionIdentity) -> bool {
-        if self
-            .entries
-            .iter()
-            .any(|entry| same_function_identity(entry, identity.def_id, &identity.name))
-        {
+        if self.entries.iter().any(|entry| {
+            same_function_identity(entry, identity.def_id, identity.instance_id, &identity.name)
+        }) {
             return false;
         }
         self.entries.push(identity);
@@ -197,8 +221,12 @@ impl FunctionIdentitySet {
 fn same_function_identity(
     left: &FunctionIdentity,
     right_def_id: Option<rumoca_core::DefId>,
+    right_instance_id: Option<rumoca_core::FunctionInstanceId>,
     right_name: &str,
 ) -> bool {
+    if let (Some(left_id), Some(right_id)) = (left.instance_id, right_instance_id) {
+        return left_id == right_id;
+    }
     match (left.def_id, right_def_id) {
         (Some(left_id), Some(right_id)) => left_id == right_id && left.name == right_name,
         _ => left.name == right_name,
@@ -582,6 +610,9 @@ fn request_seen_in_scope(
 }
 
 fn same_function_request(left: &FunctionRequest, right: &FunctionRequest) -> bool {
+    if let (Some(left_id), Some(right_id)) = (left.target_instance_id, right.target_instance_id) {
+        return left_id == right_id;
+    }
     if let (Some(left_ref), Some(right_ref)) = (&left.component_ref, &right.component_ref)
         && left_ref == right_ref
     {
@@ -648,20 +679,28 @@ pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn canonicalize_collected_function_calls(flat: &mut flat::Model) {
+pub(crate) fn canonicalize_collected_function_calls(
+    flat: &mut flat::Model,
+) -> Result<(), FlattenError> {
     let canonical_functions = flat
         .functions
         .values()
-        .map(|function| CanonicalFunction {
-            name: function.name.as_str().to_string(),
-            def_id: function.def_id,
+        .map(|function| {
+            Ok(CanonicalFunction {
+                name: function.name.as_str().to_string(),
+                def_id: function.def_id,
+                instance_id: function
+                    .instance_id
+                    .ok_or_else(|| FlattenError::internal("missing function instance identity"))?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     if canonical_functions.is_empty() {
-        return;
+        return Ok(());
     }
     let mut rewriter = CollectedFunctionCallCanonicalizer {
         canonical_functions,
+        error: None,
     };
 
     for var in flat.variables.values_mut() {
@@ -729,6 +768,10 @@ pub(crate) fn canonicalize_collected_function_calls(flat: &mut flat::Model) {
             *statement = rewriter.rewrite_statement(statement);
         }
     }
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn canonicalize_when_equations(
@@ -784,48 +827,42 @@ fn canonicalize_function_param_default(
 struct CanonicalFunction {
     name: String,
     def_id: Option<rumoca_core::DefId>,
+    instance_id: rumoca_core::FunctionInstanceId,
 }
 
 struct CollectedFunctionCallCanonicalizer {
     canonical_functions: Vec<CanonicalFunction>,
+    error: Option<FlattenError>,
 }
 
 impl CollectedFunctionCallCanonicalizer {
-    fn canonical_name_for_reference(&self, reference: &rumoca_core::Reference) -> Option<String> {
-        if let Some(component_name) = reference.component_ref().map(component_ref_name)
-            && self
+    fn canonical_function_for_reference(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> Option<&CanonicalFunction> {
+        if let Some(resolved) = reference.resolved_function() {
+            return self
                 .canonical_functions
                 .iter()
-                .any(|function| function.name == component_name)
-        {
-            return (component_name != reference.as_str()).then_some(component_name);
+                .find(|function| function.instance_id == resolved.instance_id);
         }
-        if let Some(def_id) = reference.target_def_id()
-            && let Some(function) = self
+        let exact = self
+            .canonical_functions
+            .iter()
+            .find(|function| function.name == reference.var_name().as_str());
+        if let Some(def_id) = reference.target_def_id() {
+            let mut matches = self
                 .canonical_functions
                 .iter()
-                .find(|function| function.def_id == Some(def_id))
-        {
-            return (function.name != reference.as_str()).then(|| function.name.clone());
+                .filter(|function| function.def_id == Some(def_id));
+            let first = matches.next()?;
+            let second = matches.next();
+            if let Some(exact) = exact {
+                return (exact.def_id == Some(def_id)).then_some(exact);
+            }
+            return second.is_none().then_some(first);
         }
-        self.canonical_name_for(reference.as_str())
-    }
-
-    fn canonical_name_for(&self, name: &str) -> Option<String> {
-        if self
-            .canonical_functions
-            .iter()
-            .any(|candidate| candidate.name == name)
-        {
-            return None;
-        }
-        let suffix = format!(".{name}");
-        let mut matches = self
-            .canonical_functions
-            .iter()
-            .filter(|candidate| candidate.name.ends_with(&suffix));
-        let first = matches.next()?;
-        matches.next().is_none().then(|| first.name.clone())
+        exact
     }
 }
 
@@ -840,10 +877,32 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
         else {
             return self.walk_expression(expr);
         };
+        if name.resolved_function().is_none()
+            && let Some(component_ref) = name.component_ref()
+            && component_ref.to_var_name() != *name.var_name()
+        {
+            self.error.get_or_insert_with(|| {
+                FlattenError::inconsistent_function_reference(
+                    name.as_str(),
+                    component_ref.to_var_name().as_str(),
+                    *span,
+                )
+            });
+            return self.walk_expression(expr);
+        }
         let args = self.rewrite_expressions(args);
-        if let Some(canonical_name) = self.canonical_name_for_reference(name) {
+        if let Some(canonical) = self.canonical_function_for_reference(name) {
+            let base_part_count = name
+                .component_ref()
+                .map(|reference| reference.parts.len())
+                .unwrap_or(0);
             return rumoca_core::Expression::FunctionCall {
-                name: name.with_var_name(rumoca_core::VarName::new(canonical_name)),
+                name: name
+                    .with_var_name(rumoca_core::VarName::new(&canonical.name))
+                    .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                        instance_id: canonical.instance_id,
+                        base_part_count,
+                    }),
                 args,
                 is_constructor: *is_constructor,
                 span: *span,
@@ -1328,7 +1387,34 @@ fn resolve_function_in_package_chain_class<'a>(
             return Some((class_def, direct));
         }
 
-        let package_class = class_index.get_by_qualified_name(package_name)?;
+        let package_class =
+            if let Some(package_class) = class_index.get_by_qualified_name(package_name) {
+                package_class
+            } else {
+                let (owner_scope, exposed_package) = path_utils::scope_split(package_name)?;
+                let owner = class_index.get_by_qualified_name(owner_scope)?;
+                let target = crate::pipeline::extends_class_redeclare_target(
+                    tree,
+                    class_index,
+                    owner,
+                    owner_scope,
+                    exposed_package,
+                )?;
+                let target_name = target.def_id.and_then(|def_id| tree.def_map.get(&def_id))?;
+                return resolve_inner(tree, class_index, target_name, function_leaf, visited);
+            };
+        // MLS §7.3: an extends-clause class redeclare replaces the inherited
+        // member, so it wins over the (possibly partial) lexical base member.
+        if let Some(target) = crate::pipeline::extends_class_redeclare_target(
+            tree,
+            class_index,
+            package_class,
+            package_name,
+            function_leaf,
+        ) && is_callable_class_type(&target.class_type)
+        {
+            return Some((target, direct));
+        }
         for ext in &package_class.extends {
             let base_name = ext.base_name.to_string();
             let resolved_base = ext
@@ -1366,8 +1452,8 @@ pub(crate) fn collect_function_dep_requests(func: &rumoca_core::Function) -> Vec
         .chain(func.outputs.iter())
         .chain(func.locals.iter())
     {
-        if func.is_constructor && param.type_class == Some(rumoca_core::ClassType::Record) {
-            deps.insert(FunctionRequest::from_name(param.type_name.clone()));
+        if param.type_class == Some(rumoca_core::ClassType::Record) {
+            deps.insert(FunctionRequest::from_type_param(param));
         }
         if let Some(default) = &param.default {
             collect_from_expression(default, &mut deps);
@@ -1597,13 +1683,20 @@ fn convert_callable<'tree>(
         )
         .map(Some),
         class_type if is_callable_class_type(class_type) => {
-            Ok(Some(convert_constructor_signature(
+            let mut constructor = convert_constructor_signature(
                 class_index,
                 class_def,
                 qualified_name,
                 source_map,
                 def_map,
-            )?))
+            )?;
+            contextualize_record_param_type_names(
+                tree,
+                class_index,
+                qualified_name,
+                &mut constructor,
+            )?;
+            Ok(Some(constructor))
         }
         _ => Ok(None),
     }
@@ -1724,11 +1817,69 @@ fn convert_function<'tree>(
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
     rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
+    contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func)?;
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }
 
     Ok(func)
+}
+
+/// Rewrite record-typed parameter type names to the exposed qualified names
+/// resolved in the callable's own scope (redeclare-aware, like body calls).
+///
+/// Downstream record decomposition and output projection perform exact
+/// constructor lookups keyed by these names, so a record param must carry the
+/// concrete resolved type name rather than source-relative text.
+fn contextualize_record_param_type_names(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    exposed_name: &str,
+    func: &mut rumoca_core::Function,
+) -> Result<(), FlattenError> {
+    for param in func
+        .inputs
+        .iter_mut()
+        .chain(func.outputs.iter_mut())
+        .chain(func.locals.iter_mut())
+    {
+        if param.type_class != Some(rumoca_core::ClassType::Record) {
+            continue;
+        }
+        let resolution = resolve_function_class_with_scope(
+            tree,
+            class_index,
+            &param.type_name,
+            Some(exposed_name),
+        )
+        .or_else(|| {
+            let type_def_id = param.type_def_id?;
+            let class_def = class_index.get(type_def_id)?;
+            Some(FunctionClassResolution {
+                exposed_name: class_index.qualified_name(type_def_id)?.to_string(),
+                class_def,
+            })
+        })
+        .ok_or_else(|| {
+            FlattenError::missing_resolved_class_metadata(
+                &param.type_name,
+                format!("record function parameter type contextualization in `{exposed_name}`"),
+                param.span,
+            )
+        })?;
+        if effective_function_param_class_type(class_index, resolution.class_def)
+            != rumoca_core::ClassType::Record
+        {
+            return Err(FlattenError::missing_resolved_class_metadata(
+                &param.type_name,
+                "record function parameter resolved to a non-record class",
+                param.span,
+            ));
+        }
+        param.type_name = resolution.exposed_name;
+        param.type_def_id = resolution.class_def.def_id;
+    }
+    Ok(())
 }
 
 fn function_initial_import_map<'tree>(
@@ -1841,58 +1992,4 @@ fn collect_effective_package_constant_aliases(
             }
         }
     }
-}
-
-fn active_constant_def_overrides(
-    tree: &ast::ClassTree,
-    class_index: &ast::ClassDefIndex<'_>,
-    active_function: &ast::ClassDef,
-    def_map: &crate::ResolveDefMap,
-) -> crate::ResolveDefMap {
-    let Some(active_function_def_id) = active_function.def_id else {
-        return crate::ResolveDefMap::default();
-    };
-    let Some(active_package_def_id) = class_index.parent_def_id(active_function_def_id) else {
-        return crate::ResolveDefMap::default();
-    };
-    let Some(active_package) = tree.def_map.get(&active_package_def_id) else {
-        return crate::ResolveDefMap::default();
-    };
-    let mut package_chain = Vec::new();
-    let mut visited = FxHashSet::default();
-    collect_package_chain(
-        tree,
-        class_index,
-        active_package,
-        &mut package_chain,
-        &mut visited,
-    );
-    if package_chain.is_empty() {
-        package_chain.push(active_package_def_id);
-    }
-    let package_chain: FxHashSet<rumoca_core::DefId> = package_chain.into_iter().collect();
-    def_map
-        .iter()
-        .filter_map(|(def_id, _resolved_path)| {
-            let source_def_id = class_index.parent_def_id(*def_id)?;
-            if source_def_id == active_package_def_id {
-                return None;
-            }
-            if !package_chain.contains(&source_def_id) {
-                return None;
-            }
-            let source_class = class_index.get(source_def_id)?;
-            let leaf = class_index.local_name(*def_id)?;
-            let component = source_class.components.get(leaf)?;
-            if component.def_id != Some(*def_id)
-                || !matches!(
-                    component.variability,
-                    rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-                )
-            {
-                return None;
-            }
-            Some((*def_id, format!("{active_package}.{leaf}")))
-        })
-        .collect()
 }

@@ -239,7 +239,7 @@ fn checked_compile_time_i64_rejects_upper_bound_with_span() {
         18,
     );
 
-    let err = checked_compile_time_i64(i64::MAX as f64, "for index", Some(span))
+    let err = compile_time::checked_compile_time_i64(i64::MAX as f64, "for index", Some(span))
         .expect_err("rounded f64 upper bound must not saturate to i64::MAX");
 
     assert_eq!(err.source_span(), Some(span));

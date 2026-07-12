@@ -1,6 +1,40 @@
 use super::*;
 use crate::source_spans::required_location_span;
 
+pub(super) fn effective_function_param_class_type(
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def: &ast::ClassDef,
+) -> rumoca_core::ClassType {
+    const MAX_ALIAS_DEPTH: usize = 32;
+    let mut current = class_def;
+    let mut visited = HashSet::new();
+
+    for _ in 0..MAX_ALIAS_DEPTH {
+        if current.class_type != rumoca_core::ClassType::Type {
+            return current.class_type.clone();
+        }
+        if let Some(def_id) = current.def_id
+            && !visited.insert(def_id)
+        {
+            break;
+        }
+        let Some(base) = current.extends.first() else {
+            break;
+        };
+        let base_name = base.base_name.to_string();
+        if rumoca_core::is_builtin_type(&base_name) {
+            break;
+        }
+        let Some(base_class) = class_by_name_or_def_id(class_index, &base_name, base.base_def_id)
+        else {
+            break;
+        };
+        current = base_class;
+    }
+
+    class_def.class_type.clone()
+}
+
 /// Convert an AST ExternalFunction to ExternalFunction.
 pub(super) fn convert_external_function(
     ext: &rumoca_ir_ast::ExternalFunction,
@@ -342,6 +376,9 @@ pub(super) fn convert_component_to_param(
     if let Some(def_id) = component.def_id {
         param = param.with_def_id(def_id);
     }
+    if let Some(type_def_id) = component.type_def_id.or(component.type_name.def_id) {
+        param = param.with_type_def_id(type_def_id);
+    }
     if let Some(type_class) = function_param_type_class(class_index, component) {
         param = param.with_type_class(type_class);
     }
@@ -371,6 +408,28 @@ pub(super) fn convert_component_to_param(
     if !param_dims.is_empty() {
         param = param.with_dims(param_dims);
     }
+
+    // Preserve declared scalar bounds on function parameters.  Besides being
+    // part of the parameter contract, finite Integer bounds allow solve
+    // lowering to turn a runtime-bounded Modelica loop into guarded straight-
+    // line code suitable for differentiation and efficient repeated solves.
+    let lower_bound = component
+        .modifications
+        .get("min")
+        .map(|expr| {
+            let qualified = qualify_function_expr(expr, imports, locals);
+            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+        })
+        .transpose()?;
+    let upper_bound = component
+        .modifications
+        .get("max")
+        .map(|expr| {
+            let qualified = qualify_function_expr(expr, imports, locals);
+            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+        })
+        .transpose()?;
+    param = param.with_bounds(lower_bound, upper_bound);
 
     // Use explicit declaration binding (`= expr`) for default function inputs.
     // Fall back to `start` when no declaration binding is available.
@@ -541,12 +600,12 @@ pub(super) fn function_param_type_class(
         .type_name
         .def_id
         .and_then(|def_id| class_index.get(def_id))
-        .map(|class_def| class_def.class_type.clone())
+        .map(|class_def| effective_function_param_class_type(class_index, class_def))
         .or_else(|| {
             let type_name = component.type_name.to_string();
             class_index
                 .get_by_qualified_name(&type_name)
-                .map(|class_def| class_def.class_type.clone())
+                .map(|class_def| effective_function_param_class_type(class_index, class_def))
         })
 }
 

@@ -1628,6 +1628,7 @@ pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) import_cache: &'a mut ImportCaches<'tree>,
     pub(crate) scope_index: &'a OverlayScopeIndex<'a>,
     pub(crate) component_members: &'a component_member_scope::ComponentMemberScopes,
+    pub(crate) identity_space: InstanceIdentitySpace,
 }
 
 pub(crate) fn process_component_instance(
@@ -1662,7 +1663,8 @@ pub(crate) fn process_component_instance(
     assign_instance_identity_to_flat_variable(
         request.flat,
         &mut flat_var,
-        request.tree,
+        request.identity_space,
+        request.class_index,
         request.instance_data,
     );
     let instance_scope = request.instance_data.qualified_name.to_component_path();

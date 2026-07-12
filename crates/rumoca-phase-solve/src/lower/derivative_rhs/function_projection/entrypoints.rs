@@ -187,6 +187,7 @@ pub(in crate::lower::derivative_rhs) fn project_target_scalar_outputs(
             .with_fallback_span(span));
         }
         outputs.push(ProjectedFunctionOutput {
+            output_name: None,
             field_path: Vec::new(),
             selector_indices: required_flat_index_to_subscripts(
                 dims,

@@ -1,9 +1,14 @@
+//! SPEC_0021 file-size exception: runtime-precompute regression fixtures share
+//! common DAE builders here; split plan: move remaining condition/action cases
+//! into focused sibling test modules as those groups change.
+
 use rumoca_core::Span;
 
 use super::*;
 
 mod clock_alias_resolution_tests;
 mod clock_alias_tests;
+mod clock_phase_tests;
 mod dynamic_clock_tests;
 
 fn populate_conditions(dae_model: &mut dae::Dae) {
@@ -443,6 +448,49 @@ fn test_runtime_precompute_collects_event_action_condition_roots() {
             .iter()
             .any(|candidate| rumoca_core::expressions_semantically_equal(candidate, &root)),
         "event action guards must contribute roots so assertions trigger across solvers"
+    );
+}
+
+#[test]
+fn test_runtime_precompute_skips_roots_gated_by_terminal() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable::new(rumoca_core::VarName::new("x"), test_span(1, 2)),
+    );
+    let failure = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Gt,
+        lhs: Box::new(var("x")),
+        rhs: Box::new(lit(0.0)),
+        span: test_span(3, 4),
+    };
+    let terminal = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Terminal,
+        args: Vec::new(),
+        span: test_span(5, 6),
+    };
+    dae_model.events.event_actions.push(dae::DaeEventAction {
+        condition: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::And,
+            lhs: Box::new(terminal),
+            rhs: Box::new(failure),
+            span: test_span(3, 6),
+        },
+        kind: dae::DaeEventActionKind::Assert {
+            message: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("terminal assertion failed".to_string()),
+                span: test_span(7, 8),
+            },
+        },
+        span: test_span(3, 8),
+        origin: "assert in when terminal clause".to_string(),
+    });
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!(
+        dae_model.events.synthetic_root_conditions.is_empty(),
+        "relations guarded by terminal() are evaluated at the terminal event and must not create continuous roots"
     );
 }
 
@@ -1913,83 +1961,4 @@ fn test_runtime_precompute_extracts_fractional_back_sample_schedule() {
         }),
         "expected backSample(shiftSample(Clock(0.2), 2, 5), 1, 5) to land at phase 0.04"
     );
-}
-
-#[test]
-fn test_runtime_precompute_records_per_variable_clock_phase() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .discrete_valued
-        .insert(rumoca_core::VarName::new("u"), {
-            let mut source = dae::Variable::new(
-                rumoca_core::VarName::new("u"),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            );
-            source.start = Some(var("u_start"));
-            source
-        });
-    let mut start = dae::Variable::new(
-        rumoca_core::VarName::new("u_start"),
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-    );
-    start.start = Some(lit(1.0));
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("u_start"), start);
-    dae_model.variables.discrete_valued.insert(
-        rumoca_core::VarName::new("y"),
-        dae::Variable::new(
-            rumoca_core::VarName::new("y"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("u").into()),
-        rhs: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::VarName::new("shiftSample").into(),
-            args: vec![clock_call(0.02), lit(4.0), lit(3.0)],
-            is_constructor: false,
-            span: test_span(1, 2),
-        },
-        span: test_span(1, 2),
-        origin: "u = shiftSample(Clock(0.02), 4, 3)".to_string(),
-        scalar_count: 1,
-    });
-    dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y").into()),
-        rhs: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::VarName::new("backSample").into(),
-            args: vec![var("u"), lit(4.0), lit(3.0)],
-            is_constructor: false,
-            span: test_span(1, 2),
-        },
-        span: test_span(1, 2),
-        origin: "y = backSample(u, 4, 3)".to_string(),
-        scalar_count: 1,
-    });
-
-    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
-
-    let u = dae_model
-        .clocks
-        .timings
-        .get("u")
-        .expect("shifted source timing should be recorded");
-    assert!((u.period_seconds - 0.02).abs() <= 1e-12);
-    assert!((u.phase_seconds - ((4.0 / 3.0) * 0.02)).abs() <= 1e-12);
-
-    let y = dae_model
-        .clocks
-        .timings
-        .get("y")
-        .expect("back-sampled target timing should be recorded");
-    assert!((y.period_seconds - 0.02).abs() <= 1e-12);
-    assert!(y.phase_seconds.abs() <= 1e-12);
-    assert!((dae_model.clocks.intervals["y"] - 0.02).abs() <= 1e-12);
 }

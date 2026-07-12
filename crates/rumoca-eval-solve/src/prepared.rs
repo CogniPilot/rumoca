@@ -490,6 +490,23 @@ impl PreparedScalarProgramBlock {
         self.block.output_indices.get(stored_ordinal).copied()
     }
 
+    /// Resolve a logical block output to its sole scalar program row.
+    /// Assignment-shape evaluation is row-based, while tensor/scalarized
+    /// compute blocks may place rows through a non-identity output map.
+    pub fn single_output_row_for_output_index(&self, output_index: usize) -> Option<usize> {
+        let mut stored_ordinal = 0usize;
+        for (row_idx, row) in self.block.programs.iter().enumerate() {
+            let output_count = ScalarProgramBlock::program_output_count(row);
+            if output_count == 1
+                && self.block.output_indices.get(stored_ordinal).copied() == Some(output_index)
+            {
+                return Some(row_idx);
+            }
+            stored_ordinal = stored_ordinal.checked_add(output_count)?;
+        }
+        None
+    }
+
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;

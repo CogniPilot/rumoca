@@ -1876,7 +1876,7 @@ fn instantiate_nested_class(
     )?;
 
     // Step 2.5: Propagate record bindings to field bindings (MLS §7.2)
-    if let Some(binding_expr) = binding_for_record_expansion {
+    let record_projected_keys = if let Some(binding_expr) = binding_for_record_expansion {
         propagate_record_binding_to_fields(
             tree,
             ctx,
@@ -1884,8 +1884,10 @@ fn instantiate_nested_class(
             binding_scope_for_record_expansion.cloned(),
             nested_class,
             &targeted_keys,
-        )?;
-    }
+        )?
+    } else {
+        IndexMap::default()
+    };
 
     // Step 2.6: Scope the mod_env to only contain entries relevant to this nested class.
     // After steps 1-2.5, the mod_env contains both parent-scope entries and newly added
@@ -1897,6 +1899,10 @@ fn instantiate_nested_class(
     ctx.mod_env_mut().active.retain(|key, _| {
         // Keep entries not in the snapshot (they were newly added)
         !mod_env_snapshot.contains_key(key)
+        // Keep record-field projections even when their local field names also
+        // existed in the parent snapshot (for example, `path.startPosition`
+        // nested inside a component modified at `startPosition`).
+        || record_projected_keys.contains_key(key)
         // Keep entries that were explicitly targeted at this component
         || targeted_keys.contains_key(key)
         // Keep parent keys referenced by this component's modifier RHS expressions.

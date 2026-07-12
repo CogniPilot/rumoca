@@ -67,7 +67,7 @@ fn register_implicit_record_constructor_functions(dae_model: &mut dae::Dae) {
 }
 
 fn implicit_orientation_constructor_function() -> rumoca_core::Function {
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", lower_test_span());
+    let mut orientation = test_function("Pkg.Orientation", lower_test_span());
     orientation
         .inputs
         .push(projection_function_param("T", "Real", &[3, 3]));
@@ -78,8 +78,7 @@ fn implicit_orientation_constructor_function() -> rumoca_core::Function {
 }
 
 fn angular_velocity2_function() -> rumoca_core::Function {
-    let mut angular_velocity =
-        rumoca_core::Function::new("Pkg.angularVelocity2", lower_test_span());
+    let mut angular_velocity = test_function("Pkg.angularVelocity2", lower_test_span());
     angular_velocity
         .inputs
         .push(projection_function_param("Q", "Pkg.Quaternion", &[]));
@@ -133,7 +132,7 @@ fn angular_velocity2_rhs() -> rumoca_core::Expression {
 }
 
 fn from_q_function() -> rumoca_core::Function {
-    let mut from_q = rumoca_core::Function::new("Pkg.from_Q", lower_test_span());
+    let mut from_q = test_function("Pkg.from_Q", lower_test_span());
     from_q
         .inputs
         .push(projection_function_param("Q", "Pkg.Quaternion", &[]));
@@ -244,6 +243,7 @@ fn projection_function_param(
 ) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span: lower_test_span(),
         type_name: type_name.to_string(),
@@ -251,6 +251,8 @@ fn projection_function_param(
         dims: dims.to_vec(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }
@@ -356,7 +358,7 @@ fn register_matrix_record_constructor_functions(dae_model: &mut dae::Dae) {
 }
 
 fn matrix_orientation_constructor_function() -> rumoca_core::Function {
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", lower_test_span());
+    let mut orientation = test_function("Pkg.Orientation", lower_test_span());
     orientation
         .inputs
         .push(function_param_with_dims("T", &[3, 3]));
@@ -365,7 +367,7 @@ fn matrix_orientation_constructor_function() -> rumoca_core::Function {
 }
 
 fn rotation_matrix_function() -> rumoca_core::Function {
-    let mut rotation = rumoca_core::Function::new("Pkg.rotation", lower_test_span());
+    let mut rotation = test_function("Pkg.rotation", lower_test_span());
     rotation
         .outputs
         .push(function_param_with_dims("T", &[3, 3]));
@@ -382,7 +384,7 @@ fn rotation_matrix_function() -> rumoca_core::Function {
 }
 
 fn resolve2_function() -> rumoca_core::Function {
-    let mut resolve2 = rumoca_core::Function::new("Pkg.resolve2", lower_test_span());
+    let mut resolve2 = test_function("Pkg.resolve2", lower_test_span());
     resolve2.inputs.push(function_param_with_dims("T", &[3, 3]));
     resolve2.inputs.push(function_param_with_dims("v1", &[3]));
     resolve2.outputs.push(function_param_with_dims("v2", &[3]));
@@ -395,7 +397,7 @@ fn resolve2_function() -> rumoca_core::Function {
 }
 
 fn axes_function() -> rumoca_core::Function {
-    let mut axes = rumoca_core::Function::new("Pkg.axes", lower_test_span());
+    let mut axes = test_function("Pkg.axes", lower_test_span());
     axes.inputs
         .push(function_param_with_dims("der_angles", &[3]));
     axes.outputs.push(rumoca_core::FunctionParam {
@@ -568,7 +570,7 @@ fn register_planar_rotation_functions(dae_model: &mut dae::Dae) {
 }
 
 fn planar_rotation_function() -> rumoca_core::Function {
-    let mut planar = rumoca_core::Function::new("Pkg.planarRotation", lower_test_span());
+    let mut planar = test_function("Pkg.planarRotation", lower_test_span());
     planar.inputs.push(function_param_with_dims("e", &[3]));
     planar.inputs.push(function_param("angle"));
     planar.inputs.push(function_param("der_angle"));

@@ -2,6 +2,8 @@ use super::*;
 use rumoca_core::Span;
 use std::collections::HashMap;
 
+mod review_regression_tests;
+
 fn test_span() -> Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_structural_scalarize_tests_source_1.mo"),
@@ -71,6 +73,44 @@ fn lhs(name: &str) -> Option<rumoca_core::Reference> {
         }
         None => rumoca_core::Reference::new(name),
     })
+}
+
+fn structured_reference(name: &str, span: Span) -> rumoca_core::Reference {
+    rumoca_core::Reference::from_component_reference(
+        rumoca_core::component_reference_from_flat_name(&VarName::new(name), span)
+            .expect("valid structured test reference"),
+    )
+}
+
+fn structured_function_reference(
+    name: &str,
+    span: Span,
+    instance_id: u32,
+) -> rumoca_core::Reference {
+    let reference = structured_reference(name, span);
+    let base_part_count = reference.parts().len();
+    reference.with_resolved_function(rumoca_core::ResolvedFunctionReference {
+        instance_id: rumoca_core::FunctionInstanceId::new(instance_id),
+        base_part_count,
+    })
+}
+
+fn set_function_instance(function: &mut rumoca_core::Function, instance_id: u32) {
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(instance_id));
+}
+
+fn projected_function_reference(
+    name: &str,
+    span: Span,
+    instance_id: u32,
+    base_part_count: usize,
+) -> rumoca_core::Reference {
+    structured_reference(name, span).with_resolved_function(
+        rumoca_core::ResolvedFunctionReference {
+            instance_id: rumoca_core::FunctionInstanceId::new(instance_id),
+            base_part_count,
+        },
+    )
 }
 
 #[test]
@@ -609,6 +649,9 @@ fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
         function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
     };
     let expr = Expression::Array {
         elements: vec![
@@ -678,6 +721,9 @@ fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
         function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
     };
     let expr = Expression::Array {
         elements: vec![
@@ -775,6 +821,7 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
         .insert(VarName::new("R"), variable("R", &[3]));
 
     let mut function = rumoca_core::Function::new("LieGroup.SO3.rotationMatrix", test_span());
+    set_function_instance(&mut function, 1);
     function
         .add_input(rumoca_core::FunctionParam::new("q", "Real", test_span()).with_dims(vec![4]));
     function
@@ -787,7 +834,7 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
     dae_model.continuous.equations.push(eq(
         "R",
         Expression::FunctionCall {
-            name: rumoca_core::Reference::new("LieGroup.SO3.rotationMatrix"),
+            name: structured_function_reference("LieGroup.SO3.rotationMatrix", test_span(), 1),
             args: vec![var("q")],
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
@@ -798,15 +845,323 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
     scalarize_equations(&mut dae_model).unwrap();
 
     assert_eq!(dae_model.continuous.equations.len(), 3);
+    let projected_name =
+        structured_function_reference("LieGroup.SO3.rotationMatrix", test_span(), 1)
+            .with_appended_parts(
+                &[rumoca_core::ComponentRefPart {
+                    ident: "R".to_string(),
+                    span: test_span(),
+                    subs: vec![Subscript::generated_index(1, test_span())],
+                }],
+                rumoca_core::Span::DUMMY,
+            )
+            .expect("structured projection");
     assert_eq!(
         dae_model.continuous.equations[0].rhs,
         Expression::FunctionCall {
-            name: rumoca_core::Reference::new("LieGroup.SO3.rotationMatrix.R[1]"),
+            name: projected_name,
             args: vec![var("q")],
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
         }
     );
+}
+
+#[test]
+fn scalarize_does_not_reproject_an_already_selected_function_output() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("xhat"), variable("xhat", &[2]));
+
+    let mut function = rumoca_core::Function::new("ekfUpdate", test_span());
+    set_function_instance(&mut function, 5);
+    function.add_output(rumoca_core::FunctionParam::new(
+        "valid",
+        "Boolean",
+        test_span(),
+    ));
+    function.add_output(
+        rumoca_core::FunctionParam::new("xhat", "Real", test_span()).with_dims(vec![2]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("ekfUpdate"), function);
+    let selected_name = projected_function_reference("ekfUpdate.xhat", test_span(), 5, 1);
+    dae_model.continuous.equations.push(eq(
+        "xhat",
+        Expression::FunctionCall {
+            name: selected_name.clone(),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        },
+        2,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 2);
+    for equation in &dae_model.continuous.equations {
+        assert!(matches!(
+            &equation.rhs,
+            Expression::FunctionCall { name, .. } if name == &selected_name
+        ));
+    }
+}
+
+#[test]
+fn scalarize_matrix_product_uses_declared_function_output_shapes() {
+    fn call(name: &str, instance_id: u32) -> Expression {
+        Expression::FunctionCall {
+            name: structured_function_reference(name, test_span(), instance_id),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        }
+    }
+
+    fn collect_call_names(expr: &Expression, names: &mut Vec<String>) {
+        match expr {
+            Expression::FunctionCall { name, .. } => names.push(name.as_str().to_string()),
+            Expression::Binary { lhs, rhs, .. } => {
+                collect_call_names(lhs, names);
+                collect_call_names(rhs, names);
+            }
+            _ => {}
+        }
+    }
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("P"), variable("P", &[2, 2]));
+    for (instance_id, name) in [(2, "F"), (3, "G")] {
+        let mut function = rumoca_core::Function::new(name, test_span());
+        set_function_instance(&mut function, instance_id);
+        function.add_output(
+            rumoca_core::FunctionParam::new("Y", "Real", test_span()).with_dims(vec![2, 2]),
+        );
+        dae_model
+            .symbols
+            .functions
+            .insert(function.name.clone(), function);
+    }
+    dae_model.continuous.equations.push(eq(
+        "P",
+        Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(call("F", 2)),
+            rhs: Box::new(call("G", 3)),
+            span: test_span(),
+        },
+        4,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let mut names = Vec::new();
+    collect_call_names(&dae_model.continuous.equations[0].rhs, &mut names);
+    assert_eq!(names, ["F.Y[1,1]", "G.Y[1,1]", "F.Y[1,2]", "G.Y[2,1]"]);
+}
+
+#[test]
+fn scalarize_dynamic_function_output_resolves_shape_from_array_argument() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("A"), variable("A", &[2, 2]));
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("R"), variable("R", &[2, 2]));
+
+    let mut function = rumoca_core::Function::new("My.symmetrize", test_span());
+    set_function_instance(&mut function, 4);
+    function
+        .add_input(rumoca_core::FunctionParam::new("A", "Real", test_span()).with_dims(vec![0, 0]));
+    let mut output =
+        rumoca_core::FunctionParam::new("symmetricA", "Real", test_span()).with_dims(vec![0, 0]);
+    output.shape_expr = [1, 2]
+        .into_iter()
+        .map(|dim| {
+            rumoca_core::Subscript::generated_expr(
+                Box::new(Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![
+                        var("A"),
+                        Expression::Literal {
+                            value: Literal::Integer(dim),
+                            span: test_span(),
+                        },
+                    ],
+                    span: test_span(),
+                }),
+                test_span(),
+            )
+        })
+        .collect();
+    function.add_output(output);
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    dae_model.continuous.equations.push(eq(
+        "R",
+        Expression::FunctionCall {
+            name: structured_function_reference("My.symmetrize", test_span(), 4),
+            args: vec![var("A")],
+            is_constructor: false,
+            span: test_span(),
+        },
+        4,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 4);
+    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
+        let row = offset / 2 + 1;
+        let column = offset % 2 + 1;
+        assert_eq!(
+            equation.rhs,
+            Expression::FunctionCall {
+                name: projected_function_reference(
+                    &format!("My.symmetrize.symmetricA[{row},{column}]"),
+                    test_span(),
+                    4,
+                    2,
+                ),
+                args: vec![var("A")],
+                is_constructor: false,
+                span: test_span(),
+            }
+        );
+    }
+}
+
+#[test]
+fn scalarize_array_field_of_untyped_function_result_selects_each_component() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[2]));
+
+    let mut function = rumoca_core::Function::new("Path.sample", test_span());
+    set_function_instance(&mut function, 5);
+    function.add_output(rumoca_core::FunctionParam::new(
+        "state",
+        "Path.State",
+        test_span(),
+    ));
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Path.sample"), function);
+
+    let call = Expression::FunctionCall {
+        name: structured_function_reference("Path.sample", test_span(), 5),
+        args: vec![],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let field = Expression::FieldAccess {
+        base: Box::new(call.clone()),
+        field: "firstDerivative".to_string(),
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(eq("y", field.clone(), 2));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 2);
+    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
+        assert_eq!(equation.lhs, lhs(&format!("y[{}]", offset + 1)));
+        assert_eq!(
+            equation.rhs,
+            Expression::Index {
+                base: Box::new(field.clone()),
+                subscripts: vec![Subscript::generated_index(offset as i64 + 1, test_span())],
+                span: test_span(),
+            }
+        );
+    }
+}
+
+#[test]
+fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[2]));
+
+    let mut constructor = rumoca_core::Function::new("Path.State", test_span());
+    set_function_instance(&mut constructor, 6);
+    constructor.def_id = Some(rumoca_core::DefId::new(60));
+    constructor.is_constructor = true;
+    constructor.add_input(
+        rumoca_core::FunctionParam::new("firstDerivative", "Real", test_span()).with_dims(vec![2]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Path.State"), constructor);
+
+    let mut function = rumoca_core::Function::new("Path.sample", test_span());
+    set_function_instance(&mut function, 7);
+    let mut state = rumoca_core::FunctionParam::new("state", "Path.State", test_span());
+    state.type_class = Some(rumoca_core::ClassType::Record);
+    state.type_def_id = Some(rumoca_core::DefId::new(60));
+    function.add_output(state);
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Path.sample"), function);
+
+    let call = Expression::FunctionCall {
+        name: structured_function_reference("Path.sample", test_span(), 7),
+        args: vec![],
+        is_constructor: false,
+        span: test_span(),
+    };
+    dae_model.continuous.equations.push(eq(
+        "y",
+        Expression::FieldAccess {
+            base: Box::new(call),
+            field: "firstDerivative".to_string(),
+            span: test_span(),
+        },
+        2,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
+        assert_eq!(
+            equation.rhs,
+            Expression::FunctionCall {
+                name: projected_function_reference(
+                    &format!("Path.sample.state.firstDerivative[{}]", offset + 1),
+                    test_span(),
+                    7,
+                    2,
+                ),
+                args: vec![],
+                is_constructor: false,
+                span: test_span(),
+            }
+        );
+    }
 }
 
 #[test]

@@ -120,6 +120,7 @@ fn add_any_true_function(dae: &mut Dae) {
         rumoca_core::Function::new("Modelica.Math.BooleanVectors.anyTrue", test_span());
     function.inputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "b".to_string(),
         span: test_span(),
         type_name: "Boolean".to_string(),
@@ -127,10 +128,13 @@ fn add_any_true_function(dae: &mut Dae) {
         dims: vec![0],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     function.outputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "result".to_string(),
         span: test_span(),
         type_name: "Boolean".to_string(),
@@ -138,6 +142,8 @@ fn add_any_true_function(dae: &mut Dae) {
         dims: Vec::new(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     dae.symbols
@@ -908,6 +914,7 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
     let mut function = rumoca_core::Function::new("Space.ToSpacePhasor", test_span());
     function.outputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "y".to_string(),
         span: test_span(),
         type_name: "Real".to_string(),
@@ -915,6 +922,8 @@ fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
         dims: vec![2],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     dae.symbols

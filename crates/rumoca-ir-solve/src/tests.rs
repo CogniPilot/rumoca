@@ -561,11 +561,13 @@ fn solve_problem_json_has_supported_schema_version() {
         "SolveProblem JSON must carry an explicit schema_version"
     );
 
-    let mut unsupported = value;
-    unsupported["schema_version"] = serde_json::json!(SOLVE_SCHEMA_VERSION + 1);
-    let err = serde_json::from_value::<SolveProblem>(unsupported)
-        .expect_err("unsupported SolveProblem schema version must fail");
-    assert!(err.to_string().contains("unsupported Solve schema_version"));
+    for unsupported_version in [SOLVE_SCHEMA_VERSION - 1, SOLVE_SCHEMA_VERSION + 1] {
+        let mut unsupported = value.clone();
+        unsupported["schema_version"] = serde_json::json!(unsupported_version);
+        let err = serde_json::from_value::<SolveProblem>(unsupported)
+            .expect_err("unsupported SolveProblem schema version must fail");
+        assert!(err.to_string().contains("unsupported Solve schema_version"));
+    }
 }
 
 #[test]

@@ -6,6 +6,7 @@ fn test_eval_function_call_selected_complex_output_with_array_literal_input() {
     let mut funcs = IndexMap::new();
 
     let mut f = Function::new("Pkg.pickFirstComplex", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 0);
     f.add_input(
         FunctionParam::new(
             "c",
@@ -42,13 +43,26 @@ fn test_eval_function_call_selected_complex_output_with_array_literal_input() {
     );
     assert_eq!(
         eval_expr_value::<f64>(
-            &fn_call("Pkg.pickFirstComplex.result.re", vec![arg.clone()]),
+            &resolved_fn_call(
+                "Pkg.pickFirstComplex.result.re",
+                "Pkg.pickFirstComplex",
+                0,
+                vec![arg.clone()],
+            ),
             &env
         ),
         2.0
     );
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.pickFirstComplex.result.im", vec![arg]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call(
+                "Pkg.pickFirstComplex.result.im",
+                "Pkg.pickFirstComplex",
+                0,
+                vec![arg],
+            ),
+            &env,
+        ),
         -3.0
     );
 }
@@ -59,6 +73,7 @@ fn test_eval_function_call_selected_complex_sum_with_slice_field_access() {
     let mut funcs = IndexMap::new();
 
     let mut f = Function::new("Pkg.sumComplex", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 0);
     f.add_input(
         FunctionParam::new(
             "v",
@@ -123,13 +138,21 @@ fn test_eval_function_call_selected_complex_sum_with_slice_field_access() {
     );
     assert_eq!(
         eval_expr_value::<f64>(
-            &fn_call("Pkg.sumComplex.result.re", vec![arg.clone()]),
+            &resolved_fn_call(
+                "Pkg.sumComplex.result.re",
+                "Pkg.sumComplex",
+                0,
+                vec![arg.clone()],
+            ),
             &env
         ),
         2.0
     );
     assert_eq!(
-        eval_expr_value::<f64>(&fn_call("Pkg.sumComplex.result.im", vec![arg]), &env),
+        eval_expr_value::<f64>(
+            &resolved_fn_call("Pkg.sumComplex.result.im", "Pkg.sumComplex", 0, vec![arg],),
+            &env,
+        ),
         -3.0
     );
 }
@@ -180,6 +203,7 @@ fn test_eval_function_call_selected_complex_sum_with_encoded_slice_varref() {
     let mut funcs = IndexMap::new();
 
     let mut f = Function::new("Pkg.sumComplexEncoded", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut f, 0);
     f.add_input(
         FunctionParam::new(
             "v",
@@ -234,15 +258,27 @@ fn test_eval_function_call_selected_complex_sum_with_encoded_slice_varref() {
     );
     assert!(
         (eval_expr_value::<f64>(
-            &fn_call("Pkg.sumComplexEncoded.result.re", vec![arg.clone()]),
+            &resolved_fn_call(
+                "Pkg.sumComplexEncoded.result.re",
+                "Pkg.sumComplexEncoded",
+                0,
+                vec![arg.clone()],
+            ),
             &env
         ) + 2.0)
             .abs()
             < 1.0e-12
     );
     assert!(
-        (eval_expr_value::<f64>(&fn_call("Pkg.sumComplexEncoded.result.im", vec![arg]), &env)
-            - 3.0)
+        (eval_expr_value::<f64>(
+            &resolved_fn_call(
+                "Pkg.sumComplexEncoded.result.im",
+                "Pkg.sumComplexEncoded",
+                0,
+                vec![arg],
+            ),
+            &env,
+        ) - 3.0)
             .abs()
             < 1.0e-12
     );

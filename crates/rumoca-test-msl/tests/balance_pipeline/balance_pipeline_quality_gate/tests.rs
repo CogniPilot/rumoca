@@ -780,6 +780,62 @@ fn full_run_stage_gate_allows_one_model_solve_and_ic_jitter() {
 }
 
 #[test]
+fn full_run_stage_gate_allows_one_timed_out_compile() {
+    let baseline = MslQualityBaseline {
+        simulatable_attempted: 566,
+        parse_models: 566,
+        flatten_models: 545,
+        dae_models: 545,
+        compiled_models: 545,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        simulatable_attempted: 566,
+        parse_models: 566,
+        flatten_models: 544,
+        dae_models: 544,
+        compiled_models: 544,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+
+    let mut reasons = Vec::new();
+    push_compile_balance_regression_reasons(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons.is_empty(),
+        "one full-library timeout is allowed host jitter, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn full_run_stage_gate_rejects_two_lost_compiles() {
+    let baseline = MslQualityBaseline {
+        simulatable_attempted: 566,
+        parse_models: 566,
+        flatten_models: 545,
+        dae_models: 545,
+        compiled_models: 545,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        simulatable_attempted: 566,
+        parse_models: 566,
+        flatten_models: 543,
+        dae_models: 543,
+        compiled_models: 543,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+
+    let mut reasons = Vec::new();
+    push_compile_balance_regression_reasons(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("Compile pass count regressed")),
+        "two lost compiles must fail the full-library gate, got: {reasons:?}"
+    );
+}
+
+#[test]
 fn valid_msl_summary_rejects_zero_total_models() {
     let summary = super::super::empty_summary(1, 0);
     let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))

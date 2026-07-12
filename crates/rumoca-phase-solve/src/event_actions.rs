@@ -17,7 +17,7 @@ pub(crate) fn lower_event_action_conditions(
     for action in &dae_model.events.event_actions {
         conditions.push(action.condition.clone());
     }
-    lower::lower_expression_rows_from_expressions(&conditions, layout, &dae_model.symbols.functions)
+    lower::lower_observation_rhs(dae_model, layout, &conditions)
 }
 
 pub(crate) fn lower_event_actions(
@@ -172,11 +172,7 @@ fn lower_string_conversion_message_part(
             span,
         });
     };
-    let rows = lower::lower_expression_rows_from_expressions(
-        std::slice::from_ref(arg),
-        layout,
-        &dae_model.symbols.functions,
-    )?;
+    let rows = lower::lower_observation_rhs(dae_model, layout, std::slice::from_ref(arg))?;
     let [row] = rows.as_slice() else {
         return Err(LowerError::ContractViolation {
             reason: "String() message expression did not lower to one scalar row".to_string(),
@@ -241,6 +237,120 @@ mod tests {
             err.reason()
                 .contains("event action test vector capacity exceeds host memory limits"),
             "error should explain event action capacity overflow: {err}"
+        );
+    }
+
+    #[test]
+    fn event_action_condition_inlines_direct_assignment() {
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("event_action_direct_assignment.mo"),
+            1,
+            2,
+        );
+        let threshold = rumoca_core::Reference::generated("threshold");
+        let mut dae_model = dae::Dae::default();
+        let mut threshold_variable =
+            dae::Variable::new(rumoca_core::VarName::new("threshold"), span);
+        threshold_variable.causality = dae::VariableCausality::CalculatedParameter;
+        threshold_variable.start = Some(Expression::Literal {
+            value: Literal::Real(2.0),
+            span,
+        });
+        threshold_variable.start_span = Some(span);
+        dae_model
+            .variables
+            .parameters
+            .insert(rumoca_core::VarName::new("threshold"), threshold_variable);
+        dae_model.events.event_actions.push(dae::DaeEventAction {
+            condition: Expression::Binary {
+                op: OpBinary::Gt,
+                lhs: Box::new(Expression::VarRef {
+                    name: threshold,
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Real(1.0),
+                    span,
+                }),
+                span,
+            },
+            kind: dae::DaeEventActionKind::Assert {
+                message: string_literal("failed", span),
+            },
+            span,
+            origin: "calculated threshold assertion".to_string(),
+        });
+        let layout = solve::VarLayout::default();
+
+        let rows = lower_event_action_conditions(&dae_model, &layout)
+            .expect("event condition should inline its direct assignment");
+
+        assert!(
+            rows[0]
+                .iter()
+                .any(|op| matches!(op, solve::LinearOp::Compare { .. }))
+        );
+        assert!(!rows[0].iter().any(|op| matches!(
+            op,
+            solve::LinearOp::LoadY { .. } | solve::LinearOp::LoadP { .. }
+        )));
+    }
+
+    #[test]
+    fn event_action_condition_reads_settled_algebraic_slot() {
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("event_action_algebraic_slot.mo"),
+            1,
+            2,
+        );
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("x"),
+            dae::Variable::new(rumoca_core::VarName::new("x"), span),
+        );
+        dae_model.continuous.equations.push(dae::Equation::explicit(
+            rumoca_core::Reference::generated("x"),
+            Expression::Literal {
+                value: Literal::Real(0.0),
+                span,
+            },
+            span,
+            "x = 0".to_string(),
+        ));
+        dae_model.events.event_actions.push(dae::DaeEventAction {
+            condition: Expression::Binary {
+                op: OpBinary::Gt,
+                lhs: Box::new(Expression::VarRef {
+                    name: rumoca_core::Reference::generated("x"),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Real(1.0),
+                    span,
+                }),
+                span,
+            },
+            kind: dae::DaeEventActionKind::Assert {
+                message: string_literal("failed", span),
+            },
+            span,
+            origin: "algebraic assertion".to_string(),
+        });
+        let layout = solve::VarLayout::from_parts(
+            indexmap::IndexMap::from([("x".to_string(), solve::scalar_slot_y(0))]),
+            1,
+            0,
+        );
+
+        let rows = lower_event_action_conditions(&dae_model, &layout)
+            .expect("event condition should load its settled algebraic");
+
+        assert!(
+            rows[0]
+                .iter()
+                .any(|op| matches!(op, solve::LinearOp::LoadY { index: 0, .. }))
         );
     }
 }

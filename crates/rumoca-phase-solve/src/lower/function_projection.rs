@@ -1,5 +1,7 @@
 use super::*;
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{
+    output_projection_suffix, record_output_field_param, resolve_function_reference,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct FunctionOutputProjection {
@@ -17,79 +19,73 @@ impl<'a> LowerBuilder<'a> {
         name: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<FunctionOutputProjection>, LowerError> {
-        let requested = name.as_str();
-        rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
-            match self.lookup_function_output_projection_split(base_name, suffix, span) {
-                Ok(Some(projection)) => Some(Ok(projection)),
-                Ok(None) => None,
-                Err(err) => Some(Err(err)),
-            }
-        })
-        .transpose()
-    }
-
-    fn lookup_function_output_projection_split(
-        &self,
-        base_name: &str,
-        suffix: &str,
-        span: rumoca_core::Span,
-    ) -> Result<Option<FunctionOutputProjection>, LowerError> {
-        let Some(function) = self.lookup_function_key(base_name) else {
+        let Some((function_name, function)) = resolve_function_reference(self.functions, name)
+        else {
             return Ok(None);
         };
-        let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
+        let Some(projection_suffix) = output_projection_suffix(function, name) else {
             return Ok(None);
         };
         let output_name = projection_suffix.output_name;
-        let output_field = projection_suffix.output_field;
+        let mut output_fields = projection_suffix.output_fields;
         let raw_indices = projection_suffix.indices;
 
-        let (output, output_name, output_field) =
+        let (output, output_name) =
             if let Some(output) = function.outputs.iter().find(|out| out.name == output_name) {
-                (output, output_name, output_field)
-            } else if output_field.is_none()
+                (output, output_name)
+            } else if output_fields.is_empty()
                 && matches!(output_name.as_str(), "re" | "im")
                 && function.outputs.len() == 1
                 && output_is_complex_record(&function.outputs[0])
             {
-                (
-                    &function.outputs[0],
-                    function.outputs[0].name.clone(),
-                    Some(output_name),
-                )
+                output_fields.push(output_name);
+                (&function.outputs[0], function.outputs[0].name.clone())
             } else {
                 return Ok(None);
             };
-        if let Some(field) = output_field.as_deref()
-            && (!output_is_complex_record(output) || !matches!(field, "re" | "im"))
-        {
-            return Ok(None);
-        }
+        let projected_output = match output_fields.as_slice() {
+            [field] => match record_output_field_param(self.functions, output, &output_fields) {
+                Some(field_output) => field_output,
+                None if output_is_complex_record(output)
+                    && matches!(field.as_str(), "re" | "im") =>
+                {
+                    output
+                }
+                None => return Ok(None),
+            },
+            [] => output,
+            _ => match record_output_field_param(self.functions, output, &output_fields) {
+                Some(field_output) => field_output,
+                None => return Ok(None),
+            },
+        };
+        let output_field = (!output_fields.is_empty()).then(|| output_fields.join("."));
 
-        let indices = if output_has_dynamic_dims(output) {
+        let indices = if output_has_dynamic_dims(projected_output) {
             let Some(indices) = normalize_dynamic_projection_indices(&raw_indices, span)? else {
                 return Ok(None);
             };
             indices
         } else {
-            let Some(indices) = normalize_projection_indices(&output.dims, &raw_indices, span)?
+            let Some(indices) =
+                normalize_projection_indices(&projected_output.dims, &raw_indices, span)?
             else {
                 return Ok(None);
             };
             indices
         };
-        let scope_indices = if output_has_dynamic_dims(output) {
+        let scope_indices = if output_has_dynamic_dims(projected_output) {
             copy_projection_indices(&raw_indices, span)?
         } else {
             let Some(indices) =
-                scope_indices_for_projection(&output.dims, &raw_indices, &indices, span)?
+                scope_indices_for_projection(&projected_output.dims, &raw_indices, &indices, span)?
             else {
                 return Ok(None);
             };
             indices
         };
         Ok(Some(FunctionOutputProjection {
-            base_function_name: function.name.clone(),
+            base_function_name: function_name.clone(),
             output_name,
             output_field,
             scope_indices,
@@ -350,7 +346,7 @@ fn base_projection_reg(projection: &FunctionOutputProjection, scope: &Scope) -> 
         .and_then(|base_key| scoped_reg(scope, &base_key))
 }
 
-fn projection_indices_for_dims(dims: &[i64], flat_index: usize) -> Option<Vec<usize>> {
+pub(super) fn projection_indices_for_dims(dims: &[i64], flat_index: usize) -> Option<Vec<usize>> {
     if dims.is_empty() {
         return Some(Vec::new());
     }

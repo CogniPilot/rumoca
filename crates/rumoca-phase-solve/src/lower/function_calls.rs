@@ -1,6 +1,4 @@
-// SPEC_0021 file-size exception: function-call lowering still handles builtin,
-// record, random, and projection calls together. split plan: move builtin
-// families and projection-specific lowering into focused modules.
+//! Function-call lowering and scoped function evaluation.
 
 use super::function_projection::FunctionOutputProjection;
 use super::*;
@@ -9,6 +7,7 @@ mod complex_inputs;
 mod helpers;
 mod random;
 mod runtime_intrinsics;
+mod shape_binding;
 use helpers::{
     ComplexProjectionComprehensionCtx, FlattenedRecordInputRequest,
     FlattenedRecordPositionalInputRequest, NamedOrPositionalArg, append_complex_projection_values,
@@ -598,6 +597,30 @@ impl<'a> LowerBuilder<'a> {
         )
     }
 
+    /// Bind a declared default when the call omits the input. Defaults are
+    /// lowered in the callee's own (partially bound) input scope.
+    fn bind_default_function_input(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        function_name: &str,
+        input: &rumoca_core::FunctionParam,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
+        let Some(default) = input.default.as_ref() else {
+            return Ok(false);
+        };
+        let local_scope = state.scope.clone();
+        self.bind_function_input_arg_or_closure(
+            state,
+            function_name,
+            input,
+            default,
+            &local_scope,
+            call_depth,
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn bind_function_inputs_for_name(
         &mut self,
         function_name: &str,
@@ -685,26 +708,23 @@ impl<'a> LowerBuilder<'a> {
                 )?;
                 continue;
             }
-            if let Some(default) = input.default.as_ref() {
-                let local_scope = scope.clone();
-                self.bind_function_input_arg_or_closure(
-                    FunctionInputBindState {
-                        scope: &mut scope,
-                        const_scope: &mut const_scope,
-                        const_bindings: &mut const_bindings,
-                    },
-                    function_name,
-                    input,
-                    default,
-                    &local_scope,
-                    call_depth + 1,
-                )?;
+            if self.bind_default_function_input(
+                FunctionInputBindState {
+                    scope: &mut scope,
+                    const_scope: &mut const_scope,
+                    const_bindings: &mut const_bindings,
+                },
+                function_name,
+                input,
+                call_depth + 1,
+            )? {
                 continue;
             }
 
             return missing_required_function_input(function_name, input);
         }
 
+        self.record_function_integer_bounds(inputs, &const_scope)?;
         Ok(FunctionInputBindings {
             scope,
             const_bindings,
@@ -925,10 +945,43 @@ impl<'a> LowerBuilder<'a> {
             )?;
         }
 
+        self.record_function_integer_bounds(inputs, &const_scope)?;
         Ok(FunctionInputBindings {
             scope,
             const_bindings,
         })
+    }
+
+    fn record_function_integer_bounds(
+        &mut self,
+        inputs: &[rumoca_core::FunctionParam],
+        const_scope: &IndexMap<String, f64>,
+    ) -> Result<(), LowerError> {
+        for input in inputs {
+            let (Some(min_expr), Some(max_expr)) = (&input.min, &input.max) else {
+                continue;
+            };
+            let (Ok(min), Ok(max)) = (
+                self.eval_compile_time_int(min_expr, const_scope, "function Integer lower bound"),
+                self.eval_compile_time_int(max_expr, const_scope, "function Integer upper bound"),
+            ) else {
+                // Symbolic bounds remain valid parameter metadata, but they do
+                // not establish a finite compile-time domain for unrolling.
+                continue;
+            };
+            if min > max {
+                return Err(unsupported_at(
+                    format!(
+                        "function parameter `{}` has invalid Integer bounds {min}:{max}",
+                        input.name
+                    ),
+                    input.span,
+                ));
+            }
+            self.local_integer_bounds
+                .insert(input.name.clone(), (min, max));
+        }
+        Ok(())
     }
 
     fn record_constructor_fields(
@@ -1321,6 +1374,14 @@ impl<'a> LowerBuilder<'a> {
         if input.dims.iter().all(|dim| *dim > 0) {
             return Ok(input.dims.clone());
         }
+        if input.dims.iter().all(|dim| *dim >= 0)
+            && input.dims.contains(&0)
+            && input.shape_expr.iter().any(|subscript| {
+                matches!(subscript, rumoca_core::Subscript::Index { value: 0, .. })
+            })
+        {
+            return Ok(input.dims.clone());
+        }
         let span = expr.span().unwrap_or(input.span);
         if input.dims.iter().any(|dim| *dim < 0) {
             let shape = format_i64_dims(&input.dims);
@@ -1571,6 +1632,11 @@ impl<'a> LowerBuilder<'a> {
                 self.update_known_empty_local_array(&local_key, component.known_empty);
             }
         }
+        for (suffix, dims) in materialized.empty_components {
+            let local_key = format!("{}.{}", input.name, suffix);
+            self.local_binding_dims.insert(local_key.clone(), dims);
+            self.known_empty_local_arrays.insert(local_key);
+        }
         for (suffix, bindings) in materialized.indexed_components {
             self.local_indexed_bindings
                 .insert(format!("{}.{}", input.name, suffix), bindings);
@@ -1621,6 +1687,7 @@ impl<'a> LowerBuilder<'a> {
             let _returned =
                 this.lower_statements(&function.body, &mut function_scope, call_depth + 1)?;
             Ok(Some(this.materialized_record_components_from_scope(
+                output,
                 &output_name,
                 &function_scope,
                 output.span,
@@ -1630,6 +1697,7 @@ impl<'a> LowerBuilder<'a> {
 
     fn materialized_record_components_from_scope(
         &self,
+        output: &rumoca_core::FunctionParam,
         output_name: &str,
         scope: &Scope,
         span: rumoca_core::Span,
@@ -1666,10 +1734,43 @@ impl<'a> LowerBuilder<'a> {
             };
             indexed_components.push((suffix.to_string(), bindings.clone()));
         }
+        let empty_components = self.empty_record_constructor_components(output);
         Ok(MaterializedRecordComponents {
             components,
+            empty_components,
             indexed_components,
         })
+    }
+
+    fn empty_record_constructor_components(
+        &self,
+        output: &rumoca_core::FunctionParam,
+    ) -> Vec<(String, Vec<i64>)> {
+        let constructor = output
+            .type_def_id
+            .and_then(|type_def_id| {
+                rumoca_core::resolve_record_constructor(
+                    self.functions.values(),
+                    &output.type_name,
+                    type_def_id,
+                )
+                .ok()
+            })
+            .or_else(|| {
+                self.functions
+                    .get(&rumoca_core::VarName::new(&output.type_name))
+            });
+        constructor
+            .filter(|function| function.is_constructor)
+            .into_iter()
+            .flat_map(|function| &function.inputs)
+            .filter(|field| {
+                field.shape_expr.iter().any(|subscript| {
+                    matches!(subscript, rumoca_core::Subscript::Index { value: 0, .. })
+                })
+            })
+            .map(|field| (field.name.clone(), field.dims.clone()))
+            .collect()
     }
 
     fn copy_record_input_component_dims(
@@ -1706,6 +1807,7 @@ impl<'a> LowerBuilder<'a> {
             known_empty_local_arrays: self.known_empty_local_arrays.clone(),
             guarded_uninitialized_locals: self.guarded_uninitialized_locals.clone(),
             local_const_bindings: self.local_const_bindings.clone(),
+            local_integer_bounds: self.local_integer_bounds.clone(),
             function_closures: self.function_closures.clone(),
         };
         let result = f(self);
@@ -1715,6 +1817,7 @@ impl<'a> LowerBuilder<'a> {
         self.known_empty_local_arrays = frame.known_empty_local_arrays;
         self.guarded_uninitialized_locals = frame.guarded_uninitialized_locals;
         self.local_const_bindings = frame.local_const_bindings;
+        self.local_integer_bounds = frame.local_integer_bounds;
         self.function_closures = frame.function_closures;
         result
     }
@@ -1743,6 +1846,7 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<(), LowerError> {
         self.guarded_uninitialized_locals
             .shift_remove(param.name.as_str());
+        self.initialize_record_component_shapes(param, 0)?;
         if param.default.is_some() {
             let values = self.initial_function_param_values(param, scope, call_depth)?;
             self.bind_assignment_values_with_dims(
@@ -1776,6 +1880,27 @@ impl<'a> LowerBuilder<'a> {
                 .shift_remove(param.name.as_str());
         }
         self.initialize_declared_function_param(param)?;
+        Ok(())
+    }
+
+    fn initialize_record_component_shapes(
+        &mut self,
+        param: &rumoca_core::FunctionParam,
+        depth: usize,
+    ) -> Result<(), LowerError> {
+        if param.type_class != Some(rumoca_core::ClassType::Record)
+            || depth >= MAX_FUNCTION_INLINE_DEPTH
+        {
+            return Ok(());
+        }
+        let Some(fields) = self.record_constructor_fields(&param.type_name) else {
+            return Ok(());
+        };
+        for mut field in fields {
+            field.name = format!("{}.{}", param.name, field.name);
+            self.bind_declared_function_param_shape(&field)?;
+            self.initialize_record_component_shapes(&field, depth + 1)?;
+        }
         Ok(())
     }
 
@@ -1849,102 +1974,21 @@ impl<'a> LowerBuilder<'a> {
     pub(super) fn clear_local_array_metadata(
         &mut self,
         name: &str,
-        span: rumoca_core::Span,
+        _span: rumoca_core::Span,
     ) -> Result<(), LowerError> {
         self.local_binding_dims.shift_remove(name);
         self.local_indexed_bindings.shift_remove(name);
         self.known_empty_local_arrays.shift_remove(name);
-        let prefix = format!("{}{}.", super::SIZE_BINDING_PREFIX, name);
-        let mut keys = crate::lower_vec_with_capacity(
-            self.structural_bindings.len(),
-            "local array metadata cleanup key count",
-            span,
-        )?;
-        for key in self.structural_bindings.keys() {
-            if key.starts_with(prefix.as_str()) {
-                keys.push(key.clone());
+        for dimension in 1.. {
+            let key = super::size_binding_key(name, dimension);
+            if std::sync::Arc::make_mut(&mut self.structural_bindings)
+                .shift_remove(key.as_str())
+                .is_none()
+            {
+                break;
             }
         }
-        for key in keys {
-            std::sync::Arc::make_mut(&mut self.structural_bindings).shift_remove(key.as_str());
-        }
         Ok(())
-    }
-
-    pub(super) fn set_known_local_array_dims(
-        &mut self,
-        name: &str,
-        dims: Vec<i64>,
-        value_count: usize,
-        span: rumoca_core::Span,
-    ) -> Result<(), LowerError> {
-        let is_empty = !dims.is_empty() && dims.iter().all(|dim| *dim >= 0) && dims.contains(&0);
-        self.bind_local_array_shape(name, &dims, value_count, span)?;
-        self.local_binding_dims
-            .insert(name.to_string(), dims.clone());
-        if is_empty {
-            self.known_empty_local_arrays.insert(name.to_string());
-        } else {
-            self.known_empty_local_arrays.shift_remove(name);
-        }
-        Ok(())
-    }
-
-    pub(super) fn bind_declared_function_param_shape(
-        &mut self,
-        param: &rumoca_core::FunctionParam,
-    ) -> Result<(), LowerError> {
-        if param.dims.is_empty() {
-            return Ok(());
-        }
-        if let Some(dims) = self.resolve_function_param_shape(param) {
-            self.set_known_local_array_dims(
-                &param.name,
-                dims.clone(),
-                exact_dim_value_count(
-                    &dims,
-                    format!("function parameter `{}`", param.name),
-                    param.span,
-                )?,
-                param.span,
-            )?;
-            return Ok(());
-        }
-        if param.dims.contains(&0) && param.shape_expr.is_empty() {
-            self.set_known_local_array_dims(&param.name, param.dims.clone(), 0, param.span)?;
-            return Ok(());
-        }
-        if param.dims.iter().any(|dim| *dim < 0) {
-            self.known_empty_local_arrays
-                .shift_remove(param.name.as_str());
-            return Ok(());
-        }
-
-        let value_count = dims_scalar_count(
-            &param.dims,
-            format!("function parameter `{}`", param.name),
-            param.span,
-        )?;
-        self.set_known_local_array_dims(&param.name, param.dims.clone(), value_count, param.span)?;
-        Ok(())
-    }
-
-    fn resolve_function_param_shape(&self, param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
-        if param.shape_expr.len() != param.dims.len() {
-            return None;
-        }
-        param
-            .shape_expr
-            .iter()
-            .map(|subscript| match subscript {
-                rumoca_core::Subscript::Index { value, .. } if *value >= 0 => Some(*value),
-                rumoca_core::Subscript::Expr { expr, .. } => self
-                    .eval_compile_time_int(expr, &self.local_const_bindings, "function shape")
-                    .ok()
-                    .filter(|dim| *dim >= 0),
-                rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Index { .. } => None,
-            })
-            .collect()
     }
 }
 

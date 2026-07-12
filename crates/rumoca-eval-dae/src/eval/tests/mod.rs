@@ -81,6 +81,28 @@ fn dae_var(name: &str) -> rumoca_core::Expression {
 }
 
 #[test]
+fn array_evaluation_supports_partial_matrix_var_ref_indexing() {
+    let mut env = VarEnv::new();
+    env.dims = std::sync::Arc::new(IndexMap::from([("waypoints".to_string(), vec![3, 2])]));
+    set_array_entries(
+        &mut env,
+        "waypoints",
+        &[3, 2],
+        &[0.0, 1.0, 10.0, 11.0, 20.0, 21.0],
+    );
+    let row = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("waypoints"),
+        subscripts: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_values::<f64>(&row, &env).unwrap(),
+        vec![10.0, 11.0]
+    );
+}
+
+#[test]
 fn var_scope_child_falls_through_and_shadows_without_parent_copy() {
     let mut parent = VarScope::new();
     parent.insert("a".to_string(), 1.0);
@@ -174,6 +196,33 @@ fn fn_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expre
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     }
+}
+
+fn resolved_fn_call(
+    name: &str,
+    base_name: &str,
+    instance_id: u32,
+    args: Vec<rumoca_core::Expression>,
+) -> rumoca_core::Expression {
+    let component_ref = rumoca_core::component_reference_from_flat_name(
+        &rumoca_core::VarName::new(name),
+        rumoca_core::Span::DUMMY,
+    )
+    .expect("structured function reference");
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(component_ref)
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(instance_id),
+                base_part_count: rumoca_core::VarName::new(base_name).segments().len(),
+            }),
+        args,
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn set_test_function_instance(function: &mut rumoca_core::Function, instance_id: u32) {
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(instance_id));
 }
 
 fn named_ctor_arg(name: &str, value: rumoca_core::Expression) -> rumoca_core::Expression {
@@ -273,6 +322,8 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
     let mut functions = IndexMap::new();
 
     let mut orientation = Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
+    orientation.def_id = Some(rumoca_core::DefId::new(100));
+    orientation.is_constructor = true;
     orientation.add_input(
         FunctionParam::new("T", "Real", rumoca_core::Span::source_free_serde_default())
             .with_dims(vec![3, 3]),
@@ -298,7 +349,8 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
             "Orientation",
             rumoca_core::Span::source_free_serde_default(),
         )
-        .with_type_class(rumoca_core::ClassType::Record),
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(rumoca_core::DefId::new(100)),
     );
     from_q.body = vec![Statement::Assignment {
         comp: comp_ref("R"),
@@ -891,6 +943,69 @@ fn test_eval_array_values_matrix_matrix_product() {
     assert!((eval_expr_value::<f64>(&expr, &env) - 58.0).abs() < 1e-12);
 }
 
+fn range_subscript(start: i64, end: i64) -> rumoca_core::Subscript {
+    rumoca_core::Subscript::expr(
+        Box::new(rumoca_core::Expression::Range {
+            start: Box::new(int_lit(start)),
+            step: None,
+            end: Box::new(int_lit(end)),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rumoca_core::Span::DUMMY,
+    )
+}
+
+#[test]
+fn matrix_slice_product_uses_matrix_multiplication() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([
+        ("A".to_string(), vec![3, 3]),
+        ("B".to_string(), vec![3, 3]),
+    ]));
+    set_array_entries(
+        &mut env,
+        "A",
+        &[3, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+    );
+    set_array_entries(
+        &mut env,
+        "B",
+        &[3, 3],
+        &[1.0, 2.0, 0.0, 3.0, 4.0, 0.0, 0.0, 0.0, 1.0],
+    );
+    let slice = |name: &str| rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: vec![range_subscript(1, 2), range_subscript(1, 2)],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let product = binop(OpBinary::Mul, slice("A"), slice("B"));
+
+    assert_eq!(
+        eval_array_values::<f64>(&product, &env),
+        Ok(vec![7.0, 10.0, 19.0, 28.0])
+    );
+}
+
+#[test]
+fn indexed_matrix_expression_is_not_classified_as_vector() {
+    let matrix = simple_table_expr();
+    let sliced = || rumoca_core::Expression::Index {
+        base: Box::new(matrix.clone()),
+        subscripts: vec![
+            rumoca_core::Subscript::colon(rumoca_core::Span::DUMMY),
+            rumoca_core::Subscript::colon(rumoca_core::Span::DUMMY),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let product = binop(OpBinary::Mul, sliced(), sliced());
+
+    assert_eq!(
+        eval_array_values::<f64>(&product, &VarEnv::new()),
+        Ok(vec![20.0, 140.0, 28.0, 216.0])
+    );
+}
+
 #[test]
 fn test_eval_array_values_diagonal_preserves_matrix_shape() {
     let expr = rumoca_core::Expression::BuiltinCall {
@@ -945,7 +1060,7 @@ fn test_eval_array_values_vector_arithmetic_preserves_shape() {
     let expr = binop(
         OpBinary::Add,
         binop(OpBinary::Mul, var("a"), lit(2.0)),
-        binop(OpBinary::Sub, var("b"), lit(1.0)),
+        binop(OpBinary::SubElem, var("b"), lit(1.0)),
     );
     let values = eval_array_values::<f64>(&expr, &env);
     assert_eq!(values, Ok(vec![5.0, 8.0, 11.0]));
@@ -1111,6 +1226,55 @@ fn test_eval_array_values_dynamic_function_output_uses_shape_expr() {
 }
 
 #[test]
+fn self_referential_input_shape_rejects_nonconforming_argument() {
+    let mut function = Function::new("Pkg.squareOnly", rumoca_core::Span::DUMMY);
+    function.add_input(
+        FunctionParam::new("A", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![0, 0])
+            .with_shape_expr(vec![
+                Subscript::colon(rumoca_core::Span::DUMMY),
+                Subscript::expr(
+                    Box::new(Expression::BuiltinCall {
+                        function: BuiltinFunction::Size,
+                        args: vec![var("A"), int_lit(1)],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    rumoca_core::Span::DUMMY,
+                ),
+            ]),
+    );
+    function.add_output(FunctionParam::new(
+        "y",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    function.body.push(Statement::Assignment {
+        comp: comp_ref("y"),
+        value: index_expr(var("A"), 1),
+        span: rumoca_core::Span::DUMMY,
+    });
+
+    let mut env = VarEnv::<f64>::new();
+    env.functions = Arc::new(IndexMap::from([("Pkg.squareOnly".to_string(), function)]));
+    set_array_entries(
+        &mut env,
+        "nonsquare",
+        &[2, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    );
+    Arc::make_mut(&mut env.dims).insert("nonsquare".to_string(), vec![2, 3]);
+
+    assert!(matches!(
+        eval_expr::<f64>(&fn_call("Pkg.squareOnly", vec![var("nonsquare")]), &env),
+        Err(EvalError::ShapeMismatch {
+            context: "function array input shape constraint",
+            expected: 2,
+            actual: 3,
+        })
+    ));
+}
+
+#[test]
 fn test_eval_function_dynamic_vector_input_binds_expression_shape() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([
@@ -1188,6 +1352,12 @@ fn test_eval_array_values_expands_range() {
     };
     let descending = rumoca_core::Expression::Range {
         start: Box::new(int_lit(4)),
+        step: Some(Box::new(int_lit(-1))),
+        end: Box::new(int_lit(1)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let empty = rumoca_core::Expression::Range {
+        start: Box::new(int_lit(4)),
         step: None,
         end: Box::new(int_lit(1)),
         span: rumoca_core::Span::DUMMY,
@@ -1195,8 +1365,10 @@ fn test_eval_array_values_expands_range() {
 
     let up = eval_array_values::<f64>(&ascending, &env);
     let down = eval_array_values::<f64>(&descending, &env);
+    let empty_values = eval_array_values::<f64>(&empty, &env);
     assert_eq!(up, Ok(vec![1.0, 2.0, 3.0, 4.0]));
     assert_eq!(down, Ok(vec![4.0, 3.0, 2.0, 1.0]));
+    assert_eq!(empty_values, Ok(Vec::new()));
 }
 
 fn user_function_with_default_output(name: &str, output_value: f64) -> rumoca_core::Function {

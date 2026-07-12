@@ -353,7 +353,6 @@ pub fn flatten_ref_with_options(
         .collect();
     ctx.seed_component_member_scopes(overlay);
     let mut flat = flat::Model::new();
-    populate_flat_symbol_ancestry(&mut flat, &class_index);
     let component_override_map =
         build_component_override_map(overlay, tree, &class_index, model_name)?;
 
@@ -398,20 +397,55 @@ pub fn flatten_ref_with_options(
     Ok(flat)
 }
 
-fn populate_flat_symbol_ancestry(flat: &mut flat::Model, class_index: &ast::ClassDefIndex<'_>) {
-    let mut def_ids = class_index.symbol_def_ids().collect::<Vec<_>>();
-    def_ids.sort_by_key(|def_id| def_id.index());
-    flat.symbol_ancestry = def_ids
-        .into_iter()
-        .map(|def_id| (def_id, class_index.def_ancestry(def_id)))
-        .collect();
-}
-
 fn seed_flat_functions_from_context(ctx: &Context, flat: &mut flat::Model) {
     for func in ctx.functions.values() {
-        flat.functions
-            .entry(func.name.clone())
-            .or_insert_with(|| func.clone());
+        if !flat.functions.contains_key(&func.name) {
+            flat.add_function(func.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod seed_function_tests {
+    use super::*;
+
+    #[test]
+    fn precollected_function_seed_assigns_identity_before_canonicalization() {
+        let mut ctx = Context::new();
+        let mut function = rumoca_core::Function::new("Pkg.f", rumoca_core::Span::DUMMY);
+        function.body.push(rumoca_core::Statement::Return {
+            span: rumoca_core::Span::DUMMY,
+        });
+        ctx.functions.insert("Pkg.f".to_string(), function);
+        let mut flat = flat::Model::new();
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.f"),
+                args: Vec::new(),
+                is_constructor: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "test".to_string(),
+            },
+        ));
+
+        seed_flat_functions_from_context(&ctx, &mut flat);
+        functions::canonicalize_collected_function_calls(&mut flat)
+            .expect("precollected function identity should canonicalize");
+
+        let instance_id = flat.functions[&rumoca_core::VarName::new("Pkg.f")]
+            .instance_id
+            .expect("seeded function identity");
+        let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(
+            name.resolved_function()
+                .map(|resolved| resolved.instance_id),
+            Some(instance_id)
+        );
     }
 }
 

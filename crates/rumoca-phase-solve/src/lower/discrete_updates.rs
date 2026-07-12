@@ -200,6 +200,7 @@ pub(crate) fn lower_initial_update_rhs(
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
                 structural_bindings: Some(std::sync::Arc::new(structural_bindings)),
+                direct_assignments: None,
                 guard_target_start_before_first_clock_tick: false,
             },
             true,
@@ -337,15 +338,14 @@ fn expand_tuple_function_residual(
             eq.span,
         )?;
         for (idx, target_name) in target_names.into_iter().enumerate() {
-            let Some(output_name) = projected_function_output_name(name.var_name(), output, idx)
-            else {
+            let Some(output_name) = projected_function_output_name(name, output, idx) else {
                 return Ok(None);
             };
             let target_reference = reference_for_discrete_target(dae_model, &target_name, eq.span)?;
             equations.push(dae::Equation {
                 lhs: Some(target_reference),
                 rhs: rumoca_core::Expression::FunctionCall {
-                    name: output_name.into(),
+                    name: output_name,
                     args: args.clone(),
                     is_constructor: *is_constructor,
                     span: *span,
@@ -463,19 +463,24 @@ fn tuple_assignment_output_count(
 }
 
 fn projected_function_output_name(
-    function_name: &rumoca_core::VarName,
+    function_name: &rumoca_core::Reference,
     output: &rumoca_core::FunctionParam,
     flat_index: usize,
-) -> Option<rumoca_core::VarName> {
-    let base = format!("{}.{}", function_name.as_str(), output.name);
-    if output.dims.is_empty() {
-        (flat_index == 0).then(|| rumoca_core::VarName::new(base))
+) -> Option<rumoca_core::Reference> {
+    let subs = if output.dims.is_empty() {
+        (flat_index == 0).then(Vec::new)?
     } else {
-        Some(rumoca_core::VarName::new(dae::format_subscript_key(
-            &base,
-            &[flat_index + 1],
-        )))
-    }
+        let index = i64::try_from(flat_index.checked_add(1)?).ok()?;
+        vec![rumoca_core::Subscript::index(index, output.span)]
+    };
+    function_name.with_appended_parts(
+        &[rumoca_core::ComponentRefPart {
+            ident: output.name.clone(),
+            span: output.span,
+            subs,
+        }],
+        output.span,
+    )
 }
 
 fn rewrite_discrete_update_equation(

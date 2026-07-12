@@ -4529,6 +4529,7 @@ dependencies = [
  "bincode",
  "indexmap 2.14.0",
  "rumoca-core",
+ "rustc-hash",
  "serde",
  "serde_json",
 ]

@@ -15,12 +15,21 @@ pub use component_refs_and_functions::*;
 mod generated_names;
 pub use generated_names::*;
 
+mod reference_serde;
+
 /// A unique identifier for a definition (class, component, etc.).
 ///
 /// DefIds are assigned during semantic analysis to enable efficient
 /// lookup and cross-referencing between compiler phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct DefId(pub u32);
+
+/// Shared declaration ancestry for one resolved source or instance symbol.
+///
+/// Many concrete instances can originate from the same declaration. Sharing
+/// the immutable chain keeps that semantic relationship explicit without
+/// cloning an identical allocation for every flattened scalar variable.
+pub type SymbolAncestry = Arc<[DefId]>;
 
 impl DefId {
     /// Create a new DefId from an index.
@@ -38,6 +47,30 @@ impl Display for DefId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "DefId({})", self.0)
     }
+}
+
+/// Identity of one exposed function in flattened model scope.
+///
+/// Unlike a source [`DefId`], this distinguishes inherited or redeclared
+/// function instances that originate from the same declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FunctionInstanceId(pub u32);
+
+impl FunctionInstanceId {
+    pub fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
+/// Resolved function target plus the structured base-path boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResolvedFunctionReference {
+    pub instance_id: FunctionInstanceId,
+    pub base_part_count: usize,
 }
 
 /// A unique identifier for a type.
@@ -435,6 +468,7 @@ pub use var_name::{VarName, VarNameId};
 pub struct Reference {
     name: VarName,
     component_ref: Option<ComponentReference>,
+    resolved_function: Option<ResolvedFunctionReference>,
     generated: bool,
 }
 
@@ -443,6 +477,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: None,
+            resolved_function: None,
             generated: false,
         }
     }
@@ -451,6 +486,7 @@ impl Reference {
         Self {
             name,
             component_ref: None,
+            resolved_function: None,
             generated: false,
         }
     }
@@ -459,6 +495,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: None,
+            resolved_function: None,
             generated: true,
         }
     }
@@ -485,6 +522,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            resolved_function: None,
             generated: true,
         }
     }
@@ -493,6 +531,7 @@ impl Reference {
         Self {
             name,
             component_ref: self.component_ref.clone(),
+            resolved_function: self.resolved_function,
             generated: self.generated,
         }
     }
@@ -504,6 +543,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            resolved_function: None,
             generated: false,
         }
     }
@@ -513,6 +553,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            resolved_function: None,
             generated: false,
         }
     }
@@ -548,6 +589,15 @@ impl Reference {
         self.component_ref.as_ref()
     }
 
+    pub fn resolved_function(&self) -> Option<ResolvedFunctionReference> {
+        self.resolved_function
+    }
+
+    pub fn with_resolved_function(mut self, resolved: ResolvedFunctionReference) -> Self {
+        self.resolved_function = Some(resolved);
+        self
+    }
+
     pub fn span(&self) -> Option<Span> {
         self.component_ref
             .as_ref()
@@ -565,9 +615,12 @@ impl Reference {
                         .push(Subscript::generated_index_with_provenance(index, span));
                 }
                 Self::with_component_reference(rendered, reference)
+                    .with_optional_resolved_function(self.resolved_function)
             }
-            _ if self.generated => Self::generated(rendered),
-            _ => Self::new(rendered),
+            _ if self.generated => {
+                Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
+            }
+            _ => Self::new(rendered).with_optional_resolved_function(self.resolved_function),
         }
     }
 
@@ -583,10 +636,39 @@ impl Reference {
                     subs: Vec::new(),
                 });
                 Self::with_component_reference(rendered, reference)
+                    .with_optional_resolved_function(self.resolved_function)
             }
-            _ if self.generated => Self::generated(rendered),
-            _ => Self::new(rendered),
+            _ if self.generated => {
+                Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
+            }
+            _ => Self::new(rendered).with_optional_resolved_function(self.resolved_function),
         }
+    }
+
+    /// Append compiler-owned structured component parts while retaining the
+    /// resolved declaration identity.
+    pub fn with_appended_parts(&self, parts: &[ComponentRefPart], span: Span) -> Option<Self> {
+        let mut reference = self.component_ref.clone()?;
+        if parts.is_empty() {
+            return None;
+        }
+        reference.parts.extend_from_slice(parts);
+        reference.span = span;
+        Some(if self.generated {
+            Self::generated_component_reference(reference)
+                .with_optional_resolved_function(self.resolved_function)
+        } else {
+            Self::from_component_reference(reference)
+                .with_optional_resolved_function(self.resolved_function)
+        })
+    }
+
+    fn with_optional_resolved_function(
+        mut self,
+        resolved: Option<ResolvedFunctionReference>,
+    ) -> Self {
+        self.resolved_function = resolved;
+        self
     }
 
     pub fn is_generated(&self) -> bool {
@@ -628,79 +710,8 @@ impl PartialEq for Reference {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
             && self.component_ref == other.component_ref
+            && self.resolved_function == other.resolved_function
             && self.generated == other.generated
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct ReferenceWire {
-    name: VarName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    component_ref: Option<ComponentReference>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    generated: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-impl Serialize for Reference {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if serializer.is_human_readable() && self.component_ref.is_none() && !self.generated {
-            return self.name.serialize(serializer);
-        }
-
-        if !serializer.is_human_readable() {
-            return (&self.name, &self.component_ref, &self.generated).serialize(serializer);
-        }
-
-        ReferenceWire {
-            name: self.name.clone(),
-            component_ref: self.component_ref.clone(),
-            generated: self.generated,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Reference {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        if !deserializer.is_human_readable() {
-            let (name, component_ref, generated) =
-                <(VarName, Option<ComponentReference>, bool)>::deserialize(deserializer)?;
-            return Ok(Self {
-                name,
-                component_ref,
-                generated,
-            });
-        }
-
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum HumanReference {
-            Name(VarName),
-            Wire(ReferenceWire),
-        }
-
-        match HumanReference::deserialize(deserializer)? {
-            HumanReference::Name(name) => Ok(Self {
-                name,
-                component_ref: None,
-                generated: false,
-            }),
-            HumanReference::Wire(wire) => Ok(Self {
-                name: wire.name,
-                component_ref: wire.component_ref,
-                generated: wire.generated,
-            }),
-        }
     }
 }
 

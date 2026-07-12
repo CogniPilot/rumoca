@@ -19,8 +19,6 @@ pub(super) const SIM_RATE_GATE_EPSILON: f64 = 1.0e-12;
 /// reject obviously invalid runs (for example near-zero or zero successful
 /// simulations) before we start comparing finer-grained regressions.
 pub(super) const DEFAULT_SIM_OK_HARD_FLOOR_RATIO: f64 = 0.15;
-/// Compile-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
-pub(super) const COMPILE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Initial-balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
@@ -1309,6 +1307,13 @@ fn push_compile_balance_count_regression_reasons(
         baseline.dae_models.max(baseline.compiled_models),
         denominator,
     );
+    push_stage_count_regression_reason(
+        reasons,
+        "Compile",
+        gate_input.compiled_models,
+        baseline.compiled_models,
+        denominator,
+    );
     push_stage_count_regression_reason_with_drop(
         reasons,
         "IR-Solve",
@@ -1351,25 +1356,6 @@ fn push_compile_balance_rate_regression_reasons(
     gate_input: MslQualityGateInput<'_>,
     baseline: &MslQualityBaseline,
 ) {
-    let current_compile_rate =
-        compile_success_rate(gate_input.compiled_models, gate_input.simulatable_attempted);
-    let baseline_compile_rate =
-        compile_success_rate(baseline.compiled_models, baseline.simulatable_attempted);
-    if let (Some(current), Some(baseline_rate)) = (current_compile_rate, baseline_compile_rate) {
-        let floor = (baseline_rate - COMPILE_RATE_GATE_TOLERANCE).max(0.0);
-        if current + SIM_RATE_GATE_EPSILON < floor {
-            reasons.push(format!(
-                "compile success rate regressed: current={:.2}% ({}/{}) < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                current * 100.0,
-                gate_input.compiled_models,
-                gate_input.simulatable_attempted,
-                floor * 100.0,
-                baseline_rate * 100.0,
-                COMPILE_RATE_GATE_TOLERANCE * 100.0
-            ));
-        }
-    }
-
     let current_balance_rate =
         balance_success_rate(gate_input.balanced_models, gate_input.balance_denominator);
     let baseline_balance_rate =

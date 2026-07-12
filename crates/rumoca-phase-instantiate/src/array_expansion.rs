@@ -9,6 +9,9 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_ast::ExpressionTransformer;
 use std::sync::Arc;
 
+mod selection_projection;
+use selection_projection::project_array_selection_for_element;
+
 /// Expand an array component into individual indexed instances.
 ///
 /// MLS §10.1: Array component expansion creates indexed instances.
@@ -840,9 +843,16 @@ pub(super) fn index_binding_for_element(
             });
         };
         let mut new_ref = cref.clone();
+        let subscripts = project_array_selection_for_element(
+            tree,
+            parent_components,
+            new_ref.parts[pos].subs.as_deref(),
+            indices,
+            binding.span(),
+        )?;
         new_ref.parts[pos] = ast::ComponentRefPart {
             ident: new_ref.parts[pos].ident.clone(),
-            subs: Some(make_subscripts()),
+            subs: Some(subscripts),
         };
         return Ok(ast::Expression::ComponentReference(new_ref));
     }
@@ -941,20 +951,14 @@ fn index_component_reference_array_part(
     let Some(pos) = find_array_part(tree, parent_components, &cref.parts)? else {
         return Ok(None);
     };
-    let subscripts = indices
-        .iter()
-        .map(|&i| {
-            ast::Subscript::Expression(ast::Expression::Terminal {
-                terminal_type: ast::TerminalType::UnsignedInteger,
-                token: rumoca_core::Token {
-                    text: i.to_string().into(),
-                    ..rumoca_core::Token::default()
-                },
-                span: expr.span(),
-            })
-        })
-        .collect();
     let mut indexed = cref.clone();
+    let subscripts = project_array_selection_for_element(
+        tree,
+        parent_components,
+        indexed.parts[pos].subs.as_deref(),
+        indices,
+        expr.span(),
+    )?;
     indexed.parts[pos] = ast::ComponentRefPart {
         ident: indexed.parts[pos].ident.clone(),
         subs: Some(subscripts),
@@ -1047,13 +1051,15 @@ mod tests {
         ArrayExpansionScope, array_element_binding_modification,
         distribute_component_ref_mods_for_element, distribute_mods_for_element,
         index_array_expression_for_element, index_binding_for_element,
-        pre_resolve_array_modifications, resolve_mod_to_array,
+        pre_resolve_array_modifications, project_array_selection_for_element, resolve_mod_to_array,
     };
     use crate::type_overrides::TypeOverrideMap;
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
     use std::sync::Arc;
+
+    mod vector_subscript_tests;
 
     fn make_token(text: &str) -> rumoca_core::Token {
         rumoca_core::Token {
@@ -1751,5 +1757,58 @@ mod tests {
             panic!("expected integer index");
         };
         assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_component_ref_modifier_composes_shifted_and_strided_range_selection() {
+        let mut parent_components = IndexMap::default();
+        parent_components.insert(
+            "source".to_string(),
+            ast::Component {
+                name: "source".to_string(),
+                shape: vec![8, 2],
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+        let binding = ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: make_token("source"),
+                subs: Some(vec![
+                    ast::Subscript::Expression(ast::Expression::Range {
+                        start: Arc::new(make_int_expr(2)),
+                        step: Some(Arc::new(make_int_expr(2))),
+                        end: Arc::new(make_int_expr(8)),
+                        span: test_span(),
+                    }),
+                    ast::Subscript::Range {
+                        token: make_token(":"),
+                    },
+                ]),
+            }],
+            def_id: None,
+            span: test_span(),
+        });
+
+        let projected = index_binding_for_element(
+            &ast::ClassTree::default(),
+            &parent_components,
+            &binding,
+            &[3],
+        )
+        .expect("range selection should be projected");
+        let ast::Expression::ComponentReference(reference) = projected else {
+            panic!("expected component reference");
+        };
+        let subscripts = reference.parts[0]
+            .subs
+            .as_ref()
+            .expect("projected subscripts");
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
+        else {
+            panic!("expected scalarized range index");
+        };
+        assert_eq!(token.text.as_ref(), "6");
+        assert!(matches!(subscripts[1], ast::Subscript::Range { .. }));
     }
 }

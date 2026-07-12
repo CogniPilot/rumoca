@@ -12,11 +12,15 @@ pub(super) struct ScalarProjectionContext<'a> {
     pub(super) structural_values: &'a HashMap<String, i64>,
     pub(super) complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     pub(super) component_index_map: &'a HashMap<String, HashMap<usize, String>>,
-    pub(super) function_output_index_map: &'a HashMap<String, HashMap<usize, String>>,
+    pub(super) function_output_index_map: &'a super::FunctionOutputProjectionMap,
+    pub(super) function_output_dims_map: &'a HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>,
+    pub(super) dynamic_function_output_map: &'a HashMap<rumoca_core::FunctionInstanceId, String>,
+    pub(super) record_field_projection_map: &'a super::RecordFieldProjectionMap,
+    pub(super) expected_dims: Option<&'a [i64]>,
 }
 
-impl ScalarProjectionContext<'_> {
-    pub(super) fn with_context_span(&self, span: Span) -> ScalarProjectionContext<'_> {
+impl<'a> ScalarProjectionContext<'a> {
+    pub(super) fn with_context_span(&self, span: Span) -> ScalarProjectionContext<'a> {
         ScalarProjectionContext {
             context_span: (!span.is_dummy()).then_some(span),
             var_dims: self.var_dims,
@@ -25,6 +29,29 @@ impl ScalarProjectionContext<'_> {
             complex_fields: self.complex_fields,
             component_index_map: self.component_index_map,
             function_output_index_map: self.function_output_index_map,
+            function_output_dims_map: self.function_output_dims_map,
+            dynamic_function_output_map: self.dynamic_function_output_map,
+            record_field_projection_map: self.record_field_projection_map,
+            expected_dims: self.expected_dims,
+        }
+    }
+
+    pub(super) fn with_expected_dims(
+        &self,
+        dims: Option<&'a [i64]>,
+    ) -> ScalarProjectionContext<'a> {
+        ScalarProjectionContext {
+            context_span: self.context_span,
+            var_dims: self.var_dims,
+            var_spans: self.var_spans,
+            structural_values: self.structural_values,
+            complex_fields: self.complex_fields,
+            component_index_map: self.component_index_map,
+            function_output_index_map: self.function_output_index_map,
+            function_output_dims_map: self.function_output_dims_map,
+            dynamic_function_output_map: self.dynamic_function_output_map,
+            record_field_projection_map: self.record_field_projection_map,
+            expected_dims: dims,
         }
     }
 
@@ -38,6 +65,11 @@ impl ScalarProjectionContext<'_> {
             complex_fields: self.complex_fields,
             component_index_map: self.component_index_map,
             function_output_index_map: self.function_output_index_map,
+            function_output_dims_map: self.function_output_dims_map,
+            dynamic_function_output_map: self.dynamic_function_output_map,
+            record_field_projection_map: self.record_field_projection_map,
+            expected_dims: self.expected_dims,
+            allow_dynamic_function_projection: true,
         }
     }
 
@@ -297,24 +329,39 @@ fn project_function_call_component(
     span: Span,
     field_idx: usize,
     projection: &ScalarProjectionContext<'_>,
-) -> Expression {
+) -> Result<Expression, StructuralError> {
     if is_constructor {
-        return project_constructor_component(expr, name, args, field_idx, span);
+        return Ok(project_constructor_component(
+            expr, name, args, field_idx, span,
+        ));
     }
-    if let Some(by_index) = projection.function_output_index_map.get(name.as_str())
+    let instance_id = name
+        .resolved_function()
+        .map(|resolved| resolved.instance_id)
+        .ok_or_else(|| StructuralError::ContractViolation {
+            reason: "function call lacks resolved instance identity".to_string(),
+            span,
+        })?;
+    if let Some(by_index) = projection.function_output_index_map.get(&instance_id)
         && let Some(projected_output) = by_index.get(&field_idx)
     {
-        return Expression::FunctionCall {
-            name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), projected_output)),
+        let projected_name = name
+            .with_appended_parts(projected_output, span)
+            .ok_or_else(|| StructuralError::ContractViolation {
+                reason: "projected function call lacks structured identity".to_string(),
+                span,
+            })?;
+        return Ok(Expression::FunctionCall {
+            name: projected_name,
             args: args.to_vec(),
             is_constructor: false,
             span,
-        };
+        });
     }
     if field_idx == 1 {
-        expr.clone()
+        Ok(expr.clone())
     } else {
-        complex_zero(span)
+        Ok(complex_zero(span))
     }
 }
 
@@ -404,7 +451,7 @@ fn project_complex_component(
             args,
             is_constructor,
             span,
-        } => Ok(project_function_call_component(
+        } => project_function_call_component(
             expr,
             name,
             args,
@@ -412,7 +459,7 @@ fn project_complex_component(
             *span,
             field_idx,
             projection,
-        )),
+        ),
         Expression::Array {
             elements,
             is_matrix,

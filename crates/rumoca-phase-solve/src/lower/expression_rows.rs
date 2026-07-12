@@ -42,6 +42,7 @@ pub(super) struct RuntimeRowMetadata<'a> {
     pub(super) variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
     pub(super) dae_variables: Option<&'a dae::DaeVariables>,
     pub(super) structural_bindings: Option<Arc<IndexMap<String, f64>>>,
+    pub(super) direct_assignments: Option<Arc<IndexMap<String, DirectAssignmentValue>>>,
     pub(super) guard_target_start_before_first_clock_tick: bool,
 }
 
@@ -272,7 +273,7 @@ pub(super) fn lower_expression_rows_from_expressions_with_structural_bindings(
             variable_starts: Some(metadata.variable_starts),
             dae_variables: metadata.dae_variables,
             structural_bindings: metadata.structural_bindings,
-            direct_assignments: None,
+            direct_assignments: metadata.direct_assignments,
             indexed_bindings,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: metadata
@@ -300,7 +301,7 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
             variable_starts: Some(metadata.variable_starts),
             dae_variables: metadata.dae_variables,
             structural_bindings: metadata.structural_bindings,
-            direct_assignments: None,
+            direct_assignments: metadata.direct_assignments,
             indexed_bindings,
             is_initial_mode: false,
             guard_target_start_before_first_clock_tick: metadata
@@ -416,7 +417,7 @@ pub(super) fn lower_expression_rows_with_mode<'a>(
         variable_starts: Some(runtime.variable_starts),
         dae_variables: runtime.dae_variables,
         structural_bindings: runtime.structural_bindings,
-        direct_assignments: None,
+        direct_assignments: runtime.direct_assignments,
         indexed_bindings,
         is_initial_mode,
         guard_target_start_before_first_clock_tick: runtime

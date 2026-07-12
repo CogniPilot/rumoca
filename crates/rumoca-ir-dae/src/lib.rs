@@ -22,12 +22,14 @@
 use indexmap::IndexMap;
 use rumoca_core::{
     ComponentReference, DefId, Expression, Function, FunctionShapeContractError, Reference, Span,
-    Statement, VarName, extract_algorithm_outputs,
+    Statement, SymbolAncestry, VarName, extract_algorithm_outputs,
 };
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 6;
+pub const DAE_SCHEMA_VERSION: u16 = 7;
+
+pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 
 mod event_threshold;
 mod expr_query;
@@ -674,7 +676,7 @@ pub struct DaeMetadata {
     /// DefId ancestry for resolved source symbols, ordered from outermost owner
     /// to the symbol itself. Used for structured balance and lowering queries.
     #[serde(default)]
-    pub symbol_ancestry: IndexMap<DefId, Vec<DefId>>,
+    pub symbol_ancestry: SymbolAncestryMap,
 }
 
 impl Dae {
@@ -1442,11 +1444,13 @@ mod tests {
             "DAE JSON must carry an explicit schema_version"
         );
 
-        let mut unsupported = value;
-        unsupported["schema_version"] = serde_json::json!(DAE_SCHEMA_VERSION + 1);
-        let err = serde_json::from_value::<Dae>(unsupported)
-            .expect_err("unsupported DAE schema version must fail");
-        assert!(err.to_string().contains("unsupported DAE schema_version"));
+        for unsupported_version in [DAE_SCHEMA_VERSION - 1, DAE_SCHEMA_VERSION + 1] {
+            let mut unsupported = value.clone();
+            unsupported["schema_version"] = serde_json::json!(unsupported_version);
+            let err = serde_json::from_value::<Dae>(unsupported)
+                .expect_err("unsupported DAE schema version must fail");
+            assert!(err.to_string().contains("unsupported DAE schema_version"));
+        }
     }
 
     #[test]
@@ -1482,6 +1486,31 @@ mod tests {
         let decoded: Dae =
             bincode::deserialize(&bytes).expect("deserialize representative DAE from bincode");
         assert_same_json_shape(&decoded, &dae);
+    }
+
+    #[test]
+    fn resolved_function_reference_survives_json_and_bincode_roundtrips() {
+        let reference = Reference::new("Pkg.f").with_resolved_function(
+            rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(42),
+                base_part_count: 2,
+            },
+        );
+
+        let json = serde_json::to_value(&reference).expect("serialize resolved reference as JSON");
+        assert!(
+            json.is_object(),
+            "resolved identity must not use the bare-name wire form"
+        );
+        let decoded_json: Reference =
+            serde_json::from_value(json).expect("deserialize resolved reference from JSON");
+        assert_eq!(decoded_json, reference);
+
+        let bytes =
+            bincode::serialize(&reference).expect("serialize resolved reference as bincode");
+        let decoded_binary: Reference =
+            bincode::deserialize(&bytes).expect("deserialize resolved reference from bincode");
+        assert_eq!(decoded_binary, reference);
     }
 
     #[test]

@@ -121,6 +121,39 @@ pub(crate) fn analyze_derivative_rhs(
     })
 }
 
+pub(in crate::lower) fn collect_runtime_direct_assignments(
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Result<IndexMap<String, DirectAssignmentValue>, LowerError> {
+    let state_names = dae_model
+        .variables
+        .states
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<HashSet<_>>();
+    let (_, equation_flags) =
+        collect_derivative_equations(dae_model, &state_names, structural_bindings)?;
+    let mut assignments =
+        collect_direct_assignments(dae_model, &equation_flags, structural_bindings)?;
+    for (name, parameter) in &dae_model.variables.parameters {
+        if parameter.causality != dae::VariableCausality::CalculatedParameter {
+            continue;
+        }
+        let Some(binding) = parameter.start.as_ref() else {
+            continue;
+        };
+        assignments
+            .entry(name.as_str().to_string())
+            .or_insert_with(|| {
+                DirectAssignmentValue::full(
+                    binding.clone(),
+                    parameter.start_span.unwrap_or(parameter.source_span),
+                )
+            });
+    }
+    Ok(assignments)
+}
+
 fn derivative_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,

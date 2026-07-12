@@ -97,8 +97,7 @@ pub(in crate::lower) fn indexed_record_field_key_indices(
     base_key: &str,
     field: &str,
 ) -> Option<Vec<usize>> {
-    let suffix = format!(".{field}");
-    let indexed_base_key = key.strip_suffix(suffix.as_str())?;
+    let indexed_base_key = key.strip_suffix(field)?.strip_suffix('.')?;
     let (candidate_base, indices) = parse_indexed_binding_key(indexed_base_key)?;
     (candidate_base == base_key).then_some(indices)
 }

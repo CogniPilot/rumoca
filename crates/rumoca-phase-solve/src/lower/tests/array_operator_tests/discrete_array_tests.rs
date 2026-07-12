@@ -16,7 +16,7 @@ fn discrete_array_source_span(source: u64, start: usize, end: usize) -> rumoca_c
 #[test]
 fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() {
     let mut dae_model = dae::Dae::default();
-    let mut matrix_fn = rumoca_core::Function::new("Pkg.matrix", lower_test_span());
+    let mut matrix_fn = test_function("Pkg.matrix", lower_test_span());
     matrix_fn
         .outputs
         .push(function_param_with_dims("R", &[2, 2]));
@@ -84,7 +84,7 @@ fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() 
 fn lower_expression_lowers_projected_function_matrix_output_component() {
     let mut functions = IndexMap::new();
     let span = lower_test_span();
-    let mut matrix_fn = rumoca_core::Function::new("Pkg.matrix", span);
+    let mut matrix_fn = test_function("Pkg.matrix", span);
     matrix_fn
         .outputs
         .push(function_param_with_dims("R", &[2, 2]));
@@ -104,7 +104,9 @@ fn lower_expression_lowers_projected_function_matrix_output_component() {
     let expr = rumoca_core::Expression::FunctionCall {
         // MLS §12.4.5: projected calls to array-valued function outputs select
         // the declared array component, not a flattened pseudo-variable.
-        name: rumoca_core::VarName::new("Pkg.matrix.R[2,2]").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.matrix.R[2,2]",
+        )),
         args: vec![],
         is_constructor: false,
         span,
@@ -175,7 +177,7 @@ fn function_returned_record_fields_dae(span: rumoca_core::Span) -> dae::Dae {
 }
 
 fn orientation_constructor_for_record_fields(span: rumoca_core::Span) -> rumoca_core::Function {
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", span);
+    let mut orientation = test_function("Pkg.Orientation", span);
     orientation.is_constructor = true;
     orientation
         .inputs
@@ -187,7 +189,7 @@ fn orientation_constructor_for_record_fields(span: rumoca_core::Span) -> rumoca_
 }
 
 fn null_rotation_record_function(span: rumoca_core::Span) -> rumoca_core::Function {
-    let mut null_rotation = rumoca_core::Function::new("Pkg.nullRotation", span);
+    let mut null_rotation = test_function("Pkg.nullRotation", span);
     let mut output = function_param_with_type_span("R", "Pkg.Orientation", &[], span);
     output.type_class = Some(rumoca_core::ClassType::Record);
     null_rotation.outputs.push(output);
@@ -219,6 +221,7 @@ fn function_param_with_type_span(
 ) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span,
         type_name: type_name.to_string(),
@@ -226,6 +229,8 @@ fn function_param_with_type_span(
         dims: dims.to_vec(),
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     }
 }
@@ -326,7 +331,7 @@ fn lower_residual_preserves_function_record_matrix_field_shape() {
         },
     );
 
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", span);
+    let mut orientation = test_function("Pkg.Orientation", span);
     orientation.is_constructor = true;
     orientation
         .inputs
@@ -339,7 +344,7 @@ fn lower_residual_preserves_function_record_matrix_field_shape() {
         .functions
         .insert(orientation.name.clone(), orientation);
 
-    let mut from_q = rumoca_core::Function::new("Pkg.from_Q", span);
+    let mut from_q = test_function("Pkg.from_Q", span);
     from_q
         .inputs
         .push(function_param_with_type_span("Q", "Real", &[4], span));
@@ -432,7 +437,7 @@ fn lower_residual_lowers_record_input_matrix_field_multiply() {
         },
     );
 
-    let mut resolve1 = rumoca_core::Function::new("Pkg.resolve1", span);
+    let mut resolve1 = test_function("Pkg.resolve1", span);
     resolve1.inputs.push(
         function_param_with_type_span("R", "Pkg.Orientation", &[], span)
             .with_type_class(rumoca_core::ClassType::Record),
@@ -502,7 +507,7 @@ fn lower_residual_rejects_function_record_matrix_field_shape_mismatch() {
         },
     );
 
-    let mut orientation = rumoca_core::Function::new("Pkg.Orientation", span);
+    let mut orientation = test_function("Pkg.Orientation", span);
     orientation.is_constructor = true;
     orientation
         .inputs
@@ -515,7 +520,7 @@ fn lower_residual_rejects_function_record_matrix_field_shape_mismatch() {
         .functions
         .insert(orientation.name.clone(), orientation);
 
-    let mut bad_rotation = rumoca_core::Function::new("Pkg.badRotation", span);
+    let mut bad_rotation = test_function("Pkg.badRotation", span);
     bad_rotation.outputs.push(
         function_param_with_type_span("R", "Pkg.Orientation", &[], span)
             .with_type_class(rumoca_core::ClassType::Record),
@@ -1020,11 +1025,12 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
         is_matrix: false,
         span: lower_test_span(),
     };
-    let mut matrix_fn = rumoca_core::Function::new("Pkg.dynamicMatrixProduct", lower_test_span());
+    let mut matrix_fn = test_function("Pkg.dynamicMatrixProduct", lower_test_span());
     matrix_fn.inputs.push(function_param_with_dims("x", &[3]));
     matrix_fn.outputs.push(function_param_with_dims("y", &[2]));
     matrix_fn.locals.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "A".to_string(),
         span: lower_test_span(),
         type_name: "Real".to_string(),
@@ -1039,6 +1045,8 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
             is_matrix: true,
             span: lower_test_span(),
         }),
+        min: None,
+        max: None,
         description: None,
     });
     matrix_fn.body.push(rumoca_core::Statement::Assignment {
@@ -1096,7 +1104,7 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
             ..scalar_var("y")
         },
     );
-    let mut copy_fn = rumoca_core::Function::new("Pkg.copy", lower_test_span());
+    let mut copy_fn = test_function("Pkg.copy", lower_test_span());
     copy_fn.inputs.push(function_param_with_dims("x", &[3]));
     copy_fn.outputs.push(function_param_with_dims("y", &[0]));
     copy_fn.body.push(rumoca_core::Statement::Assignment {
@@ -1180,9 +1188,10 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
         },
     );
 
-    let mut any_true = rumoca_core::Function::new("Modelica.Math.BooleanVectors.anyTrue", span);
+    let mut any_true = test_function("Modelica.Math.BooleanVectors.anyTrue", span);
     any_true.inputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "b".to_string(),
         span,
         type_name: "Boolean".to_string(),
@@ -1190,10 +1199,13 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
         dims: vec![0],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     any_true.outputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "result".to_string(),
         span,
         type_name: "Boolean".to_string(),
@@ -1201,6 +1213,8 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
         dims: vec![],
         shape_expr: Vec::new(),
         default: None,
+        min: None,
+        max: None,
         description: None,
     });
     any_true.body.push(rumoca_core::Statement::Assignment {
@@ -1282,6 +1296,7 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
             variable_starts: &variable_starts,
             dae_variables: Some(&dae_model.variables),
             structural_bindings: None,
+            direct_assignments: None,
             guard_target_start_before_first_clock_tick: false,
         },
         false,
@@ -1384,6 +1399,7 @@ fn lower_expression_rows_rejects_unspanned_matmul_node() {
             variable_starts: &variable_starts,
             dae_variables: Some(&dae_model.variables),
             structural_bindings: None,
+            direct_assignments: None,
             guard_target_start_before_first_clock_tick: false,
         },
         false,
@@ -1446,6 +1462,7 @@ fn lower_expression_rows_preserves_vector_matrix_products_as_matmul_nodes() {
                 variable_starts: &variable_starts,
                 dae_variables: Some(&dae_model.variables),
                 structural_bindings: None,
+                direct_assignments: None,
                 guard_target_start_before_first_clock_tick: false,
             },
             false,
@@ -1658,7 +1675,7 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
         .parameters
         .insert(rumoca_core::VarName::new("k"), scalar_var("k"));
 
-    let mut function = rumoca_core::Function::new("Pkg.outputs", lower_test_span());
+    let mut function = test_function("Pkg.outputs", lower_test_span());
     function.outputs.push(function_param_with_dims("r", &[2]));
     function.outputs.push(function_param_with_dims("gain", &[]));
     function.body.push(rumoca_core::Statement::Assignment {

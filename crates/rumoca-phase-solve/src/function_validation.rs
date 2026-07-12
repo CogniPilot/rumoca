@@ -4,7 +4,10 @@ use rumoca_eval_dae as eval;
 use rumoca_ir_dae as dae;
 
 use crate::lower::NAMED_FUNCTION_ARG_PREFIX;
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{
+    OutputProjectionSuffix, output_projection_suffix, record_output_field_param,
+    resolve_function_reference,
+};
 
 type BuiltinFunction = rumoca_core::BuiltinFunction;
 type ComponentReference = rumoca_core::ComponentReference;
@@ -24,82 +27,96 @@ pub struct FunctionValidationError {
 
 fn resolve_dae_function_by_key<'a>(
     dae: &'a Dae,
-    requested: &str,
+    requested: &VarName,
 ) -> Option<&'a rumoca_core::Function> {
-    let requested_name = VarName::new(requested);
-    if let Some(function) = dae.symbols.functions.get(&requested_name) {
-        return Some(function);
+    dae.symbols.functions.get(requested)
+}
+
+fn projection_matches_output(
+    functions: &indexmap::IndexMap<VarName, rumoca_core::Function>,
+    function: &rumoca_core::Function,
+    projection_suffix: OutputProjectionSuffix,
+) -> bool {
+    let Some(output) = function
+        .outputs
+        .iter()
+        .find(|out| out.name == projection_suffix.output_name)
+    else {
+        return false;
+    };
+
+    let projected_output = match projection_suffix.output_fields.as_slice() {
+        [field] => {
+            match record_output_field_param(functions, output, &projection_suffix.output_fields) {
+                Some(field_output) => field_output,
+                None if output_is_complex_record(output)
+                    && matches!(field.as_str(), "re" | "im") =>
+                {
+                    output
+                }
+                None => return false,
+            }
+        }
+        [] => output,
+        _ => match record_output_field_param(functions, output, &projection_suffix.output_fields) {
+            Some(field_output) => field_output,
+            None => return false,
+        },
+    };
+
+    let indices = projection_suffix.indices;
+    if projected_output.dims.is_empty() {
+        return indices.is_empty();
     }
 
-    fn projection_matches_output(function: &rumoca_core::Function, suffix: &str) -> bool {
-        let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
-            return false;
-        };
-
-        let Some(output) = function
-            .outputs
-            .iter()
-            .find(|out| out.name == projection_suffix.output_name)
-        else {
-            return false;
-        };
-
-        if let Some(field) = projection_suffix.output_field.as_deref() {
-            if !output_is_complex_record(output) {
-                return false;
-            }
-            if !matches!(field, "re" | "im") {
-                return false;
-            }
-        }
-
-        let indices = projection_suffix.indices;
-        if output.dims.is_empty() {
-            return indices.is_empty();
-        }
-
-        if indices.is_empty() {
-            return true;
-        }
-
-        if output.dims.iter().any(|dim| *dim < 0)
-            || (!output.shape_expr.is_empty() && output.dims.iter().any(|dim| *dim <= 0))
-        {
-            return true;
-        }
-
-        let Some(total) = output.dims.iter().try_fold(1usize, |acc, dim| {
-            usize::try_from(*dim)
-                .ok()
-                .and_then(|dim| acc.checked_mul(dim))
-        }) else {
-            return false;
-        };
-
-        if indices.len() == 1 {
-            let idx = indices[0];
-            return idx >= 1 && idx <= total;
-        }
-
-        if indices.len() != output.dims.len() {
-            return false;
-        }
-
-        indices
-            .iter()
-            .zip(output.dims.iter())
-            .all(|(idx, dim)| dimension_index_in_bounds(*idx, *dim))
+    if indices.is_empty() {
+        return true;
     }
 
-    rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
-        let base_var = VarName::new(base_name);
-        let function = dae.symbols.functions.get(&base_var)?;
-        if projection_matches_output(function, suffix) {
-            Some(function)
-        } else {
-            None
+    if projected_output.dims.iter().any(|dim| *dim < 0)
+        || (!projected_output.shape_expr.is_empty()
+            && projected_output.dims.iter().any(|dim| *dim <= 0))
+    {
+        return true;
+    }
+
+    let Some(total) = projected_output.dims.iter().try_fold(1usize, |acc, dim| {
+        usize::try_from(*dim)
+            .ok()
+            .and_then(|dim| acc.checked_mul(dim))
+    }) else {
+        return false;
+    };
+
+    if indices.len() == 1 {
+        let idx = indices[0];
+        return idx >= 1 && idx <= total;
+    }
+
+    if indices.len() != projected_output.dims.len() {
+        return false;
+    }
+
+    indices
+        .iter()
+        .zip(projected_output.dims.iter())
+        .all(|(idx, dim)| dimension_index_in_bounds(*idx, *dim))
+}
+
+fn resolve_projected_dae_function<'a>(
+    dae: &'a Dae,
+    name: &rumoca_core::Reference,
+) -> Option<&'a rumoca_core::Function> {
+    let (_, function) = resolve_function_reference(&dae.symbols.functions, name)?;
+    if let Some(resolved) = name.resolved_function() {
+        if name.component_ref()?.parts.len() == resolved.base_part_count {
+            return Some(function);
         }
-    })
+    } else {
+        return None;
+    }
+    let suffix = output_projection_suffix(function, name)?;
+    projection_matches_output(&dae.symbols.functions, function, suffix).then_some(function)
 }
 
 fn dimension_index_in_bounds(index: usize, dim: i64) -> bool {
@@ -113,15 +130,17 @@ fn resolve_dae_function<'a>(
     dae: &'a Dae,
     name: &rumoca_core::Reference,
 ) -> Option<&'a rumoca_core::Function> {
-    resolve_dae_function_by_key(dae, name.as_str())
+    resolve_projected_dae_function(dae, name)
 }
 
 fn resolve_dae_component_function<'a>(
     dae: &'a Dae,
     comp: &ComponentReference,
 ) -> Option<&'a rumoca_core::Function> {
-    let name = comp.to_var_name();
-    resolve_dae_function_by_key(dae, name.as_str())
+    resolve_projected_dae_function(
+        dae,
+        &rumoca_core::Reference::from_component_reference(comp.clone()),
+    )
 }
 
 fn is_runtime_intrinsic_short_name(short: &str) -> bool {
@@ -226,6 +245,7 @@ mod dynamic_projection_tests {
                 }]),
         );
         function.body.push(rumoca_core::Statement::Return { span });
+        function.instance_id = Some(rumoca_core::FunctionInstanceId::new(700));
         function
     }
 
@@ -237,9 +257,22 @@ mod dynamic_projection_tests {
             .insert(VarName::new("Pkg.f"), function_with_dynamic_array_output());
         let aliases = HashSet::new();
 
-        validate_sim_function_call_name(&dae, &VarName::new("Pkg.f.y").into(), &aliases)
+        let projected = |name: &str| {
+            rumoca_core::Reference::from_component_reference(
+                rumoca_core::component_reference_from_flat_name(
+                    &VarName::new(name),
+                    fixture_span(),
+                )
+                .expect("structured projected function reference"),
+            )
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(700),
+                base_part_count: 2,
+            })
+        };
+        validate_sim_function_call_name(&dae, &projected("Pkg.f.y"), &aliases)
             .expect("aggregate dynamic output projection should validate");
-        validate_sim_function_call_name(&dae, &VarName::new("Pkg.f.y[1]").into(), &aliases)
+        validate_sim_function_call_name(&dae, &projected("Pkg.f.y[1]"), &aliases)
             .expect("indexed dynamic output projection should validate");
     }
 }
@@ -304,7 +337,7 @@ pub(super) fn validate_called_function_body(
         return Ok(());
     }
 
-    let Some(func) = resolve_dae_function_by_key(dae, name.as_str()) else {
+    let Some(func) = resolve_dae_function_by_key(dae, name) else {
         active_stack.remove(name);
         return Err(FunctionValidationError {
             name: name.as_str().to_string(),
@@ -1165,6 +1198,7 @@ mod tests {
         );
         let mut dae = Dae::default();
         let mut constructor = rumoca_core::Function::new("Pkg.Record", span);
+        constructor.instance_id = Some(rumoca_core::FunctionInstanceId::new(701));
         constructor
             .inputs
             .push(rumoca_core::FunctionParam::new("known", "Real", span));
@@ -1173,7 +1207,17 @@ mod tests {
             .insert(VarName::new("Pkg.Record"), constructor);
         let expr = Expression::FieldAccess {
             base: Box::new(Expression::FunctionCall {
-                name: VarName::new("Pkg.Record").into(),
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::component_reference_from_flat_name(
+                        &VarName::new("Pkg.Record"),
+                        span,
+                    )
+                    .expect("structured constructor reference"),
+                )
+                .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                    instance_id: rumoca_core::FunctionInstanceId::new(701),
+                    base_part_count: 2,
+                }),
                 args: Vec::new(),
                 is_constructor: true,
                 span,

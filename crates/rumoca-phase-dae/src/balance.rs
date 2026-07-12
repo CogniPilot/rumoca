@@ -197,7 +197,7 @@ struct BalanceSymbolSet<'a> {
     /// members.
     prefixes: HashSet<rumoca_core::VarName>,
     def_ids: IndexSet<DefId>,
-    ancestry: &'a IndexMap<DefId, Vec<DefId>>,
+    ancestry: &'a dae::SymbolAncestryMap,
 }
 
 impl<'a> BalanceSymbolSet<'a> {

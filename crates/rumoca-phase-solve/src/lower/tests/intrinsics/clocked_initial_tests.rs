@@ -722,11 +722,12 @@ fn lower_expression_supports_size_builtin_for_known_array_dims() {
 #[test]
 fn lower_function_local_structural_symmetric_orientation() {
     let mut dae_model = dae::Dae::default();
-    let mut function = rumoca_core::Function::new("Space.phases", test_span());
+    let mut function = test_function("Space.phases", test_span());
     function.inputs.push(function_param_with_dims("x", &[3]));
     function.outputs.push(function_param_with_dims("y", &[3]));
     function.locals.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "m".to_string(),
         span: test_span(),
         type_name: "Integer".to_string(),
@@ -744,10 +745,13 @@ fn lower_function_local_structural_symmetric_orientation() {
             ],
             span: test_span(),
         }),
+        min: None,
+        max: None,
         description: None,
     });
     function.locals.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "phi".to_string(),
         span: test_span(),
         type_name: "Real".to_string(),
@@ -766,6 +770,8 @@ fn lower_function_local_structural_symmetric_orientation() {
             is_constructor: false,
             span: test_span(),
         }),
+        min: None,
+        max: None,
         description: None,
     });
     function.body = vec![
@@ -1328,8 +1334,7 @@ fn lower_expression_prefers_qualified_normal_quantile_intrinsic_over_function_bo
         .parameters
         .insert(rumoca_core::VarName::new("c"), source_array_var("c", &[1]));
 
-    let mut quantile =
-        rumoca_core::Function::new("Modelica.Math.Distributions.Normal.quantile", test_span());
+    let mut quantile = test_function("Modelica.Math.Distributions.Normal.quantile", test_span());
     quantile.inputs = vec![
         rumoca_core::FunctionParam::new("p", "Real", test_span()),
         rumoca_core::FunctionParam::new("mu", "Real", test_span()),

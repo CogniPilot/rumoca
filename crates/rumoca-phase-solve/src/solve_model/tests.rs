@@ -1331,6 +1331,7 @@ fn lower_supports_visible_observation_with_array_literal_size_range() {
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.badSizeRange"),
             def_id: None,
+            instance_id: None,
             inputs: vec![],
             outputs: vec![rumoca_core::FunctionParam::new(
                 "out",
@@ -1410,6 +1411,7 @@ fn lower_skips_visible_observation_with_unbound_function_input() {
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.needsInput"),
             def_id: None,
+            instance_id: None,
             inputs: vec![rumoca_core::FunctionParam::new(
                 "u",
                 "Real",

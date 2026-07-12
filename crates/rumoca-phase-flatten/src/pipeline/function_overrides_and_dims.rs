@@ -293,6 +293,34 @@ fn collect_extends_redeclare_aliases_for_class(
     }
 }
 
+/// Resolve `member` when one of `class_def`'s extends clauses redeclares it
+/// (`extends Base(redeclare record Member = Target)`), returning the concrete
+/// redeclare target class resolved in `class_scope`.
+pub(crate) fn extends_class_redeclare_target<'a>(
+    tree: &'a ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'a>,
+    class_def: &rumoca_ir_ast::ClassDef,
+    class_scope: &str,
+    member: &str,
+) -> Option<&'a rumoca_ir_ast::ClassDef> {
+    for ext in &class_def.extends {
+        for modification in &ext.modifications {
+            if !modification.redeclare {
+                continue;
+            }
+            let Some((alias, value)) = redeclare_alias_and_value(&modification.expr) else {
+                continue;
+            };
+            if alias != member {
+                continue;
+            }
+            let target = redeclare_value_type_ref(tree, class_index, class_scope, value)?;
+            return Some(target.class_def);
+        }
+    }
+    None
+}
+
 fn redeclare_alias_and_value(
     expr: &rumoca_ir_ast::Expression,
 ) -> Option<(String, &rumoca_ir_ast::Expression)> {

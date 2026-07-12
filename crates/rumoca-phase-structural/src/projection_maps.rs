@@ -1,9 +1,15 @@
 use std::collections::HashMap;
 
-use rumoca_core::Span;
+use rumoca_core::{ComponentRefPart, Span, Subscript};
 use rumoca_ir_dae as dae;
 
 use crate::StructuralError;
+
+pub type ProjectionParts = Vec<ComponentRefPart>;
+pub type FunctionOutputProjectionMap =
+    HashMap<rumoca_core::FunctionInstanceId, HashMap<usize, ProjectionParts>>;
+pub type RecordFieldProjectionMap =
+    HashMap<rumoca_core::FunctionInstanceId, HashMap<String, HashMap<usize, ProjectionParts>>>;
 
 fn extract_first_component_index(name: &rumoca_core::VarName) -> Option<usize> {
     for segment in name.segments() {
@@ -79,16 +85,16 @@ pub fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
 }
 
 fn push_projection_entry(
-    by_index: &mut HashMap<usize, String>,
+    by_index: &mut HashMap<usize, ProjectionParts>,
     scalar_idx: &mut usize,
-    selector: String,
+    selector: ProjectionParts,
 ) {
     by_index.insert(*scalar_idx, selector);
     *scalar_idx += 1;
 }
 
 fn append_output_projection_entry(
-    by_index: &mut HashMap<usize, String>,
+    by_index: &mut HashMap<usize, ProjectionParts>,
     scalar_idx: &mut usize,
     output_name: &str,
     output_dims: &[i64],
@@ -96,59 +102,75 @@ fn append_output_projection_entry(
     element_idx: Option<usize>,
     is_complex: bool,
 ) -> Result<(), StructuralError> {
-    let indexed_output = element_idx.map(|element_idx| {
-        dae::scalar_name_text_for_flat_index(output_name, output_dims, element_idx - 1)
-    });
-    let index_suffix = match (indexed_output.as_deref(), element_idx) {
-        (Some(name), Some(_)) => name.strip_prefix(output_name).ok_or_else(|| {
-            StructuralError::ContractViolation {
-                reason: format!(
-                    "scalarized output selector `{name}` is not prefixed by output `{output_name}`"
-                ),
-                span: output_span,
-            }
-        })?,
-        (None, Some(_)) => {
-            return Err(StructuralError::ContractViolation {
-                reason: format!(
-                    "missing scalarized output selector for `{output_name}` at index {element_idx:?}"
-                ),
-                span: output_span,
-            });
-        }
-        _ => "",
+    let subs = element_idx
+        .map(|index| projection_subscripts(output_dims, index - 1, output_span))
+        .transpose()?
+        .unwrap_or_default();
+    let part = |ident: &str, subs: Vec<Subscript>| ComponentRefPart {
+        ident: ident.to_string(),
+        span: output_span,
+        subs,
     };
     match (is_complex, element_idx) {
         (true, Some(_)) => {
             push_projection_entry(
                 by_index,
                 scalar_idx,
-                format!("{output_name}.re{index_suffix}"),
+                vec![part(output_name, vec![]), part("re", subs.clone())],
             );
             push_projection_entry(
                 by_index,
                 scalar_idx,
-                format!("{output_name}.im{index_suffix}"),
+                vec![part(output_name, vec![]), part("im", subs)],
             );
         }
         (true, None) => {
-            push_projection_entry(by_index, scalar_idx, format!("{output_name}.re"));
-            push_projection_entry(by_index, scalar_idx, format!("{output_name}.im"));
+            push_projection_entry(
+                by_index,
+                scalar_idx,
+                vec![part(output_name, vec![]), part("re", vec![])],
+            );
+            push_projection_entry(
+                by_index,
+                scalar_idx,
+                vec![part(output_name, vec![]), part("im", vec![])],
+            );
         }
         (false, Some(_)) => {
-            let selector = indexed_output.ok_or_else(|| StructuralError::ContractViolation {
-                reason: format!(
-                    "missing scalarized output selector for `{output_name}` at index {element_idx:?}"
-                ),
-                span: output_span,
-            })?;
-            push_projection_entry(by_index, scalar_idx, selector);
+            push_projection_entry(by_index, scalar_idx, vec![part(output_name, subs)]);
         }
         (false, None) => {
-            push_projection_entry(by_index, scalar_idx, output_name.to_string());
+            push_projection_entry(by_index, scalar_idx, vec![part(output_name, vec![])]);
         }
     }
     Ok(())
+}
+
+fn projection_subscripts(
+    dims: &[i64],
+    flat_index: usize,
+    span: Span,
+) -> Result<Vec<Subscript>, StructuralError> {
+    dae::flat_index_to_subscripts(dims, flat_index)
+        .ok_or_else(|| StructuralError::ContractViolation {
+            reason: format!("invalid output projection index {flat_index} for dimensions {dims:?}"),
+            span,
+        })?
+        .into_iter()
+        .map(|index| checked_projection_subscript(index, span))
+        .collect()
+}
+
+pub(crate) fn checked_projection_subscript(
+    index: usize,
+    span: Span,
+) -> Result<Subscript, StructuralError> {
+    i64::try_from(index)
+        .map(|value| Subscript::index(value, span))
+        .map_err(|_| StructuralError::ContractViolation {
+            reason: format!("output projection index {index} exceeds Modelica Integer"),
+            span,
+        })
 }
 
 /// Build projection map for scalarizing multi-output function calls.
@@ -158,10 +180,20 @@ fn append_output_projection_entry(
 /// - array output `seedOut[3]` -> `seedOut[1]`, `seedOut[2]`, `seedOut[3]`
 pub fn build_function_output_projection_map(
     dae: &dae::Dae,
-) -> Result<HashMap<String, HashMap<usize, String>>, StructuralError> {
-    let mut map: HashMap<String, HashMap<usize, String>> = HashMap::new();
-    for (function_name, function) in &dae.symbols.functions {
-        let mut by_index: HashMap<usize, String> = HashMap::new();
+) -> Result<FunctionOutputProjectionMap, StructuralError> {
+    let mut map = HashMap::new();
+    for function in dae.symbols.functions.values() {
+        let instance_id =
+            function
+                .instance_id
+                .ok_or_else(|| StructuralError::ContractViolation {
+                    reason: format!(
+                        "function `{}` lacks flattened instance identity",
+                        function.name
+                    ),
+                    span: function.span,
+                })?;
+        let mut by_index = HashMap::new();
         let mut scalar_idx = 1usize;
         for output in &function.outputs {
             let count = output_scalar_count(&output.dims, output.span)?;
@@ -191,7 +223,147 @@ pub fn build_function_output_projection_map(
             }
         }
         if !by_index.is_empty() {
-            map.insert(function_name.as_str().to_string(), by_index);
+            map.insert(instance_id, by_index);
+        }
+    }
+    Ok(map)
+}
+
+fn append_record_field_projection(
+    dae: &dae::Dae,
+    record_type: rumoca_core::DefId,
+    record_type_name: &str,
+    selector_prefix: &[ComponentRefPart],
+    field_prefix: &str,
+    fields: &mut HashMap<String, HashMap<usize, ProjectionParts>>,
+    active_types: &mut Vec<rumoca_core::DefId>,
+) -> Result<(), StructuralError> {
+    if active_types.contains(&record_type) {
+        return Ok(());
+    }
+    let selector_span = selector_prefix
+        .last()
+        .map(|part| part.span)
+        .ok_or_else(|| StructuralError::UnspannedContractViolation {
+            reason: "record projection selector is empty".to_string(),
+        })?;
+    let constructor = rumoca_core::resolve_record_constructor(
+        dae.symbols.functions.values(),
+        record_type_name,
+        record_type,
+    )
+    .map_err(|error| StructuralError::ContractViolation {
+        reason: error.to_string(),
+        span: selector_span,
+    })?;
+    active_types.push(record_type);
+    for field in &constructor.inputs {
+        let field_path = if field_prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{field_prefix}.{}", field.name)
+        };
+        let mut selector = selector_prefix.to_vec();
+        selector.push(ComponentRefPart {
+            ident: field.name.clone(),
+            span: field.span,
+            subs: vec![],
+        });
+        if field.type_class == Some(rumoca_core::ClassType::Record) {
+            let field_type_def_id =
+                field
+                    .type_def_id
+                    .ok_or_else(|| StructuralError::ContractViolation {
+                        reason: format!("record field `{field_path}` lacks resolved type identity"),
+                        span: field.span,
+                    })?;
+            append_record_field_projection(
+                dae,
+                field_type_def_id,
+                &field.type_name,
+                &selector,
+                &field_path,
+                fields,
+                active_types,
+            )?;
+            continue;
+        }
+        let count = output_scalar_count(&field.dims, field.span)?;
+        let by_index = fields.entry(field_path).or_default();
+        if count <= 1 {
+            by_index.insert(1, selector);
+            continue;
+        }
+        for element_index in 1..=count {
+            let mut indexed = selector.clone();
+            let last = indexed
+                .last_mut()
+                .ok_or_else(|| StructuralError::ContractViolation {
+                    reason: "record field selector is empty".to_string(),
+                    span: field.span,
+                })?;
+            last.subs = projection_subscripts(&field.dims, element_index - 1, field.span)?;
+            by_index.insert(element_index, indexed);
+        }
+    }
+    active_types.pop();
+    Ok(())
+}
+
+/// Map array fields of record-valued function results to scalar output paths.
+///
+/// For a function returning `Pose pose` with `Real position[2]`, this records
+/// `position -> {1: pose.position[1], 2: pose.position[2]}`. Record schemas are
+/// read from their retained constructor functions and may be nested.
+pub fn build_record_field_projection_map(
+    dae: &dae::Dae,
+) -> Result<RecordFieldProjectionMap, StructuralError> {
+    let mut map = HashMap::new();
+    for function in dae.symbols.functions.values() {
+        if function.is_constructor {
+            continue;
+        }
+        let Some(output) = function.outputs.first() else {
+            continue;
+        };
+        if output.type_class != Some(rumoca_core::ClassType::Record) {
+            continue;
+        }
+        let instance_id =
+            function
+                .instance_id
+                .ok_or_else(|| StructuralError::ContractViolation {
+                    reason: format!(
+                        "function `{}` lacks flattened instance identity",
+                        function.name
+                    ),
+                    span: function.span,
+                })?;
+        let type_def_id = output
+            .type_def_id
+            .ok_or_else(|| StructuralError::ContractViolation {
+                reason: format!(
+                    "record output `{}.{}` lacks resolved type identity",
+                    function.name, output.name
+                ),
+                span: output.span,
+            })?;
+        let mut fields = HashMap::new();
+        append_record_field_projection(
+            dae,
+            type_def_id,
+            &output.type_name,
+            &[ComponentRefPart {
+                ident: output.name.clone(),
+                span: output.span,
+                subs: vec![],
+            }],
+            "",
+            &mut fields,
+            &mut Vec::new(),
+        )?;
+        if !fields.is_empty() {
+            map.insert(instance_id, fields);
         }
     }
     Ok(map)

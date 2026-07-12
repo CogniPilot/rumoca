@@ -852,8 +852,7 @@ fn lower_expression_rejects_unlowered_advanced_string_scanner_runtime_specials()
 #[test]
 fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() {
     let mut functions = IndexMap::new();
-    let mut find_last =
-        rumoca_core::Function::new("Modelica.Utilities.Strings.findLast", test_span());
+    let mut find_last = test_function("Modelica.Utilities.Strings.findLast", test_span());
     find_last.inputs.push(function_param("string"));
     find_last.inputs.push(function_param("searchString"));
     find_last.inputs.push(function_param("startIndex"));

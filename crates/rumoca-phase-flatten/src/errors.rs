@@ -191,7 +191,7 @@ pub enum FlattenError {
 
     /// A resolved class reached flattening without the DefId metadata required
     /// for scope-based lookup.
-    #[error("missing resolved class metadata for `{name}`")]
+    #[error("missing resolved class metadata for `{name}` ({context})")]
     #[diagnostic(
         code(rumoca::flatten::EF015),
         help("name resolution must assign and preserve DefId metadata before flattening")
@@ -211,6 +211,21 @@ pub enum FlattenError {
         help("earlier phases must preserve source-map entries and non-empty source locations")
     )]
     MissingSourceContext { reason: String },
+
+    /// A function reference's display name disagreed with its structured path.
+    #[error(
+        "inconsistent resolved function reference: rendered `{rendered}`, structured `{structured}`"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF019),
+        help("name resolution must preserve one authoritative function exposure identity")
+    )]
+    InconsistentFunctionReference {
+        rendered: String,
+        structured: String,
+        #[label("conflicting function reference")]
+        span: SourceSpan,
+    },
 }
 
 impl FlattenError {
@@ -255,6 +270,18 @@ impl FlattenError {
         Self::MissingSourceScope {
             name: name.into(),
             context: context.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    pub fn inconsistent_function_reference(
+        rendered: impl Into<String>,
+        structured: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::InconsistentFunctionReference {
+            rendered: rendered.into(),
+            structured: structured.into(),
             span: rumoca_core::span_to_source_span(span),
         }
     }

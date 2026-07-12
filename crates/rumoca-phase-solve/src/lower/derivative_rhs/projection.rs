@@ -7,7 +7,9 @@ use crate::lower::{
     helpers::{format_i64_dims, format_usize_dims, positive_i64_index},
     unsupported_at,
 };
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{
+    output_projection_suffix, record_output_field_param, resolve_function_reference,
+};
 
 use super::*;
 
@@ -276,7 +278,7 @@ pub(in crate::lower) fn derivative_arg_binding_keys(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => binding_keys_for_subscripted_name(
-            name.as_str(),
+            name,
             subscripts,
             dae_model,
             structural_bindings,
@@ -285,9 +287,9 @@ pub(in crate::lower) fn derivative_arg_binding_keys(
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
-            let base = binding_base_name(base, span)?;
+            let base = plain_binding_reference(base, span)?;
             binding_keys_for_subscripted_name(
-                &base,
+                base,
                 subscripts,
                 dae_model,
                 structural_bindings,
@@ -649,6 +651,13 @@ fn project_index_expression_scalar(
     ctx: &ProjectionContext<'_>,
 ) -> Result<Option<rumoca_core::Expression>, LowerError> {
     let base_dims = expression_result_dims(base, ctx.dae_model, ctx.structural_bindings, span)?;
+    tracing::debug!(
+        target: "rumoca_phase_solve::projection",
+        ?base,
+        ?subscripts,
+        ?base_dims,
+        "projecting indexed scalar expression"
+    );
     let selections = slice_selections(subscripts, &base_dims, ctx.structural_bindings, span)?;
     let mut result_dims =
         derivative_vec_with_capacity(selections.len(), "indexed expression result rank", span)?;
@@ -1295,7 +1304,7 @@ pub(in crate::lower) fn expression_result_dims(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => expression_dims_for_subscripted_binding(
-            name.as_str(),
+            name,
             subscripts,
             dae_model,
             structural_bindings,
@@ -1440,12 +1449,13 @@ pub(in crate::lower) fn builtin_size_args_dims(
 }
 
 pub(in crate::lower) fn expression_dims_for_subscripted_binding(
-    base: &str,
+    name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     fallback_span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
+    let base = name.as_str();
     if let Some(var) = variable_by_name(dae_model, base) {
         if var.dims.is_empty() {
             if subscripts.is_empty() {
@@ -1463,6 +1473,12 @@ pub(in crate::lower) fn expression_dims_for_subscripted_binding(
             structural_bindings,
             subscript_list_span_or_owner(subscripts, fallback_span)?,
         );
+    }
+
+    if subscripts.is_empty()
+        && scalarized_aggregate_binding(dae_model, name, fallback_span)?.is_some()
+    {
+        return Ok(Vec::new());
     }
 
     if subscripts.is_empty() {
@@ -1506,13 +1522,16 @@ fn required_declared_function_output_dims(
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
     let requested = name.as_str();
-    if let Some(function) = dae_model.symbols.functions.get(name.var_name()) {
+    if let Some((function_name, function)) =
+        resolve_function_reference(&dae_model.symbols.functions, name)
+        && name.var_name() == function_name
+    {
         if function.is_constructor {
             return Ok(Vec::new());
         }
         return declared_function_output_dims(function, requested, span);
     }
-    if let Some(dims) = projected_declared_function_output_dims(dae_model, requested, span)? {
+    if let Some(dims) = projected_declared_function_output_dims(dae_model, name, span)? {
         return Ok(dims);
     }
     if external_table_intrinsic_kind(requested).is_some() {
@@ -1558,33 +1577,14 @@ fn declared_function_output_dims(
 
 fn projected_declared_function_output_dims(
     dae_model: &dae::Dae,
-    requested: &str,
+    requested: &rumoca_core::Reference,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<usize>>, LowerError> {
-    rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
-        match projected_declared_function_output_dims_split(dae_model, base_name, suffix, span) {
-            Ok(Some(dims)) => Some(Ok(dims)),
-            Ok(None) => None,
-            Err(err) => Some(Err(err)),
-        }
-    })
-    .transpose()
-}
-
-fn projected_declared_function_output_dims_split(
-    dae_model: &dae::Dae,
-    base_name: &str,
-    suffix: &str,
-    span: rumoca_core::Span,
-) -> Result<Option<Vec<usize>>, LowerError> {
-    let Some(function) = dae_model
-        .symbols
-        .functions
-        .get(&rumoca_core::VarName::new(base_name))
+    let Some((_, function)) = resolve_function_reference(&dae_model.symbols.functions, requested)
     else {
         return Ok(None);
     };
-    let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
+    let Some(projection_suffix) = output_projection_suffix(function, requested) else {
         return Ok(None);
     };
     let (output, output_name) = match function
@@ -1593,7 +1593,7 @@ fn projected_declared_function_output_dims_split(
         .find(|output| output.name == projection_suffix.output_name)
     {
         Some(output) => (output, projection_suffix.output_name.as_str()),
-        None if projection_suffix.output_field.is_none()
+        None if projection_suffix.output_fields.is_empty()
             && matches!(projection_suffix.output_name.as_str(), "re" | "im")
             && function.outputs.len() == 1
             && function_output_is_complex_record(&function.outputs[0]) =>
@@ -1602,17 +1602,36 @@ fn projected_declared_function_output_dims_split(
         }
         None => return Ok(None),
     };
-    if let Some(field) = projection_suffix.output_field.as_deref()
-        && (!function_output_is_complex_record(output) || !matches!(field, "re" | "im"))
-    {
-        return Ok(None);
-    }
-    let output_span = if output.span.is_dummy() {
+    let projected_output = match projection_suffix.output_fields.as_slice() {
+        [field] => match record_output_field_param(
+            &dae_model.symbols.functions,
+            output,
+            &projection_suffix.output_fields,
+        ) {
+            Some(field_output) => field_output,
+            None if function_output_is_complex_record(output)
+                && matches!(field.as_str(), "re" | "im") =>
+            {
+                output
+            }
+            None => return Ok(None),
+        },
+        [] => output,
+        _ => match record_output_field_param(
+            &dae_model.symbols.functions,
+            output,
+            &projection_suffix.output_fields,
+        ) {
+            Some(field_output) => field_output,
+            None => return Ok(None),
+        },
+    };
+    let output_span = if projected_output.span.is_dummy() {
         span
     } else {
-        output.span
+        projected_output.span
     };
-    let dims = declared_output_concrete_dims(output, output_name, output_span)?;
+    let dims = declared_output_concrete_dims(projected_output, output_name, output_span)?;
     projected_output_remaining_dims(&dims, &projection_suffix.indices, output_name, span).map(Some)
 }
 

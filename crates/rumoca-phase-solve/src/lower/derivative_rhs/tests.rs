@@ -79,11 +79,43 @@ fn scalar_var(name: &str) -> dae::Variable {
     }
 }
 
+fn array_var(name: &str, dims: Vec<i64>) -> dae::Variable {
+    dae::Variable {
+        dims,
+        ..scalar_var(name)
+    }
+}
+
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: Vec::new(),
         span: derivative_rhs_test_span(),
+    }
+}
+
+fn structured_indexed_var_ref(base: &str, field: &str, index: i64) -> rumoca_core::Expression {
+    let span = derivative_rhs_test_span();
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: base.to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: field.to_string(),
+                    span,
+                    subs: vec![rumoca_core::Subscript::generated_index(index, span)],
+                },
+            ],
+            def_id: None,
+        }),
+        subscripts: Vec::new(),
+        span,
     }
 }
 
@@ -122,6 +154,26 @@ fn expression_result_dims_accepts_existing_scalar_binding() {
 }
 
 #[test]
+fn expression_result_dims_accepts_scalarized_element_of_aggregate_array() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("vehicle.q"),
+        array_var("vehicle.q", vec![4]),
+    );
+    let span = derivative_rhs_test_span();
+
+    let dims = expression_result_dims(
+        &structured_indexed_var_ref("vehicle", "q", 1),
+        &dae_model,
+        &IndexMap::new(),
+        span,
+    )
+    .expect("scalarized aggregate array element has scalar shape");
+
+    assert!(dims.is_empty());
+}
+
+#[test]
 fn binding_keys_reject_missing_scalarized_binding() {
     let dae_model = dae::Dae::default();
     let span = rumoca_core::Span::from_offsets(
@@ -132,9 +184,14 @@ fn binding_keys_reject_missing_scalarized_binding() {
         7,
     );
     let subscripts = vec![rumoca_core::Subscript::generated_index(1, span)];
-    let err =
-        binding_keys_for_subscripted_name("x", &subscripts, &dae_model, &IndexMap::new(), span)
-            .expect_err("missing scalarized binding must not be fabricated");
+    let err = binding_keys_for_subscripted_name(
+        &rumoca_core::Reference::new("x"),
+        &subscripts,
+        &dae_model,
+        &IndexMap::new(),
+        span,
+    )
+    .expect_err("missing scalarized binding must not be fabricated");
     assert!(matches!(err, LowerError::MissingBinding { name } if name == "x[1]"));
 }
 
@@ -153,9 +210,14 @@ fn binding_keys_accept_existing_scalarized_binding() {
         8,
     );
     let subscripts = vec![rumoca_core::Subscript::generated_index(1, span)];
-    let keys =
-        binding_keys_for_subscripted_name("x", &subscripts, &dae_model, &IndexMap::new(), span)
-            .expect("existing scalarized binding should lower");
+    let keys = binding_keys_for_subscripted_name(
+        &rumoca_core::Reference::new("x"),
+        &subscripts,
+        &dae_model,
+        &IndexMap::new(),
+        span,
+    )
+    .expect("existing scalarized binding should lower");
     assert_eq!(keys, vec!["x[1]"]);
 }
 

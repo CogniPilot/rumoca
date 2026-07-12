@@ -360,6 +360,7 @@ pub(super) struct MaterializedRecordComponent {
 
 pub(super) struct MaterializedRecordComponents {
     pub(super) components: Vec<MaterializedRecordComponent>,
+    pub(super) empty_components: Vec<(String, Vec<i64>)>,
     pub(super) indexed_components: Vec<(String, Vec<LocalIndexedBinding>)>,
 }
 
@@ -371,6 +372,7 @@ pub(super) struct LocalLowerFrame {
     pub(super) known_empty_local_arrays: IndexSet<String>,
     pub(super) guarded_uninitialized_locals: IndexSet<String>,
     pub(super) local_const_bindings: IndexMap<String, f64>,
+    pub(super) local_integer_bounds: IndexMap<String, (i64, i64)>,
     pub(super) function_closures: IndexMap<ComponentReferenceKey, FunctionClosure>,
 }
 

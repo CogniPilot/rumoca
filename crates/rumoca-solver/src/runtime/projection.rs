@@ -50,6 +50,30 @@ pub trait AlgebraicProjectionModel {
     ) -> Result<Option<f64>, RuntimeSolveError> {
         Ok(None)
     }
+
+    fn eval_initial_target_value(
+        &self,
+        _row_idx: usize,
+        _target_y_index: usize,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(None)
+    }
+
+    /// Evaluate one logical initialization residual without evaluating the
+    /// entire initialization block. Models may return `None` when the row
+    /// cannot be isolated safely.
+    fn eval_initial_residual_row(
+        &self,
+        _row_idx: usize,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(None)
+    }
 }
 
 pub fn implicit_residual_is_zero_through_interval<M: AlgebraicProjectionModel>(
@@ -603,13 +627,35 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
     block: &solve::AlgebraicProjectionBlock,
     tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
-    let rows = initial_block_rows(block);
-    let y_indices = initial_block_y_indices(block);
+    let (mut changed, unresolved_steps) =
+        apply_initial_causal_steps(model, y, p, t, &block.causal_steps, tol)?;
+    let mut rows = block.rows.clone();
+    rows.extend(unresolved_steps.iter().map(|step| step.row));
+    rows.sort_unstable();
+    rows.dedup();
+    let mut y_indices = block.y_indices.clone();
+    y_indices.extend(unresolved_steps.iter().map(|step| step.y_index));
+    y_indices.sort_unstable();
+    y_indices.dedup();
     if rows.is_empty() || y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
-            changed: false,
-            settled: true,
+            changed,
+            settled: !changed,
         });
+    }
+    if let Some(update) = project_initial_singleton_assignment(
+        InitialBlockDeltaCtx {
+            model,
+            p,
+            t,
+            rows: &rows,
+            y_indices: &y_indices,
+            tol,
+        },
+        y,
+        changed,
+    )? {
+        return Ok(update);
     }
     let mut residual = vec![0.0; model.initial_residual_len()];
     model.eval_initial_residual(y, p, t, &mut residual)?;
@@ -623,7 +669,6 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
             settled: selected.iter().all(|value| value.is_finite()),
         });
     }
-    let jacobian = initial_block_jacobian(model, y, p, t, &rows, &y_indices, &residual)?;
     let delta_ctx = InitialBlockDeltaCtx {
         model,
         p,
@@ -632,6 +677,12 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
         y_indices: &y_indices,
         tol,
     };
+    if let Some(update) =
+        project_initial_full_residual_singleton_assignment(&delta_ctx, y, &selected, changed)?
+    {
+        return Ok(update);
+    }
+    let jacobian = initial_block_jacobian(model, y, p, t, &rows, &y_indices, &residual)?;
     if rows.len() == 1 && relax_initial_block_from_row_targets(delta_ctx, y, &selected, &jacobian)?
     {
         return Ok(ProjectionBlockUpdate {
@@ -652,7 +703,7 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
             settled: false,
         });
     };
-    accept_initial_block_delta(
+    let update = accept_initial_block_delta(
         InitialBlockDeltaCtx {
             model,
             p,
@@ -663,7 +714,123 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
         },
         y,
         delta.as_slice(),
-    )
+    )?;
+    changed |= update.changed;
+    Ok(ProjectionBlockUpdate {
+        changed,
+        settled: update.settled,
+    })
+}
+
+fn project_initial_singleton_assignment<M: AlgebraicProjectionModel>(
+    ctx: InitialBlockDeltaCtx<'_, M>,
+    y: &mut [f64],
+    changed: bool,
+) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
+    let ([row], [y_index]) = (ctx.rows, ctx.y_indices) else {
+        return Ok(None);
+    };
+    let Some(before) = ctx.model.eval_initial_residual_row(*row, y, ctx.p, ctx.t)? else {
+        return Ok(None);
+    };
+    if before.abs() <= ctx.tol || !before.is_finite() {
+        return Ok(Some(ProjectionBlockUpdate {
+            changed,
+            settled: before.is_finite(),
+        }));
+    }
+    let Some(value) = ctx
+        .model
+        .eval_initial_target_value(*row, *y_index, y, ctx.p, ctx.t)?
+    else {
+        return Ok(None);
+    };
+    if !value.is_finite() {
+        return Ok(None);
+    }
+    let previous = y[*y_index];
+    y[*y_index] = value;
+    let after = ctx.model.eval_initial_residual_row(*row, y, ctx.p, ctx.t)?;
+    if let Some(after) =
+        after.filter(|after| after.is_finite() && after.abs() + ctx.tol < before.abs())
+    {
+        return Ok(Some(ProjectionBlockUpdate {
+            changed: changed || (previous - value).abs() > ctx.tol,
+            settled: after.abs() <= ctx.tol,
+        }));
+    }
+    y[*y_index] = previous;
+    Ok(None)
+}
+
+fn project_initial_full_residual_singleton_assignment<M: AlgebraicProjectionModel>(
+    ctx: &InitialBlockDeltaCtx<'_, M>,
+    y: &mut [f64],
+    selected: &[f64],
+    changed: bool,
+) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
+    let ([row], [y_index], [before]) = (ctx.rows, ctx.y_indices, selected) else {
+        return Ok(None);
+    };
+    let Some(value) = ctx
+        .model
+        .eval_initial_target_value(*row, *y_index, y, ctx.p, ctx.t)?
+    else {
+        return Ok(None);
+    };
+    if !value.is_finite() {
+        return Ok(None);
+    }
+    let previous = y[*y_index];
+    y[*y_index] = value;
+    let mut residual_after = vec![0.0; ctx.model.initial_residual_len()];
+    ctx.model
+        .eval_initial_residual(y, ctx.p, ctx.t, &mut residual_after)?;
+    let after = initial_residual_at(
+        &residual_after,
+        *row,
+        "initial singleton assignment validation",
+    )?;
+    if after.is_finite() && after.abs() + ctx.tol < before.abs() {
+        return Ok(Some(ProjectionBlockUpdate {
+            changed: changed || (previous - value).abs() > ctx.tol,
+            settled: after.abs() <= ctx.tol,
+        }));
+    }
+    y[*y_index] = previous;
+    Ok(None)
+}
+
+fn apply_initial_causal_steps<'a, M: AlgebraicProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    steps: &'a [solve::AlgebraicProjectionStep],
+    tol: f64,
+) -> Result<(bool, Vec<&'a solve::AlgebraicProjectionStep>), RuntimeSolveError> {
+    let mut changed = false;
+    let mut unresolved = Vec::new();
+    for step in steps {
+        if step.y_index >= y.len() {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "initial causal projection step references y index {}, but the model has only {} variables",
+                step.y_index,
+                y.len()
+            )));
+        }
+        match model.eval_initial_target_value(step.row, step.y_index, y, p, t)? {
+            Some(value) if value.is_finite() => {
+                if (y[step.y_index] - value).abs() > tol {
+                    y[step.y_index] = value;
+                    changed = true;
+                }
+            }
+            Some(_) => unresolved.push(step),
+            None => unresolved.push(step),
+        }
+    }
+    Ok((changed, unresolved))
 }
 
 #[derive(Clone, Copy)]
@@ -800,30 +967,6 @@ fn initial_selected_residual_norm<M: AlgebraicProjectionModel>(
         norm = f64::max(norm, value.abs());
     }
     Ok(norm)
-}
-
-fn initial_block_rows(block: &solve::AlgebraicProjectionBlock) -> Vec<usize> {
-    let mut rows = block
-        .rows
-        .iter()
-        .copied()
-        .chain(block.causal_steps.iter().map(|step| step.row))
-        .collect::<Vec<_>>();
-    rows.sort_unstable();
-    rows.dedup();
-    rows
-}
-
-fn initial_block_y_indices(block: &solve::AlgebraicProjectionBlock) -> Vec<usize> {
-    let mut y_indices = block
-        .y_indices
-        .iter()
-        .copied()
-        .chain(block.causal_steps.iter().map(|step| step.y_index))
-        .collect::<Vec<_>>();
-    y_indices.sort_unstable();
-    y_indices.dedup();
-    y_indices
 }
 
 fn initial_projection_error(
@@ -1090,6 +1233,8 @@ fn seed_nonfinite_projection_values(y: &mut [f64], projection_indices: &[usize])
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     struct BlockProjectionModel {
@@ -1158,6 +1303,96 @@ mod tests {
     }
 
     struct RectInitialProjectionModel;
+
+    struct InitialCausalAssignmentModel {
+        initial_residual_calls: Cell<usize>,
+        initial_residual_row_calls: Cell<usize>,
+        plan: solve::AlgebraicProjectionPlan,
+    }
+
+    impl AlgebraicProjectionModel for InitialCausalAssignmentModel {
+        fn eval_residual(
+            &self,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = y[0] - 5.0;
+            Ok(())
+        }
+
+        fn eval_initial_residual(
+            &self,
+            y: &[f64],
+            p: &[f64],
+            t: f64,
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            self.initial_residual_calls
+                .set(self.initial_residual_calls.get() + 1);
+            self.eval_residual(y, p, t, out)
+        }
+
+        fn eval_jacobian_v(
+            &self,
+            _y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            v: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = v[0];
+            Ok(())
+        }
+
+        fn initial_residual_len(&self) -> usize {
+            1
+        }
+
+        fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+            Some(solve::scalar_slot_y(row_idx))
+        }
+
+        fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+            Some(solve::scalar_slot_y(row_idx))
+        }
+
+        fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+            &self.plan
+        }
+
+        fn has_explicit_initial_targets(&self) -> bool {
+            true
+        }
+
+        fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
+            Some("x")
+        }
+
+        fn eval_initial_target_value(
+            &self,
+            _row_idx: usize,
+            _target_y_index: usize,
+            _y: &[f64],
+            _p: &[f64],
+            _t: f64,
+        ) -> Result<Option<f64>, RuntimeSolveError> {
+            Ok(Some(5.0))
+        }
+
+        fn eval_initial_residual_row(
+            &self,
+            _row_idx: usize,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+        ) -> Result<Option<f64>, RuntimeSolveError> {
+            self.initial_residual_row_calls
+                .set(self.initial_residual_row_calls.get() + 1);
+            Ok(Some(y[0] - 5.0))
+        }
+    }
 
     impl AlgebraicProjectionModel for RectInitialProjectionModel {
         fn eval_residual(
@@ -1381,6 +1616,55 @@ mod tests {
             .expect("block projection should converge");
 
         assert_eq!(y, vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn initial_causal_assignment_uses_target_value_without_dense_jacobian() {
+        let model = InitialCausalAssignmentModel {
+            initial_residual_calls: Cell::new(0),
+            initial_residual_row_calls: Cell::new(0),
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: Vec::new(),
+                    y_indices: Vec::new(),
+                    causal_steps: vec![solve::AlgebraicProjectionStep { row: 0, y_index: 0 }],
+                }],
+            },
+        };
+        let mut y = vec![0.0];
+
+        project_initial_variables_with_plan(&model, &mut y, &[], 0.0, &[0], &model.plan, 1.0e-12)
+            .expect("causal initial assignment should project");
+
+        assert_eq!(y, vec![5.0]);
+        assert_eq!(
+            model.initial_residual_calls.get(),
+            2,
+            "the causal fast path needs only the before/after convergence checks"
+        );
+    }
+
+    #[test]
+    fn initial_singleton_assignment_validates_only_its_residual_row() {
+        let model = InitialCausalAssignmentModel {
+            initial_residual_calls: Cell::new(0),
+            initial_residual_row_calls: Cell::new(0),
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    causal_steps: Vec::new(),
+                }],
+            },
+        };
+        let mut y = vec![0.0];
+
+        project_initial_variables_with_plan(&model, &mut y, &[], 0.0, &[0], &model.plan, 1.0e-12)
+            .expect("singleton initial assignment should project");
+
+        assert_eq!(y, vec![5.0]);
+        assert_eq!(model.initial_residual_calls.get(), 1);
+        assert_eq!(model.initial_residual_row_calls.get(), 2);
     }
 
     #[test]
