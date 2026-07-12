@@ -438,7 +438,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         }
         active_functions.push(function_name.clone());
         let Some(output_expr) =
-            function_output_expression(function, args, output_selector.as_deref())
+            function_output_expression(function, args, output_selector.as_ref())
         else {
             active_functions.pop();
             return None;
@@ -557,7 +557,7 @@ pub(super) fn symbolic_time_derivative(
 fn function_output_expression(
     function: &rumoca_core::Function,
     args: &[Expression],
-    output_selector: Option<&str>,
+    output_selector: Option<&FunctionOutputSelector>,
 ) -> Option<Expression> {
     let output = function.outputs.first()?;
     let mut scope = HashMap::new();
@@ -567,18 +567,17 @@ fn function_output_expression(
     }
     let expr = scope.get(output.name.as_str())?.clone();
     if let Some(selector) = output_selector {
-        if selector == output.name {
+        if selector.output_name != output.name {
+            return None;
+        }
+        if selector.indices.is_empty() {
             return if output.dims == [1] {
                 scalar_array_element(&expr)
             } else {
                 Some(expr)
             };
         }
-        let scalar = rumoca_core::parse_scalar_name(selector)?;
-        if scalar.base != output.name {
-            return None;
-        }
-        let flat_index = flat_index_from_indices(&output.dims, &scalar.indices)?;
+        let flat_index = flat_index_from_indices(&output.dims, &selector.indices)?;
         return project_flat_index(&expr, &output.dims, flat_index);
     }
     if output.dims == [1] {
@@ -587,10 +586,20 @@ fn function_output_expression(
     Some(expr)
 }
 
+#[derive(Clone)]
+struct FunctionOutputSelector {
+    output_name: String,
+    indices: Vec<i64>,
+}
+
 fn resolve_function_call<'a>(
     dae: &'a Dae,
     call_name: &rumoca_core::Reference,
-) -> Option<(&'a VarName, &'a rumoca_core::Function, Option<String>)> {
+) -> Option<(
+    &'a VarName,
+    &'a rumoca_core::Function,
+    Option<FunctionOutputSelector>,
+)> {
     if let Some(def_id) = call_name.target_def_id() {
         if let Some(exact) = dae
             .symbols
@@ -613,6 +622,7 @@ fn resolve_function_call<'a>(
         if let Some(candidate) = candidates.next() {
             return candidates.next().is_none().then_some(candidate);
         }
+        return None;
     }
     if let Some(exact) = dae.symbols.functions.get_key_value(call_name.var_name()) {
         return Some((exact.0, exact.1, None));
@@ -622,8 +632,10 @@ fn resolve_function_call<'a>(
         .functions
         .iter()
         .filter_map(|(function_name, function)| {
-            function_projection_selector(function_name, call_name)
-                .map(|selector| (function_name, function, Some(selector)))
+            function.def_id.is_none().then(|| {
+                function_projection_selector(function_name, call_name)
+                    .map(|selector| (function_name, function, Some(selector)))
+            })?
         });
     let candidate = candidates.next()?;
     candidates.next().is_none().then_some(candidate)
@@ -632,12 +644,30 @@ fn resolve_function_call<'a>(
 fn function_projection_selector(
     function_name: &VarName,
     call_name: &rumoca_core::Reference,
-) -> Option<String> {
+) -> Option<FunctionOutputSelector> {
     let call_ref = call_name.component_ref()?;
-    let call_path = rumoca_core::ComponentPath::from_component_reference(call_ref);
-    let function_path = rumoca_core::ComponentPath::from_flat_path(function_name.as_str());
-    let selector = call_path.strip_prefix(&function_path)?.to_flat_string();
-    (!selector.is_empty()).then_some(selector)
+    let function_parts = function_name.segments();
+    if call_ref.parts.len() != function_parts.len() + 1
+        || !call_ref.parts[..function_parts.len()]
+            .iter()
+            .zip(function_parts)
+            .all(|(part, expected)| part.subs.is_empty() && part.ident == expected)
+    {
+        return None;
+    }
+    let output = call_ref.parts.last()?;
+    let indices = output
+        .subs
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(FunctionOutputSelector {
+        output_name: output.ident.clone(),
+        indices,
+    })
 }
 
 fn bind_function_inputs(

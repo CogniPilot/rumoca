@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use rumoca_core::Span;
+use rumoca_core::{ComponentRefPart, Span, Subscript};
 use rumoca_ir_dae as dae;
 
 use crate::StructuralError;
 
-pub type RecordFieldProjectionMap = HashMap<String, HashMap<String, HashMap<usize, String>>>;
+pub type ProjectionParts = Vec<ComponentRefPart>;
+pub type FunctionOutputProjectionMap = HashMap<String, HashMap<usize, ProjectionParts>>;
+pub type RecordFieldProjectionMap =
+    HashMap<String, HashMap<String, HashMap<usize, ProjectionParts>>>;
 
 fn extract_first_component_index(name: &rumoca_core::VarName) -> Option<usize> {
     for segment in name.segments() {
@@ -81,16 +84,16 @@ pub fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
 }
 
 fn push_projection_entry(
-    by_index: &mut HashMap<usize, String>,
+    by_index: &mut HashMap<usize, ProjectionParts>,
     scalar_idx: &mut usize,
-    selector: String,
+    selector: ProjectionParts,
 ) {
     by_index.insert(*scalar_idx, selector);
     *scalar_idx += 1;
 }
 
 fn append_output_projection_entry(
-    by_index: &mut HashMap<usize, String>,
+    by_index: &mut HashMap<usize, ProjectionParts>,
     scalar_idx: &mut usize,
     output_name: &str,
     output_dims: &[i64],
@@ -98,59 +101,70 @@ fn append_output_projection_entry(
     element_idx: Option<usize>,
     is_complex: bool,
 ) -> Result<(), StructuralError> {
-    let indexed_output = element_idx.map(|element_idx| {
-        dae::scalar_name_text_for_flat_index(output_name, output_dims, element_idx - 1)
-    });
-    let index_suffix = match (indexed_output.as_deref(), element_idx) {
-        (Some(name), Some(_)) => name.strip_prefix(output_name).ok_or_else(|| {
-            StructuralError::ContractViolation {
-                reason: format!(
-                    "scalarized output selector `{name}` is not prefixed by output `{output_name}`"
-                ),
-                span: output_span,
-            }
-        })?,
-        (None, Some(_)) => {
-            return Err(StructuralError::ContractViolation {
-                reason: format!(
-                    "missing scalarized output selector for `{output_name}` at index {element_idx:?}"
-                ),
-                span: output_span,
-            });
-        }
-        _ => "",
+    let subs = element_idx
+        .map(|index| projection_subscripts(output_dims, index - 1, output_span))
+        .transpose()?
+        .unwrap_or_default();
+    let part = |ident: &str, subs: Vec<Subscript>| ComponentRefPart {
+        ident: ident.to_string(),
+        span: output_span,
+        subs,
     };
     match (is_complex, element_idx) {
         (true, Some(_)) => {
             push_projection_entry(
                 by_index,
                 scalar_idx,
-                format!("{output_name}.re{index_suffix}"),
+                vec![part(output_name, vec![]), part("re", subs.clone())],
             );
             push_projection_entry(
                 by_index,
                 scalar_idx,
-                format!("{output_name}.im{index_suffix}"),
+                vec![part(output_name, vec![]), part("im", subs)],
             );
         }
         (true, None) => {
-            push_projection_entry(by_index, scalar_idx, format!("{output_name}.re"));
-            push_projection_entry(by_index, scalar_idx, format!("{output_name}.im"));
+            push_projection_entry(
+                by_index,
+                scalar_idx,
+                vec![part(output_name, vec![]), part("re", vec![])],
+            );
+            push_projection_entry(
+                by_index,
+                scalar_idx,
+                vec![part(output_name, vec![]), part("im", vec![])],
+            );
         }
         (false, Some(_)) => {
-            let selector = indexed_output.ok_or_else(|| StructuralError::ContractViolation {
-                reason: format!(
-                    "missing scalarized output selector for `{output_name}` at index {element_idx:?}"
-                ),
-                span: output_span,
-            })?;
-            push_projection_entry(by_index, scalar_idx, selector);
+            push_projection_entry(by_index, scalar_idx, vec![part(output_name, subs)]);
         }
         (false, None) => {
-            push_projection_entry(by_index, scalar_idx, output_name.to_string());
+            push_projection_entry(by_index, scalar_idx, vec![part(output_name, vec![])]);
         }
     }
     Ok(())
+}
+
+fn projection_subscripts(
+    dims: &[i64],
+    flat_index: usize,
+    span: Span,
+) -> Result<Vec<Subscript>, StructuralError> {
+    dae::flat_index_to_subscripts(dims, flat_index)
+        .ok_or_else(|| StructuralError::ContractViolation {
+            reason: format!("invalid output projection index {flat_index} for dimensions {dims:?}"),
+            span,
+        })?
+        .into_iter()
+        .map(|index| {
+            i64::try_from(index)
+                .map(|value| Subscript::index(value, span))
+                .map_err(|_| StructuralError::ContractViolation {
+                    reason: format!("output projection index {index} exceeds Modelica Integer"),
+                    span,
+                })
+        })
+        .collect()
 }
 
 /// Build projection map for scalarizing multi-output function calls.
@@ -160,10 +174,10 @@ fn append_output_projection_entry(
 /// - array output `seedOut[3]` -> `seedOut[1]`, `seedOut[2]`, `seedOut[3]`
 pub fn build_function_output_projection_map(
     dae: &dae::Dae,
-) -> Result<HashMap<String, HashMap<usize, String>>, StructuralError> {
-    let mut map: HashMap<String, HashMap<usize, String>> = HashMap::new();
+) -> Result<FunctionOutputProjectionMap, StructuralError> {
+    let mut map = HashMap::new();
     for (function_name, function) in &dae.symbols.functions {
-        let mut by_index: HashMap<usize, String> = HashMap::new();
+        let mut by_index = HashMap::new();
         let mut scalar_idx = 1usize;
         for output in &function.outputs {
             let count = output_scalar_count(&output.dims, output.span)?;
@@ -202,9 +216,9 @@ pub fn build_function_output_projection_map(
 fn append_record_field_projection(
     dae: &dae::Dae,
     record_type: &str,
-    selector_prefix: &str,
+    selector_prefix: &[ComponentRefPart],
     field_prefix: &str,
-    fields: &mut HashMap<String, HashMap<usize, String>>,
+    fields: &mut HashMap<String, HashMap<usize, ProjectionParts>>,
     active_types: &mut Vec<String>,
 ) -> Result<(), StructuralError> {
     if active_types.iter().any(|active| active == record_type) {
@@ -222,7 +236,12 @@ fn append_record_field_projection(
         } else {
             format!("{field_prefix}.{}", field.name)
         };
-        let selector = format!("{selector_prefix}.{}", field.name);
+        let mut selector = selector_prefix.to_vec();
+        selector.push(ComponentRefPart {
+            ident: field.name.clone(),
+            span: field.span,
+            subs: vec![],
+        });
         if field.type_class == Some(rumoca_core::ClassType::Record) {
             append_record_field_projection(
                 dae,
@@ -241,10 +260,15 @@ fn append_record_field_projection(
             continue;
         }
         for element_index in 1..=count {
-            by_index.insert(
-                element_index,
-                dae::scalar_name_text_for_flat_index(&selector, &field.dims, element_index - 1),
-            );
+            let mut indexed = selector.clone();
+            let last = indexed
+                .last_mut()
+                .ok_or_else(|| StructuralError::ContractViolation {
+                    reason: "record field selector is empty".to_string(),
+                    span: field.span,
+                })?;
+            last.subs = projection_subscripts(&field.dims, element_index - 1, field.span)?;
+            by_index.insert(element_index, indexed);
         }
     }
     active_types.pop();
@@ -274,7 +298,11 @@ pub fn build_record_field_projection_map(
         append_record_field_projection(
             dae,
             &output.type_name,
-            &output.name,
+            &[ComponentRefPart {
+                ident: output.name.clone(),
+                span: output.span,
+                subs: vec![],
+            }],
             "",
             &mut fields,
             &mut Vec::new(),

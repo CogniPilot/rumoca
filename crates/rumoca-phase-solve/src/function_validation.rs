@@ -45,13 +45,23 @@ fn projection_matches_output(
         return false;
     };
 
-    let projected_output = match projection_suffix.output_field.as_deref() {
-        Some(field) => match record_output_field_param(functions, output, field) {
+    let projected_output = match projection_suffix.output_fields.as_slice() {
+        [field] => {
+            match record_output_field_param(functions, output, &projection_suffix.output_fields) {
+                Some(field_output) => field_output,
+                None if output_is_complex_record(output)
+                    && matches!(field.as_str(), "re" | "im") =>
+                {
+                    output
+                }
+                None => return false,
+            }
+        }
+        [] => output,
+        _ => match record_output_field_param(functions, output, &projection_suffix.output_fields) {
             Some(field_output) => field_output,
-            None if output_is_complex_record(output) && matches!(field, "re" | "im") => output,
             None => return false,
         },
-        None => output,
     };
 
     let indices = projection_suffix.indices;

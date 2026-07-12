@@ -1236,32 +1236,35 @@ fn try_eval_index_from_nested_expr<T: SimFloat>(
     }
 }
 
-pub(super) fn with_function_call_stack<R>(
+pub(super) fn with_function_call_context<R>(
     runtime: &EvalRuntimeState,
-    name: &str,
+    complex_component: Option<&'static str>,
     f: impl FnOnce() -> R,
 ) -> R {
     runtime
-        .function_call_stack
+        .function_complex_component_stack
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(name.to_string());
+        .push(complex_component);
     let out = f();
     let _ = runtime
-        .function_call_stack
+        .function_complex_component_stack
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .pop();
     out
 }
 
-pub(super) fn current_function_call_name(runtime: &EvalRuntimeState) -> Option<String> {
+pub(super) fn current_function_complex_component(
+    runtime: &EvalRuntimeState,
+) -> Option<&'static str> {
     runtime
-        .function_call_stack
+        .function_complex_component_stack
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .last()
-        .cloned()
+        .copied()
+        .flatten()
 }
 
 fn eval_subscript_indices<T: SimFloat>(
@@ -1666,9 +1669,7 @@ pub(super) fn eval_var_ref_no_subscripts<T: SimFloat>(
     if let Some(&v) = env.vars.get(raw) {
         return Ok(Some(v));
     }
-    if let Some(caller) = current_function_call_name(&env.runtime)
-        && let Some(field) = complex_field_selection_from_path(&caller)
-    {
+    if let Some(field) = current_function_complex_component(&env.runtime) {
         let selected_key = format!("{raw}.{field}");
         if let Some(&v) = env.vars.get(selected_key.as_str()) {
             return Ok(Some(v));

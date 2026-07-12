@@ -467,12 +467,20 @@ fn projected_function_output_name(
     output: &rumoca_core::FunctionParam,
     flat_index: usize,
 ) -> Option<rumoca_core::Reference> {
-    let selector = if output.dims.is_empty() {
-        (flat_index == 0).then(|| output.name.clone())?
+    let subs = if output.dims.is_empty() {
+        (flat_index == 0).then(Vec::new)?
     } else {
-        dae::format_subscript_key(&output.name, &[flat_index + 1])
+        let index = i64::try_from(flat_index.checked_add(1)?).ok()?;
+        vec![rumoca_core::Subscript::index(index, output.span)]
     };
-    function_name.with_appended_path(&selector, output.span)
+    function_name.with_appended_parts(
+        &[rumoca_core::ComponentRefPart {
+            ident: output.name.clone(),
+            span: output.span,
+            subs,
+        }],
+        output.span,
+    )
 }
 
 fn rewrite_discrete_update_equation(

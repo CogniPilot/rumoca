@@ -27,33 +27,39 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         };
         let output_name = projection_suffix.output_name;
-        let output_field = projection_suffix.output_field;
+        let mut output_fields = projection_suffix.output_fields;
         let raw_indices = projection_suffix.indices;
 
-        let (output, output_name, output_field) =
+        let (output, output_name) =
             if let Some(output) = function.outputs.iter().find(|out| out.name == output_name) {
-                (output, output_name, output_field)
-            } else if output_field.is_none()
+                (output, output_name)
+            } else if output_fields.is_empty()
                 && matches!(output_name.as_str(), "re" | "im")
                 && function.outputs.len() == 1
                 && output_is_complex_record(&function.outputs[0])
             {
-                (
-                    &function.outputs[0],
-                    function.outputs[0].name.clone(),
-                    Some(output_name),
-                )
+                output_fields.push(output_name);
+                (&function.outputs[0], function.outputs[0].name.clone())
             } else {
                 return Ok(None);
             };
-        let projected_output = match output_field.as_deref() {
-            Some(field) => match record_output_field_param(self.functions, output, field) {
+        let projected_output = match output_fields.as_slice() {
+            [field] => match record_output_field_param(self.functions, output, &output_fields) {
                 Some(field_output) => field_output,
-                None if output_is_complex_record(output) && matches!(field, "re" | "im") => output,
+                None if output_is_complex_record(output)
+                    && matches!(field.as_str(), "re" | "im") =>
+                {
+                    output
+                }
                 None => return Ok(None),
             },
-            None => output,
+            [] => output,
+            _ => match record_output_field_param(self.functions, output, &output_fields) {
+                Some(field_output) => field_output,
+                None => return Ok(None),
+            },
         };
+        let output_field = (!output_fields.is_empty()).then(|| output_fields.join("."));
 
         let indices = if output_has_dynamic_dims(projected_output) {
             let Some(indices) = normalize_dynamic_projection_indices(&raw_indices, span)? else {

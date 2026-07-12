@@ -270,8 +270,7 @@ pub(super) fn copy_array_literal_matrix_entries<T: SimFloat>(
 pub(super) fn selected_component_field_in_current_call<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Option<&'static str> {
-    let caller = current_function_call_name(&env.runtime)?;
-    complex_field_selection_from_path(&caller)
+    current_function_complex_component(&env.runtime)
 }
 
 pub(super) fn copy_array_literal_input_entries<T: SimFloat>(

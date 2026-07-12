@@ -465,21 +465,33 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         else {
             return Ok(None);
         };
-        let projected_output = match projection_suffix.output_field.as_deref() {
-            Some(field) => {
-                match record_output_field_param(&self.dae_model.symbols.functions, output, field) {
+        let projected_output = match projection_suffix.output_fields.as_slice() {
+            [field] => {
+                match record_output_field_param(
+                    &self.dae_model.symbols.functions,
+                    output,
+                    &projection_suffix.output_fields,
+                ) {
                     Some(field_output) => field_output,
                     None if rumoca_core::qualified_type_name_matches(
                         &output.type_name,
                         "Complex",
-                    ) && matches!(field, "re" | "im") =>
+                    ) && matches!(field.as_str(), "re" | "im") =>
                     {
                         output
                     }
                     None => return Ok(None),
                 }
             }
-            None => output,
+            [] => output,
+            _ => match record_output_field_param(
+                &self.dae_model.symbols.functions,
+                output,
+                &projection_suffix.output_fields,
+            ) {
+                Some(field_output) => field_output,
+                None => return Ok(None),
+            },
         };
         projected_declared_output_dims(projected_output, &projection_suffix.indices, span)
     }

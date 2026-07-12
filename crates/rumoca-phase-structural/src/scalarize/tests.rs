@@ -800,7 +800,7 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
     dae_model.continuous.equations.push(eq(
         "R",
         Expression::FunctionCall {
-            name: rumoca_core::Reference::new("LieGroup.SO3.rotationMatrix"),
+            name: structured_reference("LieGroup.SO3.rotationMatrix", test_span()),
             args: vec![var("q")],
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
@@ -811,13 +811,20 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
     scalarize_equations(&mut dae_model).unwrap();
 
     assert_eq!(dae_model.continuous.equations.len(), 3);
+    let projected_name = structured_reference("LieGroup.SO3.rotationMatrix", test_span())
+        .with_appended_parts(
+            &[rumoca_core::ComponentRefPart {
+                ident: "R".to_string(),
+                span: test_span(),
+                subs: vec![Subscript::generated_index(1, test_span())],
+            }],
+            rumoca_core::Span::DUMMY,
+        )
+        .expect("structured projection");
     assert_eq!(
         dae_model.continuous.equations[0].rhs,
         Expression::FunctionCall {
-            name: structured_reference(
-                "LieGroup.SO3.rotationMatrix.R[1]",
-                rumoca_core::Span::DUMMY,
-            ),
+            name: projected_name,
             args: vec![var("q")],
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
@@ -829,7 +836,7 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
 fn scalarize_matrix_product_uses_declared_function_output_shapes() {
     fn call(name: &str) -> Expression {
         Expression::FunctionCall {
-            name: rumoca_core::Reference::new(name),
+            name: structured_reference(name, test_span()),
             args: Vec::new(),
             is_constructor: false,
             span: test_span(),
@@ -925,7 +932,7 @@ fn scalarize_dynamic_function_output_resolves_shape_from_array_argument() {
     dae_model.continuous.equations.push(eq(
         "R",
         Expression::FunctionCall {
-            name: rumoca_core::Reference::new("My.symmetrize"),
+            name: structured_reference("My.symmetrize", test_span()),
             args: vec![var("A")],
             is_constructor: false,
             span: test_span(),
@@ -974,7 +981,7 @@ fn scalarize_array_field_of_record_function_result_selects_each_component() {
         .insert(VarName::new("Path.sample"), function);
 
     let call = Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Path.sample"),
+        name: structured_reference("Path.sample", test_span()),
         args: vec![],
         is_constructor: false,
         span: test_span(),
@@ -1033,7 +1040,7 @@ fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
         .insert(VarName::new("Path.sample"), function);
 
     let call = Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Path.sample"),
+        name: structured_reference("Path.sample", test_span()),
         args: vec![],
         is_constructor: false,
         span: test_span(),

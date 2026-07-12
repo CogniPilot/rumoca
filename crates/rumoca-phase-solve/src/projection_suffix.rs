@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutputProjectionSuffix {
     pub(crate) output_name: String,
-    pub(crate) output_field: Option<String>,
+    pub(crate) output_fields: Vec<String>,
     pub(crate) indices: Vec<usize>,
 }
 
@@ -23,14 +23,15 @@ pub(crate) fn resolve_function_reference<'a>(
         if let Some(candidate) = candidates.next() {
             return candidates.next().is_none().then_some(candidate);
         }
+        return None;
     }
     if let Some(exact) = functions.get_key_value(name.var_name()) {
         return Some(exact);
     }
     name.component_ref()?;
-    let mut candidates = functions
-        .iter()
-        .filter(|(function_name, _)| output_projection_suffix(function_name, name).is_some());
+    let mut candidates = functions.iter().filter(|(function_name, function)| {
+        function.def_id.is_none() && output_projection_suffix(function_name, name).is_some()
+    });
     let candidate = candidates.next()?;
     candidates.next().is_none().then_some(candidate)
 }
@@ -77,12 +78,7 @@ pub(crate) fn output_projection_suffix(
         .collect::<Option<Vec<_>>>()?;
     Some(OutputProjectionSuffix {
         output_name: suffix[0].ident.clone(),
-        output_field: (suffix.len() > 1).then(|| {
-            rumoca_core::ComponentPath::from_parts(
-                suffix[1..].iter().map(|part| part.ident.clone()),
-            )
-            .to_flat_string()
-        }),
+        output_fields: suffix[1..].iter().map(|part| part.ident.clone()).collect(),
         indices,
     })
 }
@@ -90,23 +86,17 @@ pub(crate) fn output_projection_suffix(
 pub(crate) fn record_output_field_param<'a>(
     functions: &'a indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     output: &'a rumoca_core::FunctionParam,
-    field_path: &str,
+    field_path: &[String],
 ) -> Option<&'a rumoca_core::FunctionParam> {
     if output.type_class != Some(rumoca_core::ClassType::Record) || field_path.is_empty() {
         return None;
     }
-    let mut record_type = Some((output.type_def_id, output.type_name.as_str()));
-    let fields = crate::path_utils::segments(field_path);
+    let mut type_def_id = output.type_def_id?;
     let mut selected = None;
-    for (index, field_name) in fields.iter().enumerate() {
-        let (type_def_id, type_name) = record_type?;
-        let constructor = type_def_id
-            .and_then(|def_id| {
-                functions
-                    .values()
-                    .find(|function| function.def_id == Some(def_id))
-            })
-            .or_else(|| functions.get(&rumoca_core::VarName::new(type_name)))?;
+    for (index, field_name) in field_path.iter().enumerate() {
+        let constructor = functions
+            .values()
+            .find(|function| function.def_id == Some(type_def_id))?;
         if !constructor.is_constructor {
             return None;
         }
@@ -115,11 +105,11 @@ pub(crate) fn record_output_field_param<'a>(
             .iter()
             .find(|input| input.name == *field_name)?;
         selected = Some(field);
-        if index + 1 < fields.len() {
+        if index + 1 < field_path.len() {
             if field.type_class != Some(rumoca_core::ClassType::Record) {
                 return None;
             }
-            record_type = Some((field.type_def_id, field.type_name.as_str()));
+            type_def_id = field.type_def_id?;
         }
     }
     selected
@@ -176,7 +166,7 @@ mod tests {
             .expect("plain output"),
             OutputProjectionSuffix {
                 output_name: "out".to_string(),
-                output_field: None,
+                output_fields: vec![],
                 indices: vec![],
             }
         );
@@ -188,7 +178,7 @@ mod tests {
             .expect("fielded output"),
             OutputProjectionSuffix {
                 output_name: "out".to_string(),
-                output_field: Some("re".to_string()),
+                output_fields: vec!["re".to_string()],
                 indices: vec![2, 3],
             }
         );
@@ -233,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_def_id_falls_back_to_unambiguous_structured_path() {
+    fn stale_def_id_is_rejected_as_an_identity_contract_violation() {
         let span = rumoca_core::Span::DUMMY;
         let mut functions = indexmap::IndexMap::new();
         let mut function = rumoca_core::Function::new("Pkg.Random.random", span);
@@ -247,9 +237,6 @@ mod tests {
         component_ref.def_id = Some(rumoca_core::DefId::new(29));
         let name = rumoca_core::Reference::from_component_reference(component_ref);
 
-        let (resolved, _) = resolve_function_reference(&functions, &name)
-            .expect("concrete path should recover stale inherited identity");
-
-        assert_eq!(resolved.as_str(), "Pkg.Random.random");
+        assert!(resolve_function_reference(&functions, &name).is_none());
     }
 }

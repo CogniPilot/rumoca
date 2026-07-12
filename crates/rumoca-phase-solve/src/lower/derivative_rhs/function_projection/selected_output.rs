@@ -33,17 +33,20 @@ pub(super) fn selected_function_output_call(
             *span,
         )
     })?;
-    let mut selector = projection.output_name;
-    if let Some(field) = projection.output_field {
-        selector.push('.');
-        selector.push_str(&field);
-    }
-    if !projection.indices.is_empty() {
-        selector = dae::format_subscript_key(&selector, &projection.indices);
+    let mut selector = Vec::with_capacity(1 + projection.output_fields.len());
+    selector.push((projection.output_name.as_str(), Vec::new()));
+    selector.extend(
+        projection
+            .output_fields
+            .iter()
+            .map(|field| (field.as_str(), Vec::new())),
+    );
+    if let Some((_, indices)) = selector.last_mut() {
+        *indices = projection.indices;
     }
     if let Some(by_index) = projection_map.get(function_name.as_str()) {
         for (scalar_index, candidate) in by_index {
-            if candidate != &selector {
+            if !projection_parts_match(candidate, &selector) {
                 continue;
             }
             let zero_based_index = scalar_index.checked_sub(1).ok_or_else(|| {
@@ -55,9 +58,16 @@ pub(super) fn selected_function_output_call(
                     *span,
                 )
             })?;
+            let mut base_ref = name.component_ref().cloned().ok_or_else(|| {
+                LowerError::contract_violation(
+                    "projected function call lacks structured identity",
+                    *span,
+                )
+            })?;
+            base_ref.parts.truncate(function_name.segments().len());
             return Ok(Some((
                 rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_var_name(function_name.clone()),
+                    name: rumoca_core::Reference::from_component_reference(base_ref),
                     args: args.clone(),
                     is_constructor: false,
                     span: *span,
@@ -67,4 +77,22 @@ pub(super) fn selected_function_output_call(
         }
     }
     Ok(None)
+}
+
+fn projection_parts_match(
+    candidate: &[rumoca_core::ComponentRefPart],
+    selector: &[(&str, Vec<usize>)],
+) -> bool {
+    candidate.len() == selector.len()
+        && candidate
+            .iter()
+            .zip(selector)
+            .all(|(part, (name, indices))| {
+                part.ident == *name
+                    && part.subs.len() == indices.len()
+                    && part.subs.iter().zip(indices).all(|(subscript, index)| {
+                        matches!(subscript, rumoca_core::Subscript::Index { value, .. }
+                        if usize::try_from(*value).ok() == Some(*index))
+                    })
+            })
 }

@@ -1594,7 +1594,7 @@ fn projected_declared_function_output_dims(
         .find(|output| output.name == projection_suffix.output_name)
     {
         Some(output) => (output, projection_suffix.output_name.as_str()),
-        None if projection_suffix.output_field.is_none()
+        None if projection_suffix.output_fields.is_empty()
             && matches!(projection_suffix.output_name.as_str(), "re" | "im")
             && function.outputs.len() == 1
             && function_output_is_complex_record(&function.outputs[0]) =>
@@ -1603,16 +1603,29 @@ fn projected_declared_function_output_dims(
         }
         None => return Ok(None),
     };
-    let projected_output = match projection_suffix.output_field.as_deref() {
-        Some(field) => match record_output_field_param(&dae_model.symbols.functions, output, field)
-        {
+    let projected_output = match projection_suffix.output_fields.as_slice() {
+        [field] => match record_output_field_param(
+            &dae_model.symbols.functions,
+            output,
+            &projection_suffix.output_fields,
+        ) {
             Some(field_output) => field_output,
-            None if function_output_is_complex_record(output) && matches!(field, "re" | "im") => {
+            None if function_output_is_complex_record(output)
+                && matches!(field.as_str(), "re" | "im") =>
+            {
                 output
             }
             None => return Ok(None),
         },
-        None => output,
+        [] => output,
+        _ => match record_output_field_param(
+            &dae_model.symbols.functions,
+            output,
+            &projection_suffix.output_fields,
+        ) {
+            Some(field_output) => field_output,
+            None => return Ok(None),
+        },
     };
     let output_span = if projected_output.span.is_dummy() {
         span

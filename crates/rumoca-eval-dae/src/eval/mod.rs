@@ -158,7 +158,7 @@ pub struct EvalRuntimeState {
     pre_values: Mutex<IndexMap<String, f64>>,
     env_key_cache: Mutex<HashMap<EnvKeyCacheKey, Arc<[String]>>>,
     function_recursion_depth: AtomicUsize,
-    function_call_stack: Mutex<Vec<String>>,
+    function_complex_component_stack: Mutex<Vec<Option<&'static str>>>,
     clock_special_states: Mutex<HashMap<String, distribution_clock::ShiftSignalState>>,
     external_tables: Mutex<ExternalTableRegistry>,
     impure_random: Mutex<special::ImpureRandomRegistry>,
@@ -174,7 +174,7 @@ impl Default for EvalRuntimeState {
             pre_values: Mutex::new(IndexMap::new()),
             env_key_cache: Mutex::new(HashMap::new()),
             function_recursion_depth: AtomicUsize::new(0),
-            function_call_stack: Mutex::new(Vec::new()),
+            function_complex_component_stack: Mutex::new(Vec::new()),
             clock_special_states: Mutex::new(HashMap::new()),
             external_tables: Mutex::new(ExternalTableRegistry::default()),
             impure_random: Mutex::new(special::ImpureRandomRegistry::default()),
@@ -206,7 +206,7 @@ impl EvalRuntimeState {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
             special::ImpureRandomRegistry::default();
         self.function_recursion_depth.store(0, Ordering::Relaxed);
-        self.function_call_stack
+        self.function_complex_component_stack
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();

@@ -36,7 +36,14 @@ fn projected_output_call(
     span: rumoca_core::Span,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     let projected_name = name
-        .with_appended_path(output.name.as_str(), span)
+        .with_appended_parts(
+            &[rumoca_core::ComponentRefPart {
+                ident: output.name.clone(),
+                span,
+                subs: vec![],
+            }],
+            span,
+        )
         .ok_or_else(|| {
             ToDaeError::runtime_contract_violation_at(
                 format!(

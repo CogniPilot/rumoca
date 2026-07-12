@@ -12,7 +12,7 @@ pub(super) struct ScalarProjectionContext<'a> {
     pub(super) structural_values: &'a HashMap<String, i64>,
     pub(super) complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     pub(super) component_index_map: &'a HashMap<String, HashMap<usize, String>>,
-    pub(super) function_output_index_map: &'a HashMap<String, HashMap<usize, String>>,
+    pub(super) function_output_index_map: &'a super::FunctionOutputProjectionMap,
     pub(super) function_output_dims_map: &'a HashMap<String, Vec<i64>>,
     pub(super) dynamic_function_output_map: &'a HashMap<String, String>,
     pub(super) record_field_projection_map: &'a super::RecordFieldProjectionMap,
@@ -328,27 +328,32 @@ fn project_function_call_component(
     span: Span,
     field_idx: usize,
     projection: &ScalarProjectionContext<'_>,
-) -> Expression {
+) -> Result<Expression, StructuralError> {
     if is_constructor {
-        return project_constructor_component(expr, name, args, field_idx, span);
+        return Ok(project_constructor_component(
+            expr, name, args, field_idx, span,
+        ));
     }
     if let Some(by_index) = projection.function_output_index_map.get(name.as_str())
         && let Some(projected_output) = by_index.get(&field_idx)
     {
-        let Some(projected_name) = name.with_appended_path(projected_output, span) else {
-            return expr.clone();
-        };
-        return Expression::FunctionCall {
+        let projected_name = name
+            .with_appended_parts(projected_output, span)
+            .ok_or_else(|| StructuralError::ContractViolation {
+                reason: "projected function call lacks structured identity".to_string(),
+                span,
+            })?;
+        return Ok(Expression::FunctionCall {
             name: projected_name,
             args: args.to_vec(),
             is_constructor: false,
             span,
-        };
+        });
     }
     if field_idx == 1 {
-        expr.clone()
+        Ok(expr.clone())
     } else {
-        complex_zero(span)
+        Ok(complex_zero(span))
     }
 }
 
@@ -438,7 +443,7 @@ fn project_complex_component(
             args,
             is_constructor,
             span,
-        } => Ok(project_function_call_component(
+        } => project_function_call_component(
             expr,
             name,
             args,
@@ -446,7 +451,7 @@ fn project_complex_component(
             *span,
             field_idx,
             projection,
-        )),
+        ),
         Expression::Array {
             elements,
             is_matrix,

@@ -209,10 +209,11 @@ fn lower_discrete_rhs_expands_external_random_tuple_outputs() {
                     span,
                 },
                 rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::VarName::new(
-                        "Modelica.Math.Random.Generators.Xorshift64star.random",
-                    )
-                    .into(),
+                    name: rumoca_core::Reference::from_component_reference(
+                        source_component_ref_from_name(
+                            "Modelica.Math.Random.Generators.Xorshift64star.random",
+                        ),
+                    ),
                     args: vec![
                         rumoca_core::Expression::FunctionCall {
                             name: rumoca_core::Reference::from_component_reference(
@@ -270,6 +271,7 @@ fn xorshift64star_random_function(span: rumoca_core::Span) -> rumoca_core::Funct
         "Modelica.Math.Random.Generators.Xorshift64star.random",
         span,
     );
+    random.def_id = Some(source_fixture_def_id(random.name.as_str()));
     random.external = Some(Default::default());
     random
         .inputs

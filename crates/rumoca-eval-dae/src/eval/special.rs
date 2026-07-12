@@ -24,6 +24,7 @@ pub(super) use state_accessors::*;
 pub(in crate::eval) struct OutputSelection {
     output_name: String,
     indices: Vec<i64>,
+    complex_component: Option<&'static str>,
 }
 
 impl OutputSelection {
@@ -31,11 +32,16 @@ impl OutputSelection {
         Self {
             output_name: output_name.into(),
             indices: indices.to_vec(),
+            complex_component: None,
         }
     }
 
     pub(in crate::eval) fn output_name(&self) -> &str {
         &self.output_name
+    }
+
+    fn complex_component(&self) -> Option<&'static str> {
+        self.complex_component
     }
 }
 
@@ -51,7 +57,9 @@ fn declared_output_selection(
     }) {
         return None;
     }
-    Some(OutputSelection::new(suffix, &[]))
+    let mut selection = OutputSelection::new(suffix, &[]);
+    selection.complex_component = complex_field_selection_from_path(suffix);
+    Some(selection)
 }
 
 pub(in crate::eval) fn resolve_user_function_target<T: SimFloat>(
@@ -612,7 +620,10 @@ fn eval_user_function_call<T: SimFloat>(
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
     // Bind arguments/defaults and execute the body under the call-stack context
     // so selected function calls (`*.re` / `*.im`) propagate correctly.
-    let eval_result = with_function_call_stack(&env.runtime, name.as_str(), || {
+    let complex_component = selection
+        .as_ref()
+        .and_then(OutputSelection::complex_component);
+    let eval_result = with_function_call_context(&env.runtime, complex_component, || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
@@ -833,7 +844,7 @@ fn eval_user_function_local_env<T: SimFloat>(
             is_external: false,
         },
     );
-    with_function_call_stack(&env.runtime, name.as_str(), || {
+    with_function_call_context(&env.runtime, None, || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
@@ -881,7 +892,10 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
 
     let mut local_env = build_local_function_env(env);
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
-    with_function_call_stack(&env.runtime, name.as_str(), || {
+    let complex_component = selection
+        .as_ref()
+        .and_then(OutputSelection::complex_component);
+    with_function_call_context(&env.runtime, complex_component, || {
         bind_user_function_inputs(&mut local_env, name.as_str(), &inputs, args, env)?;
         seed_resolved_function_scope_dims(&mut local_env, &outputs)?;
         seed_resolved_function_scope_dims(&mut local_env, &locals)?;
@@ -1257,9 +1271,7 @@ fn eval_constructor_call<T: SimFloat>(
         });
     }
     if args.len() == 1 {
-        if let Some(caller) = current_function_call_name(&env.runtime)
-            && complex_field_selection_from_path(&caller) == Some("im")
-        {
+        if current_function_complex_component(&env.runtime) == Some("im") {
             // Constructors like Complex(1) imply zero imaginary part.
             return Ok(T::zero());
         }
@@ -1268,10 +1280,10 @@ fn eval_constructor_call<T: SimFloat>(
 
     // When constructor calls survive into scalar evaluation, prefer component
     // selection by caller suffix if available (e.g., generated `*.im` helpers).
-    if let Some(caller) = current_function_call_name(&env.runtime) {
-        match complex_field_selection_from_path(&caller) {
-            Some("im") => return eval_expr::<T>(&args[1], env),
-            Some("re") => return eval_expr::<T>(&args[0], env),
+    if let Some(component) = current_function_complex_component(&env.runtime) {
+        match component {
+            "im" => return eval_expr::<T>(&args[1], env),
+            "re" => return eval_expr::<T>(&args[0], env),
             _ => {}
         }
     }

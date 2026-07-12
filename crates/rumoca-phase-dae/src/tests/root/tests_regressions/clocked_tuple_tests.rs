@@ -65,9 +65,11 @@ fn add_clocked_tuple_equation(flat: &mut Model, span: Span) {
                 span,
             }),
             rhs: Box::new(Expression::FunctionCall {
-                name: VarName::new("hold").into(),
+                name: rumoca_core::Reference::from_component_reference(make_comp_ref("hold")),
                 args: vec![Expression::FunctionCall {
-                    name: VarName::new("previous").into(),
+                    name: rumoca_core::Reference::from_component_reference(make_comp_ref(
+                        "previous",
+                    )),
                     args: vec![make_var_ref("seedState")],
                     is_constructor: false,
                     span,

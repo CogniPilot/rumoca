@@ -589,16 +589,14 @@ impl Reference {
         }
     }
 
-    /// Append a compiler-owned rendered component path while retaining the
-    /// resolved declaration identity and materializing structured parts and
-    /// subscripts for downstream phases.
-    pub fn with_appended_path(&self, path: &str, span: Span) -> Option<Self> {
-        let mut reference = self
-            .component_ref
-            .clone()
-            .or_else(|| component_reference_from_flat_name(self.var_name(), span))?;
-        let suffix = component_reference_from_flat_name(&VarName::new(path), span)?;
-        reference.parts.extend(suffix.parts);
+    /// Append compiler-owned structured component parts while retaining the
+    /// resolved declaration identity.
+    pub fn with_appended_parts(&self, parts: &[ComponentRefPart], span: Span) -> Option<Self> {
+        let mut reference = self.component_ref.clone()?;
+        if parts.is_empty() {
+            return None;
+        }
+        reference.parts.extend_from_slice(parts);
         reference.span = span;
         Some(if self.generated {
             Self::generated_component_reference(reference)
