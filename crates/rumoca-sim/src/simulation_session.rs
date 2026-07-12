@@ -181,39 +181,6 @@ impl SimulationSession {
             SimulationSessionInner::RkLike(session) => session.variable_names(),
         }
     }
-
-    pub fn values_for(
-        &self,
-        names: &[String],
-    ) -> Result<Option<IndexMap<String, f64>>, SimulationDiagnosticError> {
-        match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.values_for(names).map(Some),
-            #[cfg(all(feature = "solver-diffsol", feature = "scheduled-sim"))]
-            SimulationSessionInner::Diffsol(session) => session
-                .values_for(names)
-                .map(Some)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
-            #[cfg(all(feature = "solver-diffsol", not(feature = "scheduled-sim")))]
-            SimulationSessionInner::Diffsol(session) => {
-                let state = session
-                    .state()
-                    .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
-                Ok(Some(
-                    names
-                        .iter()
-                        .filter_map(|name| {
-                            state.values.get(name).map(|value| (name.clone(), *value))
-                        })
-                        .collect(),
-                ))
-            }
-            #[cfg(feature = "solver-rk45")]
-            SimulationSessionInner::RkLike(session) => session
-                .values_for(names)
-                .map(Some)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
-        }
-    }
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -241,7 +208,19 @@ impl SimulationSessionApi for SimulationSession {
     }
 
     fn values_for(&self, names: &[String]) -> Result<Option<IndexMap<String, f64>>, Self::Error> {
-        Self::values_for(self, names)
+        match &self.inner {
+            SimulationSessionInner::Discrete(stepper) => stepper.values_for(names).map(Some),
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .values_for(names)
+                .map(Some)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .values_for(names)
+                .map(Some)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+        }
     }
 
     fn max_schedule_advance_dt(&self) -> Option<f64> {

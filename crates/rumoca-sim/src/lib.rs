@@ -29,6 +29,9 @@ pub use rumoca_solver::{
 mod build_timing;
 pub mod bulk;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+// `values_for` is consumed only by the scheduled-session adapter; the
+// remaining discrete stepper surface is used by every solver-enabled build.
+#[cfg_attr(not(feature = "scheduled-sim"), allow(dead_code))]
 mod discrete_stepper;
 pub mod row_eval_trace;
 pub mod sim_trace_compare;
