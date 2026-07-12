@@ -53,8 +53,8 @@ fn unknown_bool_ref(name: &str) -> ast::Expression {
 fn component_ref(path: &str, def_id: Option<rumoca_core::DefId>) -> ast::ComponentReference {
     ast::ComponentReference {
         local: false,
-        parts: path
-            .split('.')
+        parts: crate::path_utils::segments(path)
+            .into_iter()
             .map(|part| ast::ComponentRefPart {
                 ident: token(part),
                 subs: None,
