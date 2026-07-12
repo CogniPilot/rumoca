@@ -170,12 +170,12 @@ rustup run nightly-2026-02-27 cargo test -p rumoca-phase-structural direct_demot
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Restore the repository lint gate and commit**
+- [x] **Step 6: Verify the task-scoped strict lint gate and commit**
 
 Run:
 
 ```bash
-rustup run nightly-2026-02-27 cargo xtask verify lint
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-structural -p rumoca-eval-solve --all-targets --all-features -- -D warnings
 git diff --check
 git status --short
 git add crates/rumoca-phase-structural/src/eliminate/mod.rs \
@@ -189,4 +189,92 @@ git add crates/rumoca-phase-structural/src/eliminate/mod.rs \
 git commit -m "fix(ci): reconcile upstream merge artifacts"
 ```
 
-Expected: lint exits 0 and the commit contains only the named files.
+Expected: task-scoped strict clippy exits 0 and the commit contains only the named files. The repository-wide lint gate remains the final cross-task gate after all merge-damaged crates are reconciled.
+
+---
+
+### Task 3: Reconcile DAE merge artifacts and restore the repository lint gate
+
+**Files:**
+- Modify: `crates/rumoca-phase-dae/src/dae_lowering.rs`
+- Modify: `crates/rumoca-phase-dae/src/fold_start_values.rs`
+- Modify: `crates/rumoca-phase-dae/src/lib.rs`
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: parent1 shape-aware DAE initialization at `84e6cfc0`, upstream DefId-first DAE lookup at `24209c80`, and their broken merge at `943dded7`.
+- Produces: a coherent DefId-first array-parameter map with named actual metadata, restored start-value/package-constant folding, and initialized nonnumeric DAE metadata.
+
+- [ ] **Step 1: Verify the DAE-level RED**
+
+Run:
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca-phase-dae
+```
+
+Expected: FAIL with duplicate `ArrayParamMap`, missing folding/metadata helpers, and mixed call signatures.
+
+- [ ] **Step 2: Reconcile ArrayParamMap and block-constructor lowering**
+
+In `dae_lowering.rs`, delete the old name-only type alias and retain one DefId-first struct with both indexes carrying named parameter metadata:
+
+```rust
+struct ArrayParamMap {
+    by_def_id: HashMap<DefId, Vec<(usize, String)>>,
+    by_name: HashMap<String, Vec<(usize, String)>>,
+}
+```
+
+Build each value with `.map(|(index, parameter)| (index, parameter.name.clone()))`, insert it under both `func.def_id` and `func.name`, and return `Option<&Vec<(usize, String)>>` from `array_param_indices_for_call`. Restore from parent1 the complete `unwrap_block_constructor_value_wrappers` and `BlockConstructorValueUnwrapper` implementation; do not alter unrelated upstream lowering.
+
+- [ ] **Step 3: Restore shape-aware start and package-constant folding**
+
+In `fold_start_values.rs`, restore parent1's fixed-point initialization mechanism:
+
+```text
+- collect DAE variable dimensions before evaluating start expressions
+- seed Modelica standard constants
+- collect declared start names after bindings are built
+- call eval_start_const_expr(expr, values, dims)
+- retain structured aliases unless their reference is a declared start value
+```
+
+Restore `fold_known_package_constants_to_literals` and its rewriter/helper set: `rewrite_variable_attributes`, `rewrite_expressions`, `rewrite_optional_expression`, `KnownPackageConstantRewriter`, its `StatementRewriter` implementation, `seed_modelica_standard_constants`, `MODELICA_STANDARD_CONSTANTS`, `modelica_standard_constant_value`, and `is_declared_start_reference`. Do not remove the imports or the `lib.rs` pass that consume these mechanisms.
+
+- [ ] **Step 4: Restore DAE metadata initialization**
+
+In `lib.rs`, restore parent1's `initialize_dae_metadata` and `nonnumeric_variable_names` helpers. Preserve initialization of all prior metadata plus `metadata.nonnumeric_variable_names` for String values and external-constructor handles. Keep the existing calls to metadata initialization and package-constant folding.
+
+- [ ] **Step 5: Verify focused GREEN**
+
+Run:
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca-phase-dae
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae --test dae_array_size_args dae_array_size_arg_uses_named_actual_value
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae prepare_dae_for_codegen_unwraps_block_constructor_value_wrapper
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae fold_start_values_keeps_structured_alias_with_rewritten_display_name
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae folds_parameter_start_size_from_dae_variable_dims
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae fold_known_package_constants_rewrites_equation_rhs
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae test_todae_keeps_external_object_constructor_out_of_fx
+```
+
+Expected: all commands exit 0.
+
+- [ ] **Step 6: Restore repository lint and commit**
+
+Run:
+
+```bash
+rustup run nightly-2026-02-27 cargo xtask verify lint
+git diff --check
+git status --short
+git add crates/rumoca-phase-dae/src/dae_lowering.rs \
+  crates/rumoca-phase-dae/src/fold_start_values.rs \
+  crates/rumoca-phase-dae/src/lib.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit -m "fix(ci): reconcile DAE merge artifacts"
+```
+
+Expected: repository lint exits 0 and the commit contains only the named files.
