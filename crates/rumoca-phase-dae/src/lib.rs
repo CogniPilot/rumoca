@@ -384,6 +384,28 @@ pub fn fold_hidden_component_outputs_for_projection(dae: &mut dae::Dae) {
     inline_hidden_component_algebraics::inline_hidden_component_algebraics(dae);
 }
 
+fn initialize_dae_metadata(dae: &mut dae::Dae, flat: &flat::Model) {
+    // MLS §4.7: Propagate partial status and class type for balance checking.
+    dae.metadata.is_partial = flat.is_partial;
+    dae.metadata.class_type = flat.class_type.clone();
+    dae.metadata.model_description = flat.model_description.clone();
+    dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
+    dae.metadata.nonnumeric_variable_names = nonnumeric_variable_names(flat);
+}
+
+fn nonnumeric_variable_names(flat: &flat::Model) -> Vec<String> {
+    flat.variable_type_names
+        .iter()
+        .filter(|(name, type_name)| {
+            rumoca_core::qualified_type_name_matches(type_name, "String")
+                || flat.variables.get(*name).is_some_and(|var| {
+                    variable_analysis::is_external_constructor_handle(flat, name, var)
+                })
+        })
+        .map(|(name, _)| name.as_str().to_string())
+        .collect()
+}
+
 fn finalize_lowered_dae(
     dae: &mut dae::Dae,
     flat: &flat::Model,

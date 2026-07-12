@@ -205,7 +205,7 @@ Expected: task-scoped strict clippy exits 0 and the commit contains only the nam
 - Consumes: parent1 shape-aware DAE initialization at `84e6cfc0`, upstream DefId-first DAE lookup at `24209c80`, and their broken merge at `943dded7`.
 - Produces: a coherent DefId-first array-parameter map with named actual metadata, restored start-value/package-constant folding, and initialized nonnumeric DAE metadata.
 
-- [ ] **Step 1: Verify the DAE-level RED**
+- [x] **Step 1: Verify the DAE-level RED**
 
 Run:
 
@@ -215,7 +215,7 @@ rustup run nightly-2026-02-27 cargo check -p rumoca-phase-dae
 
 Expected: FAIL with duplicate `ArrayParamMap`, missing folding/metadata helpers, and mixed call signatures.
 
-- [ ] **Step 2: Reconcile ArrayParamMap and block-constructor lowering**
+- [x] **Step 2: Reconcile ArrayParamMap and block-constructor lowering**
 
 In `dae_lowering.rs`, delete the old name-only type alias and retain one DefId-first struct with both indexes carrying named parameter metadata:
 
@@ -228,7 +228,7 @@ struct ArrayParamMap {
 
 Build each value with `.map(|(index, parameter)| (index, parameter.name.clone()))`, insert it under both `func.def_id` and `func.name`, and return `Option<&Vec<(usize, String)>>` from `array_param_indices_for_call`. Restore from parent1 the complete `unwrap_block_constructor_value_wrappers` and `BlockConstructorValueUnwrapper` implementation; do not alter unrelated upstream lowering.
 
-- [ ] **Step 3: Restore shape-aware start and package-constant folding**
+- [x] **Step 3: Restore shape-aware start and package-constant folding**
 
 In `fold_start_values.rs`, restore parent1's fixed-point initialization mechanism:
 
@@ -242,7 +242,7 @@ In `fold_start_values.rs`, restore parent1's fixed-point initialization mechanis
 
 Restore `fold_known_package_constants_to_literals` and its rewriter/helper set: `rewrite_variable_attributes`, `rewrite_expressions`, `rewrite_optional_expression`, `KnownPackageConstantRewriter`, its `StatementRewriter` implementation, `seed_modelica_standard_constants`, `MODELICA_STANDARD_CONSTANTS`, `modelica_standard_constant_value`, and `is_declared_start_reference`. Do not remove the imports or the `lib.rs` pass that consume these mechanisms.
 
-- [ ] **Step 4: Restore DAE metadata initialization**
+- [x] **Step 4: Restore DAE metadata initialization**
 
 In `lib.rs`, restore parent1's `initialize_dae_metadata` and `nonnumeric_variable_names` helpers. Preserve initialization of all prior metadata plus `metadata.nonnumeric_variable_names` for String values and external-constructor handles. Keep the existing calls to metadata initialization and package-constant folding.
 
