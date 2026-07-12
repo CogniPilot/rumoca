@@ -101,6 +101,17 @@ cargo test --release --package rumoca-test-msl --features msl-full-test \
   -- --nocapture
 ```
 
+Pinned `modelica_models` compatibility gate (compiler / simulator semantic changes):
+
+```bash
+rumoca-msl-profile --source-root /path/to/pinned/modelica_models \
+  --model Tests.All --mode compile
+rumoca-msl-profile --source-root /path/to/pinned/modelica_models \
+  --model Tests.LieGroupTests.SO2 --mode simulate --stop-time 0.0
+rumoca-msl-profile --source-root /path/to/pinned/modelica_models \
+  --model Tests.LieGroupTests.SE2 --mode simulate --stop-time 0.0
+```
+
 ### 4a. Test Workflow Interface
 
 Rust developer workflow MUST remain Cargo-native.
@@ -127,6 +138,7 @@ Rust developer workflow MUST remain Cargo-native.
 |---|---|
 | Run the unified MSL gate for any parser, instantiate, flatten, ToDae, or sim change | One gate produces consistent OMC reference + sim trace + quality artifacts |
 | Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
+| Run the pinned `modelica_models` aggregate-compile and corpus-owned assertion-smoke gate for compiler/simulator semantic changes | A fixed external assertion corpus catches cross-library compatibility regressions without weakening MLS or MSL gates |
 | Compare against the resolved MSL quality baseline (`cargo xtask verify msl-parity` downloads the promoted `msl-quality-baseline/msl_quality_baseline.json` release asset and falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` offline) | Baseline is the regression bar |
 | Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, simulation) MUST NOT materially decrease on the fixed root-example baseline denominator; full-library runs may tolerate one-model host jitter | Early-stage pass-rate increases are always improvements, later stages are compared against their own cumulative counts, and CI/OMC host variance must not block equivalent runs |
 | Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
@@ -189,6 +201,7 @@ they are enforced by §4 commands.
 | `cargo doc --no-deps` | Docs build without errors |
 | MSL gate (compiler/sim changes) | resolved `msl_quality_baseline.json` regressions |
 | ModelicaTest semantic gate (semantic compiler/sim changes) | selected `ModelicaTest.*` models compile, simulate, and preserve assertion/parity diagnostics |
+| Pinned `modelica_models` compatibility gate (semantic compiler/sim changes) | the fixed-revision aggregate `Tests.All` model compiles and the corpus-owned Rumoca assertion smoke targets simulate successfully |
 
 ## References
 

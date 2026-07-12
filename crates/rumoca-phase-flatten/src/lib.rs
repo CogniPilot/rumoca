@@ -353,7 +353,6 @@ pub fn flatten_ref_with_options(
         .collect();
     ctx.seed_component_member_scopes(overlay);
     let mut flat = flat::Model::new();
-    populate_flat_symbol_ancestry(&mut flat, &class_index);
     let component_override_map =
         build_component_override_map(overlay, tree, &class_index, model_name)?;
 
@@ -396,15 +395,6 @@ pub fn flatten_ref_with_options(
     })?;
 
     Ok(flat)
-}
-
-fn populate_flat_symbol_ancestry(flat: &mut flat::Model, class_index: &ast::ClassDefIndex<'_>) {
-    let mut def_ids = class_index.symbol_def_ids().collect::<Vec<_>>();
-    def_ids.sort_by_key(|def_id| def_id.index());
-    flat.symbol_ancestry = def_ids
-        .into_iter()
-        .map(|def_id| (def_id, class_index.def_ancestry(def_id)))
-        .collect();
 }
 
 fn seed_flat_functions_from_context(ctx: &Context, flat: &mut flat::Model) {

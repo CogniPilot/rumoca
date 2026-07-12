@@ -196,6 +196,36 @@ pub(super) fn eval_index_array_values<T: SimFloat>(
     Ok(values)
 }
 
+fn indexed_result_dims<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    let base_dims = try_infer_runtime_expr_dims(base, env)?;
+    if base_dims.is_empty() || subscripts.len() > base_dims.len() {
+        return Err(EvalError::ShapeMismatch {
+            context: "array slice rank",
+            expected: base_dims.len(),
+            actual: subscripts.len(),
+        });
+    }
+
+    let mut result = Vec::with_capacity(base_dims.len());
+    for (axis, extent) in base_dims.into_iter().enumerate() {
+        match subscripts.get(axis) {
+            Some(rumoca_core::Subscript::Index { .. }) => {}
+            Some(rumoca_core::Subscript::Expr { expr, .. })
+                if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) =>
+            {
+                result.push(eval_array_values(expr, env)?.len());
+            }
+            Some(rumoca_core::Subscript::Expr { .. }) => {}
+            Some(rumoca_core::Subscript::Colon { .. }) | None => result.push(extent),
+        }
+    }
+    Ok(result)
+}
+
 fn checked_array_selection_index(value: f64, extent: usize) -> Result<usize, EvalError> {
     if !value.is_finite() || value.fract() != 0.0 {
         return Err(EvalError::UnsupportedExpression {
@@ -560,34 +590,20 @@ pub(super) fn eval_binary_array_values<T: SimFloat>(
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<T>>, EvalError> {
-    match op {
-        OpBinary::Mul => {
-            if let Some(value) = try_eval_vector_dot_product(lhs, rhs, env)? {
-                return Ok(Some(vec![value]));
-            }
-            if let Some(values) = eval_matrix_matrix_product(lhs, rhs, env)? {
-                return Ok(Some(values));
-            }
-            if let Some(values) = eval_matrix_vector_product(lhs, rhs, env)? {
-                return Ok(Some(values));
-            }
-            if let Some(values) = eval_vector_matrix_product(lhs, rhs, env)? {
-                return Ok(Some(values));
-            }
-            eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l * r)
-        }
-        OpBinary::MulElem => eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l * r),
-        OpBinary::Add | OpBinary::AddElem => {
-            eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l + r)
-        }
-        OpBinary::Sub | OpBinary::SubElem => {
-            eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l - r)
-        }
-        OpBinary::Div | OpBinary::DivElem => {
-            eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l / r)
-        }
-        _ => Ok(None),
+    if !matches!(
+        op,
+        OpBinary::Mul
+            | OpBinary::MulElem
+            | OpBinary::Add
+            | OpBinary::AddElem
+            | OpBinary::Sub
+            | OpBinary::SubElem
+            | OpBinary::Div
+            | OpBinary::DivElem
+    ) {
+        return Ok(None);
     }
+    Ok(Some(eval_shaped_binary_operand(op, lhs, rhs, env)?.values))
 }
 
 fn try_eval_binary_array_values<T: SimFloat>(
@@ -597,118 +613,28 @@ fn try_eval_binary_array_values<T: SimFloat>(
     source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
-    match op {
-        OpBinary::Mul => {
-            if let Some(value) = try_eval_vector_dot_product(lhs, rhs, env)? {
-                return Ok(vec![value]);
-            }
-            if let Some(values) = eval_matrix_matrix_product(lhs, rhs, env)? {
-                return Ok(values);
-            }
-            if let Some(values) = eval_matrix_vector_product(lhs, rhs, env)? {
-                return Ok(values);
-            }
-            if let Some(values) = eval_vector_matrix_product(lhs, rhs, env)? {
-                return Ok(values);
-            }
-            try_eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l * r)
-        }
-        OpBinary::MulElem => try_eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l * r),
-        OpBinary::Add | OpBinary::AddElem => {
-            try_eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l + r)
-        }
-        OpBinary::Sub | OpBinary::SubElem => {
-            try_eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l - r)
-        }
-        OpBinary::Div | OpBinary::DivElem => {
-            try_eval_elementwise_binary_array_values(lhs, rhs, env, |l, r| l / r)
-        }
-        _ => Ok(vec![eval_expr(
-            &rumoca_core::Expression::Binary {
-                op: op.clone(),
-                lhs: Box::new(lhs.clone()),
-                rhs: Box::new(rhs.clone()),
-                span: source_span,
-            },
-            env,
-        )?]),
+    if matches!(
+        op,
+        OpBinary::Mul
+            | OpBinary::MulElem
+            | OpBinary::Add
+            | OpBinary::AddElem
+            | OpBinary::Sub
+            | OpBinary::SubElem
+            | OpBinary::Div
+            | OpBinary::DivElem
+    ) {
+        return Ok(eval_shaped_binary_operand(op, lhs, rhs, env)?.values);
     }
-}
-
-fn eval_elementwise_binary_array_values<T: SimFloat>(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-    op: impl Fn(T, T) -> T,
-) -> Result<Option<Vec<T>>, EvalError> {
-    let lhs_values = eval_array_like_values(lhs, env)?;
-    let rhs_values = eval_array_like_values(rhs, env)?;
-    let len = match (lhs_values.len(), rhs_values.len()) {
-        (0, _) | (_, 0) => return Ok(None),
-        (1, 1) => return Ok(None),
-        (1, rhs_len) => rhs_len,
-        (lhs_len, 1) => lhs_len,
-        (lhs_len, rhs_len) if lhs_len == rhs_len => lhs_len,
-        _ => return Ok(None),
-    };
-    let mut values = Vec::with_capacity(len);
-    for idx in 0..len {
-        let lhs_index = if lhs_values.len() == 1 { 0 } else { idx };
-        let lhs_value = lhs_values
-            .get(lhs_index)
-            .copied()
-            .ok_or(EvalError::ShapeMismatch {
-                context: "elementwise binary lhs",
-                expected: len,
-                actual: lhs_values.len(),
-            })?;
-        let rhs_index = if rhs_values.len() == 1 { 0 } else { idx };
-        let rhs_value = rhs_values
-            .get(rhs_index)
-            .copied()
-            .ok_or(EvalError::ShapeMismatch {
-                context: "elementwise binary rhs",
-                expected: len,
-                actual: rhs_values.len(),
-            })?;
-        values.push(op(lhs_value, rhs_value));
-    }
-    Ok(Some(values))
-}
-
-fn try_eval_elementwise_binary_array_values<T: SimFloat>(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-    op: impl Fn(T, T) -> T,
-) -> Result<Vec<T>, EvalError> {
-    let lhs_values = eval_array_like_values(lhs, env)?;
-    let rhs_values = eval_array_like_values(rhs, env)?;
-    let len = match (lhs_values.len(), rhs_values.len()) {
-        (0, _) | (_, 0) => {
-            return Err(EvalError::UnsupportedExpression {
-                kind: "empty array operand",
-            });
-        }
-        (1, 1) => return Ok(vec![op(lhs_values[0], rhs_values[0])]),
-        (1, rhs_len) => rhs_len,
-        (lhs_len, 1) => lhs_len,
-        (lhs_len, rhs_len) if lhs_len == rhs_len => lhs_len,
-        (lhs_len, rhs_len) => {
-            return Err(EvalError::ShapeMismatch {
-                context: "binary array operand",
-                expected: lhs_len,
-                actual: rhs_len,
-            });
-        }
-    };
-    Ok((0..len)
-        .map(|idx| {
-            let lhs_value = lhs_values[if lhs_values.len() == 1 { 0 } else { idx }];
-            let rhs_value = rhs_values[if rhs_values.len() == 1 { 0 } else { idx }];
-            op(lhs_value, rhs_value)
-        })
-        .collect())
+    Ok(vec![eval_expr(
+        &rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(lhs.clone()),
+            rhs: Box::new(rhs.clone()),
+            span: source_span,
+        },
+        env,
+    )?])
 }
 
 fn try_eval_unary_array_values<T: SimFloat>(
@@ -1041,9 +967,202 @@ fn flat_index_to_subscripts(dims: &[i64], flat_index: usize) -> Option<Vec<usize
 }
 
 #[derive(Debug)]
-struct RuntimeArrayOperand<T: SimFloat> {
-    values: Vec<T>,
-    dims: Vec<usize>,
+pub(super) struct RuntimeArrayOperand<T: SimFloat> {
+    pub(super) values: Vec<T>,
+    pub(super) dims: Vec<usize>,
+}
+
+fn eval_shaped_operand<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<RuntimeArrayOperand<T>, EvalError> {
+    if let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = expr
+        && matches!(
+            op,
+            OpBinary::Mul
+                | OpBinary::MulElem
+                | OpBinary::Add
+                | OpBinary::AddElem
+                | OpBinary::Sub
+                | OpBinary::SubElem
+                | OpBinary::Div
+                | OpBinary::DivElem
+        )
+    {
+        return eval_shaped_binary_operand(op, lhs, rhs, env);
+    }
+    let values = eval_array_like_values(expr, env)?;
+    let dims = try_infer_runtime_expr_dims(expr, env)?;
+    validate_runtime_operand_shape(&dims, values.len())?;
+    Ok(RuntimeArrayOperand { values, dims })
+}
+
+fn validate_runtime_operand_shape(dims: &[usize], value_count: usize) -> Result<(), EvalError> {
+    let expected = dims
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent))
+        .unwrap_or(usize::MAX);
+    if (!dims.is_empty() && expected != value_count) || (dims.is_empty() && value_count != 1) {
+        return Err(EvalError::ShapeMismatch {
+            context: "binary array operand",
+            expected: if dims.is_empty() { 1 } else { expected },
+            actual: value_count,
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn eval_shaped_binary_operand<T: SimFloat>(
+    op: &OpBinary,
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<RuntimeArrayOperand<T>, EvalError> {
+    let lhs = eval_shaped_operand(lhs, env)?;
+    let rhs = eval_shaped_operand(rhs, env)?;
+    match op {
+        OpBinary::Mul => multiply_runtime_operands(lhs, rhs),
+        OpBinary::Add => combine_same_shape_operands(lhs, rhs, "array addition", |l, r| l + r),
+        OpBinary::Sub => combine_same_shape_operands(lhs, rhs, "array subtraction", |l, r| l - r),
+        OpBinary::Div => divide_runtime_operands(lhs, rhs),
+        OpBinary::MulElem => combine_elementwise_operands(lhs, rhs, |l, r| l * r),
+        OpBinary::AddElem => combine_elementwise_operands(lhs, rhs, |l, r| l + r),
+        OpBinary::SubElem => combine_elementwise_operands(lhs, rhs, |l, r| l - r),
+        OpBinary::DivElem => combine_elementwise_operands(lhs, rhs, |l, r| l / r),
+        _ => Err(EvalError::UnsupportedExpression {
+            kind: "binary array operator",
+        }),
+    }
+}
+
+fn combine_same_shape_operands<T: SimFloat>(
+    lhs: RuntimeArrayOperand<T>,
+    rhs: RuntimeArrayOperand<T>,
+    context: &'static str,
+    op: impl Fn(T, T) -> T,
+) -> Result<RuntimeArrayOperand<T>, EvalError> {
+    if lhs.dims != rhs.dims || lhs.values.len() != rhs.values.len() {
+        return Err(EvalError::ShapeMismatch {
+            context,
+            expected: lhs.values.len(),
+            actual: rhs.values.len(),
+        });
+    }
+    Ok(RuntimeArrayOperand {
+        dims: lhs.dims,
+        values: lhs
+            .values
+            .into_iter()
+            .zip(rhs.values)
+            .map(|(lhs, rhs)| op(lhs, rhs))
+            .collect(),
+    })
+}
+
+fn combine_elementwise_operands<T: SimFloat>(
+    lhs: RuntimeArrayOperand<T>,
+    rhs: RuntimeArrayOperand<T>,
+    op: impl Fn(T, T) -> T,
+) -> Result<RuntimeArrayOperand<T>, EvalError> {
+    if lhs.dims.is_empty() {
+        let scalar = lhs.values[0];
+        return Ok(RuntimeArrayOperand {
+            dims: rhs.dims,
+            values: rhs
+                .values
+                .into_iter()
+                .map(|value| op(scalar, value))
+                .collect(),
+        });
+    }
+    if rhs.dims.is_empty() {
+        let scalar = rhs.values[0];
+        return Ok(RuntimeArrayOperand {
+            dims: lhs.dims,
+            values: lhs
+                .values
+                .into_iter()
+                .map(|value| op(value, scalar))
+                .collect(),
+        });
+    }
+    combine_same_shape_operands(lhs, rhs, "elementwise array operation", op)
+}
+
+fn divide_runtime_operands<T: SimFloat>(
+    lhs: RuntimeArrayOperand<T>,
+    rhs: RuntimeArrayOperand<T>,
+) -> Result<RuntimeArrayOperand<T>, EvalError> {
+    if !rhs.dims.is_empty() {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "array division by non-scalar",
+        });
+    }
+    let scalar = rhs.values[0];
+    Ok(RuntimeArrayOperand {
+        dims: lhs.dims,
+        values: lhs.values.into_iter().map(|value| value / scalar).collect(),
+    })
+}
+
+fn multiply_runtime_operands<T: SimFloat>(
+    lhs: RuntimeArrayOperand<T>,
+    rhs: RuntimeArrayOperand<T>,
+) -> Result<RuntimeArrayOperand<T>, EvalError> {
+    if lhs.dims.is_empty() || rhs.dims.is_empty() {
+        return combine_elementwise_operands(lhs, rhs, |l, r| l * r);
+    }
+    match (lhs.dims.as_slice(), rhs.dims.as_slice()) {
+        ([lhs_len], [rhs_len]) if lhs_len == rhs_len => Ok(RuntimeArrayOperand {
+            dims: Vec::new(),
+            values: vec![
+                lhs.values
+                    .into_iter()
+                    .zip(rhs.values)
+                    .fold(T::zero(), |sum, (lhs, rhs)| sum + lhs * rhs),
+            ],
+        }),
+        ([rows, inner], [rhs_len]) if inner == rhs_len => Ok(RuntimeArrayOperand {
+            dims: vec![*rows],
+            values: (0..*rows)
+                .map(|row| {
+                    (0..*inner).fold(T::zero(), |sum, column| {
+                        sum + lhs.values[row * inner + column] * rhs.values[column]
+                    })
+                })
+                .collect(),
+        }),
+        ([lhs_len], [rows, columns]) if lhs_len == rows => Ok(RuntimeArrayOperand {
+            dims: vec![*columns],
+            values: (0..*columns)
+                .map(|column| {
+                    (0..*rows).fold(T::zero(), |sum, row| {
+                        sum + lhs.values[row] * rhs.values[row * columns + column]
+                    })
+                })
+                .collect(),
+        }),
+        ([rows, inner], [rhs_rows, columns]) if inner == rhs_rows => Ok(RuntimeArrayOperand {
+            dims: vec![*rows, *columns],
+            values: (0..*rows)
+                .flat_map(|row| {
+                    let lhs_values = &lhs.values;
+                    let rhs_values = &rhs.values;
+                    (0..*columns).map(move |column| {
+                        (0..*inner).fold(T::zero(), |sum, index| {
+                            sum + lhs_values[row * inner + index]
+                                * rhs_values[index * columns + column]
+                        })
+                    })
+                })
+                .collect(),
+        }),
+        _ => Err(EvalError::ShapeMismatch {
+            context: "array multiplication",
+            expected: lhs.dims.last().copied().unwrap_or(1),
+            actual: rhs.dims.first().copied().unwrap_or(1),
+        }),
+    }
 }
 
 pub(super) fn try_eval_cat_values<T: SimFloat>(
@@ -1096,6 +1215,30 @@ fn checked_cat_dimension<T: SimFloat>(
     Ok(rounded as usize)
 }
 
+fn indexed_runtime_expr_dims<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<usize>>, EvalError> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } if !subscripts.is_empty() => {
+            let base = rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: Vec::new(),
+                span: *span,
+            };
+            indexed_result_dims(&base, subscripts, env).map(Some)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => indexed_result_dims(base, subscripts, env).map(Some),
+        _ => Ok(None),
+    }
+}
+
 pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -1133,6 +1276,9 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     }
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {
         return Ok(runtime_vector_dims(elements.len()));
+    }
+    if let Some(dims) = indexed_runtime_expr_dims(expr, env)? {
+        return Ok(dims);
     }
 
     let values = eval_array_like_values(expr, env)?;

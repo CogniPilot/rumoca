@@ -732,6 +732,130 @@ impl Function {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordConstructorLookupError {
+    Missing {
+        type_name: String,
+        type_def_id: DefId,
+    },
+    Ambiguous {
+        type_name: String,
+        type_def_id: DefId,
+        candidates: Vec<VarName>,
+    },
+}
+
+impl std::fmt::Display for RecordConstructorLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing {
+                type_name,
+                type_def_id,
+            } => write!(
+                f,
+                "record type `{type_name}` ({type_def_id}) has no constructor metadata"
+            ),
+            Self::Ambiguous {
+                type_name,
+                type_def_id,
+                candidates,
+            } => write!(
+                f,
+                "record type `{type_name}` ({type_def_id}) has ambiguous constructor exposures: {}",
+                candidates
+                    .iter()
+                    .map(VarName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RecordConstructorLookupError {}
+
+/// Resolve constructor metadata for one exposed record type.
+///
+/// A source `DefId` can legitimately have several flattened exposures. The
+/// exposure-qualified type name therefore disambiguates before a unique-
+/// identity fallback is allowed.
+pub fn resolve_record_constructor<'a>(
+    functions: impl IntoIterator<Item = &'a Function>,
+    type_name: &str,
+    type_def_id: DefId,
+) -> Result<&'a Function, RecordConstructorLookupError> {
+    let candidates = functions
+        .into_iter()
+        .filter(|function| function.is_constructor && function.def_id == Some(type_def_id))
+        .collect::<Vec<_>>();
+    let exact = candidates
+        .iter()
+        .copied()
+        .filter(|function| function.name.as_str() == type_name)
+        .collect::<Vec<_>>();
+    if let [constructor] = exact.as_slice() {
+        return Ok(*constructor);
+    }
+    if exact.is_empty()
+        && let [constructor] = candidates.as_slice()
+    {
+        return Ok(*constructor);
+    }
+    if candidates.is_empty() {
+        return Err(RecordConstructorLookupError::Missing {
+            type_name: type_name.to_string(),
+            type_def_id,
+        });
+    }
+    Err(RecordConstructorLookupError::Ambiguous {
+        type_name: type_name.to_string(),
+        type_def_id,
+        candidates: candidates
+            .into_iter()
+            .map(|function| function.name.clone())
+            .collect(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionInstanceLookupError {
+    Missing(FunctionInstanceId),
+    Duplicate(FunctionInstanceId),
+}
+
+impl std::fmt::Display for FunctionInstanceLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(instance_id) => {
+                write!(f, "function instance {} is missing", instance_id.index())
+            }
+            Self::Duplicate(instance_id) => write!(
+                f,
+                "function instance {} has duplicate definitions",
+                instance_id.index()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FunctionInstanceLookupError {}
+
+pub fn resolve_function_instance<'a>(
+    functions: impl IntoIterator<Item = &'a Function>,
+    instance_id: FunctionInstanceId,
+) -> Result<&'a Function, FunctionInstanceLookupError> {
+    let mut matches = functions
+        .into_iter()
+        .filter(|function| function.instance_id == Some(instance_id));
+    let function = matches
+        .next()
+        .ok_or(FunctionInstanceLookupError::Missing(instance_id))?;
+    if matches.next().is_some() {
+        return Err(FunctionInstanceLookupError::Duplicate(instance_id));
+    }
+    Ok(function)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionShapeContractError {
     Param {
         function: VarName,
@@ -1015,5 +1139,35 @@ mod tests {
             ]
         );
         assert_eq!(path.to_flat_string(), "plant.motor[2].tau");
+    }
+
+    #[test]
+    fn record_constructor_lookup_uses_exposure_name_for_shared_definition() {
+        let def_id = DefId::new(77);
+        let mut first = Function::new("First.State", Span::DUMMY);
+        first.def_id = Some(def_id);
+        first.is_constructor = true;
+        let mut second = Function::new("Second.State", Span::DUMMY);
+        second.def_id = Some(def_id);
+        second.is_constructor = true;
+
+        let resolved = resolve_record_constructor([&first, &second], "Second.State", def_id)
+            .expect("exposure name disambiguates a shared declaration");
+
+        assert_eq!(resolved.name.as_str(), "Second.State");
+    }
+
+    #[test]
+    fn function_instance_lookup_rejects_duplicate_identity() {
+        let instance_id = FunctionInstanceId::new(9);
+        let mut first = Function::new("First.f", Span::DUMMY);
+        first.instance_id = Some(instance_id);
+        let mut second = Function::new("Second.f", Span::DUMMY);
+        second.instance_id = Some(instance_id);
+
+        assert_eq!(
+            resolve_function_instance([&first, &second], instance_id),
+            Err(FunctionInstanceLookupError::Duplicate(instance_id))
+        );
     }
 }

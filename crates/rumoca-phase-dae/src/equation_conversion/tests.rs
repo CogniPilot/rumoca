@@ -268,7 +268,7 @@ fn test_record_function_equation_expands_nested_flattened_record_fields() {
     flat_model.variables.insert(q.name.clone(), q);
     flat_model
         .symbol_ancestry
-        .insert(q_def, vec![rumoca_core::DefId::new(203)]);
+        .insert(q_def, vec![rumoca_core::DefId::new(203)].into());
 
     let mut constructor = rumoca_core::Function::new("PoseRecord", fixture_span());
     constructor.def_id = Some(rumoca_core::DefId::new(200));

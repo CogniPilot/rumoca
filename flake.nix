@@ -88,10 +88,12 @@
         });
 
         # Release-mode artifacts for the MSL parity gate, built as one Cargo
-        # graph so the shard / merge / ModelicaTest consumers restore them via
+        # graph so the shard / merge / ModelicaTest / pinned-library consumers
+        # restore them via
         # Cachix instead of recompiling + re-LTO'ing the workspace. A single
         # derivation keeps rumoca-worker, rumoca-sim-worker, rumoca-msl-tools,
-        # and the libtest harness in one target directory; separate derivations
+        # the focused profile runner, and the libtest harness in one target
+        # directory; separate derivations
         # rebuild the same workspace crates and made rumoca-worker a serial
         # extra build.
         msl-artifacts = craneLib.mkCargoDerivation (commonArgs // {
@@ -105,6 +107,7 @@
               --bin rumoca-worker \
               --bin rumoca-sim-worker \
               --bin rumoca-msl-tools \
+              --bin rumoca-msl-profile \
               --test msl_tests
           '';
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
@@ -118,6 +121,7 @@
             cp target/release/rumoca-worker $out/bin/rumoca-worker
             cp target/release/rumoca-sim-worker $out/bin/rumoca-sim-worker
             cp target/release/rumoca-msl-tools $out/bin/rumoca-msl-tools
+            cp target/release/rumoca-msl-profile $out/bin/rumoca-msl-profile
           '';
         });
         templateRuntimeShell = extraPackages: craneLib.devShell {

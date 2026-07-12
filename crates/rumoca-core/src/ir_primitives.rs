@@ -24,6 +24,13 @@ mod reference_serde;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct DefId(pub u32);
 
+/// Shared declaration ancestry for one resolved source or instance symbol.
+///
+/// Many concrete instances can originate from the same declaration. Sharing
+/// the immutable chain keeps that semantic relationship explicit without
+/// cloning an identical allocation for every flattened scalar variable.
+pub type SymbolAncestry = Arc<[DefId]>;
+
 impl DefId {
     /// Create a new DefId from an index.
     pub fn new(index: u32) -> Self {

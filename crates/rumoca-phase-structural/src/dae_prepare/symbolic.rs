@@ -262,6 +262,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 &dims,
                 flat_index,
                 Some(first_subscript.span()),
+                self.dae,
             );
         }
         if !subscripts.is_empty() && variable_dims_for_name(self.dae, name).is_some() {
@@ -359,8 +360,8 @@ impl<'a> SymbolicDerivativeContext<'a> {
 
         let terms = (0..n)
             .map(|idx| {
-                let lhs_i = project_flat_index(lhs, &lhs_dims, idx)?;
-                let rhs_i = project_flat_index(rhs, &rhs_dims, idx)?;
+                let lhs_i = project_flat_index(lhs, &lhs_dims, idx, self.dae)?;
+                let rhs_i = project_flat_index(rhs, &rhs_dims, idx, self.dae)?;
                 let da_b = make_binary(
                     OpBinary::Mul,
                     self.differentiate(&lhs_i, active_functions)?,
@@ -435,7 +436,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         }
         active_functions.push(instance_id);
         let Some(output_expr) =
-            function_output_expression(function, args, output_selector.as_ref())
+            function_output_expression(function, args, output_selector.as_ref(), self.dae)
         else {
             active_functions.pop();
             return None;
@@ -555,6 +556,7 @@ fn function_output_expression(
     function: &rumoca_core::Function,
     args: &[Expression],
     output_selector: Option<&FunctionOutputSelector>,
+    dae: &Dae,
 ) -> Option<Expression> {
     let output = function.outputs.first()?;
     let mut scope = HashMap::new();
@@ -575,7 +577,7 @@ fn function_output_expression(
             };
         }
         let flat_index = flat_index_from_indices(&output.dims, &selector.indices)?;
-        return project_flat_index(&expr, &output.dims, flat_index);
+        return project_flat_index(&expr, &output.dims, flat_index, dae);
     }
     if output.dims == [1] {
         return scalar_array_element(&expr);
@@ -598,11 +600,11 @@ fn resolve_function_call<'a>(
     Option<FunctionOutputSelector>,
 )> {
     let resolved = call_name.resolved_function()?;
-    let function = dae
-        .symbols
-        .functions
-        .values()
-        .find(|function| function.instance_id == Some(resolved.instance_id))?;
+    let function = rumoca_core::resolve_function_instance(
+        dae.symbols.functions.values(),
+        resolved.instance_id,
+    )
+    .ok()?;
     let selector = function_projection_selector(resolved, call_name)?;
     Some((resolved.instance_id, function, selector))
 }
@@ -742,8 +744,64 @@ fn expression_dims(expr: &Expression, dae: &Dae) -> Option<Vec<i64>> {
             args,
             ..
         } => args.first().and_then(|arg| expression_dims(arg, dae)),
+        Expression::Unary { rhs, .. } => expression_dims(rhs, dae),
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs_dims = expression_dims(lhs, dae);
+            let rhs_dims = expression_dims(rhs, dae);
+            match op {
+                OpBinary::Mul => matrix_product_dims(lhs_dims, rhs_dims),
+                OpBinary::Div => lhs_dims,
+                OpBinary::Add
+                | OpBinary::AddElem
+                | OpBinary::Sub
+                | OpBinary::SubElem
+                | OpBinary::MulElem
+                | OpBinary::DivElem => lhs_dims.or(rhs_dims),
+                _ => None,
+            }
+        }
         _ => None,
     }
+}
+
+fn matrix_product_dims(lhs: Option<Vec<i64>>, rhs: Option<Vec<i64>>) -> Option<Vec<i64>> {
+    match (lhs, rhs) {
+        (None, rhs) => rhs,
+        (lhs, None) => lhs,
+        (Some(lhs), Some(rhs)) => match (lhs.as_slice(), rhs.as_slice()) {
+            ([rows, inner], [rhs_inner, cols]) if inner == rhs_inner => Some(vec![*rows, *cols]),
+            ([rows, inner], [rhs_inner]) if inner == rhs_inner => Some(vec![*rows]),
+            ([inner], [rhs_inner, cols]) if inner == rhs_inner => Some(vec![*cols]),
+            ([lhs_n], [rhs_n]) if lhs_n == rhs_n => None,
+            _ => None,
+        },
+    }
+}
+
+fn expression_is_scalar(expr: &Expression, dae: &Dae) -> bool {
+    if expression_dims(expr, dae).is_some() {
+        return false;
+    }
+    match expr {
+        Expression::Literal { .. } => true,
+        Expression::VarRef {
+            name, subscripts, ..
+        } => !subscripts.is_empty() || variable_is_scalar(dae, name.var_name()),
+        Expression::Unary { rhs, .. } => expression_is_scalar(rhs, dae),
+        _ => false,
+    }
+}
+
+fn variable_is_scalar(dae: &Dae, name: &VarName) -> bool {
+    dae.variables
+        .states
+        .get(name)
+        .or_else(|| dae.variables.algebraics.get(name))
+        .or_else(|| dae.variables.outputs.get(name))
+        .or_else(|| dae.variables.inputs.get(name))
+        .or_else(|| dae.variables.parameters.get(name))
+        .or_else(|| dae.variables.constants.get(name))
+        .is_some_and(|variable| variable.dims.is_empty())
 }
 
 fn variable_dims_for_name(dae: &Dae, name: &VarName) -> Option<Vec<i64>> {
@@ -770,8 +828,13 @@ fn array_expression_dims(elements: &[Expression], is_matrix: bool) -> Option<Vec
     Some(vec![elements.len() as i64, cols as i64])
 }
 
-fn project_flat_index(expr: &Expression, dims: &[i64], flat_index: usize) -> Option<Expression> {
-    project_flat_index_with_span(expr, dims, flat_index, None)
+fn project_flat_index(
+    expr: &Expression,
+    dims: &[i64],
+    flat_index: usize,
+    dae: &Dae,
+) -> Option<Expression> {
+    project_flat_index_with_span(expr, dims, flat_index, None, dae)
 }
 
 fn projection_span(expr: &Expression, fallback_span: Option<Span>) -> Option<Span> {
@@ -784,6 +847,7 @@ fn project_flat_index_with_span(
     dims: &[i64],
     flat_index: usize,
     fallback_span: Option<Span>,
+    dae: &Dae,
 ) -> Option<Expression> {
     match expr {
         Expression::VarRef {
@@ -823,26 +887,49 @@ fn project_flat_index_with_span(
                     dims,
                     flat_index,
                     Some(span),
+                    dae,
                 )?],
                 span,
             })
         }
+        Expression::Binary { op, lhs, rhs, .. }
+            if matches!(op, OpBinary::Mul | OpBinary::Div)
+                && (expression_is_scalar(lhs, dae) || expression_is_scalar(rhs, dae)) =>
+        {
+            let span = projection_span(expr, fallback_span)?;
+            Some(Expression::Binary {
+                op: op.clone(),
+                lhs: Box::new(if expression_is_scalar(lhs, dae) {
+                    lhs.as_ref().clone()
+                } else {
+                    project_flat_index_with_span(lhs, dims, flat_index, Some(span), dae)?
+                }),
+                rhs: Box::new(if expression_is_scalar(rhs, dae) {
+                    rhs.as_ref().clone()
+                } else {
+                    project_flat_index_with_span(rhs, dims, flat_index, Some(span), dae)?
+                }),
+                span,
+            })
+        }
+        Expression::Binary {
+            op: OpBinary::Mul | OpBinary::Div,
+            ..
+        } => project_indexed_expression(expr, dims, flat_index, fallback_span),
         Expression::Binary { op, lhs, rhs, .. } => {
             let span = projection_span(expr, fallback_span)?;
             Some(Expression::Binary {
                 op: op.clone(),
-                lhs: Box::new(project_flat_index_with_span(
-                    lhs,
-                    dims,
-                    flat_index,
-                    Some(span),
-                )?),
-                rhs: Box::new(project_flat_index_with_span(
-                    rhs,
-                    dims,
-                    flat_index,
-                    Some(span),
-                )?),
+                lhs: Box::new(if expression_is_scalar(lhs, dae) {
+                    lhs.as_ref().clone()
+                } else {
+                    project_flat_index_with_span(lhs, dims, flat_index, Some(span), dae)?
+                }),
+                rhs: Box::new(if expression_is_scalar(rhs, dae) {
+                    rhs.as_ref().clone()
+                } else {
+                    project_flat_index_with_span(rhs, dims, flat_index, Some(span), dae)?
+                }),
                 span,
             })
         }
@@ -855,24 +942,28 @@ fn project_flat_index_with_span(
                     dims,
                     flat_index,
                     Some(span),
+                    dae,
                 )?),
                 span,
             })
         }
-        _ => {
-            let indices = dae::flat_index_to_subscripts(dims, flat_index)?;
-            let span = projection_span(expr, fallback_span)?;
-            Some(Expression::Index {
-                base: Box::new(expr.clone()),
-                subscripts: generated_index_subscripts(
-                    indices,
-                    span,
-                    "flat-index projected expression",
-                )?,
-                span,
-            })
-        }
+        _ => project_indexed_expression(expr, dims, flat_index, fallback_span),
     }
+}
+
+fn project_indexed_expression(
+    expr: &Expression,
+    dims: &[i64],
+    flat_index: usize,
+    fallback_span: Option<Span>,
+) -> Option<Expression> {
+    let indices = dae::flat_index_to_subscripts(dims, flat_index)?;
+    let span = projection_span(expr, fallback_span)?;
+    Some(Expression::Index {
+        base: Box::new(expr.clone()),
+        subscripts: generated_index_subscripts(indices, span, "flat-index projected expression")?,
+        span,
+    })
 }
 
 fn generated_index_subscripts(
@@ -1125,7 +1216,7 @@ mod tests {
             span: Span::DUMMY,
         };
 
-        assert_eq!(project_flat_index(&expr, &[2], 0), None);
+        assert_eq!(project_flat_index(&expr, &[2], 0, &Dae::new()), None);
     }
 
     #[test]
@@ -1138,7 +1229,8 @@ mod tests {
             span,
         };
 
-        let projected = project_flat_index(&expr, &[2], 0).expect("spanned binary should project");
+        let projected =
+            project_flat_index(&expr, &[2], 0, &Dae::new()).expect("spanned binary should project");
 
         assert_eq!(projected.span(), Some(span));
         assert!(
@@ -1151,5 +1243,52 @@ mod tests {
             ),
             "projected binary should index both operands with the source span"
         );
+    }
+
+    #[test]
+    fn project_flat_index_keeps_matrix_product_intact() {
+        let span = test_span();
+        let expr = Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(var_ref("A", span)),
+            rhs: Box::new(var_ref("x", span)),
+            span,
+        };
+
+        let projected =
+            project_flat_index(&expr, &[2], 1, &Dae::new()).expect("product result is indexable");
+
+        assert!(matches!(
+            projected,
+            Expression::Index { base, subscripts, .. }
+                if base.as_ref() == &expr
+                    && matches!(subscripts.as_slice(), [Subscript::Index { value: 2, .. }])
+        ));
+    }
+
+    #[test]
+    fn project_flat_index_distributes_scalar_array_product() {
+        let span = test_span();
+        let second = var_ref("x2", span);
+        let expr = Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(real_literal(2.0, span)),
+            rhs: Box::new(Expression::Array {
+                elements: vec![var_ref("x1", span), second.clone()],
+                is_matrix: false,
+                span,
+            }),
+            span,
+        };
+
+        let projected = project_flat_index(&expr, &[2], 1, &Dae::new())
+            .expect("scalar-array product should project elementwise");
+
+        assert!(matches!(
+            projected,
+            Expression::Binary { op: OpBinary::Mul, lhs, rhs, .. }
+                if matches!(lhs.as_ref(), Expression::Literal { .. })
+                    && rhs.as_ref() == &second
+        ));
     }
 }

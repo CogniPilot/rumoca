@@ -1749,9 +1749,12 @@ impl<'a> LowerBuilder<'a> {
         let constructor = output
             .type_def_id
             .and_then(|type_def_id| {
-                self.functions
-                    .values()
-                    .find(|function| function.def_id == Some(type_def_id))
+                rumoca_core::resolve_record_constructor(
+                    self.functions.values(),
+                    &output.type_name,
+                    type_def_id,
+                )
+                .ok()
             })
             .or_else(|| {
                 self.functions
@@ -1762,9 +1765,9 @@ impl<'a> LowerBuilder<'a> {
             .into_iter()
             .flat_map(|function| &function.inputs)
             .filter(|field| {
-                !field.dims.is_empty()
-                    && field.dims.iter().all(|dim| *dim >= 0)
-                    && field.dims.contains(&0)
+                field.shape_expr.iter().any(|subscript| {
+                    matches!(subscript, rumoca_core::Subscript::Index { value: 0, .. })
+                })
             })
             .map(|field| (field.name.clone(), field.dims.clone()))
             .collect()

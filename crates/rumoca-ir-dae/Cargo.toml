@@ -12,6 +12,7 @@ strict-ir-validation = []
 [dependencies]
 rumoca-core = { workspace = true }
 indexmap = { workspace = true }
+rustc-hash = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

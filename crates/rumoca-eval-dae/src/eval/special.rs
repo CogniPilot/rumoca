@@ -105,10 +105,9 @@ pub(in crate::eval) fn resolve_user_function_reference_target<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Option<(VarName, Option<OutputSelection>)> {
     if let Some(resolved) = requested.resolved_function() {
-        let function = env
-            .functions
-            .values()
-            .find(|function| function.instance_id == Some(resolved.instance_id))?;
+        let function =
+            rumoca_core::resolve_function_instance(env.functions.values(), resolved.instance_id)
+                .ok()?;
         let selection = declared_output_selection(function, requested, resolved)?;
         return Some((
             VarName::new(function.name.as_str()),
@@ -287,16 +286,17 @@ fn collect_record_field_dims<T: SimFloat>(
         if type_stack.contains(&type_key) {
             return Ok(());
         }
-        let constructor = env
-            .functions
-            .values()
-            .find(|candidate| candidate.is_constructor && candidate.def_id == Some(type_def_id))
-            .ok_or_else(|| {
-                EvalError::MissingFunction {
-                    name: format!("record constructor for `{}`", param.type_name),
-                }
-                .with_span_if_missing(param.span)
-            })?;
+        let constructor = rumoca_core::resolve_record_constructor(
+            env.functions.values(),
+            &param.type_name,
+            type_def_id,
+        )
+        .map_err(|error| {
+            EvalError::MissingFunction {
+                name: error.to_string(),
+            }
+            .with_span_if_missing(param.span)
+        })?;
         (constructor, type_key)
     } else {
         return Err(EvalError::MissingFunction {
@@ -810,12 +810,8 @@ pub fn eval_user_function_outputs_pub<T: SimFloat>(
     let mut materialized = Vec::with_capacity(outputs.len());
     for output in outputs {
         if output.type_class == Some(rumoca_core::ClassType::Record) {
+            require_complete_record_output(&output, &local_env)?;
             let fields = record_output_fields_from_local_env(&output.name, &local_env);
-            if fields.0.is_empty() {
-                return Err(EvalError::MissingBinding {
-                    name: output.name.clone(),
-                });
-            }
             materialized.push((output.name, MaterializedOutput::Record(fields)));
             continue;
         }
@@ -837,6 +833,72 @@ pub fn eval_user_function_outputs_pub<T: SimFloat>(
     Ok(Some(materialized))
 }
 
+fn require_complete_record_output<T: SimFloat>(
+    output: &FunctionParam,
+    local_env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    let mut type_stack = Vec::new();
+    require_complete_record_fields(&output.name, output, local_env, &mut type_stack)
+}
+
+fn require_complete_record_fields<T: SimFloat>(
+    prefix: &str,
+    param: &FunctionParam,
+    local_env: &VarEnv<T>,
+    type_stack: &mut Vec<RecordTypeKey>,
+) -> Result<(), EvalError> {
+    let type_def_id = param.type_def_id.ok_or_else(|| {
+        EvalError::MissingFunction {
+            name: format!("record constructor identity for `{}`", param.type_name),
+        }
+        .with_span_if_missing(param.span)
+    })?;
+    let type_key = RecordTypeKey::Identity(type_def_id);
+    if type_stack.contains(&type_key) {
+        return Ok(());
+    }
+    let constructor = resolve_record_constructor(param, local_env)?;
+    type_stack.push(type_key);
+    for field in &constructor.inputs {
+        let field_path = format!("{prefix}.{}", field.name);
+        if field.type_class == Some(rumoca_core::ClassType::Record) {
+            require_complete_record_fields(&field_path, field, local_env, type_stack)?;
+            continue;
+        }
+        let is_literal_empty = field
+            .shape_expr
+            .iter()
+            .any(|subscript| matches!(subscript, rumoca_core::Subscript::Index { value: 0, .. }));
+        let is_bound = is_literal_empty
+            || local_env.vars.local_iter().any(|(name, _)| {
+                name == &field_path
+                    || name
+                        .strip_prefix(&field_path)
+                        .is_some_and(|suffix| suffix.starts_with('['))
+            });
+        if !is_bound {
+            return Err(EvalError::MissingBinding { name: field_path });
+        }
+    }
+    type_stack.pop();
+    Ok(())
+}
+
+fn resolve_record_constructor<'a, T: SimFloat>(
+    param: &FunctionParam,
+    env: &'a VarEnv<T>,
+) -> Result<&'a rumoca_core::Function, EvalError> {
+    let type_def_id = param
+        .type_def_id
+        .ok_or_else(|| EvalError::MissingFunction {
+            name: format!("record constructor identity for `{}`", param.type_name),
+        })?;
+    rumoca_core::resolve_record_constructor(env.functions.values(), &param.type_name, type_def_id)
+        .map_err(|error| EvalError::MissingFunction {
+            name: error.to_string(),
+        })
+}
+
 /// Record output field values and dims bound under `{output_name}.` in the
 /// function's local evaluation scope.
 fn record_output_fields_from_local_env<T: SimFloat>(
@@ -846,7 +908,7 @@ fn record_output_fields_from_local_env<T: SimFloat>(
     let prefix = format!("{output_name}.");
     let values = local_env
         .vars
-        .iter()
+        .local_iter()
         .filter_map(|(key, value)| {
             key.strip_prefix(prefix.as_str())
                 .map(|suffix| (suffix.to_string(), *value))

@@ -2,15 +2,15 @@ use super::inheritance::resolve_effective_components_for_eval;
 use super::instantiate_component;
 use super::source_scope::component_declaration_source_scope;
 use super::type_overrides::TypeOverrideMap;
-use super::{
-    InstantiateContext, InstantiateError, InstantiateResult, find_class_in_tree,
-    get_effective_components,
-};
+use super::{InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components};
 use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_ast::ExpressionTransformer;
 use std::sync::Arc;
+
+mod selection_projection;
+use selection_projection::project_array_selection_for_element;
 
 /// Expand an array component into individual indexed instances.
 ///
@@ -966,134 +966,6 @@ fn index_component_reference_array_part(
     Ok(Some(ast::Expression::ComponentReference(indexed)))
 }
 
-fn generated_integer_subscript(value: i64, span: rumoca_core::Span) -> ast::Subscript {
-    ast::Subscript::Expression(ast::Expression::Terminal {
-        terminal_type: ast::TerminalType::UnsignedInteger,
-        token: rumoca_core::Token {
-            text: value.to_string().into(),
-            ..rumoca_core::Token::default()
-        },
-        span,
-    })
-}
-
-/// Compose an array-component element index with an existing array selection.
-///
-/// For example, the first element of `source[2:n, :]` is `source[2, :]`, not
-/// `source[1, :]`. Fixed scalar subscripts do not consume a result dimension;
-/// ranges and colons do. This is the subscript composition required by MLS
-/// section 10.5 when a non-`each` modifier is distributed over a component
-/// array.
-fn project_array_selection_for_element(
-    tree: &ast::ClassTree,
-    effective_components: &IndexMap<String, ast::Component>,
-    selection: Option<&[ast::Subscript]>,
-    result_indices: &[i64],
-    span: rumoca_core::Span,
-) -> InstantiateResult<Vec<ast::Subscript>> {
-    let Some(selection) = selection else {
-        return Ok(result_indices
-            .iter()
-            .copied()
-            .map(|index| generated_integer_subscript(index, span))
-            .collect());
-    };
-
-    let eval_ctx = InstantiateEvalCtx {
-        tree,
-        mod_env: &ast::ModificationEnvironment::default(),
-        effective_components,
-        resolve_class_components: resolve_effective_components_for_eval,
-    };
-    let mut result_index = result_indices.iter().copied();
-    let mut projected = Vec::with_capacity(selection.len().saturating_add(result_indices.len()));
-    for subscript in selection {
-        match subscript {
-            ast::Subscript::Expression(ast::Expression::Range {
-                start,
-                step,
-                end,
-                span: range_span,
-            }) => {
-                let Some(element_index) = result_index.next() else {
-                    projected.push(subscript.clone());
-                    continue;
-                };
-                let start_value = try_eval_integer_expr(&eval_ctx, start).ok_or_else(|| {
-                    InstantiateError::structural_param_error(
-                        "array modifier range".to_string(),
-                        "range start is not structurally evaluable".to_string(),
-                        *range_span,
-                    )
-                })?;
-                let step_value = step
-                    .as_deref()
-                    .map(|value| try_eval_integer_expr(&eval_ctx, value))
-                    .unwrap_or(Some(1))
-                    .ok_or_else(|| {
-                        InstantiateError::structural_param_error(
-                            "array modifier range".to_string(),
-                            "range step is not structurally evaluable".to_string(),
-                            *range_span,
-                        )
-                    })?;
-                let end_value = try_eval_integer_expr(&eval_ctx, end).ok_or_else(|| {
-                    InstantiateError::structural_param_error(
-                        "array modifier range".to_string(),
-                        "range end is not structurally evaluable".to_string(),
-                        *range_span,
-                    )
-                })?;
-                let offset = element_index.checked_sub(1).ok_or_else(|| {
-                    InstantiateError::array_dim_mismatch(
-                        "array modifier selection".to_string(),
-                        "a positive one-based element index".to_string(),
-                        element_index.to_string(),
-                        *range_span,
-                    )
-                })?;
-                let selected = offset
-                    .checked_mul(step_value)
-                    .and_then(|value| start_value.checked_add(value))
-                    .ok_or_else(|| {
-                        InstantiateError::array_dim_mismatch(
-                            "array modifier selection".to_string(),
-                            "an index representable as Integer".to_string(),
-                            "integer overflow".to_string(),
-                            *range_span,
-                        )
-                    })?;
-                let in_range = if step_value > 0 {
-                    selected <= end_value
-                } else if step_value < 0 {
-                    selected >= end_value
-                } else {
-                    false
-                };
-                if !in_range {
-                    return Err(InstantiateError::array_dim_mismatch(
-                        "array modifier selection".to_string(),
-                        format!("an element of {start_value}:{step_value}:{end_value}"),
-                        selected.to_string(),
-                        *range_span,
-                    )
-                    .into());
-                }
-                projected.push(generated_integer_subscript(selected, *range_span));
-            }
-            ast::Subscript::Range { .. } | ast::Subscript::Empty => {
-                projected.push(result_index.next().map_or_else(
-                    || subscript.clone(),
-                    |index| generated_integer_subscript(index, span),
-                ));
-            }
-            ast::Subscript::Expression(_) => projected.push(subscript.clone()),
-        }
-    }
-    projected.extend(result_index.map(|index| generated_integer_subscript(index, span)));
-    Ok(projected)
-}
-
 fn index_array_comprehension_for_element(
     expr: &ast::Expression,
     indices: &[i64],
@@ -1179,13 +1051,15 @@ mod tests {
         ArrayExpansionScope, array_element_binding_modification,
         distribute_component_ref_mods_for_element, distribute_mods_for_element,
         index_array_expression_for_element, index_binding_for_element,
-        pre_resolve_array_modifications, resolve_mod_to_array,
+        pre_resolve_array_modifications, project_array_selection_for_element, resolve_mod_to_array,
     };
     use crate::type_overrides::TypeOverrideMap;
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
     use std::sync::Arc;
+
+    mod vector_subscript_tests;
 
     fn make_token(text: &str) -> rumoca_core::Token {
         rumoca_core::Token {

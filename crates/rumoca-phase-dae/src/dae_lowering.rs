@@ -70,23 +70,28 @@ pub fn prepare_dae_for_fmi_model_description(dae: &dae::Dae) -> Result<CodegenDa
 
 pub(crate) fn record_constructor_fields_from_metadata<'a, I>(
     functions: I,
+    type_name: &str,
     type_def_id: rumoca_core::DefId,
 ) -> Option<Vec<rumoca_core::FunctionParam>>
 where
     I: IntoIterator<Item = (&'a rumoca_core::VarName, &'a rumoca_core::Function)>,
 {
-    functions
-        .into_iter()
-        .find(|(_, function)| function.is_constructor && function.def_id == Some(type_def_id))
-        .map(|(_, function)| function.inputs.clone())
-        .filter(|fields| !fields.is_empty())
+    rumoca_core::resolve_record_constructor(
+        functions.into_iter().map(|(_, function)| function),
+        type_name,
+        type_def_id,
+    )
+    .ok()
+    .map(|function| function.inputs.clone())
+    .filter(|fields| !fields.is_empty())
 }
 
 fn record_fields_from_constructor_metadata(
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    type_name: &str,
     type_def_id: rumoca_core::DefId,
 ) -> Option<Vec<String>> {
-    record_constructor_fields_from_metadata(functions.iter(), type_def_id)
+    record_constructor_fields_from_metadata(functions.iter(), type_name, type_def_id)
         .map(|fields| fields.into_iter().map(|param| param.name).collect())
 }
 
@@ -113,8 +118,12 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError>
                 input.span,
             )
         })?;
-        let fields = record_fields_from_constructor_metadata(&dae.symbols.functions, type_def_id)
-            .ok_or_else(|| {
+        let fields = record_fields_from_constructor_metadata(
+            &dae.symbols.functions,
+            &input.type_name,
+            type_def_id,
+        )
+        .ok_or_else(|| {
             ToDaeError::runtime_contract_violation_at(
                 format!(
                     "record parameter `{}` has no constructor for resolved type identity",

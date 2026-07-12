@@ -10,9 +10,10 @@ pub(crate) fn resolve_function_reference<'a>(
     name: &rumoca_core::Reference,
 ) -> Option<(&'a rumoca_core::VarName, &'a rumoca_core::Function)> {
     if let Some(resolved) = name.resolved_function() {
-        return functions
-            .iter()
-            .find(|(_, function)| function.instance_id == Some(resolved.instance_id));
+        let function =
+            rumoca_core::resolve_function_instance(functions.values(), resolved.instance_id)
+                .ok()?;
+        return Some((&function.name, function));
     }
     None
 }
@@ -70,14 +71,12 @@ pub(crate) fn record_output_field_param<'a>(
         return None;
     }
     let mut type_def_id = output.type_def_id?;
+    let mut type_name = output.type_name.as_str();
     let mut selected = None;
     for (index, field_name) in field_path.iter().enumerate() {
-        let constructor = functions
-            .values()
-            .find(|function| function.def_id == Some(type_def_id))?;
-        if !constructor.is_constructor {
-            return None;
-        }
+        let constructor =
+            rumoca_core::resolve_record_constructor(functions.values(), type_name, type_def_id)
+                .ok()?;
         let field = constructor
             .inputs
             .iter()
@@ -88,6 +87,7 @@ pub(crate) fn record_output_field_param<'a>(
                 return None;
             }
             type_def_id = field.type_def_id?;
+            type_name = field.type_name.as_str();
         }
     }
     selected

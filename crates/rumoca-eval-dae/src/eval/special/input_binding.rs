@@ -91,7 +91,7 @@ pub(super) fn copy_record_constructor_input_fields<T: SimFloat>(
         return Ok(false);
     }
 
-    if let Some(constructor) = resolve_record_constructor(name, caller_env) {
+    if let Some(constructor) = resolve_record_constructor(name, caller_env)? {
         return bind_declared_record_constructor_fields(
             local_env,
             param,
@@ -115,16 +115,22 @@ pub(super) fn copy_record_constructor_input_fields<T: SimFloat>(
 fn resolve_record_constructor<'a, T: SimFloat>(
     name: &rumoca_core::Reference,
     env: &'a VarEnv<T>,
-) -> Option<&'a rumoca_core::Function> {
+) -> Result<Option<&'a rumoca_core::Function>, EvalError> {
     if let Some(def_id) = name.target_def_id() {
-        return env
-            .functions
-            .values()
-            .find(|function| function.def_id == Some(def_id) && function.is_constructor);
+        return rumoca_core::resolve_record_constructor(
+            env.functions.values(),
+            name.as_str(),
+            def_id,
+        )
+        .map(Some)
+        .map_err(|error| EvalError::MissingFunction {
+            name: error.to_string(),
+        });
     }
-    env.functions
+    Ok(env
+        .functions
         .get(name.as_str())
-        .filter(|function| function.is_constructor)
+        .filter(|function| function.is_constructor))
 }
 
 fn bind_declared_record_constructor_fields<T: SimFloat>(
@@ -137,6 +143,7 @@ fn bind_declared_record_constructor_fields<T: SimFloat>(
     let (named_args, positional_args) = split_named_and_positional_call_args(args);
     let mut positional_index = 0usize;
     let mut constructor_env = caller_env.clone();
+    constructor_env.vars = VarScope::child_of(&caller_env.vars);
     let mut copied = false;
     for field in &constructor.inputs {
         let actual = named_args.get(field.name.as_str()).copied().or_else(|| {
@@ -218,6 +225,7 @@ pub(super) fn copy_array_literal_matrix_entries<T: SimFloat>(
     }
 
     let mut max_cols = 0usize;
+    let mut expected_cols = None;
     let mut actual = 0usize;
     let mut values = Vec::new();
     let selection_field = selected_component_field_in_current_call(caller_env);
@@ -226,6 +234,16 @@ pub(super) fn copy_array_literal_matrix_entries<T: SimFloat>(
             Expression::Array { elements, .. } => elements.iter().collect(),
             _ => vec![row_expr],
         };
+        if let Some(expected) = expected_cols
+            && row_values.len() != expected
+        {
+            return Err(EvalError::ShapeMismatch {
+                context: "function matrix input rectangularity",
+                expected,
+                actual: row_values.len(),
+            });
+        }
+        expected_cols = Some(row_values.len());
         max_cols = max_cols.max(row_values.len());
         actual += row_values.len();
         for value_expr in row_values {
@@ -403,15 +421,17 @@ pub(super) fn copy_array_input_entries<T: SimFloat>(
         return bind_evaluated_array_input(local_env, param, arg_expr, caller_env);
     };
 
-    let dims = source_array_dims(param, &source_name, caller_env)?;
-    if concrete_param_size(&dims) == Some(0) {
+    let source_dims = source_array_dims(param, &source_name, caller_env)?;
+    if concrete_param_size(&source_dims) == Some(0) {
+        let dims = resolved_array_input_dims(param, arg_expr, caller_env, local_env, 0)?
+            .unwrap_or(source_dims);
         // Zero-sized arrays (e.g. `Real marker[0]` record fields) have no
         // scalar entries to copy; registering the shape is the whole binding.
         std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims);
         return Ok(());
     }
     let values = if use_pre_values {
-        collect_pre_array_values(&source_name, &dims)?
+        collect_pre_array_values(&source_name, &source_dims)?
     } else {
         array_values_from_env_name_generic(source_name.as_str(), caller_env)?.ok_or_else(|| {
             EvalError::MissingBinding {
@@ -419,6 +439,8 @@ pub(super) fn copy_array_input_entries<T: SimFloat>(
             }
         })?
     };
+    let dims = resolved_array_input_dims(param, arg_expr, caller_env, local_env, values.len())?
+        .unwrap_or(source_dims);
     validate_array_input_dims(&dims, values.len())?;
     set_array_entries(local_env, param_name, &dims, &values);
     std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims.clone());
@@ -517,7 +539,39 @@ pub(super) fn infer_dynamic_array_input_dims<T: SimFloat>(
         value_count,
     )?;
     validate_array_input_dims(&dims, value_count)?;
+    validate_self_referential_shape_constraints(param, &dims, local_env)?;
     Ok(dims)
+}
+
+fn validate_self_referential_shape_constraints<T: SimFloat>(
+    param: &FunctionParam,
+    dims: &[i64],
+    local_env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    let mut shape_env = local_env.clone();
+    std::sync::Arc::make_mut(&mut shape_env.dims).insert(param.name.clone(), dims.to_vec());
+    for (axis, subscript) in param.shape_expr.iter().enumerate() {
+        let Subscript::Expr { expr, .. } = subscript else {
+            continue;
+        };
+        if !expr_references_name(expr, &param.name) {
+            continue;
+        }
+        let expected = eval_shape_expr_dim(expr, &shape_env)?;
+        let actual = dims.get(axis).copied().ok_or(EvalError::ShapeMismatch {
+            context: "function array input rank",
+            expected: param.shape_expr.len(),
+            actual: dims.len(),
+        })?;
+        if expected != actual {
+            return Err(EvalError::ShapeMismatch {
+                context: "function array input shape constraint",
+                expected: usize::try_from(expected).unwrap_or(0),
+                actual: usize::try_from(actual).unwrap_or(0),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn expr_references_name(expr: &Expression, name: &str) -> bool {

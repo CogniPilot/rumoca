@@ -22,12 +22,14 @@
 use indexmap::IndexMap;
 use rumoca_core::{
     ComponentReference, DefId, Expression, Function, FunctionShapeContractError, Reference, Span,
-    Statement, VarName, extract_algorithm_outputs,
+    Statement, SymbolAncestry, VarName, extract_algorithm_outputs,
 };
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
 pub const DAE_SCHEMA_VERSION: u16 = 7;
+
+pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 
 mod event_threshold;
 mod expr_query;
@@ -674,7 +676,7 @@ pub struct DaeMetadata {
     /// DefId ancestry for resolved source symbols, ordered from outermost owner
     /// to the symbol itself. Used for structured balance and lowering queries.
     #[serde(default)]
-    pub symbol_ancestry: IndexMap<DefId, Vec<DefId>>,
+    pub symbol_ancestry: SymbolAncestryMap,
 }
 
 impl Dae {

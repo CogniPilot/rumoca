@@ -1374,6 +1374,63 @@ jobs:
             target/msl/modelicatest-results/modelica_test_catalog.md
           if-no-files-found: warn
 
+  modelica-models-gate:
+    name: modelica_models Compatibility Gate
+    runs-on: ubuntu-24.04
+    needs: [nix-build-msl]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      # Keep this corpus fixed so compiler changes are compared against the
+      # same source. Updating the revision is an explicit compatibility-ratchet
+      # change reviewed alongside its gate result.
+      - name: Check out pinned modelica_models corpus
+        uses: actions/checkout@v5
+        with:
+          repository: CogniPilot/modelica_models
+          ref: 973cc7f4d5ff39eee23303f83e6f10473a254f51
+          path: target/modelica-models
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Cachix (rumoca binary cache)
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
+      - name: Restore prebuilt compatibility runner (Cachix)
+        run: |
+          nix build .#msl-artifacts --out-link result-msl-artifacts
+
+      - name: Compile aggregate corpus with Rumoca
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./result-msl-artifacts/bin/rumoca-msl-profile \
+            --source-root "$PWD/target/modelica-models" \
+            --model Tests.All \
+            --mode compile
+
+      - name: Run pinned assertion smoke models with Rumoca
+        shell: bash
+        run: |
+          set -euo pipefail
+          for model in Tests.LieGroupTests.SO2 Tests.LieGroupTests.SE2; do
+            ./result-msl-artifacts/bin/rumoca-msl-profile \
+              --source-root "$PWD/target/modelica-models" \
+              --model "$model" \
+              --mode simulate \
+              --stop-time 0.0
+          done
+
   # ============================================================================
   # Documentation
   # ============================================================================

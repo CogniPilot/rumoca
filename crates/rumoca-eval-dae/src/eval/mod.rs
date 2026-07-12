@@ -105,9 +105,8 @@ mod eval_expr_impl;
 use array_eval::{
     declared_dims, eval_array_like_f64_values, eval_array_like_values, eval_binary_array_values,
     eval_columns_arg, eval_cross_values, eval_index_array_values, eval_linspace_values,
-    eval_matrix_index, eval_matrix_literal_rows, eval_matrix_vector_product,
-    eval_outer_product_values, eval_skew_values, eval_symmetric_values, eval_transpose_values,
-    eval_vector_matrix_product, reshape_flat_matrix, try_eval_cat_values,
+    eval_matrix_index, eval_matrix_literal_rows, eval_outer_product_values, eval_skew_values,
+    eval_symmetric_values, eval_transpose_values, reshape_flat_matrix, try_eval_cat_values,
     try_infer_runtime_expr_dims,
 };
 pub use array_eval::{eval_array_values, eval_matrix_values, eval_shaped_array_values};

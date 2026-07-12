@@ -121,6 +121,26 @@ pub fn eval_matrix_values<T: SimFloat>(
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => matrix_values_from_env_path(name.as_str(), env),
+            rumoca_core::Expression::VarRef { subscripts, .. } if !subscripts.is_empty() => {
+                let dims = try_infer_runtime_expr_dims(expr, env)?;
+                if dims.len() != 2 {
+                    return Ok(None);
+                }
+                let values = eval_array_like_values(expr, env)?;
+                Ok(Some(reshape_flat_matrix_generic(
+                    &values, dims[0], dims[1],
+                )?))
+            }
+            rumoca_core::Expression::Index { .. } => {
+                let dims = try_infer_runtime_expr_dims(expr, env)?;
+                if dims.len() != 2 {
+                    return Ok(None);
+                }
+                let values = eval_array_like_values(expr, env)?;
+                Ok(Some(reshape_flat_matrix_generic(
+                    &values, dims[0], dims[1],
+                )?))
+            }
             rumoca_core::Expression::FieldAccess { .. } => {
                 let Some(path) = try_eval_field_access_path(expr, env)? else {
                     return Ok(None);
@@ -187,27 +207,28 @@ pub(super) fn eval_binary_matrix_values<T: SimFloat>(
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<Vec<T>>>, EvalError> {
-    match op {
-        OpBinary::Mul => {
-            if let Some(product) = eval_matrix_matrix_product_rows(lhs, rhs, env)? {
-                return Ok(Some(product));
-            }
-            eval_scalar_matrix_broadcast(op, lhs, rhs, env)
-        }
-        OpBinary::MulElem
-        | OpBinary::Div
-        | OpBinary::DivElem
-        | OpBinary::Add
-        | OpBinary::AddElem
-        | OpBinary::Sub
-        | OpBinary::SubElem => {
-            if let Some(rows) = eval_elementwise_matrix_values(op, lhs, rhs, env)? {
-                return Ok(Some(rows));
-            }
-            eval_scalar_matrix_broadcast(op, lhs, rhs, env)
-        }
-        _ => Ok(None),
+    if !matches!(
+        op,
+        OpBinary::Mul
+            | OpBinary::MulElem
+            | OpBinary::Div
+            | OpBinary::DivElem
+            | OpBinary::Add
+            | OpBinary::AddElem
+            | OpBinary::Sub
+            | OpBinary::SubElem
+    ) {
+        return Ok(None);
     }
+    let operand = eval_shaped_binary_operand(op, lhs, rhs, env)?;
+    let [rows, columns] = operand.dims.as_slice() else {
+        return Ok(None);
+    };
+    Ok(Some(reshape_flat_matrix_generic(
+        &operand.values,
+        *rows,
+        *columns,
+    )?))
 }
 
 /// Matrix values of a flattened array binding reachable by `path`.
@@ -231,110 +252,6 @@ pub(super) fn matrix_values_from_env_path<T: SimFloat>(
         )?));
     }
     Ok(None)
-}
-
-pub(super) fn apply_matrix_binary_op<T: SimFloat>(op: &OpBinary, l: T, r: T) -> Option<T> {
-    Some(match op {
-        OpBinary::Add | OpBinary::AddElem => l + r,
-        OpBinary::Sub | OpBinary::SubElem => l - r,
-        OpBinary::Mul | OpBinary::MulElem => l * r,
-        OpBinary::Div | OpBinary::DivElem => l / r,
-        _ => return None,
-    })
-}
-
-/// Elementwise combination of two same-shape matrix operands (MLS §10.6).
-pub(super) fn eval_elementwise_matrix_values<T: SimFloat>(
-    op: &OpBinary,
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Option<Vec<Vec<T>>>, EvalError> {
-    let Some(lhs_rows) = eval_matrix_values(lhs, env)? else {
-        return Ok(None);
-    };
-    let Some(rhs_rows) = eval_matrix_values(rhs, env)? else {
-        return Ok(None);
-    };
-    if lhs_rows.len() != rhs_rows.len() {
-        return Err(EvalError::ShapeMismatch {
-            context: "elementwise matrix rows",
-            expected: lhs_rows.len(),
-            actual: rhs_rows.len(),
-        });
-    }
-    let mut rows = Vec::with_capacity(lhs_rows.len());
-    for (lhs_row, rhs_row) in lhs_rows.iter().zip(rhs_rows.iter()) {
-        if lhs_row.len() != rhs_row.len() {
-            return Err(EvalError::ShapeMismatch {
-                context: "elementwise matrix columns",
-                expected: lhs_row.len(),
-                actual: rhs_row.len(),
-            });
-        }
-        let row = lhs_row
-            .iter()
-            .zip(rhs_row.iter())
-            .map(|(l, r)| {
-                apply_matrix_binary_op(op, *l, *r).ok_or(EvalError::UnsupportedExpression {
-                    kind: "elementwise matrix operator",
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.push(row);
-    }
-    Ok(Some(rows))
-}
-
-/// Broadcast a scalar operand over a matrix operand (e.g. `0.5 * A`).
-pub(super) fn eval_scalar_matrix_broadcast<T: SimFloat>(
-    op: &OpBinary,
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Option<Vec<Vec<T>>>, EvalError> {
-    let scalar_of = |expr: &rumoca_core::Expression| -> Result<Option<T>, EvalError> {
-        let values = eval_array_like_values(expr, env)?;
-        Ok((values.len() == 1).then(|| values[0]))
-    };
-    if let Some(rows) = eval_matrix_values(lhs, env)? {
-        let Some(scalar) = scalar_of(rhs)? else {
-            return Ok(None);
-        };
-        return Ok(Some(map_matrix_rows(rows, |value| {
-            apply_matrix_binary_op(op, value, scalar)
-        })?));
-    }
-    if let Some(rows) = eval_matrix_values(rhs, env)? {
-        // Plain matrix division requires the scalar on the right (MLS §10.6.7).
-        if matches!(op, OpBinary::Div) {
-            return Ok(None);
-        }
-        let Some(scalar) = scalar_of(lhs)? else {
-            return Ok(None);
-        };
-        return Ok(Some(map_matrix_rows(rows, |value| {
-            apply_matrix_binary_op(op, scalar, value)
-        })?));
-    }
-    Ok(None)
-}
-
-pub(super) fn map_matrix_rows<T: SimFloat>(
-    rows: Vec<Vec<T>>,
-    mut f: impl FnMut(T) -> Option<T>,
-) -> Result<Vec<Vec<T>>, EvalError> {
-    rows.into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|value| {
-                    f(value).ok_or(EvalError::UnsupportedExpression {
-                        kind: "matrix broadcast operator",
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .collect()
 }
 
 pub(super) fn eval_function_call_matrix_values<T: SimFloat>(
@@ -493,92 +410,4 @@ pub(in crate::eval) fn eval_symmetric_values<T: SimFloat>(
         }
     }
     Ok(Some(out))
-}
-
-pub(in crate::eval) fn eval_matrix_vector_product<T: SimFloat>(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Option<Vec<T>>, EvalError> {
-    let Some(matrix) = eval_matrix_values(lhs, env)? else {
-        return Ok(None);
-    };
-    let vector = eval_array_like_values(rhs, env)?;
-    let cols = rectangular_matrix_cols(&matrix, "matrix-vector product")?;
-    if matrix.is_empty() || cols == 0 || vector.len() != cols {
-        return Ok(None);
-    }
-
-    Ok(Some(
-        matrix
-            .iter()
-            .map(|row| (0..cols).fold(T::zero(), |acc, col| acc + row[col] * vector[col]))
-            .collect(),
-    ))
-}
-
-pub(in crate::eval) fn eval_vector_matrix_product<T: SimFloat>(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Option<Vec<T>>, EvalError> {
-    let vector = eval_array_like_values(lhs, env)?;
-    let Some(matrix) = eval_matrix_values(rhs, env)? else {
-        return Ok(None);
-    };
-    let rows = matrix.len();
-    let cols = rectangular_matrix_cols(&matrix, "vector-matrix product")?;
-    if rows == 0 || cols == 0 || vector.len() != rows {
-        return Ok(None);
-    }
-
-    Ok(Some(
-        (0..cols)
-            .map(|col| (0..rows).fold(T::zero(), |acc, row| acc + vector[row] * matrix[row][col]))
-            .collect(),
-    ))
-}
-
-pub(super) fn eval_matrix_matrix_product<T: SimFloat>(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Option<Vec<T>>, EvalError> {
-    Ok(eval_matrix_matrix_product_rows(lhs, rhs, env)?.map(|rows| flatten_matrix(&rows)))
-}
-
-pub(super) fn eval_matrix_matrix_product_rows<T: SimFloat>(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<Option<Vec<Vec<T>>>, EvalError> {
-    let Some(lhs_matrix) = eval_matrix_values(lhs, env)? else {
-        return Ok(None);
-    };
-    let Some(rhs_matrix) = eval_matrix_values(rhs, env)? else {
-        return Ok(None);
-    };
-    let rows = lhs_matrix.len();
-    let inner = rectangular_matrix_cols(&lhs_matrix, "matrix-matrix lhs")?;
-    let rhs_rows = rhs_matrix.len();
-    let cols = rectangular_matrix_cols(&rhs_matrix, "matrix-matrix rhs")?;
-    if rows == 0 || inner == 0 || rhs_rows != inner || cols == 0 {
-        return Ok(None);
-    }
-
-    Ok(Some(
-        (0..rows)
-            .map(|row| {
-                (0..cols)
-                    .map(|col| {
-                        (0..inner).fold(T::zero(), |acc, k| {
-                            let l = lhs_matrix[row][k];
-                            let r = rhs_matrix[k][col];
-                            acc + l * r
-                        })
-                    })
-                    .collect()
-            })
-            .collect(),
-    ))
 }

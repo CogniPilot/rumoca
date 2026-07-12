@@ -1,6 +1,40 @@
 use super::*;
 use crate::source_spans::required_location_span;
 
+pub(super) fn effective_function_param_class_type(
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def: &ast::ClassDef,
+) -> rumoca_core::ClassType {
+    const MAX_ALIAS_DEPTH: usize = 32;
+    let mut current = class_def;
+    let mut visited = HashSet::new();
+
+    for _ in 0..MAX_ALIAS_DEPTH {
+        if current.class_type != rumoca_core::ClassType::Type {
+            return current.class_type.clone();
+        }
+        if let Some(def_id) = current.def_id
+            && !visited.insert(def_id)
+        {
+            break;
+        }
+        let Some(base) = current.extends.first() else {
+            break;
+        };
+        let base_name = base.base_name.to_string();
+        if rumoca_core::is_builtin_type(&base_name) {
+            break;
+        }
+        let Some(base_class) = class_by_name_or_def_id(class_index, &base_name, base.base_def_id)
+        else {
+            break;
+        };
+        current = base_class;
+    }
+
+    class_def.class_type.clone()
+}
+
 /// Convert an AST ExternalFunction to ExternalFunction.
 pub(super) fn convert_external_function(
     ext: &rumoca_ir_ast::ExternalFunction,
@@ -566,12 +600,12 @@ pub(super) fn function_param_type_class(
         .type_name
         .def_id
         .and_then(|def_id| class_index.get(def_id))
-        .map(|class_def| class_def.class_type.clone())
+        .map(|class_def| effective_function_param_class_type(class_index, class_def))
         .or_else(|| {
             let type_name = component.type_name.to_string();
             class_index
                 .get_by_qualified_name(&type_name)
-                .map(|class_def| class_def.class_type.clone())
+                .map(|class_def| effective_function_param_class_type(class_index, class_def))
         })
 }
 

@@ -2,6 +2,8 @@ use super::*;
 use rumoca_core::Span;
 use std::collections::HashMap;
 
+mod review_regression_tests;
+
 fn test_span() -> Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_structural_scalarize_tests_source_1.mo"),
@@ -863,6 +865,51 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
             span: rumoca_core::Span::DUMMY,
         }
     );
+}
+
+#[test]
+fn scalarize_does_not_reproject_an_already_selected_function_output() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("xhat"), variable("xhat", &[2]));
+
+    let mut function = rumoca_core::Function::new("ekfUpdate", test_span());
+    set_function_instance(&mut function, 5);
+    function.add_output(rumoca_core::FunctionParam::new(
+        "valid",
+        "Boolean",
+        test_span(),
+    ));
+    function.add_output(
+        rumoca_core::FunctionParam::new("xhat", "Real", test_span()).with_dims(vec![2]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("ekfUpdate"), function);
+    let selected_name = projected_function_reference("ekfUpdate.xhat", test_span(), 5, 1);
+    dae_model.continuous.equations.push(eq(
+        "xhat",
+        Expression::FunctionCall {
+            name: selected_name.clone(),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        },
+        2,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 2);
+    for equation in &dae_model.continuous.equations {
+        assert!(matches!(
+            &equation.rhs,
+            Expression::FunctionCall { name, .. } if name == &selected_name
+        ));
+    }
 }
 
 #[test]

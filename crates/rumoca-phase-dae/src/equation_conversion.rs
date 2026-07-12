@@ -497,14 +497,17 @@ fn record_field_specs_for_call(
     is_constructor: bool,
     flat: &flat::Model,
 ) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
-    let function = name.resolved_function().and_then(|resolved| {
-        flat.functions
-            .values()
-            .find(|function| function.instance_id == Some(resolved.instance_id))
-    });
-    let Some(function) = function else {
+    let Some(resolved) = name.resolved_function() else {
         return Ok(None);
     };
+    let function =
+        rumoca_core::resolve_function_instance(flat.functions.values(), resolved.instance_id)
+            .map_err(|error| {
+                name.span().map_or_else(
+                    || ToDaeError::runtime_contract_violation(error.to_string()),
+                    |span| ToDaeError::runtime_contract_violation_at(error.to_string(), span),
+                )
+            })?;
     let fields = if is_constructor || function.is_constructor {
         function.inputs.clone()
     } else {
@@ -523,19 +526,21 @@ fn record_field_specs_for_call(
                 output.span,
             )
         })?;
-        flat.functions
-            .values()
-            .find(|candidate| candidate.is_constructor && candidate.def_id == Some(type_def_id))
-            .map(|constructor| constructor.inputs.clone())
-            .ok_or_else(|| {
-                ToDaeError::runtime_contract_violation_at(
-                    format!(
-                        "record output `{}.{}` has no constructor for resolved type identity",
-                        function.name, output.name
-                    ),
-                    output.span,
-                )
-            })?
+        rumoca_core::resolve_record_constructor(
+            flat.functions.values(),
+            &output.type_name,
+            type_def_id,
+        )
+        .map(|constructor| constructor.inputs.clone())
+        .map_err(|error| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "record output `{}.{}` constructor lookup failed: {error}",
+                    function.name, output.name,
+                ),
+                output.span,
+            )
+        })?
     };
     RecordFieldSpec::from_params(fields)
 }
@@ -583,7 +588,7 @@ impl RecordFieldSpec {
     fn matches_component_ref(
         &self,
         field_ref: &rumoca_core::ComponentReference,
-        symbol_ancestry: &IndexMap<rumoca_core::DefId, Vec<rumoca_core::DefId>>,
+        symbol_ancestry: &flat::SymbolAncestryMap,
     ) -> bool {
         self.param.def_id.is_some_and(|expected| {
             field_ref.def_id == Some(expected)
@@ -761,7 +766,7 @@ fn component_ref_matches_record_field(
     lhs_ref: &rumoca_core::ComponentReference,
     field_ref: &rumoca_core::ComponentReference,
     field: &RecordFieldSpec,
-    symbol_ancestry: &IndexMap<rumoca_core::DefId, Vec<rumoca_core::DefId>>,
+    symbol_ancestry: &flat::SymbolAncestryMap,
 ) -> bool {
     let lhs_parts = lhs_ref.parts.as_slice();
     let field_parts = field_ref.parts.as_slice();

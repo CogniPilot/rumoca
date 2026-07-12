@@ -69,6 +69,7 @@ impl<'a> ScalarProjectionContext<'a> {
             dynamic_function_output_map: self.dynamic_function_output_map,
             record_field_projection_map: self.record_field_projection_map,
             expected_dims: self.expected_dims,
+            allow_dynamic_function_projection: true,
         }
     }
 

@@ -191,7 +191,7 @@ pub enum FlattenError {
 
     /// A resolved class reached flattening without the DefId metadata required
     /// for scope-based lookup.
-    #[error("missing resolved class metadata for `{name}`")]
+    #[error("missing resolved class metadata for `{name}` ({context})")]
     #[diagnostic(
         code(rumoca::flatten::EF015),
         help("name resolution must assign and preserve DefId metadata before flattening")

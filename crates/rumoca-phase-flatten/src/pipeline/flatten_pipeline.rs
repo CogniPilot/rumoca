@@ -765,6 +765,7 @@ pub(crate) fn process_component_instances_for_flatten(
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
+    let identity_space = InstanceIdentitySpace::from_tree(tree);
     for instance_data in overlay.components.values() {
         if is_in_disabled_component(&instance_data.qualified_name, &overlay.disabled_components) {
             continue;
@@ -778,6 +779,7 @@ pub(crate) fn process_component_instances_for_flatten(
             import_cache: &mut import_cache,
             scope_index: &scope_index,
             component_members,
+            identity_space,
         })?;
         track_top_level_component_markers(flat, instance_data);
     }

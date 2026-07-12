@@ -76,12 +76,22 @@ fn eval_assignment_statement<T: SimFloat>(
         && let Some(dims) = env.dims.get(name.as_str()).cloned()
         && !dims.is_empty()
     {
-        let values = eval::eval_array_values(value, env)?;
+        let expected = dims
+            .iter()
+            .try_fold(1usize, |count, extent| {
+                usize::try_from(*extent)
+                    .ok()
+                    .and_then(|extent| count.checked_mul(extent))
+            })
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "full-array assignment dimensions",
+            })?;
+        let values = eval::eval_shaped_array_values(value, env, expected)?;
         eval::set_array_entries(env, &name, &dims, &values);
         return Ok(());
     }
     if !has_explicit_subscripts
-        && name.contains('.')
+        && comp.parts.len() > 1
         && let Ok(inferred_dims) = eval::infer_runtime_expr_dims(value, env)
         && !inferred_dims.is_empty()
     {
@@ -579,6 +589,13 @@ fn apply_materialized_function_outputs<T: SimFloat>(
     output_names: &[String],
     env: &mut VarEnv<T>,
 ) -> Result<(), EvalError> {
+    if outputs.len() > output_names.len() {
+        return Err(EvalError::ShapeMismatch {
+            context: "function call output arity",
+            expected: output_names.len(),
+            actual: outputs.len(),
+        });
+    }
     let by_name = materialized
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
@@ -648,6 +665,13 @@ fn apply_selected_function_outputs<T: SimFloat>(
     else {
         return Ok(false);
     };
+    if outputs.len() > output_names.len() {
+        return Err(EvalError::ShapeMismatch {
+            context: "function call output arity",
+            expected: output_names.len(),
+            actual: outputs.len(),
+        });
+    }
 
     if let Some(materialized) = eval::eval_user_function_outputs_pub(&resolved_name, args, env)? {
         apply_materialized_function_outputs(materialized, outputs, &output_names, env)?;
@@ -755,13 +779,16 @@ fn eval_function_call_statement<T: SimFloat>(
             if eval::eval_expr::<T>(condition, env)?.to_bool() {
                 return Ok(());
             }
-            return Err(EvalError::AssertionFailed {
-                message: statement_message(args.get(1), "assertion failed"),
-            });
+            let message = statement_message(args.get(1), "assertion failed", env);
+            if args.get(2).is_some_and(assertion_level_is_warning) {
+                tracing::warn!(target: "rumoca_eval_dae::assert", "{message}");
+                return Ok(());
+            }
+            return Err(EvalError::AssertionFailed { message });
         }
         "terminate" => {
             return Err(EvalError::Terminated {
-                message: statement_message(args.first(), "simulation terminated"),
+                message: statement_message(args.first(), "simulation terminated", env),
             });
         }
         _ => {}
@@ -782,13 +809,72 @@ fn eval_function_call_statement<T: SimFloat>(
     Ok(())
 }
 
-fn statement_message(expr: Option<&rumoca_core::Expression>, fallback: &str) -> String {
+fn assertion_level_is_warning(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::VarRef { name, .. }
+            if name.as_str() == "AssertionLevel.warning"
+                || name.as_str().ends_with(".AssertionLevel.warning")
+    )
+}
+
+fn statement_message<T: SimFloat>(
+    expr: Option<&rumoca_core::Expression>,
+    fallback: &str,
+    env: &VarEnv<T>,
+) -> String {
+    expr.and_then(|expr| eval_statement_string(expr, env))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn eval_statement_string<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Option<String> {
     match expr {
-        Some(rumoca_core::Expression::Literal {
+        rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String(message),
             ..
-        }) => message.clone(),
-        _ => fallback.to_string(),
+        } => Some(message.clone()),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem,
+            lhs,
+            rhs,
+            ..
+        } => Some(format!(
+            "{}{}",
+            eval_statement_string(lhs, env)?,
+            eval_statement_string(rhs, env)?
+        )),
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if name.var_name().last_segment() == "String" =>
+        {
+            let value = args.first()?;
+            match value {
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(value),
+                    ..
+                } => Some(value.to_string()),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Boolean(value),
+                    ..
+                } => Some(value.to_string()),
+                _ => Some(eval::eval_expr::<T>(value, env).ok()?.real().to_string()),
+            }
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                if eval::eval_expr::<T>(condition, env).ok()?.to_bool() {
+                    return eval_statement_string(value, env);
+                }
+            }
+            eval_statement_string(else_branch, env)
+        }
+        _ => None,
     }
 }
 
@@ -920,6 +1006,8 @@ pub fn eval_algorithms<T: SimFloat>(_dae: &rumoca_ir_dae::Dae, _env: &mut VarEnv
 mod tests {
     use super::*;
 
+    mod record_output_tests;
+
     fn env_value<T: crate::sim_float::SimFloat>(env: &VarEnv<T>, name: &str) -> T {
         match env.require(name) {
             Ok(value) => value,
@@ -1015,6 +1103,64 @@ mod tests {
             err,
             EvalError::AssertionFailed {
                 message: "radius must be positive".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn warning_assert_statement_reports_without_stopping_evaluation() {
+        let mut env = VarEnv::<f64>::new();
+        eval_statements(
+            &[
+                call_statement(
+                    "assert",
+                    vec![
+                        bool_lit(false),
+                        string_lit("warning only"),
+                        var("AssertionLevel.warning"),
+                    ],
+                ),
+                rumoca_core::Statement::Assignment {
+                    comp: comp_ref(&["continued"]),
+                    value: real(1.0),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
+            &mut env,
+        )
+        .expect("AssertionLevel.warning must not stop the function");
+
+        assert_eq!(env_value(&env, "continued"), 1.0);
+    }
+
+    #[test]
+    fn failed_assert_evaluates_computed_string_message() {
+        let mut env = VarEnv::<f64>::new();
+        let computed_message = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(string_lit("value=")),
+            rhs: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("String"),
+                args: vec![real(5.0)],
+                is_constructor: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let error = eval_statements(
+            &[call_statement(
+                "assert",
+                vec![bool_lit(false), computed_message],
+            )],
+            &mut env,
+        )
+        .expect_err("error-level assertion must stop evaluation");
+
+        assert_eq!(
+            error,
+            EvalError::AssertionFailed {
+                message: "value=5".to_string()
             }
         );
     }

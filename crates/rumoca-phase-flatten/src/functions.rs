@@ -26,12 +26,14 @@ use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
 
 mod call_args;
+mod constant_overrides;
 mod constructor_signature;
 mod function_metadata;
 mod function_output_validation;
 #[cfg(test)]
 mod tests;
 pub(crate) use call_args::validate_flat_function_call_args;
+use constant_overrides::active_constant_def_overrides;
 use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
 use function_metadata::*;
 pub(crate) use function_metadata::{
@@ -875,7 +877,8 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
         else {
             return self.walk_expression(expr);
         };
-        if let Some(component_ref) = name.component_ref()
+        if name.resolved_function().is_none()
+            && let Some(component_ref) = name.component_ref()
             && component_ref.to_var_name() != *name.var_name()
         {
             self.error.get_or_insert_with(|| {
@@ -1384,7 +1387,22 @@ fn resolve_function_in_package_chain_class<'a>(
             return Some((class_def, direct));
         }
 
-        let package_class = class_index.get_by_qualified_name(package_name)?;
+        let package_class =
+            if let Some(package_class) = class_index.get_by_qualified_name(package_name) {
+                package_class
+            } else {
+                let (owner_scope, exposed_package) = path_utils::scope_split(package_name)?;
+                let owner = class_index.get_by_qualified_name(owner_scope)?;
+                let target = crate::pipeline::extends_class_redeclare_target(
+                    tree,
+                    class_index,
+                    owner,
+                    owner_scope,
+                    exposed_package,
+                )?;
+                let target_name = target.def_id.and_then(|def_id| tree.def_map.get(&def_id))?;
+                return resolve_inner(tree, class_index, target_name, function_leaf, visited);
+            };
         // MLS §7.3: an extends-clause class redeclare replaces the inherited
         // member, so it wins over the (possibly partial) lexical base member.
         if let Some(target) = crate::pipeline::extends_class_redeclare_target(
@@ -1677,7 +1695,7 @@ fn convert_callable<'tree>(
                 class_index,
                 qualified_name,
                 &mut constructor,
-            );
+            )?;
             Ok(Some(constructor))
         }
         _ => Ok(None),
@@ -1799,7 +1817,7 @@ fn convert_function<'tree>(
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
     rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
-    contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func);
+    contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func)?;
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }
@@ -1818,7 +1836,7 @@ fn contextualize_record_param_type_names(
     class_index: &ast::ClassDefIndex<'_>,
     exposed_name: &str,
     func: &mut rumoca_core::Function,
-) {
+) -> Result<(), FlattenError> {
     for param in func
         .inputs
         .iter_mut()
@@ -1828,19 +1846,40 @@ fn contextualize_record_param_type_names(
         if param.type_class != Some(rumoca_core::ClassType::Record) {
             continue;
         }
-        let Some(resolution) = resolve_function_class_with_scope(
+        let resolution = resolve_function_class_with_scope(
             tree,
             class_index,
             &param.type_name,
             Some(exposed_name),
-        ) else {
-            continue;
-        };
-        if resolution.class_def.class_type == rumoca_core::ClassType::Record {
-            param.type_name = resolution.exposed_name;
-            param.type_def_id = resolution.class_def.def_id;
+        )
+        .or_else(|| {
+            let type_def_id = param.type_def_id?;
+            let class_def = class_index.get(type_def_id)?;
+            Some(FunctionClassResolution {
+                exposed_name: class_index.qualified_name(type_def_id)?.to_string(),
+                class_def,
+            })
+        })
+        .ok_or_else(|| {
+            FlattenError::missing_resolved_class_metadata(
+                &param.type_name,
+                format!("record function parameter type contextualization in `{exposed_name}`"),
+                param.span,
+            )
+        })?;
+        if effective_function_param_class_type(class_index, resolution.class_def)
+            != rumoca_core::ClassType::Record
+        {
+            return Err(FlattenError::missing_resolved_class_metadata(
+                &param.type_name,
+                "record function parameter resolved to a non-record class",
+                param.span,
+            ));
         }
+        param.type_name = resolution.exposed_name;
+        param.type_def_id = resolution.class_def.def_id;
     }
+    Ok(())
 }
 
 fn function_initial_import_map<'tree>(
@@ -1953,58 +1992,4 @@ fn collect_effective_package_constant_aliases(
             }
         }
     }
-}
-
-fn active_constant_def_overrides(
-    tree: &ast::ClassTree,
-    class_index: &ast::ClassDefIndex<'_>,
-    active_function: &ast::ClassDef,
-    def_map: &crate::ResolveDefMap,
-) -> crate::ResolveDefMap {
-    let Some(active_function_def_id) = active_function.def_id else {
-        return crate::ResolveDefMap::default();
-    };
-    let Some(active_package_def_id) = class_index.parent_def_id(active_function_def_id) else {
-        return crate::ResolveDefMap::default();
-    };
-    let Some(active_package) = tree.def_map.get(&active_package_def_id) else {
-        return crate::ResolveDefMap::default();
-    };
-    let mut package_chain = Vec::new();
-    let mut visited = FxHashSet::default();
-    collect_package_chain(
-        tree,
-        class_index,
-        active_package,
-        &mut package_chain,
-        &mut visited,
-    );
-    if package_chain.is_empty() {
-        package_chain.push(active_package_def_id);
-    }
-    let package_chain: FxHashSet<rumoca_core::DefId> = package_chain.into_iter().collect();
-    def_map
-        .iter()
-        .filter_map(|(def_id, _resolved_path)| {
-            let source_def_id = class_index.parent_def_id(*def_id)?;
-            if source_def_id == active_package_def_id {
-                return None;
-            }
-            if !package_chain.contains(&source_def_id) {
-                return None;
-            }
-            let source_class = class_index.get(source_def_id)?;
-            let leaf = class_index.local_name(*def_id)?;
-            let component = source_class.components.get(leaf)?;
-            if component.def_id != Some(*def_id)
-                || !matches!(
-                    component.variability,
-                    rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-                )
-            {
-                return None;
-            }
-            Some((*def_id, format!("{active_package}.{leaf}")))
-        })
-        .collect()
 }

@@ -838,10 +838,69 @@ fn contextualized_record_parameter_updates_declaration_identity() {
             .with_type_def_id(inherited_state_def),
     );
 
-    contextualize_record_param_type_names(&tree, &class_index, "Pkg.f", &mut function);
+    contextualize_record_param_type_names(&tree, &class_index, "Pkg.f", &mut function).unwrap();
 
     assert_eq!(function.inputs[0].type_name, "Pkg.State");
     assert_eq!(function.inputs[0].type_def_id, Some(concrete_state_def));
+}
+
+#[test]
+fn contextualized_record_parameter_follows_replaceable_type_alias() {
+    let package_def = rumoca_core::DefId::new(11);
+    let record_def = rumoca_core::DefId::new(12);
+    let alias_def = rumoca_core::DefId::new(13);
+    let mut package = class("Pkg", rumoca_core::ClassType::Package, package_def);
+    package.classes.insert(
+        "Quaternion".to_string(),
+        class("Quaternion", rumoca_core::ClassType::Record, record_def),
+    );
+    let mut alias = class("Orientation", rumoca_core::ClassType::Type, alias_def);
+    alias.extends.push(ast::Extend {
+        base_name: ast::Name::from_string("Pkg.Quaternion"),
+        base_def_id: Some(record_def),
+        ..Default::default()
+    });
+    package.classes.insert("Orientation".to_string(), alias);
+
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("Pkg".to_string(), package);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    function.add_input(
+        rumoca_core::FunctionParam::new("orientation", "Orientation", test_span())
+            .with_type_class(rumoca_core::ClassType::Record)
+            .with_type_def_id(record_def),
+    );
+
+    contextualize_record_param_type_names(&tree, &class_index, "Pkg.f", &mut function).unwrap();
+
+    assert_eq!(function.inputs[0].type_name, "Pkg.Orientation");
+    assert_eq!(function.inputs[0].type_def_id, Some(alias_def));
+}
+
+#[test]
+fn contextualized_record_parameter_uses_resolved_identity_for_lexical_alias() {
+    let package_def = rumoca_core::DefId::new(21);
+    let record_def = rumoca_core::DefId::new(22);
+    let mut package = class("Pkg", rumoca_core::ClassType::Package, package_def);
+    package.classes.insert(
+        "ComplexVoltage".to_string(),
+        class("ComplexVoltage", rumoca_core::ClassType::Record, record_def),
+    );
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("Pkg".to_string(), package);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    function.add_input(
+        rumoca_core::FunctionParam::new("voltage", "SI.ComplexVoltage", test_span())
+            .with_type_class(rumoca_core::ClassType::Record)
+            .with_type_def_id(record_def),
+    );
+
+    contextualize_record_param_type_names(&tree, &class_index, "Pkg.f", &mut function).unwrap();
+
+    assert_eq!(function.inputs[0].type_name, "Pkg.ComplexVoltage");
+    assert_eq!(function.inputs[0].type_def_id, Some(record_def));
 }
 
 #[test]

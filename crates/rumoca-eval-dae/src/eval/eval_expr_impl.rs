@@ -5,6 +5,8 @@ mod checked_eval;
 pub use checked_eval::eval_expr;
 mod builtin_eval;
 pub(super) use builtin_eval::*;
+mod enum_eval;
+use enum_eval::lookup_enum_literal_ordinal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
@@ -1694,69 +1696,6 @@ fn lowered_pre_parameter_value<T: SimFloat>(
     Ok(None)
 }
 
-pub(super) fn lookup_enum_literal_ordinal(
-    raw: &str,
-    ordinals: &IndexMap<String, i64>,
-) -> Option<i64> {
-    if let Some(&ordinal) = ordinals.get(raw) {
-        return Some(ordinal);
-    }
-    let mut raw_parts = rumoca_core::ComponentPath::from_flat_path(raw).into_parts();
-    if raw_parts.len() < 2 {
-        return None;
-    }
-    let literal = raw_parts.pop()?;
-    let literal = literal.as_str();
-    let prefix = raw_parts.join(".");
-    if let Some(unquoted) = strip_quoted_identifier(literal) {
-        let alt = format!("{prefix}.{unquoted}");
-        return ordinals
-            .get(&alt)
-            .copied()
-            .or_else(|| lookup_enum_literal_by_unambiguous_suffix(literal, ordinals));
-    }
-    let alt = format!("{prefix}.'{literal}'");
-    ordinals
-        .get(&alt)
-        .copied()
-        .or_else(|| lookup_enum_literal_by_unambiguous_suffix(literal, ordinals))
-}
-
-pub(super) fn strip_quoted_identifier(segment: &str) -> Option<&str> {
-    if segment.len() >= 2 && segment.starts_with('\'') && segment.ends_with('\'') {
-        Some(&segment[1..segment.len() - 1])
-    } else {
-        None
-    }
-}
-
-fn lookup_enum_literal_by_unambiguous_suffix(
-    raw_literal: &str,
-    ordinals: &IndexMap<String, i64>,
-) -> Option<i64> {
-    let target = canonical_enum_literal_segment(raw_literal);
-    let mut found = None;
-    for (name, ordinal) in ordinals {
-        let path = rumoca_core::ComponentPath::from_flat_path(name);
-        let Some(literal) = (path.len() >= 2).then(|| path.parts().last()).flatten() else {
-            continue;
-        };
-        if canonical_enum_literal_segment(literal) != target {
-            continue;
-        }
-        match found {
-            Some(existing) if existing != *ordinal => return None,
-            Some(_) => {}
-            None => found = Some(*ordinal),
-        }
-    }
-    found
-}
-
-fn canonical_enum_literal_segment(segment: &str) -> &str {
-    strip_quoted_identifier(segment).unwrap_or(segment)
-}
-
 pub(super) fn try_eval_vector_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -1818,6 +1757,9 @@ pub(super) fn try_eval_vector_values<T: SimFloat>(
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
+            if try_infer_runtime_expr_dims(expr, env)?.len() != 1 {
+                return Ok(None);
+            }
             let values = eval_index_array_values(base, subscripts, env)?;
             Ok((values.len() > 1).then_some(values))
         }
@@ -1860,16 +1802,39 @@ fn try_eval_vector_binary_values<T: SimFloat>(
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<T>>, EvalError> {
+    if matches!(
+        op,
+        rumoca_core::OpBinary::Mul
+            | rumoca_core::OpBinary::MulElem
+            | rumoca_core::OpBinary::Div
+            | rumoca_core::OpBinary::DivElem
+            | rumoca_core::OpBinary::Add
+            | rumoca_core::OpBinary::AddElem
+            | rumoca_core::OpBinary::Sub
+            | rumoca_core::OpBinary::SubElem
+    ) {
+        let operand = array_eval::eval_shaped_binary_operand(op, lhs, rhs, env)?;
+        return Ok(matches!(operand.dims.as_slice(), [_]).then_some(operand.values));
+    }
+    if !matches!(
+        op,
+        rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem
+    ) {
+        return Ok(None);
+    }
+    eval_vector_power_values(lhs, rhs, env)
+}
+
+fn eval_vector_power_values<T: SimFloat>(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<Vec<T>>, EvalError> {
     let lhs_values = try_eval_vector_values(lhs, env)?;
     let rhs_values = try_eval_vector_values(rhs, env)?;
 
     match (lhs_values, rhs_values) {
         (Some(lhs), Some(rhs)) => {
-            if matches!(op, rumoca_core::OpBinary::Mul) {
-                // Plain vector multiplication is a scalar dot product, not a
-                // vector-valued expression.
-                return Ok(None);
-            }
             if lhs.len() != rhs.len() {
                 return Err(EvalError::ShapeMismatch {
                     context: "vector binary expression",
@@ -1877,86 +1842,20 @@ fn try_eval_vector_binary_values<T: SimFloat>(
                     actual: rhs.len(),
                 });
             }
-            if !matches!(
-                op,
-                rumoca_core::OpBinary::Add
-                    | rumoca_core::OpBinary::AddElem
-                    | rumoca_core::OpBinary::Sub
-                    | rumoca_core::OpBinary::SubElem
-                    | rumoca_core::OpBinary::MulElem
-                    | rumoca_core::OpBinary::Div
-                    | rumoca_core::OpBinary::DivElem
-                    | rumoca_core::OpBinary::Exp
-                    | rumoca_core::OpBinary::ExpElem
-            ) {
-                return Ok(None);
-            }
             let values = lhs
                 .into_iter()
                 .zip(rhs)
-                .map(|(lhs, rhs)| match op {
-                    rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs + rhs,
-                    rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs - rhs,
-                    rumoca_core::OpBinary::MulElem => lhs * rhs,
-                    rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => lhs / rhs,
-                    rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => lhs.powf(rhs),
-                    _ => unreachable!("vector operator filtered above"),
-                })
+                .map(|(lhs, rhs)| lhs.powf(rhs))
                 .collect::<Vec<_>>();
             Ok(Some(values))
         }
         (Some(values), None) => {
-            // MLS §10.6.4: `vector * matrix` is a matrix product, so try it
-            // before treating the non-vector side as a scalar.
-            if matches!(op, rumoca_core::OpBinary::Mul)
-                && let Some(product) = eval_vector_matrix_product(lhs, rhs, env)?
-            {
-                return Ok(Some(product));
-            }
             let scalar = eval_expr(rhs, env)?;
-            let mapped = match op {
-                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => {
-                    values.into_iter().map(|value| value + scalar).collect()
-                }
-                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => {
-                    values.into_iter().map(|value| value - scalar).collect()
-                }
-                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => {
-                    values.into_iter().map(|value| value * scalar).collect()
-                }
-                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
-                    values.into_iter().map(|value| value / scalar).collect()
-                }
-                rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => {
-                    values.into_iter().map(|value| value.powf(scalar)).collect()
-                }
-                _ => return Ok(None),
-            };
-            Ok(Some(mapped))
+            Ok(Some(
+                values.into_iter().map(|value| value.powf(scalar)).collect(),
+            ))
         }
-        (None, Some(values)) => {
-            // MLS §10.6.4: `matrix * vector` is a matrix product, so try it
-            // before treating the non-vector side as a scalar.
-            if matches!(op, rumoca_core::OpBinary::Mul)
-                && let Some(product) = eval_matrix_vector_product(lhs, rhs, env)?
-            {
-                return Ok(Some(product));
-            }
-            let scalar = eval_expr(lhs, env)?;
-            let mapped = match op {
-                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => {
-                    values.into_iter().map(|value| scalar + value).collect()
-                }
-                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => {
-                    values.into_iter().map(|value| scalar - value).collect()
-                }
-                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => {
-                    values.into_iter().map(|value| scalar * value).collect()
-                }
-                _ => return Ok(None),
-            };
-            Ok(Some(mapped))
-        }
+        (None, Some(_)) => Ok(None),
         (None, None) => Ok(None),
     }
 }

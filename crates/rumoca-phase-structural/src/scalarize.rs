@@ -4,13 +4,17 @@ use rumoca_ir_dae as dae;
 
 use crate::projection_maps::{
     FunctionOutputProjectionMap, RecordFieldProjectionMap, build_component_index_projection_map,
-    build_function_output_projection_map, build_record_field_projection_map, output_scalar_count,
+    build_function_output_projection_map, build_record_field_projection_map,
+    checked_projection_subscript, output_scalar_count,
 };
 
 mod function_maps;
 mod projection;
 mod shape;
-use function_maps::{build_dynamic_function_output_map, build_function_output_dims_map};
+use function_maps::{
+    build_dynamic_function_output_map, build_function_output_dims_map,
+    project_wrapped_dynamic_function_output,
+};
 #[cfg(test)]
 use projection::is_complex_field_scalar_name;
 use projection::{
@@ -268,6 +272,7 @@ pub struct IndexProjectionContext<'a> {
     dynamic_function_output_map: &'a HashMap<rumoca_core::FunctionInstanceId, String>,
     record_field_projection_map: &'a RecordFieldProjectionMap,
     expected_dims: Option<&'a [i64]>,
+    allow_dynamic_function_projection: bool,
 }
 
 impl<'a> IndexProjectionContext<'a> {
@@ -285,15 +290,25 @@ impl<'a> IndexProjectionContext<'a> {
             dynamic_function_output_map: self.dynamic_function_output_map,
             record_field_projection_map: self.record_field_projection_map,
             expected_dims: self.expected_dims,
+            allow_dynamic_function_projection: self.allow_dynamic_function_projection,
         }
     }
 
+    fn nested(&self) -> IndexProjectionContext<'a> {
+        let mut nested = self.with_index(self.i);
+        nested.allow_dynamic_function_projection = false;
+        nested
+    }
+
     fn project_at(&self, expr: &Expression, i: usize) -> Result<Expression, StructuralError> {
-        self.with_index(i).project(expr)
+        let mut nested = self.with_index(i);
+        nested.allow_dynamic_function_projection = false;
+        nested.project(expr)
     }
 
     fn map_exprs(&self, exprs: &[Expression]) -> Result<Vec<Expression>, StructuralError> {
-        exprs.iter().map(|expr| self.project(expr)).collect()
+        let nested = self.nested();
+        exprs.iter().map(|expr| nested.project(expr)).collect()
     }
 
     fn project_var_ref(
@@ -751,7 +766,24 @@ impl<'a> IndexProjectionContext<'a> {
         }
     }
 
+    fn project_wrapped_dynamic_output(
+        &self,
+        expr: &Expression,
+    ) -> Result<Option<Expression>, StructuralError> {
+        project_wrapped_dynamic_function_output(
+            expr,
+            self.i,
+            self.expected_dims,
+            self.context_span,
+            self.allow_dynamic_function_projection,
+            self.dynamic_function_output_map,
+        )
+    }
+
     fn project(&self, expr: &Expression) -> Result<Expression, StructuralError> {
+        if let Some(projected) = self.project_wrapped_dynamic_output(expr)? {
+            return Ok(projected);
+        }
         match expr {
             Expression::Array {
                 elements,
@@ -770,14 +802,14 @@ impl<'a> IndexProjectionContext<'a> {
                 }
                 Ok(Expression::Binary {
                     op: op.clone(),
-                    lhs: Box::new(self.project(lhs)?),
-                    rhs: Box::new(self.project(rhs)?),
+                    lhs: Box::new(self.nested().project(lhs)?),
+                    rhs: Box::new(self.nested().project(rhs)?),
                     span: *span,
                 })
             }
             Expression::Unary { op, rhs, span } => Ok(Expression::Unary {
                 op: op.clone(),
-                rhs: Box::new(self.project(rhs)?),
+                rhs: Box::new(self.nested().project(rhs)?),
                 span: *span,
             }),
             Expression::BuiltinCall {
@@ -808,9 +840,9 @@ impl<'a> IndexProjectionContext<'a> {
             } => Ok(Expression::If {
                 branches: branches
                     .iter()
-                    .map(|(cond, val)| Ok((cond.clone(), self.project(val)?)))
+                    .map(|(cond, val)| Ok((cond.clone(), self.nested().project(val)?)))
                     .collect::<Result<Vec<_>, StructuralError>>()?,
-                else_branch: Box::new(self.project(else_branch)?),
+                else_branch: Box::new(self.nested().project(else_branch)?),
                 span: *span,
             }),
             Expression::FunctionCall {
@@ -824,32 +856,42 @@ impl<'a> IndexProjectionContext<'a> {
                 subscripts,
                 span,
             } => Ok(Expression::Index {
-                base: Box::new(self.project(base)?),
+                base: Box::new(self.nested().project(base)?),
                 subscripts: subscripts.clone(),
                 span: *span,
             }),
             Expression::FieldAccess { base, field, span } => {
-                if let Some(projected) = self.project_record_array_member_slice(base, field)? {
-                    return Ok(projected);
-                }
-                if let Some(projected) = self.project_record_function_field(expr)? {
-                    return Ok(projected);
-                }
-                if self.i == 0 {
-                    return Ok(expr.clone());
-                }
-                Ok(Expression::Index {
-                    base: Box::new(expr.clone()),
-                    subscripts: vec![generated_index_subscript(
-                        self.i,
-                        *span,
-                        "structural record-field projection subscript",
-                    )?],
-                    span: *span,
-                })
+                self.project_field_access(expr, base, field, *span)
             }
             _ => Ok(expr.clone()),
         }
+    }
+
+    fn project_field_access(
+        &self,
+        expr: &Expression,
+        base: &Expression,
+        field: &str,
+        span: Span,
+    ) -> Result<Expression, StructuralError> {
+        if let Some(projected) = self.project_record_array_member_slice(base, field)? {
+            return Ok(projected);
+        }
+        if let Some(projected) = self.project_record_function_field(expr)? {
+            return Ok(projected);
+        }
+        if self.i == 0 {
+            return Ok(expr.clone());
+        }
+        Ok(Expression::Index {
+            base: Box::new(expr.clone()),
+            subscripts: vec![generated_index_subscript(
+                self.i,
+                span,
+                "structural record-field projection subscript",
+            )?],
+            span,
+        })
     }
 
     fn project_record_function_field(
@@ -922,16 +964,26 @@ impl<'a> IndexProjectionContext<'a> {
         if is_constructor && self.i >= 1 && self.i <= args.len() {
             return self.project(&args[self.i - 1]);
         }
-        let instance_id = name
-            .resolved_function()
-            .map(|resolved| resolved.instance_id)
-            .ok_or_else(|| {
-                structural_contract_violation(
-                    "function call lacks resolved instance identity".to_string(),
-                    span,
-                )
-            })?;
-        if let Some(output_name) = self.dynamic_function_output_map.get(&instance_id)
+        let resolved = name.resolved_function().ok_or_else(|| {
+            structural_contract_violation(
+                "function call lacks resolved instance identity".to_string(),
+                span,
+            )
+        })?;
+        let instance_id = resolved.instance_id;
+        let is_bare_call = name
+            .component_ref()
+            .is_some_and(|reference| reference.parts.len() == resolved.base_part_count);
+        if !is_bare_call {
+            return Ok(Expression::FunctionCall {
+                name: name.clone(),
+                args: self.map_exprs(args)?,
+                is_constructor,
+                span,
+            });
+        }
+        if self.allow_dynamic_function_projection
+            && let Some(output_name) = self.dynamic_function_output_map.get(&instance_id)
             && let Some(dims) = self.expected_dims
             && let Ok(count) = output_scalar_count(dims, span)
             && self.i >= 1
@@ -945,7 +997,7 @@ impl<'a> IndexProjectionContext<'a> {
             })?;
             let subs = indices
                 .into_iter()
-                .map(|index| checked_dynamic_output_subscript(index, span))
+                .map(|index| checked_projection_subscript(index, span))
                 .collect::<Result<Vec<_>, _>>()?;
             let projected_name = name
                 .with_appended_parts(
@@ -1114,19 +1166,6 @@ fn integer_literal_value(expr: &Expression) -> Option<i64> {
         } if value.is_finite() && value.fract() == 0.0 => Some(*value as i64),
         _ => None,
     }
-}
-
-fn checked_dynamic_output_subscript(
-    index: usize,
-    span: Span,
-) -> Result<Subscript, StructuralError> {
-    let value = i64::try_from(index).map_err(|_| {
-        structural_contract_violation(
-            "dynamic function output index exceeds Modelica Integer".to_string(),
-            span,
-        )
-    })?;
-    Ok(Subscript::index(value, span))
 }
 
 fn project_subscripted_dims(
@@ -1396,6 +1435,7 @@ pub fn index_into_expr(
         dynamic_function_output_map: &dynamic_function_output_map,
         record_field_projection_map: &record_field_projection_map,
         expected_dims: None,
+        allow_dynamic_function_projection: true,
     }
     .project(expr)
 }
@@ -1454,6 +1494,7 @@ pub fn scalarize_expression_rows(
                 dynamic_function_output_map: &ctx.dynamic_function_output_map,
                 record_field_projection_map: &ctx.record_field_projection_map,
                 expected_dims: None,
+                allow_dynamic_function_projection: true,
             }
             .project(expr)
         })

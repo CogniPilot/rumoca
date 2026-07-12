@@ -30,7 +30,7 @@ use rumoca_core::{
     BuiltinFunction, Causality, ClassType, ComponentReference, ComprehensionTemplate, DefId,
     Expression, ForIndex, Function, FunctionInstanceId, FunctionShapeContractError, Reference,
     RegularForFamily, Span, StateSelect, Statement, StatementBlock, StructuredIndexDomain,
-    Subscript, TypeId, VarName, Variability,
+    Subscript, SymbolAncestry, TypeId, VarName, Variability,
 };
 #[cfg(test)]
 use rumoca_core::{ComprehensionIndex, Literal};
@@ -39,6 +39,7 @@ use rumoca_ir_ast as ast;
 use serde::{Deserialize, Serialize};
 
 pub type VarNameIndexMap<V> = IndexMap<VarName, V, rustc_hash::FxBuildHasher>;
+pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 
 #[cfg(test)]
 use component_ref_helpers::from_component_ref_with_def_map_impl;
@@ -165,7 +166,7 @@ pub struct Model {
     /// to the symbol itself. Used by downstream phases for child/descendant
     /// checks without rendered-name prefix matching.
     #[serde(default)]
-    pub symbol_ancestry: IndexMap<DefId, Vec<DefId>>,
+    pub symbol_ancestry: SymbolAncestryMap,
 }
 
 impl Model {

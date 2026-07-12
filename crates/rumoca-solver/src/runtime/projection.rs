@@ -826,7 +826,7 @@ fn apply_initial_causal_steps<'a, M: AlgebraicProjectionModel>(
                     changed = true;
                 }
             }
-            Some(_) => {}
+            Some(_) => unresolved.push(step),
             None => unresolved.push(step),
         }
     }

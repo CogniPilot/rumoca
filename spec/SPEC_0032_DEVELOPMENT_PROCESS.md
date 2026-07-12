@@ -76,6 +76,7 @@ variable selection, and runtime-bound function names are checked.
 | Failures MUST be classified before policy decisions | triage reports | Separates bugs from non-standard input |
 | Focused or partial MSL snapshots MUST NOT be promoted | baseline workflow | Prevents baseline drift |
 | Commit-to-commit comparisons MUST use the same focused target list | regression triage | Makes deltas meaningful |
+| External compatibility corpora MUST pin an immutable revision and run as bounded parallel gates | CI workflows | Keeps evidence reproducible without creating a serial CI long pole |
 
 Failure classifications:
 

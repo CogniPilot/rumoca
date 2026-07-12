@@ -157,15 +157,20 @@ fn projection_subscripts(
             span,
         })?
         .into_iter()
-        .map(|index| {
-            i64::try_from(index)
-                .map(|value| Subscript::index(value, span))
-                .map_err(|_| StructuralError::ContractViolation {
-                    reason: format!("output projection index {index} exceeds Modelica Integer"),
-                    span,
-                })
-        })
+        .map(|index| checked_projection_subscript(index, span))
         .collect()
+}
+
+pub(crate) fn checked_projection_subscript(
+    index: usize,
+    span: Span,
+) -> Result<Subscript, StructuralError> {
+    i64::try_from(index)
+        .map(|value| Subscript::index(value, span))
+        .map_err(|_| StructuralError::ContractViolation {
+            reason: format!("output projection index {index} exceeds Modelica Integer"),
+            span,
+        })
 }
 
 /// Build projection map for scalarizing multi-output function calls.
@@ -227,6 +232,7 @@ pub fn build_function_output_projection_map(
 fn append_record_field_projection(
     dae: &dae::Dae,
     record_type: rumoca_core::DefId,
+    record_type_name: &str,
     selector_prefix: &[ComponentRefPart],
     field_prefix: &str,
     fields: &mut HashMap<String, HashMap<usize, ProjectionParts>>,
@@ -241,17 +247,15 @@ fn append_record_field_projection(
         .ok_or_else(|| StructuralError::UnspannedContractViolation {
             reason: "record projection selector is empty".to_string(),
         })?;
-    let Some(constructor) = dae
-        .symbols
-        .functions
-        .values()
-        .find(|function| function.is_constructor && function.def_id == Some(record_type))
-    else {
-        return Err(StructuralError::ContractViolation {
-            reason: format!("record type {record_type} has no constructor metadata"),
-            span: selector_span,
-        });
-    };
+    let constructor = rumoca_core::resolve_record_constructor(
+        dae.symbols.functions.values(),
+        record_type_name,
+        record_type,
+    )
+    .map_err(|error| StructuralError::ContractViolation {
+        reason: error.to_string(),
+        span: selector_span,
+    })?;
     active_types.push(record_type);
     for field in &constructor.inputs {
         let field_path = if field_prefix.is_empty() {
@@ -276,6 +280,7 @@ fn append_record_field_projection(
             append_record_field_projection(
                 dae,
                 field_type_def_id,
+                &field.type_name,
                 &selector,
                 &field_path,
                 fields,
@@ -347,6 +352,7 @@ pub fn build_record_field_projection_map(
         append_record_field_projection(
             dae,
             type_def_id,
+            &output.type_name,
             &[ComponentRefPart {
                 ident: output.name.clone(),
                 span: output.span,

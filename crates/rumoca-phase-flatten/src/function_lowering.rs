@@ -24,16 +24,15 @@ fn record_fields_from_constructor_metadata(
             span,
         )
     })?;
-    let constructor = functions
-        .values()
-        .find(|function| function.def_id == Some(type_def_id) && function.is_constructor)
-        .ok_or_else(|| {
-            FlattenError::missing_resolved_class_metadata(
-                type_name,
-                "record constructor metadata",
-                span,
-            )
-        })?;
+    let constructor =
+        rumoca_core::resolve_record_constructor(functions.values(), type_name, type_def_id)
+            .map_err(|error| {
+                FlattenError::missing_resolved_class_metadata(
+                    type_name,
+                    format!("record constructor metadata: {error}"),
+                    span,
+                )
+            })?;
     Ok((
         constructor.name.as_str().to_string(),
         constructor.inputs.to_vec(),
@@ -149,18 +148,23 @@ fn record_param_path<'a>(
             subscripts,
             span,
         } if subscripts.is_empty() => {
-            let parts = match name.component_ref() {
-                Some(reference) => reference.parts.clone(),
-                None => name
-                    .segments()
-                    .into_iter()
-                    .map(|segment| rumoca_core::ComponentRefPart {
-                        ident: segment.to_string(),
-                        span: *span,
-                        subs: Vec::new(),
-                    })
-                    .collect(),
-            };
+            if let Some(reference) = name.component_ref() {
+                let (head, rest) = reference.parts.split_first()?;
+                if !head.subs.is_empty() {
+                    return None;
+                }
+                let param = params.iter().find(|param| param.param_name == head.ident)?;
+                return Some((param, rest.to_vec(), *span));
+            }
+            let parts = name
+                .segments()
+                .into_iter()
+                .map(|segment| rumoca_core::ComponentRefPart {
+                    ident: segment.to_string(),
+                    span: *span,
+                    subs: Vec::new(),
+                })
+                .collect::<Vec<_>>();
             let (head, rest) = parts.split_first()?;
             if !head.subs.is_empty() {
                 return None;
@@ -432,17 +436,33 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
 /// One decomposition pass. Returns whether any record parameter was decomposed.
 fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, FlattenError> {
     let mut record_fields_by_function_input = HashMap::new();
+    let mut record_metadata_by_exposure = HashMap::new();
     for (function_name, function) in &flat.functions {
         for (input_index, input) in function.inputs.iter().enumerate() {
             if input.type_class != Some(rumoca_core::ClassType::Record) {
                 continue;
             }
-            let metadata = record_fields_from_constructor_metadata(
-                &flat.functions,
-                &input.type_name,
-                input.type_def_id,
-                input.span,
-            )?;
+            let type_def_id = input.type_def_id.ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    &input.type_name,
+                    "record function parameter type",
+                    input.span,
+                )
+            })?;
+            let key = (type_def_id, input.type_name.clone());
+            if !record_metadata_by_exposure.contains_key(&key) {
+                let metadata = record_fields_from_constructor_metadata(
+                    &flat.functions,
+                    &input.type_name,
+                    Some(type_def_id),
+                    input.span,
+                )?;
+                record_metadata_by_exposure.insert(key.clone(), metadata);
+            }
+            let metadata = record_metadata_by_exposure
+                .get(&key)
+                .expect("record metadata inserted above")
+                .clone();
             record_fields_by_function_input.insert((function_name.clone(), input_index), metadata);
         }
     }
@@ -950,7 +970,13 @@ fn empty_record_field_arg(
     field: &rumoca_core::FunctionParam,
     span: rumoca_core::Span,
 ) -> Option<rumoca_core::Expression> {
-    (!field.dims.is_empty() && field.dims.iter().all(|dim| *dim >= 0) && field.dims.contains(&0))
+    // A zero in `dims` is also the shape sentinel for an unresolved/flexible
+    // axis such as `Real x[:]`.  Only a retained literal-zero declaration is
+    // proof that the field is genuinely empty.
+    field
+        .shape_expr
+        .iter()
+        .any(|subscript| matches!(subscript, rumoca_core::Subscript::Index { value: 0, .. }))
         .then_some(rumoca_core::Expression::Array {
             elements: Vec::new(),
             is_matrix: field.dims.len() == 2,
@@ -1164,6 +1190,47 @@ mod tests {
     }
 
     #[test]
+    fn record_param_lowering_disambiguates_shared_definition_by_exposure() {
+        let mut flat = flat::Model::new();
+        let mut first = rumoca_core::Function::new("First.Record", Span::DUMMY);
+        first.def_id = Some(RECORD_DEF_ID);
+        first.is_constructor = true;
+        first.add_input(rumoca_core::FunctionParam::new(
+            "wrong",
+            "Real",
+            test_span(),
+        ));
+        flat.add_function(first);
+        let mut second = rumoca_core::Function::new("Second.Record", Span::DUMMY);
+        second.def_id = Some(RECORD_DEF_ID);
+        second.is_constructor = true;
+        second.add_input(rumoca_core::FunctionParam::new(
+            "right",
+            "Real",
+            test_span(),
+        ));
+        flat.add_function(second);
+
+        let mut function = rumoca_core::Function::new("Pkg.useSecond", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("r", "Second.Record", test_span())
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        flat.add_function(function);
+
+        lower_record_function_params(&mut flat).expect("exposure-qualified lookup should pass");
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.useSecond"))
+            .expect("function remains");
+        assert_eq!(function.inputs.len(), 1);
+        assert_eq!(function.inputs[0].name, "r_right");
+    }
+
+    #[test]
     fn record_param_lowering_preserves_named_argument_slots() {
         let mut flat = flat::Model::new();
         flat.add_function(record_constructor());
@@ -1207,6 +1274,63 @@ mod tests {
                 ("r_b".to_string(), "rec.b".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn record_param_lowering_does_not_treat_flexible_field_as_empty() {
+        let mut flat = flat::Model::new();
+        let mut constructor = rumoca_core::Function::new("Pkg.FlexibleRecord", Span::DUMMY);
+        constructor.def_id = Some(RECORD_DEF_ID);
+        constructor.is_constructor = true;
+        constructor.add_input(
+            rumoca_core::FunctionParam::new("coeffs", "Real", test_span())
+                .with_dims(vec![0])
+                .with_shape_expr(vec![rumoca_core::Subscript::colon(test_span())]),
+        );
+        flat.add_function(constructor);
+
+        let mut function = rumoca_core::Function::new("Pkg.sumCoeffs", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("r", "Pkg.FlexibleRecord", test_span())
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        function.body.push(assignment_to(
+            "y",
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sum,
+                args: vec![rumoca_core::Expression::FieldAccess {
+                    base: Box::new(var_ref("r")),
+                    field: "coeffs".to_string(),
+                    span: test_span(),
+                }],
+                span: test_span(),
+            },
+        ));
+        flat.add_function(function);
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.sumCoeffs"),
+                args: vec![var_ref("rec")],
+                is_constructor: false,
+                span: test_span(),
+            },
+            test_span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert!(matches!(
+            args.as_slice(),
+            [rumoca_core::Expression::VarRef { name, .. }] if name.as_str() == "rec.coeffs"
+        ));
     }
 
     #[test]
@@ -1597,7 +1721,8 @@ mod tests {
         rotation_constructor.is_constructor = true;
         rotation_constructor.add_input(
             rumoca_core::FunctionParam::new("interfaceMarker", "Real", test_span())
-                .with_dims(vec![0]),
+                .with_dims(vec![0])
+                .with_shape_expr(vec![rumoca_core::Subscript::index(0, test_span())]),
         );
         rotation_constructor.add_input(
             rumoca_core::FunctionParam::new("q", "Real", test_span()).with_dims(vec![4]),
