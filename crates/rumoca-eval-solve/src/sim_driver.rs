@@ -297,6 +297,9 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
                         data: state.data,
                     },
                 )?;
+                // A deferred root belongs to the continuous trajectory that
+                // the scheduled-event reset just replaced.
+                pending_root_t = None;
             }
             if event_stop_reached {
                 stop_schedule.advance_past(*state.current_t);
@@ -872,6 +875,272 @@ fn trace_step_event(kind: &str, solver_t: f64, root_t: Option<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    enum TrajectoryStep {
+        Internal { solver_t: f64 },
+        Root { solver_t: f64, t_root: f64 },
+    }
+
+    struct TrajectoryGenerationBackend {
+        time: f64,
+        steps: std::collections::VecDeque<TrajectoryStep>,
+        generation: usize,
+        step_generations: Vec<usize>,
+        pinned_times: Vec<f64>,
+        reset_count: usize,
+    }
+
+    impl TrajectoryGenerationBackend {
+        fn new(steps: impl IntoIterator<Item = TrajectoryStep>) -> Self {
+            Self {
+                time: 0.0,
+                steps: steps.into_iter().collect(),
+                generation: 0,
+                step_generations: Vec::new(),
+                pinned_times: Vec::new(),
+                reset_count: 0,
+            }
+        }
+    }
+
+    impl SolverAdvanceBackend for TrajectoryGenerationBackend {
+        fn time(&self) -> f64 {
+            self.time
+        }
+
+        fn native_y(&self) -> Vec<f64> {
+            Vec::new()
+        }
+
+        fn step(&mut self) -> Result<StepOutcome, SimDriverError> {
+            let step = self
+                .steps
+                .pop_front()
+                .ok_or_else(|| SimDriverError::Backend("test backend ran out of steps".into()))?;
+            self.step_generations.push(self.generation);
+            match step {
+                TrajectoryStep::Internal { solver_t } => {
+                    self.time = solver_t;
+                    Ok(StepOutcome::Internal)
+                }
+                TrajectoryStep::Root { solver_t, t_root } => {
+                    self.time = solver_t;
+                    Ok(StepOutcome::Root { t_root })
+                }
+            }
+        }
+
+        fn set_stop_time(&mut self, _stop_time: f64) -> Result<(), SimDriverError> {
+            Err(SimDriverError::Backend(
+                "trajectory test must use free dense-output stepping".into(),
+            ))
+        }
+
+        fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimDriverError> {
+            if t > self.time && !sample_time_match_with_tol(t, self.time) {
+                return Err(SimDriverError::Backend(format!(
+                    "cannot interpolate forward from {:.12} to {t:.12}",
+                    self.time
+                )));
+            }
+            Ok(Vec::new())
+        }
+
+        fn state_mut_back(&mut self, t: f64) -> Result<(), SimDriverError> {
+            if t > self.time && !sample_time_match_with_tol(t, self.time) {
+                return Err(SimDriverError::Backend(format!(
+                    "cannot pin forward from {:.12} to {t:.12}",
+                    self.time
+                )));
+            }
+            self.time = t;
+            self.pinned_times.push(t);
+            Ok(())
+        }
+
+        fn native_to_full_y(
+            &self,
+            native: &[f64],
+            _t: f64,
+            _params: &[f64],
+        ) -> Result<Vec<f64>, SimDriverError> {
+            Ok(native.to_vec())
+        }
+
+        fn reset_vectors(
+            &self,
+            current_y: &[f64],
+            _params: &[f64],
+            _t: f64,
+        ) -> Result<(Vec<f64>, Vec<f64>), SimDriverError> {
+            Ok((current_y.to_vec(), vec![0.0; current_y.len()]))
+        }
+
+        fn reset(
+            &mut self,
+            _native_y: &[f64],
+            _native_dy: &[f64],
+            _params: &[f64],
+            t: f64,
+            _h_cap: f64,
+        ) -> Result<(), SimDriverError> {
+            self.time = t;
+            self.generation += 1;
+            self.reset_count += 1;
+            Ok(())
+        }
+
+        fn prefer_exact_output_steps(&self) -> bool {
+            false
+        }
+
+        fn project_algebraics(
+            &self,
+            _y: &mut [f64],
+            _p: &mut [f64],
+            _t: f64,
+            _tol: f64,
+        ) -> Result<bool, RuntimeSolveError> {
+            Ok(false)
+        }
+
+        fn derivative_guess(
+            &self,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+        ) -> Result<Vec<f64>, SimDriverError> {
+            Ok(vec![0.0; y.len()])
+        }
+
+        fn record_sample(
+            &self,
+            recorded_times: &mut Vec<f64>,
+            _data: &mut [Vec<f64>],
+            _y: &[f64],
+            _p: &[f64],
+            t: f64,
+        ) -> Result<(), SimDriverError> {
+            recorded_times.push(t);
+            Ok(())
+        }
+
+        fn refresh_observation(
+            &self,
+            _y: &mut [f64],
+            _p: &mut [f64],
+            _t: f64,
+        ) -> Result<(), SimDriverError> {
+            Ok(())
+        }
+
+        fn trace_step_failure(
+            &self,
+            _y: &[f64],
+            _params: &[f64],
+            _current_t: f64,
+            _solver_t: f64,
+            _error: &str,
+        ) {
+        }
+
+        fn trace_post_event_state(&self, _y: &[f64], _params: &[f64], _t: f64) {}
+    }
+
+    fn run_trajectory_driver(
+        model: &solve::SolveModel,
+        times: &[f64],
+        steps: impl IntoIterator<Item = TrajectoryStep>,
+    ) -> (
+        Result<(), SimDriverError>,
+        TrajectoryGenerationBackend,
+        Vec<f64>,
+        f64,
+    ) {
+        let runtime = SolveRuntime::new(model).expect("empty runtime should prepare");
+        let runtime_state = SimulationRuntimeState::new();
+        let opts = SimOptions {
+            atol: 1.0e-12,
+            ..SimOptions::default()
+        };
+        let runtime_params = Rc::new(RefCell::new(Vec::new()));
+        let mut current_y = Vec::new();
+        let mut params = Vec::new();
+        let mut data = Vec::new();
+        let mut recorded_times = Vec::new();
+        let mut current_t = 0.0;
+        let mut backend = TrajectoryGenerationBackend::new(steps);
+
+        let result = simulate_state_targets(
+            model,
+            &opts,
+            times,
+            &runtime_params,
+            &mut backend,
+            StateTrajectory {
+                params: &mut params,
+                data: &mut data,
+                recorded_times: &mut recorded_times,
+                current_t: &mut current_t,
+                current_y: &mut current_y,
+                runtime: &runtime,
+                runtime_state: &runtime_state,
+            },
+        );
+
+        (result, backend, recorded_times, current_t)
+    }
+
+    #[test]
+    fn scheduled_event_invalidates_deferred_future_root_from_pre_event_trajectory() {
+        const ROOT_T: f64 = 0.500_033_856_224;
+        let mut model = solve::SolveModel::default();
+        model.problem.events.scheduled_time_events.push(0.5);
+
+        let (result, backend, recorded_times, current_t) = run_trajectory_driver(
+            &model,
+            &[1.0],
+            [
+                TrajectoryStep::Root {
+                    solver_t: ROOT_T,
+                    t_root: ROOT_T,
+                },
+                TrajectoryStep::Internal { solver_t: 1.0 },
+            ],
+        );
+
+        result.expect("scheduled reset must invalidate roots from the prior trajectory");
+        assert!(backend.pinned_times.is_empty());
+        assert_eq!(backend.step_generations, vec![0, 1]);
+        assert_eq!(backend.reset_count, 1);
+        assert_eq!(recorded_times.last(), Some(&1.0));
+        assert_eq!(current_t, 1.0);
+    }
+
+    #[test]
+    fn ordinary_output_boundary_preserves_deferred_future_root() {
+        const ROOT_T: f64 = 0.500_033_856_224;
+        let model = solve::SolveModel::default();
+
+        let (result, backend, recorded_times, current_t) = run_trajectory_driver(
+            &model,
+            &[0.5, 1.0],
+            [
+                TrajectoryStep::Root {
+                    solver_t: ROOT_T,
+                    t_root: ROOT_T,
+                },
+                TrajectoryStep::Internal { solver_t: 1.0 },
+            ],
+        );
+
+        result.expect("ordinary dense output must preserve the deferred root");
+        assert_eq!(backend.pinned_times, vec![ROOT_T]);
+        assert_eq!(backend.step_generations, vec![0, 1]);
+        assert_eq!(backend.reset_count, 1);
+        assert_eq!(recorded_times, vec![0.5, 1.0]);
+        assert_eq!(current_t, 1.0);
+    }
 
     struct ForwardInterpolationRejectingBackend {
         time: f64,
