@@ -789,7 +789,20 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     // settle — all via the backend-neutral kernels (shared with the scheduled
     // path and every backend through the backend callbacks).
     let tol = ctx.opts.atol.max(1.0e-10);
-    backend.state_mut_back(t_root)?;
+    let solver_t = backend.time();
+    let pin_t = if t_root > solver_t {
+        let root_pin_tol = tol * (1.0 + t_root.abs().max(solver_t.abs()));
+        if (t_root - solver_t).abs() <= root_pin_tol {
+            solver_t
+        } else {
+            return Err(SimDriverError::Backend(format!(
+                "root time {t_root:.12} is after backend time {solver_t:.12}"
+            )));
+        }
+    } else {
+        t_root
+    };
+    backend.state_mut_back(pin_t)?;
     let root_t = backend.time();
     let native_at_root = backend.native_y();
     let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
@@ -854,4 +867,196 @@ fn trace_step_event(kind: &str, solver_t: f64, root_t: Option<f64>) {
         return;
     }
     tracing::debug!(target: EVENT_TRACE_TARGET, "{kind} solver_t={solver_t:.12} root_t={root_t:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ForwardInterpolationRejectingBackend {
+        time: f64,
+        pinned_times: Vec<f64>,
+    }
+
+    impl SolverAdvanceBackend for ForwardInterpolationRejectingBackend {
+        fn time(&self) -> f64 {
+            self.time
+        }
+
+        fn native_y(&self) -> Vec<f64> {
+            Vec::new()
+        }
+
+        fn step(&mut self) -> Result<StepOutcome, SimDriverError> {
+            unreachable!("root handler test does not step the backend")
+        }
+
+        fn set_stop_time(&mut self, _stop_time: f64) -> Result<(), SimDriverError> {
+            unreachable!("root handler test does not set a stop time")
+        }
+
+        fn interpolate(&mut self, _t: f64) -> Result<Vec<f64>, SimDriverError> {
+            unreachable!("root handler test does not interpolate output")
+        }
+
+        fn state_mut_back(&mut self, t: f64) -> Result<(), SimDriverError> {
+            if t > self.time {
+                return Err(SimDriverError::Backend(
+                    "Interpolation time is not within current step".to_string(),
+                ));
+            }
+            self.time = t;
+            self.pinned_times.push(t);
+            Ok(())
+        }
+
+        fn native_to_full_y(
+            &self,
+            native: &[f64],
+            _t: f64,
+            _params: &[f64],
+        ) -> Result<Vec<f64>, SimDriverError> {
+            Ok(native.to_vec())
+        }
+
+        fn reset_vectors(
+            &self,
+            current_y: &[f64],
+            _params: &[f64],
+            _t: f64,
+        ) -> Result<(Vec<f64>, Vec<f64>), SimDriverError> {
+            Ok((current_y.to_vec(), vec![0.0; current_y.len()]))
+        }
+
+        fn reset(
+            &mut self,
+            _native_y: &[f64],
+            _native_dy: &[f64],
+            _params: &[f64],
+            t: f64,
+            _h_cap: f64,
+        ) -> Result<(), SimDriverError> {
+            self.time = t;
+            Ok(())
+        }
+
+        fn prefer_exact_output_steps(&self) -> bool {
+            false
+        }
+
+        fn project_algebraics(
+            &self,
+            _y: &mut [f64],
+            _p: &mut [f64],
+            _t: f64,
+            _tol: f64,
+        ) -> Result<bool, RuntimeSolveError> {
+            Ok(false)
+        }
+
+        fn derivative_guess(
+            &self,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+        ) -> Result<Vec<f64>, SimDriverError> {
+            Ok(vec![0.0; y.len()])
+        }
+
+        fn record_sample(
+            &self,
+            _recorded_times: &mut Vec<f64>,
+            _data: &mut [Vec<f64>],
+            _y: &[f64],
+            _p: &[f64],
+            _t: f64,
+        ) -> Result<(), SimDriverError> {
+            unreachable!("root handler test does not record samples")
+        }
+
+        fn refresh_observation(
+            &self,
+            _y: &mut [f64],
+            _p: &mut [f64],
+            _t: f64,
+        ) -> Result<(), SimDriverError> {
+            unreachable!("root handler test does not refresh observations")
+        }
+
+        fn trace_step_failure(
+            &self,
+            _y: &[f64],
+            _params: &[f64],
+            _current_t: f64,
+            _solver_t: f64,
+            _error: &str,
+        ) {
+        }
+
+        fn trace_post_event_state(&self, _y: &[f64], _params: &[f64], _t: f64) {}
+    }
+
+    fn handle_test_root(
+        t_root: f64,
+    ) -> (
+        Result<bool, SimDriverError>,
+        ForwardInterpolationRejectingBackend,
+        f64,
+    ) {
+        let model = solve::SolveModel::default();
+        let runtime = SolveRuntime::new(&model).expect("empty runtime should prepare");
+        let opts = SimOptions {
+            atol: 1.0e-12,
+            ..SimOptions::default()
+        };
+        let runtime_params = Rc::new(RefCell::new(Vec::new()));
+        let mut current_y = Vec::new();
+        let mut params = Vec::new();
+        let mut current_t = 1.0;
+        let mut backend = ForwardInterpolationRejectingBackend {
+            time: 1.0,
+            pinned_times: Vec::new(),
+        };
+
+        let result = handle_root_crossing(
+            AdvanceContext {
+                model: &model,
+                opts: &opts,
+                runtime: &runtime,
+                runtime_params: &runtime_params,
+            },
+            AdvanceState {
+                current_y: &mut current_y,
+                params: &mut params,
+                current_t: &mut current_t,
+            },
+            t_root,
+            1.0,
+            &mut backend,
+        );
+        (result, backend, current_t)
+    }
+
+    #[test]
+    fn near_future_root_within_tolerance_pins_to_backend_time() {
+        let (result, backend, current_t) = handle_test_root(1.0 + 5.0e-13);
+        let handled = result.expect("near-future root should be handled at backend time");
+
+        assert!(handled);
+        assert_eq!(backend.pinned_times, vec![1.0]);
+        assert_eq!(current_t, 1.0);
+    }
+
+    #[test]
+    fn future_root_outside_tolerance_returns_structured_error() {
+        let (result, backend, current_t) = handle_test_root(1.0 + 5.0e-10);
+        let error = result.expect_err("future root outside tolerance should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "root time 1.000000000500 is after backend time 1.000000000000"
+        );
+        assert!(backend.pinned_times.is_empty());
+        assert_eq!(current_t, 1.0);
+    }
 }
