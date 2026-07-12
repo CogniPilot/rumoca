@@ -1403,6 +1403,7 @@ fn add_basic_template_helpers(env: &mut Environment<'static>) {
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
+    env.add_filter("json", json_filter);
     // eFMI manifest render env (contract §3b): autoescape is OFF, so every
     // text value is escaped explicitly and every raw f64 is rendered as a
     // valid xs:double lexical.
