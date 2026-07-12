@@ -30,27 +30,30 @@ Fresh pre-fix evidence:
 ### Task 1: Preserve connector instance identity in Flat record-alias canonicalization
 
 **Files:**
+- Modify: `crates/rumoca-phase-flatten/src/postprocess.rs`
 - Modify: `crates/rumoca-phase-flatten/src/postprocess_record_alias.rs`
+- Test: `crates/rumoca-phase-flatten/src/postprocess/substitute_constant_tests.rs`
 - Test: `crates/rumoca-phase-flatten/src/postprocess_record_alias_tests.rs`
 - Verify: `crates/rumoca-test-msl/tests/msl_tests/msl_flatten_tests.rs`
 
 **Step 1: Write the failing regression test**
 
-Add `record_alias_canonicalization_preserves_distinct_connector_record_endpoints`. Construct variables for `device.i`, `device.pin_p.i.re/im`, and `device.pin_n.i.re/im`; construct an equation whose two aggregate references have distinct instance paths and resolved identity. Assert that canonicalization preserves `device.pin_p.i` and `device.pin_n.i`, including their semantic metadata.
+Add `record_alias_canonicalization_preserves_distinct_connector_record_endpoints` and `collapse_index_refs_preserves_structured_distinct_record_endpoints`. Construct variables for `device.i.re/im`, `device.pin_p.i.re/im`, and `device.pin_n.i.re/im`; construct an equation whose two aggregate references have distinct instance paths and shared source declaration identity. Assert that both record-alias canonicalization and the record/index collapse pass preserve `device.pin_p.i` and `device.pin_n.i`, including their semantic metadata.
 
 **Step 2: Prove RED**
 
 Run:
 
 ```bash
-rustup run nightly-2026-02-27 cargo test -p rumoca-phase-flatten record_alias_canonicalization_preserves_distinct_connector_record_endpoints -- --exact --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-flatten record_alias_canonicalization_preserves_distinct_connector_record_endpoints -- --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-flatten collapse_index_refs_preserves_structured_distinct_record_endpoints -- --nocapture
 ```
 
-Expected pre-fix failure: both endpoints collapse to `device.i` and their resolved identity is cleared.
+Expected pre-fix failure: both endpoints collapse to `device.i` and their resolved identity is cleared. The first real-model owner is `CollapseIndexRewriter` treating an already-structured reference as a rendered-name recovery candidate; the record-alias fallback is a second instance of the same invalid identity inference.
 
 **Step 3: Remove the invalid generic fallback**
 
-Remove or narrow `decomposed_record_field_candidate` so a variable merely existing at a sibling leaf cannot authorize alias projection. Legitimate record aliasing must come from the established alias map or a canonicalizer that proves the same declaration and instance ancestry. Update the older sibling-leaf test whose expectation encoded name-based guessing.
+Guard the rendered-name recovery branch in `CollapseIndexRewriter` so only references without structured semantic identity enter repeated/penultimate-field recovery. Remove or narrow `decomposed_record_field_candidate` so a variable merely existing at a sibling leaf cannot authorize alias projection. Legitimate record aliasing must come from the established alias map or a canonicalizer that proves the same declaration and instance ancestry. Update the older sibling-leaf test whose expectation encoded name-based guessing.
 
 **Step 4: Verify the unit scope and real model**
 
@@ -83,7 +86,7 @@ Add `near_future_root_within_tolerance_pins_to_backend_time`. Use a fake backend
 **Step 2: Prove RED**
 
 ```bash
-rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve near_future_root_within_tolerance_pins_to_backend_time --lib -- --exact --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve near_future_root_within_tolerance_pins_to_backend_time --lib -- --nocapture
 ```
 
 Expected pre-fix failure: interpolation is requested outside the current step.
@@ -149,27 +152,28 @@ git add crates/rumoca-phase-dae crates/rumoca/tests/clocked_sample_regression.rs
 git commit -s -m "fix(dae): rearm periodic clock alias ticks"
 ```
 
-### Task 4: Preserve projection alternatives in algebraic refresh plans
+### Task 4: Preserve BLT causal ownership and projection alternatives in refresh plans
 
 **Files:**
 - Modify: `crates/rumoca-eval-solve/src/refresh_plan.rs`
 - Test: `crates/rumoca-eval-solve/src/runtime/tests.rs`
 
-**Step 1: Write the failing plan/runtime regression**
+**Step 1: Write the failing plan/runtime regressions**
 
-Add `refresh_uses_projection_alternative_when_explicit_row_target_is_runtime_singular`. Reuse the parameter-select fixture, provide both an explicit row target and projection alternatives for the same target, and force the primary row slope to zero while an alternate row remains solvable.
+Add `refresh_plan_preserves_blt_causal_primary_over_explicit_target`. Use a 2x2 coupled projection block whose `causal_steps` cross-map rows and targets while `implicit_row_targets` suggest the opposite direct placement. Assert that each BLT causal step remains the primary row and that direct placement is retained only as a deterministic alternative. Also add or retain `refresh_uses_projection_alternative_when_primary_is_runtime_singular` to force a primary row slope to zero while an alternate row remains solvable.
 
 **Step 2: Prove RED**
 
 ```bash
-rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve refresh_uses_projection_alternative_when_explicit_row_target_is_runtime_singular -- --exact --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve refresh_plan_preserves_blt_causal_primary_over_explicit_target --lib -- --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve refresh_uses_projection_alternative_when_primary_is_runtime_singular --lib -- --nocapture
 ```
 
-Expected pre-fix failure: `.or_insert` keeps the explicit row but drops all projection alternatives, leading to `residual does not depend on it`.
+Expected pre-fix failure: direct-first insertion shadows the structural BLT primary, and `.or_insert` drops projection alternatives, leading either to a wrong stable algebraic fixed point or `residual does not depend on it`.
 
 **Step 3: Merge plan semantics without hiding errors**
 
-When explicit and projection rows target the same unknown, preserve the explicit primary row and merge unique projection alternatives in deterministic order. Keep the existing runtime alternate-row solve path; do not revive residual nudging.
+For coupled blocks, use `AlgebraicProjectionBlock.causal_steps` as the authoritative primary mapping in producer order. For targets not covered by causal steps, use deterministic incidence matching; keep remaining block rows as stable, deduplicated alternatives. Apply `implicit_row_targets` only to targets not covered by projection, or as alternatives for a covered target. Keep the runtime alternate-row solve path; do not revive residual nudging.
 
 **Step 4: Verify unit scope and representative model**
 
@@ -192,6 +196,7 @@ git commit -s -m "fix(solve): preserve algebraic refresh alternatives"
 **Files:**
 - Modify: `crates/rumoca-phase-solve/src/lib.rs`
 - Modify: `crates/rumoca-solver/src/runtime/projection.rs`
+- Modify: `crates/rumoca-solver-diffsol/src/runtime.rs`
 - Modify as required: initialization/event projection call sites in `crates/rumoca-eval-solve/src/`
 - Test: `crates/rumoca-phase-solve/src/tests/projection_plan_more.rs`
 - Test: projection tests colocated with `crates/rumoca-solver/src/runtime/projection.rs`
@@ -203,7 +208,7 @@ Add `project_algebraics_rejects_nonzero_residual_row_omitted_from_plan`. Create 
 **Step 2: Prove RED**
 
 ```bash
-rustup run nightly-2026-02-27 cargo test -p rumoca-solver project_algebraics_rejects_nonzero_residual_row_omitted_from_plan -- --exact --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-solver project_algebraics_rejects_nonzero_residual_row_omitted_from_plan -- --nocapture
 ```
 
 Expected pre-fix failure: the omitted row is initialized to zero and projection falsely returns success.
@@ -215,20 +220,21 @@ Add `solve_problem_projection_plan_covers_every_algebraic_tail_row` around `lowe
 **Step 4: Prove producer RED**
 
 ```bash
-rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve solve_problem_projection_plan_covers_every_algebraic_tail_row -- --exact --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve solve_problem_projection_plan_covers_every_algebraic_tail_row -- --nocapture
 ```
 
 **Step 5: Implement producer and runtime invariants**
 
 - Make Solve lowering account for every algebraic residual tail row and its unknown coverage; reject an incomplete balanced projection plan instead of silently skipping it.
 - Compute/check the actual full algebraic residual tail after projection. Never initialize omitted rows as successful zeros.
-- Keep the full OdeModel projection as the initialization/event semantic authority. A fast refresh may remain only when followed by the full-tail postcondition and a correct full-projection fallback.
+- Restore `rumoca-solver-diffsol` initialization/event callbacks to full OdeModel projection semantics (`project_algebraics_and_detect_changes` or its current equivalent). A fast refresh may remain only as a pre-optimization followed by the full-tail postcondition and a correct full-projection fallback; it must never replace the semantic projector.
 
 **Step 6: Verify projection and initialization models**
 
 ```bash
 rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve projection_plan -- --nocapture
 rustup run nightly-2026-02-27 cargo test -p rumoca-solver projection --lib -- --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-solver-diffsol runtime --lib -- --nocapture
 rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve --lib
 target/debug/xtask repo msl rerun --model 'Modelica.Electrical.Analog.Examples.OpAmps.LowPass' --results-dir /tmp/rumoca-msl-projection-fixed
 ```
@@ -252,12 +258,13 @@ git commit -s -m "fix(solve): validate complete algebraic projection"
 **Step 1: Run focused regression set together**
 
 ```bash
-rustup run nightly-2026-02-27 cargo test -p rumoca-phase-flatten record_alias_canonicalization_preserves_distinct_connector_record_endpoints -- --exact
-rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve near_future_root_within_tolerance_pins_to_backend_time --lib -- --exact
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-flatten record_alias_canonicalization_preserves_distinct_connector_record_endpoints
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-flatten collapse_index_refs_preserves_structured_distinct_record_endpoints
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve near_future_root_within_tolerance_pins_to_backend_time --lib
 rustup run nightly-2026-02-27 cargo test -p rumoca --test clocked_sample_regression native_simulation_rearms_clock_alias_edge_at_every_periodic_tick -- --exact
-rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve refresh_uses_projection_alternative_when_explicit_row_target_is_runtime_singular -- --exact
-rustup run nightly-2026-02-27 cargo test -p rumoca-solver project_algebraics_rejects_nonzero_residual_row_omitted_from_plan -- --exact
-rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve solve_problem_projection_plan_covers_every_algebraic_tail_row -- --exact
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve refresh_plan_preserves_blt_causal_primary_over_explicit_target --lib
+rustup run nightly-2026-02-27 cargo test -p rumoca-solver project_algebraics_rejects_nonzero_residual_row_omitted_from_plan
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve solve_problem_projection_plan_covers_every_algebraic_tail_row
 ```
 
 **Step 2: Run repository Rust gates**
