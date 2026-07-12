@@ -85,6 +85,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Verify repository toolchain pins
+        run: node --test .github/scripts/toolchain-pins.test.mjs
+
       # Architectural invariant, checked without compiling anything: `xtask` must
       # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
       # out; heavy compiler-linked work runs on demand via `cargo run -p <crate>`
@@ -951,20 +954,7 @@ jobs:
 
       - name: Install OpenModelica
         shell: bash
-        run: |
-          set -euo pipefail
-          omc_channel="stable"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang cmake curl gnupg \
-            libexpat1-dev liblapack-dev lsb-release unzip zip
-          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
-            | sudo tee /etc/apt/sources.list.d/openmodelica.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends omc
-          omc --version
+        run: scripts/ci/install-openmodelica.sh
 
       - name: Clean stale MSL results
         shell: bash
@@ -1380,20 +1370,7 @@ jobs:
 
       - name: Install OpenModelica
         shell: bash
-        run: |
-          set -euo pipefail
-          omc_channel="stable"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang cmake curl gnupg \
-            libexpat1-dev liblapack-dev lsb-release unzip zip
-          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
-            | sudo tee /etc/apt/sources.list.d/openmodelica.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends omc
-          omc --version
+        run: scripts/ci/install-openmodelica.sh
 
       - name: Prepare ModelicaTest sources
         shell: bash

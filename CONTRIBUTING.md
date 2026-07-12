@@ -40,6 +40,20 @@ The canonical top-level command groups are:
 
 ## Local Prerequisites
 
+Put rustup's proxy directory before package-manager Rust installations so a
+plain `cargo` command honors `rust-toolchain.toml`:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+rustc --version
+cargo --version
+```
+
+MSL parity uses the exact OpenModelica release recorded in
+`toolchains/openmodelica-version`. Local installations and CI must report that
+same normalized `major.minor.patch` version before a full MSL result is
+comparable. The CI installer rejects both older and silently upgraded versions.
+
 Rust-only workflows do not require Node/npm:
 
 ```bash
@@ -53,6 +67,7 @@ Package, playground, VS Code, and browser-asset workflows do require Node/npm.
 CI uses Node 20, so local package validation should use Node 20 as well:
 
 ```bash
+nvm use
 node --version
 npm --version
 ```
