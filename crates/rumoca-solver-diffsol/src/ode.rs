@@ -109,6 +109,7 @@ pub(crate) struct OdeModel {
     implicit_rhs: PreparedComputeBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
     initial_residual: PreparedComputeBlock,
+    initial_scalar_residual: PreparedScalarProgramBlock,
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
     pub(crate) root_conditions: PreparedScalarProgramBlock,
@@ -133,6 +134,9 @@ impl OdeModel {
             initial_residual: PreparedComputeBlock::new_with_label(
                 &model.problem.initialization.residual,
                 "ode_initial_residual",
+            )?,
+            initial_scalar_residual: PreparedScalarProgramBlock::new(
+                solve_eval::to_scalar_program_block(&model.problem.initialization.residual)?,
             )?,
             initial_targets: model.problem.initialization.row_targets.clone(),
             implicit_jacobian_v: PreparedComputeBlock::new_with_label(
@@ -282,6 +286,58 @@ impl AlgebraicProjectionModel for OdeModel {
                 t,
                 self.row_eval_context(None),
             )
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
+    }
+
+    fn eval_initial_target_value(
+        &self,
+        output_index: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(row_idx) = self
+            .initial_scalar_residual
+            .single_output_row_for_output_index(output_index)
+        else {
+            return Ok(None);
+        };
+        self.initial_scalar_residual
+            .eval_target_assignment_row_unchecked_with_context(
+                row_idx,
+                target_y_index,
+                y,
+                p,
+                t,
+                self.row_eval_context(None),
+            )
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
+    }
+
+    fn eval_initial_residual_row(
+        &self,
+        output_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(row_idx) = self
+            .initial_scalar_residual
+            .single_output_row_for_output_index(output_index)
+        else {
+            return Ok(None);
+        };
+        self.initial_scalar_residual
+            .eval_row_output_unchecked_with_context(
+                row_idx,
+                0,
+                y,
+                p,
+                t,
+                self.row_eval_context(None),
+            )
+            .map(Some)
             .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 

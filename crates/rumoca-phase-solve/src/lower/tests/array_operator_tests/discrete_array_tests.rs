@@ -219,6 +219,7 @@ fn function_param_with_type_span(
 ) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span,
         type_name: type_name.to_string(),
@@ -1027,6 +1028,7 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
     matrix_fn.outputs.push(function_param_with_dims("y", &[2]));
     matrix_fn.locals.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "A".to_string(),
         span: lower_test_span(),
         type_name: "Real".to_string(),
@@ -1187,6 +1189,7 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
     let mut any_true = rumoca_core::Function::new("Modelica.Math.BooleanVectors.anyTrue", span);
     any_true.inputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "b".to_string(),
         span,
         type_name: "Boolean".to_string(),
@@ -1200,6 +1203,7 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
     });
     any_true.outputs.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "result".to_string(),
         span,
         type_name: "Boolean".to_string(),
@@ -1290,6 +1294,7 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
             variable_starts: &variable_starts,
             dae_variables: Some(&dae_model.variables),
             structural_bindings: None,
+            direct_assignments: None,
             guard_target_start_before_first_clock_tick: false,
         },
         false,
@@ -1392,6 +1397,7 @@ fn lower_expression_rows_rejects_unspanned_matmul_node() {
             variable_starts: &variable_starts,
             dae_variables: Some(&dae_model.variables),
             structural_bindings: None,
+            direct_assignments: None,
             guard_target_start_before_first_clock_tick: false,
         },
         false,
@@ -1454,6 +1460,7 @@ fn lower_expression_rows_preserves_vector_matrix_products_as_matmul_nodes() {
                 variable_starts: &variable_starts,
                 dae_variables: Some(&dae_model.variables),
                 structural_bindings: None,
+                direct_assignments: None,
                 guard_target_start_before_first_clock_tick: false,
             },
             false,

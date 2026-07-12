@@ -256,7 +256,7 @@ fn collect_one_based_index_tuples(
     }
 }
 
-pub(super) fn index_choice_tuples(
+pub(in crate::lower) fn index_choice_tuples(
     choices: &[Vec<usize>],
     span: rumoca_core::Span,
 ) -> Result<Vec<Vec<usize>>, LowerError> {

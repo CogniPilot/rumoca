@@ -160,6 +160,243 @@ fn lower_expression_unrolls_function_for_loop_over_local_input_size() {
 }
 
 #[test]
+fn lower_expression_unrolls_for_loop_over_assigned_local_integer() {
+    let mut dae_model = dae::Dae::default();
+    let mut function = rumoca_core::Function::new("My.assignedLoopBound", lower_test_span());
+    function.outputs.push(function_param("out"));
+    function.locals.push(rumoca_core::FunctionParam::new(
+        "solveRow",
+        "Integer",
+        lower_test_span(),
+    ));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("solveRow"),
+        value: int_lit(2),
+        span: lower_test_span(),
+    });
+    function.body.push(rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "k".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(var("solveRow")),
+                step: None,
+                end: Box::new(var("solveRow")),
+                span: lower_test_span(),
+            },
+        }],
+        equations: vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("out"),
+            value: var("k"),
+            span: lower_test_span(),
+        }],
+        span: lower_test_span(),
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("My.assignedLoopBound"),
+        args: Vec::new(),
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect("assigned local integer should be available to the following loop range");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 2.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_uses_assigned_local_integer_in_comprehension_range() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    let mut function = rumoca_core::Function::new("My.assignedComprehensionBound", span);
+    function.outputs.push(function_param("out"));
+    function
+        .locals
+        .push(rumoca_core::FunctionParam::new("pivotRow", "Integer", span));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("pivotRow"),
+        value: int_lit(2),
+        span,
+    });
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(var("column")),
+                indices: vec![rumoca_core::ComprehensionIndex {
+                    name: "column".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(add(var("pivotRow"), int_lit(1))),
+                        step: None,
+                        end: Box::new(int_lit(3)),
+                        span,
+                    },
+                }],
+                filter: None,
+                span,
+            }],
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("My.assignedComprehensionBound"),
+        args: Vec::new(),
+        is_constructor: false,
+        span,
+    };
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect("assigned local Integer should be available to a comprehension range");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 3.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_reads_array_value_assigned_in_for_loop() {
+    let mut dae_model = dae::Dae::default();
+    let mut function = rumoca_core::Function::new("My.arrayLoopAssignment", lower_test_span());
+    function.outputs.push(function_param("out"));
+    function
+        .locals
+        .push(function_param_with_dims("values", &[1]).with_default(
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(0.0)],
+                is_matrix: false,
+                span: lower_test_span(),
+            },
+        ));
+    function.body.push(rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(1)),
+                span: lower_test_span(),
+            },
+        }],
+        equations: vec![rumoca_core::Statement::Assignment {
+            comp: component_ref_index_expr("values", var("i")),
+            value: real_lit(2.0),
+            span: lower_test_span(),
+        }],
+        span: lower_test_span(),
+    });
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: var_index("values", 1),
+        span: lower_test_span(),
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("My.arrayLoopAssignment"),
+        args: Vec::new(),
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect("local array assignment in a function loop should lower");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 2.0).abs() <= 1e-12);
+}
+
+#[test]
+fn runtime_if_inside_for_invalidates_pre_loop_constant_index() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut function = rumoca_core::Function::new("My.loopSelectedIndex", span);
+    function.inputs.push(function_param("u"));
+    function.outputs.push(function_param("out"));
+    function.locals.push(
+        rumoca_core::FunctionParam::new("selected", "Integer", span).with_default(int_lit(0)),
+    );
+    function
+        .locals
+        .push(function_param_with_dims("values", &[2]).with_default(
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(5.0), real_lit(7.0)],
+                is_matrix: false,
+                span,
+            },
+        ));
+    function.body.push(rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(2)),
+                span,
+            },
+        }],
+        equations: vec![rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Gt,
+                    lhs: Box::new(source_var("u")),
+                    rhs: Box::new(source_var("i")),
+                    span,
+                },
+                stmts: vec![rumoca_core::Statement::Assignment {
+                    comp: component_ref("selected"),
+                    value: source_var("i"),
+                    span,
+                }],
+            }],
+            else_block: None,
+            span,
+        }],
+        span,
+    });
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: var_index_expr("values", source_var("selected")),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.loopSelectedIndex"),
+        args: vec![source_var("u")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("runtime loop branch should invalidate a pre-loop constant index");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "u", 3.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 7.0).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_uses_function_local_size_in_fill_dimension() {
     let mut dae_model = dae::Dae::default();
     let mut count_fill = rumoca_core::Function::new("My.countFill", lower_test_span());

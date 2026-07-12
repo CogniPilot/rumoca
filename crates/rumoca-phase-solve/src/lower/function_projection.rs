@@ -354,7 +354,7 @@ fn base_projection_reg(projection: &FunctionOutputProjection, scope: &Scope) -> 
         .and_then(|base_key| scoped_reg(scope, &base_key))
 }
 
-fn projection_indices_for_dims(dims: &[i64], flat_index: usize) -> Option<Vec<usize>> {
+pub(super) fn projection_indices_for_dims(dims: &[i64], flat_index: usize) -> Option<Vec<usize>> {
     if dims.is_empty() {
         return Some(Vec::new());
     }

@@ -4,8 +4,8 @@ use crate::eval::special::{
 };
 
 mod matrix_eval;
-pub(in crate::eval) use matrix_eval::*;
 pub use matrix_eval::eval_matrix_values;
+pub(in crate::eval) use matrix_eval::*;
 
 pub(super) fn declared_dims<T: SimFloat>(
     name: &str,
@@ -1218,7 +1218,11 @@ fn binary_expr_runtime_dims<T: SimFloat>(
             _ => runtime_vector_dims(value_count),
         });
     }
-    Ok(if lhs_dims.is_empty() { rhs_dims } else { lhs_dims })
+    Ok(if lhs_dims.is_empty() {
+        rhs_dims
+    } else {
+        lhs_dims
+    })
 }
 
 /// Runtime result shape for shape-defining builtin calls (MLS §10.3).
@@ -1238,9 +1242,7 @@ fn builtin_call_runtime_dims<T: SimFloat>(
         }
         Ok(value as usize)
     };
-    fn single_arg(
-        args: &[rumoca_core::Expression],
-    ) -> Result<&rumoca_core::Expression, EvalError> {
+    fn single_arg(args: &[rumoca_core::Expression]) -> Result<&rumoca_core::Expression, EvalError> {
         args.first().ok_or(EvalError::UnsupportedExpression {
             kind: "builtin dimension arity",
         })

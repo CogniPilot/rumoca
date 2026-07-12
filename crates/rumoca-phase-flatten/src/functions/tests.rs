@@ -761,6 +761,32 @@ fn record_function_signature_keeps_constructor_as_structural_dependency() {
 }
 
 #[test]
+fn contextualized_record_parameter_updates_declaration_identity() {
+    let package_def = rumoca_core::DefId::new(1);
+    let inherited_state_def = rumoca_core::DefId::new(2);
+    let concrete_state_def = rumoca_core::DefId::new(3);
+    let mut package = class("Pkg", rumoca_core::ClassType::Package, package_def);
+    package.classes.insert(
+        "State".to_string(),
+        class("State", rumoca_core::ClassType::Record, concrete_state_def),
+    );
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("Pkg".to_string(), package);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    function.add_input(
+        rumoca_core::FunctionParam::new("state", "Pkg.State", test_span())
+            .with_type_class(rumoca_core::ClassType::Record)
+            .with_type_def_id(inherited_state_def),
+    );
+
+    contextualize_record_param_type_names(&tree, &class_index, "Pkg.f", &mut function);
+
+    assert_eq!(function.inputs[0].type_name, "Pkg.State");
+    assert_eq!(function.inputs[0].type_def_id, Some(concrete_state_def));
+}
+
+#[test]
 fn validates_flat_boundary_allows_output_binding_functions() {
     let mut flat = flat::Model::new();
     let mut function =

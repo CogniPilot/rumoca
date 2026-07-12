@@ -262,7 +262,10 @@ pub struct IndexProjectionContext<'a> {
     complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     component_index_map: &'a HashMap<String, HashMap<usize, String>>,
     function_output_index_map: &'a HashMap<String, HashMap<usize, String>>,
+    function_output_dims_map: &'a HashMap<String, Vec<i64>>,
+    dynamic_function_output_map: &'a HashMap<String, String>,
     record_field_projection_map: &'a RecordFieldProjectionMap,
+    expected_dims: Option<&'a [i64]>,
 }
 
 impl<'a> IndexProjectionContext<'a> {
@@ -276,7 +279,10 @@ impl<'a> IndexProjectionContext<'a> {
             complex_fields: self.complex_fields,
             component_index_map: self.component_index_map,
             function_output_index_map: self.function_output_index_map,
+            function_output_dims_map: self.function_output_dims_map,
+            dynamic_function_output_map: self.dynamic_function_output_map,
             record_field_projection_map: self.record_field_projection_map,
+            expected_dims: self.expected_dims,
         }
     }
 
@@ -376,6 +382,11 @@ impl<'a> IndexProjectionContext<'a> {
                     ExpressionShape::Scalar
                 }
             }
+            Expression::FunctionCall { name, .. } => self
+                .function_output_dims_map
+                .get(name.as_str())
+                .map(|dims| shape_from_dims(dims))
+                .unwrap_or(ExpressionShape::Other),
             Expression::Index {
                 base, subscripts, ..
             } => self
@@ -886,6 +897,20 @@ impl<'a> IndexProjectionContext<'a> {
         if is_constructor && self.i >= 1 && self.i <= args.len() {
             return self.project(&args[self.i - 1]);
         }
+        if let Some(output_name) = self.dynamic_function_output_map.get(name.as_str())
+            && let Some(dims) = self.expected_dims
+            && let Ok(count) = output_scalar_count(dims, span)
+            && self.i >= 1
+            && self.i <= count
+        {
+            let selector = dae::scalar_name_text_for_flat_index(output_name, dims, self.i - 1);
+            return Ok(Expression::FunctionCall {
+                name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), selector)),
+                args: args.to_vec(),
+                is_constructor: false,
+                span,
+            });
+        }
         if let Some(by_index) = self.function_output_index_map.get(name.as_str())
             && let Some(projected_output) = by_index.get(&self.i)
         {
@@ -1280,6 +1305,8 @@ pub fn index_into_expr(
 ) -> Result<Expression, StructuralError> {
     let structural_values = HashMap::new();
     let var_spans = HashMap::new();
+    let dynamic_function_output_map = HashMap::new();
+    let function_output_dims_map = HashMap::new();
     let record_field_projection_map = HashMap::new();
     IndexProjectionContext {
         i,
@@ -1290,7 +1317,10 @@ pub fn index_into_expr(
         complex_fields,
         component_index_map,
         function_output_index_map,
+        function_output_dims_map: &function_output_dims_map,
+        dynamic_function_output_map: &dynamic_function_output_map,
         record_field_projection_map: &record_field_projection_map,
+        expected_dims: None,
     }
     .project(expr)
 }
@@ -1302,7 +1332,40 @@ pub struct ExpressionScalarizationContext {
     complex_fields: HashMap<String, [Option<String>; 2]>,
     component_index_map: HashMap<String, HashMap<usize, String>>,
     function_output_index_map: HashMap<String, HashMap<usize, String>>,
+    function_output_dims_map: HashMap<String, Vec<i64>>,
+    dynamic_function_output_map: HashMap<String, String>,
     record_field_projection_map: RecordFieldProjectionMap,
+}
+
+fn build_dynamic_function_output_map(dae: &Dae) -> HashMap<String, String> {
+    dae.symbols
+        .functions
+        .iter()
+        .filter_map(|(name, function)| {
+            let [output] = function.outputs.as_slice() else {
+                return None;
+            };
+            output
+                .dims
+                .iter()
+                .any(|dim| *dim <= 0)
+                .then(|| (name.as_str().to_string(), output.name.clone()))
+        })
+        .collect()
+}
+
+fn build_function_output_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
+    dae.symbols
+        .functions
+        .iter()
+        .filter_map(|(name, function)| {
+            let [output] = function.outputs.as_slice() else {
+                return None;
+            };
+            (output.dims.is_empty() || output.dims.iter().all(|dim| *dim > 0))
+                .then(|| (name.as_str().to_string(), output.dims.clone()))
+        })
+        .collect()
 }
 
 pub fn build_expression_scalarization_context(
@@ -1317,6 +1380,8 @@ pub fn build_expression_scalarization_context(
         complex_fields: build_complex_field_map(dae),
         component_index_map: build_component_index_projection_map(dae),
         function_output_index_map: build_function_output_projection_map(dae)?,
+        function_output_dims_map: build_function_output_dims_map(dae),
+        dynamic_function_output_map: build_dynamic_function_output_map(dae),
         record_field_projection_map: build_record_field_projection_map(dae)?,
     })
 }
@@ -1341,7 +1406,10 @@ pub fn scalarize_expression_rows(
                 complex_fields: &ctx.complex_fields,
                 component_index_map: &ctx.component_index_map,
                 function_output_index_map: &ctx.function_output_index_map,
+                function_output_dims_map: &ctx.function_output_dims_map,
+                dynamic_function_output_map: &ctx.dynamic_function_output_map,
                 record_field_projection_map: &ctx.record_field_projection_map,
+                expected_dims: None,
             }
             .project(expr)
         })
@@ -1722,6 +1790,8 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     let complex_fields = build_complex_field_map(dae);
     let component_index_map = build_component_index_projection_map(dae);
     let function_output_index_map = build_function_output_projection_map(dae)?;
+    let function_output_dims_map = build_function_output_dims_map(dae);
+    let dynamic_function_output_map = build_dynamic_function_output_map(dae);
     let record_field_projection_map = build_record_field_projection_map(dae)?;
     let projection = ScalarProjectionContext {
         context_span: None,
@@ -1731,7 +1801,10 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
         complex_fields: &complex_fields,
         component_index_map: &component_index_map,
         function_output_index_map: &function_output_index_map,
+        function_output_dims_map: &function_output_dims_map,
+        dynamic_function_output_map: &dynamic_function_output_map,
         record_field_projection_map: &record_field_projection_map,
+        expected_dims: None,
     };
     let scalar_names = build_output_names(dae)?;
     let mut expanded = Vec::new();
@@ -1740,12 +1813,18 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     let mut spans: Vec<(usize, usize)> = Vec::with_capacity(dae.continuous.equations.len());
     for eq in &dae.continuous.equations {
         let new_start = expanded.len();
-        let eq_projection = projection.with_context_span(eq.span);
         let scalarization_target = eq
             .lhs
             .as_ref()
             .map(|lhs| lhs.as_str().to_string())
             .or_else(|| residual_lhs_target_name(&eq.rhs));
+        let expected_dims = scalarization_target
+            .as_deref()
+            .and_then(|target| var_dims.get(target))
+            .map(Vec::as_slice);
+        let eq_projection = projection
+            .with_context_span(eq.span)
+            .with_expected_dims(expected_dims);
         let residual_lhs_targets =
             residual_lhs_scalar_targets(&eq.rhs, eq.span, &var_dims, &structural_values)?;
         let (lhs_targets, has_residual_lhs_targets) = scalar_lhs_targets_for_equation(
@@ -1808,11 +1887,18 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
         &spans,
     );
 
-    lower_scalar_linear_algebra_exprs(&mut dae.conditions.relations, &projection)?;
-    lower_scalar_linear_algebra_exprs(&mut dae.events.synthetic_root_conditions, &projection)?;
-    lower_scalar_linear_algebra_exprs(&mut dae.clocks.triggered_conditions, &projection)?;
-    lower_scalar_linear_algebra_exprs(&mut dae.clocks.constructor_exprs, &projection)?;
+    lower_event_scalar_linear_algebra(dae, &projection)?;
     Ok(())
+}
+
+fn lower_event_scalar_linear_algebra(
+    dae: &mut Dae,
+    projection: &ScalarProjectionContext<'_>,
+) -> Result<(), StructuralError> {
+    lower_scalar_linear_algebra_exprs(&mut dae.conditions.relations, projection)?;
+    lower_scalar_linear_algebra_exprs(&mut dae.events.synthetic_root_conditions, projection)?;
+    lower_scalar_linear_algebra_exprs(&mut dae.clocks.triggered_conditions, projection)?;
+    lower_scalar_linear_algebra_exprs(&mut dae.clocks.constructor_exprs, projection)
 }
 
 #[cfg(test)]

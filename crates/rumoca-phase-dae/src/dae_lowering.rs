@@ -135,6 +135,7 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError>
             for field in fields {
                 func.inputs.push(rumoca_core::FunctionParam {
                     def_id: None,
+                    type_def_id: None,
                     name: format!("{param_name}_{field}"),
                     span: input.span,
                     type_name: "Real".to_string(),

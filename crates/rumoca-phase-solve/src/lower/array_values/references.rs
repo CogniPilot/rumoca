@@ -9,48 +9,45 @@ impl<'a> LowerBuilder<'a> {
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
         let span = self.var_ref_array_lookup_span(name, expr)?;
+        let key = name.as_str();
+        if self.known_empty_local_arrays.contains(key)
+            || self
+                .structural_bindings
+                .get(super::size_binding_key(key, 1).as_str())
+                .is_some_and(|dim| *dim == 0.0)
+        {
+            return Ok(Vec::new());
+        }
         let generated_key = generated_scope_key(name.as_str());
         if let Some(reg) = scope.get(&generated_key).copied()
             && self.local_scalar_binding_precedes_indexed_values(name.as_str())
         {
             return Ok(vec![reg]);
         }
-        if let Some(values) = scoped_indexed_binding_values(scope, &generated_key, span)? {
+        if let Some(values) = self.local_indexed_binding_values(name.as_str()) {
             return Ok(values);
         }
-        if let Some(values) = self.local_indexed_binding_values(name.as_str()) {
+        if let Some(values) = scoped_indexed_binding_values(scope, &generated_key, span)? {
             return Ok(values);
         }
         if let Some(reg) = scope.get(&generated_key).copied() {
             return Ok(vec![reg]);
         }
 
-        let key = name.as_str();
         if let Some(values) = self.lower_record_field_array_values(key, span)? {
             return Ok(values);
         }
-
         let key_path = self.scope_key_from_reference(name, span)?;
         if let Some(reg) = scope.get(&key_path).copied()
             && self.local_scalar_binding_precedes_indexed_values(key)
         {
             return Ok(vec![reg]);
         }
-        if let Some(values) = scoped_indexed_binding_values(scope, &key_path, span)? {
-            return Ok(values);
-        }
         if let Some(values) = self.local_indexed_binding_values(key) {
             return Ok(values);
         }
-        if self.known_empty_local_arrays.contains(key) {
-            return Ok(Vec::new());
-        }
-        if self
-            .structural_bindings
-            .get(super::size_binding_key(key, 1).as_str())
-            .is_some_and(|dim| *dim == 0.0)
-        {
-            return Ok(Vec::new());
+        if let Some(values) = scoped_indexed_binding_values(scope, &key_path, span)? {
+            return Ok(values);
         }
         if let Some(pre_key) = self.pre_mode_base_key(key)
             && let Some(values) = self.lower_indexed_binding_values_at(pre_key.as_str(), span)?
@@ -112,7 +109,16 @@ impl<'a> LowerBuilder<'a> {
         &self,
         base_key: &str,
         field: &str,
-    ) -> IndexMap<Vec<usize>, String> {
+    ) -> Arc<IndexMap<Vec<usize>, String>> {
+        let cache_key = (base_key.to_string(), field.to_string());
+        if let Some(keys) = self
+            .indexed_record_field_key_cache
+            .borrow()
+            .get(&cache_key)
+            .cloned()
+        {
+            return keys;
+        }
         let mut keys = IndexMap::new();
         for (binding_key, _slot) in self.layout.bindings() {
             if let Some(indices) = indexed_record_field_key_indices(binding_key, base_key, field) {
@@ -127,6 +133,10 @@ impl<'a> LowerBuilder<'a> {
             }
         }
         keys.sort_keys();
+        let keys = Arc::new(keys);
+        self.indexed_record_field_key_cache
+            .borrow_mut()
+            .insert(cache_key, Arc::clone(&keys));
         keys
     }
 

@@ -609,6 +609,8 @@ fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
         function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
         record_field_projection_map: HashMap::new(),
     };
     let expr = Expression::Array {
@@ -679,6 +681,8 @@ fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
         complex_fields: HashMap::new(),
         component_index_map: HashMap::new(),
         function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
         record_field_projection_map: HashMap::new(),
     };
     let expr = Expression::Array {
@@ -809,6 +813,134 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
             span: rumoca_core::Span::DUMMY,
         }
     );
+}
+
+#[test]
+fn scalarize_matrix_product_uses_declared_function_output_shapes() {
+    fn call(name: &str) -> Expression {
+        Expression::FunctionCall {
+            name: rumoca_core::Reference::new(name),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        }
+    }
+
+    fn collect_call_names(expr: &Expression, names: &mut Vec<String>) {
+        match expr {
+            Expression::FunctionCall { name, .. } => names.push(name.as_str().to_string()),
+            Expression::Binary { lhs, rhs, .. } => {
+                collect_call_names(lhs, names);
+                collect_call_names(rhs, names);
+            }
+            _ => {}
+        }
+    }
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("P"), variable("P", &[2, 2]));
+    for name in ["F", "G"] {
+        let mut function = rumoca_core::Function::new(name, test_span());
+        function.add_output(
+            rumoca_core::FunctionParam::new("Y", "Real", test_span()).with_dims(vec![2, 2]),
+        );
+        dae_model
+            .symbols
+            .functions
+            .insert(function.name.clone(), function);
+    }
+    dae_model.continuous.equations.push(eq(
+        "P",
+        Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(call("F")),
+            rhs: Box::new(call("G")),
+            span: test_span(),
+        },
+        4,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let mut names = Vec::new();
+    collect_call_names(&dae_model.continuous.equations[0].rhs, &mut names);
+    assert_eq!(names, ["F.Y[1,1]", "G.Y[1,1]", "F.Y[1,2]", "G.Y[2,1]"]);
+}
+
+#[test]
+fn scalarize_dynamic_function_output_resolves_shape_from_array_argument() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("A"), variable("A", &[2, 2]));
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("R"), variable("R", &[2, 2]));
+
+    let mut function = rumoca_core::Function::new("My.symmetrize", test_span());
+    function
+        .add_input(rumoca_core::FunctionParam::new("A", "Real", test_span()).with_dims(vec![0, 0]));
+    let mut output =
+        rumoca_core::FunctionParam::new("symmetricA", "Real", test_span()).with_dims(vec![0, 0]);
+    output.shape_expr = [1, 2]
+        .into_iter()
+        .map(|dim| {
+            rumoca_core::Subscript::generated_expr(
+                Box::new(Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![
+                        var("A"),
+                        Expression::Literal {
+                            value: Literal::Integer(dim),
+                            span: test_span(),
+                        },
+                    ],
+                    span: test_span(),
+                }),
+                test_span(),
+            )
+        })
+        .collect();
+    function.add_output(output);
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    dae_model.continuous.equations.push(eq(
+        "R",
+        Expression::FunctionCall {
+            name: rumoca_core::Reference::new("My.symmetrize"),
+            args: vec![var("A")],
+            is_constructor: false,
+            span: test_span(),
+        },
+        4,
+    ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 4);
+    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
+        let row = offset / 2 + 1;
+        let column = offset % 2 + 1;
+        assert_eq!(
+            equation.rhs,
+            Expression::FunctionCall {
+                name: rumoca_core::Reference::new(format!(
+                    "My.symmetrize.symmetricA[{row},{column}]"
+                )),
+                args: vec![var("A")],
+                is_constructor: false,
+                span: test_span(),
+            }
+        );
+    }
 }
 
 #[test]

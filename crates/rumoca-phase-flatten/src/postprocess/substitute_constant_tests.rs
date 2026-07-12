@@ -155,6 +155,44 @@ fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
 }
 
 #[test]
+fn substitutes_late_scoped_constant_inside_array_subscript() {
+    let mut model = flat::Model::new();
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("medium.X"),
+            subscripts: vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(spanned_var_ref("nS")),
+                span: test_span(),
+            }],
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "medium".to_string(),
+        },
+    ));
+    let mut ctx = Context::new();
+    ctx.parameter_values.insert("medium.nS".to_string(), 2);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Expression::VarRef { subscripts, .. } = &model.equations[0].residual else {
+        panic!("expected indexed variable reference");
+    };
+    assert!(matches!(
+        &subscripts[0],
+        rumoca_core::Subscript::Expr { expr, .. }
+            if matches!(
+                expr.as_ref(),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    ..
+                }
+            )
+    ));
+}
+
+#[test]
 fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);

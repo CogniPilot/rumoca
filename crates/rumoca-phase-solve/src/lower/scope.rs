@@ -360,6 +360,7 @@ pub(super) struct MaterializedRecordComponent {
 
 pub(super) struct MaterializedRecordComponents {
     pub(super) components: Vec<MaterializedRecordComponent>,
+    pub(super) empty_components: Vec<(String, Vec<i64>)>,
     pub(super) indexed_components: Vec<(String, Vec<LocalIndexedBinding>)>,
 }
 

@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: function-expression regression fixtures share
+//! common function/DAE builders; split plan: continue moving behavioral groups
+//! into the existing focused sibling modules.
+
 use super::*;
 
 mod shape_diagnostic_tests;
@@ -6,6 +10,7 @@ use statement_and_projection_tests::{array_arg, matrix_arg, size_call};
 fn complex_output_param(name: &str) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span: lower_test_span(),
         type_name: "Complex".to_string(),
@@ -1284,6 +1289,534 @@ fn lower_expression_projects_multi_output_scalar_inside_binary() {
 }
 
 #[test]
+fn projected_function_output_reads_array_assigned_in_if_branches() {
+    fn indexed(name: &str, index: i64) -> rumoca_core::Expression {
+        let span = lower_test_span();
+        rumoca_core::Expression::Index {
+            base: Box::new(source_var(name)),
+            subscripts: vec![rumoca_core::Subscript::Index { value: index, span }],
+            span,
+        }
+    }
+
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    let mut from_quat = rumoca_core::Function::new("My.fromQuat", span);
+    from_quat.inputs.push(function_param_with_dims("q", &[4]));
+    from_quat.outputs.push(function_param_with_dims("r", &[3]));
+    from_quat.locals.push(function_param_with_dims("q_n", &[4]));
+    from_quat.locals.push(function_param("den"));
+    from_quat.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Lt,
+                lhs: Box::new(indexed("q", 1)),
+                rhs: Box::new(real_lit(0.0)),
+                span,
+            },
+            stmts: vec![rumoca_core::Statement::Assignment {
+                comp: component_ref("q_n"),
+                value: rumoca_core::Expression::Unary {
+                    op: rumoca_core::OpUnary::Minus,
+                    rhs: Box::new(source_var("q")),
+                    span,
+                },
+                span,
+            }],
+        }],
+        else_block: Some(vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("q_n"),
+            value: source_var("q"),
+            span,
+        }]),
+        span,
+    });
+    from_quat.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("den"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(real_lit(1.0)),
+            rhs: Box::new(indexed("q_n", 1)),
+            span,
+        },
+        span,
+    });
+    from_quat.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref_index("r", 1),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs: Box::new(indexed("q_n", 2)),
+            rhs: Box::new(source_var("den")),
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(from_quat.name.clone(), from_quat);
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.fromQuat.r[1]"),
+        args: vec![array_lit(&[1.0, 2.0, 3.0, 4.0])],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("projected function output should retain branch-assigned local array elements");
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 1.0).abs() <= 1e-12);
+}
+
+#[test]
+fn function_reads_initialized_array_element_reassigned_in_runtime_if() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut choose = rumoca_core::Function::new("My.chooseArrayElement", span);
+    choose.inputs.push(function_param("u"));
+    choose.outputs.push(function_param("out"));
+    choose
+        .locals
+        .push(function_param_with_dims("values", &[1]).with_default(
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(0.0)],
+                is_matrix: false,
+                span,
+            },
+        ));
+    choose.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Gt,
+                lhs: Box::new(source_var("u")),
+                rhs: Box::new(real_lit(0.0)),
+                span,
+            },
+            stmts: vec![rumoca_core::Statement::Assignment {
+                comp: component_ref_index("values", 1),
+                value: real_lit(2.0),
+                span,
+            }],
+        }],
+        else_block: Some(vec![rumoca_core::Statement::Assignment {
+            comp: component_ref_index("values", 1),
+            value: real_lit(3.0),
+            span,
+        }]),
+        span,
+    });
+    choose.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: var_index("values", 1),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(choose.name.clone(), choose);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.chooseArrayElement"),
+        args: vec![source_var("u")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("runtime branch array assignment should lower");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "u", 1.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 2.0).abs() <= 1e-12);
+}
+
+#[test]
+fn runtime_if_assignment_invalidates_stale_constant_index() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut choose = rumoca_core::Function::new("My.chooseDynamicIndex", span);
+    choose.inputs.push(function_param("u"));
+    choose.outputs.push(function_param("out"));
+    choose.locals.push(
+        rumoca_core::FunctionParam::new("selected", "Integer", span).with_default(int_lit(0)),
+    );
+    choose
+        .locals
+        .push(function_param_with_dims("values", &[2]).with_default(
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(5.0), real_lit(7.0)],
+                is_matrix: false,
+                span,
+            },
+        ));
+    choose.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Gt,
+                lhs: Box::new(source_var("u")),
+                rhs: Box::new(real_lit(0.0)),
+                span,
+            },
+            stmts: vec![rumoca_core::Statement::Assignment {
+                comp: component_ref("selected"),
+                value: int_lit(1),
+                span,
+            }],
+        }],
+        else_block: Some(vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("selected"),
+            value: int_lit(2),
+            span,
+        }]),
+        span,
+    });
+    choose.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: var_index_expr("values", source_var("selected")),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(choose.name.clone(), choose);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.chooseDynamicIndex"),
+        args: vec![source_var("u")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("runtime branch assignment should invalidate the initial constant index");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "u", 1.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 5.0).abs() <= 1e-12);
+}
+
+#[test]
+fn function_selects_runtime_local_matrix_row_slice() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("row"), scalar_var("row"));
+
+    let matrix_row = rumoca_core::Expression::Index {
+        base: Box::new(source_var("matrix")),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_expr(Box::new(source_var("row")), span),
+            rumoca_core::Subscript::generated_colon(span),
+        ],
+        span,
+    };
+    let mut row_sum = rumoca_core::Function::new("My.runtimeRowSum", span);
+    row_sum.inputs.push(function_param("row"));
+    row_sum.outputs.push(function_param("out"));
+    row_sum
+        .locals
+        .push(function_param_with_dims("matrix", &[2, 2]).with_default(
+            rumoca_core::Expression::Array {
+                elements: vec![
+                    rumoca_core::Expression::Array {
+                        elements: vec![real_lit(1.0), real_lit(2.0)],
+                        is_matrix: false,
+                        span,
+                    },
+                    rumoca_core::Expression::Array {
+                        elements: vec![real_lit(3.0), real_lit(4.0)],
+                        is_matrix: false,
+                        span,
+                    },
+                ],
+                is_matrix: true,
+                span,
+            },
+        ));
+    row_sum.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![matrix_row],
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(row_sum.name.clone(), row_sum);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.runtimeRowSum"),
+        args: vec![source_var("row")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("runtime local matrix row slice should lower through dynamic selection");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "row", 2.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 7.0).abs() <= 1e-12);
+}
+
+#[test]
+fn function_assigns_runtime_local_matrix_row_slice() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("row"), scalar_var("row"));
+
+    let matrix_literal = rumoca_core::Expression::Array {
+        elements: vec![
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(1.0), real_lit(2.0)],
+                is_matrix: false,
+                span,
+            },
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(3.0), real_lit(4.0)],
+                is_matrix: false,
+                span,
+            },
+        ],
+        is_matrix: true,
+        span,
+    };
+    let mut target = source_component_ref_from_name("matrix");
+    target.parts.last_mut().unwrap().subs = vec![
+        rumoca_core::Subscript::generated_expr(Box::new(source_var("row")), span),
+        rumoca_core::Subscript::generated_colon(span),
+    ];
+    let second_row = rumoca_core::Expression::Index {
+        base: Box::new(source_var("matrix")),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_index(2, span),
+            rumoca_core::Subscript::generated_colon(span),
+        ],
+        span,
+    };
+
+    let mut row_update = rumoca_core::Function::new("My.runtimeRowUpdate", span);
+    row_update.inputs.push(function_param("row"));
+    row_update.outputs.push(function_param("out"));
+    row_update
+        .locals
+        .push(function_param_with_dims("matrix", &[2, 2]).with_default(matrix_literal));
+    row_update.body.push(rumoca_core::Statement::Assignment {
+        comp: target,
+        value: rumoca_core::Expression::Array {
+            elements: vec![real_lit(9.0), real_lit(8.0)],
+            is_matrix: false,
+            span,
+        },
+        span,
+    });
+    row_update.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![second_row],
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(row_update.name.clone(), row_update);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.runtimeRowUpdate"),
+        args: vec![source_var("row")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("runtime local matrix row slice assignment should lower");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "row", 2.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 17.0).abs() <= 1e-12);
+}
+
+#[test]
+fn function_output_shape_uses_scalar_actual_for_callee_input_name() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+
+    let mut square = rumoca_core::Function::new("My.dynamicSquare", span);
+    square
+        .inputs
+        .push(rumoca_core::FunctionParam::new("n", "Integer", span));
+    let mut output = function_param_with_dims("matrix", &[0, 0]);
+    output.shape_expr = vec![
+        rumoca_core::Subscript::generated_expr(Box::new(source_var("n")), span),
+        rumoca_core::Subscript::generated_expr(Box::new(source_var("n")), span),
+    ];
+    square.outputs.push(output);
+    square.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("matrix"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Zeros,
+            args: vec![source_var("n"), source_var("n")],
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(square.name.clone(), square);
+
+    let mut wrapper = rumoca_core::Function::new("My.squareSum", span);
+    wrapper.outputs.push(function_param("out"));
+    wrapper.locals.push(
+        rumoca_core::FunctionParam::new("dimension", "Integer", span).with_default(int_lit(2)),
+    );
+    wrapper.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::generated("My.dynamicSquare"),
+                args: vec![source_var("dimension")],
+                is_constructor: false,
+                span,
+            }],
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(wrapper.name.clone(), wrapper);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.squareSum"),
+        args: Vec::new(),
+        is_constructor: false,
+        span,
+    };
+    let lowered = lower_expression(
+        &expression,
+        &VarLayout::default(),
+        &dae_model.symbols.functions,
+    )
+    .expect("callee output shape should bind `n` to caller actual `dimension`");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!(read_reg(&regs, lowered.result).abs() <= 1e-12);
+}
+
+#[test]
+fn return_guard_preserves_prior_multidimensional_output_assignment() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let matrix = |values: [f64; 4]| rumoca_core::Expression::Array {
+        elements: vec![
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(values[0]), real_lit(values[1])],
+                is_matrix: false,
+                span,
+            },
+            rumoca_core::Expression::Array {
+                elements: vec![real_lit(values[2]), real_lit(values[3])],
+                is_matrix: false,
+                span,
+            },
+        ],
+        is_matrix: true,
+        span,
+    };
+    let mut choose = rumoca_core::Function::new("My.matrixReturn", span);
+    choose.inputs.push(function_param("u"));
+    choose
+        .outputs
+        .push(function_param_with_dims("matrix", &[2, 2]));
+    choose.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Gt,
+                lhs: Box::new(source_var("u")),
+                rhs: Box::new(real_lit(0.0)),
+                span,
+            },
+            stmts: vec![
+                rumoca_core::Statement::Assignment {
+                    comp: component_ref("matrix"),
+                    value: matrix([1.0, 2.0, 3.0, 4.0]),
+                    span,
+                },
+                rumoca_core::Statement::Return { span },
+            ],
+        }],
+        else_block: None,
+        span,
+    });
+    choose.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("matrix"),
+        value: matrix([5.0, 6.0, 7.0, 8.0]),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(choose.name.clone(), choose);
+
+    let expression = rumoca_core::Expression::Index {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::generated("My.matrixReturn"),
+            args: vec![source_var("u")],
+            is_constructor: false,
+            span,
+        }),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_index(1, span),
+            rumoca_core::Subscript::generated_index(1, span),
+        ],
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("return guard should preserve a prior matrix output assignment by matrix indices");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "u", 1.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 1.0).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_projects_record_field_from_forwarded_function_result() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();
@@ -1374,6 +1907,175 @@ fn lower_expression_projects_record_field_from_forwarded_function_result() {
     let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
     let compiled = read_reg(&regs, lowered.result);
     assert!((compiled - 370.0).abs() <= 1e-12);
+}
+
+#[test]
+fn record_function_output_field_preserves_declared_matrix_shape() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+
+    let mut state_ctor = rumoca_core::Function::new("My.MatrixState", span);
+    state_ctor.is_constructor = true;
+    state_ctor
+        .inputs
+        .push(function_param_with_dims("covariance", &[2, 2]));
+    state_ctor
+        .outputs
+        .push(record_param("state", "My.MatrixState"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeMatrixState", span);
+    make_state
+        .outputs
+        .push(record_param("state", "My.MatrixState"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state.covariance"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Zeros,
+            args: vec![int_lit(2), int_lit(2)],
+            span,
+        },
+        span,
+    });
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref_indices("state.covariance", &[1, 1]),
+        value: real_lit(2.0),
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let expression = rumoca_core::Expression::Index {
+        base: Box::new(rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::generated("My.makeMatrixState"),
+                args: Vec::new(),
+                is_constructor: false,
+                span,
+            }),
+            field: "covariance".to_string(),
+            span,
+        }),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_index(1, span),
+            rumoca_core::Subscript::generated_index(1, span),
+        ],
+        span,
+    };
+    let lowered = lower_expression(
+        &expression,
+        &VarLayout::default(),
+        &dae_model.symbols.functions,
+    )
+    .expect("record output matrix field should retain its constructor-declared shape");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 2.0).abs() <= 1e-12);
+}
+
+#[test]
+fn function_assigns_record_result_to_record_array_element() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("which"), scalar_var("which"));
+
+    let mut candidate_ctor = rumoca_core::Function::new("My.Candidate", span);
+    candidate_ctor.is_constructor = true;
+    candidate_ctor.inputs.push(function_param("length"));
+    candidate_ctor
+        .outputs
+        .push(record_param("candidate", "My.Candidate"));
+    dae_model
+        .symbols
+        .functions
+        .insert(candidate_ctor.name.clone(), candidate_ctor);
+
+    let mut make_candidate = rumoca_core::Function::new("My.makeCandidate", span);
+    make_candidate.inputs.push(function_param("length"));
+    make_candidate
+        .outputs
+        .push(record_param("candidate", "My.Candidate"));
+    make_candidate
+        .body
+        .push(rumoca_core::Statement::Assignment {
+            comp: component_ref("candidate.length"),
+            value: source_var("length"),
+            span,
+        });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_candidate.name.clone(), make_candidate);
+
+    let mut select = rumoca_core::Function::new("My.selectCandidate", span);
+    select.inputs.push(function_param("which"));
+    select.outputs.push(function_param("out"));
+    select
+        .locals
+        .push(record_param("candidates", "My.Candidate").with_dims(vec![2]));
+    select.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref_index("candidates", 1),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::generated("My.makeCandidate"),
+            args: vec![real_lit(2.0)],
+            is_constructor: false,
+            span,
+        },
+        span,
+    });
+    select.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref_index("candidates", 2),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::generated("My.makeCandidate"),
+            args: vec![real_lit(3.0)],
+            is_constructor: false,
+            span,
+        },
+        span,
+    });
+    select.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::Index {
+                base: Box::new(source_var("candidates")),
+                subscripts: vec![rumoca_core::Subscript::generated_expr(
+                    Box::new(source_var("which")),
+                    span,
+                )],
+                span,
+            }),
+            field: "length".to_string(),
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(select.name.clone(), select);
+
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated("My.selectCandidate"),
+        args: vec![source_var("which")],
+        is_constructor: false,
+        span,
+    };
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let lowered = lower_expression(&expression, &layout, &dae_model.symbols.functions)
+        .expect("record function result should assign to a record-array element");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "which", 2.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 3.0).abs() <= 1e-12);
 }
 
 #[test]

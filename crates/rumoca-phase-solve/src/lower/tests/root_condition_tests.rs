@@ -217,6 +217,34 @@ fn lower_root_conditions_keep_enum_literal_relations_active() {
 }
 
 #[test]
+fn lower_synthetic_root_conditions_inline_calculated_parameters() {
+    let mut dae_model = dae::Dae::default();
+    let span = lower_test_span();
+    dae_model.continuous.equations.push(dae::Equation::explicit(
+        source_ref("threshold"),
+        real_lit(2.0),
+        span,
+        "calculated parameter definition",
+    ));
+    dae_model
+        .events
+        .synthetic_root_conditions
+        .push(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var("threshold")),
+            rhs: Box::new(real_lit(1.0)),
+            span,
+        });
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+
+    let rows = lower_root_conditions(&dae_model, &layout)
+        .expect("calculated parameters should inline into synthetic roots");
+    let (_, output) = eval_linear_ops(&rows[0], &[], &[], 0.0);
+
+    assert_eq!(output, Some(1.0));
+}
+
+#[test]
 fn lower_root_conditions_marks_schedule_backed_sample_roots() {
     let mut dae_model = dae::Dae::default();
     let span = lower_test_span();

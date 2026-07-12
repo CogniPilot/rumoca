@@ -79,6 +79,13 @@ fn scalar_var(name: &str) -> dae::Variable {
     }
 }
 
+fn array_var(name: &str, dims: Vec<i64>) -> dae::Variable {
+    dae::Variable {
+        dims,
+        ..scalar_var(name)
+    }
+}
+
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
@@ -118,6 +125,21 @@ fn expression_result_dims_accepts_existing_scalar_binding() {
     );
     let dims = expression_result_dims(&var_ref("x"), &dae_model, &IndexMap::new(), span)
         .expect("existing scalar binding has scalar shape");
+    assert!(dims.is_empty());
+}
+
+#[test]
+fn expression_result_dims_accepts_scalarized_element_of_aggregate_array() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("vehicle.q"),
+        array_var("vehicle.q", vec![4]),
+    );
+    let span = derivative_rhs_test_span();
+
+    let dims = expression_result_dims(&var_ref("vehicle.q[1]"), &dae_model, &IndexMap::new(), span)
+        .expect("scalarized aggregate array element has scalar shape");
+
     assert!(dims.is_empty());
 }
 

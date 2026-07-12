@@ -28,6 +28,12 @@ pub(super) fn lower_visible_observations(
         if is_unbound_identity_observation(layout, visible) {
             continue;
         }
+        if let Some(row) = direct_identity_observation_row(layout, visible)? {
+            names.push(visible.name.clone());
+            program_spans.push(visible_expression_span(visible)?);
+            rows.push(row);
+            continue;
+        }
         match crate::lower::lower_observation_rhs_with_structural_bindings(
             dae_model,
             layout,
@@ -55,6 +61,62 @@ pub(super) fn lower_visible_observations(
         solve::ScalarProgramBlock::with_program_spans(rows, program_spans)
             .map_err(LowerError::from)?,
     ))
+}
+
+fn direct_identity_observation_row(
+    layout: &solve::VarLayout,
+    visible: &VisibleExpression,
+) -> Result<Option<Vec<solve::LinearOp>>, LowerError> {
+    if !visible_expression_is_identity(visible) {
+        return Ok(None);
+    }
+    let Some(slot) = layout.binding(&visible.name) else {
+        return Ok(None);
+    };
+    let load = match slot {
+        solve::ScalarSlot::Time => solve::LinearOp::LoadTime { dst: 0 },
+        solve::ScalarSlot::Y { index, .. } => solve::LinearOp::LoadY { dst: 0, index },
+        solve::ScalarSlot::P { index, .. } => solve::LinearOp::LoadP { dst: 0, index },
+        solve::ScalarSlot::Constant(value) => solve::LinearOp::Const { dst: 0, value },
+    };
+    let span = visible.expr.span();
+    let mut row = lower_vec_with_capacity(
+        2,
+        "direct visible identity row operation count",
+        span.ok_or_else(|| LowerError::UnspannedContractViolation {
+            reason: format!(
+                "visible observation `{}` reached direct lowering without provenance",
+                visible.name
+            ),
+        })?,
+    )?;
+    row.push(load);
+    row.push(solve::LinearOp::StoreOutput { src: 0 });
+    Ok(Some(row))
+}
+
+fn visible_expression_is_identity(visible: &VisibleExpression) -> bool {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = &visible.expr
+    else {
+        return false;
+    };
+    if subscripts.is_empty() {
+        return name.as_str() == visible.name;
+    }
+    let Some(scalar) = rumoca_core::parse_scalar_name(&visible.name) else {
+        return false;
+    };
+    scalar.base == name.as_str()
+        && scalar.indices.len() == subscripts.len()
+        && scalar
+            .indices
+            .iter()
+            .zip(subscripts)
+            .all(|(expected, subscript)| {
+                matches!(subscript, rumoca_core::Subscript::Index { value, .. } if value == expected)
+            })
 }
 
 fn visible_expression_span(
@@ -337,4 +399,48 @@ pub(super) fn visible_subscripts_from_usize(
         lowered.push(rumoca_core::Subscript::index(value, span));
     }
     Ok(lowered)
+}
+
+#[cfg(test)]
+mod tests {
+    use indexmap::IndexMap;
+
+    use super::*;
+
+    #[test]
+    fn direct_identity_observation_loads_layout_slot_without_expression_lowering() {
+        let layout = solve::VarLayout::from_parts(
+            IndexMap::from([(
+                "x".to_string(),
+                solve::ScalarSlot::Y {
+                    index: 3,
+                    byte_offset: 3 * std::mem::size_of::<f64>(),
+                },
+            )]),
+            4,
+            0,
+        );
+        let span =
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2);
+        let visible = VisibleExpression {
+            name: "x".to_string(),
+            expr: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::generated("x"),
+                subscripts: Vec::new(),
+                span,
+            },
+        };
+
+        let row = direct_identity_observation_row(&layout, &visible)
+            .expect("direct observation should lower")
+            .expect("identity observation should take the direct path");
+
+        assert_eq!(
+            row,
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 3 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]
+        );
+    }
 }

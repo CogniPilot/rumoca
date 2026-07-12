@@ -88,7 +88,7 @@ impl FunctionProjectionAnalysis<'_> {
     ) -> Result<rumoca_core::Subscript, LowerError> {
         match subscript {
             rumoca_core::Subscript::Expr { expr, span } => {
-                let value = self.compile_time_int(&self.substitute(expr, scope)?, *span)?;
+                let value = self.compile_time_int(&self.substitute(expr, scope)?, scope, *span)?;
                 Ok(rumoca_core::Subscript::Index { value, span: *span })
             }
             rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
@@ -108,10 +108,10 @@ impl FunctionProjectionAnalysis<'_> {
             rumoca_core::Expression::Range {
                 start, step, end, ..
             } => {
-                let start = self.compile_time_int(&start, span)?;
-                let end = self.compile_time_int(&end, span)?;
+                let start = self.compile_time_int(&start, scope, span)?;
+                let end = self.compile_time_int(&end, scope, span)?;
                 let step = match step {
-                    Some(step) => self.compile_time_int(&step, span)?,
+                    Some(step) => self.compile_time_int(&step, scope, span)?,
                     None => 1,
                 };
                 if step == 0 {
@@ -129,7 +129,7 @@ impl FunctionProjectionAnalysis<'_> {
                     span,
                 )?,
                 |mut values, element| {
-                    values.push(self.compile_time_int(element, span)?);
+                    values.push(self.compile_time_int(element, scope, span)?);
                     Ok(values)
                 },
             ),
@@ -139,21 +139,97 @@ impl FunctionProjectionAnalysis<'_> {
                     "function projection scalar range value count",
                     span,
                 )?;
-                values.push(self.compile_time_int(&range, span)?);
+                values.push(self.compile_time_int(&range, scope, span)?);
                 Ok(values)
             }
         }
     }
 
-    fn compile_time_int(
+    pub(super) fn compile_time_int(
         &self,
         expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
         span: rumoca_core::Span,
     ) -> Result<i64, LowerError> {
-        let value = self.compile_time_scalar(expr).ok_or_else(|| {
-            unsupported_at("function projection requires a compile-time integer", span)
-        })?;
+        let value = self
+            .compile_time_scalar_with_scope(expr, scope, span)?
+            .ok_or_else(|| {
+                unsupported_at("function projection requires a compile-time integer", span)
+            })?;
         checked_compile_time_i64(value, span)
+    }
+
+    fn compile_time_scalar_with_scope(
+        &self,
+        expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<f64>, LowerError> {
+        if let Some(value) = self.compile_time_size_dim(expr, scope, span)? {
+            return Ok(Some(value));
+        }
+        match expr {
+            rumoca_core::Expression::Unary { op, rhs, .. } => {
+                let Some(value) = self.compile_time_scalar_with_scope(rhs, scope, span)? else {
+                    return Ok(None);
+                };
+                Ok(match op {
+                    rumoca_core::OpUnary::Plus
+                    | rumoca_core::OpUnary::DotPlus
+                    | rumoca_core::OpUnary::Empty => Some(value),
+                    rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Some(-value),
+                    rumoca_core::OpUnary::Not => Some(f64::from(value == 0.0)),
+                })
+            }
+            rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+                let Some(lhs) = self.compile_time_scalar_with_scope(lhs, scope, span)? else {
+                    return Ok(None);
+                };
+                let Some(rhs) = self.compile_time_scalar_with_scope(rhs, scope, span)? else {
+                    return Ok(None);
+                };
+                Ok(super::compile_time::compile_time_binary(op, lhs, rhs))
+            }
+            _ => Ok(self.compile_time_scalar(expr)),
+        }
+    }
+
+    fn compile_time_size_dim(
+        &self,
+        expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<f64>, LowerError> {
+        let rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args,
+            ..
+        } = expr
+        else {
+            return Ok(None);
+        };
+        let [array, dim] = args.as_slice() else {
+            return Ok(None);
+        };
+        let Some(dim) = self.compile_time_scalar(dim) else {
+            return Ok(None);
+        };
+        let dim = checked_compile_time_i64(dim, span)?;
+        let Some(dim_index) = usize::try_from(dim).ok().and_then(|dim| dim.checked_sub(1)) else {
+            return Ok(None);
+        };
+        let dims = match array {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => match scope.dims.get(name.as_str()) {
+                Some(dims) => Some(dims.clone()),
+                None => self.expr_dims_with_owner(array, scope, 0, span)?,
+            },
+            _ => self.expr_dims_with_owner(array, scope, 0, span)?,
+        };
+        Ok(dims
+            .and_then(|dims| dims.get(dim_index).copied())
+            .map(|dim| dim as f64))
     }
 }
 
@@ -260,6 +336,87 @@ fn range_would_overshoot_i64(current: i64, end: i64, step: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn for_index_values_resolves_size_from_projected_input_dims() -> Result<(), LowerError> {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("function_projection_size_loop_range.mo"),
+            1,
+            12,
+        );
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("A1"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("A1"),
+                dims: vec![3, 3],
+                ..dae::Variable::empty_with_span(span)
+            },
+        );
+        let structural_bindings = IndexMap::new();
+        let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+        let mut scope = FunctionProjectionScope::default();
+        scope.dims.insert("A".to_string(), vec![3, 3]);
+        scope.full.insert(
+            "A".to_string(),
+            rumoca_core::Expression::If {
+                branches: vec![(
+                    rumoca_core::Expression::Literal {
+                        value: Literal::Boolean(true),
+                        span,
+                    },
+                    rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("A1"),
+                        subscripts: Vec::new(),
+                        span,
+                    },
+                )],
+                else_branch: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("A1"),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                span,
+            },
+        );
+        let range = rumoca_core::Expression::Range {
+            start: Box::new(rumoca_core::Expression::Literal {
+                value: Literal::Integer(1),
+                span,
+            }),
+            step: None,
+            end: Box::new(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Add,
+                lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![
+                        rumoca_core::Expression::VarRef {
+                            name: rumoca_core::Reference::new("A"),
+                            subscripts: Vec::new(),
+                            span,
+                        },
+                        rumoca_core::Expression::Literal {
+                            value: Literal::Integer(1),
+                            span,
+                        },
+                    ],
+                    span,
+                }),
+                rhs: Box::new(rumoca_core::Expression::Literal {
+                    value: Literal::Integer(0),
+                    span,
+                }),
+                span,
+            }),
+            span,
+        };
+
+        assert_eq!(
+            analysis.for_index_values(&range, &scope, span)?,
+            vec![1, 2, 3]
+        );
+        Ok(())
+    }
 
     #[test]
     fn build_i64_range_values_stops_before_step_overflow() -> Result<(), String> {

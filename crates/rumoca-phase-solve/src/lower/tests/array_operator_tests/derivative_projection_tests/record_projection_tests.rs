@@ -244,6 +244,7 @@ fn projection_function_param(
 ) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span: lower_test_span(),
         type_name: type_name.to_string(),

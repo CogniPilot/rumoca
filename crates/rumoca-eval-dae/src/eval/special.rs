@@ -11,8 +11,8 @@ use super::*;
 mod input_binding;
 mod runtime_specials;
 mod state_accessors;
-use input_binding::*;
 pub(in crate::eval) use input_binding::infer_array_arg_dims;
+use input_binding::*;
 pub(super) use runtime_specials::*;
 pub use runtime_specials::{
     deterministic_automatic_global_seed, is_runtime_special_function_name,

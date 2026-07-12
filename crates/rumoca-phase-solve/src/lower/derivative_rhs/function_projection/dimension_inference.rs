@@ -19,7 +19,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
 
     // SPEC_0021: Exception - function projection dimension inference keeps
     // call, field, array, and comprehension cases in one recursive walker.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub(super) fn expr_dims_with_owner(
         &self,
         expr: &rumoca_core::Expression,
@@ -58,9 +58,13 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 {
                     return self.expr_dims_with_owner(expr, scope, depth + 1, span);
                 }
-                Ok(variable_by_name(self.dae_model, name.as_str())
-                    .map(|variable| variable_dims_i64(variable, span))
-                    .transpose()?)
+                if let Some(variable) = variable_by_name(self.dae_model, name.as_str()) {
+                    return variable_dims_i64(variable, span).map(Some);
+                }
+                if scalarized_aggregate_variable(self.dae_model, name.as_str(), span)?.is_some() {
+                    return Ok(Some(Vec::new()));
+                }
+                Ok(None)
             }
             rumoca_core::Expression::Array {
                 elements,
@@ -113,6 +117,29 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 }
                 self.function_field_access_dims(base, field, span, depth)
             }
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let Some(mut dims) =
+                    self.expr_dims_with_owner(else_branch, scope, depth + 1, span)?
+                else {
+                    return Ok(None);
+                };
+                for (_, value) in branches {
+                    let Some(branch_dims) =
+                        self.expr_dims_with_owner(value, scope, depth + 1, span)?
+                    else {
+                        return Ok(None);
+                    };
+                    if branch_dims != dims {
+                        return Ok(None);
+                    }
+                    dims = branch_dims;
+                }
+                Ok(Some(dims))
+            }
             rumoca_core::Expression::Binary { op, lhs, rhs, .. } if is_mul(op) => {
                 let Some(lhs_dims) = self.expr_dims_with_owner(lhs, scope, depth, span)? else {
                     return Ok(None);
@@ -153,6 +180,20 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         span: rumoca_core::Span,
     ) -> Result<Option<Vec<i64>>, LowerError> {
         match function {
+            rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones => {
+                self.dimension_argument_builtin_dims(args, scope, span)
+            }
+            rumoca_core::BuiltinFunction::Fill => {
+                self.dimension_argument_builtin_dims(args.get(1..).unwrap_or_default(), scope, span)
+            }
+            rumoca_core::BuiltinFunction::Identity => {
+                let Some(size) = args.first() else {
+                    return Ok(None);
+                };
+                let size = self.compile_time_int(&self.substitute(size, scope)?, scope, span)?;
+                copy_projection_dims(&[size, size], "identity matrix dimension count", span)
+                    .map(Some)
+            }
             rumoca_core::BuiltinFunction::Cross => {
                 copy_projection_dims(&[3], "cross product dimension count", span).map(Some)
             }
@@ -170,6 +211,30 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn dimension_argument_builtin_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        if args.is_empty() {
+            return Ok(None);
+        }
+        let mut dims =
+            projection_vec_with_capacity(args.len(), "array constructor dimension count", span)?;
+        for arg in args {
+            let dim = self.compile_time_int(&self.substitute(arg, scope)?, scope, span)?;
+            if dim < 0 {
+                return Err(LowerError::contract_violation(
+                    format!("array constructor dimension must be non-negative, got {dim}"),
+                    span,
+                ));
+            }
+            dims.push(dim);
+        }
+        Ok(Some(dims))
     }
 
     fn diagonal_builtin_dims(

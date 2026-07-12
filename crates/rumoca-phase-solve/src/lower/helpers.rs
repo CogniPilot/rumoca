@@ -662,6 +662,13 @@ pub(super) fn binding_base_key(expr: &rumoca_core::Expression) -> Result<String,
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
             field_access_binding_key(base, field)
         }
+        rumoca_core::Expression::FunctionCall { name, .. } => Err(unsupported_at(
+            format!(
+                "function call `{}` cannot be used directly as a binding path",
+                name.as_str()
+            ),
+            required_index_expr_span(expr, "binding path expression")?,
+        )),
         _ => Err(unsupported_at(
             format!(
                 "unsupported base expression for binding path: {}",

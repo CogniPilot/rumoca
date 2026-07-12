@@ -318,7 +318,9 @@ pub(super) fn copy_array_literal_matrix_entries<T: SimFloat>(
     Ok(true)
 }
 
-pub(super) fn selected_component_field_in_current_call<T: SimFloat>(env: &VarEnv<T>) -> Option<&'static str> {
+pub(super) fn selected_component_field_in_current_call<T: SimFloat>(
+    env: &VarEnv<T>,
+) -> Option<&'static str> {
     let caller = current_function_call_name(&env.runtime)?;
     complex_field_selection_from_path(&caller)
 }
@@ -455,6 +457,12 @@ pub(super) fn copy_array_input_entries<T: SimFloat>(
     };
 
     let dims = source_array_dims(param, &source_name, caller_env)?;
+    if concrete_param_size(&dims) == Some(0) {
+        // Zero-sized arrays (e.g. `Real marker[0]` record fields) have no
+        // scalar entries to copy; registering the shape is the whole binding.
+        std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims);
+        return Ok(());
+    }
     let values = if use_pre_values {
         collect_pre_array_values(&source_name, &dims)?
     } else {
@@ -488,7 +496,11 @@ pub(super) fn copy_array_input_entries<T: SimFloat>(
     Ok(())
 }
 
-pub(super) fn env_array_sample<T: SimFloat>(env: &VarEnv<T>, name: &str, subscripts: &[usize]) -> Option<T> {
+pub(super) fn env_array_sample<T: SimFloat>(
+    env: &VarEnv<T>,
+    name: &str,
+    subscripts: &[usize],
+) -> Option<T> {
     env.vars
         .get(&dae::format_subscript_key(name, subscripts))
         .copied()
@@ -529,14 +541,8 @@ pub(super) fn resolved_array_input_dims<T: SimFloat>(
     value_count: usize,
 ) -> Result<Option<Vec<i64>>, EvalError> {
     if !param.shape_expr.is_empty() {
-        return infer_dynamic_array_input_dims(
-            param,
-            arg_expr,
-            caller_env,
-            local_env,
-            value_count,
-        )
-        .map(Some);
+        return infer_dynamic_array_input_dims(param, arg_expr, caller_env, local_env, value_count)
+            .map(Some);
     }
     if concrete_param_size(&param.dims).is_some() {
         return Ok(Some(param.dims.clone()));

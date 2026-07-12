@@ -437,6 +437,19 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
                 }
                 self.visit_expr_with_suppression(else_branch, else_suppressed);
             }
+            rumoca_core::Expression::Binary { op, lhs, rhs, .. }
+                if matches!(op, rumoca_core::OpBinary::And | rumoca_core::OpBinary::Or)
+                    && condition_activation::runtime_activation(expr).is_some() =>
+            {
+                let suppress = self.suppress_events
+                    || matches!(
+                        (op, condition_activation::runtime_activation(expr)),
+                        (rumoca_core::OpBinary::And, Some(false))
+                            | (rumoca_core::OpBinary::Or, Some(true))
+                    );
+                self.visit_expr_with_suppression(lhs, suppress);
+                self.visit_expr_with_suppression(rhs, suppress);
+            }
             rumoca_core::Expression::Binary { .. } => {
                 push_relation_root_if_event_condition(
                     expr,

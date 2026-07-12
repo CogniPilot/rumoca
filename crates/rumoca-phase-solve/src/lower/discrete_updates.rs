@@ -200,6 +200,7 @@ pub(crate) fn lower_initial_update_rhs(
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
                 structural_bindings: Some(std::sync::Arc::new(structural_bindings)),
+                direct_assignments: None,
                 guard_target_start_before_first_clock_tick: false,
             },
             true,

@@ -94,6 +94,9 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
     Ok(())
 }
 
+// SPEC_0021: Exception - top-level equation collection keeps projected and
+// ordinary residual assignment discovery in deterministic source order.
+#[allow(clippy::excessive_nesting)]
 pub(in crate::lower) fn collect_direct_assignments(
     dae_model: &dae::Dae,
     equation_flags: &[bool],
@@ -108,6 +111,28 @@ pub(in crate::lower) fn collect_direct_assignments(
             ));
         };
         if handled_by_derivative {
+            continue;
+        }
+        if let Some(projected) = function_projected_residuals_with_owner(
+            &equation.rhs,
+            dae_model,
+            structural_bindings,
+            equation.span,
+        )? {
+            for residual in projected {
+                let Some((target, rhs)) = direct_assignment_residual_target_rhs(&residual)? else {
+                    continue;
+                };
+                insert_direct_assignment(
+                    dae_model,
+                    &mut assignments,
+                    target,
+                    rhs,
+                    1,
+                    structural_bindings,
+                    equation.span,
+                )?;
+            }
             continue;
         }
         let Some((target, rhs)) = direct_assignment_target_rhs(equation)? else {
@@ -168,7 +193,13 @@ pub(in crate::lower) fn direct_assignment_target_rhs(
         return Ok(Some((lhs.var_name().clone(), equation.rhs.clone())));
     }
 
-    let Some((lhs, rhs)) = split_subtraction(&equation.rhs) else {
+    direct_assignment_residual_target_rhs(&equation.rhs)
+}
+
+fn direct_assignment_residual_target_rhs(
+    residual: &rumoca_core::Expression,
+) -> Result<Option<(rumoca_core::VarName, rumoca_core::Expression)>, LowerError> {
+    let Some((lhs, rhs)) = split_subtraction(residual) else {
         return Ok(None);
     };
     if !rhs.contains_der()
@@ -1492,5 +1523,78 @@ mod tests {
         let err = direct_assignment_target_rhs(&equation)
             .expect_err("invalid eligible direct-assignment target should fail");
         assert_eq!(err.source_span(), Some(span(3, 4)));
+    }
+
+    #[test]
+    fn direct_assignment_collection_uses_projected_function_residual() -> Result<(), LowerError> {
+        let owner_span = span(0, 10);
+        let mut function = rumoca_core::Function::new("My.constant", owner_span);
+        function
+            .outputs
+            .push(rumoca_core::FunctionParam::new("y", "Real", owner_span));
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
+                local: false,
+                span: owner_span,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "y".to_string(),
+                    span: owner_span,
+                    subs: Vec::new(),
+                }],
+                def_id: None,
+            },
+            value: literal(2, owner_span),
+            span: owner_span,
+        });
+
+        let call = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("My.constant"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: owner_span,
+        };
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("x"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("x"),
+                origin: dae::VariableOrigin::Generated,
+                ..dae::Variable::empty_with_span(owner_span)
+            },
+        );
+        dae_model
+            .symbols
+            .functions
+            .insert(function.name.clone(), function);
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var_ref("x", Vec::new(), owner_span)),
+                rhs: Box::new(call),
+                span: owner_span,
+            },
+            owner_span,
+            "test",
+        ));
+
+        let (_, equation_flags) =
+            collect_derivative_equations(&dae_model, &HashSet::new(), &IndexMap::new())?;
+        assert_eq!(equation_flags, vec![false]);
+
+        let assignments =
+            collect_direct_assignments(&dae_model, &equation_flags, &IndexMap::new())?;
+        let assignment = assignments.get("x").expect("x assignment");
+        assert!(
+            matches!(
+                &assignment.rhs,
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    ..
+                }
+            ),
+            "projected function result should replace the original call: {:?}",
+            assignment.rhs
+        );
+        Ok(())
     }
 }

@@ -172,7 +172,9 @@ pub fn eval_matrix_values<T: SimFloat>(
                     return Ok(None);
                 }
                 let values = eval_array_like_values(expr, env)?;
-                Ok(Some(reshape_flat_matrix_generic(&values, dims[0], dims[1])?))
+                Ok(Some(reshape_flat_matrix_generic(
+                    &values, dims[0], dims[1],
+                )?))
             }
             _ => Ok(None),
         },

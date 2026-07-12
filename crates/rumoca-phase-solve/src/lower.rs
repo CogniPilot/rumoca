@@ -82,6 +82,15 @@ pub(super) struct IndexedBinding {
     indices: Vec<usize>,
 }
 
+#[derive(Default)]
+struct RecordComponentSources {
+    layout: Vec<(String, String, ScalarSlot)>,
+    direct: Vec<(String, String)>,
+}
+
+type IndexedRecordFieldKeyCache =
+    std::cell::RefCell<IndexMap<(String, String), Arc<IndexMap<Vec<usize>, String>>>>;
+
 pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +244,7 @@ pub(crate) fn lower_discrete_rhs_from_equations(
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
                 structural_bindings: Some(Arc::new(structural_bindings)),
+                direct_assignments: None,
                 guard_target_start_before_first_clock_tick: true,
             },
             false,
@@ -262,6 +272,7 @@ pub(crate) fn lower_runtime_assignment_rhs(
                 variable_starts: &dae_model.metadata.variable_starts,
                 dae_variables: Some(&dae_model.variables),
                 structural_bindings: Some(Arc::new(structural_bindings)),
+                direct_assignments: None,
                 guard_target_start_before_first_clock_tick: true,
             },
             false,
@@ -288,6 +299,7 @@ pub(crate) fn lower_dynamic_time_event_rhs(
             variable_starts: &dae_model.metadata.variable_starts,
             dae_variables: Some(&dae_model.variables),
             structural_bindings: Some(Arc::new(structural_bindings)),
+            direct_assignments: None,
             guard_target_start_before_first_clock_tick: false,
         },
     )
@@ -330,6 +342,8 @@ pub(crate) fn lower_observation_rhs_with_structural_bindings(
     structural_bindings: &Arc<IndexMap<String, f64>>,
     indexed_bindings: &IndexedBindingMap,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    let direct_assignments =
+        derivative_rhs::collect_runtime_direct_assignments(dae_model, structural_bindings)?;
     expression_rows::lower_observation_rows_from_expressions_with_structural_bindings(
         expressions,
         layout,
@@ -342,6 +356,7 @@ pub(crate) fn lower_observation_rhs_with_structural_bindings(
             variable_starts: &dae_model.metadata.variable_starts,
             dae_variables: Some(&dae_model.variables),
             structural_bindings: Some(Arc::clone(structural_bindings)),
+            direct_assignments: Some(Arc::new(direct_assignments)),
             guard_target_start_before_first_clock_tick: false,
         },
         Arc::clone(indexed_bindings),
@@ -405,6 +420,16 @@ struct LowerBuilder<'a> {
     /// Lazy per-key indexed-binding metadata (dims + indices lookup).
     /// `RefCell` because dims inference also runs from `&self` paths.
     indexed_meta_cache: std::cell::RefCell<IndexMap<ComponentReferenceKey, Arc<IndexedMeta>>>,
+    /// Immutable layout/direct-assignment record-array field keys, cached by
+    /// `(record array base, field)`. Dynamic selection used to rescan every
+    /// model binding for every scalarized access.
+    indexed_record_field_key_cache: IndexedRecordFieldKeyCache,
+    /// Immutable layout and direct-assignment descendants for record copies,
+    /// cached by source component. Inlined record functions often copy the
+    /// same source hundreds of times; rescanning the whole model for each copy
+    /// is quadratic in the number of scalar bindings.
+    record_component_source_cache:
+        std::cell::RefCell<IndexMap<String, Arc<RecordComponentSources>>>,
     /// Lazy index from a parent binding path to its direct scalarized
     /// children, mirroring `scope_key_direct_child_suffix` semantics.
     /// Built once on first use: the previous per-reference full scan of
@@ -437,31 +462,6 @@ impl<'a> LowerBuilder<'a> {
         functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     ) -> Self {
         Self::new_with_metadata(layout, functions, LowerBuilderMetadata::default())
-    }
-
-    fn new_with_runtime_metadata(
-        layout: &'a VarLayout,
-        functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-        clock_intervals: &'a IndexMap<String, f64>,
-        clock_timings: &'a IndexMap<String, dae::ClockSchedule>,
-        triggered_clock_conditions: &'a [rumoca_core::Expression],
-        variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
-        is_initial_mode: bool,
-    ) -> Self {
-        Self::new_with_metadata(
-            layout,
-            functions,
-            LowerBuilderMetadata {
-                clock_intervals: Some(clock_intervals),
-                clock_timings: Some(clock_timings),
-                triggered_clock_conditions: Some(triggered_clock_conditions),
-                discrete_valued_names: None,
-                variable_starts: Some(variable_starts),
-                dae_variables: None,
-                indexed_bindings: None,
-                is_initial_mode,
-            },
-        )
     }
 
     fn new_with_metadata(
@@ -504,6 +504,8 @@ impl<'a> LowerBuilder<'a> {
             param_slot_regs: IndexMap::new(),
             dedup_access_ops: true,
             indexed_meta_cache: std::cell::RefCell::new(IndexMap::new()),
+            indexed_record_field_key_cache: std::cell::RefCell::new(IndexMap::new()),
+            record_component_source_cache: std::cell::RefCell::new(IndexMap::new()),
             scalarized_children_index: None,
         }
     }
@@ -572,6 +574,8 @@ impl<'a> LowerBuilder<'a> {
             param_slot_regs: IndexMap::new(),
             dedup_access_ops: self.dedup_access_ops,
             indexed_meta_cache: std::cell::RefCell::new(IndexMap::new()),
+            indexed_record_field_key_cache: std::cell::RefCell::new(IndexMap::new()),
+            record_component_source_cache: std::cell::RefCell::new(IndexMap::new()),
             scalarized_children_index: None,
         }
     }
@@ -663,6 +667,14 @@ impl<'a> LowerBuilder<'a> {
         if self
             .lookup_function_output_projection(name, span)?
             .is_some()
+        {
+            return Ok(ComponentReferenceKey::generated(name.as_str()));
+        }
+        if self.structural_bindings.contains_key(name.as_str())
+            || matches!(
+                self.layout.binding(name.as_str()),
+                Some(ScalarSlot::Constant(_))
+            )
         {
             return Ok(ComponentReferenceKey::generated(name.as_str()));
         }
@@ -831,6 +843,9 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
+    // SPEC_0021: Exception - variable-reference lowering is the exhaustive
+    // name-resolution entry point for local, structural, indexed, and layout bindings.
+    #[allow(clippy::too_many_lines)]
     fn lower_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
@@ -843,6 +858,16 @@ impl<'a> LowerBuilder<'a> {
             && let Some(reg) = scope.get(&generated_scope_key(name.as_str())).copied()
         {
             return Ok(reg);
+        }
+
+        if subscripts.is_empty()
+            && let Some(value) = self.structural_bindings.get(name.as_str()).copied()
+            && matches!(
+                self.layout.binding(name.as_str()),
+                None | Some(ScalarSlot::Constant(_))
+            )
+        {
+            return self.emit_const_at(value, span);
         }
 
         if subscripts.is_empty()
@@ -880,7 +905,20 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(reg);
         }
-
+        if let Some(indices) = static_subscript_indices_with_owner(subscripts, owner_span)?
+            && !indices.is_empty()
+            && let Some(reg) = self
+                .local_indexed_bindings
+                .get(name.as_str())
+                .and_then(|bindings| {
+                    bindings
+                        .iter()
+                        .find(|binding| binding.indices == indices)
+                        .map(|binding| binding.reg)
+                })
+        {
+            return Ok(reg);
+        }
         if !subscripts.is_empty()
             && scope.contains_key(&name_key)
             && !self.local_indexed_bindings.contains_key(name.as_str())
@@ -953,13 +991,18 @@ impl<'a> LowerBuilder<'a> {
         if let Some(slot) = self.pre_mode_slot_for_key(key) {
             return self.emit_slot_load(slot, owner_span).map(Some);
         }
+        // Solver-visible values must come from the settled Y/P slot. Direct
+        // assignment expansion is a fallback for calculated values that have
+        // no runtime slot; re-expanding an algebraic here can disagree with
+        // projection order and makes event actions observe a different value
+        // from the equation system.
+        if let Some(slot) = self.layout.binding(key) {
+            return self.emit_slot_load(slot, owner_span).map(Some);
+        }
         if let Some(values) = self.lower_direct_assignment_values_for_key(key, scope, call_depth)?
             && let Some(value) = values.first().copied()
         {
             return Ok(Some(value));
-        }
-        if let Some(slot) = self.layout.binding(key) {
-            return self.emit_slot_load(slot, owner_span).map(Some);
         }
         Ok(None)
     }

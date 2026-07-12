@@ -1,3 +1,7 @@
+//! SPEC_0021 file-size exception: dynamic selection covers array, record, and
+//! function-output selectors; split plan: separate record-field and slice
+//! selection helpers while retaining one precedence-ordered entry point.
+
 use super::*;
 
 impl<'a> LowerBuilder<'a> {
@@ -314,10 +318,25 @@ impl<'a> LowerBuilder<'a> {
         if bindings.is_empty() {
             return None;
         }
+        let expected_rank = self
+            .local_binding_dims
+            .get(key)
+            .map(Vec::len)
+            .unwrap_or_else(|| {
+                bindings
+                    .iter()
+                    .map(|binding| binding.indices.len())
+                    .max()
+                    .unwrap_or(0)
+            });
         let mut values = bindings
             .iter()
+            .filter(|binding| binding.indices.len() == expected_rank)
             .map(|binding| (binding.indices.clone(), binding.reg))
             .collect::<Vec<_>>();
+        if values.is_empty() {
+            return None;
+        }
         values.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
         Some(values.into_iter().map(|(_, reg)| reg).collect())
     }
@@ -472,6 +491,9 @@ impl<'a> LowerBuilder<'a> {
             })
     }
 
+    // SPEC_0021: Exception - exhaustive record-field storage representations
+    // must retain their precedence in one compiler lookup entry point.
+    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn lower_field_access_array_like_values(
         &mut self,
         base: &rumoca_core::Expression,
@@ -509,6 +531,30 @@ impl<'a> LowerBuilder<'a> {
             }
             if let Some(values) = self.lower_indexed_binding_values_at(key.as_str(), span)? {
                 return Ok(values);
+            }
+            if let Some(dims) = self.layout.shape(&key).map(<[usize]>::to_vec)
+                && !dims.is_empty()
+            {
+                let count = checked_shape_size(&dims, "record field array value count", span)?;
+                let mut keys =
+                    array_vec_with_capacity(count, "record field array binding key count", span)?;
+                let dims_i64 = dims
+                    .iter()
+                    .map(|dim| {
+                        i64::try_from(*dim).map_err(|_| {
+                            LowerError::contract_violation(
+                                format!("record field array dimension {dim} exceeds i64 range"),
+                                span,
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                for flat_index in 0..count {
+                    keys.push(dae::scalar_name_text_for_flat_index(
+                        &key, &dims_i64, flat_index,
+                    ));
+                }
+                return self.load_binding_keys(&keys, span);
             }
             if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {
                 return single_reg_vec(reg, "scalarized record field access value count", span);
@@ -707,36 +753,54 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         };
         let field_keys = self.indexed_record_field_keys(base_key.as_str(), field);
-        if field_keys.is_empty() {
-            return Ok(None);
-        }
-        let dims = infer_dims_from_index_sets(field_keys.keys().cloned());
-        if dims.is_empty() {
-            return Ok(None);
-        }
-        if subscripts.len() == dims.len() && subscripts.iter().all(is_scalar_selector_subscript) {
-            let span = required_expr_span_from_subscripts_or_base(
-                subscripts,
-                base,
-                owner_span,
-                "dynamic indexed record field scalar selection",
-            )?;
-            return self
-                .lower_dynamic_indexed_record_field_value(subscripts, &field_keys, span, scope)
-                .and_then(|value| {
-                    value
-                        .map(|reg| {
-                            single_reg_vec(reg, "dynamic indexed record field value count", span)
-                        })
-                        .transpose()
-                });
-        }
         let span = required_expr_span_from_subscripts_or_base(
             subscripts,
             base,
             owner_span,
-            "dynamic indexed record field slice selection",
+            "dynamic indexed record field selection",
         )?;
+        let mut field_values = IndexMap::<Vec<usize>, Vec<Reg>>::new();
+        for (indices, key) in field_keys.iter() {
+            field_values.insert(
+                indices.clone(),
+                self.load_binding_keys(std::slice::from_ref(key), span)?,
+            );
+        }
+        for (key, reg) in scope.iter_checked("local record-array field binding count", span)? {
+            let Some(key) = generated_scope_key_name(&key) else {
+                continue;
+            };
+            let Some(indices) = indexed_record_field_key_indices(key, base_key.as_str(), field)
+            else {
+                continue;
+            };
+            field_values.insert(indices, vec![reg]);
+        }
+        let local_array_fields = self
+            .local_indexed_bindings
+            .keys()
+            .filter_map(|key| {
+                indexed_record_field_key_indices(key, base_key.as_str(), field)
+                    .map(|indices| (indices, key.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (indices, key) in local_array_fields {
+            if let Some(values) = self.local_indexed_binding_values(&key) {
+                field_values.insert(indices, values);
+            }
+        }
+        if field_values.is_empty() {
+            return Ok(None);
+        }
+        let dims = infer_dims_from_index_sets(field_values.keys().cloned());
+        if dims.is_empty() {
+            return Ok(None);
+        }
+        if subscripts.len() == dims.len() && subscripts.iter().all(is_scalar_selector_subscript) {
+            return self
+                .lower_dynamic_indexed_record_field_values(subscripts, &field_values, span, scope)
+                .map(Some);
+        }
         let selections = self.slice_selections(subscripts, &dims, span, scope)?;
         let mut keys = Vec::new();
         collect_indexed_record_field_keys(
@@ -750,33 +814,40 @@ impl<'a> LowerBuilder<'a> {
         self.load_binding_keys(&keys, span).map(Some)
     }
 
-    pub(in crate::lower) fn lower_dynamic_indexed_record_field_value(
+    fn lower_dynamic_indexed_record_field_values(
         &mut self,
         subscripts: &[rumoca_core::Subscript],
-        field_keys: &IndexMap<Vec<usize>, String>,
+        field_values: &IndexMap<Vec<usize>, Vec<Reg>>,
         span: rumoca_core::Span,
         scope: &Scope,
-    ) -> Result<Option<Reg>, LowerError> {
+    ) -> Result<Vec<Reg>, LowerError> {
         let mut selectors =
             array_vec_with_capacity(subscripts.len(), "dynamic selector value count", span)?;
         for subscript in subscripts {
             selectors.push(self.lower_structural_index_selector(subscript, span, scope, 0)?);
         }
-        let mut merged = self.emit_const_at(0.0, span)?;
-        let mut matched = false;
-        for (indices, key) in field_keys {
+        let width = field_values.values().next().map(Vec::len).unwrap_or(0);
+        let mut merged =
+            array_vec_with_capacity(width, "dynamic indexed record field result count", span)?;
+        for _ in 0..width {
+            merged.push(self.emit_const_at(0.0, span)?);
+        }
+        for (indices, values) in field_values {
             if indices.len() != selectors.len() {
                 continue;
             }
-            let mut values = self.load_binding_keys(std::slice::from_ref(key), span)?;
-            let value = values
-                .pop()
-                .ok_or_else(|| LowerError::MissingBinding { name: key.clone() })?;
+            if values.len() != width {
+                return Err(LowerError::contract_violation(
+                    "record-array field elements have inconsistent scalar widths",
+                    span,
+                ));
+            }
             let cond = self.emit_subscript_match_at(&selectors, indices, span)?;
-            merged = self.emit_select_at(cond, value, merged, span)?;
-            matched = true;
+            for (result, value) in merged.iter_mut().zip(values) {
+                *result = self.emit_select_at(cond, *value, *result, span)?;
+            }
         }
-        Ok(matched.then_some(merged))
+        Ok(merged)
     }
 
     pub(in crate::lower) fn lower_range_array_like_values(
@@ -1182,6 +1253,20 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
+        if let Some((name, args, span, mut field_path)) = function_call_field_path(base) {
+            if !field_path.is_empty() {
+                field_path.push('.');
+            }
+            field_path.push_str(field);
+            return self.lower_user_function_output_field_values(
+                name,
+                args,
+                &field_path,
+                span,
+                scope,
+                call_depth,
+            );
+        }
         match base {
             rumoca_core::Expression::Array { elements, .. }
             | rumoca_core::Expression::Tuple { elements, .. } => {
@@ -1208,11 +1293,6 @@ impl<'a> LowerBuilder<'a> {
                 )
                 .map(Some)
             }
-            rumoca_core::Expression::FunctionCall {
-                name, args, span, ..
-            } => self.lower_user_function_output_field_values(
-                name, args, field, *span, scope, call_depth,
-            ),
             _ => Ok(None),
         }
     }
@@ -1383,7 +1463,7 @@ impl<'a> LowerBuilder<'a> {
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
         let mut scope = scope.clone();
-        let mut const_scope = IndexMap::<String, f64>::new();
+        let mut const_scope = self.local_const_bindings.clone();
         let mut values = Vec::new();
         let mut ctx = ArrayComprehensionLowerCtx {
             indices,
@@ -1808,6 +1888,30 @@ impl<'a> LowerBuilder<'a> {
     }
 }
 
+fn function_call_field_path(
+    expr: &rumoca_core::Expression,
+) -> Option<(
+    &rumoca_core::Reference,
+    &[rumoca_core::Expression],
+    rumoca_core::Span,
+    String,
+)> {
+    match expr {
+        rumoca_core::Expression::FunctionCall {
+            name, args, span, ..
+        } => Some((name, args, *span, String::new())),
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let (name, args, span, mut path) = function_call_field_path(base)?;
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(field);
+            Some((name, args, span, path))
+        }
+        _ => None,
+    }
+}
+
 fn function_output_dims(
     function_name: &rumoca_core::Reference,
     output: &rumoca_core::FunctionParam,
@@ -1856,6 +1960,7 @@ mod tests {
     ) -> rumoca_core::FunctionParam {
         rumoca_core::FunctionParam {
             def_id: None,
+            type_def_id: None,
             name: name.to_string(),
             span,
             type_name: "Real".to_string(),

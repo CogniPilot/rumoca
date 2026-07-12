@@ -727,6 +727,7 @@ fn lower_function_local_structural_symmetric_orientation() {
     function.outputs.push(function_param_with_dims("y", &[3]));
     function.locals.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "m".to_string(),
         span: test_span(),
         type_name: "Integer".to_string(),
@@ -750,6 +751,7 @@ fn lower_function_local_structural_symmetric_orientation() {
     });
     function.locals.push(rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: "phi".to_string(),
         span: test_span(),
         type_name: "Real".to_string(),

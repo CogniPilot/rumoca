@@ -96,14 +96,9 @@ mod builtin_runtime;
 mod table_eval;
 
 mod special;
-use special::{
-    copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
-    resolve_user_function_target,
-};
 pub use special::{
     MaterializedOutput, MaterializedOutputs, RecordOutputFields,
-    deterministic_automatic_global_seed,
-    eval_builtin_pub, eval_condition_as_root,
+    deterministic_automatic_global_seed, eval_builtin_pub, eval_condition_as_root,
     eval_function_call_pub, eval_function_call_pub_dae, eval_selected_function_output_pub,
     eval_selected_function_output_pub_dae, eval_user_function_array_output_pub,
     eval_user_function_output_array_path_pub, eval_user_function_output_path_pub,
@@ -112,13 +107,17 @@ pub use special::{
     modelica_strings_hash_string, resolve_function_call_outputs_pub,
     resolve_function_call_outputs_pub_dae, resolve_user_function_output_dims_pub,
 };
+use special::{
+    copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
+    resolve_user_function_target,
+};
 mod eval_expr_impl;
 use array_eval::{
     declared_dims, eval_array_like_f64_values, eval_array_like_values, eval_binary_array_values,
     eval_columns_arg, eval_cross_values, eval_index_array_values, eval_linspace_values,
     eval_matrix_index, eval_matrix_literal_rows, eval_matrix_vector_product,
-    eval_outer_product_values, eval_skew_values, eval_vector_matrix_product,
-    eval_symmetric_values, eval_transpose_values, reshape_flat_matrix, try_eval_cat_values,
+    eval_outer_product_values, eval_skew_values, eval_symmetric_values, eval_transpose_values,
+    eval_vector_matrix_product, reshape_flat_matrix, try_eval_cat_values,
     try_infer_runtime_expr_dims,
 };
 pub use array_eval::{eval_array_values, eval_matrix_values, eval_shaped_array_values};

@@ -67,6 +67,54 @@ fn lower_builder_try_pack_registers_rejects_overflow() {
 }
 
 #[test]
+fn local_indexed_values_ignore_cache_entries_with_wrong_declared_rank() {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = super::LowerBuilder::new(&layout, &functions);
+    builder
+        .local_binding_dims
+        .insert("matrix".to_string(), vec![2, 2]);
+    builder.local_indexed_bindings.insert(
+        "matrix".to_string(),
+        (1..=4)
+            .map(|index| super::LocalIndexedBinding {
+                reg: index,
+                indices: vec![usize::try_from(index).expect("small test index should fit usize")],
+            })
+            .collect(),
+    );
+
+    assert_eq!(builder.local_indexed_binding_values("matrix"), None);
+
+    builder.local_indexed_bindings.insert(
+        "matrix".to_string(),
+        vec![
+            super::LocalIndexedBinding {
+                reg: 1,
+                indices: vec![1, 1],
+            },
+            super::LocalIndexedBinding {
+                reg: 2,
+                indices: vec![1, 2],
+            },
+            super::LocalIndexedBinding {
+                reg: 3,
+                indices: vec![2, 1],
+            },
+            super::LocalIndexedBinding {
+                reg: 4,
+                indices: vec![2, 2],
+            },
+        ],
+    );
+
+    assert_eq!(
+        builder.local_indexed_binding_values("matrix"),
+        Some(vec![1, 2, 3, 4])
+    );
+}
+
+#[test]
 fn dynamic_layout_entries_rejects_missing_source_binding_group_with_span() {
     let layout = VarLayout::default();
     let functions = IndexMap::new();
@@ -1108,6 +1156,7 @@ fn component_ref_index_expr(
 fn function_param(name: &str) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span: lower_test_span(),
         type_name: "Real".to_string(),
@@ -1124,6 +1173,7 @@ fn function_param(name: &str) -> rumoca_core::FunctionParam {
 fn function_param_with_dims(name: &str, dims: &[i64]) -> rumoca_core::FunctionParam {
     rumoca_core::FunctionParam {
         def_id: None,
+        type_def_id: None,
         name: name.to_string(),
         span: lower_test_span(),
         type_name: "Real".to_string(),

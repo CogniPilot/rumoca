@@ -426,15 +426,18 @@ impl<'a> SymbolicDerivativeContext<'a> {
         if is_constructor {
             return None;
         }
-        if active_functions.iter().any(|active| active == name) {
+        let (function_name, function, output_selector) = resolve_function_call(self.dae, name)?;
+        if active_functions
+            .iter()
+            .any(|active| active == function_name)
+        {
             return None;
         }
-        let function = self.dae.symbols.functions.get(name)?;
         if !function.pure || function.external.is_some() || function.outputs.len() != 1 {
             return None;
         }
-        active_functions.push(name.clone());
-        let Some(output_expr) = function_output_expression(function, args) else {
+        active_functions.push(function_name.clone());
+        let Some(output_expr) = function_output_expression(function, args, output_selector) else {
             active_functions.pop();
             return None;
         };
@@ -557,6 +560,7 @@ pub(super) fn symbolic_time_derivative(
 fn function_output_expression(
     function: &rumoca_core::Function,
     args: &[Expression],
+    output_selector: Option<&str>,
 ) -> Option<Expression> {
     let output = function.outputs.first()?;
     let mut scope = HashMap::new();
@@ -565,10 +569,46 @@ fn function_output_expression(
         apply_function_assignment(statement, &mut scope)?;
     }
     let expr = scope.get(output.name.as_str())?.clone();
+    if let Some(selector) = output_selector {
+        if selector == output.name {
+            return if output.dims == [1] {
+                scalar_array_element(&expr)
+            } else {
+                Some(expr)
+            };
+        }
+        let scalar = rumoca_core::parse_scalar_name(selector)?;
+        if scalar.base != output.name {
+            return None;
+        }
+        let flat_index = flat_index_from_indices(&output.dims, &scalar.indices)?;
+        return project_flat_index(&expr, &output.dims, flat_index);
+    }
     if output.dims == [1] {
         return scalar_array_element(&expr);
     }
     Some(expr)
+}
+
+fn resolve_function_call<'a>(
+    dae: &'a Dae,
+    call_name: &'a VarName,
+) -> Option<(&'a VarName, &'a rumoca_core::Function, Option<&'a str>)> {
+    if let Some(function) = dae.symbols.functions.get(call_name) {
+        return Some((call_name, function, None));
+    }
+
+    dae.symbols
+        .functions
+        .iter()
+        .filter_map(|(function_name, function)| {
+            let selector = call_name
+                .as_str()
+                .strip_prefix(function_name.as_str())?
+                .strip_prefix('.')?;
+            (!selector.is_empty()).then_some((function_name, function, Some(selector)))
+        })
+        .max_by_key(|(function_name, _, _)| function_name.as_str().len())
 }
 
 fn bind_function_inputs(

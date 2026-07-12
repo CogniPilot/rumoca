@@ -342,6 +342,9 @@ pub(super) fn convert_component_to_param(
     if let Some(def_id) = component.def_id {
         param = param.with_def_id(def_id);
     }
+    if let Some(type_def_id) = component.type_def_id.or(component.type_name.def_id) {
+        param = param.with_type_def_id(type_def_id);
+    }
     if let Some(type_class) = function_param_type_class(class_index, component) {
         param = param.with_type_class(type_class);
     }

@@ -190,6 +190,11 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
         {
             return Ok(Some(values));
         }
+        // Statically zero-sized array (every dim known, some dim zero): the
+        // empty value is exact, unlike unknown-dim placeholders (negative).
+        if scalar_count == 0 && dims.iter().all(|&dim| dim >= 0) {
+            return Ok(Some(Vec::new()));
+        }
     }
 
     if let Some(dims) = env.dims.get(name)

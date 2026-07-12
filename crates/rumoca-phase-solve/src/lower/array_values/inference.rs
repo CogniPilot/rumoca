@@ -49,9 +49,9 @@ impl<'a> LowerBuilder<'a> {
                     self.infer_expr_dims(element, scope)
                 })?
             }
-            rumoca_core::Expression::FunctionCall { name, span, .. } => {
-                self.infer_function_call_output_dims(name, *span)?
-            }
+            rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } => self.infer_function_call_output_dims(name, args, scope, *span)?,
             rumoca_core::Expression::Array {
                 elements,
                 is_matrix,
@@ -381,6 +381,8 @@ impl<'a> LowerBuilder<'a> {
     fn infer_function_call_output_dims(
         &self,
         name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
         if resolve_intrinsic_builtin(name.as_str()).is_some() {
@@ -400,6 +402,18 @@ impl<'a> LowerBuilder<'a> {
                 span,
             )
         })?;
+        if output.dims.iter().any(|dim| *dim <= 0) && output.shape_expr.len() == output.dims.len() {
+            let mut dims = crate::lower_vec_with_capacity(
+                output.shape_expr.len(),
+                "dynamic function output dimension count",
+                span,
+            )?;
+            for subscript in &output.shape_expr {
+                let dim = self.infer_function_output_shape_dim(function, args, subscript, scope)?;
+                dims.push(dim);
+            }
+            return Ok(dims);
+        }
         concrete_i64_dims(
             &output.dims,
             name.as_str(),
@@ -410,6 +424,151 @@ impl<'a> LowerBuilder<'a> {
                 output.span
             },
         )
+    }
+
+    // SPEC_0021: Exception - exhaustive Modelica shape-expression forms are
+    // interpreted together so source-span errors remain consistent.
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+    fn infer_function_output_shape_dim(
+        &self,
+        function: &rumoca_core::Function,
+        args: &[rumoca_core::Expression],
+        subscript: &rumoca_core::Subscript,
+        scope: &Scope,
+    ) -> Result<usize, LowerError> {
+        let shape_bindings = self.function_output_shape_bindings(function, args)?;
+        match subscript {
+            rumoca_core::Subscript::Index { value, span } => {
+                usize::try_from(*value).map_err(|_| {
+                    LowerError::contract_violation(
+                        format!("function output shape has invalid dimension `{value}`"),
+                        *span,
+                    )
+                })
+            }
+            rumoca_core::Subscript::Expr { expr, span } => {
+                let rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: size_args,
+                    ..
+                } = expr.as_ref()
+                else {
+                    let value =
+                        self.eval_compile_time_int(expr, &shape_bindings, "function output shape")?;
+                    return usize::try_from(value).map_err(|_| {
+                        LowerError::contract_violation(
+                            format!("function output shape has invalid dimension `{value}`"),
+                            *span,
+                        )
+                    });
+                };
+                let Some(rumoca_core::Expression::VarRef {
+                    name, subscripts, ..
+                }) = size_args.first()
+                else {
+                    return Err(LowerError::contract_violation(
+                        "function output size expression requires an input reference",
+                        *span,
+                    ));
+                };
+                if !subscripts.is_empty() {
+                    return Err(LowerError::contract_violation(
+                        "function output size expression input must be unsubscripted",
+                        *span,
+                    ));
+                }
+                let input_index = function
+                    .inputs
+                    .iter()
+                    .position(|input| input.name == name.as_str())
+                    .ok_or_else(|| {
+                        LowerError::contract_violation(
+                            format!(
+                                "function output size expression references unknown input `{}`",
+                                name.as_str()
+                            ),
+                            *span,
+                        )
+                    })?;
+                let actual = args.get(input_index).ok_or_else(|| {
+                    LowerError::contract_violation(
+                        format!(
+                            "function `{}` is missing actual input `{}` for output shape",
+                            function.name,
+                            name.as_str()
+                        ),
+                        *span,
+                    )
+                })?;
+                let actual_dims = self.infer_expr_dims(actual, scope)?;
+                let dim = match size_args.get(1) {
+                    Some(dim) => self.eval_compile_time_int(
+                        dim,
+                        &shape_bindings,
+                        "function output size dimension",
+                    )?,
+                    None if actual_dims.len() == 1 => 1,
+                    None => {
+                        return Err(LowerError::contract_violation(
+                            "function output size expression omits dimension for non-vector input",
+                            *span,
+                        ));
+                    }
+                };
+                let dim_index = usize::try_from(dim)
+                    .ok()
+                    .and_then(|dim| dim.checked_sub(1))
+                    .ok_or_else(|| {
+                        LowerError::contract_violation(
+                            format!("function output size dimension `{dim}` is invalid"),
+                            *span,
+                        )
+                    })?;
+                actual_dims.get(dim_index).copied().ok_or_else(|| {
+                    LowerError::contract_violation(
+                        format!(
+                            "function output size dimension `{dim}` exceeds actual rank {}",
+                            actual_dims.len()
+                        ),
+                        *span,
+                    )
+                })
+            }
+            rumoca_core::Subscript::Colon { span } => Err(LowerError::contract_violation(
+                "function output shape cannot retain an unresolved colon dimension",
+                *span,
+            )),
+        }
+    }
+
+    fn function_output_shape_bindings(
+        &self,
+        function: &rumoca_core::Function,
+        args: &[rumoca_core::Expression],
+    ) -> Result<IndexMap<String, f64>, LowerError> {
+        let (named, positional) =
+            function_calls::split_named_and_positional_call_args(function.name.as_str(), args)?;
+        let mut bindings = self.local_const_bindings.clone();
+        let mut positional_index = 0usize;
+        for input in &function.inputs {
+            let actual = named.get(input.name.as_str()).copied().or_else(|| {
+                let actual = positional.get(positional_index).copied();
+                positional_index += usize::from(actual.is_some());
+                actual
+            });
+            let value = actual
+                .and_then(|expr| self.eval_compile_time_expr(expr, &bindings).ok())
+                .or_else(|| {
+                    input
+                        .default
+                        .as_ref()
+                        .and_then(|expr| self.eval_compile_time_expr(expr, &bindings).ok())
+                });
+            if let Some(value) = value {
+                bindings.insert(input.name.clone(), value);
+            }
+        }
+        Ok(bindings)
     }
 
     fn infer_projected_function_call_output_dims(

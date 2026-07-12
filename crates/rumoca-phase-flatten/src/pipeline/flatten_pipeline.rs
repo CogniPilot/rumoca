@@ -989,6 +989,10 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     canonicalize_varrefs_via_instantiated_def_ids(flat);
+    // Re-run constant substitution after late function collection and DefId
+    // canonicalization: both can expose inherited constant aliases in model
+    // equations (for example `nX = nS` in a redeclared Medium package).
+    substitute_known_constants_in_flat(flat, ctx)?;
     functions::canonicalize_collected_function_calls(flat);
     resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);

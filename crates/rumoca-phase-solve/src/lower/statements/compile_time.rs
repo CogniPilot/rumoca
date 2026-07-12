@@ -9,7 +9,9 @@ use rumoca_ir_solve::ScalarSlot;
 
 use super::super::helpers::*;
 use super::super::{LowerBuilder, LowerError, Scope, size_binding_key, unsupported_at};
-use super::{positive_size_dimension, start_metadata_refers_to_key, unsupported_with_optional_span};
+use super::{
+    positive_size_dimension, start_metadata_refers_to_key, unsupported_with_optional_span,
+};
 
 impl<'a> LowerBuilder<'a> {
     pub(super) fn integer_expr_interval(

@@ -5,7 +5,7 @@ pub(crate) fn runtime_activation(expr: &rumoca_core::Expression) -> Option<bool>
             ..
         } => Some(*value),
         rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Initial,
+            function: rumoca_core::BuiltinFunction::Initial | rumoca_core::BuiltinFunction::Terminal,
             args,
             ..
         } if args.is_empty() => Some(false),

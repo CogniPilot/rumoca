@@ -1780,10 +1780,9 @@ fn contextualize_record_param_type_names(
         ) else {
             continue;
         };
-        if resolution.class_def.class_type == rumoca_core::ClassType::Record
-            && resolution.exposed_name != param.type_name
-        {
+        if resolution.class_def.class_type == rumoca_core::ClassType::Record {
             param.type_name = resolution.exposed_name;
+            param.type_def_id = resolution.class_def.def_id;
         }
     }
 }

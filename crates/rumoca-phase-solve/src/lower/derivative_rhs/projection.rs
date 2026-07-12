@@ -1472,6 +1472,12 @@ pub(in crate::lower) fn expression_dims_for_subscripted_binding(
         );
     }
 
+    if subscripts.is_empty()
+        && scalarized_aggregate_variable(dae_model, base, fallback_span)?.is_some()
+    {
+        return Ok(Vec::new());
+    }
+
     if subscripts.is_empty() {
         if let Some(dims) = scalarized_child_dims(dae_model, base, fallback_span)? {
             return Ok(dims);

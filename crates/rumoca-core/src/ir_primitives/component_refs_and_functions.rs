@@ -769,6 +769,14 @@ impl std::error::Error for FunctionShapeContractError {
 pub struct FunctionParam {
     #[serde(default)]
     pub def_id: Option<DefId>,
+    /// Resolved source declaration identity of this parameter's type.
+    ///
+    /// This is distinct from `def_id`, which identifies the parameter
+    /// declaration itself. Downstream phases use `type_def_id` for semantic
+    /// type metadata lookup instead of reconstructing identity from
+    /// `type_name` display text (SPEC_0001).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_def_id: Option<DefId>,
     pub name: String,
     pub span: Span,
     pub type_name: String,
@@ -791,6 +799,7 @@ impl FunctionParam {
     pub fn new(name: impl Into<String>, type_name: impl Into<String>, span: Span) -> Self {
         Self {
             def_id: None,
+            type_def_id: None,
             name: name.into(),
             span,
             type_name: type_name.into(),
@@ -827,6 +836,11 @@ impl FunctionParam {
 
     pub fn with_def_id(mut self, def_id: DefId) -> Self {
         self.def_id = Some(def_id);
+        self
+    }
+
+    pub fn with_type_def_id(mut self, type_def_id: DefId) -> Self {
+        self.type_def_id = Some(type_def_id);
         self
     }
 
