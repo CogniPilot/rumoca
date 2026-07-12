@@ -206,6 +206,18 @@ pub(super) fn assignment_target_name(expr: &Expression) -> Option<VarName> {
     None
 }
 
+pub(super) fn assignment_target_name_in_dae(dae: &Dae, expr: &Expression) -> Option<VarName> {
+    let Expression::Binary { op, lhs, rhs, .. } = expr else {
+        return None;
+    };
+    if !matches!(op, OpBinary::Sub) {
+        return None;
+    }
+    exact_reference_expr_name_in_dae(dae, lhs)
+        .or_else(|| exact_reference_expr_name_in_dae(dae, rhs))
+        .or_else(|| assignment_target_name(expr))
+}
+
 pub(super) fn assignment_var_ref_name(
     name: &VarName,
     subscripts: &[rumoca_core::Subscript],

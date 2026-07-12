@@ -1916,6 +1916,9 @@ fn extract_state_direct_assignment_equation(
         if expr_contains_der_of(&eq.rhs, &state_name) {
             continue;
         }
+        if expr_contains_der_of_state_or_component(&eq.rhs, &state_name) {
+            continue;
+        }
         let Some((coef, remainder)) = split_linear_target(&eq.rhs, &state_name, eq.span) else {
             continue;
         };
@@ -1930,6 +1933,48 @@ fn extract_state_direct_assignment_equation(
         solved = Some((state_name.clone(), defining_expr));
     }
     solved
+}
+
+fn expr_contains_der_of_state_or_component(expr: &Expression, state_name: &VarName) -> bool {
+    let matcher = DerivativeNameMatcher::from_var_names(std::slice::from_ref(state_name));
+    expr_contains_der_of_any(expr, &matcher)
+}
+
+fn variable_dims_for_direct_demotion(dae: &Dae, state_name: &VarName) -> Option<Vec<i64>> {
+    dae.variables
+        .states
+        .get(state_name)
+        .map(|state| state.dims.clone())
+        .filter(|dims| !dims.is_empty())
+}
+
+fn der_call_target_subscripts<'a>(
+    expr: &'a Expression,
+    state_name: &VarName,
+) -> Option<Option<&'a [Subscript]>> {
+    let Expression::BuiltinCall { function, args, .. } = expr else {
+        return None;
+    };
+    if *function != BuiltinFunction::Der || args.len() != 1 {
+        return None;
+    }
+    if expression_exact_name(&args[0]).as_deref() == Some(state_name.as_str()) {
+        return Some(None);
+    }
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = &args[0]
+    else {
+        return expr_refers_to_var(&args[0], state_name).then_some(None);
+    };
+    if name.var_name() != state_name {
+        return None;
+    }
+    if subscripts.is_empty() {
+        Some(None)
+    } else {
+        Some(Some(subscripts.as_slice()))
+    }
 }
 
 fn state_value_refs_outside_der(expr: &Expression, state_names: &[VarName]) -> Vec<VarName> {
@@ -1968,16 +2013,6 @@ impl ExpressionVisitor for StateValueRefCollector<'_> {
             self.visit_subscript(subscript);
         }
     }
-}
-
-fn der_call_targets_state(expr: &Expression, state_name: &VarName) -> bool {
-    matches!(
-        expr,
-        Expression::BuiltinCall { function, args, .. }
-            if *function == BuiltinFunction::Der
-                && args.len() == 1
-                && expr_refers_to_var(&args[0], state_name)
-    )
 }
 
 fn substitute_der_of_state(
