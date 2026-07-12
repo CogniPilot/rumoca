@@ -10,11 +10,11 @@ use rumoca_solver::{
 
 pub(crate) fn settle_algebraics_and_relation_memory(
     runtime: &SolveRuntime,
-    _model: &OdeModel,
+    model: &OdeModel,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
-    _state_count: usize,
+    state_count: usize,
     tol: f64,
 ) -> Result<(), SimError> {
     runtime
@@ -24,33 +24,14 @@ pub(crate) fn settle_algebraics_and_relation_memory(
             t,
             tol,
             EVENT_UPDATE_MAX_ITERS,
-            move |y, p| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol),
+            move |y, p| project_algebraics_and_detect_changes(model, y, p, t, state_count, tol),
         )
         .map_err(Into::into)
 }
 
-pub(crate) fn refresh_algebraics_and_detect_changes(
-    runtime: &SolveRuntime,
-    y: &mut [f64],
-    p: &mut [f64],
-    t: f64,
-    tol: f64,
-) -> Result<bool, RuntimeSolveError> {
-    let before = y.to_vec();
-    runtime.refresh_algebraic_and_output_slots(t, y, p, tol, EVENT_UPDATE_MAX_ITERS)?;
-    Ok(values_changed(&before, y, tol))
-}
-
-fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
-    before
-        .iter()
-        .zip(after.iter())
-        .any(|(before, after)| (*before - *after).abs() > tol)
-}
-
 pub(crate) fn apply_event_updates(
     runtime: &SolveRuntime,
-    _ode_model: &OdeModel,
+    ode_model: &OdeModel,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
@@ -60,6 +41,7 @@ pub(crate) fn apply_event_updates(
     let event_pre_p = p.to_vec();
     apply_event_updates_with_event_pre(EventUpdateInput {
         runtime,
+        ode_model,
         y,
         p,
         t,
@@ -71,6 +53,7 @@ pub(crate) fn apply_event_updates(
 
 pub(crate) struct EventUpdateInput<'a> {
     pub(crate) runtime: &'a SolveRuntime,
+    pub(crate) ode_model: &'a OdeModel,
     pub(crate) y: &'a mut [f64],
     pub(crate) p: &'a mut [f64],
     pub(crate) t: f64,
@@ -91,6 +74,7 @@ fn apply_event_updates_with_filter(
 ) -> Result<(), SimError> {
     let EventUpdateInput {
         runtime,
+        ode_model,
         y,
         p,
         t,
@@ -110,7 +94,7 @@ fn apply_event_updates_with_filter(
             row_filter,
             root_relation_overrides: &[],
         },
-        project_algebraics_callback(runtime, t, tol),
+        project_algebraics_callback(ode_model, t, tol),
     )?;
     event_action_outcome_to_result(outcome, t)
 }
@@ -141,11 +125,20 @@ pub(crate) fn apply_initialization_updates(
 }
 
 fn project_algebraics_callback(
-    runtime: &SolveRuntime,
+    model: &OdeModel,
     t: f64,
     tol: f64,
 ) -> impl FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError> + '_ {
-    move |y, p| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol)
+    move |y, p| {
+        project_algebraics_and_detect_changes(
+            model,
+            y,
+            p,
+            t,
+            model.state_count_for_projection(),
+            tol,
+        )
+    }
 }
 
 fn event_action_outcome_to_result(

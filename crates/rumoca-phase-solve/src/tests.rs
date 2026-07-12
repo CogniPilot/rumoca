@@ -847,6 +847,35 @@ fn algebraic_projection_loop_keeps_explicit_row_targets() -> Result<(), LowerErr
 }
 
 #[test]
+fn algebraic_projection_scalar_keeps_distinct_explicit_row_target() -> Result<(), LowerError> {
+    let projection_incidence = ProjectionIncidence {
+        incidence: Incidence::new(
+            vec![BTreeSet::from([0, 1]).into_iter().collect()],
+            vec![EquationRef(7)],
+            vec![UnknownId::SolverY(9), UnknownId::SolverY(10)],
+        ),
+        unknown_y_indices: vec![9, 10],
+    };
+    let mut row_targets = vec![None; 8];
+    row_targets[7] = Some(solve::scalar_slot_y(9));
+
+    let blocks = super::lower_blt_projection_blocks(
+        &[BltBlock::Scalar {
+            equation: EquationRef(7),
+            unknown: UnknownId::SolverY(10),
+        }],
+        &row_targets,
+        &projection_incidence,
+        solve_test_span(),
+    )?;
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].rows, vec![7]);
+    assert_eq!(blocks[0].y_indices, vec![9, 10]);
+    Ok(())
+}
+
+#[test]
 fn algebraic_projection_plan_merges_blocks_that_share_row_targets() -> Result<(), LowerError> {
     let blocks = super::merge_overlapping_projection_blocks(
         vec![

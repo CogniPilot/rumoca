@@ -646,6 +646,39 @@ fn place_targeted_residual_rows(
         residual_to_implicit_rows[residual_idx] = Some(index);
     }
 
+    let structural_fallback_targets = if state_scalar_count == 0 {
+        let mut targets = implicit_rhs_vec_with_capacity(
+            residual.len(),
+            "state-free fallback residual target count",
+            span,
+        )?;
+        targets.resize(residual.len(), None);
+        targets
+    } else {
+        match_unowned_residuals_to_free_algebraics(
+            residual,
+            residual_targets,
+            &placed,
+            occupied,
+            state_scalar_count,
+            solver_scalar_count,
+            span,
+        )?
+    };
+    for (residual_idx, target_idx) in structural_fallback_targets.into_iter().enumerate() {
+        let Some(target_idx) = target_idx else {
+            continue;
+        };
+        rows[target_idx] = residual[residual_idx].clone();
+        row_targets[target_idx] = match residual_targets.get(residual_idx).copied().flatten() {
+            Some(target) => fallback_residual_row_target(Some(target), state_scalar_count, span)?,
+            None => Some(implicit_rhs_y_slot(target_idx, span)?),
+        };
+        occupied[target_idx] = true;
+        placed[residual_idx] = true;
+        residual_to_implicit_rows[residual_idx] = Some(target_idx);
+    }
+
     let mut fallback_idx = state_scalar_count;
     for (residual_idx, row) in residual.iter().enumerate() {
         if placed[residual_idx] {
@@ -663,6 +696,118 @@ fn place_targeted_residual_rows(
             residual_to_implicit_rows[residual_idx] = Some(target_idx);
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn match_unowned_residuals_to_free_algebraics(
+    residual: &[Vec<solve::LinearOp>],
+    residual_targets: &[Option<solve::ScalarSlot>],
+    placed: &[bool],
+    occupied: &[bool],
+    state_scalar_count: usize,
+    solver_scalar_count: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<Option<usize>>, LowerError> {
+    let mut matched_targets =
+        implicit_rhs_vec_with_capacity(residual.len(), "fallback residual target count", span)?;
+    matched_targets.resize(residual.len(), None);
+
+    let available_y_indices = (state_scalar_count..solver_scalar_count)
+        .filter(|index| !occupied[*index])
+        .collect::<Vec<_>>();
+    let available_positions = available_y_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(position, y_index)| (y_index, position))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let available_projection_set = available_y_indices.iter().copied().collect();
+    let mut equation_refs = Vec::new();
+    let mut eq_unknowns = Vec::new();
+    for (residual_idx, row) in residual.iter().enumerate() {
+        let has_owned_algebraic_target = matches!(
+            residual_targets.get(residual_idx).copied().flatten(),
+            Some(solve::ScalarSlot::Y { index, .. })
+                if index >= state_scalar_count && index < solver_scalar_count
+        );
+        if placed[residual_idx] || has_owned_algebraic_target {
+            continue;
+        }
+        let unknowns = super::collect_algebraic_y_indices_for_row(row, &available_projection_set)
+            .into_iter()
+            .filter_map(|index| available_positions.get(&index).copied())
+            .collect::<std::collections::HashSet<_>>();
+        if unknowns.is_empty() {
+            continue;
+        }
+        equation_refs.push(rumoca_phase_structural::EquationRef(residual_idx));
+        eq_unknowns.push(unknowns);
+    }
+    if equation_refs.is_empty() {
+        return Ok(matched_targets);
+    }
+    let unknown_names = available_y_indices
+        .iter()
+        .copied()
+        .map(rumoca_phase_structural::UnknownId::SolverY)
+        .collect::<Vec<_>>();
+    let incidence =
+        rumoca_phase_structural::Incidence::new(eq_unknowns, equation_refs, unknown_names);
+    let regular =
+        rumoca_phase_structural::maximum_regular_subsystem(&incidence).map_err(|err| {
+            implicit_rhs_contract_violation(
+                format!("match fallback residual algebraic targets: {err}"),
+                span,
+            )
+        })?;
+    let blocks =
+        rumoca_phase_structural::build_blt_from_incidence(&regular.incidence).map_err(|err| {
+            implicit_rhs_contract_violation(
+                format!("match fallback residual algebraic targets: {err}"),
+                span,
+            )
+        })?;
+    for block in blocks {
+        match block {
+            rumoca_phase_structural::BltBlock::Scalar { equation, unknown } => {
+                assign_fallback_residual_target(&mut matched_targets, equation, unknown, span)?;
+            }
+            rumoca_phase_structural::BltBlock::AlgebraicLoop {
+                equations,
+                unknowns,
+            } => {
+                for (equation, unknown) in equations.into_iter().zip(unknowns) {
+                    assign_fallback_residual_target(&mut matched_targets, equation, unknown, span)?;
+                }
+            }
+        }
+    }
+    Ok(matched_targets)
+}
+
+fn assign_fallback_residual_target(
+    matched_targets: &mut [Option<usize>],
+    equation: rumoca_phase_structural::EquationRef,
+    unknown: rumoca_phase_structural::UnknownId,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let rumoca_phase_structural::UnknownId::SolverY(y_index) = unknown else {
+        return Err(implicit_rhs_contract_violation(
+            "fallback residual matching returned a non-solver unknown",
+            span,
+        ));
+    };
+    let Some(target) = matched_targets.get_mut(equation.0) else {
+        return Err(implicit_rhs_contract_violation(
+            format!(
+                "fallback residual matching returned equation {} outside residual rows",
+                equation.0
+            ),
+            span,
+        ));
+    };
+    *target = Some(y_index);
     Ok(())
 }
 
@@ -815,6 +960,225 @@ mod tests {
             })
         );
         assert_eq!(residual_to_implicit_rows, vec![Some(2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn fallback_residual_claims_a_free_loaded_algebraic_target() -> Result<(), LowerError> {
+        let mut rows = vec![
+            zero_rhs_row(),
+            zero_rhs_row(),
+            zero_rhs_row(),
+            zero_rhs_row(),
+        ];
+        let mut row_targets = vec![None, None, None, None];
+        let mut occupied = vec![true, false, false, false];
+        let residual = vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::LoadY { dst: 1, index: 3 },
+                solve::LinearOp::LoadY { dst: 3, index: 2 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ];
+        let residual_targets = vec![Some(solve::scalar_slot_y(1)), None];
+        let mut residual_to_implicit_rows = vec![None, None];
+
+        place_targeted_residual_rows(
+            &mut rows,
+            &mut row_targets,
+            &mut occupied,
+            &residual,
+            &residual_targets,
+            1,
+            4,
+            &mut residual_to_implicit_rows,
+            test_span(),
+        )?;
+
+        assert_eq!(residual_to_implicit_rows, vec![Some(1), Some(3)]);
+        assert_eq!(row_targets[3], Some(solve::scalar_slot_y(3)));
+        assert_eq!(rows[3], residual[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn state_free_system_leaves_fallback_residual_without_synthetic_target()
+    -> Result<(), LowerError> {
+        let mut rows = vec![zero_rhs_row(), zero_rhs_row(), zero_rhs_row()];
+        let mut row_targets = vec![None, None, None];
+        let mut occupied = vec![false, false, false];
+        let residual = vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadY { dst: 1, index: 2 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ];
+        let residual_targets = vec![Some(solve::scalar_slot_y(0)), None];
+        let mut residual_to_implicit_rows = vec![None, None];
+
+        place_targeted_residual_rows(
+            &mut rows,
+            &mut row_targets,
+            &mut occupied,
+            &residual,
+            &residual_targets,
+            0,
+            3,
+            &mut residual_to_implicit_rows,
+            test_span(),
+        )?;
+
+        assert_eq!(residual_to_implicit_rows, vec![Some(0), Some(1)]);
+        assert_eq!(row_targets[1], None);
+        assert_eq!(rows[1], residual[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn state_consistency_row_participates_in_free_algebraic_matching() -> Result<(), LowerError> {
+        let mut rows = vec![
+            zero_rhs_row(),
+            zero_rhs_row(),
+            zero_rhs_row(),
+            zero_rhs_row(),
+        ];
+        let mut row_targets = vec![None, None, None, None];
+        let mut occupied = vec![true, false, false, false];
+        let residual = vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 2 },
+                solve::LinearOp::LoadY { dst: 1, index: 3 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadY { dst: 1, index: 2 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ];
+        let residual_targets = vec![
+            Some(solve::scalar_slot_y(1)),
+            None,
+            Some(solve::scalar_slot_y(0)),
+        ];
+        let mut residual_to_implicit_rows = vec![None, None, None];
+
+        place_targeted_residual_rows(
+            &mut rows,
+            &mut row_targets,
+            &mut occupied,
+            &residual,
+            &residual_targets,
+            1,
+            4,
+            &mut residual_to_implicit_rows,
+            test_span(),
+        )?;
+
+        assert_eq!(residual_to_implicit_rows, vec![Some(1), Some(3), Some(2)]);
+        assert_eq!(row_targets[2], Some(solve::scalar_slot_y(0)));
+        assert_eq!(row_targets[3], Some(solve::scalar_slot_y(3)));
+        Ok(())
+    }
+
+    #[test]
+    fn unmatched_fallback_residual_is_retained_in_projection_block() -> Result<(), LowerError> {
+        let span = test_span();
+        let derivative = vec![zero_rhs_row()];
+        let residual = vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 3 },
+                solve::LinearOp::Const { dst: 1, value: 1.0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 3 },
+                solve::LinearOp::Const { dst: 1, value: 2.0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ];
+        let implicit = build_implicit_rhs_rows(
+            &derivative,
+            &residual,
+            &[Some(solve::scalar_slot_y(1)), None, None],
+            1,
+            4,
+            span,
+        )?;
+
+        let plan = super::super::lower_algebraic_projection_plan(
+            &implicit.rows,
+            &implicit.row_targets,
+            1,
+            4,
+            span,
+        )?;
+        let covered_rows = plan
+            .blocks
+            .iter()
+            .flat_map(|block| block.rows.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(covered_rows, std::collections::BTreeSet::from([1, 2, 3]));
+        assert!(plan.blocks.iter().any(|block| {
+            block.rows.iter().all(|row| [2, 3].contains(row))
+                && block.rows.len() == 2
+                && block.y_indices == vec![3]
+        }));
         Ok(())
     }
 

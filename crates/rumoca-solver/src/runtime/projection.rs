@@ -137,7 +137,7 @@ fn project_algebraics_with_plan<M: AlgebraicProjectionModel>(
     for _ in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
         seed_nonfinite_algebraics(y, state_count);
         model.eval_residual(y, p, t, &mut rhs)?;
-        let residual = projection_residual_tail(&rhs, plan, state_count)?;
+        let residual = projection_residual_tail(&rhs, plan, state_count, tol)?;
         if residual_converged(&residual, tol) {
             return Ok(());
         }
@@ -168,25 +168,73 @@ fn projection_residual_tail(
     rhs: &[f64],
     plan: &solve::AlgebraicProjectionPlan,
     state_count: usize,
+    tol: f64,
 ) -> Result<Vec<f64>, RuntimeSolveError> {
-    let mut residual =
-        vec![0.0; algebraic_tail_len(rhs.len(), state_count, "projection residual tail")?];
-    for row in plan.blocks.iter().flat_map(|block| {
-        block
-            .rows
-            .iter()
-            .copied()
-            .chain(block.causal_steps.iter().map(|step| step.row))
-    }) {
-        if row < state_count {
-            continue;
-        }
-        let value = residual_at(rhs, row, "projection residual tail")?;
-        if let Some(slot) = residual.get_mut(row - state_count) {
-            *slot = value;
+    let covered_rows = validate_algebraic_projection_plan(plan, rhs.len(), state_count)?;
+    for (offset, value) in rhs[state_count..].iter().copied().enumerate() {
+        if !covered_rows[offset] && (!value.is_finite() || value.abs() > tol) {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "algebraic projection plan omits implicit residual row {}",
+                state_count + offset
+            )));
         }
     }
-    Ok(residual)
+    Ok(rhs[state_count..].to_vec())
+}
+
+fn validate_algebraic_projection_plan(
+    plan: &solve::AlgebraicProjectionPlan,
+    residual_len: usize,
+    state_count: usize,
+) -> Result<Vec<bool>, RuntimeSolveError> {
+    let algebraic_count = algebraic_tail_len(
+        residual_len,
+        state_count,
+        "validate algebraic projection plan",
+    )?;
+    let mut covered_rows = vec![false; algebraic_count];
+    for (block_index, block) in plan.blocks.iter().enumerate() {
+        if block.rows.is_empty() && (!block.y_indices.is_empty() || !block.causal_steps.is_empty())
+        {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "algebraic projection block {block_index} has targets but no residual rows"
+            )));
+        }
+        if !block.rows.is_empty() && block.y_indices.is_empty() {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "algebraic projection block {block_index} has residual rows but no algebraic targets"
+            )));
+        }
+        for &y_index in &block.y_indices {
+            if y_index < state_count || y_index >= residual_len {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "algebraic projection block {block_index} references non-algebraic y index {y_index} outside {state_count}..{residual_len}"
+                )));
+            }
+        }
+        for &row in &block.rows {
+            let Some(offset) = row.checked_sub(state_count) else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "algebraic projection block {block_index} references state residual row {row}"
+                )));
+            };
+            let Some(covered) = covered_rows.get_mut(offset) else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "algebraic projection block {block_index} references residual row {row}, but the model evaluated only {residual_len} rows"
+                )));
+            };
+            *covered = true;
+        }
+        for step in &block.causal_steps {
+            if !block.rows.contains(&step.row) || !block.y_indices.contains(&step.y_index) {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "algebraic projection causal step ({}, y[{}]) is not contained in block {block_index}",
+                    step.row, step.y_index
+                )));
+            }
+        }
+    }
+    Ok(covered_rows)
 }
 
 fn algebraic_tail_len(
@@ -1384,6 +1432,30 @@ mod tests {
     }
 
     #[test]
+    fn project_algebraics_rejects_nonzero_residual_row_omitted_from_plan() {
+        let model = BlockProjectionModel {
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    causal_steps: Vec::new(),
+                }],
+            },
+            initial_residual_len: 0,
+        };
+        let mut y = vec![0.0, 0.0];
+
+        let err = project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-12)
+            .expect_err("an omitted nonzero algebraic residual row must reject projection");
+
+        assert!(matches!(err, RuntimeSolveError::SolveIr { .. }));
+        assert!(
+            err.to_string()
+                .contains("algebraic projection plan omits implicit residual row 1")
+        );
+    }
+
+    #[test]
     fn project_algebraics_rejects_state_count_past_y_length() {
         let model = BlockProjectionModel {
             plan: solve::AlgebraicProjectionPlan::default(),
@@ -1402,8 +1474,13 @@ mod tests {
 
     #[test]
     fn projection_residual_tail_rejects_state_count_past_rhs_length() {
-        let err = projection_residual_tail(&[0.0], &solve::AlgebraicProjectionPlan::default(), 2)
-            .expect_err("state count beyond residual length should fail");
+        let err = projection_residual_tail(
+            &[0.0],
+            &solve::AlgebraicProjectionPlan::default(),
+            2,
+            1.0e-12,
+        )
+        .expect_err("state count beyond residual length should fail");
 
         assert!(
             err.to_string()

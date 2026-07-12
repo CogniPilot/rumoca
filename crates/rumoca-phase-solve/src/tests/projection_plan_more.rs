@@ -9,6 +9,60 @@ fn projection_plan_span() -> rumoca_core::Span {
 }
 
 #[test]
+fn solve_problem_projection_plan_covers_every_algebraic_tail_row() {
+    let span = projection_plan_span();
+    let rows = vec![
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+        vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+    ];
+
+    let err = lower_algebraic_projection_plan(&rows, &[None; 3], 1, 3, span)
+        .expect_err("constant algebraic tail row must not be omitted from projection coverage");
+
+    assert!(
+        err.to_string()
+            .contains("algebraic projection plan omits implicit row 2")
+    );
+    assert_eq!(err.source_span(), Some(span));
+}
+
+#[test]
+fn solve_problem_leaves_dynamic_consistency_rows_to_full_tail_validation() {
+    let span = projection_plan_span();
+    let rows = vec![
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+        vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+    ];
+
+    let plan = lower_algebraic_projection_plan(&rows, &[None; 3], 1, 3, span)
+        .expect("parameter-dependent consistency rows have no algebraic target to project");
+
+    assert_eq!(plan.blocks.len(), 1);
+    assert_eq!(plan.blocks[0].rows, vec![1]);
+    assert_eq!(plan.blocks[0].y_indices, vec![1]);
+}
+
+#[test]
 fn solve_problem_preserves_duplicate_target_residual_rows() {
     let mut dae_model = dae::Dae::default();
     dae_model

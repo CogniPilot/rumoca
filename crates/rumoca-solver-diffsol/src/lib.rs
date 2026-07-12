@@ -46,8 +46,8 @@ use rumoca_solver::{
 };
 pub(crate) use runtime::{
     EventUpdateInput, apply_event_updates, apply_event_updates_with_event_pre,
-    apply_initialization_updates, refresh_algebraics_and_detect_changes,
-    seed_initial_discrete_values, settle_algebraics_and_relation_memory,
+    apply_initialization_updates, seed_initial_discrete_values,
+    settle_algebraics_and_relation_memory,
 };
 use runtime::{check_no_state_initialization, simulate_no_state_solve_ir};
 
@@ -764,27 +764,14 @@ where
         t: f64,
         tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
-        match self.mode {
-            DiffsolMode::General => project_algebraics_and_detect_changes(
-                self.equilibrium_model,
-                y,
-                p,
-                t,
-                self.equilibrium_model.state_count_for_projection(),
-                tol,
-            ),
-            DiffsolMode::StateOnly => {
-                let before = y.to_vec();
-                self.runtime.refresh_algebraic_and_output_slots(
-                    t,
-                    y,
-                    p,
-                    tol,
-                    EVENT_UPDATE_MAX_ITERS,
-                )?;
-                Ok(values_changed(&before, y, tol))
-            }
-        }
+        project_algebraics_and_detect_changes(
+            self.equilibrium_model,
+            y,
+            p,
+            t,
+            self.equilibrium_model.state_count_for_projection(),
+            tol,
+        )
     }
 
     fn derivative_guess(&self, y: &[f64], p: &[f64], t: f64) -> Result<Vec<f64>, SimDriverError> {
@@ -1025,13 +1012,6 @@ fn visible_values(
         },
     )
     .map_err(|err| SimError::SolveIr(err.to_string()))
-}
-
-fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
-    before
-        .iter()
-        .zip(after.iter())
-        .any(|(before, after)| (*before - *after).abs() > tol)
 }
 
 fn trace_bdf_step_failure(

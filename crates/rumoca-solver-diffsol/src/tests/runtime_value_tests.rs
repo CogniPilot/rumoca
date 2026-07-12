@@ -531,10 +531,13 @@ fn project_algebraics_uses_solve_ir_row_targets_before_large_pivots() {
 }
 
 #[test]
-fn project_algebraics_preserves_state_values_for_consistency_residuals() {
+fn project_algebraics_rejects_nonzero_state_targeted_consistency_residuals() {
     let mut model = solve::SolveModel::default();
     let rhs_rows = vec![
-        vec![solve::LinearOp::Const { dst: 0, value: 0.0 }],
+        vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
         vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const { dst: 1, value: 2.0 },
@@ -548,7 +551,10 @@ fn project_algebraics_preserves_state_values_for_consistency_residuals() {
         ],
     ];
     let jvp_rows = vec![
-        vec![solve::LinearOp::Const { dst: 0, value: 0.0 }],
+        vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
         vec![
             solve::LinearOp::LoadSeed { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
@@ -569,13 +575,101 @@ fn project_algebraics_preserves_state_values_for_consistency_residuals() {
 
     let ode_model = OdeModel::new(&model).expect("ODE model should build from solve-IR rows");
     let mut y = model.initial_y.clone();
-    project_algebraics(&ode_model, &mut y, &[], 0.0, 1, 1.0e-12)
-        .expect("algebraic projection should ignore state-targeted consistency residuals");
+    let err = project_algebraics(&ode_model, &mut y, &[], 0.0, 1, 1.0e-12)
+        .expect_err("a nonzero consistency residual in the algebraic tail must not be ignored");
 
     // State initialization belongs to the initialization problem and fixed
-    // starts, not to the algebraic projector used at event boundaries.
+    // starts, not to the algebraic projector used at event boundaries. The
+    // projector therefore reports the inconsistent row without moving state.
+    assert!(
+        err.to_string()
+            .contains("algebraic projection plan omits implicit residual row 1")
+    );
     assert_eq!(y[0], 0.0);
     assert_eq!(y[1], 0.0);
+}
+
+#[test]
+fn settle_algebraics_uses_full_ode_projection_semantics() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.state_scalar_count = 1;
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 0.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 1 },
+                    solve::LinearOp::Const { dst: 1, value: 2.0 },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Sub,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::StoreOutput { src: 2 },
+                ],
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 2 },
+                    solve::LinearOp::Const { dst: 1, value: 3.0 },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Sub,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::StoreOutput { src: 2 },
+                ],
+            ],
+            fixture_span!(),
+        ),
+    );
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 0.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadSeed { dst: 0, index: 2 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_row_targets = vec![None; 3];
+    model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![solve::AlgebraicProjectionBlock {
+            rows: vec![1],
+            y_indices: vec![1],
+            causal_steps: Vec::new(),
+        }],
+    };
+    model.initial_y = vec![0.0, 0.0, 0.0];
+
+    let runtime = SolveRuntime::new(&model).expect("runtime should prepare the incomplete plan");
+    let ode_model = OdeModel::new(&model).expect("ODE model should prepare full residual rows");
+    let mut y = model.initial_y.clone();
+    let mut p = model.parameters.clone();
+
+    let err = settle_algebraics_and_relation_memory(
+        &runtime, &ode_model, &mut y, &mut p, 0.0, 1, 1.0e-12,
+    )
+    .expect_err("settling must not bypass the OdeModel semantic projector");
+
+    assert!(
+        err.to_string()
+            .contains("algebraic projection plan omits implicit residual row 2")
+    );
 }
 
 #[test]
