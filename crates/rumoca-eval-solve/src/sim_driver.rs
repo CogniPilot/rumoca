@@ -649,7 +649,7 @@ fn advance_to_target_once<St: SolverAdvanceBackend + ?Sized>(
     deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
     if event_stop.is_some() {
-        return advance_to_scheduled_stop(ctx, state, target, backend);
+        return advance_to_scheduled_stop(ctx, state, target, backend, deferred_root);
     }
     advance_output_interval(ctx, state, target, backend, deferred_root)
 }
@@ -659,52 +659,13 @@ fn advance_to_scheduled_stop<St: SolverAdvanceBackend + ?Sized>(
     state: AdvanceState<'_>,
     target: f64,
     backend: &mut St,
+    deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
-    if backend.time() > target {
-        backend.state_mut_back(target)?;
-    }
-    if sample_time_match_with_tol(backend.time(), target) {
-        *state.current_t = target;
-        state
-            .params
-            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        let native = backend.native_y();
-        write_full_y(backend, &native, target, state.current_y, state.params)?;
-        return Ok(false);
-    }
-    backend.set_stop_time(target)?;
-    loop {
-        let outcome = match backend.step() {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                backend.trace_step_failure(
-                    state.current_y,
-                    state.params,
-                    *state.current_t,
-                    backend.time(),
-                    &e.to_string(),
-                );
-                return Err(e);
-            }
-        };
-        match outcome {
-            StepOutcome::Stop => {
-                let stop_t = backend.time();
-                *state.current_t = stop_t;
-                state
-                    .params
-                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                let native = backend.native_y();
-                write_full_y(backend, &native, stop_t, state.current_y, state.params)?;
-                return Ok(false);
-            }
-            StepOutcome::Internal => continue,
-            StepOutcome::Root { t_root } => {
-                trace_step_event("scheduled-root", backend.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, backend);
-            }
-        }
-    }
+    // A scheduled event is the left limit of the continuous trajectory. Keep
+    // the adaptive solver's natural history and interpolate at the event
+    // boundary; pinning a BDF stop can survive a coincident root/reset and make
+    // the next step reject `stop time == current time`.
+    advance_output_interval(ctx, state, target, backend, deferred_root)
 }
 
 fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(

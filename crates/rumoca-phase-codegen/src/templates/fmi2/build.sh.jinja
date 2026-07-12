@@ -189,6 +189,7 @@ if [ "$EXTERNAL_LIBS_NEEDED" -eq 1 ]; then
   rewrite_darwin_runtime_paths
 fi
 
+rm -f {{ model_name }}.fmu
 if [ -d resources ]; then
   zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/ resources/
 else

@@ -73,7 +73,7 @@
 {{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
 {%- endmacro -%}
 {%- macro float64_attr(attr_name, expr, element_count) -%}
-{% if expr is not none %} {{ attr_name }}="{% if element_count is not none %}{% for i in range(element_count) %}{{ render_expr_at_index(expr, i + 1, cfg) }}{% if not loop.last %} {% endif %}{% endfor %}{% else %}{{ render_expr(expr, cfg) }}{% endif %}"{% endif %}
+{% if expr is not none %} {{ attr_name }}="{% if element_count is not none %}{% for i in range(element_count) %}{{ render_xml_attr_expr_at_index(expr, i + 1, cfg) }}{% if not loop.last %} {% endif %}{% endfor %}{% else %}{{ render_xml_attr_expr(expr, cfg) }}{% endif %}"{% endif %}
 {%- endmacro -%}
 {#- Macro: emit a scalar <Float64> variable element (FMI 3.0 style) -#}
 {%- macro float64_var(name, vr, causality, variability, var, initial) -%}

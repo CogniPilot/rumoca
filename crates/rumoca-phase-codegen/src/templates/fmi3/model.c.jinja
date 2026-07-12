@@ -738,7 +738,7 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 
 {#- Macro: check if a function has any record-typed parameters -#}
 {% macro has_complex_params(func) -%}
-{%- for p in func.inputs -%}{%- if p.type_class == "Record" -%}yes{%- endif -%}{%- endfor -%}
+{%- for p in func.inputs -%}{%- if p.type_class | default("") == "Record" -%}yes{%- endif -%}{%- endfor -%}
 {%- endmacro %}
 
 {#- Macro: render a C parameter list for one-output user functions. #}

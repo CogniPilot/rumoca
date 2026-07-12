@@ -454,6 +454,8 @@ fn continuous_artifacts_value(
 pub(super) fn solve_value(
     problem: Arc<solve::SolveProblem>,
     artifacts: Arc<solve::SolveArtifacts>,
+    visible_names: Arc<Vec<String>>,
+    visible_value_rows: Arc<solve::ScalarProgramBlock>,
 ) -> Result<Value, CodegenError> {
     let continuous = continuous_value(problem.clone())?;
     let artifacts_value = artifacts_value(artifacts.clone())?;
@@ -468,6 +470,8 @@ pub(super) fn solve_value(
             "events",
             "clocks",
             "artifacts",
+            "visible_names",
+            "visible_value_rows",
         ],
         move |k| match k {
             "schema_version" => Some(Value::from(problem.schema_version)),
@@ -479,6 +483,8 @@ pub(super) fn solve_value(
             "initialization" => Some(Value::from_serialize(&problem.initialization)),
             "clocks" => Some(Value::from_serialize(&problem.clocks)),
             "artifacts" => Some(artifacts_value.clone()),
+            "visible_names" => Some(Value::from_serialize(visible_names.as_ref())),
+            "visible_value_rows" => Some(scalar_program_block_value(visible_value_rows.clone())),
             _ => None,
         },
     ))

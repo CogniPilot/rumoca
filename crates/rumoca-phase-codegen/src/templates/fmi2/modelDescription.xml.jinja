@@ -58,7 +58,7 @@
 {{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
 {%- endmacro -%}
 {%- macro real_attr(attr_name, expr, start_index) -%}
-{% if expr is not none %} {{ attr_name }}="{% if start_index is not none %}{{ render_expr_at_index(expr, start_index, cfg) }}{% else %}{{ render_expr(expr, cfg) }}{% endif %}"{% endif %}
+{% if expr is not none %} {{ attr_name }}="{% if start_index is not none %}{{ render_xml_attr_expr_at_index(expr, start_index, cfg) }}{% else %}{{ render_xml_attr_expr(expr, cfg) }}{% endif %}"{% endif %}
 {%- endmacro -%}
 {#- Macro: emit a <ScalarVariable> element -#}
 {%- macro scalar_var(name, vr, causality, variability, var, initial, start_index) -%}

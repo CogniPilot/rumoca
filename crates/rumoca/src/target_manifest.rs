@@ -284,9 +284,12 @@ fn render_manifest_files(
             .render(result, &file.path, model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
+        let file_renderer = file
+            .ir
+            .map(|ir| ManifestRenderer::Ir(template_ir_to_cli(ir)));
         let content = render_manifest_template(
             result,
-            renderer,
+            file_renderer.as_ref().unwrap_or(renderer),
             file.render_context,
             template.as_ref(),
             model_identifier,
@@ -679,9 +682,12 @@ fn write_manifest_file(
     }
 
     let template = bundle.template_source(&file.template)?;
+    let file_renderer = file
+        .ir
+        .map(|ir| ManifestRenderer::Ir(template_ir_to_cli(ir)));
     let rendered = render_manifest_template(
         result,
-        renderer,
+        file_renderer.as_ref().unwrap_or(renderer),
         file.render_context,
         template.as_ref(),
         model_identifier,

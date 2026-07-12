@@ -143,6 +143,30 @@ impl ExprLowerer<'_> {
         span: Span,
     ) -> Result<Typed, GalecTargetError> {
         let dims = &classified.variable.dims;
+        let projected_subscripts;
+        let base_start = subscripts.len().saturating_sub(dims.len());
+        let subscripts =
+            if base_start > 0 && subscripts[base_start..].iter().any(is_slice_subscript) {
+                projected_subscripts = self.project_indexed_slice_subscripts(
+                    classified.variable.name.as_str(),
+                    &subscripts[base_start..],
+                    &subscripts[..base_start],
+                    span,
+                )?;
+                projected_subscripts.as_slice()
+            } else {
+                subscripts
+            };
+        // Flattening can preserve a scalarized trailing index in the rendered
+        // reference name while also carrying a full-rank subscript vector for
+        // a row/range slice. In that form the explicit subscripts are the
+        // authoritative original-rank access; counting the rendered suffix a
+        // second time invents an extra dimension.
+        let prefix_indices = if subscripts.len() == dims.len() {
+            Vec::new()
+        } else {
+            prefix_indices
+        };
         let subscript_count = prefix_indices.len() + subscripts.len();
         if subscript_count == 0 {
             return Ok(Typed::array(

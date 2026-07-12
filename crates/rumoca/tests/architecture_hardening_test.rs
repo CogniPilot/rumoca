@@ -77,7 +77,8 @@ fn test_builtin_codegen_has_no_kelvin_or_boptest_adapters() {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        let lower = content.to_ascii_lowercase();
+        // `kelvin` is also the standard SI base-dimension JSON key.
+        let lower = content.to_ascii_lowercase().replace("\"kelvin\":", "");
         for term in banned_terms {
             if lower.contains(term) {
                 offenders.push(format!("{} contains {term}", path.display()));
@@ -1391,9 +1392,9 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
     );
     assert!(
         root_exports.iter().any(|export| {
-            export == "pub use rumoca_phase_solve::{lower_solve_artifacts, lower_solve_problem};"
+            export == "pub use rumoca_phase_solve::{ lower_dae_to_solve_model_owned, lower_solve_artifacts, lower_solve_problem, };"
         }),
-        "rumoca-sim may expose solve lowering/artifact preparation as its simulation-preparation facade"
+        "rumoca-sim may expose direct SolveModel lowering plus solve preparation helpers as its simulation-preparation facade"
     );
     assert!(
         root_exports

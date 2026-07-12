@@ -108,6 +108,9 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
+    /// Optional per-file IR override for mixed-context targets (for example,
+    /// FMI resource metadata rendered from DAE alongside Solve runtime code).
+    pub ir: Option<TargetTemplateIr>,
     pub render_context: Option<TargetFileRenderContext>,
     pub mode: Option<String>,
     /// Stable logical identity of this rendered file within the target

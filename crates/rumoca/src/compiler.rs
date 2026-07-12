@@ -59,7 +59,7 @@ use rumoca_compile::source_roots::{
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
-use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
+use rumoca_sim::lower_solve_problem;
 use serde_json::{Map, Value};
 
 use crate::error::CompilerError;
@@ -100,13 +100,17 @@ pub enum TemplateIr {
 }
 
 fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
-    let problem = lower_solve_problem(dae_model)
-        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let artifacts = lower_solve_artifacts(&problem)
-        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
     let template_dae = dae_for_solve_template_context(dae_model)?;
-    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
-        .map_err(CompilerError::TemplateError)
+    let solve_model = rumoca_sim::lower_dae_to_solve_model_owned(template_dae.clone())
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    SolveTemplateRenderer::new_with_dae_and_visible_outputs(
+        &solve_model.problem,
+        &solve_model.artifacts,
+        template_dae,
+        solve_model.visible_names,
+        solve_model.visible_value_rows,
+    )
+    .map_err(CompilerError::TemplateError)
 }
 
 fn build_solve_template_renderer_without_dae(
@@ -1860,7 +1864,7 @@ mod tests {
             "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
         );
         assert!(
-            rendered.contains("m->x[0] = child_p;  /* initial equation: child.x */"),
+            rendered.contains("m->x[0] = p;  /* initial equation: child.x */"),
             "FMI2 C must apply direct initial equation x = p after parameter bindings; got:\n{rendered}"
         );
         assert!(

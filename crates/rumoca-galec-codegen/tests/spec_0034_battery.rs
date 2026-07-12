@@ -938,6 +938,37 @@ mod array_vector_regressions {
     }
 
     #[test]
+    fn flattened_trailing_index_projects_through_full_rank_slice_subscripts() {
+        let row_slice = Expression::VarRef {
+            name: Reference::new("waypoints"),
+            subscripts: vec![
+                Subscript::index(2, Span::DUMMY),
+                subscript_expr(var("__pre__.idx")),
+                Subscript::colon(Span::DUMMY),
+            ],
+            span: Span::DUMMY,
+        };
+        let mut model = model_with_body(row_slice);
+        add_waypoints(&mut model);
+        let mut idx = variable("idx");
+        idx.start = Some(integer(1));
+        idx.min = Some(integer(1));
+        idx.max = Some(integer(3));
+        model
+            .variables
+            .discrete_valued
+            .insert(idx.name.clone(), idx);
+        add_pre_slot(&mut model, "idx", integer(1), Vec::new());
+        let mut types = base_types();
+        types.insert(VarName::new("idx"), ScalarType::Integer);
+        types.insert(VarName::new("waypoints"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("self.waypoints[1, 2]"), "{alg}");
+        assert!(alg.contains("self.waypoints[3, 2]"), "{alg}");
+    }
+
+    #[test]
     fn scalarized_index_into_range_slice_projects_original_dimension() {
         let range_slice = Expression::VarRef {
             name: Reference::new("a"),

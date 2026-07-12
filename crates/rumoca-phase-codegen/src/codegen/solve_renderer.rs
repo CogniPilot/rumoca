@@ -88,7 +88,39 @@ impl SolveTemplateRenderer {
             value: std::sync::OnceLock::new(),
         });
         Ok(Self {
-            context: solve_render_context_value_with_dae(problem, artifacts, None, dae_entry)?,
+            context: solve_render_context_value_with_dae(
+                problem,
+                artifacts,
+                None,
+                dae_entry,
+                Vec::new(),
+                solve::ScalarProgramBlock::default(),
+            )?,
+            guard_dae: Some(dae_model),
+        })
+    }
+
+    pub fn new_with_dae_and_visible_outputs(
+        problem: &solve::SolveProblem,
+        artifacts: &solve::SolveArtifacts,
+        dae_model: dae::Dae,
+        visible_names: Vec<String>,
+        visible_value_rows: solve::ScalarProgramBlock,
+    ) -> Result<Self, CodegenError> {
+        let dae_model = std::sync::Arc::new(dae_model);
+        let dae_entry = Value::from_object(LazyDaeTemplateJson {
+            dae: dae_model.clone(),
+            value: std::sync::OnceLock::new(),
+        });
+        Ok(Self {
+            context: solve_render_context_value_with_dae(
+                problem,
+                artifacts,
+                None,
+                dae_entry,
+                visible_names,
+                visible_value_rows,
+            )?,
             guard_dae: Some(dae_model),
         })
     }
@@ -123,7 +155,14 @@ pub(super) fn solve_render_context_value(
     artifacts: &solve::SolveArtifacts,
     model_name: Option<&str>,
 ) -> Result<Value, CodegenError> {
-    solve_render_context_value_with_dae(solve_problem, artifacts, model_name, Value::default())
+    solve_render_context_value_with_dae(
+        solve_problem,
+        artifacts,
+        model_name,
+        Value::default(),
+        Vec::new(),
+        solve::ScalarProgramBlock::default(),
+    )
 }
 
 fn solve_render_context_value_with_dae(
@@ -131,6 +170,8 @@ fn solve_render_context_value_with_dae(
     artifacts: &solve::SolveArtifacts,
     model_name: Option<&str>,
     dae_entry: Value,
+    visible_names: Vec<String>,
+    visible_value_rows: solve::ScalarProgramBlock,
 ) -> Result<Value, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
@@ -138,7 +179,12 @@ fn solve_render_context_value_with_dae(
     // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
     let problem_arc = std::sync::Arc::new(solve_problem.clone());
     let artifacts_arc = std::sync::Arc::new(artifacts.clone());
-    let solve_value = super::solve_lazy::solve_value(problem_arc.clone(), artifacts_arc.clone())?;
+    let solve_value = super::solve_lazy::solve_value(
+        problem_arc.clone(),
+        artifacts_arc.clone(),
+        std::sync::Arc::new(visible_names),
+        std::sync::Arc::new(visible_value_rows),
+    )?;
     let artifacts_value = super::solve_lazy::artifacts_value(artifacts_arc.clone())?;
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(

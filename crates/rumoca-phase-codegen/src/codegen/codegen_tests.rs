@@ -1161,7 +1161,7 @@ fn test_fmi_getters_refresh_outputs_when_dirty() {
     );
 
     let fmi3 = builtin_template("fmi3", "model.c.jinja");
-    let get_float64 = template_section(fmi3, "FMI3_EXPORT fmi3Status fmi3GetFloat64");
+    let get_float64 = template_section(fmi3, "FMI3_Export fmi3Status fmi3GetFloat64");
     assert!(
         get_float64.contains(
             "compute_derivatives(m);\n        compute_outputs(m);\n        m->dirty_values = 0;"
@@ -1180,7 +1180,7 @@ fn test_fmi_real_setters_mark_values_dirty() {
     );
 
     let fmi3 = builtin_template("fmi3", "model.c.jinja");
-    let set_float64 = template_section(fmi3, "FMI3_EXPORT fmi3Status fmi3SetFloat64");
+    let set_float64 = template_section(fmi3, "FMI3_Export fmi3Status fmi3SetFloat64");
     assert!(
         set_float64.contains("m->dirty_values = 1;\n    return fmi3OK;"),
         "FMI 3 fmi3SetFloat64 must mark cached derivatives and outputs dirty after accepted inputs:\n{set_float64}"
@@ -1198,7 +1198,10 @@ fn test_fmi_cosimulation_refreshes_discrete_updates_before_derivatives() {
     );
 
     let fmi3 = builtin_template("fmi3", "model.c.jinja");
-    let rk45_eval = template_section(fmi3, "static void rk45_eval");
+    let rk45_eval = template_section(
+        fmi3,
+        "static fmi3Status rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]) {",
+    );
     assert!(
         rk45_eval.contains(
             "m->dirty_values = 1;\n    compute_discrete_updates(m);\n    compute_derivatives(m);"
@@ -1466,7 +1469,7 @@ fn test_fmi_templates_apply_explicit_state_initial_equations() {
             .split(if target == "fmi2" {
                 "FMI2_EXPORT fmi2Status fmi2ExitInitializationMode"
             } else {
-                "FMI3_EXPORT fmi3Status fmi3ExitInitializationMode"
+                "FMI3_Export fmi3Status fmi3ExitInitializationMode"
             })
             .nth(1)
             .expect("template should define exit initialization");

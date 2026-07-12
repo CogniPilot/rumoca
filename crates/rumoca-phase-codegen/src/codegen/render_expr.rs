@@ -318,6 +318,12 @@ fn render_unsubscripted_var_ref_with_source(
     source_ref: &str,
     cfg: &ExprConfig,
 ) -> RenderResult {
+    // DAE `VarName` text is already the canonical one-based source reference.
+    // Prefer its exact symbol before consulting an attached AST component_ref,
+    // whose serialized indices are zero-based and require normalization.
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), raw_name) {
+        return Ok(symbol);
+    }
     if let Some(scope) = cfg.source_scope.as_deref()
         && let Some(rest) = source_ref.strip_prefix(scope)
         && rest.starts_with('.')
