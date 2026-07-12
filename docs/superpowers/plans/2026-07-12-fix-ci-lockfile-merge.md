@@ -482,6 +482,7 @@ Expected: only the helper deletion and plan completion state are committed.
 **Files:**
 - Modify: `crates/rumoca-sim/src/lib.rs`
 - Modify: `crates/rumoca-sim/src/simulation_session.rs`
+- Modify: `crates/rumoca-sim/src/discrete_stepper.rs`
 - Test: existing pure-discrete interactive session regression in `crates/rumoca-bind-wasm/src/tests.rs`
 - Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
 
@@ -517,6 +518,8 @@ In `simulation_session.rs`:
 
 Do not duplicate lowering or reintroduce the retired pre-Session API.
 
+The backend-native `SimStepper::values_for` is used only by the private scheduled-sim trait surface. Compile that method only when `scheduled-sim` is enabled; do not apply a module-wide `dead_code` allowance.
+
 - [x] **Step 4: Verify focused behavior and strict lint**
 
 ```bash
@@ -537,6 +540,7 @@ rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
 git diff --check
 git add crates/rumoca-sim/src/lib.rs \
   crates/rumoca-sim/src/simulation_session.rs \
+  crates/rumoca-sim/src/discrete_stepper.rs \
   docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
 git commit --signoff -m "fix(ci): restore discrete simulation sessions"
 ```

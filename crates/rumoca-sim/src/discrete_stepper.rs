@@ -155,6 +155,7 @@ impl SimStepper {
         })
     }
 
+    #[cfg(feature = "scheduled-sim")]
     pub(crate) fn values_for(
         &self,
         names: &[String],
