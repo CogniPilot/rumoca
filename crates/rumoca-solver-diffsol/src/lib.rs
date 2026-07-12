@@ -1034,18 +1034,6 @@ fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
         .any(|(before, after)| (*before - *after).abs() > tol)
 }
 
-/// True when the model has no discontinuities (zero-crossing roots, scheduled
-/// time events, or discrete `when` updates), so the BDF solution is smooth and
-/// safe to dense-output / interpolate at arbitrary times.
-fn model_is_event_free(model: &solve::SolveModel) -> bool {
-    let events = &model.problem.events;
-    let discrete = &model.problem.discrete;
-    events.root_conditions.is_empty()
-        && events.scheduled_time_events.is_empty()
-        && discrete.update_targets.is_empty()
-        && discrete.runtime_assignment_targets.is_empty()
-}
-
 fn trace_bdf_step_failure(
     equilibrium_model: &OdeModel,
     y: &[f64],

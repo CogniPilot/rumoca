@@ -428,3 +428,49 @@ git commit -m "fix(ci): remove orphan DAE test helper"
 ```
 
 Expected: only the orphan helper and plan completion state are committed.
+
+---
+
+### Task 7: Remove orphan diffsol merge residue and close final gates
+
+**Files:**
+- Modify: `crates/rumoca-solver-diffsol/src/lib.rs`
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: first-parent event-boundary mechanism from commit `21455e93`, where `prefer_exact_output_steps` deliberately became `false` and `model_is_event_free` was removed.
+- Produces: no second-parent orphan helper and a repository-wide strict lint pass.
+
+- [x] **Step 1: Verify RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-solver-diffsol --all-targets --all-features -- -D warnings
+```
+
+Expected: FAIL only because `model_is_event_free` is unused.
+
+- [x] **Step 2: Delete the orphan helper**
+
+Delete `model_is_event_free` and no other solver behavior. Do not restore the obsolete call: the shared driver stops at runtime event boundaries, while forcing every output point would damage BDF multistep history.
+
+- [ ] **Step 3: Verify solver behavior and final repository gates**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-solver-diffsol
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-solver-diffsol --all-targets --all-features -- -D warnings
+rustup run nightly-2026-02-27 cargo xtask verify lint
+rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
+git diff --check
+```
+
+Expected: all commands exit 0.
+
+- [x] **Step 4: Commit with DCO**
+
+```bash
+git add crates/rumoca-solver-diffsol/src/lib.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit --signoff -m "fix(ci): remove orphan diffsol helper"
+```
+
+Expected: only the helper deletion and plan completion state are committed.
