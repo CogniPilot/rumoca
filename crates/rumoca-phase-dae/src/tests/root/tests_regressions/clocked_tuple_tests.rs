@@ -53,7 +53,7 @@ fn add_hold_function(flat: &mut Model, span: Span) {
         .push(rumoca_core::FunctionParam::new("x", "Real", span));
     hold.outputs
         .push(rumoca_core::FunctionParam::new("seedOut", "Integer", span).with_dims(vec![3]));
-    flat.functions.insert(hold.name.clone(), hold);
+    flat.add_function(hold);
 }
 
 fn add_clocked_tuple_equation(flat: &mut Model, span: Span) {
