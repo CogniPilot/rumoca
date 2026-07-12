@@ -346,7 +346,45 @@ git add crates/rumoca-eval-solve/src/sim_driver.rs
 git commit -s -m "fix(sim): invalidate roots across scheduled resets"
 ```
 
-### Task 8: Run full gates, synchronize truth, and push
+### Task 8: Infer projected function-result cardinality from the selected field
+
+**Files:**
+- Modify: `crates/rumoca-phase-dae/src/scalar_inference/mod.rs`
+- Test: `crates/rumoca-phase-dae/src/scalar_inference/regression_more_tests.rs`
+
+**Step 1: Write the failing scalar-cardinality regression**
+
+Add `test_infer_scalar_count_scalar_field_function_call_ignores_record_argument_width`. Construct an expression equivalent to `(ird * calc(params).resistance) - (D - Dinternal)`, where `calc` receives wide record arguments but `resistance` is a scalar result field. Assert equation scalar count `1`.
+
+**Step 2: Prove RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae test_infer_scalar_count_scalar_field_function_call_ignores_record_argument_width -- --nocapture
+```
+
+Expected pre-fix failure: `infer_scalar_count_from_varrefs` descends into the function arguments and returns their record width (for Spice3 representatives, `48` or `31`) for a scalar projected output.
+
+**Step 3: Fix expression-shape ownership**
+
+Teach scalar inference that `FieldAccess(FunctionCall(...), field)` gets its cardinality from the selected function-result field metadata. Function arguments are dependencies and cannot determine the output field shape. Preserve array-valued result fields by using their declared dimensions; when a resolved scalar field is selected, return one. Do not clamp counts, special-case Spice3, or change structural balance rules.
+
+**Step 4: Verify phase and representative models**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae scalar_inference -- --nocapture
+target/debug/xtask repo msl rerun --model 'Modelica.Electrical.Spice3.Examples.Inverter' --results-dir /tmp/rumoca-msl-spice-inverter-cardinality-fixed
+```
+
+Expected: the four representative resistor equations remain scalar instead of expanding to `48/31/48/31`; Inverter's equation/unknown balance returns to zero and the broader Spice3 overconstraint cluster improves without exemptions.
+
+**Step 5: Commit and task-review**
+
+```bash
+git add crates/rumoca-phase-dae/src/scalar_inference/mod.rs crates/rumoca-phase-dae/src/scalar_inference/regression_more_tests.rs
+git commit -s -m "fix(dae): infer projected result field cardinality"
+```
+
+### Task 9: Run full gates, synchronize truth, and push
 
 **Files:**
 - Modify only if behavior/contracts changed: `spec/` and repository documentation selected by `architecture-sync-guard`
