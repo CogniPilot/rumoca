@@ -61,7 +61,7 @@ rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
 
 Expected: exit code 0 with no duplicate-package parse error.
 
-- [ ] **Step 4: Run the repository lint gate**
+- [x] **Step 4: Run the repository lint gate**
 
 Run:
 
@@ -262,7 +262,7 @@ rustup run nightly-2026-02-27 cargo test -p rumoca-phase-dae test_todae_keeps_ex
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Restore repository lint and commit**
+- [x] **Step 6: Restore repository lint and commit**
 
 Run:
 
@@ -409,7 +409,7 @@ Delete `int_lit` and no other test code. Do not add a fake call; the only parent
 
 Run the six exact phase-dae focused commands from Task 3 Step 5 without warning suppression. Expected: all exit 0.
 
-- [ ] **Step 4: Run final repository gates**
+- [x] **Step 4: Run final repository gates**
 
 ```bash
 rustup run nightly-2026-02-27 cargo xtask verify lint
@@ -453,7 +453,7 @@ Expected: FAIL only because `model_is_event_free` is unused.
 
 Delete `model_is_event_free` and no other solver behavior. Do not restore the obsolete call: the shared driver stops at runtime event boundaries, while forcing every output point would damage BDF multistep history.
 
-- [ ] **Step 3: Verify solver behavior and final repository gates**
+- [x] **Step 3: Verify solver behavior and final repository gates**
 
 ```bash
 rustup run nightly-2026-02-27 cargo test -p rumoca-solver-diffsol
@@ -532,7 +532,7 @@ rustup run nightly-2026-02-27 cargo test -p rumoca-bind-wasm --features sim-diff
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Run final gates and commit with DCO**
+- [x] **Step 5: Run final gates and commit with DCO**
 
 ```bash
 rustup run nightly-2026-02-27 cargo xtask verify lint
@@ -667,7 +667,7 @@ rustup run nightly-2026-02-27 cargo clippy -p rumoca --all-targets --all-feature
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Run final gates and commit with DCO**
+- [x] **Step 5: Run final gates and commit with DCO**
 
 ```bash
 rustup run nightly-2026-02-27 cargo xtask verify lint
