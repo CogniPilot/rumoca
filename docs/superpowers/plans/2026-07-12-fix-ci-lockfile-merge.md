@@ -474,3 +474,71 @@ git commit --signoff -m "fix(ci): remove orphan diffsol helper"
 ```
 
 Expected: only the helper deletion and plan completion state are committed.
+
+---
+
+### Task 8: Restore pure-discrete SimulationSession merge wiring
+
+**Files:**
+- Modify: `crates/rumoca-sim/src/lib.rs`
+- Modify: `crates/rumoca-sim/src/simulation_session.rs`
+- Test: existing pure-discrete interactive session regression in `crates/rumoca-bind-wasm/src/tests.rs`
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: parent1 pure-discrete `SimStepper` behavior at `84e6cfc0`, upstream `SimulationSession` naming/API at `24209c80`, and the public worker facade contract.
+- Produces: a coherent `SimulationSessionInner::Discrete` variant, zero-state routing, discrete `advance_to`, and the restored public boundary-reduced DAE facade.
+
+- [x] **Step 1: Verify rumoca-sim RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca-sim
+```
+
+Expected: FAIL on missing `SimStepperInner`/`StepperState` and the missing facade re-export warning.
+
+- [x] **Step 2: Restore module and public facade wiring**
+
+In `lib.rs`, restore the solver-feature-gated `mod discrete_stepper`. Add `boundary_reduced_dae_for_simulation_artifact` to the existing curated `pub use solve_lowering::{...}` list; do not delete it because `rumoca-worker` imports this public API.
+
+- [x] **Step 3: Adapt pure-discrete behavior to SimulationSession**
+
+In `simulation_session.rs`:
+
+```text
+- add SimulationSessionInner::Discrete(Box<crate::discrete_stepper::SimStepper>)
+- replace stale SimStepperInner::Discrete arms with SimulationSessionInner::Discrete
+- use SessionState instead of stale StepperState
+- restore the discrete-session constructor from an already lowered SolveModel
+- route Auto and RK-like construction to Discrete when state_scalar_count() == 0
+- keep Bdf explicitly routed to diffsol
+- add the Discrete arm to advance_to using the remaining duration target_time - stepper.time(), preserving the existing stepper's equal/backward-time error semantics
+```
+
+Do not duplicate lowering or reintroduce the retired pre-Session API.
+
+- [x] **Step 4: Verify focused behavior and strict lint**
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca-sim
+rustup run nightly-2026-02-27 cargo check -p rumoca-worker
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-sim --all-targets --all-features -- -D warnings
+rustup run nightly-2026-02-27 cargo test -p rumoca-bind-wasm --features sim-rk45 test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscript
+rustup run nightly-2026-02-27 cargo test -p rumoca-bind-wasm --features sim-diffsol test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscript
+```
+
+Expected: all commands exit 0.
+
+- [ ] **Step 5: Run final gates and commit with DCO**
+
+```bash
+rustup run nightly-2026-02-27 cargo xtask verify lint
+rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
+git diff --check
+git add crates/rumoca-sim/src/lib.rs \
+  crates/rumoca-sim/src/simulation_session.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit --signoff -m "fix(ci): restore discrete simulation sessions"
+```
+
+Expected: all gates exit 0 and only the named files are committed.
