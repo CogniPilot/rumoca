@@ -693,6 +693,7 @@ fn quaternion_constraint_dae() -> dae::Dae {
 fn orientation_constraint_function() -> rumoca_core::Function {
     let span = fixture_span();
     let mut function = rumoca_core::Function::new("orientationConstraint", span);
+    function.instance_id = Some(orientation_constraint_instance_id());
     function
         .inputs
         .push(rumoca_core::FunctionParam::new("Q", "Orientation", span));
@@ -770,11 +771,18 @@ fn array(elements: Vec<Expression>) -> Expression {
 
 fn call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::FunctionCall {
-        name: reference(name),
+        name: reference(name).with_resolved_function(rumoca_core::ResolvedFunctionReference {
+            instance_id: orientation_constraint_instance_id(),
+            base_part_count: 1,
+        }),
         args,
         is_constructor: false,
         span: fixture_span(),
     }
+}
+
+fn orientation_constraint_instance_id() -> rumoca_core::FunctionInstanceId {
+    rumoca_core::FunctionInstanceId::new(1)
 }
 
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
