@@ -1696,9 +1696,6 @@ impl<'a> LowerBuilder<'a> {
         })
     }
 
-    // SPEC_0021: Exception - exhaustive record materialization collects scalar,
-    // indexed, and zero-sized fields in one ordered compiler boundary.
-    #[allow(clippy::excessive_nesting)]
     fn materialized_record_components_from_scope(
         &self,
         output: &rumoca_core::FunctionParam,
@@ -1738,7 +1735,18 @@ impl<'a> LowerBuilder<'a> {
             };
             indexed_components.push((suffix.to_string(), bindings.clone()));
         }
-        let mut empty_components = Vec::new();
+        let empty_components = self.empty_record_constructor_components(output);
+        Ok(MaterializedRecordComponents {
+            components,
+            empty_components,
+            indexed_components,
+        })
+    }
+
+    fn empty_record_constructor_components(
+        &self,
+        output: &rumoca_core::FunctionParam,
+    ) -> Vec<(String, Vec<i64>)> {
         let constructor = output
             .type_def_id
             .and_then(|type_def_id| {
@@ -1750,21 +1758,17 @@ impl<'a> LowerBuilder<'a> {
                 self.functions
                     .get(&rumoca_core::VarName::new(&output.type_name))
             });
-        if let Some(constructor) = constructor.filter(|function| function.is_constructor) {
-            for field in &constructor.inputs {
-                if !field.dims.is_empty()
+        constructor
+            .filter(|function| function.is_constructor)
+            .into_iter()
+            .flat_map(|function| &function.inputs)
+            .filter(|field| {
+                !field.dims.is_empty()
                     && field.dims.iter().all(|dim| *dim >= 0)
                     && field.dims.contains(&0)
-                {
-                    empty_components.push((field.name.clone(), field.dims.clone()));
-                }
-            }
-        }
-        Ok(MaterializedRecordComponents {
-            components,
-            empty_components,
-            indexed_components,
-        })
+            })
+            .map(|field| (field.name.clone(), field.dims.clone()))
+            .collect()
     }
 
     fn copy_record_input_component_dims(

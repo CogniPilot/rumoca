@@ -15,10 +15,18 @@ use super::{
 };
 
 const MAX_INLINE_WHILE_ITERS: usize = 128;
-const MAX_SYMBOLIC_FOR_VALUES: usize = 4096;
 
 /// Symbolic iteration candidates: `(index value, runtime membership guard)`.
 type SymbolicIterValues = Vec<(f64, Option<Reg>)>;
+
+struct DynamicSliceAssignment<'a> {
+    base: &'a str,
+    subscripts: &'a [rumoca_core::Subscript],
+    dims: &'a [usize],
+    values: &'a [Reg],
+    call_depth: usize,
+    span: rumoca_core::Span,
+}
 
 /// Bounded candidate count of a symbolic for-loop interval domain.
 fn checked_symbolic_domain_count(
@@ -40,15 +48,20 @@ fn checked_symbolic_domain_count(
     }
     .and_then(|count| usize::try_from(count).ok())
     .ok_or_else(|| unsupported_at("symbolic for-loop domain is too large", span))?;
-    if count > MAX_SYMBOLIC_FOR_VALUES {
-        return Err(unsupported_at(
-            format!(
-                "symbolic for-loop domain has {count} values; maximum is {MAX_SYMBOLIC_FOR_VALUES}"
-            ),
-            span,
-        ));
-    }
     Ok(count)
+}
+
+fn checked_slice_assignment_dim(
+    dim: i64,
+    base: &str,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    usize::try_from(dim).map_err(|_| {
+        LowerError::contract_violation(
+            format!("slice assignment target `{base}` has invalid dimension {dim}"),
+            span,
+        )
+    })
 }
 
 /// Recursion state for `lower_for_iterations`.
@@ -114,9 +127,6 @@ impl<'a> LowerBuilder<'a> {
         Ok(false)
     }
 
-    // SPEC_0021: Exception - statement-branch lowering is a compiler entry point
-    // that atomically merges scalar, indexed, and compile-time scopes.
-    #[allow(clippy::too_many_lines)]
     pub(super) fn lower_if_statement(
         &mut self,
         cond_blocks: &[rumoca_core::StatementBlock],
@@ -124,18 +134,10 @@ impl<'a> LowerBuilder<'a> {
         scope: &mut Scope,
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        if let Some(selected) = self.compile_time_if_selection(cond_blocks, else_block)? {
-            return match selected {
-                Some(stmts) => self.lower_statements(stmts, scope, call_depth),
-                None => Ok(false),
-            };
-        }
-
-        if cond_blocks.is_empty() {
-            if let Some(stmts) = else_block {
-                return self.lower_statements(stmts, scope, call_depth);
-            }
-            return Ok(false);
+        if let Some(result) =
+            self.lower_static_if_statement(cond_blocks, else_block, scope, call_depth)?
+        {
+            return Ok(result);
         }
 
         let entry_scope = scope.clone();
@@ -249,6 +251,29 @@ impl<'a> LowerBuilder<'a> {
             .collect();
 
         Ok(false)
+    }
+
+    fn lower_static_if_statement(
+        &mut self,
+        cond_blocks: &[rumoca_core::StatementBlock],
+        else_block: &Option<Vec<rumoca_core::Statement>>,
+        scope: &mut Scope,
+        call_depth: usize,
+    ) -> Result<Option<bool>, LowerError> {
+        if let Some(selected) = self.compile_time_if_selection(cond_blocks, else_block)? {
+            return selected
+                .map(|statements| self.lower_statements(statements, scope, call_depth))
+                .transpose()
+                .map(|result| Some(result.unwrap_or(false)));
+        }
+        if !cond_blocks.is_empty() {
+            return Ok(None);
+        }
+        else_block
+            .as_deref()
+            .map(|statements| self.lower_statements(statements, scope, call_depth))
+            .transpose()
+            .map(|result| Some(result.unwrap_or(false)))
     }
 
     /// Re-merge builder-level indexed array-element bindings after if-branches.
@@ -629,9 +654,6 @@ impl<'a> LowerBuilder<'a> {
     }
 
     /// Returns `true` when lowering should stop due to `return`.
-    // SPEC_0021: Exception - exhaustive Modelica statement dispatch remains in
-    // one compiler entry point so return/break control flow is consistent.
-    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub(super) fn lower_statement(
         &mut self,
         statement: &rumoca_core::Statement,
@@ -646,87 +668,7 @@ impl<'a> LowerBuilder<'a> {
                 Ok(true)
             }
             rumoca_core::Statement::Assignment { comp, value, span } => {
-                if component_reference_has_slice_subscript(comp) {
-                    self.lower_slice_assignment(comp, value, scope, call_depth, *span)?;
-                    return Ok(false);
-                }
-                let target = assignment_target(comp, &self.local_const_bindings)?;
-                let assigned_const = target
-                    .indices
-                    .is_none()
-                    .then(|| {
-                        self.eval_compile_time_expr(value, &self.local_const_bindings)
-                            .ok()
-                    })
-                    .flatten();
-                if let Some(indices) = target
-                    .indices
-                    .as_deref()
-                    .filter(|indices| !indices.is_empty())
-                {
-                    let indexed_target = format_subscript_binding_key(&target.base, indices);
-                    if self.bind_record_component_assignment(
-                        scope,
-                        &indexed_target,
-                        value,
-                        *span,
-                        call_depth,
-                    )? {
-                        self.local_const_bindings.shift_remove(&target.base);
-                        return Ok(false);
-                    }
-                }
-                if target.indices.is_none()
-                    && self.bind_record_component_assignment(
-                        scope,
-                        &target.base,
-                        value,
-                        *span,
-                        call_depth,
-                    )?
-                {
-                    self.local_const_bindings.shift_remove(&target.base);
-                    return Ok(false);
-                }
-                let values = self.lower_array_like_values(value, scope, call_depth)?;
-                if let Some(indices) = target
-                    .indices
-                    .as_deref()
-                    .filter(|indices| !indices.is_empty())
-                {
-                    // MLS §11.1.2: algorithm assignments target component references.
-                    // A subscripted target updates only the selected array component.
-                    let values = self.guard_indexed_assignment_after_return(
-                        scope,
-                        &target.base,
-                        indices,
-                        values,
-                        comp.span,
-                    )?;
-                    self.bind_indexed_assignment_values(
-                        scope,
-                        &target.base,
-                        indices,
-                        &values,
-                        comp.span,
-                    )?;
-                } else {
-                    let values =
-                        self.guard_assignment_after_return(scope, &target.base, values, comp.span)?;
-                    self.bind_assignment_values_at(scope, &target.base, &values, comp.span)?;
-                    self.bind_record_constructor_assignment_fields(
-                        scope,
-                        &target.base,
-                        value,
-                        call_depth,
-                    )?;
-                }
-                if let Some(value) = assigned_const {
-                    self.local_const_bindings.insert(target.base.clone(), value);
-                } else {
-                    self.local_const_bindings.shift_remove(&target.base);
-                }
-                Ok(false)
+                self.lower_assignment_statement(comp, value, *span, scope, call_depth)
             }
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -760,9 +702,93 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    // SPEC_0021: Exception - exhaustive local/layout slice-shape sources share
-    // one assignment validation path.
-    #[allow(clippy::excessive_nesting)]
+    fn lower_assignment_statement(
+        &mut self,
+        comp: &rumoca_core::ComponentReference,
+        value: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+        scope: &mut Scope,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
+        if component_reference_has_slice_subscript(comp) {
+            self.lower_slice_assignment(comp, value, scope, call_depth, span)?;
+            return Ok(false);
+        }
+        let target = assignment_target(comp, &self.local_const_bindings)?;
+        let assigned_const = target
+            .indices
+            .is_none()
+            .then(|| {
+                self.eval_compile_time_expr(value, &self.local_const_bindings)
+                    .ok()
+            })
+            .flatten();
+        if self.bind_record_assignment_target(scope, &target, value, span, call_depth)? {
+            self.local_const_bindings.shift_remove(&target.base);
+            return Ok(false);
+        }
+        let values = self.lower_array_like_values(value, scope, call_depth)?;
+        if let Some(indices) = target
+            .indices
+            .as_deref()
+            .filter(|indices| !indices.is_empty())
+        {
+            let values = self.guard_indexed_assignment_after_return(
+                scope,
+                &target.base,
+                indices,
+                values,
+                comp.span,
+            )?;
+            self.bind_indexed_assignment_values(scope, &target.base, indices, &values, comp.span)?;
+        } else {
+            let values =
+                self.guard_assignment_after_return(scope, &target.base, values, comp.span)?;
+            self.bind_assignment_values_at(scope, &target.base, &values, comp.span)?;
+            self.bind_record_constructor_assignment_fields(scope, &target.base, value, call_depth)?;
+        }
+        if let Some(value) = assigned_const {
+            self.local_const_bindings.insert(target.base.clone(), value);
+        } else {
+            self.local_const_bindings.shift_remove(&target.base);
+        }
+        Ok(false)
+    }
+
+    fn bind_record_assignment_target(
+        &mut self,
+        scope: &mut Scope,
+        target: &AssignmentTarget,
+        value: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
+        if let Some(indices) = target
+            .indices
+            .as_deref()
+            .filter(|indices| !indices.is_empty())
+        {
+            let indexed_target = format_subscript_binding_key(&target.base, indices);
+            return self.bind_record_component_assignment(
+                scope,
+                &indexed_target,
+                value,
+                span,
+                call_depth,
+            );
+        }
+        if target.indices.is_none() {
+            return self.bind_record_component_assignment(
+                scope,
+                &target.base,
+                value,
+                span,
+                call_depth,
+            );
+        }
+        Ok(false)
+    }
+
     fn lower_slice_assignment(
         &mut self,
         comp: &rumoca_core::ComponentReference,
@@ -781,25 +807,7 @@ impl<'a> LowerBuilder<'a> {
             .ok_or_else(|| {
                 LowerError::contract_violation("slice assignment target has no path", span)
             })?;
-        let dims = if let Some(dims) = self.local_binding_dims.get(&base) {
-            dims.iter()
-                .map(|dim| {
-                    usize::try_from(*dim).map_err(|_| {
-                        LowerError::contract_violation(
-                            format!("slice assignment target `{base}` has invalid dimension {dim}"),
-                            span,
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else if let Some(dims) = self.layout.shape(&base) {
-            dims.to_vec()
-        } else {
-            return Err(LowerError::contract_violation(
-                format!("slice assignment target `{base}` has no array shape metadata"),
-                span,
-            ));
-        };
+        let dims = self.slice_assignment_dims(&base, span)?;
         if subscripts.len() > dims.len() {
             return Err(LowerError::contract_violation(
                 format!(
@@ -823,7 +831,15 @@ impl<'a> LowerBuilder<'a> {
         if has_runtime_selector {
             let values = self.lower_array_like_values(value, scope, call_depth)?;
             return self.lower_dynamic_slice_assignment(
-                &base, subscripts, &dims, &values, scope, call_depth, span,
+                DynamicSliceAssignment {
+                    base: &base,
+                    subscripts,
+                    dims: &dims,
+                    values: &values,
+                    call_depth,
+                    span,
+                },
+                scope,
             );
         }
         let mut choices =
@@ -861,19 +877,41 @@ impl<'a> LowerBuilder<'a> {
         Ok(())
     }
 
-    // SPEC_0021: Exception - dynamic slice lowering carries the full selection
-    // context needed to emit guarded scalar assignments.
-    #[allow(clippy::too_many_arguments)]
+    fn slice_assignment_dims(
+        &self,
+        base: &str,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<usize>, LowerError> {
+        if let Some(dims) = self.local_binding_dims.get(base) {
+            return dims
+                .iter()
+                .map(|dim| checked_slice_assignment_dim(*dim, base, span))
+                .collect();
+        }
+        self.layout
+            .shape(base)
+            .map(<[usize]>::to_vec)
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!("slice assignment target `{base}` has no array shape metadata"),
+                    span,
+                )
+            })
+    }
+
     fn lower_dynamic_slice_assignment(
         &mut self,
-        base: &str,
-        subscripts: &[rumoca_core::Subscript],
-        dims: &[usize],
-        values: &[Reg],
+        assignment: DynamicSliceAssignment<'_>,
         scope: &mut Scope,
-        call_depth: usize,
-        span: rumoca_core::Span,
     ) -> Result<(), LowerError> {
+        let DynamicSliceAssignment {
+            base,
+            subscripts,
+            dims,
+            values,
+            call_depth,
+            span,
+        } = assignment;
         let parts =
             self.lower_array_like_selection_parts(subscripts, dims, span, scope, call_depth)?;
         let slice_choices = parts
@@ -1570,9 +1608,6 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    // SPEC_0021: Exception - exhaustive local/layout slice-shape sources share
-    // one multi-output binding validation path.
-    #[allow(clippy::excessive_nesting)]
     fn bind_statement_slice_output_values(
         &mut self,
         scope: &mut Scope,
@@ -1590,25 +1625,7 @@ impl<'a> LowerBuilder<'a> {
             .ok_or_else(|| {
                 LowerError::contract_violation("slice assignment target has no path", span)
             })?;
-        let dims = if let Some(dims) = self.local_binding_dims.get(&base) {
-            dims.iter()
-                .map(|dim| {
-                    usize::try_from(*dim).map_err(|_| {
-                        LowerError::contract_violation(
-                            format!("slice assignment target `{base}` has invalid dimension {dim}"),
-                            span,
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else if let Some(dims) = self.layout.shape(&base) {
-            dims.to_vec()
-        } else {
-            return Err(LowerError::contract_violation(
-                format!("slice assignment target `{base}` has no array shape metadata"),
-                span,
-            ));
-        };
+        let dims = self.slice_assignment_dims(&base, span)?;
         let has_runtime_selector = subscripts.iter().any(|subscript| {
             matches!(
                 subscript,
@@ -1620,8 +1637,17 @@ impl<'a> LowerBuilder<'a> {
             )
         });
         if has_runtime_selector {
-            return self
-                .lower_dynamic_slice_assignment(&base, subscripts, &dims, values, scope, 0, span);
+            return self.lower_dynamic_slice_assignment(
+                DynamicSliceAssignment {
+                    base: &base,
+                    subscripts,
+                    dims: &dims,
+                    values,
+                    call_depth: 0,
+                    span,
+                },
+                scope,
+            );
         }
         let mut choices = crate::lower_vec_with_capacity(
             dims.len(),

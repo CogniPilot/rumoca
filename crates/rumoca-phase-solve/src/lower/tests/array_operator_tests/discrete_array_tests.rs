@@ -104,7 +104,9 @@ fn lower_expression_lowers_projected_function_matrix_output_component() {
     let expr = rumoca_core::Expression::FunctionCall {
         // MLS §12.4.5: projected calls to array-valued function outputs select
         // the declared array component, not a flattened pseudo-variable.
-        name: rumoca_core::VarName::new("Pkg.matrix.R[2,2]").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.matrix.R[2,2]",
+        )),
         args: vec![],
         is_constructor: false,
         span,

@@ -1,6 +1,8 @@
 use super::compile_time::{compile_time_binary, compile_time_var_key, literal_to_f64};
 use super::*;
-use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
+use crate::projection_suffix::{
+    output_projection_suffix, record_output_field_param, resolve_function_reference,
+};
 
 impl<'a> FunctionProjectionAnalysis<'a> {
     // SPEC_0021: Exception - function projection dimension inference keeps
@@ -19,7 +21,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
 
     // SPEC_0021: Exception - function projection dimension inference keeps
     // call, field, array, and comprehension cases in one recursive walker.
-    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     pub(super) fn expr_dims_with_owner(
         &self,
         expr: &rumoca_core::Expression,
@@ -61,7 +63,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 if let Some(variable) = variable_by_name(self.dae_model, name.as_str()) {
                     return variable_dims_i64(variable, span).map(Some);
                 }
-                if scalarized_aggregate_variable(self.dae_model, name.as_str(), span)?.is_some() {
+                if scalarized_aggregate_binding(self.dae_model, name, span)?.is_some() {
                     return Ok(Some(Vec::new()));
                 }
                 Ok(None)
@@ -121,25 +123,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 branches,
                 else_branch,
                 ..
-            } => {
-                let Some(mut dims) =
-                    self.expr_dims_with_owner(else_branch, scope, depth + 1, span)?
-                else {
-                    return Ok(None);
-                };
-                for (_, value) in branches {
-                    let Some(branch_dims) =
-                        self.expr_dims_with_owner(value, scope, depth + 1, span)?
-                    else {
-                        return Ok(None);
-                    };
-                    if branch_dims != dims {
-                        return Ok(None);
-                    }
-                    dims = branch_dims;
-                }
-                Ok(Some(dims))
-            }
+            } => self.if_expression_dims(branches, else_branch, scope, depth, span),
             rumoca_core::Expression::Binary { op, lhs, rhs, .. } if is_mul(op) => {
                 let Some(lhs_dims) = self.expr_dims_with_owner(lhs, scope, depth, span)? else {
                     return Ok(None);
@@ -169,6 +153,29 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn if_expression_dims(
+        &self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let Some(dims) = self.expr_dims_with_owner(else_branch, scope, depth + 1, span)? else {
+            return Ok(None);
+        };
+        for (_, value) in branches {
+            let Some(branch_dims) = self.expr_dims_with_owner(value, scope, depth + 1, span)?
+            else {
+                return Ok(None);
+            };
+            if branch_dims != dims {
+                return Ok(None);
+            }
+        }
+        Ok(Some(dims))
     }
 
     fn linear_algebra_builtin_dims(
@@ -429,42 +436,26 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         name: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<Vec<i64>>, LowerError> {
-        if let Some(function) = self.dae_model.symbols.functions.get(name.var_name()) {
+        if let Some((function_name, function)) =
+            resolve_function_reference(&self.dae_model.symbols.functions, name)
+            && name.var_name() == function_name
+        {
             return exact_declared_function_output_dims(function, span);
         }
-        self.projected_declared_function_output_dims(name.as_str(), span)
+        self.projected_declared_function_output_dims(name, span)
     }
 
     fn projected_declared_function_output_dims(
         &self,
-        requested: &str,
+        requested: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<Vec<i64>>, LowerError> {
-        rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
-            match self.projected_declared_function_output_dims_split(base_name, suffix, span) {
-                Ok(Some(dims)) => Some(Ok(dims)),
-                Ok(None) => None,
-                Err(err) => Some(Err(err)),
-            }
-        })
-        .transpose()
-    }
-
-    fn projected_declared_function_output_dims_split(
-        &self,
-        base_name: &str,
-        suffix: &str,
-        span: rumoca_core::Span,
-    ) -> Result<Option<Vec<i64>>, LowerError> {
-        let Some(function) = self
-            .dae_model
-            .symbols
-            .functions
-            .get(&rumoca_core::VarName::new(base_name))
+        let Some((function_name, function)) =
+            resolve_function_reference(&self.dae_model.symbols.functions, requested)
         else {
             return Ok(None);
         };
-        let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
+        let Some(projection_suffix) = output_projection_suffix(function_name, requested) else {
             return Ok(None);
         };
         let Some(output) = function

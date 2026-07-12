@@ -59,6 +59,17 @@ struct IndexedSliceReference {
     group_key: ComponentReferenceKey,
 }
 
+struct LocalArraySelection<'a> {
+    key: &'a str,
+    subscripts: &'a [rumoca_core::Subscript],
+    scope: &'a Scope,
+    call_depth: usize,
+    span: rumoca_core::Span,
+    dims: &'a [i64],
+    scoped_bindings: &'a [LocalIndexedBinding],
+    local_bindings: &'a [LocalIndexedBinding],
+}
+
 fn is_modelica_array_constructor_function(name: &rumoca_core::Reference) -> bool {
     name.as_str() == "array"
 }
@@ -1672,9 +1683,6 @@ impl<'a> LowerBuilder<'a> {
     /// scoped local binding exists, resolution must either produce local values
     /// or report an error; falling through to global lookup would violate
     /// Modelica lexical shadowing.
-    // SPEC_0021: Exception - lexical-shadowing resolution keeps every local
-    // array representation in one ordered lookup path.
-    #[allow(clippy::too_many_lines)]
     fn local_shadowed_subscript_values(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1729,17 +1737,43 @@ impl<'a> LowerBuilder<'a> {
                 span,
             ));
         }
+        self.resolve_local_array_selection(LocalArraySelection {
+            key,
+            subscripts,
+            scope,
+            call_depth,
+            span,
+            dims: &dims,
+            scoped_bindings: &scoped_bindings,
+            local_bindings: &local_bindings,
+        })
+    }
+
+    fn resolve_local_array_selection(
+        &mut self,
+        selection: LocalArraySelection<'_>,
+    ) -> Result<LocalSubscriptResolution, LowerError> {
+        let LocalArraySelection {
+            key,
+            subscripts,
+            scope,
+            call_depth,
+            span,
+            dims,
+            scoped_bindings,
+            local_bindings,
+        } = selection;
         if dims.iter().any(|dim| *dim < 0) {
-            let shape = format_i64_dims(&dims);
+            let shape = format_i64_dims(dims);
             return Err(unsupported_at(
                 format!("subscripted local array `{key}` has negative dimensions {shape}"),
                 span,
             ));
         };
         let mut shape = crate::lower_vec_with_capacity(dims.len(), "local array shape rank", span)?;
-        for dim in &dims {
+        for dim in dims {
             let Ok(dim) = usize::try_from(*dim) else {
-                let shape = format_i64_dims(&dims);
+                let shape = format_i64_dims(dims);
                 return Err(unsupported_at(
                     format!("subscripted local array `{key}` has unsupported dimensions {shape}"),
                     span,

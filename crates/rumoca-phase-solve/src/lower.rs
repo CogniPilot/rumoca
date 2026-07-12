@@ -843,9 +843,6 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    // SPEC_0021: Exception - variable-reference lowering is the exhaustive
-    // name-resolution entry point for local, structural, indexed, and layout bindings.
-    #[allow(clippy::too_many_lines)]
     fn lower_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
@@ -887,23 +884,46 @@ impl<'a> LowerBuilder<'a> {
             return Ok(reg);
         }
 
+        if let Some(reg) =
+            self.lower_static_var_ref(name, subscripts, span, &name_key, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
+
+        let target = DynamicBindingTarget::source_reference(name, span)?;
+        self.lower_dynamic_subscripted_binding(
+            target,
+            subscripts,
+            scope,
+            call_depth,
+            DynamicSubscriptSemantics::VarRef,
+        )
+    }
+
+    fn lower_static_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+        name_key: &ComponentReferenceKey,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let owner_span = reference_context_span(name, span);
         if let Some(indices) =
             self.singleton_shape_subscript_indices(name.as_str(), subscripts, span)?
         {
             let key = format_subscript_binding_key(name.as_str(), &indices);
-            let owner_span = reference_context_span(name, span);
             if let Some(reg) =
                 self.lower_var_ref_binding_key(&key, owner_span, scope, call_depth)?
             {
-                return Ok(reg);
+                return Ok(Some(reg));
             }
         }
-
-        let owner_span = reference_context_span(name, span);
         if let Some(reg) =
             self.generated_local_static_subscript_reg(name, subscripts, owner_span, scope)?
         {
-            return Ok(reg);
+            return Ok(Some(reg));
         }
         if let Some(indices) = static_subscript_indices_with_owner(subscripts, owner_span)?
             && !indices.is_empty()
@@ -917,10 +937,10 @@ impl<'a> LowerBuilder<'a> {
                         .map(|binding| binding.reg)
                 })
         {
-            return Ok(reg);
+            return Ok(Some(reg));
         }
         if !subscripts.is_empty()
-            && scope.contains_key(&name_key)
+            && scope.contains_key(name_key)
             && !self.local_indexed_bindings.contains_key(name.as_str())
         {
             return Err(LowerError::Unsupported {
@@ -930,50 +950,32 @@ impl<'a> LowerBuilder<'a> {
                 ),
             });
         }
-
-        let base_name = name.as_str().to_string();
+        let base_name = name.as_str();
         if let Some(indices) = static_subscript_indices_with_owner(subscripts, owner_span)? {
             let key = if indices.is_empty() {
-                base_name.clone()
-            } else if indices.len() == 1 {
-                format!("{base_name}[{}]", indices[0])
+                base_name.to_string()
             } else {
-                let suffix = indices
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!("{base_name}[{suffix}]")
+                format_subscript_binding_key(base_name, &indices)
             };
             if let Some(reg) =
                 self.lower_var_ref_binding_key(&key, owner_span, scope, call_depth)?
             {
-                return Ok(reg);
+                return Ok(Some(reg));
             }
         }
-
         if let Some(indices) = self.compile_time_subscript_indices(subscripts, span)? {
             let key = if indices.is_empty() {
-                base_name.clone()
+                base_name.to_string()
             } else {
-                format_subscript_binding_key(base_name.as_str(), &indices)
+                format_subscript_binding_key(base_name, &indices)
             };
-            let owner_span = reference_context_span(name, span);
             if let Some(reg) =
                 self.lower_var_ref_binding_key(&key, owner_span, scope, call_depth)?
             {
-                return Ok(reg);
+                return Ok(Some(reg));
             }
         }
-
-        let target = DynamicBindingTarget::source_reference(name, span)?;
-        self.lower_dynamic_subscripted_binding(
-            target,
-            subscripts,
-            scope,
-            call_depth,
-            DynamicSubscriptSemantics::VarRef,
-        )
+        Ok(None)
     }
 
     /// Resolves a scalar binding key through the pre-mode slot, direct

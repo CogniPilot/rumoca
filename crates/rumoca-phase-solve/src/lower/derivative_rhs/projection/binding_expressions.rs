@@ -154,31 +154,18 @@ fn scalar_binding_expression(
             span,
         );
     }
-    let Some(variable) = scalarized_aggregate_variable(dae_model, name.as_str(), span)? else {
+    let Some(binding) = scalarized_aggregate_binding(dae_model, name, span)? else {
         return Err(LowerError::MissingBinding {
             name: name.as_str().to_string(),
         });
     };
-    let scalar = rumoca_core::parse_scalar_name(name.as_str()).ok_or_else(|| {
-        LowerError::contract_violation(
-            format!("validated scalar binding `{name}` lost its scalar suffix"),
-            span,
-        )
-    })?;
-    let scalar_subscripts = scalar
-        .indices
-        .iter()
-        .copied()
-        .map(|index| {
-            checked_generated_derivative_subscript(
-                index,
-                span,
-                "scalarized aggregate binding index",
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     single_expression_vec(
-        dae_variable_ref_expr(scalar.base, variable, span, scalar_subscripts)?,
+        dae_variable_ref_expr(
+            binding.reference.as_str(),
+            binding.variable,
+            span,
+            binding.subscripts,
+        )?,
         "derivative scalarized aggregate binding expression count",
         span,
     )
@@ -271,14 +258,14 @@ pub(in crate::lower) fn dae_variable_ref_expr(
     })
 }
 
-pub(in crate::lower) fn binding_base_name(
+pub(in crate::lower) fn plain_binding_reference(
     expr: &rumoca_core::Expression,
     owner_span: rumoca_core::Span,
-) -> Result<String, LowerError> {
+) -> Result<&rumoca_core::Reference, LowerError> {
     match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => Ok(name.as_str().to_string()),
+        } if subscripts.is_empty() => Ok(name),
         _ => Err(unsupported_at(
             "unsupported sliced derivative binding base",
             projection_expr_or_owner_span(expr, owner_span)?,
@@ -287,18 +274,19 @@ pub(in crate::lower) fn binding_base_name(
 }
 
 pub(in crate::lower) fn binding_keys_for_subscripted_name(
-    base: &str,
+    name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     fallback_span: rumoca_core::Span,
 ) -> Result<Vec<String>, LowerError> {
+    let base = name.as_str();
     let Some(dims) = variable_dims(dae_model, base)? else {
         if subscripts.is_empty() {
             if variable_by_name(dae_model, base).is_some() {
                 return Ok(vec![base.to_string()]);
             }
-            if scalarized_aggregate_variable(dae_model, base, fallback_span)?.is_some() {
+            if scalarized_aggregate_binding(dae_model, name, fallback_span)?.is_some() {
                 return Ok(vec![base.to_string()]);
             }
             if let Some(dims) = scalarized_child_dims(dae_model, base, fallback_span)? {
@@ -379,42 +367,91 @@ pub(in crate::lower) fn variable_by_name<'a>(
         .or_else(|| dae_model.variables.discrete_valued.get(&name))
 }
 
-pub(in crate::lower) fn scalarized_aggregate_variable<'a>(
+pub(in crate::lower) struct ScalarizedAggregateBinding<'a> {
+    pub(in crate::lower) variable: &'a dae::Variable,
+    pub(in crate::lower) reference: rumoca_core::Reference,
+    pub(in crate::lower) subscripts: Vec<rumoca_core::Subscript>,
+}
+
+pub(in crate::lower) fn scalarized_aggregate_binding<'a>(
     dae_model: &'a dae::Dae,
-    name: &str,
+    name: &rumoca_core::Reference,
     span: rumoca_core::Span,
-) -> Result<Option<&'a dae::Variable>, LowerError> {
-    let Some(scalar) = rumoca_core::parse_scalar_name(name) else {
+) -> Result<Option<ScalarizedAggregateBinding<'a>>, LowerError> {
+    let Some(component_ref) = name.component_ref() else {
         return Ok(None);
     };
-    let Some(variable) = variable_by_name(dae_model, scalar.base) else {
-        return Ok(None);
-    };
-    variable.try_size().map_err(variable_shape_contract_error)?;
-    if scalar.indices.len() != variable.dims.len() {
+    for part_index in (0..component_ref.parts.len()).rev() {
+        let subscripts = &component_ref.parts[part_index].subs;
+        if subscripts.is_empty()
+            || !subscripts
+                .iter()
+                .all(|subscript| matches!(subscript, rumoca_core::Subscript::Index { .. }))
+        {
+            continue;
+        }
+        let mut aggregate_ref = component_ref.clone();
+        aggregate_ref.parts[part_index].subs.clear();
+        let reference = if name.is_generated() {
+            rumoca_core::Reference::generated_component_reference(aggregate_ref)
+        } else {
+            rumoca_core::Reference::from_component_reference(aggregate_ref)
+        };
+        let Some(variable) = variable_by_name(dae_model, reference.as_str()) else {
+            continue;
+        };
+        variable.try_size().map_err(variable_shape_contract_error)?;
+        validate_aggregate_element_subscripts(name, subscripts, variable, span)?;
+        return Ok(Some(ScalarizedAggregateBinding {
+            variable,
+            reference,
+            subscripts: subscripts.clone(),
+        }));
+    }
+    Ok(None)
+}
+
+fn validate_aggregate_element_subscripts(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    variable: &dae::Variable,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    if subscripts.len() != variable.dims.len() {
         return Err(LowerError::contract_violation(
             format!(
-                "scalarized DAE binding `{name}` has rank {}, but aggregate `{}` has rank {}",
-                scalar.indices.len(),
-                scalar.base,
+                "scalarized DAE binding `{}` has rank {}, but aggregate `{}` has rank {}",
+                name.as_str(),
+                subscripts.len(),
+                variable.name,
                 variable.dims.len()
             ),
             span,
         ));
     }
-    for (axis, (&index, &dim)) in scalar.indices.iter().zip(&variable.dims).enumerate() {
-        if index <= 0 || index > dim {
+    for (axis, (subscript, &dim)) in subscripts.iter().zip(&variable.dims).enumerate() {
+        let rumoca_core::Subscript::Index { value: index, .. } = subscript else {
             return Err(LowerError::contract_violation(
                 format!(
-                    "scalarized DAE binding `{name}` index {index} is out of bounds for dimension {} of `{}`",
+                    "scalarized DAE binding `{}` has a non-index subscript",
+                    name.as_str()
+                ),
+                span,
+            ));
+        };
+        if *index <= 0 || *index > dim {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "scalarized DAE binding `{}` index {index} is out of bounds for dimension {} of `{}`",
+                    name.as_str(),
                     axis + 1,
-                    scalar.base
+                    variable.name
                 ),
                 span,
             ));
         }
     }
-    Ok(Some(variable))
+    Ok(())
 }
 
 pub(in crate::lower) fn variable_dims(
@@ -620,9 +657,9 @@ pub(in crate::lower) fn derivative_target_result_dims(
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
-            let base = binding_base_name(base, span)?;
+            let base = plain_binding_reference(base, span)?;
             result_dims_for_subscripted_binding(
-                &base,
+                base.as_str(),
                 subscripts,
                 dae_model,
                 structural_bindings,

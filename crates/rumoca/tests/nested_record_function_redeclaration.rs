@@ -61,7 +61,9 @@ package P
   model Probe
     parameter Concrete.Element left = Concrete.Element(
       {0.0, 0.0, 0.0}, Quaternion.Orientation({}, {1.0, 0.0, 0.0, 0.0}));
-    parameter Real y = Concrete.product(left);
+    Real x(start = 0.0, fixed = true);
+  equation
+    der(x) = Concrete.product(left);
   end Probe;
 end P;
 "#;
@@ -90,4 +92,30 @@ end P;
         ],
         "nested concrete record fields must be fully represented in the Flat function signature"
     );
+
+    let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
+        .expect("nested record fixture should lower through Solve IR");
+    assert!(matches!(
+        solve.layout.binding("x"),
+        Some(rumoca_ir_solve::ScalarSlot::Y { index: 0, .. })
+    ));
+
+    let simulation = rumoca_sim::simulate_dae(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.01,
+            dt: Some(0.005),
+            ..Default::default()
+        },
+    )
+    .expect("nested record fixture should simulate");
+    let x_index = simulation
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("simulation should expose state x");
+    let final_x = *simulation.data[x_index]
+        .last()
+        .expect("simulation should contain final x");
+    assert!((final_x - 0.01).abs() < 1.0e-8, "unexpected x: {final_x}");
 }

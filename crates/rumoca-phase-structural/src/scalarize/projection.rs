@@ -335,8 +335,11 @@ fn project_function_call_component(
     if let Some(by_index) = projection.function_output_index_map.get(name.as_str())
         && let Some(projected_output) = by_index.get(&field_idx)
     {
+        let Some(projected_name) = name.with_appended_path(projected_output, span) else {
+            return expr.clone();
+        };
         return Expression::FunctionCall {
-            name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), projected_output)),
+            name: projected_name,
             args: args.to_vec(),
             is_constructor: false,
             span,

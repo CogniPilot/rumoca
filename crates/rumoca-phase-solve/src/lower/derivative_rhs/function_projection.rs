@@ -72,7 +72,7 @@ use super::super::helpers::{
     field_access_binding_key, format_i64_dims, is_record_constructor_signature,
 };
 use super::{
-    dae_variable_ref_expr, is_add, is_div, is_mul, is_sub, scalarized_aggregate_variable,
+    dae_variable_ref_expr, is_add, is_div, is_mul, is_sub, scalarized_aggregate_binding,
     split_subtraction, sub_with_span, variable_by_name,
 };
 
@@ -82,6 +82,12 @@ struct ProjectedFunctionOutput {
     field_path: Vec<String>,
     selector_indices: Vec<usize>,
     expr: rumoca_core::Expression,
+}
+
+fn assign_projected_output_name(outputs: &mut [ProjectedFunctionOutput], name: &str) {
+    for output in outputs {
+        output.output_name = Some(name.to_string());
+    }
 }
 
 struct FunctionProjectionAnalysis<'a> {
@@ -98,6 +104,14 @@ struct FunctionProjectionScope {
     full: IndexMap<String, rumoca_core::Expression>,
     scalars: IndexMap<String, Vec<rumoca_core::Expression>>,
     dims: IndexMap<String, Vec<i64>>,
+}
+
+struct ProcedureCallProjection<'a> {
+    comp: &'a rumoca_core::ComponentReference,
+    args: &'a [rumoca_core::Expression],
+    targets: &'a [rumoca_core::ComponentReference],
+    depth: usize,
+    span: rumoca_core::Span,
 }
 
 impl<'a> FunctionProjectionAnalysis<'a> {
@@ -557,12 +571,14 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 span,
             } if !outputs.is_empty() => self.apply_function_call_statement(
                 function,
-                comp,
-                args,
-                outputs,
+                ProcedureCallProjection {
+                    comp,
+                    args,
+                    targets: outputs,
+                    depth,
+                    span: inherited_projection_span(*span, owner_span),
+                },
                 scope,
-                depth,
-                inherited_projection_span(*span, owner_span),
             ),
             statement if is_ignorable_projection_statement(statement) => Ok(()),
             _ => Err(unsupported_at(
@@ -575,17 +591,19 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_function_call_statement(
         &self,
         caller: &rumoca_core::Function,
-        comp: &rumoca_core::ComponentReference,
-        args: &[rumoca_core::Expression],
-        targets: &[rumoca_core::ComponentReference],
+        call: ProcedureCallProjection<'_>,
         scope: &mut FunctionProjectionScope,
-        depth: usize,
-        span: rumoca_core::Span,
     ) -> Result<(), LowerError> {
+        let ProcedureCallProjection {
+            comp,
+            args,
+            targets,
+            depth,
+            span,
+        } = call;
         let function_name = comp.to_var_name();
         let callee = self
             .dae_model
@@ -707,9 +725,6 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(())
     }
 
-    // SPEC_0021: Exception - exhaustive function assignment forms share one
-    // scope update path to keep whole, indexed, array, and record outputs coherent.
-    #[allow(clippy::excessive_nesting)]
     fn apply_assignment(
         &self,
         function: &rumoca_core::Function,
@@ -755,9 +770,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             self.record_constructor_outputs(&value, scope, depth + 1)?
         {
             if is_function_output_target(function, &target) {
-                for output in &mut record_outputs {
-                    output.output_name = Some(target.clone());
-                }
+                assign_projected_output_name(&mut record_outputs, &target);
                 append_projected_outputs(
                     projected,
                     record_outputs,
@@ -792,9 +805,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             );
             if is_function_output_target(function, &target) {
                 let mut outputs = project_target_scalar_outputs(&dims, scalars, target_span)?;
-                for output in &mut outputs {
-                    output.output_name = Some(target.clone());
-                }
+                assign_projected_output_name(&mut outputs, &target);
                 append_projected_outputs(
                     projected,
                     outputs,
@@ -1149,9 +1160,6 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(merged)
     }
 
-    // SPEC_0021: Exception - exhaustive declared-output representations are
-    // merged here in declaration order.
-    #[allow(clippy::excessive_nesting)]
     fn projected_outputs_from_scope(
         &self,
         function: &rumoca_core::Function,
@@ -1179,9 +1187,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     .unwrap_or(output.dims.as_slice());
                 let mut projected =
                     project_target_scalar_outputs(dims, values.clone(), output_span)?;
-                for projected_output in &mut projected {
-                    projected_output.output_name = Some(output.name.clone());
-                }
+                assign_projected_output_name(&mut projected, &output.name);
                 append_projected_outputs(
                     &mut outputs,
                     projected,
@@ -1193,9 +1199,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             if let Some(expr) = scope.full.get(output.name.as_str()) {
                 let mut projected =
                     self.project_output_expr(output, expr, scope, depth + 1, output_span)?;
-                for projected_output in &mut projected {
-                    projected_output.output_name = Some(output.name.clone());
-                }
+                assign_projected_output_name(&mut projected, &output.name);
                 append_projected_outputs(
                     &mut outputs,
                     projected,

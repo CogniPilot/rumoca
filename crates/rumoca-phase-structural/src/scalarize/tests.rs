@@ -73,6 +73,13 @@ fn lhs(name: &str) -> Option<rumoca_core::Reference> {
     })
 }
 
+fn structured_reference(name: &str, span: Span) -> rumoca_core::Reference {
+    rumoca_core::Reference::from_component_reference(
+        rumoca_core::component_reference_from_flat_name(&VarName::new(name), span)
+            .expect("valid structured test reference"),
+    )
+}
+
 #[test]
 fn complex_field_scalar_name_requires_top_level_segment_boundary() {
     assert!(is_complex_field_scalar_name("z.re", "re"));
@@ -807,7 +814,10 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
     assert_eq!(
         dae_model.continuous.equations[0].rhs,
         Expression::FunctionCall {
-            name: rumoca_core::Reference::new("LieGroup.SO3.rotationMatrix.R[1]"),
+            name: structured_reference(
+                "LieGroup.SO3.rotationMatrix.R[1]",
+                rumoca_core::Span::DUMMY,
+            ),
             args: vec![var("q")],
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
@@ -932,9 +942,10 @@ fn scalarize_dynamic_function_output_resolves_shape_from_array_argument() {
         assert_eq!(
             equation.rhs,
             Expression::FunctionCall {
-                name: rumoca_core::Reference::new(format!(
-                    "My.symmetrize.symmetricA[{row},{column}]"
-                )),
+                name: structured_reference(
+                    &format!("My.symmetrize.symmetricA[{row},{column}]"),
+                    test_span(),
+                ),
                 args: vec![var("A")],
                 is_constructor: false,
                 span: test_span(),
@@ -1043,10 +1054,10 @@ fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
         assert_eq!(
             equation.rhs,
             Expression::FunctionCall {
-                name: rumoca_core::Reference::new(format!(
-                    "Path.sample.state.firstDerivative[{}]",
-                    offset + 1
-                )),
+                name: structured_reference(
+                    &format!("Path.sample.state.firstDerivative[{}]", offset + 1),
+                    test_span(),
+                ),
                 args: vec![],
                 is_constructor: false,
                 span: test_span(),

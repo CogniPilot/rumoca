@@ -120,13 +120,28 @@ fn assert_mixed_clocked_tuple_dae(dae: &rumoca_ir_dae::Dae) {
         selected_call_name(&dae.discrete.valued_updates[0].rhs).as_deref(),
         Some("hold.seedOut")
     );
+    let selected = selected_call_reference(&dae.discrete.valued_updates[0].rhs)
+        .expect("tuple output call reference");
+    assert!(selected.has_structure());
+    assert_eq!(
+        selected
+            .parts()
+            .iter()
+            .map(|part| part.ident.as_str())
+            .collect::<Vec<_>>(),
+        ["hold", "seedOut"]
+    );
 }
 
 fn selected_call_name(expr: &rumoca_core::Expression) -> Option<String> {
+    selected_call_reference(expr).map(|name| name.as_str().to_string())
+}
+
+fn selected_call_reference(expr: &rumoca_core::Expression) -> Option<&rumoca_core::Reference> {
     match expr {
-        rumoca_core::Expression::FunctionCall { name, .. } => Some(name.as_str().to_string()),
+        rumoca_core::Expression::FunctionCall { name, .. } => Some(name),
         rumoca_core::Expression::Binary { lhs, rhs, .. } => {
-            selected_call_name(lhs).or_else(|| selected_call_name(rhs))
+            selected_call_reference(lhs).or_else(|| selected_call_reference(rhs))
         }
         _ => None,
     }

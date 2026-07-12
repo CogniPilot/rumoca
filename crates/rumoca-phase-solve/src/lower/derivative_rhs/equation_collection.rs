@@ -94,9 +94,6 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
     Ok(())
 }
 
-// SPEC_0021: Exception - top-level equation collection keeps projected and
-// ordinary residual assignment discovery in deterministic source order.
-#[allow(clippy::excessive_nesting)]
 pub(in crate::lower) fn collect_direct_assignments(
     dae_model: &dae::Dae,
     equation_flags: &[bool],
@@ -119,20 +116,13 @@ pub(in crate::lower) fn collect_direct_assignments(
             structural_bindings,
             equation.span,
         )? {
-            for residual in projected {
-                let Some((target, rhs)) = direct_assignment_residual_target_rhs(&residual)? else {
-                    continue;
-                };
-                insert_direct_assignment(
-                    dae_model,
-                    &mut assignments,
-                    target,
-                    rhs,
-                    1,
-                    structural_bindings,
-                    equation.span,
-                )?;
-            }
+            insert_projected_direct_assignments(
+                dae_model,
+                &mut assignments,
+                &projected,
+                structural_bindings,
+                equation.span,
+            )?;
             continue;
         }
         let Some((target, rhs)) = direct_assignment_target_rhs(equation)? else {
@@ -149,6 +139,30 @@ pub(in crate::lower) fn collect_direct_assignments(
         )?;
     }
     Ok(assignments)
+}
+
+fn insert_projected_direct_assignments(
+    dae_model: &dae::Dae,
+    assignments: &mut IndexMap<String, DirectAssignmentValue>,
+    residuals: &[rumoca_core::Expression],
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    for residual in residuals {
+        let Some((target, rhs)) = direct_assignment_residual_target_rhs(residual)? else {
+            continue;
+        };
+        insert_direct_assignment(
+            dae_model,
+            assignments,
+            target,
+            rhs,
+            1,
+            structural_bindings,
+            span,
+        )?;
+    }
+    Ok(())
 }
 
 pub(in crate::lower) fn collect_missing_indexed_record_field_assignments(

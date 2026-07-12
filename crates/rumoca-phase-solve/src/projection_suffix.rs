@@ -5,43 +5,84 @@ pub(crate) struct OutputProjectionSuffix {
     pub(crate) indices: Vec<usize>,
 }
 
-pub(crate) fn parse_output_projection_suffix(suffix: &str) -> Option<OutputProjectionSuffix> {
-    if suffix.is_empty() {
+pub(crate) fn resolve_function_reference<'a>(
+    functions: &'a indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    name: &rumoca_core::Reference,
+) -> Option<(&'a rumoca_core::VarName, &'a rumoca_core::Function)> {
+    if let Some(def_id) = name.target_def_id() {
+        if let Some(exact) = functions
+            .get_key_value(name.var_name())
+            .filter(|(_, function)| function.def_id == Some(def_id))
+        {
+            return Some(exact);
+        }
+        let mut candidates = functions.iter().filter(|(function_name, function)| {
+            function.def_id == Some(def_id)
+                && output_projection_suffix(function_name, name).is_some()
+        });
+        if let Some(candidate) = candidates.next() {
+            return candidates.next().is_none().then_some(candidate);
+        }
+    }
+    if let Some(exact) = functions.get_key_value(name.var_name()) {
+        return Some(exact);
+    }
+    name.component_ref()?;
+    let mut candidates = functions
+        .iter()
+        .filter(|(function_name, _)| output_projection_suffix(function_name, name).is_some());
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+pub(crate) fn output_projection_suffix(
+    function_name: &rumoca_core::VarName,
+    name: &rumoca_core::Reference,
+) -> Option<OutputProjectionSuffix> {
+    if name.var_name() == function_name {
         return None;
     }
-
-    let (output_with_field, indices) = match rumoca_core::parse_scalar_name(suffix) {
-        Some(scalar) => {
-            let indices = scalar
-                .indices
-                .into_iter()
-                .map(|index| usize::try_from(index).ok().filter(|index| *index > 0))
-                .collect::<Option<Vec<_>>>()?;
-            (scalar.base, indices)
-        }
-        None if rumoca_core::split_trailing_subscript_suffix(suffix).is_some() => return None,
-        None if rumoca_core::component_path_base_name(suffix).is_none() => return None,
-        None => (suffix, Vec::new()),
-    };
-
-    if let Some((output_name, field)) = crate::path_utils::root_split(output_with_field) {
-        if output_name.is_empty() || field.is_empty() {
-            return None;
-        }
-        if indices.is_empty() && rumoca_core::split_trailing_subscript_suffix(output_name).is_some()
-        {
-            return None;
-        }
-        return Some(OutputProjectionSuffix {
-            output_name: output_name.to_string(),
-            output_field: Some(field.to_string()),
-            indices,
-        });
+    let component_ref = name.component_ref()?;
+    let split = (1..component_ref.parts.len()).find(|&end| {
+        component_ref.parts[..end]
+            .iter()
+            .all(|part| part.subs.is_empty())
+            && rumoca_core::ComponentPath::from_parts(
+                component_ref.parts[..end]
+                    .iter()
+                    .map(|part| part.ident.clone()),
+            )
+            .as_str()
+                == function_name.as_str()
+    })?;
+    let suffix = &component_ref.parts[split..];
+    if suffix.is_empty()
+        || suffix.iter().any(|part| part.ident.is_empty())
+        || suffix[..suffix.len() - 1]
+            .iter()
+            .any(|part| !part.subs.is_empty())
+    {
+        return None;
     }
-
+    let indices = suffix
+        .last()?
+        .subs
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => {
+                usize::try_from(*value).ok().filter(|index| *index > 0)
+            }
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
     Some(OutputProjectionSuffix {
-        output_name: output_with_field.to_string(),
-        output_field: None,
+        output_name: suffix[0].ident.clone(),
+        output_field: (suffix.len() > 1).then(|| {
+            rumoca_core::ComponentPath::from_parts(
+                suffix[1..].iter().map(|part| part.ident.clone()),
+            )
+            .to_flat_string()
+        }),
         indices,
     })
 }
@@ -54,11 +95,18 @@ pub(crate) fn record_output_field_param<'a>(
     if output.type_class != Some(rumoca_core::ClassType::Record) || field_path.is_empty() {
         return None;
     }
-    let mut record_type = output.type_name.as_str();
+    let mut record_type = Some((output.type_def_id, output.type_name.as_str()));
     let fields = crate::path_utils::segments(field_path);
     let mut selected = None;
     for (index, field_name) in fields.iter().enumerate() {
-        let constructor = functions.get(&rumoca_core::VarName::new(record_type))?;
+        let (type_def_id, type_name) = record_type?;
+        let constructor = type_def_id
+            .and_then(|def_id| {
+                functions
+                    .values()
+                    .find(|function| function.def_id == Some(def_id))
+            })
+            .or_else(|| functions.get(&rumoca_core::VarName::new(type_name)))?;
         if !constructor.is_constructor {
             return None;
         }
@@ -71,7 +119,7 @@ pub(crate) fn record_output_field_param<'a>(
             if field.type_class != Some(rumoca_core::ClassType::Record) {
                 return None;
             }
-            record_type = field.type_name.as_str();
+            record_type = Some((field.type_def_id, field.type_name.as_str()));
         }
     }
     selected
@@ -81,10 +129,51 @@ pub(crate) fn record_output_field_param<'a>(
 mod tests {
     use super::*;
 
+    fn projection_reference(
+        suffix_parts: Vec<rumoca_core::ComponentRefPart>,
+    ) -> rumoca_core::Reference {
+        let span = rumoca_core::Span::DUMMY;
+        let mut parts = vec![
+            rumoca_core::ComponentRefPart {
+                ident: "Pkg".to_string(),
+                span,
+                subs: Vec::new(),
+            },
+            rumoca_core::ComponentRefPart {
+                ident: "f".to_string(),
+                span,
+                subs: Vec::new(),
+            },
+        ];
+        parts.extend(suffix_parts);
+        rumoca_core::Reference::from_component_reference(rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts,
+            def_id: Some(rumoca_core::DefId::new(7)),
+        })
+    }
+
+    fn part(name: &str, indices: &[i64]) -> rumoca_core::ComponentRefPart {
+        rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: indices
+                .iter()
+                .map(|index| rumoca_core::Subscript::index(*index, rumoca_core::Span::DUMMY))
+                .collect(),
+        }
+    }
+
     #[test]
-    fn parses_output_projection_suffixes_with_structured_scalar_names() {
+    fn reads_output_projection_from_structured_reference() {
+        let function_name = rumoca_core::VarName::new("Pkg.f");
         assert_eq!(
-            parse_output_projection_suffix("out").expect("plain output"),
+            output_projection_suffix(
+                &function_name,
+                &projection_reference(vec![part("out", &[])])
+            )
+            .expect("plain output"),
             OutputProjectionSuffix {
                 output_name: "out".to_string(),
                 output_field: None,
@@ -92,28 +181,75 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_output_projection_suffix("out.re[2, 3]").expect("fielded output"),
+            output_projection_suffix(
+                &function_name,
+                &projection_reference(vec![part("out", &[]), part("re", &[2, 3])]),
+            )
+            .expect("fielded output"),
             OutputProjectionSuffix {
                 output_name: "out".to_string(),
                 output_field: Some("re".to_string()),
                 indices: vec![2, 3],
             }
         );
-        assert_eq!(
-            parse_output_projection_suffix("out[index.with.dot].field[1]").expect("balanced base"),
-            OutputProjectionSuffix {
-                output_name: "out[index.with.dot]".to_string(),
-                output_field: Some("field".to_string()),
-                indices: vec![1],
-            }
+        assert!(
+            output_projection_suffix(
+                &function_name,
+                &projection_reference(vec![part("out", &[1]), part("re", &[])]),
+            )
+            .is_none()
         );
+        assert!(
+            output_projection_suffix(
+                &function_name,
+                &projection_reference(vec![part("out", &[0])]),
+            )
+            .is_none()
+        );
+    }
 
-        assert!(parse_output_projection_suffix("").is_none());
-        assert!(parse_output_projection_suffix(".re").is_none());
-        assert!(parse_output_projection_suffix("out.").is_none());
-        assert!(parse_output_projection_suffix("out[0]").is_none());
-        assert!(parse_output_projection_suffix("out[-1]").is_none());
-        assert!(parse_output_projection_suffix("out[1").is_none());
-        assert!(parse_output_projection_suffix("out[1].re").is_none());
+    #[test]
+    fn duplicate_inherited_def_ids_use_structured_concrete_path() {
+        let span = rumoca_core::Span::DUMMY;
+        let def_id = rumoca_core::DefId::new(17);
+        let mut functions = indexmap::IndexMap::new();
+        for name in ["Pkg.A.f", "Pkg.B.f"] {
+            let mut function = rumoca_core::Function::new(name, span);
+            function.def_id = Some(def_id);
+            functions.insert(function.name.clone(), function);
+        }
+        let mut component_ref = rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("Pkg.B.f.out"),
+            span,
+        )
+        .expect("structured projected call");
+        component_ref.def_id = Some(def_id);
+        let name = rumoca_core::Reference::from_component_reference(component_ref);
+
+        let (resolved, _) =
+            resolve_function_reference(&functions, &name).expect("concrete function identity");
+
+        assert_eq!(resolved.as_str(), "Pkg.B.f");
+    }
+
+    #[test]
+    fn stale_def_id_falls_back_to_unambiguous_structured_path() {
+        let span = rumoca_core::Span::DUMMY;
+        let mut functions = indexmap::IndexMap::new();
+        let mut function = rumoca_core::Function::new("Pkg.Random.random", span);
+        function.def_id = Some(rumoca_core::DefId::new(23));
+        functions.insert(function.name.clone(), function);
+        let mut component_ref = rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("Pkg.Random.random.result"),
+            span,
+        )
+        .expect("structured projected call");
+        component_ref.def_id = Some(rumoca_core::DefId::new(29));
+        let name = rumoca_core::Reference::from_component_reference(component_ref);
+
+        let (resolved, _) = resolve_function_reference(&functions, &name)
+            .expect("concrete path should recover stale inherited identity");
+
+        assert_eq!(resolved.as_str(), "Pkg.Random.random");
     }
 }

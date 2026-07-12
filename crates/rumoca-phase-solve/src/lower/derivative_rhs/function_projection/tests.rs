@@ -972,14 +972,8 @@ fn assignment_projection_resolves_dynamic_declared_dims() -> Result<(), LowerErr
     Ok(())
 }
 
-#[test]
-// SPEC_0021: Exception - end-to-end procedure projection fixture keeps the
-// complete callee/caller IR construction visible in one test.
-#[allow(clippy::too_many_lines)]
-fn function_projection_binds_procedure_call_outputs() -> Result<(), LowerError> {
+fn procedure_call_projection_fixture() -> (dae::Dae, rumoca_core::Expression) {
     let mut dae_model = dae::Dae::default();
-    let structural_bindings = IndexMap::new();
-
     let mut split = rumoca_core::Function::new("My.split", test_span());
     split.outputs.push(function_param_with_dims("values", &[0]));
     split.outputs.push(scalar_function_param("ok"));
@@ -1062,10 +1056,16 @@ fn function_projection_binds_procedure_call_outputs() -> Result<(), LowerError> 
         is_constructor: false,
         span: test_span(),
     };
+    (dae_model, call)
+}
+
+#[test]
+fn function_projection_binds_procedure_call_outputs() -> Result<(), LowerError> {
+    let (dae_model, call) = procedure_call_projection_fixture();
     let outputs = function_call_projected_scalars_with_owner(
         &call,
         &dae_model,
-        &structural_bindings,
+        &IndexMap::new(),
         test_span(),
     )?
     .expect("procedure-style output call should project");

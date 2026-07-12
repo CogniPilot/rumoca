@@ -69,7 +69,7 @@ fn lower_discrete_rhs_expands_tuple_function_assignment_outputs() {
                 },
                 rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(
-                        source_component_ref_from_name("Pkg.randomLike"),
+                        test_component_ref_from_name("Pkg.randomLike"),
                     ),
                     args: vec![rumoca_core::Expression::Array {
                         elements: vec![
@@ -485,10 +485,11 @@ fn lower_discrete_rhs_expands_random_state_out_array_projection() {
         .push(dae::Equation::explicit_with_scalar_count(
             rumoca_core::VarName::new("state64"),
             rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::VarName::new(
-                    "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut",
-                )
-                .into(),
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name(
+                        "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut",
+                    ),
+                ),
                 args: vec![rumoca_core::Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(
                         test_component_ref_from_name("previous"),

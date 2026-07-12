@@ -1,5 +1,7 @@
 use super::*;
-use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
+use crate::projection_suffix::{
+    output_projection_suffix, record_output_field_param, resolve_function_reference,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct FunctionOutputProjection {
@@ -17,27 +19,11 @@ impl<'a> LowerBuilder<'a> {
         name: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<FunctionOutputProjection>, LowerError> {
-        let requested = name.as_str();
-        rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
-            match self.lookup_function_output_projection_split(base_name, suffix, span) {
-                Ok(Some(projection)) => Some(Ok(projection)),
-                Ok(None) => None,
-                Err(err) => Some(Err(err)),
-            }
-        })
-        .transpose()
-    }
-
-    fn lookup_function_output_projection_split(
-        &self,
-        base_name: &str,
-        suffix: &str,
-        span: rumoca_core::Span,
-    ) -> Result<Option<FunctionOutputProjection>, LowerError> {
-        let Some(function) = self.lookup_function_key(base_name) else {
+        let Some((function_name, function)) = resolve_function_reference(self.functions, name)
+        else {
             return Ok(None);
         };
-        let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
+        let Some(projection_suffix) = output_projection_suffix(function_name, name) else {
             return Ok(None);
         };
         let output_name = projection_suffix.output_name;
@@ -93,7 +79,7 @@ impl<'a> LowerBuilder<'a> {
             indices
         };
         Ok(Some(FunctionOutputProjection {
-            base_function_name: function.name.clone(),
+            base_function_name: function_name.clone(),
             output_name,
             output_field,
             scope_indices,

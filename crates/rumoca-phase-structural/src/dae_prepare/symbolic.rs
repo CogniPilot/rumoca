@@ -418,7 +418,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
 
     fn differentiate_function_call(
         &self,
-        name: &VarName,
+        name: &rumoca_core::Reference,
         args: &[Expression],
         is_constructor: bool,
         active_functions: &mut Vec<VarName>,
@@ -437,7 +437,9 @@ impl<'a> SymbolicDerivativeContext<'a> {
             return None;
         }
         active_functions.push(function_name.clone());
-        let Some(output_expr) = function_output_expression(function, args, output_selector) else {
+        let Some(output_expr) =
+            function_output_expression(function, args, output_selector.as_deref())
+        else {
             active_functions.pop();
             return None;
         };
@@ -486,12 +488,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 args,
                 is_constructor,
                 ..
-            } => self.differentiate_function_call(
-                name.var_name(),
-                args,
-                *is_constructor,
-                active_functions,
-            ),
+            } => self.differentiate_function_call(name, args, *is_constructor, active_functions),
             // d/dt(der(X)) — a higher-order derivative (successive `Der` blocks,
             // or a relative acceleration `a = der(der(phi))`). `der(X)` is X's
             // first time-derivative; differentiate that expression to climb one
@@ -592,23 +589,55 @@ fn function_output_expression(
 
 fn resolve_function_call<'a>(
     dae: &'a Dae,
-    call_name: &'a VarName,
-) -> Option<(&'a VarName, &'a rumoca_core::Function, Option<&'a str>)> {
-    if let Some(function) = dae.symbols.functions.get(call_name) {
-        return Some((call_name, function, None));
+    call_name: &rumoca_core::Reference,
+) -> Option<(&'a VarName, &'a rumoca_core::Function, Option<String>)> {
+    if let Some(def_id) = call_name.target_def_id() {
+        if let Some(exact) = dae
+            .symbols
+            .functions
+            .get_key_value(call_name.var_name())
+            .filter(|(_, function)| function.def_id == Some(def_id))
+        {
+            return Some((exact.0, exact.1, None));
+        }
+        let mut candidates =
+            dae.symbols
+                .functions
+                .iter()
+                .filter_map(|(function_name, function)| {
+                    (function.def_id == Some(def_id))
+                        .then(|| function_projection_selector(function_name, call_name))
+                        .flatten()
+                        .map(|selector| (function_name, function, Some(selector)))
+                });
+        if let Some(candidate) = candidates.next() {
+            return candidates.next().is_none().then_some(candidate);
+        }
     }
-
-    dae.symbols
+    if let Some(exact) = dae.symbols.functions.get_key_value(call_name.var_name()) {
+        return Some((exact.0, exact.1, None));
+    }
+    let mut candidates = dae
+        .symbols
         .functions
         .iter()
         .filter_map(|(function_name, function)| {
-            let selector = call_name
-                .as_str()
-                .strip_prefix(function_name.as_str())?
-                .strip_prefix('.')?;
-            (!selector.is_empty()).then_some((function_name, function, Some(selector)))
-        })
-        .max_by_key(|(function_name, _, _)| function_name.as_str().len())
+            function_projection_selector(function_name, call_name)
+                .map(|selector| (function_name, function, Some(selector)))
+        });
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+fn function_projection_selector(
+    function_name: &VarName,
+    call_name: &rumoca_core::Reference,
+) -> Option<String> {
+    let call_ref = call_name.component_ref()?;
+    let call_path = rumoca_core::ComponentPath::from_component_reference(call_ref);
+    let function_path = rumoca_core::ComponentPath::from_flat_path(function_name.as_str());
+    let selector = call_path.strip_prefix(&function_path)?.to_flat_string();
+    (!selector.is_empty()).then_some(selector)
 }
 
 fn bind_function_inputs(

@@ -880,7 +880,7 @@ impl<'a> IndexProjectionContext<'a> {
             .get(&field_path)?
             .get(&self.i)?;
         Some(Expression::FunctionCall {
-            name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), selector)),
+            name: name.with_appended_path(selector, span)?,
             args: args.to_vec(),
             is_constructor,
             span,
@@ -904,8 +904,14 @@ impl<'a> IndexProjectionContext<'a> {
             && self.i <= count
         {
             let selector = dae::scalar_name_text_for_flat_index(output_name, dims, self.i - 1);
+            let projected_name = name.with_appended_path(&selector, span).ok_or_else(|| {
+                structural_contract_violation(
+                    format!("invalid dynamic function output selector `{selector}`"),
+                    span,
+                )
+            })?;
             return Ok(Expression::FunctionCall {
-                name: rumoca_core::Reference::new(format!("{}.{}", name.as_str(), selector)),
+                name: projected_name,
                 args: args.to_vec(),
                 is_constructor: false,
                 span,
@@ -914,12 +920,16 @@ impl<'a> IndexProjectionContext<'a> {
         if let Some(by_index) = self.function_output_index_map.get(name.as_str())
             && let Some(projected_output) = by_index.get(&self.i)
         {
+            let projected_name =
+                name.with_appended_path(projected_output, span)
+                    .ok_or_else(|| {
+                        structural_contract_violation(
+                            format!("invalid function output selector `{projected_output}`"),
+                            span,
+                        )
+                    })?;
             return Ok(Expression::FunctionCall {
-                name: rumoca_core::Reference::new(format!(
-                    "{}.{}",
-                    name.as_str(),
-                    projected_output
-                )),
+                name: projected_name,
                 args: args.to_vec(),
                 is_constructor: false,
                 span,

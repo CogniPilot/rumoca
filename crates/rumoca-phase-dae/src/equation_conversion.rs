@@ -19,6 +19,9 @@ use crate::{
     flat_to_dae_expression_with_refs, flat_to_dae_var_name, remap_flat_structured_equations,
 };
 
+mod tuple_outputs;
+use tuple_outputs::tuple_function_output_expressions;
+
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
     // Only check connection equations
     if !eq.origin.is_connection() {
@@ -1230,37 +1233,6 @@ fn tuple_rhs_output_expressions(
             rhs.span().unwrap_or(span),
         )),
     }
-}
-
-fn tuple_function_output_expressions(
-    name: &rumoca_core::Reference,
-    args: &[rumoca_core::Expression],
-    span: rumoca_core::Span,
-    lhs_count: usize,
-    flat: &flat::Model,
-) -> Result<Vec<rumoca_core::Expression>, ToDaeError> {
-    let function = flat.functions.get(name.var_name()).ok_or_else(|| {
-        ToDaeError::runtime_contract_violation_at(
-            format!(
-                "mixed tuple assignment RHS function `{}` is missing from Flat.functions",
-                name.as_str()
-            ),
-            span,
-        )
-    })?;
-    if function.outputs.len() != lhs_count {
-        return Err(tuple_arity_error(lhs_count, function.outputs.len(), span));
-    }
-    Ok(function
-        .outputs
-        .iter()
-        .map(|output| rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::generated(format!("{}.{}", name.as_str(), output.name)),
-            args: args.to_vec(),
-            is_constructor: false,
-            span,
-        })
-        .collect())
 }
 
 fn tuple_arity_error(lhs_count: usize, rhs_count: usize, span: rumoca_core::Span) -> ToDaeError {

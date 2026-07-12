@@ -403,44 +403,57 @@ pub(super) struct FunctionScopeSubstituter<'a> {
     pub(super) error: Option<LowerError>,
 }
 
-impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
-    // SPEC_0021: Exception - exhaustive indexed-substitution guards preserve
-    // the original expression when any projection proof is unavailable.
-    #[allow(clippy::excessive_nesting)]
-    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
-        if let rumoca_core::Expression::Index {
+impl FunctionScopeSubstituter<'_> {
+    fn indexed_scope_value(
+        &mut self,
+        expr: &rumoca_core::Expression,
+    ) -> Option<rumoca_core::Expression> {
+        let rumoca_core::Expression::Index {
             base,
             subscripts,
             span,
         } = expr
-            && let rumoca_core::Expression::VarRef {
-                name,
-                subscripts: base_subscripts,
-                ..
-            } = base.as_ref()
-            && base_subscripts.is_empty()
-            && let Some(values) = self.scope.scalars.get(name.as_str())
-            && let Some(dims) = self.scope.dims.get(name.as_str())
-            && let Some(indices) = subscripts
-                .iter()
-                .map(|subscript| match subscript {
-                    rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()
-        {
-            match flat_index_from_indices(dims, &indices, *span, "projected indexed substitution") {
-                Ok(Some(index)) => {
-                    if let Some(value) = values.get(index) {
-                        return value.clone().with_span(*span);
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    self.error = Some(error);
-                    return expr.clone();
-                }
+        else {
+            return None;
+        };
+        let rumoca_core::Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            ..
+        } = base.as_ref()
+        else {
+            return None;
+        };
+        if !base_subscripts.is_empty() {
+            return None;
+        }
+        let values = self.scope.scalars.get(name.as_str())?;
+        let dims = self.scope.dims.get(name.as_str())?;
+        let indices = subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        match flat_index_from_indices(dims, &indices, *span, "projected indexed substitution") {
+            Ok(Some(index)) => values
+                .get(index)
+                .cloned()
+                .map(|value| value.with_span(*span)),
+            Ok(None) => None,
+            Err(error) => {
+                self.error = Some(error);
+                Some(expr.clone())
             }
+        }
+    }
+}
+
+impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let Some(value) = self.indexed_scope_value(expr) {
+            return value;
         }
         let rumoca_core::Expression::VarRef {
             name,

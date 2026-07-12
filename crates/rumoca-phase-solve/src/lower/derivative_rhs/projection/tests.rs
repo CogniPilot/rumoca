@@ -135,7 +135,7 @@ fn scalar_binding_indexed_dimension_error_reports_subscript_span() -> Result<(),
     );
 
     let Err(err) = expression_dims_for_subscripted_binding(
-        "x",
+        &rumoca_core::Reference::new("x"),
         &[rumoca_core::Subscript::index(1, subscript_span)],
         &dae_model,
         &IndexMap::new(),
@@ -559,7 +559,13 @@ fn expression_result_dims_accepts_projected_matrix_function_output() -> Result<(
         .functions
         .insert(rumoca_core::VarName::new("Pkg.mat9"), function);
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Pkg.mat9.M[1,1]"),
+        name: rumoca_core::Reference::from_component_reference(
+            rumoca_core::component_reference_from_flat_name(
+                &rumoca_core::VarName::new("Pkg.mat9.M[1,1]"),
+                span,
+            )
+            .expect("structured projected function reference"),
+        ),
         args: Vec::new(),
         is_constructor: false,
         span,

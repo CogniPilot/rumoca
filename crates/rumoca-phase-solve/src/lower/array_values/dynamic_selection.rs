@@ -491,9 +491,6 @@ impl<'a> LowerBuilder<'a> {
             })
     }
 
-    // SPEC_0021: Exception - exhaustive record-field storage representations
-    // must retain their precedence in one compiler lookup entry point.
-    #[allow(clippy::excessive_nesting)]
     pub(in crate::lower) fn lower_field_access_array_like_values(
         &mut self,
         base: &rumoca_core::Expression,
@@ -532,29 +529,8 @@ impl<'a> LowerBuilder<'a> {
             if let Some(values) = self.lower_indexed_binding_values_at(key.as_str(), span)? {
                 return Ok(values);
             }
-            if let Some(dims) = self.layout.shape(&key).map(<[usize]>::to_vec)
-                && !dims.is_empty()
-            {
-                let count = checked_shape_size(&dims, "record field array value count", span)?;
-                let mut keys =
-                    array_vec_with_capacity(count, "record field array binding key count", span)?;
-                let dims_i64 = dims
-                    .iter()
-                    .map(|dim| {
-                        i64::try_from(*dim).map_err(|_| {
-                            LowerError::contract_violation(
-                                format!("record field array dimension {dim} exceeds i64 range"),
-                                span,
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                for flat_index in 0..count {
-                    keys.push(dae::scalar_name_text_for_flat_index(
-                        &key, &dims_i64, flat_index,
-                    ));
-                }
-                return self.load_binding_keys(&keys, span);
+            if let Some(values) = self.lower_shaped_field_binding(&key, span)? {
+                return Ok(values);
             }
             if let Some(reg) = self.lower_var_ref_binding_key(&key, span, scope, call_depth)? {
                 return single_reg_vec(reg, "scalarized record field access value count", span);
@@ -567,6 +543,37 @@ impl<'a> LowerBuilder<'a> {
         let mut values = array_vec_with_capacity(1, "field access fallback value count", span)?;
         values.push(self.lower_expr(expr, scope, call_depth)?);
         Ok(values)
+    }
+
+    fn lower_shaped_field_binding(
+        &mut self,
+        key: &str,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let Some(dims) = self.layout.shape(key).map(<[usize]>::to_vec) else {
+            return Ok(None);
+        };
+        if dims.is_empty() {
+            return Ok(None);
+        }
+        let count = checked_shape_size(&dims, "record field array value count", span)?;
+        let dims_i64 = dims
+            .iter()
+            .map(|dim| {
+                i64::try_from(*dim).map_err(|_| {
+                    LowerError::contract_violation(
+                        format!("record field array dimension {dim} exceeds i64 range"),
+                        span,
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut keys =
+            array_vec_with_capacity(count, "record field array binding key count", span)?;
+        keys.extend(
+            (0..count).map(|index| dae::scalar_name_text_for_flat_index(key, &dims_i64, index)),
+        );
+        self.load_binding_keys(&keys, span).map(Some)
     }
 
     /// Lowers a record-array member slice such as `ac.pin[:].v` by loading

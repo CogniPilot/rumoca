@@ -1356,7 +1356,9 @@ fn projected_function_output_reads_array_assigned_in_if_branches() {
         .functions
         .insert(from_quat.name.clone(), from_quat);
     let expression = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::generated("My.fromQuat.r[1]"),
+        name: rumoca_core::Reference::generated_component_reference(test_component_ref_from_name(
+            "My.fromQuat.r[1]",
+        )),
         args: vec![array_lit(&[1.0, 2.0, 3.0, 4.0])],
         is_constructor: false,
         span,

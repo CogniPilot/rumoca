@@ -105,18 +105,17 @@ fn visible_expression_is_identity(visible: &VisibleExpression) -> bool {
     if subscripts.is_empty() {
         return name.as_str() == visible.name;
     }
-    let Some(scalar) = rumoca_core::parse_scalar_name(&visible.name) else {
+    let Some(indices) = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => usize::try_from(*value).ok(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
         return false;
     };
-    scalar.base == name.as_str()
-        && scalar.indices.len() == subscripts.len()
-        && scalar
-            .indices
-            .iter()
-            .zip(subscripts)
-            .all(|(expected, subscript)| {
-                matches!(subscript, rumoca_core::Subscript::Index { value, .. } if value == expected)
-            })
+    dae::format_subscript_key(name.as_str(), &indices) == visible.name
 }
 
 fn visible_expression_span(

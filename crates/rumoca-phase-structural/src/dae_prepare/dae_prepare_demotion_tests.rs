@@ -1241,7 +1241,9 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
     q.dims = vec![4];
     dae.variables.states.insert(VarName::new("Q"), q);
 
+    let function_def_id = rumoca_core::DefId::new(4_101);
     let mut function = rumoca_core::Function::new("orientationConstraint", test_span());
+    function.def_id = Some(function_def_id);
     function.inputs.push(rumoca_core::FunctionParam::new(
         "Q",
         "Orientation",
@@ -1322,7 +1324,9 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
     q.dims = vec![4];
     dae.variables.states.insert(VarName::new("Q"), q);
 
+    let function_def_id = rumoca_core::DefId::new(4_102);
     let mut function = rumoca_core::Function::new("orientationConstraint", test_span());
+    function.def_id = Some(function_def_id);
     function.inputs.push(rumoca_core::FunctionParam::new(
         "Q",
         "Orientation",
@@ -1355,8 +1359,30 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
         .functions
         .insert(VarName::new("orientationConstraint"), function);
 
+    let projected_call = Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(rumoca_core::ComponentReference {
+            local: false,
+            span: constraint_span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "orientationConstraint".to_string(),
+                    span: constraint_span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "residue".to_string(),
+                    span: constraint_span,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(function_def_id),
+        }),
+        args: vec![var("Q")],
+        is_constructor: false,
+        span: constraint_span,
+    };
     let derivative = symbolic_time_derivative(
-        &call("orientationConstraint.residue", vec![var("Q")]),
+        &projected_call,
         &dae,
         &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build"),
     )

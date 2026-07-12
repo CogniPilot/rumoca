@@ -7,7 +7,9 @@ use crate::lower::{
     helpers::{format_i64_dims, format_usize_dims, positive_i64_index},
     unsupported_at,
 };
-use crate::projection_suffix::{parse_output_projection_suffix, record_output_field_param};
+use crate::projection_suffix::{
+    output_projection_suffix, record_output_field_param, resolve_function_reference,
+};
 
 use super::*;
 
@@ -276,7 +278,7 @@ pub(in crate::lower) fn derivative_arg_binding_keys(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => binding_keys_for_subscripted_name(
-            name.as_str(),
+            name,
             subscripts,
             dae_model,
             structural_bindings,
@@ -285,9 +287,9 @@ pub(in crate::lower) fn derivative_arg_binding_keys(
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
-            let base = binding_base_name(base, span)?;
+            let base = plain_binding_reference(base, span)?;
             binding_keys_for_subscripted_name(
-                &base,
+                base,
                 subscripts,
                 dae_model,
                 structural_bindings,
@@ -1302,7 +1304,7 @@ pub(in crate::lower) fn expression_result_dims(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => expression_dims_for_subscripted_binding(
-            name.as_str(),
+            name,
             subscripts,
             dae_model,
             structural_bindings,
@@ -1447,12 +1449,13 @@ pub(in crate::lower) fn builtin_size_args_dims(
 }
 
 pub(in crate::lower) fn expression_dims_for_subscripted_binding(
-    base: &str,
+    name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     fallback_span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
+    let base = name.as_str();
     if let Some(var) = variable_by_name(dae_model, base) {
         if var.dims.is_empty() {
             if subscripts.is_empty() {
@@ -1473,7 +1476,7 @@ pub(in crate::lower) fn expression_dims_for_subscripted_binding(
     }
 
     if subscripts.is_empty()
-        && scalarized_aggregate_variable(dae_model, base, fallback_span)?.is_some()
+        && scalarized_aggregate_binding(dae_model, name, fallback_span)?.is_some()
     {
         return Ok(Vec::new());
     }
@@ -1519,13 +1522,16 @@ fn required_declared_function_output_dims(
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
     let requested = name.as_str();
-    if let Some(function) = dae_model.symbols.functions.get(name.var_name()) {
+    if let Some((function_name, function)) =
+        resolve_function_reference(&dae_model.symbols.functions, name)
+        && name.var_name() == function_name
+    {
         if function.is_constructor {
             return Ok(Vec::new());
         }
         return declared_function_output_dims(function, requested, span);
     }
-    if let Some(dims) = projected_declared_function_output_dims(dae_model, requested, span)? {
+    if let Some(dims) = projected_declared_function_output_dims(dae_model, name, span)? {
         return Ok(dims);
     }
     if external_table_intrinsic_kind(requested).is_some() {
@@ -1571,33 +1577,15 @@ fn declared_function_output_dims(
 
 fn projected_declared_function_output_dims(
     dae_model: &dae::Dae,
-    requested: &str,
+    requested: &rumoca_core::Reference,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<usize>>, LowerError> {
-    rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
-        match projected_declared_function_output_dims_split(dae_model, base_name, suffix, span) {
-            Ok(Some(dims)) => Some(Ok(dims)),
-            Ok(None) => None,
-            Err(err) => Some(Err(err)),
-        }
-    })
-    .transpose()
-}
-
-fn projected_declared_function_output_dims_split(
-    dae_model: &dae::Dae,
-    base_name: &str,
-    suffix: &str,
-    span: rumoca_core::Span,
-) -> Result<Option<Vec<usize>>, LowerError> {
-    let Some(function) = dae_model
-        .symbols
-        .functions
-        .get(&rumoca_core::VarName::new(base_name))
+    let Some((function_name, function)) =
+        resolve_function_reference(&dae_model.symbols.functions, requested)
     else {
         return Ok(None);
     };
-    let Some(projection_suffix) = parse_output_projection_suffix(suffix) else {
+    let Some(projection_suffix) = output_projection_suffix(function_name, requested) else {
         return Ok(None);
     };
     let (output, output_name) = match function

@@ -16,11 +16,6 @@ pub(crate) fn scope_split(name: &str) -> Option<(&str, &str)> {
     rumoca_core::split_last_top_level(name)
 }
 
-/// Split a rendered name into `(root, rest)` at the first top-level dot.
-pub(crate) fn root_split(name: &str) -> Option<(&str, &str)> {
-    rumoca_core::split_first_top_level(name)
-}
-
 /// True when the rendered name is nested (has a top-level dot).
 pub(crate) fn is_nested_name(name: &str) -> bool {
     rumoca_core::has_top_level_dot(name)

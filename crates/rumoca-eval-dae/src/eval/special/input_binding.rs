@@ -79,6 +79,7 @@ pub(super) fn copy_record_constructor_input_fields<T: SimFloat>(
         return Ok(false);
     }
     let Expression::FunctionCall {
+        name,
         args,
         is_constructor,
         ..
@@ -90,129 +91,77 @@ pub(super) fn copy_record_constructor_input_fields<T: SimFloat>(
         return Ok(false);
     }
 
-    let mut explicit_fields = IndexMap::new();
+    if let Some(constructor) = resolve_record_constructor(name, caller_env) {
+        return bind_declared_record_constructor_fields(
+            local_env,
+            param,
+            constructor,
+            args,
+            caller_env,
+        );
+    }
+    let mut copied = false;
     for arg in args {
         let Some((field, value_expr)) = decode_named_constructor_arg(arg) else {
             continue;
         };
         let value = eval_expr::<T>(value_expr, caller_env)?;
         local_env.set(&format!("{}.{field}", param.name), value);
-        explicit_fields.insert(field.to_string(), value);
-    }
-    let copied_start_fields =
-        copy_record_constructor_start_fields(local_env, param, &explicit_fields, caller_env)?;
-    Ok(!explicit_fields.is_empty() || copied_start_fields)
-}
-
-pub(super) fn copy_record_constructor_start_fields<T: SimFloat>(
-    local_env: &mut VarEnv<T>,
-    param: &FunctionParam,
-    explicit_fields: &IndexMap<String, T>,
-    caller_env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    if explicit_fields.is_empty() {
-        return Ok(false);
-    }
-    let prefixes = matching_record_constructor_prefixes(explicit_fields, caller_env)?;
-    let fields = consensus_start_fields(&prefixes, explicit_fields, caller_env)?;
-    let mut copied = false;
-    for (field, value) in fields {
-        local_env.set(&format!("{}.{field}", param.name), value);
         copied = true;
     }
     Ok(copied)
 }
 
-pub(super) fn matching_record_constructor_prefixes<T: SimFloat>(
-    explicit_fields: &IndexMap<String, T>,
-    env: &VarEnv<T>,
-) -> Result<Vec<String>, EvalError> {
-    let Some((field, value)) = explicit_fields.first() else {
-        return Ok(Vec::new());
-    };
-    let mut candidates = Vec::new();
-    let suffix = format!(".{field}");
-    for key in env.start_exprs.keys() {
-        let Some(prefix) = key.strip_suffix(suffix.as_str()) else {
+fn resolve_record_constructor<'a, T: SimFloat>(
+    name: &rumoca_core::Reference,
+    env: &'a VarEnv<T>,
+) -> Option<&'a rumoca_core::Function> {
+    if let Some(def_id) = name.target_def_id() {
+        return env
+            .functions
+            .values()
+            .find(|function| function.def_id == Some(def_id) && function.is_constructor);
+    }
+    env.functions
+        .get(name.as_str())
+        .filter(|function| function.is_constructor)
+}
+
+fn bind_declared_record_constructor_fields<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    param: &FunctionParam,
+    constructor: &rumoca_core::Function,
+    args: &[Expression],
+    caller_env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    let (named_args, positional_args) = split_named_and_positional_call_args(args);
+    let mut positional_index = 0usize;
+    let mut constructor_env = caller_env.clone();
+    let mut copied = false;
+    for field in &constructor.inputs {
+        let actual = named_args.get(field.name.as_str()).copied().or_else(|| {
+            let value = positional_args.get(positional_index).copied();
+            positional_index += usize::from(value.is_some());
+            value
+        });
+        let value_expr = actual.or(field.default.as_ref());
+        let Some(value_expr) = value_expr else {
             continue;
         };
-        if record_prefix_matches_constructor_fields(prefix, explicit_fields, env)?
-            && eval_record_start_field(prefix, field, env)?
-                .is_some_and(|field_value| field_value.eq_approx(*value))
-        {
-            candidates.push(prefix.to_string());
+        let value = eval_expr::<T>(value_expr, &constructor_env)?;
+        constructor_env.set(&field.name, value);
+        local_env.set(&format!("{}.{}", param.name, field.name), value);
+        copied = true;
+    }
+    for (field, value_expr) in named_args {
+        if constructor.inputs.iter().any(|input| input.name == field) {
+            continue;
         }
+        let value = eval_expr::<T>(value_expr, &constructor_env)?;
+        local_env.set(&format!("{}.{field}", param.name), value);
+        copied = true;
     }
-    Ok(candidates)
-}
-
-pub(super) fn record_prefix_matches_constructor_fields<T: SimFloat>(
-    prefix: &str,
-    explicit_fields: &IndexMap<String, T>,
-    env: &VarEnv<T>,
-) -> Result<bool, EvalError> {
-    for (field, expected) in explicit_fields {
-        let Some(actual) = eval_record_start_field(prefix, field, env)? else {
-            return Ok(false);
-        };
-        if !actual.eq_approx(*expected) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-pub(super) fn consensus_start_fields<T: SimFloat>(
-    prefixes: &[String],
-    explicit_fields: &IndexMap<String, T>,
-    env: &VarEnv<T>,
-) -> Result<IndexMap<String, T>, EvalError> {
-    let mut fields: IndexMap<String, T> = IndexMap::new();
-    for prefix in prefixes {
-        let start_prefix = format!("{prefix}.");
-        for key in env.start_exprs.keys() {
-            let Some(field) = key.strip_prefix(start_prefix.as_str()) else {
-                continue;
-            };
-            if explicit_fields.contains_key(field) {
-                continue;
-            }
-            let Some(value) = eval_record_start_field(prefix, field, env)? else {
-                continue;
-            };
-            if let Some(existing) = fields.get(field)
-                && !existing.eq_approx(value)
-            {
-                return Err(EvalError::InvalidShape {
-                    context: "record constructor start field",
-                    reason: format!(
-                        "ambiguous flattened defaults for omitted constructor field `{field}`"
-                    ),
-                });
-            }
-            fields.insert(field.to_string(), value);
-        }
-    }
-    Ok(fields)
-}
-
-pub(super) fn eval_record_start_field<T: SimFloat>(
-    prefix: &str,
-    field: &str,
-    env: &VarEnv<T>,
-) -> Result<Option<T>, EvalError> {
-    let key = format!("{prefix}.{field}");
-    if let Some(value) = env.get_optional(key.as_str()) {
-        return Ok(Some(value));
-    }
-    let Some(start_expr) = env.start_exprs.get(key.as_str()) else {
-        return Ok(None);
-    };
-    match eval_expr::<T>(start_expr, env) {
-        Ok(value) => Ok(Some(value)),
-        Err(err) if err.missing_binding_name().is_some() => Ok(None),
-        Err(err) => Err(err),
-    }
+    Ok(copied)
 }
 
 pub(super) fn copy_array_literal_vector_entries<T: SimFloat>(
@@ -440,7 +389,6 @@ pub(super) fn copy_array_input_entries<T: SimFloat>(
         return Ok(());
     }
 
-    let trace_array_bind = crate::trace::sim_or_introspect_enabled();
     let pre_source_name = pre_like_array_source_name(arg_expr, caller_env)?;
     let use_pre_values = pre_source_name.is_some();
     let source_name = match pre_source_name {
@@ -476,23 +424,6 @@ pub(super) fn copy_array_input_entries<T: SimFloat>(
     set_array_entries(local_env, param_name, &dims, &values);
     std::sync::Arc::make_mut(&mut local_env.dims).insert(param_name.to_string(), dims.clone());
 
-    if trace_array_bind && source_name.contains("timeTable.table") {
-        let t11 = env_array_sample(caller_env, &source_name, &[1, 1]);
-        let t21 = env_array_sample(caller_env, &source_name, &[2, 1]);
-        let t22 = env_array_sample(caller_env, &source_name, &[2, 2]);
-        tracing::debug!(
-            target: "rumoca_eval_dae::sim",
-            "function array-arg bind source='{}' param='{}' copied_entries={} dims={:?} base_present={} sample_entries=[1,1]={:?} [2,1]={:?} [2,2]={:?}",
-            source_name,
-            param_name,
-            values.len(),
-            caller_env.dims.get(&source_name),
-            caller_env.vars.contains_key(&source_name),
-            t11,
-            t21,
-            t22
-        );
-    }
     Ok(())
 }
 
