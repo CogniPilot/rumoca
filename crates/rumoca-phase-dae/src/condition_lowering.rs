@@ -141,7 +141,7 @@ pub(crate) fn generated_pre_component_ref(
     owner_span: Span,
 ) -> rumoca_core::ComponentReference {
     let mut parts = vec![rumoca_core::ComponentRefPart {
-        ident: "__pre__".to_string(),
+        ident: rumoca_core::PRE_SLOT_NAMESPACE.to_string(),
         span: owner_span,
         subs: Vec::new(),
     }];
@@ -194,7 +194,7 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
     let Some(condition_var) = dae_model.variables.discrete_valued.get(&condition_key) else {
         return;
     };
-    let pre_name = rumoca_core::VarName::new(format!("__pre__.{condition_name}"));
+    let pre_name = rumoca_core::pre_slot_name(condition_name);
     let pre_ref = generated_pre_component_ref(
         condition_var.component_ref.as_ref(),
         condition_name,
@@ -419,7 +419,7 @@ fn expr_can_vary_during_simulation(expr: &rumoca_core::Expression, dae_model: &d
 }
 
 fn var_ref_can_vary_during_simulation(name: &rumoca_core::VarName, dae_model: &dae::Dae) -> bool {
-    if name.as_str().starts_with("__pre__.") {
+    if rumoca_core::is_pre_slot(name.as_str()) {
         return true;
     }
     if is_time_invariant_var_ref(name, dae_model) {

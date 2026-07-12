@@ -1,6 +1,6 @@
 use super::*;
 use rumoca_eval_solve::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, apply_discrete_slot_value,
+    EventUpdateRowFilter, ProjectedEventUpdateInput, apply_discrete_slot_values,
 };
 use rumoca_solver::{
     EventActionOutcome, EventPreMode, NoStateEventStep, NoStateOrchestrationBackend,
@@ -10,11 +10,11 @@ use rumoca_solver::{
 
 pub(crate) fn settle_algebraics_and_relation_memory(
     runtime: &SolveRuntime,
-    model: &OdeModel,
+    _model: &OdeModel,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
-    state_count: usize,
+    _state_count: usize,
     tol: f64,
 ) -> Result<(), SimError> {
     runtime
@@ -24,14 +24,33 @@ pub(crate) fn settle_algebraics_and_relation_memory(
             t,
             tol,
             EVENT_UPDATE_MAX_ITERS,
-            move |y, p| project_algebraics_and_detect_changes(model, y, p, t, state_count, tol),
+            move |y, p| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol),
         )
         .map_err(Into::into)
 }
 
+pub(crate) fn refresh_algebraics_and_detect_changes(
+    runtime: &SolveRuntime,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    tol: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let before = y.to_vec();
+    runtime.refresh_algebraic_and_output_slots(t, y, p, tol, EVENT_UPDATE_MAX_ITERS)?;
+    Ok(values_changed(&before, y, tol))
+}
+
+fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
+    before
+        .iter()
+        .zip(after.iter())
+        .any(|(before, after)| (*before - *after).abs() > tol)
+}
+
 pub(crate) fn apply_event_updates(
     runtime: &SolveRuntime,
-    ode_model: &OdeModel,
+    _ode_model: &OdeModel,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
@@ -41,7 +60,6 @@ pub(crate) fn apply_event_updates(
     let event_pre_p = p.to_vec();
     apply_event_updates_with_event_pre(EventUpdateInput {
         runtime,
-        ode_model,
         y,
         p,
         t,
@@ -53,7 +71,6 @@ pub(crate) fn apply_event_updates(
 
 pub(crate) struct EventUpdateInput<'a> {
     pub(crate) runtime: &'a SolveRuntime,
-    pub(crate) ode_model: &'a OdeModel,
     pub(crate) y: &'a mut [f64],
     pub(crate) p: &'a mut [f64],
     pub(crate) t: f64,
@@ -74,7 +91,6 @@ fn apply_event_updates_with_filter(
 ) -> Result<(), SimError> {
     let EventUpdateInput {
         runtime,
-        ode_model,
         y,
         p,
         t,
@@ -94,7 +110,7 @@ fn apply_event_updates_with_filter(
             row_filter,
             root_relation_overrides: &[],
         },
-        project_algebraics_callback(ode_model, t, tol),
+        project_algebraics_callback(runtime, t, tol),
     )?;
     event_action_outcome_to_result(outcome, t)
 }
@@ -124,32 +140,12 @@ pub(crate) fn apply_initialization_updates(
         .map_err(Into::into)
 }
 
-pub(crate) fn apply_discrete_value(
-    target: solve::ScalarSlot,
-    value: f64,
-    y: &mut [f64],
-    p: &mut [f64],
-    tol: f64,
-) -> Result<bool, SimError> {
-    apply_discrete_slot_value(target, value, y, p, tol)
-        .map_err(|err| SimError::SolveIr(err.to_string()))
-}
-
 fn project_algebraics_callback(
-    model: &OdeModel,
+    runtime: &SolveRuntime,
     t: f64,
     tol: f64,
 ) -> impl FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError> + '_ {
-    move |y, p| {
-        project_algebraics_and_detect_changes(
-            model,
-            y,
-            p,
-            t,
-            model.state_count_for_projection(),
-            tol,
-        )
-    }
+    move |y, p| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol)
 }
 
 fn event_action_outcome_to_result(
@@ -175,7 +171,7 @@ pub(crate) fn simulate_no_state_solve_ir(
 ) -> Result<SimResult, SimError> {
     let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
     let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
-    let mut runtime = initialize_no_state_runtime(model, opts, times.len())?;
+    let mut runtime = initialize_no_state_runtime(model, opts, times.len(), true)?;
     let tol = opts.atol.max(1.0e-10);
 
     run_no_state_output_schedule(
@@ -200,13 +196,69 @@ pub(crate) fn check_no_state_initialization(
     model: &solve::SolveModel,
     opts: &SimOptions,
 ) -> Result<(), SimError> {
-    initialize_no_state_runtime(model, opts, 1).map(|_| ())
+    initialize_no_state_runtime(model, opts, 1, true).map(|_| ())
 }
 
-struct DiffsolNoStateOrchestration<'a> {
-    model: &'a solve::SolveModel,
-    opts: &'a SimOptions,
-    runtime: &'a mut NoStateRuntime,
+pub(crate) fn advance_no_state_runtime_to(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    runtime: &mut NoStateRuntime,
+    target: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    run_no_state_output_schedule(
+        &mut DiffsolNoStateOrchestration {
+            model,
+            opts,
+            runtime,
+        },
+        [target],
+        tol,
+    )
+}
+
+pub(crate) fn apply_no_state_deadline_tick(
+    model: &solve::SolveModel,
+    runtime: &mut NoStateRuntime,
+    target: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    runtime.current_t = target;
+    let values = runtime.runtime.eval_scalar_program_block(
+        &model.problem.discrete.rhs,
+        &runtime.current_y,
+        &runtime.params,
+        target,
+    )?;
+    apply_discrete_slot_values(
+        &model.problem.discrete.update_targets,
+        &values,
+        &mut runtime.current_y,
+        &mut runtime.params,
+        tol,
+    )?;
+    runtime.runtime.apply_runtime_assignments_once(
+        &mut runtime.current_y,
+        &mut runtime.params,
+        target,
+    )?;
+    settle_algebraics_and_relation_memory(
+        &runtime.runtime,
+        &runtime.equilibrium_model,
+        &mut runtime.current_y,
+        &mut runtime.params,
+        target,
+        0,
+        tol,
+    )?;
+    crate::commit_pre_params_after_event(model, &runtime.current_y, &mut runtime.params, tol);
+    Ok(())
+}
+
+pub(crate) struct DiffsolNoStateOrchestration<'a> {
+    pub(crate) model: &'a solve::SolveModel,
+    pub(crate) opts: &'a SimOptions,
+    pub(crate) runtime: &'a mut NoStateRuntime,
 }
 
 impl NoStateOrchestrationBackend for DiffsolNoStateOrchestration<'_> {
@@ -263,6 +315,7 @@ fn apply_no_state_event_step(
     runtime: &mut NoStateRuntime,
     step: NoStateEventStep,
 ) -> Result<(), SimError> {
+    runtime.last_event_t = Some(step.event_time());
     runtime.current_t = if step.root_event {
         root_event_application_time(step.event_time(), step.target)
     } else {
@@ -272,15 +325,16 @@ fn apply_no_state_event_step(
     if let Some(event) = step.event_stop
         && !step.root_event
     {
-        prepare_fixed_event_left_limit(
+        prepare_fixed_event_left_limit(FixedEventLeftLimitInput {
             model,
-            &runtime.equilibrium_model,
-            &mut runtime.current_y,
-            &mut runtime.params,
-            runtime.current_t,
-            step.tol,
+            runtime: &runtime.runtime,
+            equilibrium_model: &runtime.equilibrium_model,
+            y: &mut runtime.current_y,
+            params: &mut runtime.params,
+            event_t: runtime.current_t,
+            tol: step.tol,
             event,
-        )?;
+        })?;
     }
     let event_pre_y = runtime.current_y.clone();
     let event_pre_p = runtime.params.clone();
@@ -367,15 +421,16 @@ fn record_no_state_event_step(
     Ok(())
 }
 
-struct NoStateRuntime {
-    runtime: SolveRuntime,
-    params: Vec<f64>,
-    current_y: Vec<f64>,
-    current_t: f64,
-    data: Vec<Vec<f64>>,
-    recorded_times: Vec<f64>,
-    equilibrium_model: OdeModel,
-    stop_schedule: SolveStopSchedule,
+pub(crate) struct NoStateRuntime {
+    pub(crate) runtime: SolveRuntime,
+    pub(crate) params: Vec<f64>,
+    pub(crate) current_y: Vec<f64>,
+    pub(crate) current_t: f64,
+    pub(crate) last_event_t: Option<f64>,
+    pub(crate) data: Vec<Vec<f64>>,
+    pub(crate) recorded_times: Vec<f64>,
+    pub(crate) equilibrium_model: OdeModel,
+    pub(crate) stop_schedule: SolveStopSchedule,
 }
 
 fn settle_and_record_no_state_output(
@@ -408,10 +463,11 @@ fn settle_and_record_no_state_output(
     )
 }
 
-fn initialize_no_state_runtime(
+pub(crate) fn initialize_no_state_runtime(
     model: &solve::SolveModel,
     opts: &SimOptions,
     output_count: usize,
+    apply_without_initial_event: bool,
 ) -> Result<NoStateRuntime, SimError> {
     let mut params = model.parameters.clone();
     let mut current_y = model.initial_y.clone();
@@ -443,21 +499,23 @@ fn initialize_no_state_runtime(
             event_pre_p: &event_pre_p,
             max_iters: EVENT_UPDATE_MAX_ITERS,
             dynamic_event,
-            apply_without_initial_event: true,
+            apply_without_initial_event,
         },
         |y, p, t| project_algebraics_and_detect_changes(&equilibrium_model, y, p, t, 0, tol),
     )?;
     event_action_outcome_to_result(outcome.action, outcome.final_t)?;
     current_t = outcome.final_t;
-    refresh_observation_rows_and_relation_memory(
-        model,
-        &runtime,
-        &equilibrium_model,
-        &mut current_y,
-        &mut params,
-        current_t,
-        tol,
-    )?;
+    if apply_without_initial_event || !outcome.observations.is_empty() {
+        refresh_observation_rows_and_relation_memory(
+            model,
+            &runtime,
+            &equilibrium_model,
+            &mut current_y,
+            &mut params,
+            current_t,
+            tol,
+        )?;
+    }
     commit_pre_params_after_event(model, &current_y, &mut params, tol);
     let mut data = vec![Vec::with_capacity(output_count); model.visible_names.len()];
     let mut recorded_times = Vec::with_capacity(output_count);
@@ -485,6 +543,7 @@ fn initialize_no_state_runtime(
         params,
         current_y,
         current_t,
+        last_event_t: None,
         data,
         recorded_times,
         equilibrium_model,
@@ -521,37 +580,41 @@ fn root_event_application_time(root_time: f64, target: f64) -> f64 {
     runtime_root_event_application_time(root_time, target)
 }
 
-pub(crate) fn prepare_fixed_event_left_limit(
-    model: &solve::SolveModel,
-    equilibrium_model: &OdeModel,
-    y: &mut [f64],
-    params: &mut [f64],
+pub(crate) struct FixedEventLeftLimitInput<'a> {
+    model: &'a solve::SolveModel,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    y: &'a mut [f64],
+    params: &'a mut [f64],
     event_t: f64,
     tol: f64,
     event: RuntimeEventStop,
+}
+
+pub(crate) fn prepare_fixed_event_left_limit(
+    input: FixedEventLeftLimitInput<'_>,
 ) -> Result<(), SimError> {
     if !matches!(
-        event.pre_mode,
+        input.event.pre_mode,
         EventPreMode::EventEntry | EventPreMode::Fixed
     ) {
         return Ok(());
     }
-    let left_t = event_left_limit_time(event_t);
-    refresh_observation_discrete_rows(
-        model,
-        &equilibrium_model.runtime_state,
-        y,
-        params,
+    let left_t = event_left_limit_time(input.event_t);
+    input.runtime.refresh_observation_discrete_rows(
+        input.y,
+        input.params,
         left_t,
-        tol,
+        input.tol,
+        EVENT_UPDATE_MAX_ITERS,
     )?;
     project_algebraics(
-        equilibrium_model,
-        y,
-        params,
+        input.equilibrium_model,
+        input.y,
+        input.params,
         left_t,
-        model.state_scalar_count(),
-        tol,
+        input.model.state_scalar_count(),
+        input.tol,
     )?;
     Ok(())
 }

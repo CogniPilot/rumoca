@@ -34,7 +34,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 14;
+pub const SOLVE_SCHEMA_VERSION: u16 = 15;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -181,6 +181,12 @@ impl ScalarProgramBlock {
             .iter()
             .map(|program| Self::program_output_count(program))
             .sum()
+    }
+
+    pub fn uses_linear_solve_component(&self) -> bool {
+        self.programs
+            .iter()
+            .any(|program| linear_ops_use_linear_solve_component(program))
     }
 
     /// Map a dense output slot to the program that produces it.
@@ -772,6 +778,17 @@ impl ComputeBlock {
         counts
     }
 
+    pub fn uses_linear_solve_component(&self) -> bool {
+        self.nodes.iter().any(|node| match node {
+            ComputeNode::ScalarPrograms(block) => block.uses_linear_solve_component(),
+            ComputeNode::LinSolve { .. } => true,
+            ComputeNode::Map { base_ops, .. } | ComputeNode::AffineStencil { base_ops, .. } => {
+                linear_ops_use_linear_solve_component(base_ops)
+            }
+            ComputeNode::MatMul { .. } => false,
+        })
+    }
+
     pub fn tensor_node_count(&self) -> usize {
         self.compute_node_counts().tensor_nodes()
     }
@@ -1212,6 +1229,12 @@ impl SolveProblem {
         counts
     }
 
+    pub fn uses_linear_solve_component(&self) -> bool {
+        self.continuous.implicit_rhs.uses_linear_solve_component()
+            || self.continuous.residual.uses_linear_solve_component()
+            || self.continuous.derivative_rhs.uses_linear_solve_component()
+    }
+
     pub fn validate_shape_contract(&self) -> Result<(), SolveProblemShapeContractError> {
         if self.schema_version != SOLVE_SCHEMA_VERSION {
             return Err(SolveProblemShapeContractError::SchemaVersion {
@@ -1282,6 +1305,11 @@ impl SolveProblem {
         self.events
             .root_conditions
             .validate_shape_contract("events.root_conditions")?;
+        validate_scheduled_root_conditions(
+            "events.scheduled_root_conditions",
+            &self.events.scheduled_root_conditions,
+            self.events.root_conditions.len(),
+        )?;
         self.events
             .dynamic_time_event_rhs
             .validate_shape_contract("events.dynamic_time_event_rhs")?;
@@ -1295,6 +1323,11 @@ impl SolveProblem {
         )?;
         Ok(())
     }
+}
+
+fn linear_ops_use_linear_solve_component(ops: &[LinearOp]) -> bool {
+    ops.iter()
+        .any(|op| matches!(op, LinearOp::LinearSolveComponent { .. }))
 }
 
 fn validate_count(
@@ -1326,6 +1359,28 @@ fn validate_indices(
             context,
             index,
             upper_bound,
+            span: None,
+        });
+    }
+    Ok(())
+}
+
+fn validate_scheduled_root_conditions(
+    context: &'static str,
+    roots: &[ScheduledRootCondition],
+    upper_bound: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    for root in roots {
+        validate_indices(context, &[root.root_index], upper_bound)?;
+        if root.period_seconds.is_finite()
+            && root.period_seconds > 0.0
+            && root.phase_seconds.is_finite()
+        {
+            continue;
+        }
+        return Err(SolveProblemShapeContractError::InvalidScheduledRootTiming {
+            context,
+            root_index: root.root_index,
             span: None,
         });
     }
@@ -1415,6 +1470,11 @@ pub enum SolveProblemShapeContractError {
         upper_bound: usize,
         span: Option<Span>,
     },
+    InvalidScheduledRootTiming {
+        context: &'static str,
+        root_index: usize,
+        span: Option<Span>,
+    },
 }
 
 impl SolveProblemShapeContractError {
@@ -1426,7 +1486,8 @@ impl SolveProblemShapeContractError {
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
             | Self::OutputIndexOverflow { span, .. }
-            | Self::SolverIndexOutOfBounds { span, .. } => *span,
+            | Self::SolverIndexOutOfBounds { span, .. }
+            | Self::InvalidScheduledRootTiming { span, .. } => *span,
             Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
             | Self::TensorOutputMapDimension { span, .. }
@@ -1530,6 +1591,11 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "{context} references solver index {index}, but upper bound is {upper_bound}"
             ),
+            Self::InvalidScheduledRootTiming {
+                context,
+                root_index,
+                ..
+            } => write!(f, "{context} root {root_index} has invalid periodic timing"),
         }
     }
 }
@@ -1619,11 +1685,19 @@ pub struct DiscreteSolveSystem {
 pub struct SolveEventPartition {
     pub root_conditions: ScalarProgramBlock,
     pub root_relation_memory_targets: Vec<Option<ScalarSlot>>,
+    pub scheduled_root_conditions: Vec<ScheduledRootCondition>,
     pub scheduled_time_events: Vec<f64>,
     pub dynamic_time_event_names: Vec<String>,
     pub dynamic_time_event_rhs: ScalarProgramBlock,
     pub action_conditions: ScalarProgramBlock,
     pub actions: Vec<SolveEventAction>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ScheduledRootCondition {
+    pub root_index: usize,
+    pub period_seconds: f64,
+    pub phase_seconds: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

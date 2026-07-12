@@ -861,12 +861,7 @@ fn render_part_subscripts(part: &Value, cfg: &ExprConfig) -> RenderResult {
 /// Render an AST subscript.
 fn render_ast_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Ok(index) = get_field(sub, "Index") {
-        let value = subscript_index_value(&index)?;
-        return if cfg.one_based_index || cfg.subscript_underscore {
-            Ok((value + 1).to_string())
-        } else {
-            Ok(value.to_string())
-        };
+        return Ok(subscript_index_value(&index)?.to_string());
     }
     if let Ok(expr) = get_field(sub, "Expr") {
         return render_expression(&expr, cfg);

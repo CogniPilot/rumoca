@@ -18,10 +18,15 @@ pub enum TargetTemplateIr {
     Ast,
 }
 
+/// Post-render packaging step selected by a target's `build` field. The
+/// build kind is the packaging mechanism — there is no CLI flag: `fmu`
+/// compiles + zips an FMU, `efmu` assembles a schema-valid eFMU container
+/// (directory + `.efmu` zip forms) from the invocation's rendered files.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetBuildKind {
     Fmu,
+    Efmu,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +45,12 @@ pub struct TargetManifest {
     pub capabilities: Option<TargetCapabilities>,
     #[serde(default)]
     pub files: Vec<TargetFile>,
+    /// Declared asset bundles the packaging build step copies verbatim into
+    /// the product (contract §4d): e.g. the vendored eFMI XSD tree. Assets
+    /// are NOT graph nodes — nothing checksums them, so they sit outside the
+    /// render/hash DAG. A product needing no bundled assets declares none.
+    #[serde(default)]
+    pub assets: Vec<AssetBundle>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +94,7 @@ pub struct TensorCapabilities {
 pub enum TensorCapability {
     Native,
     Scalar,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -96,8 +108,56 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
-    pub ir: Option<TargetTemplateIr>,
+    pub render_context: Option<TargetFileRenderContext>,
     pub mode: Option<String>,
+    /// Stable logical identity of this rendered file within the target
+    /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
+    /// need one; the identity is keyed off `id`, never the templated `path`,
+    /// so it is stable across path interpolation (`{{ model_name }}`).
+    pub id: Option<String>,
+    /// Checksum edges this file consumes: for each entry, the SHA-1 of the
+    /// producer file `of` is exposed to this file's templates under the
+    /// context key `as` (contract §4a). The declaration is co-located with
+    /// the template that interpolates the key, so under strict-undefined
+    /// minijinja a template referencing `{{ <as> }}` without a matching
+    /// entry fails loudly at render — declaration and use cannot drift.
+    #[serde(default)]
+    pub checksums: Vec<ChecksumNeed>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetFileRenderContext {
+    FmiModelDescription,
+}
+
+/// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
+/// under my context key `as`" (contract §4a). Modeled as the directed edge
+/// `of -> this` ("`of` rendered + hashed before this file") by the packaging
+/// topo sort; a manifest can never checksum itself (no self edge) so the
+/// edge set is a DAG by construction (contract §4c).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChecksumNeed {
+    /// The producer file's `id` whose exact rendered bytes are hashed.
+    pub of: String,
+    /// The context key this file's templates read the producer's SHA-1 from.
+    /// `as` is a Rust keyword, so the field is renamed for the struct.
+    #[serde(rename = "as")]
+    pub as_key: String,
+}
+
+/// A declared asset bundle: copy the named embedded/vendored `bundle` into
+/// the product under `dest` (contract §4d). The bundle payload is declared
+/// here; the copy mechanism is coded once, generically, in the build step.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetBundle {
+    /// Logical name of the embedded/vendored bundle (e.g. `efmi-schemas`).
+    pub bundle: String,
+    /// Destination directory (product-root-relative) the bundle is copied
+    /// into, e.g. `schemas/`.
+    pub dest: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -336,6 +396,7 @@ fn tensor_feature_support(
         Some(TensorCapability::Native) => TargetFeatureSupport::Native,
         Some(TensorCapability::Scalar) if scalar_fallback => TargetFeatureSupport::Scalar,
         Some(TensorCapability::Scalar) => TargetFeatureSupport::Unsupported,
+        Some(TensorCapability::Unsupported) => TargetFeatureSupport::Unsupported,
         None => TargetFeatureSupport::Unknown,
     }
 }
@@ -520,6 +581,85 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
         if let Some(mode) = file.mode.as_deref() {
             u32::from_str_radix(mode.trim_start_matches("0o"), 8)
                 .with_context(|| format!("Parse target file mode '{mode}'"))?;
+        }
+    }
+    validate_checksum_web(&manifest.files)?;
+    validate_asset_bundles(&manifest.assets)?;
+    Ok(())
+}
+
+/// Fail-early structural checks on the declared checksum web (contract §4a/
+/// §4c), before any rendering: file `id`s are unique, every `[[files.checksums]]`
+/// `of` resolves to a declared `id`, no file checksums itself (the no-self-hash
+/// invariant that keeps the edge set a DAG), and every `as` key is non-empty and
+/// unique per file. Cycle detection is the packaging topo sort's job (it renders
+/// nothing on a cycle); this rejects the malformed declarations that can be seen
+/// without ordering.
+fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
+    let mut ids = std::collections::BTreeSet::new();
+    for file in files {
+        if let Some(id) = &file.id {
+            if id.trim().is_empty() {
+                bail!("[[files]] id must not be empty (path '{}')", file.path);
+            }
+            if !ids.insert(id.as_str()) {
+                bail!("duplicate [[files]] id '{id}' (ids must be unique per target)");
+            }
+        }
+    }
+    for file in files {
+        let mut as_keys = std::collections::BTreeSet::new();
+        for need in &file.checksums {
+            if need.as_key.trim().is_empty() {
+                bail!(
+                    "[[files.checksums]] `as` must not be empty (file '{}', of = '{}')",
+                    file.path,
+                    need.of
+                );
+            }
+            if !as_keys.insert(need.as_key.as_str()) {
+                bail!(
+                    "[[files.checksums]] `as` = '{}' is declared twice on file '{}'; each `as` \
+                     key names one distinct injected checksum, so a duplicate would silently \
+                     overwrite one producer's real SHA-1 with another's",
+                    need.as_key,
+                    file.path
+                );
+            }
+            if !ids.contains(need.of.as_str()) {
+                bail!(
+                    "[[files.checksums]] of = '{}' on file '{}' names no [[files]] id \
+                     (declare `id = \"{}\"` on the producer file)",
+                    need.of,
+                    file.path,
+                    need.of
+                );
+            }
+            if file.id.as_deref() == Some(need.of.as_str()) {
+                bail!(
+                    "[[files.checksums]] of = '{}' on file '{}' checksums itself; a file \
+                     can never embed its own hash (contract §4c no-self-hash invariant)",
+                    need.of,
+                    file.path
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fail-early checks on declared `[[assets]]` bundles: bundle name and dest
+/// must be non-empty (the copy mechanism resolves the bundle payload by name).
+fn validate_asset_bundles(assets: &[AssetBundle]) -> Result<()> {
+    for asset in assets {
+        if asset.bundle.trim().is_empty() {
+            bail!("[[assets]] bundle name must not be empty");
+        }
+        if asset.dest.trim().is_empty() {
+            bail!(
+                "[[assets]] dest must not be empty (bundle '{}')",
+                asset.bundle
+            );
         }
     }
     Ok(())
@@ -836,8 +976,8 @@ fn is_integer_literal(expr: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        TargetFeatureSupport, TargetManifest, TargetTemplateIr, TensorCapability,
-        TensorLayoutCapability, builtin_target_compatibility_matrix,
+        TargetFeatureSupport, TargetFileRenderContext, TargetManifest, TargetTemplateIr,
+        TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
         ensure_target_has_rendered_files, parse_target_manifest, safe_target_join, templates,
         validate_dae_target_capabilities, validate_target_manifest,
     };
@@ -951,6 +1091,28 @@ host_callbacks = false
     }
 
     #[test]
+    fn target_manifest_parses_file_render_context() {
+        let manifest = super::parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "custom"
+
+[[files]]
+path = "modelDescription.xml"
+template = "modelDescription.xml.jinja"
+render_context = "fmi-model-description"
+"#,
+        )
+        .expect("parse target manifest with file render context");
+
+        assert_eq!(
+            manifest.files[0].render_context,
+            Some(TargetFileRenderContext::FmiModelDescription)
+        );
+    }
+
+    #[test]
     fn all_builtin_target_manifests_parse() {
         for target in templates::builtin_targets() {
             parse_target_manifest(target.manifest).unwrap_or_else(|err| {
@@ -1018,6 +1180,18 @@ host_callbacks = false
             .expect("rust-solve target should be listed");
         assert_eq!(rust_solve.readiness_level, Some(2));
         assert_eq!(rust_solve.matmul, TargetFeatureSupport::Scalar);
+
+        let rust_fixed_solve = matrix
+            .iter()
+            .find(|entry| entry.id == "rust-fixed-solve")
+            .expect("rust-fixed-solve target should be listed");
+        assert_eq!(rust_fixed_solve.readiness_level, Some(2));
+        assert_eq!(rust_fixed_solve.deployment_class.as_deref(), Some("cpu"));
+        assert_eq!(rust_fixed_solve.execution_mode.as_deref(), Some("compiled"));
+        assert_eq!(rust_fixed_solve.matmul, TargetFeatureSupport::Scalar);
+        assert_eq!(rust_fixed_solve.linsolve, TargetFeatureSupport::Unsupported);
+        assert_eq!(rust_fixed_solve.sparse, TargetFeatureSupport::Unsupported);
+        assert_eq!(rust_fixed_solve.dtypes, vec!["f64"]);
 
         let cuda_c = matrix
             .iter()
@@ -1391,5 +1565,180 @@ dynamic_derivative_subscripts = false
             .expect_err("dynamic derivative subscripts should be rejected");
 
         assert!(err.to_string().contains("dynamic_derivative_subscripts"));
+    }
+
+    // --- checksum-web / asset-bundle validators (each fail-early branch) ---
+
+    /// A well-formed checksum web (one producer, one consumer edge) parses and
+    /// validates — the positive control for the rejection tests below.
+    #[test]
+    fn checksum_web_accepts_a_wellformed_declaration() {
+        super::parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "checksum-web"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "a"
+as = "a_sha1"
+"#,
+        )
+        .expect("a well-formed checksum web validates");
+    }
+
+    fn expect_target_error(source: &str, needle: &str) {
+        let err = super::parse_target_manifest(source)
+            .expect_err("malformed target.toml must be rejected");
+        assert!(
+            err.to_string().contains(needle),
+            "error `{err}` should mention `{needle}`"
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_duplicate_file_ids() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "dup-id"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "x"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+id = "x"
+"#,
+            "duplicate [[files]] id",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_dangling_of() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "dangling"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "ghost"
+as = "ghost_sha1"
+"#,
+            "names no [[files]] id",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_self_hash() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "self-hash"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files.checksums]]
+of = "a"
+as = "a_sha1"
+"#,
+            "checksums itself",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_empty_as_key() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "empty-as"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "a"
+as = ""
+"#,
+            "`as` must not be empty",
+        );
+    }
+
+    #[test]
+    fn checksum_web_rejects_duplicate_as_key_on_one_file() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "dup-as"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+id = "a"
+[[files]]
+path = "c.txt"
+template = "c.jinja"
+id = "c"
+[[files]]
+path = "b.txt"
+template = "b.jinja"
+[[files.checksums]]
+of = "a"
+as = "sha1"
+[[files.checksums]]
+of = "c"
+as = "sha1"
+"#,
+            "declared twice",
+        );
+    }
+
+    #[test]
+    fn asset_bundle_rejects_empty_bundle_and_dest() {
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "empty-bundle"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+[[assets]]
+bundle = ""
+dest = "schemas/"
+"#,
+            "bundle name must not be empty",
+        );
+        expect_target_error(
+            r#"
+version = 1
+ir = "solve"
+name = "empty-dest"
+[[files]]
+path = "a.txt"
+template = "a.jinja"
+[[assets]]
+bundle = "efmi-schemas"
+dest = ""
+"#,
+            "dest",
+        );
     }
 }

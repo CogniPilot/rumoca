@@ -17,8 +17,7 @@ fn event_time_guard_name(expr: &rumoca_core::Expression) -> Option<String> {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => Some(
-            name.as_str()
-                .strip_prefix("__pre__.")
+            rumoca_core::pre_slot_base(name.as_str())
                 .unwrap_or_else(|| name.as_str())
                 .to_string(),
         ),

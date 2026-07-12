@@ -144,11 +144,11 @@ fn reverse_gradients(
         cotangents,
         &mut vjp,
     )?;
-    Ok(trainables
+    trainables
         .entries()
         .iter()
-        .map(|trainable| vjp[model.runtime().solver_count + trainable.slot])
-        .collect())
+        .map(|trainable| checked_gradient(vjp[model.runtime().solver_count + trainable.slot]))
+        .collect()
 }
 
 fn forward_gradients(
@@ -200,6 +200,10 @@ fn gradient_for_slot(
         .zip(matrix)
         .map(|(cotangent, row)| cotangent * row[column])
         .sum::<f64>();
+    checked_gradient(value)
+}
+
+fn checked_gradient(value: f64) -> Result<f64, OptError> {
     finite("gradient", value)?;
     Ok(value)
 }
@@ -234,5 +238,24 @@ fn finite(what: &'static str, value: f64) -> Result<(), OptError> {
         Ok(())
     } else {
         Err(OptError::NonFinite { what, value })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gradient_validation_rejects_non_finite_values() {
+        let error =
+            checked_gradient(f64::INFINITY).expect_err("non-finite gradient should be rejected");
+
+        assert!(matches!(
+            error,
+            OptError::NonFinite {
+                what: "gradient",
+                ..
+            }
+        ));
     }
 }

@@ -1,7 +1,7 @@
 version = 1
 ir = "solve"
 name = "fmi3"
-description = "FMI 3.0 Model Exchange source tree"
+description = "FMI 3.0 Model Exchange and Co-Simulation source tree"
 execution_mode = "packaged"
 deployment_class = "fmu"
 build = "fmu"
@@ -26,10 +26,23 @@ ir = "dae"
 [[files]]
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
+render_context = "fmi-model-description"
 
 [[files]]
 path = "sources/{{ model_name }}.c"
 template = "model.c.jinja"
+
+[[files]]
+path = "sources/fmi3PlatformTypes.h"
+template = "fmi3PlatformTypes.h.jinja"
+
+[[files]]
+path = "sources/fmi3FunctionTypes.h"
+template = "fmi3FunctionTypes.h.jinja"
+
+[[files]]
+path = "sources/fmi3Functions.h"
+template = "fmi3Functions.h.jinja"
 
 [[files]]
 path = "sources/buildDescription.xml"

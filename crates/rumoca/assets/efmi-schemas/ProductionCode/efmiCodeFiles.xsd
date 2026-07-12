@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiFiles.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="efmiTypeDefs.xsd"/>
+	<xs:include schemaLocation="efmiIncludes.xsd"/>
+	<xs:include schemaLocation="efmiMacros.xsd"/>
+	<xs:include schemaLocation="efmiVariables.xsd"/>
+	<xs:include schemaLocation="efmiFunctions.xsd"/>
+	<xs:element name="CodeFiles">
+		<xs:annotation>
+			<xs:documentation>List of files in model representation, i.e. source file and/or header file including any information needed to integrate the code in an environment.</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="CodeFile" minOccurs="1" maxOccurs="unbounded">
+					<xs:annotation>
+						<xs:documentation>File consisting of C code.</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="FileReference" minOccurs="1" maxOccurs="1"/>
+							<xs:element ref="Includes" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="Typedefs" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="Macros" minOccurs="0" maxOccurs="1"/>
+							<xs:element ref="Variables" minOccurs="0" maxOccurs="1">
+								<xs:annotation>
+									<xs:documentation>List of all global accessible data elements, e.g. global variables or data accessible via functions or macros.</xs:documentation>
+								</xs:annotation>
+							</xs:element>
+							<xs:element ref="Functions" minOccurs="0" maxOccurs="1"/>
+						</xs:sequence>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+						<xs:attribute name="fileType" type="FileType" use="required"/>
+						<xs:attribute name="codeType" type="CodeType" use="required"/>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:simpleType name="FileType">
+		<xs:restriction base="xs:normalizedString">
+			<xs:enumeration value="ProductionCode"/>
+			<xs:enumeration value="SimulationCode"/>
+			<xs:enumeration value="ToolSpecificCode"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CodeType">
+		<xs:restriction base="xs:normalizedString">
+			<xs:enumeration value="SourceFile"/>
+			<xs:enumeration value="HeaderFile"/>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

@@ -1,0 +1,139 @@
+version = 1
+ir = "dae"
+name = "galec-production"
+# Conformance ladder (SPEC_0034 GAL-021/GAL-024): this target earns the
+# "eFMI Production Code export" rung — one schema-valid eFMU container
+# holding BOTH an Algorithm Code representation (AlgorithmCode/: Model.alg
+# + manifest.xml, exactly what `galec` emits) and a Production Code
+# representation (ProductionCode/: generated C99 + a manifest whose
+# LogicalData maps every block variable and all three BlockMethods to the C
+# entities). Co-emission of the Algorithm Code representation is mandatory
+# per eFMI ch. 2.2 — a PC-only container is non-conformant. Every SHA-1 in
+# the checksum web (__content.xml <-> both manifests <-> code files <-> PC
+# ManifestReference <-> AC manifest bytes) is computed from the exact
+# written bytes. The co-emitted GALEC also meets "GALEC language
+# conformance": it round-trip parses (rumoca-ir-galec tests/roundtrip.rs).
+description = "eFMI Production Code export: eFMU container with generated C99 + LogicalData mapping manifest (ProductionCode/) and co-emitted Algorithm Code representation (AlgorithmCode/), directory and .efmu zip forms"
+execution_mode = "packaged"
+# deployment_class is the deployment FAMILY axis of `rumoca targets` (like
+# "gpu" spanning cuda-c readiness levels), not a conformance claim; the
+# honest rung claim lives in description/completion_message per GAL-021.
+deployment_class = "efmi"
+readiness_level = 2
+# `build = "efmu"` packages this invocation's rendered files into the two
+# eFMU package forms (directory + .efmu zip) — the build-kind pattern is the
+# packaging mechanism, exactly like fmi3's `build = "fmu"`; no CLI flag.
+# The AlgorithmCode/ and ProductionCode/ path prefixes below are the
+# grouping contract with the efmu build step: one model representation per
+# container directory, each rooted at its own manifest.xml.
+build = "efmu"
+completion_message = """eFMI Production Code eFMU written to: {{ out_dir }}
+  {{ model_name }}/       eFMU container, directory form (__content.xml + schemas/ + AlgorithmCode/ + ProductionCode/)
+  {{ model_name }}.efmu   eFMU container, zip form (same content, __content.xml at zip root)
+Conformance: "eFMI Production Code export" (SPEC_0034 GAL-021/GAL-024) — schema-valid
+eFMU with Algorithm Code + Production Code representations, all SHA-1 checksums
+computed from the written bytes, LogicalData mapping every block variable and
+method; the co-emitted GALEC also round-trip parses ("GALEC language conformance")."""
+
+# Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
+# the galec target: both consume the same DAE → GALEC projection, so
+# admissibility is identical. The gates run before any rendering; the
+# projection re-checks admissibility on the untouched DAE afterwards
+# (GAL-004, additive) and owns the projection-scope wording (GAL-025).
+[capabilities]
+continuous_states = false
+residual_equations = false
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+# The `.alg`/`.h`/`.c` files are passthrough templates of the typed GALEC
+# printer / typed C printer (GAL-009 / D3); `ac_manifest.xml.jinja`,
+# `pc_manifest.xml.jinja`, and `__content.xml.jinja` are the real eFMI manifest
+# templates (contract §3, WI-2) that author every XML element from the
+# product-agnostic context — the typed serializers no longer emit packaging XML
+# (SPEC_0034 D3 amended). One projection per invocation feeds a single
+# packaging plan; the declarative checksum-web build step (contract §9 WI-5)
+# renders every file in topological order and threads each producer's real
+# SHA-1 into its consumers (no placeholder ever, GAL-021).
+#
+# Declared asset bundle (contract §4d): the vendored eFMI Beta-1 XSD tree plus
+# its BSD-3-Clause LICENSE (GAL-023), copied verbatim into schemas/ by the
+# generic build step. Assets sit OUTSIDE the render/hash checksum DAG — nothing
+# checksums the XSDs.
+[[assets]]
+bundle = "efmi-schemas"
+dest = "schemas/"
+
+# The `id` + `[[files.checksums]]` declarations wire the generic declarative
+# checksum web (contract §4a). Edges (`of -> as`), all leaf→manifest or AC→PC,
+# form a DAG (contract §4c): the Algorithm Code manifest embeds the `.alg`
+# SHA-1; the Production Code manifest embeds the AC-manifest SHA-1 (its
+# ManifestReference/@checksum) and both C files' SHA-1s (their File/@checksum
+# entries). The build step renders each producer first, hashes its exact bytes,
+# and threads the digest downstream (no placeholder ever). The `content` node
+# (`__content.xml` → `ac_manifest`, `pc_manifest`) closes the web: each
+# registered representation's `@checksum` is the SHA-1 of its rendered manifest.
+[[files]]
+id = "alg"
+path = "AlgorithmCode/{{ model_name }}.alg"
+template = "model.alg.jinja"
+
+[[files]]
+id = "ac_manifest"
+path = "AlgorithmCode/manifest.xml"
+template = "ac_manifest.xml.jinja"
+  # File/@checksum edge: the AC manifest embeds the SHA-1 of the `.alg` bytes.
+  [[files.checksums]]
+  of = "alg"
+  as = "alg_sha1"
+
+[[files]]
+id = "c_header"
+path = "ProductionCode/{{ model_name }}.h"
+template = "model.h.jinja"
+
+[[files]]
+id = "c_source"
+path = "ProductionCode/{{ model_name }}.c"
+template = "model.c.jinja"
+
+[[files]]
+id = "pc_manifest"
+path = "ProductionCode/manifest.xml"
+template = "pc_manifest.xml.jinja"
+  # ManifestReference/@checksum edge (AC → PC): the PC manifest embeds the
+  # SHA-1 of the Algorithm Code manifest bytes.
+  [[files.checksums]]
+  of = "ac_manifest"
+  as = "ac_manifest_sha1"
+  # File/@checksum edges (code → PC): the PC manifest embeds each C file SHA-1.
+  [[files.checksums]]
+  of = "c_header"
+  as = "c_header_sha1"
+  [[files.checksums]]
+  of = "c_source"
+  as = "c_source_sha1"
+
+[[files]]
+id = "content"
+path = "__content.xml"
+template = "__content.xml.jinja"
+  # ModelRepresentation/@checksum edges: __content.xml embeds the SHA-1 of each
+  # rendered representation manifest (Algorithm Code + Production Code bytes).
+  [[files.checksums]]
+  of = "ac_manifest"
+  as = "ac_manifest_sha1"
+  [[files.checksums]]
+  of = "pc_manifest"
+  as = "pc_manifest_sha1"

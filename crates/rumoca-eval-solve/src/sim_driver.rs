@@ -6,9 +6,9 @@
 //! and records the visible trajectory. Everything solver-specific — taking a
 //! step, interpolating, the native-state↔full-solver_y mapping, the post-event
 //! reset, the algebraic-projection event kernels — is delegated to a
-//! [`SolverStepper`]. The driver therefore carries no backend types and is
+//! [`SolverAdvanceBackend`]. The driver therefore carries no backend types and is
 //! identical for the implicit (diffsol) and explicit (rk-like) solvers; each
-//! backend only provides a `SolverStepper` adapter.
+//! backend only provides a `SolverAdvanceBackend` adapter.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,7 +43,7 @@ pub enum StepOutcome {
     Root { t_root: f64 },
 }
 
-/// Error surfaced by the driver. Backend (`SolverStepper`) failures arrive as
+/// Error surfaced by the driver. Backend (`SolverAdvanceBackend`) failures arrive as
 /// [`SimDriverError::Backend`]; runtime evaluation failures convert in via
 /// `From<RuntimeSolveError>`. `Terminated` is preserved so the backend's
 /// finalization can replay Modelica `terminate()` semantics.
@@ -64,7 +64,7 @@ pub enum SimDriverError {
 /// integration mode here, so the driver never sees it); an explicit rk-like
 /// backend can implement the same contract. Each method maps to an existing,
 /// unchanged backend routine, so the numerics are preserved.
-pub trait SolverStepper {
+pub trait SolverAdvanceBackend {
     // --- solver stepping ---
     fn time(&self) -> f64;
     fn native_y(&self) -> Vec<f64>;
@@ -191,14 +191,14 @@ pub struct StateTrajectory<'a> {
 }
 
 /// Write the full solver_y for `native` at `t` into `current_y`.
-fn write_full_y<St: SolverStepper + ?Sized>(
-    stepper: &St,
+fn write_full_y<St: SolverAdvanceBackend + ?Sized>(
+    backend: &St,
     native: &[f64],
     t: f64,
     current_y: &mut [f64],
     params: &[f64],
 ) -> Result<(), SimDriverError> {
-    let full = stepper.native_to_full_y(native, t, params)?;
+    let full = backend.native_to_full_y(native, t, params)?;
     current_y.copy_from_slice(&full);
     Ok(())
 }
@@ -206,12 +206,12 @@ fn write_full_y<St: SolverStepper + ?Sized>(
 // SPEC_0021: Exception - central event loop keeps step advancement,
 // zero-crossing handling, and sample recording in a single ordered routine.
 #[allow(clippy::too_many_lines)]
-pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
+pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
     model: &solve::SolveModel,
     opts: &SimOptions,
     times: &[f64],
     runtime_params: &RuntimeParameters,
-    stepper: &mut St,
+    backend: &mut St,
     state: StateTrajectory<'_>,
 ) -> Result<(), SimDriverError> {
     let runtime = state.runtime;
@@ -243,7 +243,7 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
                     current_t: state.current_t,
                 },
                 target,
-                stepper,
+                backend,
                 &mut stop_schedule,
             )? {
                 PendingRootAction::Break => break,
@@ -270,7 +270,7 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
                 },
                 stop_time,
                 event_stop,
-                stepper,
+                backend,
                 &mut deferred_root,
             )?;
             if let Some(prt) = deferred_root {
@@ -291,7 +291,7 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
                     },
                     event,
                     target,
-                    stepper,
+                    backend,
                     ObservationBuffers {
                         recorded_times: state.recorded_times,
                         data: state.data,
@@ -305,9 +305,9 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
                 break;
             }
         }
-        stepper.refresh_observation(state.current_y, state.params, *state.current_t)?;
+        backend.refresh_observation(state.current_y, state.params, *state.current_t)?;
         runtime_params.borrow_mut().copy_from_slice(state.params);
-        stepper.record_sample(
+        backend.record_sample(
             state.recorded_times,
             state.data,
             state.current_y,
@@ -319,31 +319,31 @@ pub fn simulate_state_targets<St: SolverStepper + ?Sized>(
     Ok(())
 }
 
-fn resolve_pending_root<St: SolverStepper + ?Sized>(
+fn resolve_pending_root<St: SolverAdvanceBackend + ?Sized>(
     pending_root_t: &mut Option<f64>,
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
-    stepper: &mut St,
+    backend: &mut St,
     stop_schedule: &mut SolveStopSchedule,
 ) -> Result<PendingRootAction, SimDriverError> {
     let Some(prt) = *pending_root_t else {
         return Ok(PendingRootAction::None);
     };
     if !sample_time_match_with_tol(target, prt) && target < prt {
-        let y_at = stepper.interpolate(target)?;
+        let y_at = backend.interpolate(target)?;
         *state.current_t = target;
         state
             .params
             .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        write_full_y(stepper, &y_at, target, state.current_y, state.params)?;
-        refresh_interpolated_sample_state(ctx, state, target, stepper)?;
+        write_full_y(backend, &y_at, target, state.current_y, state.params)?;
+        refresh_interpolated_sample_state(ctx, state, target, backend)?;
         return Ok(PendingRootAction::Break);
     }
 
     *pending_root_t = None;
-    handle_root_crossing(ctx, state, prt, target, stepper)?;
-    stop_schedule.advance_past(stepper.time());
+    handle_root_crossing(ctx, state, prt, target, backend)?;
+    stop_schedule.advance_past(backend.time());
     Ok(PendingRootAction::Continue)
 }
 
@@ -368,9 +368,9 @@ struct EventPre<'a> {
 
 /// Apply the projected discrete-event update at `t`, using the backend's
 /// `project_algebraics` as the projection callback (shared by every backend).
-fn apply_event_update_kernel<St: SolverStepper + ?Sized>(
+fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
     runtime: &SolveRuntime,
-    stepper: &St,
+    backend: &St,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
@@ -389,15 +389,15 @@ fn apply_event_update_kernel<St: SolverStepper + ?Sized>(
             row_filter: EventUpdateRowFilter::All,
             root_relation_overrides: &[],
         },
-        |y, p| stepper.project_algebraics(y, p, t, tol),
+        |y, p| backend.project_algebraics(y, p, t, tol),
     )?;
     event_action_to_result(outcome, t)
 }
 
 /// Re-settle the projected runtime + relation memory at `t`.
-fn settle_kernel<St: SolverStepper + ?Sized>(
+fn settle_kernel<St: SolverAdvanceBackend + ?Sized>(
     runtime: &SolveRuntime,
-    stepper: &St,
+    backend: &St,
     y: &mut [f64],
     p: &mut [f64],
     t: f64,
@@ -409,7 +409,7 @@ fn settle_kernel<St: SolverStepper + ?Sized>(
         t,
         tol,
         EVENT_UPDATE_MAX_ITERS,
-        |y, p| stepper.project_algebraics(y, p, t, tol),
+        |y, p| backend.project_algebraics(y, p, t, tol),
     )?;
     Ok(())
 }
@@ -417,8 +417,8 @@ fn settle_kernel<St: SolverStepper + ?Sized>(
 /// Bracket a zero-crossing: extrapolate `event_pre_y` to the left limit and `y`
 /// to the right limit across the tiny `[root_t, right_t]` interval, using the
 /// backend's full-solver_y derivative guess.
-fn bracket_event_limits_kernel<St: SolverStepper + ?Sized>(
-    stepper: &St,
+fn bracket_event_limits_kernel<St: SolverAdvanceBackend + ?Sized>(
+    backend: &St,
     event_pre_y: &mut [f64],
     y: &mut [f64],
     p: &[f64],
@@ -429,7 +429,7 @@ fn bracket_event_limits_kernel<St: SolverStepper + ?Sized>(
     if dt <= 0.0 {
         return Ok(());
     }
-    let dy = stepper.derivative_guess(y, p, root_t)?;
+    let dy = backend.derivative_guess(y, p, root_t)?;
     for (slot, d) in event_pre_y.iter_mut().zip(dy.iter().copied()) {
         *slot -= dt * d;
     }
@@ -440,12 +440,12 @@ fn bracket_event_limits_kernel<St: SolverStepper + ?Sized>(
 }
 
 /// Transient [`RuntimeEventBoundaryHandler`] that applies the Modelica left/right
-/// limit event semantics using only the backend-neutral kernels + the stepper's
+/// limit event semantics using only the backend-neutral kernels + the backend's
 /// `project_algebraics` / `derivative_guess` / `refresh_observation` /
 /// `record_sample`. Both the diffsol and rk-like backends drive events through
 /// this same handler.
-struct EventBoundary<'a, St: SolverStepper + ?Sized> {
-    stepper: &'a St,
+struct EventBoundary<'a, St: SolverAdvanceBackend + ?Sized> {
+    backend: &'a St,
     runtime: &'a SolveRuntime,
     y: &'a mut [f64],
     p: &'a mut [f64],
@@ -462,19 +462,19 @@ struct EventBoundary<'a, St: SolverStepper + ?Sized> {
     data: Option<&'a mut [Vec<f64>]>,
 }
 
-impl<St: SolverStepper + ?Sized> EventBoundary<'_, St> {
+impl<St: SolverAdvanceBackend + ?Sized> EventBoundary<'_, St> {
     fn record(&mut self, t: f64) -> Result<(), SimDriverError> {
-        self.stepper.refresh_observation(self.y, self.p, t)?;
+        self.backend.refresh_observation(self.y, self.p, t)?;
         if let (Some(times), Some(data)) =
             (self.recorded_times.as_deref_mut(), self.data.as_deref_mut())
         {
-            self.stepper.record_sample(times, data, self.y, self.p, t)?;
+            self.backend.record_sample(times, data, self.y, self.p, t)?;
         }
         Ok(())
     }
 }
 
-impl<St: SolverStepper + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'_, St> {
+impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'_, St> {
     type Error = SimDriverError;
 
     fn on_event_time(
@@ -490,15 +490,15 @@ impl<St: SolverStepper + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'
                 EventPreMode::EventEntry | EventPreMode::Fixed
             ) {
                 let left_t = event_left_limit_time(event_t);
-                self.stepper.refresh_observation(self.y, self.p, left_t)?;
-                self.stepper
+                self.backend.refresh_observation(self.y, self.p, left_t)?;
+                self.backend
                     .project_algebraics(self.y, self.p, left_t, self.tol)?;
             }
             self.event_pre_y.copy_from_slice(self.y);
             self.event_pre_p.copy_from_slice(self.p);
             apply_event_update_kernel(
                 self.runtime,
-                self.stepper,
+                self.backend,
                 self.y,
                 self.p,
                 event_t,
@@ -520,7 +520,7 @@ impl<St: SolverStepper + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'
     ) -> Result<(), SimDriverError> {
         if let Some(root_t) = self.root_t {
             bracket_event_limits_kernel(
-                self.stepper,
+                self.backend,
                 &mut self.event_pre_y,
                 self.y,
                 self.p,
@@ -530,7 +530,7 @@ impl<St: SolverStepper + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'
         }
         apply_event_update_kernel(
             self.runtime,
-            self.stepper,
+            self.backend,
             self.y,
             self.p,
             right_t,
@@ -543,7 +543,7 @@ impl<St: SolverStepper + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'
         if self.root_t.is_some() {
             settle_kernel(
                 self.runtime,
-                self.stepper,
+                self.backend,
                 self.y,
                 self.p,
                 right_t,
@@ -556,33 +556,33 @@ impl<St: SolverStepper + ?Sized> RuntimeEventBoundaryHandler for EventBoundary<'
     }
 }
 
-fn refresh_interpolated_sample_state<St: SolverStepper + ?Sized>(
+fn refresh_interpolated_sample_state<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
-    stepper: &mut St,
+    backend: &mut St,
 ) -> Result<(), SimDriverError> {
     settle_kernel(
         ctx.runtime,
-        stepper,
+        backend,
         state.current_y,
         state.params,
         target,
         ctx.opts.atol.max(1.0e-10),
     )?;
-    stepper.refresh_observation(state.current_y, state.params, target)?;
+    backend.refresh_observation(state.current_y, state.params, target)?;
     ctx.runtime_params
         .borrow_mut()
         .copy_from_slice(state.params);
     Ok(())
 }
 
-fn apply_scheduled_time_event<St: SolverStepper + ?Sized>(
+fn apply_scheduled_time_event<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     event: RuntimeEventStop,
     target: f64,
-    stepper: &mut St,
+    backend: &mut St,
     observations: ObservationBuffers<'_>,
 ) -> Result<(), SimDriverError> {
     let tol = ctx.opts.atol.max(1.0e-10);
@@ -590,7 +590,7 @@ fn apply_scheduled_time_event<St: SolverStepper + ?Sized>(
     let event_pre_p = vec![0.0; state.params.len()];
     let outcome = {
         let mut handler = EventBoundary {
-            stepper: &*stepper,
+            backend: &*backend,
             runtime: ctx.runtime,
             y: state.current_y,
             p: state.params,
@@ -612,26 +612,26 @@ fn apply_scheduled_time_event<St: SolverStepper + ?Sized>(
     };
     *state.current_t = outcome.final_t;
     commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
-    reinitialize_solver_after_time_event(ctx, state, stepper, tol)
+    reinitialize_solver_after_time_event(ctx, state, backend, tol)
 }
 
-fn reinitialize_solver_after_time_event<St: SolverStepper + ?Sized>(
+fn reinitialize_solver_after_time_event<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
-    stepper: &mut St,
+    backend: &mut St,
     tol: f64,
 ) -> Result<(), SimDriverError> {
     let t_right = *state.current_t;
     settle_kernel(
         ctx.runtime,
-        stepper,
+        backend,
         state.current_y,
         state.params,
         t_right,
         tol,
     )?;
-    let (native_y, native_dy) = stepper.reset_vectors(state.current_y, state.params, t_right)?;
-    stepper.reset(
+    let (native_y, native_dy) = backend.reset_vectors(state.current_y, state.params, t_right)?;
+    backend.reset(
         &native_y,
         &native_dy,
         state.params,
@@ -640,68 +640,105 @@ fn reinitialize_solver_after_time_event<St: SolverStepper + ?Sized>(
     )
 }
 
-fn advance_to_target_once<St: SolverStepper + ?Sized>(
+fn advance_to_target_once<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
     event_stop: Option<RuntimeEventStop>,
-    stepper: &mut St,
+    backend: &mut St,
     deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
     if event_stop.is_some() {
-        return advance_to_scheduled_stop(ctx, state, target, stepper, deferred_root);
+        return advance_to_scheduled_stop(ctx, state, target, backend);
     }
-    advance_output_interval(ctx, state, target, stepper, deferred_root)
+    advance_output_interval(ctx, state, target, backend, deferred_root)
 }
 
-fn advance_to_scheduled_stop<St: SolverStepper + ?Sized>(
+fn advance_to_scheduled_stop<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
-    stepper: &mut St,
-    deferred_root: &mut Option<f64>,
+    backend: &mut St,
 ) -> Result<bool, SimDriverError> {
-    // Time-event boundaries are left limits of a continuous trajectory. Let the
-    // adaptive solver keep its natural BDF history, interpolate the left-limit
-    // state at `target`, and reset after the discrete event. Pinning a BDF
-    // `tstop` here can leave a stale stop if a root is detected at the same
-    // instant, causing the next post-event step to reject "stop time == current
-    // time".
-    advance_output_interval(ctx, state, target, stepper, deferred_root)
+    if backend.time() > target {
+        backend.state_mut_back(target)?;
+    }
+    if sample_time_match_with_tol(backend.time(), target) {
+        *state.current_t = target;
+        state
+            .params
+            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        let native = backend.native_y();
+        write_full_y(backend, &native, target, state.current_y, state.params)?;
+        return Ok(false);
+    }
+    backend.set_stop_time(target)?;
+    loop {
+        let outcome = match backend.step() {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                backend.trace_step_failure(
+                    state.current_y,
+                    state.params,
+                    *state.current_t,
+                    backend.time(),
+                    &e.to_string(),
+                );
+                return Err(e);
+            }
+        };
+        match outcome {
+            StepOutcome::Stop => {
+                let stop_t = backend.time();
+                *state.current_t = stop_t;
+                state
+                    .params
+                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+                let native = backend.native_y();
+                write_full_y(backend, &native, stop_t, state.current_y, state.params)?;
+                return Ok(false);
+            }
+            StepOutcome::Internal => continue,
+            StepOutcome::Root { t_root } => {
+                trace_step_event("scheduled-root", backend.time(), Some(t_root));
+                return handle_root_crossing(ctx, state, t_root, target, backend);
+            }
+        }
+    }
 }
 
-fn advance_output_interval<St: SolverStepper + ?Sized>(
+fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
-    stepper: &mut St,
+    backend: &mut St,
     deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
     // Backends whose interpolation re-projects algebraics (reduced-state) ask to
     // land exactly on each output point near discontinuities; otherwise we keep
     // free dense-output stepping so a multi-step controller is not starved by a
     // fine output grid.
-    if stepper.prefer_exact_output_steps() {
-        return advance_output_interval_clamped(ctx, state, target, stepper);
+    if backend.prefer_exact_output_steps() {
+        return advance_output_interval_clamped(ctx, state, target, backend);
     }
     loop {
-        if stepper.time() >= target {
-            let y_at_target = stepper.interpolate(target)?;
+        if backend.time() >= target {
+            let y_at_target = backend.interpolate(target)?;
             *state.current_t = target;
             state
                 .params
                 .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-            write_full_y(stepper, &y_at_target, target, state.current_y, state.params)?;
+            write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
             return Ok(false);
         }
-        let outcome = match stepper.step() {
+        let outcome = match backend.step() {
             Ok(outcome) => outcome,
             Err(e) => {
-                stepper.trace_step_failure(
+                backend.trace_step_failure(
                     state.current_y,
                     state.params,
                     *state.current_t,
-                    stepper.time(),
+                    backend.time(),
                     &e.to_string(),
                 );
                 return Err(e);
@@ -710,18 +747,18 @@ fn advance_output_interval<St: SolverStepper + ?Sized>(
         match outcome {
             StepOutcome::Stop | StepOutcome::Internal => {}
             StepOutcome::Root { t_root } => {
-                trace_step_event("output-root", stepper.time(), Some(t_root));
+                trace_step_event("output-root", backend.time(), Some(t_root));
                 let root_after_target =
                     t_root > target && !sample_time_match_with_tol(t_root, target);
                 if !root_after_target {
-                    return handle_root_crossing(ctx, state, t_root, target, stepper);
+                    return handle_root_crossing(ctx, state, t_root, target, backend);
                 }
-                let y_at_target = stepper.interpolate(target)?;
+                let y_at_target = backend.interpolate(target)?;
                 *state.current_t = target;
                 state
                     .params
                     .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                write_full_y(stepper, &y_at_target, target, state.current_y, state.params)?;
+                write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
                 *deferred_root = Some(t_root);
                 return Ok(false);
             }
@@ -729,31 +766,31 @@ fn advance_output_interval<St: SolverStepper + ?Sized>(
     }
 }
 
-fn advance_output_interval_clamped<St: SolverStepper + ?Sized>(
+fn advance_output_interval_clamped<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
-    stepper: &mut St,
+    backend: &mut St,
 ) -> Result<bool, SimDriverError> {
-    if stepper.time() >= target {
-        let y_at_target = stepper.interpolate(target)?;
+    if backend.time() >= target {
+        let y_at_target = backend.interpolate(target)?;
         *state.current_t = target;
         state
             .params
             .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        write_full_y(stepper, &y_at_target, target, state.current_y, state.params)?;
+        write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
         return Ok(false);
     }
-    stepper.set_stop_time(target)?;
+    backend.set_stop_time(target)?;
     loop {
-        let outcome = match stepper.step() {
+        let outcome = match backend.step() {
             Ok(outcome) => outcome,
             Err(e) => {
-                stepper.trace_step_failure(
+                backend.trace_step_failure(
                     state.current_y,
                     state.params,
                     *state.current_t,
-                    stepper.time(),
+                    backend.time(),
                     &e.to_string(),
                 );
                 return Err(e);
@@ -761,53 +798,39 @@ fn advance_output_interval_clamped<St: SolverStepper + ?Sized>(
         };
         match outcome {
             StepOutcome::Stop => {
-                let stop_t = stepper.time();
+                let stop_t = backend.time();
                 *state.current_t = stop_t;
                 state
                     .params
                     .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                let native = stepper.native_y();
-                write_full_y(stepper, &native, stop_t, state.current_y, state.params)?;
+                let native = backend.native_y();
+                write_full_y(backend, &native, stop_t, state.current_y, state.params)?;
                 return Ok(false);
             }
             StepOutcome::Internal => continue,
             StepOutcome::Root { t_root } => {
-                trace_step_event("output-root-clamped", stepper.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, stepper);
+                trace_step_event("output-root-clamped", backend.time(), Some(t_root));
+                return handle_root_crossing(ctx, state, t_root, target, backend);
             }
         }
     }
 }
 
-fn handle_root_crossing<St: SolverStepper + ?Sized>(
+fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     t_root: f64,
     target: f64,
-    stepper: &mut St,
+    backend: &mut St,
 ) -> Result<bool, SimDriverError> {
     // A zero-crossing is a single-apply event: pin to the root, bracket the
     // continuous state across [root_t, right_t], apply at the right limit, and
-    // settle. Backends that keep their internal step at the accepted step end
-    // (diffsol BDF) use this pinning to expose the physical root state before
-    // the event path rebuilds the backend after the discrete update.
+    // settle — all via the backend-neutral kernels (shared with the scheduled
+    // path and every backend through the backend callbacks).
     let tol = ctx.opts.atol.max(1.0e-10);
-    let solver_t = stepper.time();
-    let pin_t = if t_root > solver_t {
-        let root_pin_tol = tol * (1.0 + t_root.abs().max(solver_t.abs()));
-        if (t_root - solver_t).abs() <= root_pin_tol {
-            solver_t
-        } else {
-            return Err(SimDriverError::Backend(format!(
-                "root time {t_root:.12} is after backend time {solver_t:.12}"
-            )));
-        }
-    } else {
-        t_root
-    };
-    stepper.state_mut_back(pin_t)?;
-    let root_t = stepper.time();
-    let native_at_root = stepper.native_y();
+    backend.state_mut_back(t_root)?;
+    let root_t = backend.time();
+    let native_at_root = backend.native_y();
     let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
     let right_t = runtime_root_event_application_time(root_t, target);
     *state.current_t = right_t;
@@ -816,7 +839,7 @@ fn handle_root_crossing<St: SolverStepper + ?Sized>(
         .copy_from_slice(ctx.runtime_params.borrow().as_slice());
     let mut event_pre_y = vec![0.0; state.current_y.len()];
     write_full_y(
-        stepper,
+        backend,
         &native_at_root,
         root_t,
         &mut event_pre_y,
@@ -824,7 +847,7 @@ fn handle_root_crossing<St: SolverStepper + ?Sized>(
     )?;
     state.current_y.copy_from_slice(&event_pre_y);
     bracket_event_limits_kernel(
-        stepper,
+        backend,
         &mut event_pre_y,
         state.current_y,
         state.params,
@@ -833,7 +856,7 @@ fn handle_root_crossing<St: SolverStepper + ?Sized>(
     )?;
     apply_event_update_kernel(
         ctx.runtime,
-        stepper,
+        backend,
         state.current_y,
         state.params,
         right_t,
@@ -845,17 +868,17 @@ fn handle_root_crossing<St: SolverStepper + ?Sized>(
     )?;
     settle_kernel(
         ctx.runtime,
-        stepper,
+        backend,
         state.current_y,
         state.params,
         right_t,
         tol,
     )?;
     commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
-    stepper.trace_post_event_state(state.current_y, state.params, *state.current_t);
+    backend.trace_post_event_state(state.current_y, state.params, *state.current_t);
     let (native_y, native_dy) =
-        stepper.reset_vectors(state.current_y, state.params, *state.current_t)?;
-    stepper.reset(
+        backend.reset_vectors(state.current_y, state.params, *state.current_t)?;
+    backend.reset(
         &native_y,
         &native_dy,
         state.params,

@@ -106,7 +106,7 @@ test("web simulation clients default persisted results to results directory", ()
   const settingsBlock = sliceFrom(
     source,
     "function getSimulationSettings(",
-    "function getConfiguredWorkspaceSourceRootPaths(",
+    "function isSimulationRunnableDocument(",
   );
   const resultDirectoryBlock = sliceFrom(
     source,

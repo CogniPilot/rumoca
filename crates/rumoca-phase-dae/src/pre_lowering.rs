@@ -47,8 +47,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     let mut pre_params: IndexMap<rumoca_core::VarName, dae::Variable> = IndexMap::new();
 
     for (target_name, target) in &pre_targets {
-        let pre_param_name =
-            rumoca_core::VarName::new(format!("__pre__.{}", target.source_name.as_str()));
+        let pre_param_name = rumoca_core::pre_slot_name(target.source_name.as_str());
         let Some(var) = find_variable(dae, &target.source_name) else {
             return Err(ToDaeError::runtime_contract_violation_at(
                 format!(
@@ -642,7 +641,7 @@ fn is_allowed_explicit_pre_target_partition(
     name: &rumoca_core::VarName,
     allow_continuous_target: bool,
 ) -> bool {
-    if is_pre_target_partition(partition) || name.as_str().starts_with("__pre__.") {
+    if is_pre_target_partition(partition) || rumoca_core::is_pre_slot(name.as_str()) {
         return true;
     }
 
@@ -1205,7 +1204,7 @@ fn pre_var_ref(
     span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::generated(format!("__pre__.{}", name.as_str())),
+        name: rumoca_core::Reference::generated(rumoca_core::pre_slot_name(name.as_str()).as_str()),
         subscripts: subscripts.to_vec(),
         span,
     }
@@ -1323,7 +1322,7 @@ fn subscript_source_span(subscript: &rumoca_core::Subscript) -> Option<rumoca_co
 }
 
 fn is_pre_parameter_name(name: &rumoca_core::VarName) -> bool {
-    name.as_str().starts_with("__pre__.")
+    rumoca_core::is_pre_slot(name.as_str())
 }
 
 fn indexed_field_target_name(

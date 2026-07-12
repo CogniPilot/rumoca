@@ -42,39 +42,7 @@
 #include <string.h>
 #include <math.h>
 
-/* FMI3 types and function declarations (match fmi3/model.c.jinja) */
-typedef unsigned int fmi3ValueReference;
-typedef double       fmi3Float64;
-typedef int          fmi3Boolean;
-typedef const char*  fmi3String;
-typedef void*        fmi3Instance;
-typedef void*        fmi3InstanceEnvironment;
-
-typedef enum { fmi3OK, fmi3Warning, fmi3Discard, fmi3Error, fmi3Fatal } fmi3Status;
-
-typedef void (*fmi3LogMessageCallback)(
-    fmi3InstanceEnvironment instanceEnvironment,
-    fmi3Status status,
-    fmi3String category,
-    fmi3String message);
-
-/* FMI3 API declarations */
-extern fmi3Instance fmi3InstantiateModelExchange(
-    fmi3String, fmi3String, fmi3String, fmi3Boolean, fmi3Boolean,
-    fmi3InstanceEnvironment, fmi3LogMessageCallback);
-extern void fmi3FreeInstance(fmi3Instance);
-extern fmi3Status fmi3EnterInitializationMode(fmi3Instance, fmi3Boolean, fmi3Float64, fmi3Float64, fmi3Boolean, fmi3Float64);
-extern fmi3Status fmi3ExitInitializationMode(fmi3Instance);
-extern fmi3Status fmi3SetTime(fmi3Instance, fmi3Float64);
-extern fmi3Status fmi3SetContinuousStates(fmi3Instance, const fmi3Float64[], size_t);
-extern fmi3Status fmi3GetContinuousStates(fmi3Instance, fmi3Float64[], size_t);
-extern fmi3Status fmi3GetContinuousStateDerivatives(fmi3Instance, fmi3Float64[], size_t);
-extern fmi3Status fmi3EnterEventMode(fmi3Instance);
-extern fmi3Status fmi3UpdateDiscreteStates(fmi3Instance, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Float64*);
-extern fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance);
-extern fmi3Status fmi3CompletedIntegratorStep(fmi3Instance, fmi3Boolean, fmi3Boolean*, fmi3Boolean*);
-extern fmi3Status fmi3Terminate(fmi3Instance);
-extern fmi3Status fmi3SetClock(fmi3Instance, const fmi3ValueReference[], size_t, const fmi3Boolean[]);
+#include "fmi3Functions.h"
 
 static void dummy_logger(fmi3InstanceEnvironment env, fmi3Status status, fmi3String cat, fmi3String msg) {
     (void)env; (void)status; (void)cat; (void)msg;

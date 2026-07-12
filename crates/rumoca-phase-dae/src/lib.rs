@@ -34,8 +34,12 @@ mod convert;
 mod dae_lowering;
 mod equation_conversion;
 mod errors;
+mod fmi_metadata_values;
+#[cfg(test)]
+mod fmi_metadata_values_tests;
 mod fold_start_values;
 mod initial;
+mod inline_hidden_component_algebraics;
 mod name_resolution;
 mod overconstrained_interface;
 mod path_utils;
@@ -95,7 +99,8 @@ pub use balance::{
 };
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
-    prepare_dae_for_codegen, scalarize_phantom_vector_equations,
+    prepare_dae_for_codegen, prepare_dae_for_fmi_model_description,
+    scalarize_phantom_vector_equations,
 };
 pub use errors::{ToDaeError, ToDaeResult};
 // Re-export moved functions so sibling modules can still use `super::`.
@@ -369,26 +374,14 @@ pub fn to_dae_with_options(
     Ok(dae)
 }
 
-fn initialize_dae_metadata(dae: &mut dae::Dae, flat: &flat::Model) {
-    // MLS §4.7: Propagate partial status and class type for balance checking.
-    dae.metadata.is_partial = flat.is_partial;
-    dae.metadata.class_type = flat.class_type.clone();
-    dae.metadata.model_description = flat.model_description.clone();
-    dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
-    dae.metadata.nonnumeric_variable_names = nonnumeric_variable_names(flat);
-}
-
-fn nonnumeric_variable_names(flat: &flat::Model) -> Vec<String> {
-    flat.variable_type_names
-        .iter()
-        .filter(|(name, type_name)| {
-            rumoca_core::qualified_type_name_matches(type_name, "String")
-                || flat.variables.get(*name).is_some_and(|var| {
-                    variable_analysis::is_external_constructor_handle(flat, name, var)
-                })
-        })
-        .map(|(name, _)| name.as_str().to_string())
-        .collect()
+/// Fold hidden scalar component-output algebraics for projection backends.
+///
+/// This is intentionally not part of canonical ToDae finalization. Some export
+/// targets need component-local output aliases expressed as ordinary discrete
+/// RHS expressions before their capability gates run, while simulation and MSL
+/// quality gates should consume the canonical DAE emitted by ToDae.
+pub fn fold_hidden_component_outputs_for_projection(dae: &mut dae::Dae) {
+    inline_hidden_component_algebraics::inline_hidden_component_algebraics(dae);
 }
 
 fn finalize_lowered_dae(

@@ -3,7 +3,7 @@
 Interactive simulation is regular `task = "simulate"` with live inputs enabled.
 The scenario still owns the model, solver, and output/viewer panels; `[sim]`
 chooses the clock policy, `[input]` maps devices into local state, and
-`[signals.stepper_inputs]` routes that state into Modelica `input` variables.
+`[signals.model_inputs]` routes that state into Modelica `input` variables.
 External browser scenes are just one presentation surface for that same run.
 
 ## Running the Examples
@@ -53,6 +53,24 @@ cargo run -p rumoca --release -- \
   sim -c examples/interactive/fixedwing/rumoca-scenario.toml
 ```
 
+### Reusable Booster Autonomous Landing
+
+```modelica,interactive
+// rumoca-live-scenario: ../repo-examples/interactive/reusable_booster/rumoca-scenario.toml
+```
+
+Native run:
+
+```bash
+cargo xtask repo modelica-deps ensure
+cargo run -p rumoca --release -- \
+  sim -c examples/interactive/reusable_booster/rumoca-scenario.toml
+```
+
+See [Reusable Booster Autonomous Landing](./reusable-booster-landing.md) for the
+differential-flatness planner, `SE_2(3)` controller, gimbal/RCS allocation, and
+visualization details.
+
 The CLI prints the HTTP and WebSocket endpoints for the viewer. Open the
 HTTP URL in a browser if it does not open automatically. Use release builds
 — interactive simulation is real-time work.
@@ -72,6 +90,7 @@ name = "QuadrotorAcro"
 
 [sim]
 dt = 0.01
+t_end = 10.0
 mode = "realtime"
 solver = "rk-like"
 
@@ -101,10 +120,10 @@ state = "armed"
 debounce_ms = 500
 precondition = "throttle <= 0.05"
 
-[signals.stepper_inputs]
+[signals.model_inputs]
 stick_throttle = "local:throttle"
 
-[signals.stepper_inputs.armed]
+[signals.model_inputs.armed]
 from = "local:armed"
 when_false = 0.0
 when_true = 1.0
@@ -139,7 +158,7 @@ and live presentation are independent additions:
 - `[transport.http]` + `[transport.websocket]` — serve the browser viewer
   (`scene = "my_scene.js"` selects the 3D scene file). This asks for an
   external web surface.
-- `[input]`, `[locals]`, `[signals.stepper_inputs]` — named runner state and
+- `[input]`, `[locals]`, `[signals.model_inputs]` — named simulation state and
   routing from input devices to model `input` variables. Input alone does not
   select a special viewer.
 - `[transport.udp]` + `[schema]`/`[receive]`/`[send]` — couple an external
@@ -171,5 +190,5 @@ devices) without changing the Modelica source.
 
 Viewer surfaces are separate from input routing. Standard timeseries/scatter
 panels use the results viewer. External web scenes use the native realtime
-runner and the configured scene script. Both are launched from scenarios, so
+scheduled loop and the configured scene script. Both are launched from scenarios, so
 the same configuration works from the CLI, VS Code, and editor tooling.

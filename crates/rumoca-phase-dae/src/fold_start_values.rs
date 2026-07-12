@@ -20,43 +20,7 @@ use std::collections::HashMap;
 pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeError> {
     // Phase 1: build a name→value map from constants, enum ordinals, and
     // parameter start expressions (fixed-point iteration).
-    let mut values: HashMap<String, ConstValue> = HashMap::new();
-    let dims = rumoca_eval_dae::collect_var_dims(dae);
-
-    // Seed with enum literal ordinals
-    for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
-        values.insert(name.clone(), ConstValue::Real(*ordinal as f64));
-    }
-    seed_modelica_standard_constants(&mut values);
-
-    // Collect all named start bindings (constants, parameters, inputs, states,
-    // discrete reals, discrete valued, algebraics, outputs)
-    let mut bindings = Vec::new();
-    StartBindingCollector {
-        bindings: &mut bindings,
-    }
-    .visit_dae(dae);
-    let declared_start_names = declared_start_names(&bindings, dae);
-
-    // Fixed-point iteration: resolve chains like A = B, B = 3.14
-    let max_passes = bindings.len().max(1) * 2;
-    for _ in 0..max_passes {
-        let mut changed = false;
-        for (name, expr) in &bindings {
-            if values.contains_key(name.as_str()) {
-                continue;
-            }
-            if let Some(value) = eval_start_const_expr(expr, &values, &dims)
-                && value.is_finite()
-            {
-                values.insert(name.to_string(), value);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let values = collect_foldable_start_values(dae);
 
     // Set of parameter names: a parameter start expression that references
     // another parameter stays symbolic (see below), matching the bare-alias
@@ -167,140 +131,38 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) -> Result<(), ToDaeEr
     Ok(())
 }
 
-/// Replace Modelica Standard Library package constants with literals anywhere
-/// they survive lowering as references. These constants are translation-time
-/// package declarations, not runtime variables, so unresolved VarRefs to them
-/// should not reach DAE reference validation.
-pub(crate) fn fold_known_package_constants_to_literals(dae: &mut Dae) {
-    let mut rewriter = KnownPackageConstantRewriter;
-    rewrite_variable_attributes(&mut dae.variables, &mut rewriter);
-    for equation in dae
-        .continuous
-        .equations
-        .iter_mut()
-        .chain(dae.discrete.real_updates.iter_mut())
-        .chain(dae.discrete.valued_updates.iter_mut())
-        .chain(dae.conditions.equations.iter_mut())
-        .chain(dae.initialization.equations.iter_mut())
-    {
-        equation.rhs = rewriter.rewrite_expression(&equation.rhs);
+fn collect_foldable_start_values(dae: &Dae) -> HashMap<String, ConstValue> {
+    let mut values: HashMap<String, ConstValue> = HashMap::new();
+
+    for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
+        values.insert(name.clone(), ConstValue::Real(*ordinal as f64));
     }
-    rewrite_expressions(&mut dae.conditions.relations, &mut rewriter);
-    rewrite_expressions(&mut dae.events.synthetic_root_conditions, &mut rewriter);
-    for action in &mut dae.events.event_actions {
-        action.condition = rewriter.rewrite_expression(&action.condition);
-        let (rumoca_ir_dae::DaeEventActionKind::Assert { message }
-        | rumoca_ir_dae::DaeEventActionKind::Terminate { message }) = &mut action.kind;
-        *message = rewriter.rewrite_expression(message);
+
+    let mut bindings = Vec::new();
+    StartBindingCollector {
+        bindings: &mut bindings,
     }
-    rewrite_expressions(&mut dae.clocks.constructor_exprs, &mut rewriter);
-    rewrite_expressions(&mut dae.clocks.triggered_conditions, &mut rewriter);
-    for function in dae.symbols.functions.values_mut() {
-        for param in function
-            .inputs
-            .iter_mut()
-            .chain(function.outputs.iter_mut())
-            .chain(function.locals.iter_mut())
-        {
-            if let Some(default) = &mut param.default {
-                *default = rewriter.rewrite_expression(default);
+    .visit_dae(dae);
+
+    let max_passes = bindings.len().max(1) * 2;
+    for _ in 0..max_passes {
+        let mut changed = false;
+        for (name, expr) in &bindings {
+            if values.contains_key(name.as_str()) {
+                continue;
+            }
+            if let Some(value) = eval_start_const_expr(expr, &values)
+                && value.is_finite()
+            {
+                values.insert(name.to_string(), value);
+                changed = true;
             }
         }
-        function.body = rewriter.rewrite_statements(&function.body);
-    }
-}
-
-fn rewrite_variable_attributes(
-    variables: &mut DaeVariables,
-    rewriter: &mut KnownPackageConstantRewriter,
-) {
-    for variable in variables
-        .states
-        .values_mut()
-        .chain(variables.algebraics.values_mut())
-        .chain(variables.inputs.values_mut())
-        .chain(variables.outputs.values_mut())
-        .chain(variables.parameters.values_mut())
-        .chain(variables.constants.values_mut())
-        .chain(variables.discrete_reals.values_mut())
-        .chain(variables.discrete_valued.values_mut())
-    {
-        rewrite_optional_expression(&mut variable.start, rewriter);
-        rewrite_optional_expression(&mut variable.min, rewriter);
-        rewrite_optional_expression(&mut variable.max, rewriter);
-        rewrite_optional_expression(&mut variable.nominal, rewriter);
-    }
-}
-
-fn rewrite_expressions(
-    expressions: &mut [Expression],
-    rewriter: &mut KnownPackageConstantRewriter,
-) {
-    for expression in expressions {
-        *expression = rewriter.rewrite_expression(expression);
-    }
-}
-
-fn rewrite_optional_expression(
-    expression: &mut Option<Expression>,
-    rewriter: &mut KnownPackageConstantRewriter,
-) {
-    if let Some(expression) = expression {
-        *expression = rewriter.rewrite_expression(expression);
-    }
-}
-
-struct KnownPackageConstantRewriter;
-
-impl ExpressionRewriter for KnownPackageConstantRewriter {
-    fn rewrite_var_ref_expression(
-        &mut self,
-        name: &Reference,
-        subscripts: &[Subscript],
-        span: Span,
-    ) -> Expression {
-        if subscripts.is_empty()
-            && let Some(value) = modelica_standard_constant_value(name.as_str())
-        {
-            return Expression::Literal {
-                value: Literal::Real(value),
-                span,
-            };
+        if !changed {
+            break;
         }
-        self.walk_var_ref_expression(name, subscripts, span)
     }
-}
-
-impl StatementRewriter for KnownPackageConstantRewriter {}
-
-fn seed_modelica_standard_constants(values: &mut HashMap<String, ConstValue>) {
-    for (name, value) in MODELICA_STANDARD_CONSTANTS {
-        values
-            .entry(name.to_string())
-            .or_insert(ConstValue::Real(*value));
-    }
-}
-
-const MODELICA_STANDARD_CONSTANTS: &[(&str, f64)] = &[
-    ("Modelica.Constants.pi", std::f64::consts::PI),
-    ("Modelica.Constants.e", std::f64::consts::E),
-    ("Modelica.Constants.small", 1.0e-60),
-    ("Modelica.Constants.eps", f64::EPSILON),
-];
-
-fn modelica_standard_constant_value(name: &str) -> Option<f64> {
-    MODELICA_STANDARD_CONSTANTS
-        .iter()
-        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
-}
-
-fn is_declared_start_reference(
-    name: &rumoca_core::Reference,
-    declared_start_names: &std::collections::HashSet<String>,
-) -> bool {
-    reference_lookup_names(name)
-        .iter()
-        .any(|candidate| declared_start_names.contains(candidate))
+    values
 }
 
 fn folded_start_span(var: &Variable, start: &Expression) -> Result<Span, ToDaeError> {

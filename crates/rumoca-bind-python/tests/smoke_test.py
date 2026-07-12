@@ -15,7 +15,7 @@ SOURCE_ROOT = FIXTURE_ROOT / "Lib"
 
 
 def test_load_and_metadata() -> None:
-    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    m = rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
     assert m.name == "UsesLib"
     assert m.states.names == ["x"]
     assert m.parameters.names == ["gain"]
@@ -36,13 +36,13 @@ def test_load_and_metadata() -> None:
 
 def test_loads_inline() -> None:
     src = "model Decay Real x(start=1); equation der(x) = -x; end Decay;"
-    m = rm.loads(src, model="Decay")
+    m = rm.Session().loads(src, model="Decay")
     assert m.name == "Decay"
     assert m.states.names == ["x"]
 
 
 def test_simulate() -> None:
-    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    m = rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
     r = m.simulate(t=(0.0, 0.2), dt=0.1)
     assert isinstance(r, rm.Result)
     assert r.model == "UsesLib"
@@ -53,7 +53,7 @@ def test_simulate() -> None:
 
 
 def test_codegen() -> None:
-    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    m = rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
     cg = m.codegen("sympy")
     assert cg.target == "sympy"
     assert any(p.endswith(".py") for p in cg.paths)
@@ -63,7 +63,7 @@ def test_codegen() -> None:
 
 
 def test_render() -> None:
-    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    m = rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
     rendered = m.render("dae-modelica")
     assert "UsesLib" in rendered
 

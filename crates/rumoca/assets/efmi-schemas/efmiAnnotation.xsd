@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:complexType name="efmiAnnotation">
+		<xs:sequence minOccurs="1" maxOccurs="unbounded">
+			<xs:element name="Annotation">
+				<xs:annotation>
+					<xs:documentation>Tool specific annotation
+(ignored by other tools).</xs:documentation>
+				</xs:annotation>
+				<xs:complexType>
+					<xs:sequence>
+						<xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+					</xs:sequence>
+					<xs:attribute name="type" type="xs:normalizedString" use="required">
+						<xs:annotation>
+							<xs:documentation>Domain name in reverse domain notation of the tool that can interpret the annotation. Must be unique with respect to all other elements of the Annotation list. Domain names under both the "org.modelica" and "org.efmi-standard" domains are reserved for future eFMI versions.</xs:documentation>
+						</xs:annotation>
+					</xs:attribute>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

@@ -21,6 +21,7 @@ use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
 use std::path::Path;
 
+mod fmi3_projection;
 mod render_c;
 mod render_dae_modelica;
 mod render_expr;
@@ -30,6 +31,7 @@ mod render_stmt;
 mod solve_lazy;
 mod symbol_alloc;
 
+use fmi3_projection::fmi3_scalar_projection_schedule_function;
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
@@ -38,8 +40,9 @@ use render_solve::{
     render_solve_pre_param_binding_c_function, render_solve_row_c_function,
     render_solve_row_output_wgsl_function, render_solve_row_rust_function,
     render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
-    render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
-    render_wgsl_native_family_inventory_json_function, solve_block_output_count_function,
+    render_solve_target_assignment_c_function, render_wgsl_kernel_schedule_json_function,
+    render_wgsl_kernel_workgroup_total_function, render_wgsl_native_family_inventory_json_function,
+    solve_block_output_count_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
@@ -287,7 +290,11 @@ fn add_function_output_projection_refs(
             let selector = if count == 1 {
                 output.name.as_str().to_string()
             } else {
-                format!("{}[{}]", output.name.as_str(), element_idx)
+                format!(
+                    "{}[{}]",
+                    output.name.as_str(),
+                    source_subscript_suffix(&dims, element_idx)?
+                )
             };
             refs.insert(format!("{func_name}.{selector}"));
         }
@@ -1396,7 +1403,11 @@ fn add_basic_template_helpers(env: &mut Environment<'static>) {
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
-    env.add_filter("json", json_filter);
+    // eFMI manifest render env (contract §3b): autoescape is OFF, so every
+    // text value is escaped explicitly and every raw f64 is rendered as a
+    // valid xs:double lexical.
+    env.add_filter("xml_escape", xml_escape_filter);
+    env.add_filter("xs_double", xs_double_filter);
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.
@@ -1427,6 +1438,14 @@ fn add_basic_template_helpers(env: &mut Environment<'static>) {
 
 fn add_solve_template_helpers(env: &mut Environment<'static>) {
     env.add_function("render_solve_row_c", render_solve_row_c_function);
+    env.add_function(
+        "fmi3_scalar_projection_schedule",
+        fmi3_scalar_projection_schedule_function,
+    );
+    env.add_function(
+        "render_solve_target_assignment_c",
+        render_solve_target_assignment_c_function,
+    );
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
     env.add_function("render_solve_block_c", render_solve_block_c_function);
     env.add_function("render_solve_block_rust", render_solve_block_rust_function);
@@ -1720,6 +1739,49 @@ fn eval_integer_sum(expr: &str) -> Option<i64> {
 fn last_segment_filter(value: Value) -> String {
     let s = value.to_string().replace('"', "");
     rumoca_core::top_level_last_segment(&s).to_string()
+}
+
+/// XML-escape a text value: the five predefined entities `& < > " '`.
+///
+/// The eFMI manifest templates render under an autoescape-OFF, strict
+/// environment (contract §3b), so every interpolated text value is piped
+/// through this filter: `{{ name | xml_escape }}`. Control-char rejection is
+/// NOT this filter's job — that stays a validator on the context.
+pub(crate) fn xml_escape_str(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn xml_escape_filter(value: String) -> String {
+    xml_escape_str(&value)
+}
+
+/// Render a finite `f64` as a valid `xs:double` lexical form (explicit
+/// decimal point, never exponent notation): `2` -> `2.0`, `1e300` stays a
+/// plain decimal. Mirrors `rumoca_galec_codegen::xs_double` (a tier below cannot be
+/// imported here, so the guarantee is duplicated deliberately — contract §6);
+/// used by the eFMI templates for raw `BaseUnit` factor/offset.
+pub(crate) fn xs_double_str(value: f64) -> String {
+    let rendered = format!("{value}");
+    if rendered.contains('.') {
+        rendered
+    } else {
+        format!("{rendered}.0")
+    }
+}
+
+fn xs_double_filter(value: f64) -> String {
+    xs_double_str(value)
 }
 
 /// Filter to compute the product of all elements in a sequence.
@@ -2485,29 +2547,7 @@ impl ExprConfig {
 }
 
 #[cfg(test)]
-mod local_tests {
-    use super::*;
-
-    #[test]
-    fn enum_type_names_use_top_level_parent_scope() {
-        let mut dae = dae::Dae::default();
-        dae.symbols.enum_literal_ordinals.insert(
-            "Modelica.Blocks.Types.Smoothness.LinearSegments".to_string(),
-            1,
-        );
-        dae.symbols
-            .enum_literal_ordinals
-            .insert("Pkg.Enum[index.with.dot].Choice".to_string(), 1);
-
-        assert_eq!(
-            enum_type_names_from_ordinals(&dae),
-            vec![
-                "Modelica.Blocks.Types.Smoothness".to_string(),
-                "Pkg.Enum[index.with.dot]".to_string(),
-            ]
-        );
-    }
-}
+mod local_tests;
 
 mod solve_renderer;
 pub use solve_renderer::SolveTemplateRenderer;
@@ -2521,6 +2561,8 @@ mod codegen_tests;
 mod dae_modelica_tests;
 #[cfg(test)]
 mod fmi_template_tests;
+#[cfg(test)]
+mod galec_manifest_template_tests;
 #[cfg(test)]
 mod solve_sparse_output_tests;
 #[cfg(test)]

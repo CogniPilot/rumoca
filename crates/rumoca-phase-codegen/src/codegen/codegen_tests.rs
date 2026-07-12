@@ -523,6 +523,91 @@ fn test_rust_solve_builtin_target_syntax_checks_when_rustc_available() {
 }
 
 #[test]
+fn test_rust_fixed_solve_builtin_target_renders_fixed_derivative_kernel() {
+    let problem = solve_problem_with_one_by_one_matmul_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-solve", "model_fixed_solve.rs.jinja"),
+        "TensorDemo",
+    )
+    .expect("rust-fixed-solve template should render");
+
+    assert!(rendered.contains("pub type State = [Scalar; Y_LEN];"));
+    assert!(rendered.contains("pub type Parameters = [Scalar; P_LEN];"));
+    assert!(rendered.contains("pub fn derivative_rhs_into"));
+    assert!(rendered.contains("out[0] ="));
+    assert!(!rendered.contains("Vec<"));
+    assert!(!rendered.contains("to_vec"));
+}
+
+#[test]
+fn test_rust_fixed_solve_builtin_target_rejects_linsolve_render() {
+    let problem = solve_problem_with_two_by_two_linsolve_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let err = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-solve", "model_fixed_solve.rs.jinja"),
+        "TensorDemo",
+    )
+    .expect_err("rust-fixed-solve should reject LinSolve during template rendering");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("unsupported-feature:tensor.linsolve")
+            && message.contains("rust-fixed-solve does not support scalar-fallback LinSolve"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_rust_fixed_solve_builtin_target_syntax_checks_when_rustc_available() {
+    if std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping rust-fixed-solve syntax smoke: rustc not available");
+        return;
+    }
+
+    let problem = solve_problem_with_one_by_one_matmul_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let source = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-solve", "model_fixed_solve.rs.jinja"),
+        "TensorDemo",
+    )
+    .expect("rust-fixed-solve source should render");
+    let dir = std::env::temp_dir().join(format!(
+        "rumoca_rust_fixed_solve_smoke_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create rust-fixed-solve smoke dir");
+    let source_path = dir.join("TensorDemo_fixed_solve.rs");
+    std::fs::write(&source_path, source).expect("write generated rust-fixed-solve source");
+
+    let output = std::process::Command::new("rustc")
+        .arg("--crate-type")
+        .arg("lib")
+        .arg(&source_path)
+        .current_dir(&dir)
+        .output()
+        .expect("run rustc syntax check");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.status.success(),
+        "generated rust-fixed-solve source must pass rustc syntax check\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn test_mlir_builtin_target_renders_tensor_scalar_fallback_rows() {
     let problem = solve_problem_with_one_by_one_matmul_derivative();
     let artifacts = solve::SolveArtifacts::default();
@@ -667,12 +752,16 @@ fn test_dae_template_json_includes_projected_function_output_refs() {
         .collect::<Vec<_>>();
 
     assert!(
-        refs.contains(&"LieGroup.SO3.rotationMatrix.R[1]"),
+        refs.contains(&"LieGroup.SO3.rotationMatrix.R[1,1]"),
         "first projected array-output function symbol should be allocated: {refs:?}",
     );
     assert!(
-        refs.contains(&"LieGroup.SO3.rotationMatrix.R[9]"),
+        refs.contains(&"LieGroup.SO3.rotationMatrix.R[3,3]"),
         "last projected array-output function symbol should be allocated: {refs:?}",
+    );
+    assert!(
+        !refs.contains(&"LieGroup.SO3.rotationMatrix.R[1]"),
+        "multidimensional function outputs must preserve source subscripts: {refs:?}",
     );
 }
 
@@ -1524,6 +1613,113 @@ fn test_fmi3_derivative_api_renders_from_solver_ad_ir() {
     assert!(
         !rendered.contains("Finite-difference") && !rendered.contains("finite-difference"),
         "FMI3 derivative APIs should consume solve AD rows, not finite differences"
+    );
+}
+
+#[test]
+fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
+    let mut dae = dae::Dae::new();
+    dae.variables
+        .states
+        .insert("x".into(), dae::Variable::new("x".into(), fixture_span()));
+    dae.variables
+        .algebraics
+        .insert("y".into(), dae::Variable::new("y".into(), fixture_span()));
+    let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
+    let implicit = solve::ScalarProgramBlock::with_output_indices(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::Const { dst: 1, value: 2.0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        vec![fixture_span()],
+        vec![1],
+    )
+    .unwrap();
+    let mut problem = solve::SolveProblem::default();
+    problem.solve_layout.state_scalar_count = 1;
+    problem.solve_layout.algebraic_scalar_count = 1;
+    problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(implicit);
+    problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![solve::AlgebraicProjectionBlock {
+            rows: vec![1],
+            y_indices: vec![1],
+            causal_steps: Vec::new(),
+        }],
+    };
+    let object = dae_json.as_object_mut().unwrap();
+    object.insert("__ir_kind".to_string(), serde_json::json!("solve"));
+    object.insert("solve".to_string(), serde_json::to_value(problem).unwrap());
+
+    let rendered = render_template_with_dae_json_and_name(
+        &dae_json,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+
+    assert!(!rendered.contains("static double __rumoca_implicit_row"));
+    assert!(rendered.contains("const int y_index = 1;"), "{rendered}");
+    assert!(rendered.contains("const double value = 2.0;"), "{rendered}");
+    assert!(rendered.contains("__rumoca_solve_set_y(m, y_index, value)"));
+    assert!(
+        rendered.contains("The Solve-IR projection writes the algebraic and output Y segments")
+    );
+
+    let mut causal = dae_json.clone();
+    *causal
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/causal_steps")
+        .unwrap() = serde_json::json!([{"row": 1, "y_index": 1}]);
+    let rendered = render_template_with_dae_json_and_name(
+        &causal,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect("unsupported causal projection must use the DAE fallback");
+    assert!(
+        !rendered.contains("const int y_index = 1;")
+            && !rendered.contains("The Solve-IR projection writes"),
+        "{rendered}"
+    );
+
+    let mut multi_row = dae_json.clone();
+    *multi_row
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/rows")
+        .unwrap() = serde_json::json!([1, 1]);
+    *multi_row
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/y_indices")
+        .unwrap() = serde_json::json!([1, 1]);
+    let rendered = render_template_with_dae_json_and_name(
+        &multi_row,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect("unsupported multi-row projection must use the DAE fallback");
+    assert!(
+        !rendered.contains("const int y_index = 1;")
+            && !rendered.contains("The Solve-IR projection writes"),
+        "{rendered}"
+    );
+
+    let mut unmatched = dae_json;
+    *unmatched
+        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/rows/0")
+        .unwrap() = serde_json::json!(99);
+    let error = render_template_with_dae_json_and_name(
+        &unmatched,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect_err("FMI3 projection must reject rows without a scalar producer");
+    assert!(
+        error.to_string().contains("has no scalar producer"),
+        "{error}"
     );
 }
 

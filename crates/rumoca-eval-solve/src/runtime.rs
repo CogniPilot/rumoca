@@ -2,8 +2,8 @@ use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
     EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
-    discrete_row_pre_mode, push_visible_values, replace_last_visible_values,
-    row_reads_solver_or_time, timeline::sample_time_match_with_tol, update_relation_memory_slots,
+    push_visible_values, replace_last_visible_values, timeline::sample_time_match_with_tol,
+    update_relation_memory_slots,
 };
 use std::{cell::RefCell, collections::HashMap};
 
@@ -13,21 +13,21 @@ use crate::refresh_plan::{
 };
 use crate::runtime_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
-    event_eval_params_with_relation_overrides, next_runtime_event_stop,
-    visible_values_with_context,
+    next_runtime_event_stop, visible_values_with_context,
 };
 use crate::{
     self as solve_eval, EvalSolveError, PreparedComputeBlock, PreparedScalarProgramBlock,
     RowEvalContext, to_scalar_program_block,
 };
 
+mod discrete_rows;
 mod event_update;
 mod initial_event;
 mod plans;
 mod refresh_batch;
 mod sensitivity;
 mod support;
-use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput, EventEvalParamCache};
+use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput};
 pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 pub use initial_event::{
     InitialEventObservation, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
@@ -88,11 +88,13 @@ pub struct SolveRuntime {
     root_refresh: RefreshPlan,
     root_condition_rows: PreparedScalarProgramBlock,
     root_condition_plan: Option<RootConditionPlan>,
+    discrete_rhs: PreparedScalarProgramBlock,
     visible_name_index: HashMap<String, usize>,
     visible_value_rows: PreparedScalarProgramBlock,
     visible_value_plan: Option<VisibleValuePlan>,
     visible_scratch: RefCell<Vec<f64>>,
     refresh_probe_scratch: RefCell<Vec<f64>>,
+    refresh_tensor_scratch: RefCell<Vec<f64>>,
     runtime_state: solve_eval::SimulationRuntimeState,
     derivative_scratch: RefCell<StateDerivativeScratch>,
     root_scratch: RefCell<Vec<f64>>,
@@ -148,6 +150,7 @@ impl SolveRuntime {
                 model.problem.events.root_conditions.clone(),
             )?,
             root_condition_plan,
+            discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
             visible_name_index: model
                 .visible_names
                 .iter()
@@ -158,6 +161,7 @@ impl SolveRuntime {
             visible_value_plan,
             visible_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
+            refresh_tensor_scratch: RefCell::new(Vec::new()),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             derivative_scratch: RefCell::new(StateDerivativeScratch::default()),
             root_scratch: RefCell::new(Vec::new()),
@@ -644,25 +648,34 @@ impl SolveRuntime {
                 t,
                 self.row_eval_context(),
             )?;
-        match row.assignment_target {
-            // `raw - current_target` is only valid when the row evaluates to the
-            // target's *value* (an expression in the other unknowns). A row that
-            // reads its own target is already a residual in it — e.g. a flow-sum
-            // `... + own + ... = 0` whose `raw` is affine in `own` with a +1
-            // coefficient. Subtracting `own` there cancels that dependence and
-            // leaves a residual with zero slope, so the linear solve reports the
-            // target as undeterminable. Use the bare residual in that case (same
-            // as assignment-shape rows), which Newton-solves correctly.
-            Some(own)
-                if !self
-                    .implicit_scalar_rhs
-                    .row_has_assignment_shape(row.row_idx)
-                    && !self.implicit_scalar_rhs.row_reads_y(row.row_idx, own) =>
-            {
-                Ok(raw - solver_y[own])
-            }
-            _ => Ok(raw),
+        if let Some(target) = self.refresh_row_subtracted_target_index(row) {
+            return Ok(raw - solver_y[target]);
         }
+        Ok(raw)
+    }
+
+    /// Target slot subtracted from raw row output when a shapeless row evaluates
+    /// an implicit target value instead of a residual. The seed/JVP refresh uses
+    /// the same predicate so value projection and sensitivity projection solve
+    /// the same residual.
+    fn refresh_row_subtracted_target_index(&self, row: &AlgebraicRefreshRow) -> Option<usize> {
+        let own = row.assignment_target?;
+        // `raw - current_target` is only valid when the row evaluates to the
+        // target's *value* (an expression in the other unknowns). A row that
+        // reads its own target is already a residual in it — e.g. a flow-sum
+        // `... + own + ... = 0` whose `raw` is affine in `own` with a +1
+        // coefficient. Subtracting `own` there cancels that dependence and
+        // leaves a residual with zero slope, so the linear solve reports the
+        // target as undeterminable. Use the bare residual in that case (same
+        // as assignment-shape rows), which Newton-solves correctly.
+        if !self
+            .implicit_scalar_rhs
+            .row_has_assignment_shape(row.row_idx)
+            && !self.implicit_scalar_rhs.row_reads_y(row.row_idx, own)
+        {
+            return Some(own);
+        }
+        None
     }
 
     fn solve_refresh_residual_row(
@@ -771,6 +784,12 @@ impl SolveRuntime {
         let mut row_outputs = Vec::new();
         let mut row_pos = 0usize;
         while row_pos < plan.len() {
+            if let Some(next_pos) =
+                self.try_refresh_tensor_output_segment(plan, row_pos, t, solver_y, params)?
+            {
+                row_pos = next_pos;
+                continue;
+            }
             if let Some(next_pos) = self.try_refresh_shapeless_output_segment(
                 plan,
                 row_pos,
@@ -1407,7 +1426,9 @@ impl SolveRuntime {
                     &mut project_algebraics,
                 )?;
             }
-            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            if root_relation_overrides.is_empty() {
+                changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            }
             changed |=
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             changed |= project_algebraics(y, p)?;
@@ -1456,108 +1477,6 @@ impl SolveRuntime {
         Err(RuntimeSolveError::solve_ir(format!(
             "event runtime assignments did not converge at t={t}"
         )))
-    }
-
-    fn settle_discrete_rows_for_pre_snapshot<P>(
-        &self,
-        snapshot: &DiscretePreSnapshot<'_>,
-        input: &mut DiscreteRowsSettleInput<'_>,
-        project_algebraics: &mut P,
-    ) -> Result<bool, RuntimeSolveError>
-    where
-        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
-    {
-        let mut changed_any = false;
-        for _ in 0..input.max_iters {
-            let mut pass_changed = self.apply_discrete_rows_for_pre_snapshot(
-                snapshot, input.y, input.p, input.t, input.tol, false,
-            )?;
-            pass_changed |= self.apply_runtime_assignments_until_stable(
-                input.y,
-                input.p,
-                input.t,
-                input.tol,
-                input.max_iters,
-            )?;
-            pass_changed |= project_algebraics(input.y, input.p)?;
-            pass_changed |= self.apply_runtime_assignments_until_stable(
-                input.y,
-                input.p,
-                input.t,
-                input.tol,
-                input.max_iters,
-            )?;
-            if !pass_changed {
-                return Ok(changed_any);
-            }
-            changed_any = true;
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "discrete event equations did not converge at t={}",
-            input.t
-        )))
-    }
-
-    fn apply_constant_discrete_rows_for_pre_snapshot(
-        &self,
-        snapshot: &DiscretePreSnapshot<'_>,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-    ) -> Result<bool, RuntimeSolveError> {
-        self.apply_discrete_rows_for_pre_snapshot(snapshot, y, p, t, tol, true)
-    }
-
-    fn apply_discrete_rows_for_pre_snapshot(
-        &self,
-        snapshot: &DiscretePreSnapshot<'_>,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        skip_solver_or_time_rows: bool,
-    ) -> Result<bool, RuntimeSolveError> {
-        let eval_y = copy_runtime_values(y, "discrete row eval y snapshot")?;
-        let eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
-        let sources = snapshot.event_pre_sources();
-        let mut eval_p_cache = EventEvalParamCache::default();
-        let mut row_values = Vec::new();
-        reserve_runtime_vec_capacity(
-            &mut row_values,
-            self.model.problem.discrete.rhs.programs.len(),
-            "discrete row values",
-        )?;
-        for (row_idx, row) in self.model.problem.discrete.rhs.programs.iter().enumerate() {
-            if skip_solver_or_time_rows && row_reads_solver_or_time(row) {
-                continue;
-            }
-            let row_pre_mode = discrete_row_pre_mode(&self.model, row_idx);
-            if !snapshot.row_filter.accepts(row_pre_mode) {
-                continue;
-            }
-            let row_p = eval_p_cache.params(&self.model, &eval_p, row_pre_mode, &sources, tol);
-            let row_p_with_root_overrides;
-            let row_p = if snapshot.root_relation_overrides.is_empty() {
-                row_p
-            } else {
-                row_p_with_root_overrides = event_eval_params_with_relation_overrides(
-                    &self.model.problem.events.root_relation_memory_targets,
-                    snapshot.root_relation_overrides,
-                    row_p,
-                )?;
-                &row_p_with_root_overrides
-            };
-            let value =
-                solve_eval::eval_row_with_context(row, &eval_y, row_p, t, self.row_eval_context())?;
-            row_values.push((self.model.problem.discrete.update_targets[row_idx], value));
-        }
-        self.override_relation_memory_row_values(snapshot.root_relation_overrides, &mut row_values);
-        let mut changed = false;
-        for (target, value) in row_values {
-            changed |= solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
-        }
-        Ok(changed)
     }
 
     fn override_relation_memory_row_values(
@@ -1935,8 +1854,8 @@ pub struct AlgebraicLinearization<'a> {
     pub settle: AlgebraicSettle,
 }
 
-/// Diagonal magnitude below which a residual row is treated as not constraining
-/// its own target slot (a structural zero on the seed diagonal).
+/// Diagonal magnitude below which a seed residual row is treated as singular for
+/// its paired target slot, matching the value refresh's residual-slope check.
 const SEED_DIAGONAL_EPS: f64 = 1.0e-12;
 
 fn validate_derivative_output_len(

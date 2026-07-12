@@ -1,0 +1,116 @@
+{#-
+  eFMI Algorithm Code manifest (efmiAlgorithmCodeManifest.xsd, 0.14.0).
+
+  Real jinja rewrite of the typed quick-xml serializer (contract §3, WI-2).
+  Autoescape is OFF + strict-undefined: EVERY interpolated text value passes
+  through the `xml_escape` filter, every raw f64 through `xs_double`.
+
+  xs:sequence child order is LOAD-BEARING (checksums are over these bytes, so
+  element order must match; attribute order and whitespace are free):
+    Files -> Clock -> BlockMethods (Startup, Recalibrate, DoStep)
+      -> ErrorSignalStatus -> Units -> Variables -> Annotations.
+
+  Divergence to remember: AC `Dimension/@number` is 1-based (`loop.index`);
+  the Production Code manifest uses 0-based (`loop.index0`).
+
+  Consumes: ctx.ac, ctx.units (fixed efmiVersion/xsdVersion/kind/schema
+  location are template literals, not context — contract §3a/§4d).
+-#}
+{%- set ac = ctx.ac -%}
+{%- macro attr(name, value) -%}
+{{ " " }}{{ name }}="{{ value | xml_escape }}"
+{%- endmacro -%}
+{%- macro base_unit(bu) -%}
+<BaseUnit
+{%- if bu.kg != 0 %} kg="{{ bu.kg }}"{% endif %}
+{%- if bu.m != 0 %} m="{{ bu.m }}"{% endif %}
+{%- if bu.s != 0 %} s="{{ bu.s }}"{% endif %}
+{%- if bu.ampere != 0 %} A="{{ bu.ampere }}"{% endif %}
+{%- if bu.kelvin != 0 %} K="{{ bu.kelvin }}"{% endif %}
+{%- if bu.mol != 0 %} mol="{{ bu.mol }}"{% endif %}
+{%- if bu.cd != 0 %} cd="{{ bu.cd }}"{% endif %}
+{%- if bu.rad != 0 %} rad="{{ bu.rad }}"{% endif %}
+{%- if bu.factor != 1.0 %} factor="{{ bu.factor | xs_double }}"{% endif %}
+{%- if bu.offset != 0.0 %} offset="{{ bu.offset | xs_double }}"{% endif %}/>
+{%- endmacro -%}
+{%- macro dimensions(dims) -%}
+      <Dimensions>
+{%- for d in dims %}
+        <Dimension number="{{ loop.index }}" size="{{ d }}"/>
+{%- endfor %}
+      </Dimensions>
+{%- endmacro -%}
+{%- macro annotations(items, indent) -%}
+{{ indent }}<Annotations>
+{%- for a in items %}
+{{ indent }}  <Annotation{{ attr("type", a.annotation_type) }}/>
+{%- endfor %}
+{{ indent }}</Annotations>
+{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<Manifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schemas/AlgorithmCode/efmiAlgorithmCodeManifest.xsd" xsdVersion="0.14.0" kind="AlgorithmCode" efmiVersion="1.0.0"{{ attr("id", ac.attributes.id) }}{{ attr("name", ac.attributes.name) }}{% if ac.attributes.description is not none %}{{ attr("description", ac.attributes.description) }}{% endif %}{% if ac.attributes.version is not none %}{{ attr("version", ac.attributes.version) }}{% endif %}{{ attr("generationDateAndTime", ac.attributes.generation_date_and_time) }}{% if ac.attributes.generation_tool is not none %}{{ attr("generationTool", ac.attributes.generation_tool) }}{% endif %}{% if ac.attributes.copyright is not none %}{{ attr("copyright", ac.attributes.copyright) }}{% endif %}{% if ac.attributes.license is not none %}{{ attr("license", ac.attributes.license) }}{% endif %}{{ attr("fileRefId", ac.file_ref_id) }}>
+{%- if ac.files | length == 0 %}
+  <Files/>
+{%- else %}
+  <Files>
+{%- for f in ac.files %}
+    <File{{ attr("id", f.id) }}{{ attr("name", f.name) }}{{ attr("path", f.path) }}{% if f.needs_checksum %} needsChecksum="true"{{ attr("checksum", f.checksum) }}{% else %} needsChecksum="false"{% endif %}{{ attr("role", f.role) }}{% if f.description is not none %}{{ attr("description", f.description) }}{% endif %}/>
+{%- endfor %}
+  </Files>
+{%- endif %}
+  <Clock{{ attr("id", ac.clock.id) }}{{ attr("variableRefId", ac.clock.variable_ref_id) }}/>
+  <BlockMethods>
+{%- for m in [ac.block_methods.startup, ac.block_methods.recalibrate, ac.block_methods.do_step] %}
+{%- if m.signals | length == 0 %}
+    <BlockMethod{{ attr("id", m.id) }}{{ attr("kind", m.kind) }}/>
+{%- else %}
+    <BlockMethod{{ attr("id", m.id) }}{{ attr("kind", m.kind) }}>
+      <Signals>
+{%- for s in m.signals %}
+        <Signal{{ attr("value", s) }}/>
+{%- endfor %}
+      </Signals>
+    </BlockMethod>
+{%- endif %}
+{%- endfor %}
+  </BlockMethods>
+  <ErrorSignalStatus{{ attr("id", ac.error_signal_status_id) }}/>
+{%- if ctx.units | length == 0 %}
+  <Units/>
+{%- else %}
+  <Units>
+{%- for u in ctx.units %}
+{%- if u.base_unit is none %}
+    <Unit{{ attr("id", u.id) }}{{ attr("name", u.name) }}/>
+{%- else %}
+    <Unit{{ attr("id", u.id) }}{{ attr("name", u.name) }}>
+      {{ base_unit(u.base_unit) }}
+    </Unit>
+{%- endif %}
+{%- endfor %}
+  </Units>
+{%- endif %}
+  <Variables>
+{%- for v in ac.variables %}
+{%- set element = v.kind ~ "Variable" -%}
+{%- set open -%}
+<{{ element }}{{ attr("id", v.id) }}{{ attr("name", v.name) }}{% if v.description is not none %}{{ attr("description", v.description) }}{% endif %}{{ attr("blockCausality", v.block_causality) }}{{ attr("start", v.start) }}{% if v.kind == "Real" %}{% if v.unit_ref_id is not none %}{{ attr("unitRefId", v.unit_ref_id) }}{% endif %}{% if v.relative_quantity %} relativeQuantity="true"{% endif %}{% if v.min is not none %}{{ attr("min", v.min) }}{% endif %}{% if v.max is not none %}{{ attr("max", v.max) }}{% endif %}{% if v.nominal is not none %}{{ attr("nominal", v.nominal) }}{% endif %}{% elif v.kind == "Integer" %}{% if v.min is not none %}{{ attr("min", v.min) }}{% endif %}{% if v.max is not none %}{{ attr("max", v.max) }}{% endif %}{% endif %}
+{%- endset -%}
+{%- if v.dimensions | length == 0 and v.annotations | length == 0 %}
+    {{ open }}/>
+{%- else %}
+    {{ open }}>
+{%- if v.dimensions | length > 0 %}
+{{ dimensions(v.dimensions) }}
+{%- endif %}
+{%- if v.annotations | length > 0 %}
+{{ annotations(v.annotations, "      ") }}
+{%- endif %}
+    </{{ element }}>
+{%- endif %}
+{%- endfor %}
+  </Variables>
+{%- if ac.annotations | length > 0 %}
+{{ annotations(ac.annotations, "  ") }}
+{%- endif %}
+</Manifest>

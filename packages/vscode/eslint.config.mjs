@@ -22,7 +22,7 @@ export default [
     rules: {
       ...tsPlugin.configs.recommended.rules,
       "no-undef": "off",
-      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
       "@typescript-eslint/no-explicit-any": "warn",
     },
   },

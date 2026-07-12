@@ -594,6 +594,89 @@ fn lower_dynamic_scalar_assignment(
     Ok(Some(lowered))
 }
 
+fn primitive_record_children(flat: &Model, target: &VarName) -> Vec<VarName> {
+    flat.variables
+        .iter()
+        .filter(|(name, var)| {
+            var.is_primitive
+                && name
+                    .structural_ancestors()
+                    .iter()
+                    .any(|ancestor| ancestor == target)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+fn corresponding_record_field_value(
+    flat: &Model,
+    source: &rumoca_core::Reference,
+    target: &VarName,
+    target_child: &VarName,
+    span: Span,
+) -> Option<Expression> {
+    let suffix = target_child.as_str().strip_prefix(target.as_str())?;
+    if !(suffix.starts_with('.') || suffix.starts_with('[')) {
+        return None;
+    }
+
+    let source_child = VarName::new(format!("{}{}", source.var_name().as_str(), suffix));
+    let source_var = flat.variables.get(&source_child)?;
+    if !source_var.is_primitive {
+        return None;
+    }
+
+    Some(Expression::VarRef {
+        name: source_child.into(),
+        subscripts: vec![],
+        span,
+    })
+}
+
+fn lower_record_assignment(
+    flat: &Model,
+    comp: &ComponentReference,
+    value: &Expression,
+    span: Span,
+) -> Option<Vec<AlgorithmAssignment>> {
+    let target = algorithm_assignment_target_name(comp)?;
+    let Expression::VarRef {
+        name: source,
+        subscripts,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    if flat
+        .variables
+        .get(&target)
+        .is_some_and(|var| var.is_primitive)
+    {
+        return None;
+    }
+    if !subscripts.is_empty() {
+        return None;
+    }
+
+    let target_children = primitive_record_children(flat, &target);
+    if target_children.is_empty() {
+        return None;
+    }
+
+    target_children
+        .into_iter()
+        .map(|target_child| {
+            Some((
+                target_child.clone(),
+                corresponding_record_field_value(flat, source, &target, &target_child, span)?,
+                span,
+                "algorithm record assignment".to_string(),
+            ))
+        })
+        .collect()
+}
+
 pub(super) fn lower_assignment_statement(
     flat: &Model,
     comp: &ComponentReference,
@@ -609,6 +692,10 @@ pub(super) fn lower_assignment_statement(
     }
 
     if let Some(lowered) = lower_dynamic_scalar_assignment(flat, comp, value, span)? {
+        return Ok(lowered);
+    }
+
+    if let Some(lowered) = lower_record_assignment(flat, comp, value, span) {
         return Ok(lowered);
     }
 

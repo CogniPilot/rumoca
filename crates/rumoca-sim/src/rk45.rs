@@ -5,13 +5,15 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::BuildSimulationTimings;
-use crate::InteractiveStepper;
+#[cfg(feature = "scheduled-sim")]
+use crate::SimulationSessionApi;
 use crate::solve_lowering::{
-    SimulationDiagnosticError, lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing,
+    SimulationDiagnosticError, lower_dae_for_simulation_with_stage_timing_and_param_overrides,
+    tunable_param_overrides,
 };
 
+pub use rumoca_solver_rk45::SessionState;
 pub use rumoca_solver_rk45::SimError;
-pub use rumoca_solver_rk45::StepperState;
 
 pub fn simulate(
     dae_model: &dae::Dae,
@@ -35,11 +37,11 @@ pub fn simulate_with_diagnostics(
 
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
-pub struct SimStepper {
-    inner: rumoca_solver_rk45::SimStepper,
+pub struct SimulationSession {
+    inner: rumoca_solver_rk45::SimulationSession,
 }
 
-impl SimStepper {
+impl SimulationSession {
     pub fn new(dae_model: &dae::Dae, opts: rumoca_solver::SimOptions) -> Result<Self, SimError> {
         Self::new_with_stage_timing(dae_model, opts, |_| {}).map(|(stepper, _)| stepper)
     }
@@ -49,17 +51,23 @@ impl SimStepper {
         opts: rumoca_solver::SimOptions,
         mut begin_stage: impl FnMut(&'static str),
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
+        let param_overrides = tunable_param_overrides(dae_model, &opts);
         let (mut solve_model, solve_timings) =
-            lower_dae_for_simulation_with_stage_timing(dae_model, &opts, &mut begin_stage)
-                .map_err(|err| SimError::SolveIr(err.to_string()))?;
+            lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+                dae_model,
+                &opts,
+                &param_overrides,
+                &mut begin_stage,
+            )
+            .map_err(|err| SimError::SolveIr(err.to_string()))?;
         begin_stage("sim_overrides");
         let override_apply_start = Instant::now();
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts, true)
+        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
             .map_err(|err| SimError::SolveIr(err.to_string()))?;
         let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
         let backend_build_start = Instant::now();
-        let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)?;
+        let inner = rumoca_solver_rk45::SimulationSession::new(&solve_model, opts)?;
         let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
         Ok((
             Self { inner },
@@ -77,25 +85,19 @@ impl SimStepper {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let mut solve_model = lower_dae_for_simulation(dae_model, &opts)
-            .map_err(SimulationDiagnosticError::SolveLowering)?;
-        crate::solve_lowering::apply_simulation_overrides(
-            &mut solve_model,
-            dae_model,
-            &opts,
-            true,
-        )?;
+        let solve_model =
+            crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, &opts)?;
         Self::from_solve_model(solve_model, opts)
     }
 
     /// Build directly from an already-lowered, override-applied solve model, so
-    /// callers that lowered once (e.g. the auto-stepper dispatch that first
+    /// callers that lowered once (e.g. auto solver dispatch that first
     /// probes for a pure-discrete model) do not lower the model a second time.
     pub(crate) fn from_solve_model(
         solve_model: solve::SolveModel,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let inner = rumoca_solver_rk45::SimStepper::new(&solve_model, opts)
+        let inner = rumoca_solver_rk45::SimulationSession::new(&solve_model, opts)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })
     }
@@ -106,6 +108,10 @@ impl SimStepper {
 
     pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
         self.inner.set_inputs(inputs)
+    }
+
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        self.inner.advance_to(target_time)
     }
 
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
@@ -124,7 +130,7 @@ impl SimStepper {
         self.inner.get(name)
     }
 
-    pub fn state(&self) -> Result<StepperState, SimError> {
+    pub fn state(&self) -> Result<SessionState, SimError> {
         self.inner.state()
     }
 
@@ -141,15 +147,9 @@ impl SimStepper {
     }
 }
 
-impl InteractiveStepper for SimStepper {
+#[cfg(feature = "scheduled-sim")]
+impl SimulationSessionApi for SimulationSession {
     type Error = SimError;
-
-    fn new_from_dae(
-        dae_model: &dae::Dae,
-        opts: rumoca_solver::SimOptions,
-    ) -> Result<Self, Self::Error> {
-        Self::new(dae_model, opts)
-    }
 
     fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
         Self::reset(self, t_start)
@@ -159,8 +159,8 @@ impl InteractiveStepper for SimStepper {
         Self::set_input(self, name, value)
     }
 
-    fn step(&mut self, dt: f64) -> Result<(), Self::Error> {
-        Self::step(self, dt)
+    fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
+        Self::advance_to(self, target_time)
     }
 
     fn time(&self) -> f64 {
@@ -169,9 +169,5 @@ impl InteractiveStepper for SimStepper {
 
     fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
         Self::get(self, name)
-    }
-
-    fn input_names(&self) -> &[String] {
-        Self::input_names(self)
     }
 }

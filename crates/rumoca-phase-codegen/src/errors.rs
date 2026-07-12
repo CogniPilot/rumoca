@@ -64,6 +64,17 @@ pub enum CodegenError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
+
+    /// DAE preparation for a template-specific projection failed.
+    #[error("DAE preparation failed: {message}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC006),
+        help("check source metadata used by the selected template target")
+    )]
+    DaePreparationFailed {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl CodegenError {
@@ -82,6 +93,16 @@ impl CodegenError {
         Self::ExternalFunctionNotCallable {
             function,
             src,
+            span,
+        }
+    }
+
+    pub fn dae_preparation_failed(
+        message: impl Into<String>,
+        span: Option<rumoca_core::Span>,
+    ) -> Self {
+        Self::DaePreparationFailed {
+            message: message.into(),
             span,
         }
     }
@@ -202,6 +223,11 @@ mod tests {
             CodegenError::SolveScalarizationFailed { .. } => {
                 unreachable!(
                     "From<minijinja::Error> only constructs template errors, never scalarization errors"
+                );
+            }
+            CodegenError::DaePreparationFailed { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never DAE preparation errors"
                 );
             }
         }

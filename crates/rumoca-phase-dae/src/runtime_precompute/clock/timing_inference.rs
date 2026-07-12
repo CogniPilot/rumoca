@@ -521,6 +521,15 @@ pub(super) fn infer_clock_timing_from_function_call_expr(
 ) -> Option<(f64, f64)> {
     let short = name.last_segment();
     if is_sample_timing_function_name(short) && args.len() >= 2 {
+        if let Some(sample_args) = internal_sample_start_interval_args(short, args) {
+            return infer_sample_start_interval_timing(
+                sample_args,
+                constants,
+                sources,
+                remaining_depth,
+                visiting,
+            );
+        }
         return infer_clock_timing_next(&args[1], constants, sources, remaining_depth, visiting)
             .or_else(|| {
                 infer_sample_start_interval_timing(
@@ -748,7 +757,7 @@ impl ClockConstructorExprCollector<'_> {
     ) {
         let short = name.last_segment();
         if is_sample_timing_function_name(short) {
-            if sample_start_interval_timing(args, self.constants).is_some() {
+            if function_sample_start_interval_timing(short, args, self.constants).is_some() {
                 self.out.push(rumoca_core::Expression::FunctionCall {
                     name: name.clone(),
                     args: args.to_vec(),
@@ -784,6 +793,28 @@ pub(super) fn static_sample_start_interval_timing(
         return None;
     }
     sample_start_interval_timing(args, constants)
+}
+
+pub(super) fn function_sample_start_interval_timing(
+    short: &str,
+    args: &[rumoca_core::Expression],
+    constants: &HashMap<String, f64>,
+) -> Option<(f64, f64)> {
+    if short != rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+        && rumoca_core::source_temporal_function_short_name(short)
+            .is_none_or(|name| name != "sample")
+    {
+        return None;
+    }
+    let args = internal_sample_start_interval_args(short, args).unwrap_or(args);
+    sample_start_interval_timing(args, constants)
+}
+
+fn internal_sample_start_interval_args<'a>(
+    short: &str,
+    args: &'a [rumoca_core::Expression],
+) -> Option<&'a [rumoca_core::Expression]> {
+    (short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME && args.len() >= 3).then_some(&args[1..])
 }
 
 fn is_sample_timing_function_name(short: &str) -> bool {

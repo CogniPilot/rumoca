@@ -421,6 +421,23 @@ function collectCustomCodegenTarget(targetPath) {
     return { manifest, templates };
 }
 
+// GALEC codegen targets (all ir = "dae") are served by the SEPARATE, lazily
+// loaded GALEC addon — never the core render_target/DAE-JSON path, which drops
+// the flat model the projection needs. The worker loads the addon on demand.
+const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+
+async function renderGalecCodegenSelection(modelName, workspaceSources, target) {
+    const rendered = await sendWorkspaceCommand('rumoca.workspace.renderGalec', {
+        workspaceSources,
+        modelName,
+        target,
+    });
+    if (!rendered || !Array.isArray(rendered.files)) {
+        throw new Error('GALEC codegen renderer did not return files.');
+    }
+    return rendered.files;
+}
+
 async function renderCodegenSelection(modelName, daeJson, templateSelection) {
     let manifest = '';
     let templates = {};
@@ -3692,8 +3709,23 @@ async function createCodegenRunForModel(modelName) {
     try {
         await ensureBuiltInCodegenTemplatesLoaded();
         const templateSelection = await resolveCodegenTemplateSelection(nextModel);
-        const daeJson = JSON.stringify(result.dae_native);
-        const renderedFiles = await renderCodegenSelection(nextModel, daeJson, templateSelection);
+        let renderedFiles;
+        if (GALEC_CODEGEN_TARGETS.has(templateSelection.target)) {
+            // Project GALEC from the FULL workspace sources (the addon owns its
+            // own compile), so a model spanning several files renders just as it
+            // compiles for every other target — not only the active document.
+            const workspaceSources = collectWorkspaceModelicaSourcesJson(
+                workspaceFs.getActiveDocumentPath(),
+            );
+            renderedFiles = await renderGalecCodegenSelection(
+                nextModel,
+                workspaceSources,
+                templateSelection.target,
+            );
+        } else {
+            const daeJson = JSON.stringify(result.dae_native);
+            renderedFiles = await renderCodegenSelection(nextModel, daeJson, templateSelection);
+        }
         const configuredOutputRoot = normalizePath(templateSelection.outputRoot || '');
         const outputRoot = configuredOutputRoot || defaultCodegenOutputRoot(nextModel, templateSelection);
         const paths = writeRenderedTargetFiles(renderedFiles, outputRoot);
@@ -5374,7 +5406,7 @@ require(['vs/editor/editor.main'], function() {
                     dae: result.dae,
                     dae_native: result.dae_native,
                     balance: result.balance,
-                    pretty: result.pretty
+                    pretty: result.pretty,
                 };
                 // Update DAE for codegen completions (use dae_native for actual field names)
                 if (result.dae_native && (modelName === modelSelect.value || modelSelect.value === '')) {

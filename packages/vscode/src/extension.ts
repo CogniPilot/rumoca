@@ -22,8 +22,10 @@ import {
 } from './language_client_runtime';
 import { createNotebookControllerRuntime } from './notebook_controller_runtime';
 import { buildNotebookPythonSnippet } from './notebook_python_snippets';
+import { createGalecLanguageClient } from './galec_client';
 
 let client: LanguageClient | undefined;
+let galecClient: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
 const nodeRequire = createRequire(__filename);
 const DEFAULT_WEB_RESULTS_OUTPUT_DIR = 'results';
@@ -33,14 +35,6 @@ const pendingSimulationJobs = new Map<string, {
         payload?: unknown;
         error?: string;
         metrics?: unknown;
-    }) => void;
-}>();
-const pendingPrepareSimulationJobs = new Map<string, {
-    resolve: (response: {
-        ok?: boolean;
-        preparedModels?: string[];
-        failures?: Array<{ model?: string; error?: string }>;
-        error?: string;
     }) => void;
 }>();
 
@@ -868,27 +862,6 @@ async function getSimulationModelState(
     return normalizeSimulationModelState(response);
 }
 
-async function setSelectedSimulationModel(
-    documentUri: string,
-    model: string,
-    defaultModel?: string,
-): Promise<{
-    ok: boolean;
-    models: string[];
-    selectedModel?: string;
-    error?: string;
-}> {
-    const response = await sendScenarioCommand<SimulationModelStateResponse>(
-        'rumoca.scenario.setSelectedSimulationModel',
-        {
-            uri: documentUri,
-            model,
-            defaultModel: defaultModel?.trim() || null,
-        },
-    );
-    return normalizeSimulationModelState(response);
-}
-
 function resolveSourceRootPaths(config: vscode.WorkspaceConfiguration): SourceRootPathSources {
     return resolveSourceRootPathsForEntries(
         config.get<string[]>('sourceRootPaths') ?? [],
@@ -913,21 +886,6 @@ function getSimulationSettings(config: vscode.WorkspaceConfiguration): Simulatio
             || DEFAULT_WEB_RESULTS_OUTPUT_DIR,
         sourceRootPaths: sourceRootPaths.mergedPaths,
     };
-}
-
-function getConfiguredWorkspaceSourceRootPaths(): string[] {
-    return vscode.workspace
-        .getConfiguration('rumoca')
-        .get<string[]>('sourceRootPaths') ?? [];
-}
-
-async function setConfiguredWorkspaceSourceRootPaths(paths: string[]): Promise<void> {
-    const normalized = Array.from(
-        new Set(paths.map((entry) => entry.trim()).filter(Boolean)),
-    );
-    await vscode.workspace
-        .getConfiguration('rumoca')
-        .update('sourceRootPaths', normalized, vscode.ConfigurationTarget.Workspace);
 }
 
 function isSimulationRunnableDocument(document: vscode.TextDocument): boolean {
@@ -1109,26 +1067,6 @@ interface SimulationCompleteNotification {
     diagnostic?: unknown;
 }
 
-interface PrepareSimulationModelsCompleteNotification {
-    requestId?: string;
-    ok?: boolean;
-    preparedModels?: string[];
-    failures?: Array<{ model?: string; error?: string }>;
-    error?: string;
-}
-
-interface BuiltinCodegenTemplate {
-    id: string;
-    label: string;
-    manifest: string;
-}
-
-interface CodegenSettings {
-    mode: 'target' | 'custom-target';
-    builtinTargetId: string;
-    customTargetPath: string;
-}
-
 interface CodegenTargetFile {
     path: string;
     content: string;
@@ -1269,8 +1207,6 @@ function benchmarkServerArgs(config: vscode.WorkspaceConfiguration): string[] {
     }
     return args;
 }
-let builtInCodegenTemplatesCache: BuiltinCodegenTemplate[] | undefined;
-
 function wireSimulationJobNotifications(activeClient: LanguageClient) {
     activeClient.onNotification('rumoca/simulationComplete', (payload: SimulationCompleteNotification) => {
         const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
@@ -1284,82 +1220,10 @@ function wireSimulationJobNotifications(activeClient: LanguageClient) {
         pendingSimulationJobs.delete(requestId);
         pending.resolve(payload);
     });
-    activeClient.onNotification(
-        'rumoca/prepareSimulationModelsComplete',
-        (payload: PrepareSimulationModelsCompleteNotification) => {
-            const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
-            if (!requestId) {
-                return;
-            }
-            const pending = pendingPrepareSimulationJobs.get(requestId);
-            if (!pending) {
-                return;
-            }
-            pendingPrepareSimulationJobs.delete(requestId);
-            pending.resolve(payload);
-        },
-    );
 }
 
 function trimMaybeString(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
-}
-
-function defaultCodegenSettings(): CodegenSettings {
-    return {
-        mode: 'target',
-        builtinTargetId: DEFAULT_CODEGEN_TARGET_ID,
-        customTargetPath: '',
-    };
-}
-
-function normalizeCodegenSettings(raw: unknown): CodegenSettings {
-    const next = raw && typeof raw === 'object' && !Array.isArray(raw)
-        ? raw as Record<string, unknown>
-        : {};
-    const mode = next.mode === 'custom-target'
-            ? 'custom-target'
-            : 'target';
-    return {
-        mode,
-        builtinTargetId: trimMaybeString(next.builtinTargetId) || DEFAULT_CODEGEN_TARGET_ID,
-        customTargetPath: trimMaybeString(next.customTargetPath),
-    };
-}
-
-function codegenSettingsFromScenarioConfig(
-    raw: unknown,
-    templates: BuiltinCodegenTemplate[],
-): CodegenSettings {
-    const config = raw && typeof raw === 'object' && !Array.isArray(raw)
-        ? raw as Record<string, unknown>
-        : {};
-    const target = trimMaybeString(config.target) || DEFAULT_CODEGEN_TARGET_ID;
-    const builtin = templates.find((template) => template.id === target);
-    if (builtin) {
-        return {
-            mode: 'target',
-            builtinTargetId: builtin.id,
-            customTargetPath: '',
-        };
-    }
-    return {
-        mode: 'custom-target',
-        builtinTargetId: findBuiltinCodegenTemplate(templates, DEFAULT_CODEGEN_TARGET_ID)?.id
-            ?? templates[0]?.id
-            ?? DEFAULT_CODEGEN_TARGET_ID,
-        customTargetPath: target,
-    };
-}
-
-function codegenConfigFromSettings(raw: unknown): { target: string } {
-    const settings = normalizeCodegenSettings(raw);
-    const target = settings.mode === 'custom-target'
-        ? settings.customTargetPath
-        : settings.builtinTargetId;
-    return {
-        target: trimMaybeString(target) || DEFAULT_CODEGEN_TARGET_ID,
-    };
 }
 
 function normalizeSelectedSimulationModels(raw: unknown): Record<string, string> {
@@ -1375,20 +1239,6 @@ function normalizeSelectedSimulationModels(raw: unknown): Record<string, string>
         }
     }
     return out;
-}
-
-function loadStoredSelectedSimulationModel(
-    context: vscode.ExtensionContext,
-    documentUri: string | undefined,
-): string | undefined {
-    const uri = trimMaybeString(documentUri);
-    if (!uri) {
-        return undefined;
-    }
-    const models = normalizeSelectedSimulationModels(
-        context.workspaceState.get(SELECTED_SIMULATION_MODELS_STATE_KEY),
-    );
-    return models[uri];
 }
 
 async function storeSelectedSimulationModel(
@@ -1413,35 +1263,6 @@ async function storeSelectedSimulationModel(
         SELECTED_SIMULATION_MODELS_STATE_KEY,
         Object.keys(models).length > 0 ? models : undefined,
     );
-}
-
-function normalizeBuiltinCodegenTemplates(raw: unknown): BuiltinCodegenTemplate[] {
-    if (!Array.isArray(raw)) {
-        return [];
-    }
-    return raw
-        .map((entry) => {
-            const next = entry && typeof entry === 'object' && !Array.isArray(entry)
-                ? entry as Record<string, unknown>
-                : {};
-            return {
-                id: trimMaybeString(next.id),
-                label: trimMaybeString(next.label),
-                manifest: typeof next.manifest === 'string' ? next.manifest : '',
-            };
-        })
-        .filter((entry) => entry.id.length > 0 && entry.label.length > 0);
-}
-
-function findBuiltinCodegenTemplate(
-    templates: BuiltinCodegenTemplate[],
-    templateId: string,
-): BuiltinCodegenTemplate | undefined {
-    const preferredId = trimMaybeString(templateId);
-    if (!preferredId) {
-        return templates[0];
-    }
-    return templates.find((template) => template.id === preferredId) ?? templates[0];
 }
 
 function scenarioDefaultOutputDir(document: vscode.TextDocument): string {
@@ -1526,88 +1347,6 @@ async function sendWorkspaceCommand<T>(
     return await sendExecuteCommand<T>(command, payload);
 }
 
-async function loadBuiltInCodegenTemplates(
-    forceReload = false,
-): Promise<BuiltinCodegenTemplate[]> {
-    if (!forceReload && builtInCodegenTemplatesCache) {
-        return builtInCodegenTemplatesCache;
-    }
-    const response = await sendWorkspaceCommand<unknown>('rumoca.workspace.getBuiltinTargets', {});
-    const templates = normalizeBuiltinCodegenTemplates(response);
-    if (templates.length === 0) {
-        throw new Error('No built-in codegen targets are available from rumoca-lsp.');
-    }
-    builtInCodegenTemplatesCache = templates;
-    return templates;
-}
-
-async function getScenarioCodegenConfig(
-    model: string,
-    workspaceRoot: string | undefined,
-): Promise<unknown> {
-    if (!workspaceRoot) {
-        return undefined;
-    }
-    return await sendScenarioCommand<unknown>(
-        'rumoca.scenario.getCodegenConfig',
-        {
-            workspaceRoot,
-            model,
-        },
-    );
-}
-
-async function setScenarioCodegenConfig(
-    model: string,
-    workspaceRoot: string | undefined,
-    settings: CodegenSettings,
-): Promise<boolean> {
-    if (!workspaceRoot) {
-        return false;
-    }
-    const response = await sendScenarioCommand<{ ok?: boolean }>(
-        'rumoca.scenario.setCodegenConfig',
-        {
-            workspaceRoot,
-            model,
-            config: codegenConfigFromSettings(settings),
-        },
-    );
-    return response?.ok === true;
-}
-
-async function setScenarioSourceRoots(
-    model: string,
-    workspaceRoot: string | undefined,
-    sourceRootPaths: string[],
-): Promise<boolean> {
-    if (!workspaceRoot) {
-        return false;
-    }
-    const response = await sendScenarioCommand<{ ok?: boolean }>(
-        'rumoca.scenario.setSourceRoots',
-        {
-            workspaceRoot,
-            model,
-            task: 'codegen',
-            config: { sourceRootPaths },
-        },
-    );
-    return response?.ok === true;
-}
-
-async function loadCurrentCodegenSettingsState(
-    model: string,
-    workspaceRoot: string | undefined,
-): Promise<{ settings: CodegenSettings; templates: BuiltinCodegenTemplate[] }> {
-    const templates = await loadBuiltInCodegenTemplates();
-    const settings = codegenSettingsFromScenarioConfig(
-        await getScenarioCodegenConfig(model, workspaceRoot),
-        templates,
-    );
-    return { settings, templates };
-}
-
 function workspaceRelativeTemplatePath(
     workspaceRoot: string | undefined,
     absolutePath: string,
@@ -1623,13 +1362,6 @@ function workspaceRelativeTemplatePath(
         return absolutePath;
     }
     return relativePath.split(path.sep).join('/');
-}
-
-function workspaceRelativeSourceRootPath(
-    workspaceRoot: string | undefined,
-    absolutePath: string,
-): string {
-    return workspaceRelativeTemplatePath(workspaceRoot, absolutePath);
 }
 
 async function getScenarioSimulationConfig(
@@ -1855,42 +1587,6 @@ async function reopenEmbeddedModelicaDocuments() {
     }
 }
 
-async function setScenarioSimulationPreset(
-    model: string,
-    workspaceRoot: string | undefined,
-    preset: ModelSimulationPreset
-): Promise<boolean> {
-    if (!workspaceRoot) {
-        return false;
-    }
-    const response = await sendScenarioCommand<{ ok?: boolean }>(
-        'rumoca.scenario.setSimulationPreset',
-        {
-            workspaceRoot,
-            model,
-            preset,
-        }
-    );
-    return response?.ok === true;
-}
-
-async function resetScenarioSimulationPreset(
-    model: string,
-    workspaceRoot: string | undefined
-): Promise<boolean> {
-    if (!workspaceRoot) {
-        return false;
-    }
-    const response = await sendScenarioCommand<{ ok?: boolean }>(
-        'rumoca.scenario.resetSimulationPreset',
-        {
-            workspaceRoot,
-            model,
-        }
-    );
-    return response?.ok === true;
-}
-
 function defaultThreeDimensionalViewerScript(): string {
     return loadVisualizationShared().defaultThreeDimensionalViewerScript();
 }
@@ -1915,25 +1611,6 @@ async function getScenarioVisualizationConfig(
         }
     );
     return normalizeVisualizationViews(response?.views);
-}
-
-async function setScenarioVisualizationConfig(
-    model: string,
-    workspaceRoot: string | undefined,
-    views: VisualizationView[]
-): Promise<boolean> {
-    if (!workspaceRoot) {
-        return false;
-    }
-    const response = await sendScenarioCommand<{ ok?: boolean }>(
-        'rumoca.scenario.setVisualizationConfig',
-        {
-            workspaceRoot,
-            model,
-            views,
-        }
-    );
-    return response?.ok === true;
 }
 
 function resolveWorkspaceVisualizationScriptPath(
@@ -2079,56 +1756,6 @@ async function runRumocaSimulation(
         payload,
         metrics,
         diagnostic,
-    };
-}
-
-async function prepareRumocaSimulationModels(
-    modelUri: string,
-    models: string[],
-    settings: SimulationExecutionSettings,
-): Promise<{
-    ok: boolean;
-    preparedModels: string[];
-    failures: Array<{ model?: string; error?: string }>;
-    error?: string;
-}> {
-    const accepted = await sendScenarioCommand<BackgroundRequestAccepted>(
-        'rumoca.scenario.prepareSimulationModels',
-        {
-            uri: modelUri,
-            models,
-            settings: {
-                solver: settings.solver,
-                tEnd: settings.tEnd,
-                dt: settings.dt ?? null,
-                sourceRootPaths: settings.sourceRootPaths ?? [],
-            },
-        },
-    );
-    if (!accepted) {
-        return {
-            ok: false,
-            preparedModels: [],
-            failures: [],
-            error: 'No response from rumoca-lsp prepare request.',
-        };
-    }
-    if (!accepted.ok || !accepted.requestId) {
-        return {
-            ok: false,
-            preparedModels: [],
-            failures: [],
-            error: accepted.error ?? 'rumoca-lsp rejected the prepare request.',
-        };
-    }
-    const response = await new Promise<PrepareSimulationModelsCompleteNotification>((resolve) => {
-        pendingPrepareSimulationJobs.set(accepted.requestId!, { resolve });
-    });
-    return {
-        ok: response.ok === true,
-        preparedModels: response.preparedModels ?? [],
-        failures: response.failures ?? [],
-        error: response.error,
     };
 }
 
@@ -2681,7 +2308,6 @@ export async function activate(context: vscode.ExtensionContext) {
         getClient: () => client,
         setClient: (nextClient) => {
             client = nextClient;
-            builtInCodegenTemplatesCache = undefined;
         },
         startLanguageClient,
         stopLanguageClient: async (existingClient) => {
@@ -2700,6 +2326,19 @@ export async function activate(context: vscode.ExtensionContext) {
         languageClientRuntime.setServerPath(initialLanguageClient.serverPath);
     } else {
         log('Continuing activation without a running language server so commands remain available.');
+    }
+
+    // GALEC (.alg) language client — independent of the Modelica server above,
+    // so a missing or failed GALEC server never affects Modelica support.
+    galecClient = createGalecLanguageClient(context, log);
+    if (galecClient) {
+        try {
+            await galecClient.start();
+            log('GALEC language server started');
+        } catch (error) {
+            log(`Failed to start GALEC language server: ${error}`);
+            galecClient = undefined;
+        }
     }
 
     const startInteractiveScenario = async (
@@ -2867,7 +2506,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         }
                         return { views: defaultVisualizationViews() };
                     },
-                    saveViews: async ({ modelRef, payload }) => {
+                    saveViews: async ({ payload }) => {
                         const rawPayload = payload && typeof payload === 'object'
                             ? payload as Record<string, unknown>
                             : {};
@@ -3488,14 +3127,6 @@ export async function activate(context: vscode.ExtensionContext) {
             },
         ),
     );
-
-    const currentModelicaEditor = (): vscode.TextEditor | undefined => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document.languageId !== 'modelica') {
-            return undefined;
-        }
-        return editor;
-    };
 
     const simulationDiagnostics = vscode.languages.createDiagnosticCollection('rumoca simulation');
     context.subscriptions.push(simulationDiagnostics);
@@ -4221,5 +3852,8 @@ export async function activate(context: vscode.ExtensionContext) {
 export async function deactivate(): Promise<void> {
     if (client) {
         await client.stop();
+    }
+    if (galecClient) {
+        await galecClient.stop();
     }
 }

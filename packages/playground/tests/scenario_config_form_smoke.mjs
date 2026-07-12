@@ -37,7 +37,7 @@ const configTree = {
       },
     },
   },
-  signals: { viewer: { theta: "stepper:theta" } },
+  signals: { viewer: { theta: "model:theta" } },
 };
 
 function flattenExposesNestedLeaves() {
@@ -56,7 +56,7 @@ function flattenExposesNestedLeaves() {
     "expected number kind for numeric leaf",
   );
   assert(
-    byLabel.get("signals.viewer.theta")?.value === "stepper:theta",
+    byLabel.get("signals.viewer.theta")?.value === "model:theta",
     "expected signal-routing leaf",
   );
 }
@@ -111,7 +111,7 @@ function documentRendersSectionsAndControls() {
   assert(html.includes('"keyboardDecay"'), "expected keyboard decay to be preserved in scenario state");
   assert(html.includes('data-add-gamepad-axis'), "expected typed gamepad input mapping controls");
   assert(html.includes('data-add-gamepad-integrator'), "expected typed gamepad integrator controls");
-  assert(html.includes('data-add-stepper-input'), "expected typed Modelica input routing controls");
+  assert(html.includes('data-add-model-input'), "expected typed Modelica input routing controls");
   assert(html.includes('id="parametersSummary"'), "expected parameter summary to be refreshable");
   assert(html.includes('id="parametersList"'), "expected parameter list to be refreshable");
   assert(html.includes("requestHost('parameterMetadata'"), "expected parameter metadata refresh from the shared form");

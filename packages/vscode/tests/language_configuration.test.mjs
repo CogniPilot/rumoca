@@ -35,3 +35,25 @@ test("modelica language wiring keeps comment configuration enabled", () => {
     "expected modelica comments to support editor toggle-comment commands",
   );
 });
+
+test("galec language wiring enables block-comment configuration", () => {
+  const packageJson = readJson(packageJsonPath);
+  const galecContribution = (packageJson.contributes?.languages ?? []).find(
+    (entry) => entry?.id === "galec",
+  );
+
+  assert.ok(galecContribution, "expected a galec language contribution");
+  assert.equal(
+    galecContribution.configuration,
+    "./galec-language-configuration.json",
+    "expected galec to use galec-language-configuration.json",
+  );
+  const galecConfiguration = readJson(
+    path.join(extensionRoot, "galec-language-configuration.json"),
+  );
+  assert.deepEqual(
+    galecConfiguration.comments,
+    { blockComment: ["/*", "*/"] },
+    "GALEC uses /* */ block comments only (no line comments, GAL-019)",
+  );
+});

@@ -488,7 +488,7 @@ impl SolveRuntime {
     /// which uses the complete `algebraic_refresh` plan so that *leaf* algebraics —
     /// ones that feed no state derivative, e.g. a pure output objective — also get
     /// their seed filled).
-    fn seed_refresh_with_plan(
+    pub(super) fn seed_refresh_with_plan(
         &self,
         plan: &RefreshPlan,
         lin: AlgebraicLinearization<'_>,
@@ -496,7 +496,7 @@ impl SolveRuntime {
         seed: &mut [f64],
         unit_seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let AlgebraicLinearization { t, params, settle } = lin;
+        let AlgebraicLinearization { t, params, .. } = lin;
         if plan.rows.is_empty() {
             return Ok(());
         }
@@ -507,21 +507,125 @@ impl SolveRuntime {
             }
             return Ok(());
         }
-        // Algebraic loop: Gauss–Seidel on the (linear) seed system, mirroring the
-        // value iteration. Since the value refresh already converged at this
-        // point, the seed iteration converges at the same rate.
-        for _ in 0..settle.max_iters.max(1) {
-            let mut max_delta = 0.0_f64;
-            for row in &plan.rows {
-                let before = seed[row.target_index];
-                self.seed_refresh_row(t, solver_y, params, seed, unit_seed, row)?;
-                max_delta = max_delta.max((seed[row.target_index] - before).abs());
+        // Algebraic loop: the linearized seed equations form
+        //     J_alg,alg * seed_alg = -J_alg,nonalg * seed_nonalg
+        // at the already-settled value point. Solve that system directly instead
+        // of using a fixed-point sweep: value refresh convergence does not imply
+        // the seed fixed point contracts, while the direct linear solve is the
+        // implicit-function theorem applied to the whole coupled block.
+        self.seed_refresh_coupled_plan(plan, t, solver_y, params, seed, unit_seed)
+    }
+
+    fn seed_refresh_coupled_plan(
+        &self,
+        plan: &RefreshPlan,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        seed: &mut [f64],
+        unit_seed: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let saved_targets = self.zero_seed_refresh_targets(plan, seed)?;
+        let result = self.seed_refresh_coupled_solution(plan, t, solver_y, params, seed, unit_seed);
+        match result {
+            Ok(solution) => {
+                if let Err(error) = self.write_seed_refresh_solution(plan, &solution, seed) {
+                    restore_seed_refresh_targets(plan, seed, &saved_targets);
+                    return Err(error);
+                }
+                Ok(())
             }
-            if max_delta <= settle.tol {
-                break;
+            Err(error) => {
+                restore_seed_refresh_targets(plan, seed, &saved_targets);
+                Err(error)
             }
         }
+    }
+
+    fn zero_seed_refresh_targets(
+        &self,
+        plan: &RefreshPlan,
+        seed: &mut [f64],
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let mut saved = Vec::new();
+        reserve_runtime_vec_capacity(&mut saved, plan.rows.len(), "seed target snapshot")?;
+        for row in &plan.rows {
+            saved.push(seed[row.target_index]);
+            seed[row.target_index] = 0.0;
+        }
+        Ok(saved)
+    }
+
+    fn seed_refresh_coupled_solution(
+        &self,
+        plan: &RefreshPlan,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        seed: &[f64],
+        unit_seed: &mut [f64],
+    ) -> Result<crate::linear_solve::AugmentedMatrix, RuntimeSolveError> {
+        let n = plan.rows.len();
+        let mut augmented =
+            crate::linear_solve::AugmentedMatrix::zeroed(n).map_err(RuntimeSolveError::from)?;
+        unit_seed.fill(0.0);
+        for (row_pos, row) in plan.rows.iter().enumerate() {
+            let off_diagonal =
+                self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, seed)?;
+            self.validate_seed_jacobian_value(t, row, off_diagonal, "right-hand side")?;
+            for (col_pos, target_row) in plan.rows.iter().enumerate() {
+                let target = target_row.target_index;
+                unit_seed[target] = 1.0;
+                let coefficient =
+                    self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, unit_seed);
+                unit_seed[target] = 0.0;
+                let coefficient = coefficient?;
+                self.validate_seed_jacobian_value(t, row, coefficient, "matrix coefficient")?;
+                augmented.set(row_pos, col_pos, coefficient);
+            }
+            augmented.set(row_pos, n, -off_diagonal);
+        }
+        if crate::linear_solve::gaussian_eliminate(&mut augmented).is_none() {
+            return Err(self.seed_refresh_singular_error(t, plan));
+        }
+        Ok(augmented)
+    }
+
+    fn write_seed_refresh_solution(
+        &self,
+        plan: &RefreshPlan,
+        solution: &crate::linear_solve::AugmentedMatrix,
+        seed: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let n = plan.rows.len();
+        for (row_pos, row) in plan.rows.iter().enumerate() {
+            let value = solution.get(row_pos, n);
+            if !value.is_finite() {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "algebraic forward-sensitivity refresh solved non-finite seed for {}",
+                    self.solver_name(row.target_index)
+                )));
+            }
+            seed[row.target_index] = value;
+        }
         Ok(())
+    }
+
+    fn validate_seed_jacobian_value(
+        &self,
+        t: f64,
+        row: &AlgebraicRefreshRow,
+        value: f64,
+        role: &'static str,
+    ) -> Result<(), RuntimeSolveError> {
+        if value.is_finite() {
+            return Ok(());
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "algebraic forward-sensitivity refresh produced non-finite {role} from row {} for {} at t={t}",
+            row.row_idx,
+            self.solver_name(row.target_index)
+        )))
     }
 
     /// Solve one residual row `g(y)=0` (which defines algebraic slot `target`) for
@@ -541,20 +645,86 @@ impl SolveRuntime {
         // Off-diagonal term: JVP of the row with the target's own seed held at 0.
         let saved = seed[target];
         seed[target] = 0.0;
-        let off_diagonal = self.eval_implicit_jacobian_row(row, solver_y, params, t, seed)?;
+        let off_diagonal = self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, seed);
         seed[target] = saved;
+        let off_diagonal = off_diagonal?;
+        self.validate_seed_jacobian_value(t, row, off_diagonal, "right-hand side")?;
+        if self.refresh_row_subtracted_target_index(row) == Some(target) {
+            seed[target] = off_diagonal;
+            return Ok(());
+        }
+        if let Some(diagonal) = self.assignment_row_diagonal(row, solver_y, params, t)? {
+            self.write_seed_refresh_from_diagonal(t, row, seed, off_diagonal, diagonal)?;
+            return Ok(());
+        }
         // Diagonal term ∂g/∂target via a unit seed isolated to the target slot.
         unit_seed[target] = 1.0;
-        let diagonal = self.eval_implicit_jacobian_row(row, solver_y, params, t, unit_seed)?;
+        let diagonal = self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, unit_seed);
         unit_seed[target] = 0.0;
-        seed[target] = if diagonal.is_finite() && diagonal.abs() > SEED_DIAGONAL_EPS {
-            -off_diagonal / diagonal
-        } else {
-            // The row does not constrain its target through its own value (a true
-            // structural zero on the diagonal); the seed contribution is zero.
-            0.0
-        };
+        let diagonal = diagonal?;
+        self.validate_seed_jacobian_value(t, row, diagonal, "diagonal coefficient")?;
+        self.write_seed_refresh_from_diagonal(t, row, seed, off_diagonal, diagonal)
+    }
+
+    fn assignment_row_diagonal(
+        &self,
+        row: &AlgebraicRefreshRow,
+        solver_y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        self.implicit_scalar_rhs
+            .target_assignment_diagonal_unchecked_with_context(
+                row.row_idx,
+                row.target_index,
+                solver_y,
+                params,
+                t,
+                self.row_eval_context(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn write_seed_refresh_from_diagonal(
+        &self,
+        t: f64,
+        row: &AlgebraicRefreshRow,
+        seed: &mut [f64],
+        off_diagonal: f64,
+        diagonal: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        self.validate_seed_jacobian_value(t, row, diagonal, "diagonal coefficient")?;
+        if diagonal.abs() <= SEED_DIAGONAL_EPS {
+            return Err(self.seed_refresh_row_singular_error(t, row, diagonal));
+        }
+        seed[row.target_index] = -off_diagonal / diagonal;
         Ok(())
+    }
+
+    /// Directional derivative of the same residual that value refresh solves.
+    /// Shapeless target-value rows are residualized as `raw - target`, so their
+    /// JVP must subtract the target seed just like [`Self::refresh_row_residual`]
+    /// subtracts the target value.
+    fn eval_refresh_residual_jacobian_row(
+        &self,
+        row: &AlgebraicRefreshRow,
+        solver_y: &[f64],
+        params: &[f64],
+        t: f64,
+        seed: &[f64],
+    ) -> Result<f64, RuntimeSolveError> {
+        let raw = self.eval_implicit_jacobian_row(row, solver_y, params, t, seed)?;
+        let Some(target) = self.refresh_row_subtracted_target_index(row) else {
+            return Ok(raw);
+        };
+        let Some(target_seed) = seed.get(target).copied() else {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "algebraic forward-sensitivity seed length {} does not include residual target {}",
+                seed.len(),
+                self.solver_name(target)
+            )));
+        };
+        Ok(raw - target_seed)
     }
 
     /// Directional derivative `∂g_row/∂y · seed` of implicit residual row
@@ -585,5 +755,44 @@ impl SolveRuntime {
                     row.row_idx, row.output_offset
                 ))
             })
+    }
+
+    fn seed_refresh_singular_error(&self, t: f64, plan: &RefreshPlan) -> RuntimeSolveError {
+        RuntimeSolveError::solve_ir(format!(
+            "algebraic forward-sensitivity linear solve is singular at t={t}; targets={}",
+            self.seed_refresh_target_names(plan)
+        ))
+    }
+
+    fn seed_refresh_row_singular_error(
+        &self,
+        t: f64,
+        row: &AlgebraicRefreshRow,
+        diagonal: f64,
+    ) -> RuntimeSolveError {
+        RuntimeSolveError::solve_ir(format!(
+            "algebraic forward-sensitivity row {} is singular for {} at t={t}; diagonal={diagonal:.6e}",
+            row.row_idx,
+            self.solver_name(row.target_index)
+        ))
+    }
+
+    fn seed_refresh_target_names(&self, plan: &RefreshPlan) -> String {
+        let mut names = plan
+            .rows
+            .iter()
+            .take(8)
+            .map(|row| self.solver_name(row.target_index).to_string())
+            .collect::<Vec<_>>();
+        if plan.rows.len() > names.len() {
+            names.push(format!("... +{}", plan.rows.len() - names.len()));
+        }
+        names.join(", ")
+    }
+}
+
+fn restore_seed_refresh_targets(plan: &RefreshPlan, seed: &mut [f64], saved: &[f64]) {
+    for (row, value) in plan.rows.iter().zip(saved) {
+        seed[row.target_index] = *value;
     }
 }

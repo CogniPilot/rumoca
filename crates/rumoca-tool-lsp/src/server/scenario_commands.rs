@@ -245,6 +245,13 @@ impl ModelicaLanguageServer {
             return Some(response);
         }
 
+        // GALEC targets carry the projection context (dae + flat) the generic
+        // DAE template render lacks; route them to the shared identity-free
+        // renderer instead (the eFMU container itself stays a CLI concern).
+        if rumoca_compile::galec::is_galec_target(&target_name) {
+            return Some(galec_codegen_response(&compiled, &model, &target_name));
+        }
+
         let target_path = resolve_scenario_codegen_target(&target_base_path, &target_name);
         if raw_jinja_target(&target_path) {
             return match render_raw_jinja_target(compiled.dae.as_ref(), &model, &target_path) {
@@ -521,6 +528,46 @@ fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new(""))
         .join(target_path)
+}
+
+/// Render a GALEC codegen target's inspectable sources for the scenario
+/// "Generate Code" flow: the `.alg` plus, for the C tracks, the `.h`/`.c`.
+/// Uses the shared identity-free renderer (the same one the WASM addon uses),
+/// which needs both the DAE and the Flat model — the generic DAE template
+/// render does not carry the GALEC projection context.
+fn galec_codegen_response(
+    compiled: &rumoca_compile::compile::DaeCompilationResult,
+    model: &str,
+    target: &str,
+) -> Value {
+    // GALEC identifiers and C names cannot contain dots.
+    let model_id = model.replace('.', "_");
+    match rumoca_compile::galec::render_galec_sources(
+        compiled.dae.as_ref(),
+        compiled.flat.as_ref(),
+        &model_id,
+        target,
+    ) {
+        Ok(sources) => {
+            let mut files = vec![json!({
+                "path": format!("{model_id}.alg"),
+                "content": sources.alg,
+            })];
+            if !sources.c_source.is_empty() {
+                files.push(json!({
+                    "path": format!("{model_id}.h"),
+                    "content": sources.c_header,
+                }));
+                files.push(json!({
+                    "path": format!("{model_id}.c"),
+                    "content": sources.c_source,
+                }));
+            }
+            json!({ "ok": true, "target": target, "files": files })
+        }
+        // Same `{ ok: false, error }` shape as `simulation_error_value`.
+        Err(error) => json!({ "ok": false, "error": format!("GALEC codegen failed: {error}") }),
+    }
 }
 
 fn render_target_base_path(request_uri: &Url, focus_path: &Path) -> PathBuf {

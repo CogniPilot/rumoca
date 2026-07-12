@@ -1,0 +1,45 @@
+/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
+{%- for line in conformance_header.lines %}
+ * {{ line }}
+{%- endfor %} */
+#ifndef {{ include_guard }}
+#define {{ include_guard }}
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Block state: every manifest-listed variable of the projected GALEC
+ * block, including the 'previous(x)' discrete-state slots committed at
+ * the end of dostep (eFMI trap T2). */
+typedef struct {
+{%- for variable in variables %}
+    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+{%- endfor %}
+} {{ struct_name }};
+
+/* The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
+ * all I/O through the block state.
+ * - startup: initializes every writable variable (call once first);
+ * - recalibrate: recomputes dependent parameters after tunable-parameter
+ *   changes (parameters stay tunable at runtime);
+ * - dostep: one fixed-sample control-cycle tick. */
+void {{ function_prefix }}_startup({{ struct_name }} *self);
+void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
+void {{ function_prefix }}_dostep({{ struct_name }} *self);
+
+/* Project-neutral convenience wrappers for applications that want a stable
+ * eFMI-shaped call surface independent of the generated model prefix. */
+#ifndef EFMI_STATE_TYPE
+#  define EFMI_STATE_TYPE(model) model##State
+#endif
+#ifndef EFMI_INIT
+#  define EFMI_INIT(model, state) model##_startup(state)
+#endif
+#ifndef EFMI_RECALIBRATE
+#  define EFMI_RECALIBRATE(model, state) model##_recalibrate(state)
+#endif
+#ifndef EFMI_STEP
+#  define EFMI_STEP(model, state) model##_dostep(state)
+#endif
+
+#endif /* {{ include_guard }} */

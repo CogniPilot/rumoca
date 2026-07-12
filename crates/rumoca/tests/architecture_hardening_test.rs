@@ -472,14 +472,14 @@ Author reminder: bind-wasm should route through session/tool crates."
         );
     }
 
-    for feature in ["sim-diffsol", "sim-rk45", "stepper-diffsol", "full-web"] {
+    for feature in ["sim-diffsol", "sim-rk45", "session-diffsol", "full-web"] {
         assert!(
             section_contains_dependency(&content, "features", feature),
             "rumoca-bind-wasm must expose a `{feature}` feature so optional runtime surfaces are explicit"
         );
     }
 
-    // The runner facade (rumoca-sim) is the single optional surface; it
+    // The scheduled simulation facade (rumoca-sim) is the single optional surface; it
     // re-exports sim-core + solver crates behind its own feature flags.
     let optional_dep = "rumoca-sim";
     let line =
@@ -504,7 +504,7 @@ fn test_bind_wasm_full_web_uses_browser_safe_solver_graph() {
         "full-web must include the browser-safe RK45 backend; found `{line}`"
     );
     assert!(
-        !line.contains("\"sim-diffsol\"") && !line.contains("\"stepper-diffsol\""),
+        !line.contains("\"sim-diffsol\"") && !line.contains("\"session-diffsol\""),
         "full-web must not pull the Diffsol/Pulp relaxed-SIMD graph into \
 browser smoke builds; found `{line}`"
     );
@@ -1540,7 +1540,7 @@ fn test_rumoca_entry_uses_session_facade_for_ir() {
     let cargo_toml = workspace_root().join("crates/rumoca/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca Cargo.toml");
 
-    // rumoca-sim is the runner-facade dep; it transitively wraps web,
+    // rumoca-sim is the scheduled-sim-facade dep; it transitively wraps web,
     // transports, codecs, input devices, and signal-hook so the CLI no
     // longer names the lower-level runtime crates directly.
     for required in [
@@ -1570,7 +1570,7 @@ fn test_test_msl_uses_explicit_runtime_crates() {
     let cargo_toml = workspace_root().join("crates/rumoca-test-msl/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-test-msl Cargo.toml");
 
-    // rumoca-sim is the runner facade that owns sim-core + solver wiring;
+    // rumoca-sim is the scheduled simulation facade that owns sim-core + solver wiring;
     // test-msl pulls runtime-specific crates only as dev-dependencies for
     // direct IR introspection in regression tests.
     for required in ["rumoca-compile", "rumoca-sim"] {

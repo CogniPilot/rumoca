@@ -13,8 +13,6 @@ MODEL_FILE = FIXTURE_ROOT / "UsesLib.mo"
 SOURCE_ROOT = FIXTURE_ROOT / "Lib"
 
 EXPECTED_PUBLIC = {
-    "load",
-    "loads",
     "validate",
     "validate_source",
     "format",
@@ -30,6 +28,7 @@ EXPECTED_PUBLIC = {
     "ParameterInfo",
     "StructuralInfo",
     "Result",
+    "ScenarioResult",
     "GradientResult",
     "CodegenResult",
     "GeneratedFile",
@@ -49,8 +48,13 @@ EXPECTED_PUBLIC = {
     "unload_ipython_extension",
 }
 
-# Names from the previous JSON-returning API that must NOT be public anymore.
+# Names that must NOT be public anymore, including old JSON-returning helpers
+# and convenience functions that created throwaway compiler sessions.
 REMOVED_NAMES = {
+    "load",
+    "loads",
+    "run_scenario",
+    "codegen_file",
     "compile",
     "compile_source",
     "compile_file",
@@ -75,6 +79,14 @@ REMOVED_NAMES = {
 }
 
 
+def _load_fixture() -> rm.Model:
+    return rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
+
+
+def _loads(source: str, *, model: str) -> rm.Model:
+    return rm.Session().loads(source, model=model)
+
+
 def test_public_namespace_is_clean() -> None:
     assert set(rm.__all__) == EXPECTED_PUBLIC
     public = {n for n in dir(rm) if not n.startswith("_")}
@@ -88,7 +100,7 @@ def test_no_removed_attributes() -> None:
 
 
 def test_typed_returns_not_json() -> None:
-    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    m = _load_fixture()
     assert isinstance(m, rm.Model)
     assert isinstance(m.parameters["gain"], rm.ParameterInfo)
     assert isinstance(m.parameters["gain"].value, float)
@@ -104,7 +116,7 @@ def test_error_hierarchy() -> None:
     assert issubclass(rm.StructuralParamError, rm.RumocaError)
     # A bad model raises a typed CompileError, not a bare RuntimeError.
     try:
-        rm.loads("model Bad Real x = ; end Bad;", model="Bad")
+        _loads("model Bad Real x = ; end Bad;", model="Bad")
     except rm.RumocaError:
         pass
     except Exception as error:  # noqa: BLE001
@@ -131,7 +143,7 @@ DEPS = (
 def test_tunable_param_override_changes_trajectory() -> None:
     import math
 
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     base = m.simulate(t=1.0)["x"][-1]
     over = m.simulate(t=1.0, params={"k": 4.0})["x"][-1]
     assert abs(base - math.exp(-1)) < 1e-3
@@ -140,7 +152,7 @@ def test_tunable_param_override_changes_trajectory() -> None:
 
 def test_cheap_sweep_compiles_once() -> None:
     # with_params shares the compiled artifact; each handle simulates from it.
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     results = [m.with_params(k=k).simulate(t=1.0)["x"][-1] for k in (0.5, 2.0, 8.0)]
     assert results[0] > results[1] > results[2]  # faster decay with larger k
 
@@ -148,7 +160,7 @@ def test_cheap_sweep_compiles_once() -> None:
 def test_start_override() -> None:
     import math
 
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     out = m.with_start(x=3.0).simulate(t=1.0)["x"][-1]
     assert abs(out - 3.0 * math.exp(-1)) < 1e-3
 
@@ -158,13 +170,13 @@ def test_overrides_are_solver_independent() -> None:
     # rk45 backend honors them just like the default (diffsol) path.
     import math
 
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     out = m.simulate(t=1.0, params={"k": 3.0}, config=rm.SimConfig(solver="rk-like"))["x"][-1]
     assert abs(out - math.exp(-3)) < 1e-2
 
 
 def test_unknown_start_override_is_keyerror() -> None:
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     try:
         m.simulate(t=0.1, start={"nope": 1.0})
     except KeyError:
@@ -174,7 +186,7 @@ def test_unknown_start_override_is_keyerror() -> None:
 
 
 def test_override_rejections_are_typed() -> None:
-    m = rm.loads(DEPS, model="M")
+    m = _loads(DEPS, model="M")
     assert m.parameters["n"].kind == "structural"
     assert m.parameters["k"].kind == "tunable"
 
@@ -209,7 +221,7 @@ def test_dependent_param_propagation() -> None:
         "  der(x) = b;\n"
         "end Dep;\n"
     )
-    m = rm.loads(src, model="Dep")
+    m = _loads(src, model="Dep")
     assert abs(m.simulate(t=1.0, dt=0.5)["x"][-1] - 2.0) < 1e-6
     assert abs(m.simulate(t=1.0, dt=0.5, params={"a": 5.0})["x"][-1] - 10.0) < 1e-6
     # A chain c = 3*b = 6*a propagates transitively.
@@ -219,7 +231,7 @@ def test_dependent_param_propagation() -> None:
     ).replace("der(x) = b;", "der(x) = c;").replace("model Dep", "model Chain").replace(
         "end Dep;", "end Chain;"
     )
-    mc = rm.loads(chain, model="Chain")
+    mc = _loads(chain, model="Chain")
     assert abs(mc.simulate(t=1.0, dt=0.5, params={"a": 2.0})["x"][-1] - 12.0) < 1e-6
 
 
@@ -236,7 +248,7 @@ def test_array_dependent_param_propagation() -> None:
         "  for i in 1:3 loop der(x[i]) = arr[i]; end for;\n"
         "end Arr;\n"
     )
-    m = rm.loads(src, model="Arr")
+    m = _loads(src, model="Arr")
     base = m.simulate(t=0.5, dt=0.5)
     over = m.simulate(t=0.5, dt=0.5, params={"a": 10.0})
     for i, (base_expected, over_expected) in enumerate(
@@ -250,7 +262,7 @@ def test_array_dependent_param_propagation() -> None:
 def test_structural_recompile() -> None:
     # `with_params(recompile=True)` re-instantiates: an Integer dimension param
     # changes the array size (§9 DoD). The original handle is untouched.
-    m = rm.loads(DEPS, model="M")
+    m = _loads(DEPS, model="M")
     assert m.states["x"].dims == [2]
     m4 = m.with_params(n=4, recompile=True)
     assert m4.states["x"].dims == [4]
@@ -271,7 +283,7 @@ def test_structural_recompile_boolean() -> None:
         "  der(x) = if on then 1.0 else -x;\n"
         "end Gate;\n"
     )
-    m = rm.loads(src, model="Gate")
+    m = _loads(src, model="Gate")
     assert m.parameters["on"].kind == "structural"
     off = m.simulate(t=0.5, dt=0.25)["x"][-1]
     on = m.with_params(on=True, recompile=True).simulate(t=0.5, dt=0.25)["x"][-1]
@@ -293,7 +305,7 @@ STEADY = (
 
 
 def test_objective_gradient_forward_matches_analytic() -> None:
-    m = rm.loads(STEADY, model="Steady")
+    m = _loads(STEADY, model="Steady")
     grad = m.objective_gradient("x", state={"x": 1.5})
     assert isinstance(grad, rm.GradientResult)
     assert grad.objective == "x"
@@ -304,7 +316,7 @@ def test_objective_gradient_forward_matches_analytic() -> None:
 
 
 def test_objective_gradient_adjoint_matches_forward() -> None:
-    m = rm.loads(STEADY, model="Steady")
+    m = _loads(STEADY, model="Steady")
     fwd = m.objective_gradient("x", state={"x": 1.5}, mode="forward")
     adj = m.objective_gradient("x", state={"x": 1.5}, mode="adjoint")
     assert adj.mode == "adjoint"
@@ -316,7 +328,7 @@ def test_objective_gradient_adjoint_matches_forward() -> None:
 
 
 def test_objective_gradient_typed_views() -> None:
-    m = rm.loads(STEADY, model="Steady")
+    m = _loads(STEADY, model="Steady")
     grad = m.objective_gradient("x", state={"x": 1.5})
     # dict view and membership.
     d = grad.to_dict()
@@ -333,14 +345,14 @@ def test_objective_gradient_typed_views() -> None:
 def test_objective_gradient_honors_param_override() -> None:
     # with_params linearizes the gradient at the overridden value: at k=4, u=3 the
     # steady state is 0.75 and d(x_ss)/dk = -u/k² = -3/16.
-    m = rm.loads(STEADY, model="Steady").with_params(k=4.0)
+    m = _loads(STEADY, model="Steady").with_params(k=4.0)
     grad = m.objective_gradient("x", state={"x": 0.75})
     assert abs(grad["k"] - (-3.0 / 16.0)) < 1e-6
     assert abs(grad["u"] - 0.25) < 1e-6
 
 
 def test_objective_gradient_errors_are_typed() -> None:
-    m = rm.loads(STEADY, model="Steady")
+    m = _loads(STEADY, model="Steady")
     # An objective that is not a solver-y variable surfaces as SimulationError,
     # never an empty/zero gradient.
     try:
@@ -361,7 +373,7 @@ def test_objective_gradient_errors_are_typed() -> None:
 def test_session_from_scenario() -> None:
     # One call reads roots/model/solver from a rumoca-scenario.toml and returns
     # a ready (session, model, config) triple, paths resolved relative to it.
-    scenario = str(FIXTURE_ROOT / "scenario.toml")
+    scenario = FIXTURE_ROOT / "scenario.toml"
     session, model, config = rm.Session.from_scenario(scenario)
     assert isinstance(session, rm.Session)
     assert isinstance(model, rm.Model) and model.name == "UsesLib"
@@ -373,9 +385,94 @@ def test_session_from_scenario() -> None:
     model.with_params(gain=4.0).simulate(t=0.2, config=config)
 
 
+def test_run_scenario_batch_with_output_override() -> None:
+    import tempfile
+
+    scenario = FIXTURE_ROOT / "scenario.toml"
+    session = rm.Session(roots=[str(SOURCE_ROOT)])
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "scenario.csv"
+        run = session.run_scenario(scenario, overrides={"output": output})
+        assert isinstance(run, rm.ScenarioResult)
+        assert run.task == "simulate"
+        assert run.status == "completed"
+        assert run.model == "UsesLib"
+        assert run.schedule in ("as_fast_as_possible", "realtime", "lockstep")
+        assert output.exists()
+        assert str(output) in run.output_paths
+        assert isinstance(run.result, rm.Result)
+        assert run.result.model == "UsesLib"
+        assert run.codegen is None
+
+
+def test_session_run_scenario_reuses_session_surface() -> None:
+    import tempfile
+
+    scenario = FIXTURE_ROOT / "scenario.toml"
+    session = rm.Session(roots=[str(SOURCE_ROOT)])
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "session-scenario.csv"
+        run = session.run_scenario(scenario, overrides={"output": output})
+        assert isinstance(run, rm.ScenarioResult)
+        assert run.task == "simulate"
+        assert output.exists()
+
+
+def test_codegen_file_helper() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        written = rm.Session(roots=[str(SOURCE_ROOT)]).codegen_file(
+            MODEL_FILE,
+            "UsesLib",
+            "sympy",
+            tmp,
+        )
+        assert written
+        assert any(path.endswith(".py") for path in written)
+        for path in written:
+            assert Path(path).exists()
+
+
+def test_run_codegen_scenario() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        scenario = root / "rumoca-scenario.codegen.toml"
+        scenario.write_text(
+            "\n".join(
+                [
+                    f'source_roots = ["{SOURCE_ROOT.as_posix()}"]',
+                    "",
+                    "[rumoca]",
+                    'version = "1"',
+                    'task = "codegen"',
+                    "",
+                    "[model]",
+                    f'file = "{MODEL_FILE.as_posix()}"',
+                    'name = "UsesLib"',
+                    "",
+                    "[codegen]",
+                    'target = "sympy"',
+                    'output_dir = "generated"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        run = rm.Session().run_scenario(scenario)
+        assert isinstance(run, rm.ScenarioResult)
+        assert run.task == "codegen"
+        assert run.result is None
+        assert isinstance(run.codegen, rm.CodegenResult)
+        assert run.output_paths
+        assert all(Path(path).exists() for path in run.output_paths)
+
+
 def test_structure_blt() -> None:
     # A plain ODE is one sequential block with no algebraic loops.
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     s = m.structure()
     assert s.is_matched and s.n_blocks >= 1
     assert s.n_algebraic_loops == 0 and s.largest_algebraic_loop == 0
@@ -390,13 +487,13 @@ def test_structure_blt() -> None:
         "  a - b = x;\n"
         "end Loop;\n"
     )
-    sl = rm.loads(loop, model="Loop").structure()
+    sl = _loads(loop, model="Loop").structure()
     assert sl.n_algebraic_loops == 1
     assert sl.largest_algebraic_loop >= 2
 
     # Balanced but structurally singular (a is determined twice, b never): no
     # full matching, so the BLT can't be built — reported honestly, not crashed.
-    singular = rm.loads("model S Real a; Real b; equation a=1; a=2; end S;", model="S")
+    singular = _loads("model S Real a; Real b; equation a=1; a=2; end S;", model="S")
     ss = singular.structure()
     assert not ss.is_matched
     assert ss.n_blocks == 0 and ss.n_algebraic_loops == 0
@@ -404,7 +501,7 @@ def test_structure_blt() -> None:
 
 def test_errors_teach_did_you_mean() -> None:
     # Unknown names suggest the closest match (§1 "errors that teach").
-    m = rm.loads(DECAY, model="Decay")
+    m = _loads(DECAY, model="Decay")
     try:
         m.parameters["kk"]  # typo for "k"
     except KeyError as error:
@@ -437,7 +534,7 @@ def test_errors_teach_did_you_mean() -> None:
 
 def test_subscripted_lookup_falls_back_to_base() -> None:
     # Scalar `x` resolves both exactly and via a subscripted spelling.
-    m = rm.load(str(MODEL_FILE), roots=[str(SOURCE_ROOT)])
+    m = _load_fixture()
     assert m.states["x"].name == "x"
     assert "x" in m.states
 
@@ -458,6 +555,10 @@ def main() -> None:
     test_structural_recompile()
     test_structural_recompile_boolean()
     test_session_from_scenario()
+    test_run_scenario_batch_with_output_override()
+    test_session_run_scenario_reuses_session_surface()
+    test_codegen_file_helper()
+    test_run_codegen_scenario()
     test_structure_blt()
     test_errors_teach_did_you_mean()
     test_subscripted_lookup_falls_back_to_base()

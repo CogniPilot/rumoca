@@ -1,0 +1,24 @@
+[package]
+name = "rumoca-tool-docs"
+description = "Documentation tooling for rumoca: builds the source-root cache the mdBook live examples hydrate in the browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "rumoca-docs-cache"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bincode = { workspace = true }
+clap = { workspace = true }
+flate2 = { workspace = true }
+mimalloc = { workspace = true }
+rayon = { workspace = true }
+rumoca-compile = { workspace = true }
+
+[lints]
+workspace = true

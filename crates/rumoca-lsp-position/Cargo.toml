@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-lsp-position"
+description = "WASM-safe byte-offset <-> LSP UTF-16 Position conversion shared by the Modelica and GALEC language servers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# lsp-types only: this is the single, WASM-safe byte<->UTF-16 boundary both
+# language servers share (no compiler/solver deps, so a browser editor can use
+# it too).
+lsp-types = { workspace = true }
+
+[lints]
+workspace = true

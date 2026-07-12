@@ -66,7 +66,7 @@ pub(super) fn apply_substitutions_to_remaining_once(
         }
         let original_lhs = eq.lhs.clone();
         let original_rhs = eq.rhs.clone();
-        let rhs = apply_substitutions_in_order_with_derivatives_and_dae(
+        let rhs = apply_substitutions_in_order_with_derivatives(
             &eq.rhs,
             substitutions,
             &derivative_source,

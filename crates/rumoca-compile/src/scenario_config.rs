@@ -115,6 +115,8 @@ pub struct SimulationDefaults {
     pub solver: Option<String>,
     pub t_end: Option<f64>,
     pub dt: Option<f64>,
+    pub atol: Option<f64>,
+    pub rtol: Option<f64>,
     pub output_dir: Option<String>,
 }
 
@@ -124,6 +126,8 @@ pub struct SimulationModelOverride {
     pub solver: Option<String>,
     pub t_end: Option<f64>,
     pub dt: Option<f64>,
+    pub atol: Option<f64>,
+    pub rtol: Option<f64>,
     pub output_dir: Option<String>,
     pub source_root_overrides: Vec<String>,
 }
@@ -134,6 +138,8 @@ pub struct EffectiveSimulationConfig {
     pub solver: String,
     pub t_end: f64,
     pub dt: Option<f64>,
+    pub atol: Option<f64>,
+    pub rtol: Option<f64>,
     pub output_dir: String,
     pub source_root_paths: Vec<String>,
 }
@@ -144,6 +150,8 @@ impl Default for EffectiveSimulationConfig {
             solver: "auto".to_string(),
             t_end: 10.0,
             dt: None,
+            atol: None,
+            rtol: None,
             output_dir: String::new(),
             source_root_paths: Vec::new(),
         }
@@ -164,6 +172,8 @@ pub struct EffectiveSimulationPreset {
     pub solver: String,
     pub t_end: f64,
     pub dt: Option<f64>,
+    pub atol: Option<f64>,
+    pub rtol: Option<f64>,
     pub output_dir: String,
     pub source_root_overrides: Vec<String>,
 }
@@ -423,6 +433,8 @@ impl ScenarioConfig {
     ) {
         model_override.solver = normalize_solver_opt(model_override.solver);
         model_override.dt = normalize_dt_opt(model_override.dt);
+        model_override.atol = normalize_positive_f64_opt(model_override.atol);
+        model_override.rtol = normalize_positive_f64_opt(model_override.rtol);
         if !model_override
             .t_end
             .map(|value| value.is_finite() && value > 0.0)
@@ -841,6 +853,12 @@ fn apply_model_config(
     if let Some(dt) = normalize_dt(sim.dt) {
         effective.dt = Some(dt);
     }
+    if let Some(atol) = normalize_positive_f64_opt(sim.atol) {
+        effective.atol = Some(atol);
+    }
+    if let Some(rtol) = normalize_positive_f64_opt(sim.rtol) {
+        effective.rtol = Some(rtol);
+    }
     if let Some(output_dir) = sim.output_dir.as_deref() {
         effective.output_dir = output_dir.to_string();
     }
@@ -873,6 +891,8 @@ fn preset_from_override(
     let mut override_copy = model_override.clone();
     override_copy.solver = normalize_solver_opt(override_copy.solver);
     override_copy.dt = normalize_dt_opt(override_copy.dt);
+    override_copy.atol = normalize_positive_f64_opt(override_copy.atol);
+    override_copy.rtol = normalize_positive_f64_opt(override_copy.rtol);
     if let Some(solver) = override_copy.solver.as_deref() {
         effective.solver = solver.to_string();
     }
@@ -885,6 +905,12 @@ fn preset_from_override(
     if let Some(dt) = override_copy.dt {
         effective.dt = Some(dt);
     }
+    if let Some(atol) = override_copy.atol {
+        effective.atol = Some(atol);
+    }
+    if let Some(rtol) = override_copy.rtol {
+        effective.rtol = Some(rtol);
+    }
     if let Some(output_dir) = override_copy.output_dir.as_deref() {
         effective.output_dir = output_dir.to_string();
     }
@@ -892,6 +918,8 @@ fn preset_from_override(
         solver: effective.solver,
         t_end: effective.t_end,
         dt: effective.dt,
+        atol: effective.atol,
+        rtol: effective.rtol,
         output_dir: effective.output_dir,
         source_root_overrides: override_copy.source_root_overrides,
     }
@@ -1057,6 +1085,8 @@ fn merge_sim_config_value(
         "solver",
         "t_end",
         "dt",
+        "atol",
+        "rtol",
         "output_dir",
         "source_root_overrides",
     ];
@@ -1087,6 +1117,8 @@ fn merge_sim_config_value(
     merge_optional_string(table, "solver", sim.solver.as_deref());
     merge_optional_f64(table, "t_end", sim.t_end);
     merge_optional_f64(table, "dt", sim.dt);
+    merge_optional_f64(table, "atol", sim.atol);
+    merge_optional_f64(table, "rtol", sim.rtol);
     merge_optional_string(table, "output_dir", sim.output_dir.as_deref());
     if sim.source_root_overrides.is_empty() {
         table.remove("source_root_overrides");
@@ -1283,6 +1315,8 @@ fn simulation_model_override_is_empty(value: &SimulationModelOverride) -> bool {
     value.solver.is_none()
         && value.t_end.is_none()
         && value.dt.is_none()
+        && value.atol.is_none()
+        && value.rtol.is_none()
         && value.output_dir.is_none()
         && value.source_root_overrides.is_empty()
 }
@@ -1313,24 +1347,29 @@ fn sanitize_identifier(input: &str) -> String {
 
 fn normalize_solver(raw: Option<&str>) -> Option<&'static str> {
     let lowered = raw?.trim().to_ascii_lowercase();
-    match lowered.as_str() {
+    let normalized = lowered.replace(['-', '_', ' '], "");
+    match normalized.as_str() {
         "auto" => Some("auto"),
         "bdf" => Some("bdf"),
-        "rk-like" => Some("rk-like"),
+        "esdirk34" => Some("esdirk34"),
+        "trbdf2" => Some("trbdf2"),
+        "rklike" => Some("rk-like"),
         _ => None,
     }
 }
 
 fn normalize_solver_opt(value: Option<String>) -> Option<String> {
-    match value
+    let normalized = value
         .as_deref()
         .map(str::trim)
         .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
+        .map(|value| value.replace(['-', '_', ' '], ""));
+    match normalized.as_deref() {
         Some("auto") => Some("auto".to_string()),
         Some("bdf") => Some("bdf".to_string()),
-        Some("rk-like") => Some("rk-like".to_string()),
+        Some("esdirk34") => Some("esdirk34".to_string()),
+        Some("trbdf2") => Some("trbdf2".to_string()),
+        Some("rklike") => Some("rk-like".to_string()),
         _ => None,
     }
 }
@@ -1341,6 +1380,10 @@ fn normalize_dt(raw: Option<f64>) -> Option<f64> {
 
 fn normalize_dt_opt(raw: Option<f64>) -> Option<f64> {
     normalize_dt(raw)
+}
+
+fn normalize_positive_f64_opt(raw: Option<f64>) -> Option<f64> {
+    raw.filter(|value| value.is_finite() && *value > 0.0)
 }
 
 #[cfg(test)]

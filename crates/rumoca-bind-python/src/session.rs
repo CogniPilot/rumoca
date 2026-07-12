@@ -1,5 +1,5 @@
-//! The reusable [`Session`] and the module-level convenience functions that
-//! delegate to a default session (`rumoca.load`, `rumoca.loads`, ...).
+//! The reusable [`Session`], which owns source roots and compiler caches for
+//! the Python API.
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// A reusable compiler session that retains loaded source roots and caches
-/// across calls. Free functions (`rumoca.load`, ...) delegate to a default one.
+/// across calls.
 #[pyclass(module = "rumoca", unsendable)]
 pub struct Session {
     session: CompileSession,
@@ -39,6 +39,31 @@ impl Session {
             &self.source_root_paths,
             &mut self.effective_source_root_paths,
         );
+    }
+
+    fn load_file(&mut self, path: &str, model: Option<&str>) -> ApiResult<Model> {
+        self.sync();
+        // Read the source ourselves (rather than `compile_file_in_session`) so we
+        // can retain it on the Model for structural recompiles.
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| ApiError::Compile(format!("Failed to read {path}: {e}")))?;
+        let (result, name) = compile_source_in_session(
+            &mut self.session,
+            &source,
+            model,
+            path,
+            &self.effective_source_root_paths,
+        )
+        .map_err(compile_err)?;
+        Ok(Model::new(
+            name,
+            result,
+            RecompileContext {
+                source,
+                filename: path.to_string(),
+                roots: self.effective_source_root_paths.clone(),
+            },
+        ))
     }
 }
 
@@ -66,9 +91,10 @@ impl Session {
     #[pyo3(signature = (path))]
     fn from_scenario(
         _cls: &Bound<'_, PyType>,
-        path: &str,
+        path: &Bound<'_, PyAny>,
     ) -> ApiResult<(Session, Model, SimConfig)> {
-        let scenario_path = Path::new(path);
+        let path = crate::scenario::path_string(path)?;
+        let scenario_path = Path::new(&path);
         let text = std::fs::read_to_string(scenario_path)
             .map_err(|e| ApiError::Compile(format!("Failed to read {path}: {e}")))?;
         let config = rumoca_compile::scenario::parse_scenario_config_file(&text)
@@ -92,7 +118,7 @@ impl Session {
             .collect();
 
         let mut session = Self::build(roots);
-        let model = session.load(&model_path, Some(model_name.as_str()))?;
+        let model = session.load_file(&model_path, Some(model_name.as_str()))?;
         let config = SimConfig {
             solver: config.sim.solver,
             rtol: None,
@@ -103,6 +129,50 @@ impl Session {
         Ok((session, model, config))
     }
 
+    /// Execute a `rumoca-scenario*.toml` through the same public scenario
+    /// surface as the native CLI, reusing this session's source roots and
+    /// compiler cache.
+    #[pyo3(signature = (path, *, overrides=None))]
+    fn run_scenario(
+        &mut self,
+        path: &Bound<'_, PyAny>,
+        overrides: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> ApiResult<crate::scenario::ScenarioResult> {
+        self.sync();
+        let path = crate::scenario::path_string(path)?;
+        crate::scenario::run_scenario_in_session(
+            &mut self.session,
+            &self.effective_source_root_paths,
+            &path,
+            overrides,
+        )
+    }
+
+    /// Compile a model file with this session and write a codegen target to a
+    /// directory. This is the build-system-friendly API for CMake/Nix steps.
+    #[pyo3(signature = (path, model, target, output, *, roots=None))]
+    fn codegen_file(
+        &mut self,
+        path: &Bound<'_, PyAny>,
+        model: &str,
+        target: &str,
+        output: &Bound<'_, PyAny>,
+        roots: Option<Vec<String>>,
+    ) -> ApiResult<Vec<String>> {
+        self.sync();
+        let path = crate::scenario::path_string(path)?;
+        let output = crate::scenario::path_string(output)?;
+        crate::scenario::codegen_file_in_session(
+            &mut self.session,
+            &self.effective_source_root_paths,
+            &path,
+            model,
+            target,
+            &output,
+            &roots.unwrap_or_default(),
+        )
+    }
+
     /// The configured source roots.
     #[getter]
     fn roots(&self) -> Vec<String> {
@@ -111,29 +181,9 @@ impl Session {
 
     /// Compile a model from a file and return a [`Model`].
     #[pyo3(signature = (path, *, model=None))]
-    fn load(&mut self, path: &str, model: Option<&str>) -> ApiResult<Model> {
-        self.sync();
-        // Read the source ourselves (rather than `compile_file_in_session`) so we
-        // can retain it on the Model for structural recompiles.
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| ApiError::Compile(format!("Failed to read {path}: {e}")))?;
-        let (result, name) = compile_source_in_session(
-            &mut self.session,
-            &source,
-            model,
-            path,
-            &self.effective_source_root_paths,
-        )
-        .map_err(compile_err)?;
-        Ok(Model::new(
-            name,
-            result,
-            RecompileContext {
-                source,
-                filename: path.to_string(),
-                roots: self.effective_source_root_paths.clone(),
-            },
-        ))
+    fn load(&mut self, path: &Bound<'_, PyAny>, model: Option<&str>) -> ApiResult<Model> {
+        let path = crate::scenario::path_string(path)?;
+        self.load_file(&path, model)
     }
 
     /// Compile a model from inline source and return a [`Model`].
@@ -179,45 +229,20 @@ fn compile_err(err: PyRuntimeStringError) -> ApiError {
     ApiError::Compile(err.0)
 }
 
-// ── module-level functions (delegate to a fresh default session) ────────────
-
-/// Load and compile a model from a file.
-#[pyfunction]
-#[pyo3(signature = (path, *, model=None, roots=None))]
-pub fn load(path: &str, model: Option<&str>, roots: Option<Vec<String>>) -> ApiResult<Model> {
-    let mut session = Session::build(resolve_roots(roots));
-    session.load(path, model)
-}
-
-/// Load and compile a model from inline source.
-#[pyfunction]
-#[pyo3(signature = (source, *, model=None, filename=None, roots=None))]
-pub fn loads(
-    source: &str,
-    model: Option<&str>,
-    filename: Option<&str>,
-    roots: Option<Vec<String>>,
-) -> ApiResult<Model> {
-    let mut session = Session::build(resolve_roots(roots));
-    session.loads(source, model, filename)
-}
-
-fn resolve_roots(roots: Option<Vec<String>>) -> Vec<String> {
-    roots.unwrap_or_default()
-}
-
 /// Validate a model file, returning all diagnostics. Never raises on model
 /// errors (only on I/O failure reading the file).
 #[pyfunction]
 #[pyo3(signature = (path, *, model=None))]
 pub fn validate(
-    path: &str,
+    path: &Bound<'_, PyAny>,
     model: Option<&str>,
 ) -> std::result::Result<Vec<Diagnostic>, PyRuntimeStringError> {
-    let source = std::fs::read_to_string(path)
+    let path = crate::scenario::path_string(path)
+        .map_err(|error| PyRuntimeStringError(format!("{error}")))?;
+    let source = std::fs::read_to_string(&path)
         .map_err(|e| PyRuntimeStringError(format!("Failed to read {path}: {e}")))?;
     let _ = model;
-    Ok(crate::diagnostics_for_source(&source, path))
+    Ok(crate::diagnostics_for_source(&source, &path))
 }
 
 /// Validate inline source, returning all diagnostics. Never raises on model

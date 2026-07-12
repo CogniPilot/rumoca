@@ -711,6 +711,18 @@ pub(in crate::codegen) fn render_solve_row_c_function(row: Value, config: Value)
     render_solve_row_c(&row, &cfg)
 }
 
+pub(in crate::codegen) fn render_solve_target_assignment_c_function(
+    row: Value,
+    target_y_index: Value,
+    config: Value,
+) -> RenderResult {
+    let target_y_index = target_y_index
+        .as_usize()
+        .ok_or_else(|| render_err("target-assignment Y index must be a non-negative integer"))?;
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_target_assignment_c(&row, target_y_index, &cfg)
+}
+
 pub(in crate::codegen) fn render_solve_row_wgsl_function(
     row: Value,
     config: Value,

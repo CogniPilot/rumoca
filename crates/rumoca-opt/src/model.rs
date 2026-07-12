@@ -1,5 +1,5 @@
 use crate::OptError;
-use indexmap::IndexMap;
+use indexmap::IndexSet;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
@@ -102,10 +102,12 @@ impl DifferentiableModel {
         sim_options: &SimOptions,
         opt_options: OptOptions,
     ) -> Result<Self, OptError> {
-        let solve_model = rumoca_sim::lower_for_simulation_with_overrides(dae_model, sim_options)?;
+        let solve_model =
+            rumoca_sim::lower_for_differentiation_with_overrides(dae_model, sim_options)?;
+        validate_sensitivity_artifacts(&solve_model)?;
         let state = solve_model.initial_y[..solve_model.state_scalar_count()].to_vec();
         let params = solve_model.parameters.clone();
-        let parameters = collect_model_parameter_slots(&solve_model);
+        let parameters = collect_model_parameter_slots(dae_model, &solve_model);
         let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)?;
         Ok(Self {
             runtime,
@@ -216,6 +218,37 @@ impl DifferentiableModel {
     }
 }
 
+fn validate_sensitivity_artifacts(model: &solve::SolveModel) -> Result<(), OptError> {
+    if model.state_scalar_count() == 0 {
+        return Ok(());
+    }
+    if model
+        .artifacts
+        .continuous
+        .full_jacobian_v
+        .programs
+        .is_empty()
+    {
+        return Err(OptError::Lowering(
+            "differentiable lowering did not produce derivative sensitivity artifacts".to_string(),
+        ));
+    }
+    if model.solver_scalar_count() > model.state_scalar_count()
+        && model
+            .artifacts
+            .continuous
+            .implicit_jacobian_v_scalar
+            .programs
+            .is_empty()
+    {
+        return Err(OptError::Lowering(
+            "differentiable lowering did not produce algebraic projection sensitivity artifacts"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn available_trainables(parameters: &[TrainableParameter]) -> String {
     parameters
         .iter()
@@ -224,28 +257,103 @@ fn available_trainables(parameters: &[TrainableParameter]) -> String {
         .join(", ")
 }
 
-fn collect_model_parameter_slots(model: &solve::SolveModel) -> Vec<TrainableParameter> {
-    let n = model.problem.layout.p_scalars();
-    let mut by_slot: Vec<Option<String>> = vec![None; n];
-    write_binding_parameter_slots(model.problem.layout.bindings(), &mut by_slot);
-    by_slot
-        .into_iter()
-        .enumerate()
-        .filter_map(|(slot, name)| name.map(|name| TrainableParameter { name, slot }))
+fn collect_model_parameter_slots(
+    dae_model: &dae::Dae,
+    model: &solve::SolveModel,
+) -> Vec<TrainableParameter> {
+    let excluded = parameter_dependency_participants(dae_model);
+    let mut seen_slots = IndexSet::new();
+    let mut parameters = Vec::new();
+    for (name, var) in &dae_model.variables.parameters {
+        if independent_trainable_parameter(name.as_str(), var, &excluded) {
+            write_trainable_parameter_slots(
+                name.as_str(),
+                var,
+                model,
+                &mut seen_slots,
+                &mut parameters,
+            );
+        }
+    }
+    parameters.sort_by_key(|parameter| parameter.slot);
+    parameters
+}
+
+fn independent_trainable_parameter(
+    name: &str,
+    var: &dae::Variable,
+    excluded: &IndexSet<String>,
+) -> bool {
+    var.is_tunable
+        && var.origin == dae::VariableOrigin::Source
+        && var.causality == dae::VariableCausality::Parameter
+        && !excluded.contains(name)
+}
+
+fn parameter_dependency_participants(dae_model: &dae::Dae) -> IndexSet<String> {
+    let parameter_names = dae_model
+        .variables
+        .parameters
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<IndexSet<_>>();
+    let mut participants = IndexSet::new();
+    for (name, var) in &dae_model.variables.parameters {
+        let refs = parameter_start_refs(var, &parameter_names);
+        if refs.is_empty() {
+            continue;
+        }
+        participants.insert(name.as_str().to_string());
+        participants.extend(refs);
+    }
+    participants
+}
+
+fn parameter_start_refs(
+    var: &dae::Variable,
+    parameter_names: &IndexSet<String>,
+) -> IndexSet<String> {
+    let Some(start) = var.start.as_ref() else {
+        return IndexSet::new();
+    };
+    let mut refs = Vec::new();
+    start.collect_var_refs(&mut refs);
+    refs.into_iter()
+        .filter_map(|reference| {
+            let name = reference.as_str();
+            parameter_names.contains(name).then(|| name.to_string())
+        })
         .collect()
 }
 
-fn write_binding_parameter_slots(
-    bindings: &IndexMap<String, solve::ScalarSlot>,
-    by_slot: &mut [Option<String>],
+fn write_trainable_parameter_slots(
+    name: &str,
+    var: &dae::Variable,
+    model: &solve::SolveModel,
+    seen_slots: &mut IndexSet<usize>,
+    parameters: &mut Vec<TrainableParameter>,
 ) {
-    for (name, slot) in bindings {
-        if let solve::ScalarSlot::P { index, .. } = slot
-            && *index < by_slot.len()
-            && !name.starts_with("__")
-            && by_slot[*index].is_none()
+    let Ok(size) = var.try_size() else {
+        return;
+    };
+    for scalar_name in trainable_scalar_names(name, var, size) {
+        if let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(&scalar_name)
+            && !scalar_name.starts_with("__")
+            && seen_slots.insert(index)
         {
-            by_slot[*index] = Some(name.clone());
+            parameters.push(TrainableParameter {
+                name: scalar_name,
+                slot: index,
+            });
         }
     }
+}
+
+fn trainable_scalar_names(name: &str, var: &dae::Variable, size: usize) -> Vec<String> {
+    if size <= 1 && var.dims.is_empty() {
+        return vec![name.to_string()];
+    }
+    (0..size)
+        .map(|index| dae::scalar_name_text_for_flat_index(name, &var.dims, index))
+        .collect()
 }

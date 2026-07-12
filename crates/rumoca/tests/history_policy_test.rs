@@ -104,6 +104,44 @@ Pre 1.0, we want no {} {}/ {} code; delete the old path instead.",
     )
 }
 
+/// The eFMI 1.0.0 standard mandates a `SupportedPlatform` enumeration whose
+/// value is a capitalized proper noun (`efmiSupportedPlatforms.xsd`) naming a
+/// plain-C, non-AUTOSAR deployment target. Rumoca emits that value verbatim
+/// (`SupportedPlatform` enum + `platform="…"` manifest attribute), so the word
+/// appears in our source as a schema literal, not as history-preserving code.
+///
+/// A hit is exempt only when the offending word IS that capitalized identifier:
+/// the lowercase adjective (as in "… code" / "… path") still fails, and the
+/// exemption is scoped to the single-word platform term so the multi-word
+/// compatibility terms are never affected.
+fn term_is_efmi_platform_proper_noun(line: &str, banned_term: &str) -> bool {
+    if banned_term != concat!("leg", "acy") {
+        return false;
+    }
+    // Every hit on this line must be the exact capitalized standard token.
+    !line.contains(banned_term) && line.contains(concat!("Leg", "acy"))
+}
+
+/// Append `rel:line contains \`term\`` for every banned term on every line of
+/// one file, skipping the eFMI platform proper-noun exemption.
+fn collect_line_offenders(
+    rel: &str,
+    content: &str,
+    banned_terms: &[&str],
+    offenders: &mut Vec<String>,
+) {
+    for (line_idx, line) in content.lines().enumerate() {
+        let lower = line.to_lowercase();
+        let hits = banned_terms
+            .iter()
+            .filter(|term| lower.contains(**term))
+            .filter(|term| !term_is_efmi_platform_proper_noun(line, term));
+        for term in hits {
+            offenders.push(format!("{rel}:{} contains `{term}`", line_idx + 1));
+        }
+    }
+}
+
 #[test]
 fn test_no_history_preserving_paths_before_one_dot_zero() {
     let root = workspace_root();
@@ -116,13 +154,8 @@ fn test_no_history_preserving_paths_before_one_dot_zero() {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        for (line_idx, line) in content.lines().enumerate() {
-            let lower = line.to_lowercase();
-            if let Some(term) = banned_terms.iter().find(|term| lower.contains(**term)) {
-                let rel = normalized_rel_path(path.strip_prefix(&root).expect("relative path"));
-                offenders.push(format!("{rel}:{} contains `{term}`", line_idx + 1));
-            }
-        }
+        let rel = normalized_rel_path(path.strip_prefix(&root).expect("relative path"));
+        collect_line_offenders(&rel, &content, &banned_terms, &mut offenders);
     }
 
     assert!(

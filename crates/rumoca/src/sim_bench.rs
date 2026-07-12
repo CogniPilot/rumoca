@@ -11,7 +11,7 @@ use crate::cli::{
     DiagnosticsArgs, ModelInputArgs, ModelOptions, SimulateSolverMode,
     compile_dae_with_inferred_model, init_debug_tracing,
 };
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use crate::cli::{configured_model_name, resolve_path};
 
 #[derive(Args, Debug)]
@@ -52,7 +52,7 @@ pub struct SimBenchArgs {
     pub(crate) dt: Option<f64>,
 
     /// Solver mode. Hot benchmarking uses the prepared BDF/diffsol path or the
-    /// reusable rk-like stepper, depending on this selection.
+    /// reusable rk-like session, depending on this selection.
     #[arg(long, value_enum)]
     pub(crate) solver: Option<BenchSolverMode>,
 
@@ -104,7 +104,7 @@ enum PreparedHotBench {
 }
 
 struct RkLikeHotBench {
-    stepper: rumoca_sim::rk45::SimStepper,
+    session: rumoca_sim::rk45::SimulationSession,
     sample_times: Vec<f64>,
     t_start: f64,
 }
@@ -167,6 +167,7 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
             .map_err(|err| anyhow::anyhow!("warmup simulation failed: {err}"))?;
     }
 
+    rumoca_sim::row_eval_trace::reset();
     let mut run_seconds = Vec::with_capacity(args.iterations);
     let mut last_points = 0;
     let mut last_final_time = None;
@@ -180,6 +181,7 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
         last_points = summary.points;
         last_final_time = summary.final_time;
     }
+    rumoca_sim::row_eval_trace::snapshot("sim-bench");
 
     let hot_total_seconds = run_seconds.iter().sum::<f64>();
     let hot_average_seconds = hot_total_seconds / args.iterations as f64;
@@ -259,12 +261,12 @@ impl RkLikeHotBench {
         dae: &rumoca_compile::compile::Dae,
         opts: &SimOptions,
     ) -> Result<(Self, BuildSimulationTimings)> {
-        let (stepper, timings) =
-            rumoca_sim::rk45::SimStepper::new_with_stage_timing(dae, opts.clone(), |_| {})
+        let (session, timings) =
+            rumoca_sim::rk45::SimulationSession::new_with_stage_timing(dae, opts.clone(), |_| {})
                 .map_err(|err| anyhow::anyhow!("failed to prepare rk-like simulation: {err}"))?;
         Ok((
             Self {
-                stepper,
+                session,
                 sample_times: build_output_times(opts.t_start, opts.t_end, bench_output_dt(opts)),
                 t_start: opts.t_start,
             },
@@ -273,18 +275,17 @@ impl RkLikeHotBench {
     }
 
     fn run_hot(&mut self) -> Result<HotRunSummary> {
-        self.stepper
+        self.session
             .reset(self.t_start)
             .map_err(|err| anyhow::anyhow!("failed to reset rk-like simulation: {err}"))?;
         for &target in self.sample_times.iter().skip(1) {
-            let dt = target - self.stepper.time();
-            self.stepper
-                .step(dt)
+            self.session
+                .advance_to(target)
                 .map_err(|err| anyhow::anyhow!("failed to step rk-like simulation: {err}"))?;
         }
         Ok(HotRunSummary {
             points: self.sample_times.len(),
-            final_time: Some(self.stepper.time()),
+            final_time: Some(self.session.time()),
         })
     }
 }
@@ -311,9 +312,9 @@ fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
     })
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<BenchInput> {
-    let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
+    let config = rumoca_sim::scenario_config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
     let config_dir = Path::new(config_path).parent().unwrap_or(Path::new("."));
     let model_path_str = args
@@ -364,11 +365,11 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
     })
 }
 
-#[cfg(not(feature = "runner"))]
+#[cfg(not(feature = "scheduled-sim"))]
 fn resolve_config_bench_input(_args: &SimBenchArgs, _config_path: &str) -> Result<BenchInput> {
     bail!(
         "this rumoca binary was built without simulation config support; \
-         rebuild with --features=runner"
+         rebuild with --features=scheduled-sim"
     );
 }
 

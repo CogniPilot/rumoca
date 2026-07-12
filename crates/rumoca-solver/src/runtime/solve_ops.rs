@@ -2,6 +2,7 @@ use rumoca_ir_solve as solve;
 
 use crate::{
     SimResult, SimTermination, SimVariableMeta, runtime::pre_params::write_pre_params_from_sources,
+    timeline,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -277,17 +278,34 @@ pub fn root_crossings_with_relation_memory(
         .filter_map(|(index, (old, new))| {
             let target = root_relation_memory_targets.get(index).copied().flatten();
             if target.is_some() {
-                if let Some(crossing) = relation_memory_root_crossing(index, *new, target, params) {
-                    return Some(crossing);
+                if let Some(crossing) = signed_root_crossing(index, *old, *new, tol) {
+                    return relation_memory_target_toggled(
+                        crossing.post_relation_memory_value,
+                        target,
+                        params,
+                    )
+                    .then_some(crossing);
                 }
                 if relation_memory_value_from_signed_root(*new).is_some() {
                     return None;
                 }
-                return signed_root_crossing(index, *old, *new, tol);
+                return None;
             }
             root_crossing(index, *old, *new, tol)
         })
         .collect()
+}
+
+pub fn filter_scheduled_root_crossings(
+    crossings: &mut Vec<RootCrossing>,
+    scheduled_roots: &[solve::ScheduledRootCondition],
+) {
+    if scheduled_roots.is_empty() {
+        return;
+    }
+    crossings.retain(|crossing| {
+        !timeline::scheduled_root_index_is_known(scheduled_roots, crossing.index)
+    });
 }
 
 pub fn root_value_crossed(before: f64, after: f64, tol: f64) -> bool {
@@ -330,24 +348,21 @@ fn boolean_relation_value(value: f64, tol: f64) -> bool {
     value.abs() <= tol || (value - 1.0).abs() <= tol
 }
 
-fn relation_memory_root_crossing(
-    index: usize,
-    new: f64,
+fn relation_memory_target_toggled(
+    post: f64,
     target: Option<solve::ScalarSlot>,
     params: &[f64],
-) -> Option<RootCrossing> {
+) -> bool {
     let Some(solve::ScalarSlot::P {
         index: param_idx, ..
     }) = target
     else {
-        return None;
+        return false;
     };
-    let current = *params.get(param_idx)?;
-    let post = relation_memory_value_from_signed_root(new)?;
-    relation_toggled(current, post).then_some(RootCrossing {
-        index,
-        post_relation_memory_value: post,
-    })
+    let Some(current) = params.get(param_idx).copied() else {
+        return false;
+    };
+    relation_toggled(current, post)
 }
 
 fn relation_memory_value_from_signed_root(root: f64) -> Option<f64> {
@@ -433,6 +448,29 @@ mod tests {
         assert_eq!(
             root_crossings_with_relation_memory(&[0.0], &[0.1], 1.0e-6, &targets, &[0.0]),
             Vec::new()
+        );
+    }
+
+    #[test]
+    fn relation_memory_same_side_stale_value_does_not_request_bisection() {
+        let targets = [Some(solve::scalar_slot_p(0))];
+
+        assert_eq!(
+            root_crossings_with_relation_memory(&[1.0], &[1.0], 1.0e-6, &targets, &[1.0]),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn relation_memory_signed_root_crossing_requests_bisection_when_post_value_changes() {
+        let targets = [Some(solve::scalar_slot_p(0))];
+
+        assert_eq!(
+            root_crossings_with_relation_memory(&[1.0], &[-1.0], 1.0e-6, &targets, &[0.0]),
+            vec![RootCrossing {
+                index: 0,
+                post_relation_memory_value: 1.0
+            }]
         );
     }
 

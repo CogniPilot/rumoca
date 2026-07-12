@@ -1,0 +1,167 @@
+{#-
+  eFMI Production Code manifest (efmiProductionCodeManifest.xsd, 0.17.0).
+
+  Real jinja rewrite of the typed quick-xml serializer (contract §3, WI-2).
+  Autoescape is OFF + strict-undefined: EVERY interpolated text value passes
+  through `xml_escape`.
+
+  xs:sequence child order is LOAD-BEARING:
+    ManifestReferences -> Files -> CodeContainer
+      (Target -> TargetTypes -> CodeFiles -> LogicalData) -> Annotations.
+
+  Structural rules the template reproduces (contract §3a):
+    - `origin="true"` unconditional on the single ManifestReference;
+    - `<Target>` is a TEXT element, not an attribute;
+    - `Dimension/@number` is 0-based here (`loop.index0`), and
+      `FormalParameter/@number` likewise (the AC manifest is 1-based);
+    - always-emitted wrappers: Files, CodeFiles, LogicalData,
+      DataReferences, FunctionReferences (empty -> self-closing);
+    - absent-when-empty wrappers: TargetTypes, Includes, Typedefs,
+      Functions, FormalParameters, every Dimensions, Annotations;
+    - only-when-true booleans: Component/@pointer, parameter
+      const/pointer/constPointer.
+
+  Consumes: ctx.pc (fixed efmiVersion/xsdVersion/kind/schema location are
+  template literals, not context).
+-#}
+{%- set pc = ctx.pc -%}
+{%- macro attr(name, value) -%}
+{{ " " }}{{ name }}="{{ value | xml_escape }}"
+{%- endmacro -%}
+{%- macro dimensions_zero(dims, indent) -%}
+{{ indent }}<Dimensions>
+{%- for d in dims %}
+{{ indent }}  <Dimension number="{{ loop.index0 }}" size="{{ d }}"/>
+{%- endfor %}
+{{ indent }}</Dimensions>
+{%- endmacro -%}
+{%- macro param_core(core) -%}
+{{ attr("id", core.id) }}{{ attr("typeDefRefId", core.type_def_ref_id) }}
+{%- if core.constant %} const="true"{% endif %}
+{%- if core.pointer %} pointer="true"{% endif %}
+{%- if core.const_pointer %} constPointer="true"{% endif %}
+{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<Manifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schemas/ProductionCode/efmiProductionCodeManifest.xsd" xsdVersion="0.17.0" kind="ProductionCode" efmiVersion="1.0.0"{{ attr("id", pc.attributes.id) }}{{ attr("name", pc.attributes.name) }}{% if pc.attributes.description is not none %}{{ attr("description", pc.attributes.description) }}{% endif %}{% if pc.attributes.version is not none %}{{ attr("version", pc.attributes.version) }}{% endif %}{{ attr("generationDateAndTime", pc.attributes.generation_date_and_time) }}{% if pc.attributes.generation_tool is not none %}{{ attr("generationTool", pc.attributes.generation_tool) }}{% endif %}{% if pc.attributes.copyright is not none %}{{ attr("copyright", pc.attributes.copyright) }}{% endif %}{% if pc.attributes.license is not none %}{{ attr("license", pc.attributes.license) }}{% endif %}>
+  <ManifestReferences>
+    <ManifestReference{{ attr("id", pc.manifest_reference.id) }}{{ attr("manifestRefId", pc.manifest_reference.manifest_ref_id) }}{{ attr("checksum", pc.manifest_reference.checksum) }} origin="true"/>
+  </ManifestReferences>
+{%- if pc.files | length == 0 %}
+  <Files/>
+{%- else %}
+  <Files>
+{%- for f in pc.files %}
+    <File{{ attr("id", f.id) }}{{ attr("name", f.name) }}{{ attr("path", f.path) }}{% if f.needs_checksum %} needsChecksum="true"{{ attr("checksum", f.checksum) }}{% else %} needsChecksum="false"{% endif %}{{ attr("role", f.role) }}{% if f.description is not none %}{{ attr("description", f.description) }}{% endif %}/>
+{%- endfor %}
+  </Files>
+{%- endif %}
+{%- set cc = pc.code_container %}
+  <CodeContainer{{ attr("language", cc.language) }}{{ attr("standard", cc.standard) }}{{ attr("platform", cc.platform) }}{{ attr("floatPrecision", cc.float_precision) }}{% if cc.description is not none %}{{ attr("description", cc.description) }}{% endif %}>
+    <Target>{{ cc.target | xml_escape }}</Target>
+{%- if cc.target_types | length > 0 %}
+    <TargetTypes>
+{%- for t in cc.target_types %}
+      <TargetType{{ attr("id", t.id) }}{{ attr("kind", t.kind) }}{{ attr("codedType", t.coded_type) }}/>
+{%- endfor %}
+    </TargetTypes>
+{%- endif %}
+    <CodeFiles>
+{%- for cf in cc.code_files %}
+      <CodeFile{{ attr("id", cf.id) }}{{ attr("fileType", cf.file_type) }}{{ attr("codeType", cf.code_type) }}>
+        <FileReference{{ attr("fileRefId", cf.file_ref_id) }}{% if cf.file_ref_kind is not none %}{{ attr("kind", cf.file_ref_kind) }}{% endif %}/>
+{%- if cf.includes | length > 0 %}
+        <Includes>
+{%- for inc in cf.includes %}
+          <Include{{ attr("codeFileRefId", inc) }}/>
+{%- endfor %}
+        </Includes>
+{%- endif %}
+{%- if cf.typedefs | length > 0 %}
+        <Typedefs>
+{%- for td in cf.typedefs %}
+          <Typedef{{ attr("id", td.id) }}{{ attr("name", td.name) }}>
+{%- if td.alias is not none %}
+            <Alias{{ attr("targetTypeRefId", td.alias.target_type_ref_id) }}{% if td.alias.type_def_ref_id is not none %}{{ attr("typeDefRefId", td.alias.type_def_ref_id) }}{% endif %}/>
+{%- else %}
+            <Components>
+{%- for co in td.components %}
+{%- if co.dimensions | length == 0 %}
+              <Component{{ attr("id", co.id) }}{{ attr("name", co.name) }}{{ attr("typeDefRefId", co.type_def_ref_id) }}{% if co.pointer %} pointer="true"{% endif %}/>
+{%- else %}
+              <Component{{ attr("id", co.id) }}{{ attr("name", co.name) }}{{ attr("typeDefRefId", co.type_def_ref_id) }}{% if co.pointer %} pointer="true"{% endif %}>
+{{ dimensions_zero(co.dimensions, "                ") }}
+              </Component>
+{%- endif %}
+{%- endfor %}
+            </Components>
+{%- endif %}
+          </Typedef>
+{%- endfor %}
+        </Typedefs>
+{%- endif %}
+{%- if cf.functions | length > 0 %}
+        <Functions>
+{%- for fn in cf.functions %}
+          <Function{{ attr("id", fn.id) }}{{ attr("name", fn.name) }}>
+{%- if fn.return_parameter.dimensions | length == 0 %}
+            <ReturnParameter{{ param_core(fn.return_parameter) }}/>
+{%- else %}
+            <ReturnParameter{{ param_core(fn.return_parameter) }}>
+{{ dimensions_zero(fn.return_parameter.dimensions, "              ") }}
+            </ReturnParameter>
+{%- endif %}
+{%- if fn.formal_parameters | length > 0 %}
+            <FormalParameters>
+{%- for fp in fn.formal_parameters %}
+{%- if fp.core.dimensions | length == 0 %}
+              <FormalParameter{{ attr("name", fp.name) }} number="{{ loop.index0 }}"{{ param_core(fp.core) }}/>
+{%- else %}
+              <FormalParameter{{ attr("name", fp.name) }} number="{{ loop.index0 }}"{{ param_core(fp.core) }}>
+{{ dimensions_zero(fp.core.dimensions, "                ") }}
+              </FormalParameter>
+{%- endif %}
+{%- endfor %}
+            </FormalParameters>
+{%- endif %}
+          </Function>
+{%- endfor %}
+        </Functions>
+{%- endif %}
+      </CodeFile>
+{%- endfor %}
+    </CodeFiles>
+    <LogicalData>
+{%- if cc.logical_data.data_references | length == 0 %}
+      <DataReferences/>
+{%- else %}
+      <DataReferences>
+{%- for dr in cc.logical_data.data_references %}
+        <DataReference>
+          <ForeignVariableReference{{ attr("manifestReferenceRefId", dr.manifest_reference_ref_id) }}{{ attr("foreignRefId", dr.foreign_ref_id) }}/>
+          <FormalParameter{{ attr("formalParameterRefId", dr.formal_parameter_ref_id) }}{% if dr.component_identifier is not none %}{{ attr("componentIdentifier", dr.component_identifier) }}{% endif %}/>
+        </DataReference>
+{%- endfor %}
+      </DataReferences>
+{%- endif %}
+{%- if cc.logical_data.function_references | length == 0 %}
+      <FunctionReferences/>
+{%- else %}
+      <FunctionReferences>
+{%- for fr in cc.logical_data.function_references %}
+        <FunctionReference>
+          <ForeignFunctionReference{{ attr("manifestReferenceRefId", fr.manifest_reference_ref_id) }}{{ attr("foreignRefId", fr.foreign_ref_id) }}/>
+          <GlobalFunction{{ attr("functionRefId", fr.function_ref_id) }}/>
+        </FunctionReference>
+{%- endfor %}
+      </FunctionReferences>
+{%- endif %}
+    </LogicalData>
+  </CodeContainer>
+{%- if pc.annotations | length > 0 %}
+  <Annotations>
+{%- for a in pc.annotations %}
+    <Annotation{{ attr("type", a.annotation_type) }}/>
+{%- endfor %}
+  </Annotations>
+{%- endif %}
+</Manifest>

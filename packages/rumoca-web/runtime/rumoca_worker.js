@@ -2,6 +2,7 @@ import {
     ensureParsedSourceRootCache,
     normalizeSimulationSolver,
     renderDaeTextWithRuntime,
+    renderGalecFilesWithRuntime,
     simulateModelWithRuntime,
 } from './rumoca_runtime.js';
 
@@ -598,6 +599,23 @@ self.onmessage = async (e) => {
                             payload.manifest || '',
                             payload.templates || '{}',
                         );
+                        break;
+                    case 'rumoca.workspace.renderGalec':
+                        // GALEC codegen ('galec' / 'galec-production' /
+                        // 'embedded-c-galec') is served by the SEPARATE, lazily
+                        // imported GALEC addon — never the core render_target
+                        // (DAE-JSON) path, which drops the flat model the
+                        // projection needs. The addon wasm loads only on this
+                        // command, so the core module stays untouched.
+                        result = {
+                            ok: true,
+                            files: await renderGalecFilesWithRuntime({
+                                pkgBase: './',
+                                workspaceSources: payload.workspaceSources || '{}',
+                                modelName: payload.modelName || 'Model',
+                                target: payload.target || '',
+                            }),
+                        };
                         break;
                     default:
                         throw new Error(`Unknown workspace command: ${command}`);

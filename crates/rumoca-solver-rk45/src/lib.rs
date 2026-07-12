@@ -14,14 +14,17 @@ use rumoca_solver::{
     BackendState, EventActionOutcome, EventPreMode, RootCrossing, RuntimeEventBoundary,
     RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimResult,
     SimSolverMode, SimTermination, SimulationBackend, SolveStopSchedule, StepUntilOutcome,
-    TimeoutBudget, TimeoutExceeded, commit_pre_params_after_event, convert_variable_meta,
+    TimeoutBudget, TimeoutExceeded, clear_scheduled_root_relation_memory,
+    commit_pre_params_after_event, convert_variable_meta, filter_scheduled_root_crossings,
     process_runtime_event_boundary, root_crossings_with_relation_memory, root_value_crossed,
     runtime_event_horizon, timeline,
 };
 
+mod no_state;
 mod reset;
 mod trace;
 
+use no_state::NoStateSession;
 use reset::Rk45ResetSnapshot;
 use trace::{
     record_derivative_eval_trace, record_root_eval_trace, reset_rk_eval_trace,
@@ -84,25 +87,124 @@ impl From<rumoca_eval_solve::EvalSolveError> for SimError {
 }
 
 #[derive(Debug, Clone)]
-pub struct StepperState {
+pub struct SessionState {
     pub time: f64,
     pub values: IndexMap<String, f64>,
 }
 
-pub struct SimStepper {
+pub struct SimulationSession {
+    inner: SimulationSessionInner,
+}
+
+enum SimulationSessionInner {
+    NoState(Box<NoStateSession>),
+    State(Box<StateSession>),
+}
+
+struct StateSession {
     runtime: &'static SolveRuntime,
     backend: Rk45Backend<'static>,
     reset_snapshot: Rk45ResetSnapshot,
     input_values: IndexMap<String, f64>,
 }
 
-impl SimStepper {
+impl SimulationSession {
     pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         match opts.solver_mode {
             SimSolverMode::Auto | SimSolverMode::RkLike => {}
             requested => return Err(SimError::UnsupportedSolverMode { requested }),
         }
+        if model.state_scalar_count() == 0 {
+            return NoStateSession::new(model, opts).map(|session| Self {
+                inner: SimulationSessionInner::NoState(Box::new(session)),
+            });
+        }
         validate_explicit_solve_model(model)?;
+        StateSession::new(model, opts).map(|session| Self {
+            inner: SimulationSessionInner::State(Box::new(session)),
+        })
+    }
+
+    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.set_input(name, value),
+            SimulationSessionInner::State(session) => session.set_input(name, value),
+        }
+    }
+
+    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.set_inputs(inputs),
+            SimulationSessionInner::State(session) => session.set_inputs(inputs),
+        }
+    }
+
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.advance_to(target_time),
+            SimulationSessionInner::State(session) => session.advance_to(target_time),
+        }
+    }
+
+    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.step(dt),
+            SimulationSessionInner::State(session) => session.step(dt),
+        }
+    }
+
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.reset(t_start),
+            SimulationSessionInner::State(session) => session.reset(t_start),
+        }
+    }
+
+    pub fn time(&self) -> f64 {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.time(),
+            SimulationSessionInner::State(session) => session.time(),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.get(name),
+            SimulationSessionInner::State(session) => session.get(name),
+        }
+    }
+
+    pub fn state(&self) -> Result<SessionState, SimError> {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.state(),
+            SimulationSessionInner::State(session) => session.state(),
+        }
+    }
+
+    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.values_for(names),
+            SimulationSessionInner::State(session) => session.values_for(names),
+        }
+    }
+
+    pub fn input_names(&self) -> &[String] {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.input_names(),
+            SimulationSessionInner::State(session) => session.input_names(),
+        }
+    }
+
+    pub fn variable_names(&self) -> &[String] {
+        match &self.inner {
+            SimulationSessionInner::NoState(session) => session.variable_names(),
+            SimulationSessionInner::State(session) => session.variable_names(),
+        }
+    }
+}
+
+impl StateSession {
+    fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         let runtime = Box::leak(Box::new(SolveRuntime::new(model)?));
         let mut backend = Rk45Backend::new(runtime, &opts)?;
         backend.init()?;
@@ -115,7 +217,7 @@ impl SimStepper {
         })
     }
 
-    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+    fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
         let Some(param_idx) = self
             .runtime
             .model
@@ -133,33 +235,40 @@ impl SimStepper {
         Ok(())
     }
 
-    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
         for (name, value) in inputs {
             self.set_input(name, *value)?;
         }
         Ok(())
     }
 
-    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+    fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
+        let target_time = target_time.min(self.backend.t_end);
+        if target_time <= self.backend.time {
+            return Ok(());
+        }
+        advance_backend_to(&mut self.backend, target_time)
+    }
+
+    fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt <= 0.0 {
             return Ok(());
         }
-        let target = self.backend.time + dt;
-        advance_backend_to(&mut self.backend, target)
+        self.advance_to(self.backend.time + dt)
     }
 
-    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+    fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.backend
             .reset_to_snapshot(&self.reset_snapshot, t_start);
         Ok(())
     }
 
-    pub fn time(&self) -> f64 {
+    fn time(&self) -> f64 {
         self.backend.time
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
+    fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
             return Ok(Some(value));
         }
@@ -186,15 +295,15 @@ impl SimStepper {
         })
     }
 
-    pub fn state(&self) -> Result<StepperState, SimError> {
-        Ok(StepperState {
+    fn state(&self) -> Result<SessionState, SimError> {
+        Ok(SessionState {
             time: self.time(),
-            values: self.stepper_visible_values()?,
+            values: self.session_visible_values()?,
         })
     }
 
-    pub fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
-        let visible_values = self.stepper_visible_values()?;
+    fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+        let visible_values = self.session_visible_values()?;
         let mut values = IndexMap::with_capacity(names.len());
         for name in names {
             if let Some(value) = visible_values.get(name).copied() {
@@ -204,15 +313,15 @@ impl SimStepper {
         Ok(values)
     }
 
-    pub fn input_names(&self) -> &[String] {
+    fn input_names(&self) -> &[String] {
         self.runtime.model.problem.solve_layout.input_scalar_names()
     }
 
-    pub fn variable_names(&self) -> &[String] {
+    fn variable_names(&self) -> &[String] {
         &self.runtime.model.visible_names
     }
 
-    fn stepper_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
+    fn session_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
         let solver_y = self.backend.current_solver_y()?;
         let visible_values =
             self.runtime
@@ -509,10 +618,14 @@ impl<'a> Rk45Backend<'a> {
     }
 
     fn current_solver_y(&self) -> Result<Vec<f64>, SimError> {
+        self.solver_y_at_time(self.public_time_eval_time(self.time))
+    }
+
+    fn solver_y_at_time(&self, time: f64) -> Result<Vec<f64>, SimError> {
         let mut guess = self.solver_y_guess.borrow_mut();
         self.model
             .full_solver_y_with_guess(
-                self.public_time_eval_time(self.time),
+                time,
                 &self.state,
                 &self.params,
                 &mut guess,
@@ -762,12 +875,16 @@ impl<'a> Rk45Backend<'a> {
             self.continuous_eval_time(new_t, context.event_boundary),
             &trial.y_next,
         )?;
-        let crossings = root_crossings_with_relation_memory(
+        let mut crossings = root_crossings_with_relation_memory(
             context.old_roots,
             &new_roots,
             self.atol,
             &self.model.model.problem.events.root_relation_memory_targets,
             &self.params,
+        );
+        filter_scheduled_root_crossings(
+            &mut crossings,
+            &self.model.model.problem.events.scheduled_root_conditions,
         );
         if let Some(crossing) = crossings.first().copied() {
             let root = self.bisect_root(
@@ -1049,6 +1166,7 @@ impl<'a> Rk45Backend<'a> {
         )?;
         self.post_event_eval_time = outcome.right_limit_t;
         self.apply_event_actions(outcome.final_t)?;
+        self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
         self.clear_runtime_caches();
         Ok(Some(
             self.termination
@@ -1161,6 +1279,7 @@ impl SimulationBackend for Rk45Backend<'_> {
             &mut self.params,
             self.atol,
         );
+        self.clear_all_scheduled_root_relation_memory()?;
         self.clear_runtime_caches();
         Ok(())
     }
@@ -1183,11 +1302,12 @@ impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
         event: RuntimeEventStop,
     ) -> Result<(), Self::Error> {
         self.time = event_time.max(self.time);
-        let (event_pre_y, event_pre_p) = self.event_pre_for_update()?;
+        let (event_pre_y, event_pre_p) = self.event_pre_for_update(event_time, event)?;
         self.boundary_event_pre_y = Some(event_pre_y.clone());
         self.boundary_event_pre_p = Some(event_pre_p.clone());
         self.pending_event_pre_y = Some(event_pre_y);
         self.pending_event_pre_p = Some(event_pre_p);
+        self.seed_scheduled_root_relation_overrides(event_time, event)?;
         self.apply_discrete_event_updates(self.time, event)?;
         Ok(())
     }
@@ -1215,17 +1335,88 @@ impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
 }
 
 impl Rk45Backend<'_> {
-    fn event_pre_for_update(&mut self) -> Result<(Vec<f64>, Vec<f64>), SimError> {
-        let event_pre_y = self
-            .pending_event_pre_y
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| self.current_solver_y())?;
-        let event_pre_p = self
-            .pending_event_pre_p
-            .take()
-            .unwrap_or_else(|| self.params.clone());
+    fn event_pre_for_update(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(Vec<f64>, Vec<f64>), SimError> {
+        if let Some(event_pre_y) = self.pending_event_pre_y.take() {
+            let event_pre_p = self
+                .pending_event_pre_p
+                .take()
+                .unwrap_or_else(|| self.params.clone());
+            return Ok((event_pre_y, event_pre_p));
+        }
+        let pre_time = match event.pre_mode {
+            EventPreMode::EventEntry | EventPreMode::Fixed => {
+                timeline::event_left_limit_time(event_time)
+            }
+            EventPreMode::FollowCurrent => self.public_time_eval_time(self.time),
+        };
+        let event_pre_y = self.solver_y_at_time(pre_time)?;
+        let event_pre_p = self.params.clone();
         Ok((event_pre_y, event_pre_p))
+    }
+
+    fn clear_event_entry_scheduled_root_relation_memory(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), SimError> {
+        if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
+            return Ok(());
+        }
+        let root_indices = self.scheduled_root_indices_at_time(event_time);
+        self.clear_scheduled_root_relation_memory(&root_indices)
+    }
+
+    fn clear_all_scheduled_root_relation_memory(&mut self) -> Result<(), SimError> {
+        let root_indices = self
+            .model
+            .model
+            .problem
+            .events
+            .scheduled_root_conditions
+            .iter()
+            .map(|root| root.root_index)
+            .collect::<Vec<_>>();
+        self.clear_scheduled_root_relation_memory(&root_indices)
+    }
+
+    fn clear_scheduled_root_relation_memory(
+        &mut self,
+        root_indices: &[usize],
+    ) -> Result<(), SimError> {
+        clear_scheduled_root_relation_memory(&self.model.model, root_indices, &mut self.params)
+            .map_err(runtime_contract_violation)
+    }
+
+    fn seed_scheduled_root_relation_overrides(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), SimError> {
+        if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
+            return Ok(());
+        }
+        let scheduled_indices = self.scheduled_root_indices_at_time(event_time);
+        if scheduled_indices.is_empty() {
+            return Ok(());
+        }
+        for index in scheduled_indices {
+            self.pending_root_crossings.push(RootCrossing {
+                index,
+                post_relation_memory_value: 1.0,
+            });
+        }
+        Ok(())
+    }
+
+    fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
+        timeline::scheduled_root_indices_at_time(
+            &self.model.model.problem.events.scheduled_root_conditions,
+            event_time,
+        )
     }
 }
 

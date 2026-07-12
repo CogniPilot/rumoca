@@ -178,6 +178,31 @@ impl Model {
             start_overrides: merge_overrides(&self.start_overrides, extra_start),
         }
     }
+
+    fn build_sim_options(
+        &self,
+        t_start: f64,
+        t_end: f64,
+        dt: Option<f64>,
+        config: SimConfig,
+    ) -> SimOptions {
+        let (solver_mode, _label) = SimSolverMode::parse_request(config.solver.as_deref());
+        let mut opts = SimOptions {
+            t_start,
+            t_end,
+            dt: dt.or(config.dt),
+            solver_mode,
+            ..SimOptions::default()
+        };
+        if let Some(rtol) = config.rtol {
+            opts.rtol = rtol;
+        }
+        if let Some(atol) = config.atol {
+            opts.atol = atol;
+        }
+        opts.max_wall_seconds = config.max_wall_seconds;
+        opts
+    }
 }
 
 /// Convert an optional `{name: value}` mapping to override pairs.
@@ -241,7 +266,7 @@ fn merge_overrides(base: &[(String, f64)], extra: &[(String, f64)]) -> Vec<(Stri
 
 /// Translate the `t` argument (float end, `(start, end)` tuple) into a
 /// `(t_start, t_end)` pair.
-fn parse_time_span(t: &Bound<'_, PyAny>) -> ApiResult<(f64, f64)> {
+pub(crate) fn parse_time_span(t: &Bound<'_, PyAny>) -> ApiResult<(f64, f64)> {
     if let Ok(end) = t.extract::<f64>() {
         return Ok((0.0, end));
     }
@@ -404,9 +429,15 @@ impl Model {
     }
 
     #[pyo3(signature = (path, stage="dae"))]
-    fn save_json(&self, path: &str, stage: &str) -> std::result::Result<(), PyRuntimeStringError> {
+    fn save_json(
+        &self,
+        path: &Bound<'_, PyAny>,
+        stage: &str,
+    ) -> std::result::Result<(), PyRuntimeStringError> {
+        let path = crate::scenario::path_string(path)
+            .map_err(|error| PyRuntimeStringError(format!("{error}")))?;
         let text = self.to_json(stage, true)?;
-        std::fs::write(path, text)
+        std::fs::write(&path, text)
             .map_err(|e| PyRuntimeStringError(format!("Failed to write {path}: {e}")))
     }
 
@@ -452,7 +483,7 @@ impl Model {
             Some(t) => parse_time_span(t)?,
             None => (0.0, 1.0),
         };
-        let mut opts = self.sim_options(t_start, t_end, dt, config.unwrap_or_default());
+        let mut opts = self.build_sim_options(t_start, t_end, dt, config.unwrap_or_default());
         opts.param_overrides = param_overrides;
         opts.start_overrides = start_overrides;
 
@@ -734,34 +765,6 @@ impl Model {
             let obj = module.call_method1(builder, (content, self.name.clone(), form))?;
             Ok(obj.into_py(py))
         })
-    }
-
-    /// Resolve solver controls: the explicit `dt` kwarg wins over `config.dt`,
-    /// which wins over `SimOptions` defaults. The solver is selected from
-    /// `config.solver` (defaulting to auto).
-    fn sim_options(
-        &self,
-        t_start: f64,
-        t_end: f64,
-        dt: Option<f64>,
-        config: SimConfig,
-    ) -> SimOptions {
-        let (solver_mode, _label) = SimSolverMode::parse_request(config.solver.as_deref());
-        let mut opts = SimOptions {
-            t_start,
-            t_end,
-            dt: dt.or(config.dt),
-            solver_mode,
-            ..SimOptions::default()
-        };
-        if let Some(rtol) = config.rtol {
-            opts.rtol = rtol;
-        }
-        if let Some(atol) = config.atol {
-            opts.atol = atol;
-        }
-        opts.max_wall_seconds = config.max_wall_seconds;
-        opts
     }
 
     fn stage_value(

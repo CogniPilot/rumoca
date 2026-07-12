@@ -20,7 +20,7 @@ use crate::sim_bench;
 use crate::sim_inspect;
 use crate::target_manifest;
 use crate::targets_cmd;
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -92,7 +92,7 @@ alias is passed through as a raw tracing EnvFilter directive, so
 `--trace=rumoca_phase_dae::profile=debug` still works.
 
 Subsystem targets (not compiler phases):
-  viewer   debug overlay/logging for the interactive viewer; only applies to
+  viewer   debug overlay/logging for the browser viewer; only applies to
            `sim --config` scenario runs (ignored by compile/check/batch sim)
 
 Runtime diagnostic targets (simulation/solver internals; enable a whole crate
@@ -779,7 +779,7 @@ fn display_source_name(file_name: &str) -> String {
         .unwrap_or_else(|| file_name.to_string())
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
     let p = Path::new(rel);
     if p.is_absolute() {
@@ -789,10 +789,10 @@ pub(crate) fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 pub(crate) fn configured_model_name(
     cli_model: Option<&str>,
-    config_model: Option<&rumoca_sim::runner::config::ModelConfig>,
+    config_model: Option<&rumoca_sim::scenario_config::ModelConfig>,
     model_path: &Path,
 ) -> String {
     cli_model
@@ -807,14 +807,14 @@ pub(crate) fn configured_model_name(
         .unwrap_or_else(|| "Model".to_string())
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 /// Resolve the viewer scene script (read from `[transport.http].scene`) and the
 /// directory served at `/assets/...`. The asset dir defaults to the scene
 /// script's parent, overridden by an explicit `[transport.http].asset_dir`
 /// (both resolved relative to the config file), letting several examples share
 /// one `/assets/` root (e.g. `examples/assets`).
 fn resolve_scene_and_asset_dir(
-    config: &rumoca_sim::runner::config::SimulationConfig,
+    config: &rumoca_sim::scenario_config::SimulationConfig,
     config_dir: &Path,
 ) -> Result<(Option<String>, Option<std::path::PathBuf>)> {
     let http = config.transport.as_ref().and_then(|t| t.http.as_ref());
@@ -843,7 +843,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
     let config_path = args.config.as_deref().ok_or_else(|| {
         anyhow::anyhow!("rumoca sim requires MODELICA_FILE or --config <rumoca-scenario.toml>")
     })?;
-    let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
+    let config = rumoca_sim::scenario_config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
 
     let config_dir = parent_dir_or_current(Path::new(config_path));
@@ -875,7 +875,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
     let solver_label = configured_solver_label(args.solver, config.sim.solver.as_ref());
     let solver_mode = SimSolverMode::from_external_name(&solver_label);
 
-    if !config.is_interactive_runner() {
+    if !config.requires_scheduled_loop() {
         let input = ModelInputArgs {
             model_file: model_path.to_string_lossy().to_string(),
             options: ModelOptions {
@@ -896,8 +896,8 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
             t_start: SimOptions::default().t_start,
             t_end: configured_sim_t_end(args.t_end, config.sim.t_end),
             dt: Some(configured_sim_dt(args.dt, config.sim.dt)),
-            atol: args.atol.unwrap_or_else(|| SimOptions::default().atol),
-            rtol: args.rtol.unwrap_or_else(|| SimOptions::default().rtol),
+            atol: configured_sim_option(args.atol, config.sim.atol),
+            rtol: configured_sim_option(args.rtol, config.sim.rtol),
             solver_mode,
             solver_label: &solver_label,
             output: args.output.as_deref().or(config.sim.output.as_deref()),
@@ -907,19 +907,24 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
 
     let (scene_script, scene_asset_dir) = resolve_scene_and_asset_dir(&config, config_dir)?;
 
-    Ok(rumoca_sim::runner::run(rumoca_sim::runner::SimArgs {
-        model_source,
-        model_path: Some(model_path),
-        model_name,
-        solver_mode,
-        http_port: config.http_port(),
-        ws_port: config.websocket_port(),
-        config,
-        scene_script,
-        scene_asset_dir,
-        source_roots,
-        debug: trace_requests_viewer(&args.diagnostics),
-    })?)
+    Ok(rumoca_sim::scheduled_sim::run(
+        rumoca_sim::scheduled_sim::ScheduledSimArgs {
+            model_source,
+            model_path: Some(model_path),
+            model_name,
+            solver_mode,
+            solver_label,
+            atol: configured_sim_option(args.atol, config.sim.atol),
+            rtol: configured_sim_option(args.rtol, config.sim.rtol),
+            http_port: config.http_port(),
+            ws_port: config.websocket_port(),
+            config,
+            scene_script,
+            scene_asset_dir,
+            source_roots,
+            debug: trace_requests_viewer(&args.diagnostics),
+        },
+    )?)
 }
 
 fn configured_solver_label(
@@ -949,18 +954,22 @@ fn configured_sim_dt(cli_dt: Option<f64>, config_dt: f64) -> f64 {
     }
 }
 
-#[cfg(feature = "runner")]
+fn configured_sim_option(cli_value: Option<f64>, config_value: Option<f64>) -> Option<f64> {
+    cli_value.or(config_value)
+}
+
+#[cfg(feature = "scheduled-sim")]
 fn run_config_check(args: SimCheckArgs) -> Result<()> {
     let config_path = args.config_path()?;
-    let _config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(config_path))
+    let _config = rumoca_sim::scenario_config::SimulationConfig::load(Path::new(config_path))
         .with_context(|| format!("Load simulation config: {config_path}"))?;
     println!("{config_path}: config OK");
     Ok(())
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn run_config_init() -> Result<()> {
-    print!("{}", rumoca_sim::runner::CONFIG_TEMPLATE);
+    print!("{}", rumoca_sim::scenario_config::CONFIG_TEMPLATE);
     Ok(())
 }
 
@@ -1173,27 +1182,27 @@ fn render_ir_as_modelica(
 
 fn run_sim(args: SimCommandArgs) -> Result<()> {
     match args.command {
-        #[cfg(feature = "runner")]
+        #[cfg(feature = "scheduled-sim")]
         Some(SimSubcommand::Check(check_args)) => run_config_check(check_args),
-        #[cfg(feature = "runner")]
+        #[cfg(feature = "scheduled-sim")]
         Some(SimSubcommand::Init) => run_config_init(),
         Some(SimSubcommand::Bench(bench_args)) => sim_bench::run_sim_bench(bench_args),
-        #[cfg(not(feature = "runner"))]
+        #[cfg(not(feature = "scheduled-sim"))]
         Some(_) => bail!(
-            "this rumoca binary was built without interactive simulation config support; \
-             rebuild with --features=runner"
+            "this rumoca binary was built without scheduled scheduled simulation support; \
+             rebuild with --features=scheduled-sim"
         ),
         None if args.config.is_some() => {
-            #[cfg(feature = "runner")]
+            #[cfg(feature = "scheduled-sim")]
             {
                 run_configured_simulation(args)
             }
-            #[cfg(not(feature = "runner"))]
+            #[cfg(not(feature = "scheduled-sim"))]
             {
                 let _ = args;
                 bail!(
-                    "this rumoca binary was built without interactive simulation config support; \
-                     rebuild with --features=runner"
+                    "this rumoca binary was built without scheduled scheduled simulation support; \
+                     rebuild with --features=scheduled-sim"
                 )
             }
         }
@@ -1272,7 +1281,7 @@ fn simulate_solver_or_auto(
     // explicit schemes the implicit BDF auto path cannot step. Non-RK annotations
     // (`dassl`, `cvode`, ...) already resolve to the implicit family and so match the
     // `Auto` fallback, leaving their behavior unchanged. This mirrors the WASM/docs
-    // runner, which already resolves the annotated solver.
+    // scheduled simulation loop, which already resolves the annotated solver.
     match experiment_solver {
         Some(name) if SimSolverMode::from_external_name(name) == SimSolverMode::RkLike => {
             SimulateSolverMode::RkLike
@@ -1463,7 +1472,7 @@ fn trace_filter_from_diagnostics(diagnostics: &DiagnosticsArgs) -> Option<String
 }
 
 /// Whether the `--trace` filter names the `viewer` subsystem (e.g.
-/// `--trace=viewer`). The interactive viewer is just another trace subsystem:
+/// `--trace=viewer`). The browser viewer is just another trace subsystem:
 /// naming it enables the viewer's debug overlay/logging (this replaced the
 /// separate `--viewer-debug` flag).
 fn trace_requests_viewer(diagnostics: &DiagnosticsArgs) -> bool {

@@ -1,0 +1,39 @@
+[package]
+name = "rumoca-bind-wasm-galec"
+description = "Lazy GALEC / eFMI codegen addon for the rumoca WASM package — compiles Modelica to GALEC (.alg) and the GALEC-derived embedded C, loaded on demand only when a GALEC target is selected"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rumoca-compile = { workspace = true }
+rumoca-galec-codegen = { workspace = true }
+rumoca-ir-galec = { workspace = true, features = ["parse"] }
+rumoca-tool-galec-lsp = { workspace = true }
+lsp-types = { workspace = true }
+wasm-bindgen = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# The GALEC projection (transitively, via rumoca-compile) pulls uuid (v4) +
+# time, which reach getrandom; enable the wasm_js backend feature so the addon
+# links on wasm32. The identity-free `render_galec_sources` path never *calls*
+# uuid or time::now_utc — that path is the wasm32 hazard (panics without the
+# time wasm feature) and is deliberately avoided.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+console_error_panic_hook = { workspace = true, optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+# Size-optimize the published addon (mirrors rumoca-bind-wasm and the diffsol
+# addon); this GALEC codegen surface is carried only by users who select a
+# GALEC target, so it stays out of the core rumoca WASM binary.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
+
+[lints]
+workspace = true

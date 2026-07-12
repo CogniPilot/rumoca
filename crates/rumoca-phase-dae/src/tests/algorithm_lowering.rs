@@ -1,5 +1,7 @@
 use super::*;
 
+mod current_values;
+
 fn test_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("algorithm_lowering_test.mo"),
@@ -20,6 +22,11 @@ fn make_comp_ref(name: &str) -> rumoca_core::ComponentReference {
         }],
         def_id: None,
     }
+}
+
+fn make_comp_ref_from_flat_name(name: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::component_reference_from_flat_name(&VarName::new(name), test_span())
+        .expect("test component reference should parse")
 }
 
 fn make_subscripted_comp_ref(
@@ -187,6 +194,31 @@ fn add_discrete_valued(flat: &mut Model, name: &str) {
             name: VarName::new(name),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
+            is_primitive: true,
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
+        }),
+    );
+}
+
+fn add_discrete_real(flat: &mut Model, name: &str) {
+    flat.add_variable(
+        VarName::new(name),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new(name),
+            variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
+            is_primitive: true,
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
+        }),
+    );
+}
+
+fn add_discrete_real_vector(flat: &mut Model, name: &str, len: i64) {
+    flat.add_variable(
+        VarName::new(name),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new(name),
+            dims: vec![len],
+            variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
             ..rumoca_ir_flat::Variable::empty_with_span(test_span())
         }),
@@ -1046,6 +1078,72 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
     assert!(
         !lowered_lhs.iter().any(|lhs| lhs == "y"),
         "indexed when targets must not collapse to the whole array name"
+    );
+}
+
+#[test]
+fn test_todae_lowers_when_algorithm_record_assignment_to_fields() {
+    let mut flat = Model::new();
+    add_discrete_valued(&mut flat, "tick");
+    add_discrete_real(&mut flat, "estimator.estimate.flightPathAngle");
+    add_discrete_real(&mut flat, "estimator.estimate.speedChange");
+    add_discrete_real(&mut flat, "guidance.estimate.flightPathAngle");
+    add_discrete_real(&mut flat, "guidance.estimate.speedChange");
+
+    flat.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: make_var_ref("tick"),
+                stmts: vec![rumoca_core::Statement::Assignment {
+                    comp: make_comp_ref_from_flat_name("guidance.estimate"),
+                    value: make_var_ref("estimator.estimate"),
+                    span: test_span(),
+                }],
+            }],
+            span: test_span(),
+        }],
+        test_span(),
+        "when record assignment".to_string(),
+    ));
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("record-valued when assignment should lower to primitive field updates");
+
+    let updates = dae
+        .discrete
+        .real_updates
+        .iter()
+        .filter_map(|eq| {
+            Some((
+                eq.lhs.as_ref()?.as_str().to_string(),
+                format!("{:?}", eq.rhs),
+            ))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let flight_path = updates
+        .get("guidance.estimate.flightPathAngle")
+        .expect("missing lowered field update for guidance.estimate.flightPathAngle");
+    assert!(
+        flight_path.contains("estimator.estimate.flightPathAngle"),
+        "field update should read the corresponding source field, got {flight_path}"
+    );
+
+    let speed_change = updates
+        .get("guidance.estimate.speedChange")
+        .expect("missing lowered field update for guidance.estimate.speedChange");
+    assert!(
+        speed_change.contains("estimator.estimate.speedChange"),
+        "field update should read the corresponding source field, got {speed_change}"
+    );
+    assert!(
+        !updates.contains_key("guidance.estimate"),
+        "record assignment must not leave a non-primitive record target"
     );
 }
 

@@ -114,15 +114,70 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     let prune_start = maybe_start_timer_if(profile);
     prune_unreferenced_condition_memory(dae_model, &compile_time_scalars)?;
     remove_relation_duplicate_synthetic_roots(dae_model, &mut synthetic_roots);
+    let scheduled_root_conditions = collect_scheduled_root_conditions(
+        dae_model,
+        &synthetic_roots,
+        &clock_schedules,
+        &clock_compile_time_scalars,
+    );
     log_runtime_precompute_profile("prune_condition_memory", prune_start);
     dae_model.events.synthetic_root_conditions = synthetic_roots;
     dae_model.events.scheduled_time_events = scheduled_time_events;
+    dae_model.events.scheduled_root_conditions = scheduled_root_conditions;
     dae_model.clocks.constructor_exprs = clock_constructor_exprs;
     dae_model.clocks.schedules = clock_schedules;
     dae_model.clocks.intervals = clock_intervals;
     dae_model.clocks.timings = clock_timings;
     dae_model.clocks.triggered_conditions = triggered_clock_conditions;
     Ok(())
+}
+
+fn collect_scheduled_root_conditions(
+    dae_model: &dae::Dae,
+    synthetic_roots: &[rumoca_core::Expression],
+    clock_schedules: &[dae::ClockSchedule],
+    compile_time_scalars: &HashMap<String, f64>,
+) -> Vec<dae::DaeScheduledRootCondition> {
+    let mut roots = Vec::new();
+    for (root_index, expr) in dae_model.conditions.relations.iter().enumerate() {
+        push_scheduled_root_condition(
+            &mut roots,
+            root_index,
+            expr,
+            clock_schedules,
+            compile_time_scalars,
+        );
+    }
+    let synthetic_offset = dae_model.conditions.relations.len();
+    for (index, expr) in synthetic_roots.iter().enumerate() {
+        push_scheduled_root_condition(
+            &mut roots,
+            synthetic_offset + index,
+            expr,
+            clock_schedules,
+            compile_time_scalars,
+        );
+    }
+    roots
+}
+
+fn push_scheduled_root_condition(
+    roots: &mut Vec<dae::DaeScheduledRootCondition>,
+    root_index: usize,
+    expr: &rumoca_core::Expression,
+    clock_schedules: &[dae::ClockSchedule],
+    compile_time_scalars: &HashMap<String, f64>,
+) {
+    let Some(schedule) =
+        clock::scheduled_sample_root_schedule(expr, clock_schedules, compile_time_scalars)
+    else {
+        return;
+    };
+    roots.push(dae::DaeScheduledRootCondition {
+        root_index,
+        period_seconds: schedule.period_seconds,
+        phase_seconds: schedule.phase_seconds,
+    });
 }
 
 fn remove_relation_duplicate_synthetic_roots(
@@ -308,7 +363,9 @@ fn collect_referenced_condition_indices(
 ) -> std::collections::HashSet<usize> {
     let mut collector = ConditionMemoryUseCollector {
         condition_name,
-        pre_condition_name: format!("__pre__.{condition_name}"),
+        pre_condition_name: rumoca_core::pre_slot_name(condition_name)
+            .as_str()
+            .to_owned(),
         referenced: std::collections::HashSet::new(),
     };
     for expr in dae_model
@@ -376,7 +433,9 @@ fn rewrite_condition_memory_references(
 
     let mut rewriter = ConditionMemoryReindexer {
         condition_name,
-        pre_condition_name: format!("__pre__.{condition_name}"),
+        pre_condition_name: rumoca_core::pre_slot_name(condition_name)
+            .as_str()
+            .to_owned(),
         replacements,
         error: None,
     };
@@ -454,7 +513,9 @@ fn replacement_expr(
     match replacement {
         ConditionMemoryReplacement::Memory(index) => condition_memory_ref(
             if is_pre {
-                format!("__pre__.{condition_name}")
+                rumoca_core::pre_slot_name(condition_name)
+                    .as_str()
+                    .to_owned()
             } else {
                 condition_name.to_string()
             },
@@ -508,10 +569,10 @@ fn generated_index_subscript(
     })
 }
 
-// `pre_condition_name` is `format!("__pre__.{condition_name}")`, precomputed by
-// the caller. It is hoisted out because this is called once per visited
-// var-ref; allocating it here turned a model walk into per-var-ref string
-// formatting (a measurable hot spot on large array models).
+// `pre_condition_name` is `rumoca_core::pre_slot_name(condition_name)` rendered
+// to a `String`, precomputed by the caller. It is hoisted out because this is
+// called once per visited var-ref; allocating it here turned a model walk into
+// per-var-ref string formatting (a measurable hot spot on large array models).
 fn condition_memory_index(
     name: &str,
     subscripts: &[rumoca_core::Subscript],

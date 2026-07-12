@@ -32,7 +32,7 @@
 //!   9. Indexed array thresholds keep structured subscript information through
 //!      DAE/Solve lowering instead of being treated as opaque names.
 
-use rumoca_sim::{SimOptions, simulate_dae};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 const CONST_THRESHOLD_COUNTER: &str = r#"
 model ConstThresholdCounter
@@ -93,6 +93,16 @@ equation
 end SampleCounter;
 "#;
 
+const ZERO_PHASE_SAMPLE_COUNTER: &str = r#"
+model ZeroPhaseSampleCounter
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when sample(0.0, 0.1) then
+    count = pre(count) + 1;
+  end when;
+end ZeroPhaseSampleCounter;
+"#;
+
 const VECTOR_SELF_RESCHEDULING_COUNTER: &str = r#"
 model VectorSelfReschedulingCounter
   parameter Real period = 0.1;
@@ -119,6 +129,42 @@ equation
     unrelated = pre(unrelated) + 1;
   end when;
 end IndexedParameterThresholdWithLaterEvent;
+"#;
+
+const DISCRETE_VECTOR_CAPTURE: &str = r#"
+model DiscreteVectorCapture
+  Real source[3];
+  discrete Real captured[3](each start = 0.0, each fixed = true);
+equation
+  source = {time, 2.0 * time, 3.0 * time};
+  when time >= 0.1 then
+    captured = source;
+  end when;
+end DiscreteVectorCapture;
+"#;
+
+const MULTI_DISCRETE_VECTOR_CAPTURE: &str = r#"
+model MultiDiscreteVectorCapture
+  Real position[3];
+  Real velocity[3];
+  Real acceleration[3];
+  discrete Real event_time(start = -1.0, fixed = true);
+  discrete Real captured_position[3](start = {0.0, 0.0, 20.0}, each fixed = true);
+  discrete Real captured_velocity[3](each start = 0.0, each fixed = true);
+  discrete Real captured_acceleration[3](each start = 0.0, each fixed = true);
+  output Real forwarded_position[3];
+equation
+  position = {time, 2.0 * time, 20.0 + 3.0 * time};
+  velocity = {1.0, 2.0, 3.0};
+  acceleration = {4.0, 5.0, 6.0};
+  forwarded_position = captured_position;
+  when time >= 0.1 and pre(event_time) < 0.0 then
+    event_time = time;
+    captured_position = position;
+    captured_velocity = velocity;
+    captured_acceleration = acceleration;
+  end when;
+end MultiDiscreteVectorCapture;
 "#;
 
 const NONLINEAR_PRE_FACTOR_WITH_LATER_EVENT: &str = r#"
@@ -420,6 +466,79 @@ fn indexed_parameter_threshold_does_not_refire_on_later_unrelated_event() {
 }
 
 #[test]
+fn discrete_vector_assignment_captures_every_component_at_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("DiscreteVectorCapture")
+        .compile_str(DISCRETE_VECTOR_CAPTURE, "discrete_vector_capture.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    for (index, expected) in [0.1, 0.2, 0.3].into_iter().enumerate() {
+        let name = format!("captured[{}]", index + 1);
+        let actual = value_at(&sim, &name, 0.2);
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "{name} should capture {expected} at the vector event, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn one_event_captures_multiple_discrete_vectors() {
+    let compiled = rumoca::Compiler::new()
+        .model("MultiDiscreteVectorCapture")
+        .compile_str(
+            MULTI_DISCRETE_VECTOR_CAPTURE,
+            "multi_discrete_vector_capture.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    let event_time = value_at(&sim, "event_time", 0.2);
+    assert!(
+        (event_time - 0.1).abs() <= 2.0e-5,
+        "the capture event should occur near t=0.1, got {event_time}"
+    );
+    for (base, expected) in [
+        (
+            "captured_position",
+            [event_time, 2.0 * event_time, 20.0 + 3.0 * event_time],
+        ),
+        ("captured_velocity", [1.0, 2.0, 3.0]),
+        ("captured_acceleration", [4.0, 5.0, 6.0]),
+        (
+            "forwarded_position",
+            [event_time, 2.0 * event_time, 20.0 + 3.0 * event_time],
+        ),
+    ] {
+        for (index, expected_component) in expected.into_iter().enumerate() {
+            let name = format!("{base}[{}]", index + 1);
+            let actual = value_at(&sim, &name, 0.2);
+            assert!(
+                (actual - expected_component).abs() <= 1.0e-6,
+                "{name} should capture {expected_component}, got {actual}"
+            );
+        }
+    }
+}
+
+#[test]
 fn nonlinear_pre_factor_guard_does_not_refire_on_later_unrelated_event() {
     let compiled = rumoca::Compiler::new()
         .model("NonlinearPreFactorWithLaterEvent")
@@ -566,6 +685,68 @@ fn sample_when_accumulator_advances_once_per_tick() {
             (actual - expected).abs() <= 1.0e-9,
             "count at t={t} should be {expected}, got {actual} \
              (sample(start, interval) must fire once per tick)"
+        );
+    }
+}
+
+#[test]
+fn rk_like_sample_when_accumulator_advances_once_per_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleCounter")
+        .compile_str(SAMPLE_COUNTER, "sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate with RK-like solver");
+
+    let checks = [(0.05, 0.0), (0.15, 1.0), (0.25, 2.0), (0.35, 3.0)];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "RK-like count at t={t} should be {expected}, got {actual} \
+             (scheduled sample condition memory must clear between ticks)"
+        );
+    }
+}
+
+#[test]
+fn rk_like_zero_phase_sample_when_accumulator_advances_after_initial_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("ZeroPhaseSampleCounter")
+        .compile_str(ZERO_PHASE_SAMPLE_COUNTER, "zero_phase_sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate with RK-like solver");
+
+    let checks = [
+        (0.00, 1.0),
+        (0.05, 1.0),
+        (0.15, 2.0),
+        (0.25, 3.0),
+        (0.35, 4.0),
+    ];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "RK-like zero-phase count at t={t} should be {expected}, got {actual} \
+             (sample(0, interval) must re-arm after the initialization tick)"
         );
     }
 }

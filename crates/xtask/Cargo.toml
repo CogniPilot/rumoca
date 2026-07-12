@@ -11,39 +11,27 @@ name = "xtask"
 path = "src/main.rs"
 
 [[bin]]
-name = "rumoca-msl-tools"
-path = "src/bin/rumoca-msl-tools.rs"
-
-[[bin]]
 name = "rumoca-traversal-policy-check"
 path = "src/bin/rumoca-traversal-policy-check.rs"
 
+# xtask carries NO `rumoca-*` workspace dependency: it parses args, moves files,
+# and shells out. Heavy, compiler-linked work runs on demand via `cargo run -p
+# <crate>` (rumoca-test-msl for MSL tooling, rumoca-tool-docs for the docs cache).
+# The CI arch check (ci.yml) enforces this — keep this list free of rumoca-*.
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 mimalloc = { workspace = true }
-rumoca-compile = { workspace = true }
-rumoca-sim = { workspace = true, features = ["viz", "solver-diffsol"] }
-rumoca-worker = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 blake3 = { workspace = true }
-bincode = { workspace = true }
 sha2 = "0.10"
 toml = { workspace = true }
 lsp-types = { workspace = true }
-dirs = "5.0"
-flate2 = "1.0"
-indexmap = { workspace = true }
-rayon = { workspace = true }
-tar = "0.4"
 tempfile = { workspace = true }
 ureq = "2.9"
 walkdir = "2.5"
-zmq = "0.10"
-nix = { version = "0.29", features = ["signal"] }
-regex = "1"
 syn = { version = "2.0", features = ["full", "visit"] }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 

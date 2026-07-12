@@ -21,7 +21,7 @@ apply below that directory:
 ```toml
 source_roots = [
   "../target/msl/ModelicaStandardLibrary-4.1.0",
-  "../target/cmm/CMM-v0.0.2",
+  "../target/cmm/CMM-a642c381",
 ]
 ```
 

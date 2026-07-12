@@ -122,7 +122,7 @@ target = "throttle"
 value = 1.0
 
 [signals.viewer]
-theta = "stepper:theta"
+theta = "model:theta"
 "#;
     let sources = serde_json::json!({ "rumoca-scenario.toml": scenario_toml }).to_string();
 
@@ -136,7 +136,7 @@ theta = "stepper:theta"
         config["input"]["keyboard"]["keys"]["ArrowUp"]["action"],
         "set"
     );
-    assert_eq!(config["signals"]["viewer"]["theta"], "stepper:theta");
+    assert_eq!(config["signals"]["viewer"]["theta"], "model:theta");
 
     config["sim"]["solver"] = serde_json::Value::from("bdf");
     config["parameters"]["gain"] = serde_json::Value::from(3.0);
@@ -148,7 +148,7 @@ theta = "stepper:theta"
     assert!(content.contains("[parameters]"));
     assert!(content.contains("gain = 3.0"));
     assert!(content.contains("[input.keyboard.keys.ArrowUp]"));
-    assert!(content.contains("theta = \"stepper:theta\""));
+    assert!(content.contains("theta = \"model:theta\""));
     assert!(content.contains("[rumoca]"));
 }
 

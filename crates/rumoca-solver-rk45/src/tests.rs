@@ -11,6 +11,10 @@ macro_rules! fixture_span {
     };
 }
 
+fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
+    session.step(dt).expect(context);
+}
+
 #[test]
 fn combine_stage_rejects_short_stage_vectors() {
     let err = combine_stage(&[1.0, 2.0], 0.1, &[(&[3.0], 1.0)])
@@ -489,6 +493,204 @@ fn rk45_applies_periodic_event_update() {
 }
 
 #[test]
+fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 3;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec![
+        "sample_a".to_string(),
+        "sample_b".to_string(),
+        "m".to_string(),
+    ];
+    model.problem.solve_layout.relation_memory_parameter_indices = vec![0, 1];
+    model.problem.clocks.periodic_event_schedules = vec![
+        solve::PeriodicEventSchedule {
+            period_seconds: 0.05,
+            phase_seconds: 0.05,
+        },
+        solve::PeriodicEventSchedule {
+            period_seconds: 0.07,
+            phase_seconds: 0.07,
+        },
+    ];
+    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span!(),
+    );
+    model.problem.events.root_relation_memory_targets =
+        vec![Some(solve::scalar_slot_p(0)), Some(solve::scalar_slot_p(1))];
+    model.problem.events.scheduled_root_conditions = vec![
+        solve::ScheduledRootCondition {
+            root_index: 0,
+            period_seconds: 0.05,
+            phase_seconds: 0.05,
+        },
+        solve::ScheduledRootCondition {
+            root_index: 1,
+            period_seconds: 0.07,
+            phase_seconds: 0.07,
+        },
+    ];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
+    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: 10.0,
+            },
+            LinearOp::LoadP { dst: 2, index: 1 },
+            LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 3,
+            },
+            LinearOp::StoreOutput { src: 4 },
+        ]],
+        fixture_span!(),
+    );
+    model.parameters = vec![0.0, 0.0, 0.0];
+    model.visible_names = vec![
+        "x".to_string(),
+        "sample_a".to_string(),
+        "sample_b".to_string(),
+        "m".to_string(),
+    ];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.06,
+            dt: Some(0.06),
+            ..Default::default()
+        },
+    )
+    .expect("rk45 should seed scheduled sample relation memory before event rows");
+
+    assert_eq!(result.data[3], vec![0.0, 1.0]);
+}
+
+#[test]
+fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 4;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec![
+        "__pre__.sample".to_string(),
+        "sample".to_string(),
+        "count".to_string(),
+        "__pre__.count".to_string(),
+    ];
+    model.problem.solve_layout.pre_param_bindings = vec![
+        solve::PreParamBinding {
+            dest_p_index: 0,
+            source: solve::PreParamSource::P { index: 1 },
+        },
+        solve::PreParamBinding {
+            dest_p_index: 3,
+            source: solve::PreParamSource::P { index: 2 },
+        },
+    ];
+    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+        period_seconds: 0.05,
+        phase_seconds: 0.0,
+    }];
+    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(1))];
+    model.problem.events.scheduled_root_conditions = vec![solve::ScheduledRootCondition {
+        root_index: 0,
+        period_seconds: 0.05,
+        phase_seconds: 0.0,
+    }];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
+    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::Fixed];
+    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 1 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            LinearOp::Unary {
+                dst: 2,
+                op: solve::UnaryOp::Not,
+                arg: 1,
+            },
+            LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::And,
+                lhs: 0,
+                rhs: 2,
+            },
+            LinearOp::LoadP { dst: 4, index: 3 },
+            LinearOp::Const { dst: 5, value: 1.0 },
+            LinearOp::Binary {
+                dst: 6,
+                op: solve::BinaryOp::Add,
+                lhs: 4,
+                rhs: 5,
+            },
+            LinearOp::Select {
+                dst: 7,
+                cond: 3,
+                if_true: 6,
+                if_false: 4,
+            },
+            LinearOp::StoreOutput { src: 7 },
+        ]],
+        fixture_span!(),
+    );
+    // Mimic a phase-zero sample that already fired during initialization:
+    // current sample memory is true and count has advanced once.
+    model.parameters = vec![0.0, 1.0, 1.0, 1.0];
+    model.visible_names = vec![
+        "x".to_string(),
+        "__pre__.sample".to_string(),
+        "sample".to_string(),
+        "count".to_string(),
+        "__pre__.count".to_string(),
+    ];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.11,
+            dt: Some(0.05),
+            ..Default::default()
+        },
+    )
+    .expect("rk45 should re-arm scheduled sample relation memory after each tick");
+
+    assert_eq!(result.times, vec![0.0, 0.05, 0.1, 0.11]);
+    assert_eq!(result.data[3], vec![1.0, 2.0, 3.0, 3.0]);
+}
+
+#[test]
 fn rk45_applies_dynamic_time_event_update() {
     let mut model = single_state_model(vec![vec![
         LinearOp::Const { dst: 0, value: 0.0 },
@@ -543,7 +745,7 @@ fn runtime_contract_step_until_advances_rk45_backend() {
 }
 
 #[test]
-fn rk45_stepper_reset_restores_cached_initial_state() {
+fn rk45_session_reset_restores_cached_initial_state() {
     let mut model = single_state_model(vec![vec![
         LinearOp::LoadP { dst: 0, index: 0 },
         LinearOp::StoreOutput { src: 0 },
@@ -551,7 +753,7 @@ fn rk45_stepper_reset_restores_cached_initial_state() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
     model.parameters = vec![0.0];
-    let mut stepper = SimStepper::new(
+    let mut session = SimulationSession::new(
         &model,
         SimOptions {
             solver_mode: SimSolverMode::RkLike,
@@ -559,37 +761,101 @@ fn rk45_stepper_reset_restores_cached_initial_state() {
             ..Default::default()
         },
     )
-    .expect("stepper should build");
+    .expect("session should build");
 
-    stepper.set_input("u", 4.0).expect("input should exist");
-    stepper.step(0.1).expect("stepper should advance");
-    let advanced_x = stepper
+    session.set_input("u", 4.0).expect("input should exist");
+    advance_by(&mut session, 0.1, "session should advance");
+    let advanced_x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
     assert!(advanced_x > 1.1);
 
-    stepper
+    session
         .reset(12.5)
         .expect("reset should restore cached initial state");
 
-    assert!((stepper.time() - 12.5).abs() <= 1.0e-12);
-    let reset_x = stepper
+    assert!((session.time() - 12.5).abs() <= 1.0e-12);
+    let reset_x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
     assert!((reset_x - 1.0).abs() <= 1.0e-12);
     assert_eq!(
-        stepper.get("u").expect("stepper read should succeed"),
+        session.get("u").expect("session read should succeed"),
         None,
         "reset should clear stale input overrides"
     );
 }
 
 #[test]
-fn rk45_stepper_uses_adaptive_event_integration_for_stiff_contact() {
+fn rk45_session_advance_to_clamps_to_sim_options_end_time() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+    model.parameters = vec![0.0];
+    let mut session = SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.05,
+            solver_mode: SimSolverMode::RkLike,
+            dt: Some(0.01),
+            ..Default::default()
+        },
+    )
+    .expect("session should build");
+
+    session.set_input("u", 4.0).expect("input should exist");
+    session
+        .step(0.1)
+        .expect("step past final time should clamp");
+
+    assert!(
+        (session.time() - 0.05).abs() <= 1.0e-12,
+        "session should stop at t_end, got t={}",
+        session.time()
+    );
+}
+
+#[test]
+fn rk45_session_runs_no_state_discrete_controller() {
+    let model = no_state_input_accumulator_model();
+    let mut session = SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.05,
+            solver_mode: SimSolverMode::RkLike,
+            ..Default::default()
+        },
+    )
+    .expect("no-state session should build");
+
+    session.set_input("u", 1.5).expect("input should exist");
+    session.step(0.02).expect("first controller tick");
+    assert!((session.time() - 0.02).abs() <= 1.0e-12);
+    assert_eq!(session.get("y").expect("read y"), Some(1.5));
+
+    session.set_input("u", 2.0).expect("input should update");
+    session.step(0.02).expect("second controller tick");
+    assert_eq!(session.get("y").expect("read y"), Some(3.5));
+
+    session.step(1.0).expect("step should clamp at t_end");
+    assert!((session.time() - 0.05).abs() <= 1.0e-12);
+    assert_eq!(session.get("y").expect("read y"), Some(5.5));
+
+    session
+        .step(1.0)
+        .expect("further steps at t_end should be stable");
+    assert_eq!(session.get("y").expect("read y"), Some(5.5));
+}
+
+#[test]
+fn rk45_session_uses_adaptive_event_integration_for_stiff_contact() {
     let model = stiff_contact_model();
-    let mut stepper = SimStepper::new(
+    let mut session = SimulationSession::new(
         &model,
         SimOptions {
             solver_mode: SimSolverMode::RkLike,
@@ -597,72 +863,73 @@ fn rk45_stepper_uses_adaptive_event_integration_for_stiff_contact() {
             ..Default::default()
         },
     )
-    .expect("stiff contact stepper should initialize");
+    .expect("stiff contact session should initialize");
 
     for _ in 0..50 {
-        stepper.step(0.02).expect("stepper should advance");
+        advance_by(&mut session, 0.02, "session should advance");
     }
 
-    let x = stepper
+    let x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
-    let contact = stepper
+    let contact = session
         .get("contact")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("contact should be visible");
     assert!(
         x > -0.01 && x < 0.03,
-        "adaptive stepper should settle near the contact surface without frame-step penetration; x={x}"
+        "adaptive session should settle near the contact surface without frame-step penetration; x={x}"
     );
     assert_eq!(contact, 1.0);
 }
 
 #[test]
-fn rk45_stepper_redetects_contact_after_thrust_liftoff() {
+fn rk45_session_redetects_contact_after_thrust_liftoff() {
     let model = stiff_contact_model();
-    let mut stepper = SimStepper::new(
+    let mut session = SimulationSession::new(
         &model,
         SimOptions {
             solver_mode: SimSolverMode::RkLike,
             dt: Some(0.02),
+            t_end: 6.0,
             ..Default::default()
         },
     )
-    .expect("stiff contact stepper should initialize");
+    .expect("stiff contact session should initialize");
 
     for _ in 0..50 {
-        stepper.step(0.02).expect("initial settle should advance");
+        advance_by(&mut session, 0.02, "initial settle should advance");
     }
-    stepper
+    session
         .set_input("thrust", 40.0)
         .expect("thrust input should exist");
     for _ in 0..10 {
-        stepper.step(0.02).expect("liftoff should advance");
+        advance_by(&mut session, 0.02, "liftoff should advance");
     }
-    let lifted_x = stepper
+    let lifted_x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
     assert!(
         lifted_x > 0.05,
         "thrust phase should lift the mass above the contact surface; x={lifted_x}"
     );
 
-    stepper
+    session
         .set_input("thrust", 0.0)
         .expect("thrust input should update");
     for _ in 0..180 {
-        stepper.step(0.02).expect("descent should advance");
+        advance_by(&mut session, 0.02, "descent should advance");
     }
 
-    let x = stepper
+    let x = session
         .get("x")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("x should be visible");
-    let contact = stepper
+    let contact = session
         .get("contact")
-        .expect("stepper read should succeed")
+        .expect("session read should succeed")
         .expect("contact should be visible");
     assert!(
         x > -0.02 && x < 0.04,
@@ -916,4 +1183,89 @@ fn const_scalar_program_block(value: f64) -> ScalarProgramBlock {
         ]],
         fixture_span!(),
     )
+}
+
+fn no_state_input_accumulator_model() -> solve::SolveModel {
+    let zero = const_scalar_program_block(0.0);
+    let preserve_y = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    solve::SolveModel {
+        problem: SolveProblem {
+            schema_version: solve::SOLVE_SCHEMA_VERSION,
+            layout: solve::VarLayout::from_parts(Default::default(), 0, 1),
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: ComputeBlock::from_scalar_program_block(preserve_y.clone()),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                residual: ComputeBlock::from_scalar_program_block(preserve_y.clone()),
+                derivative_rhs: ComputeBlock::from_scalar_program_block(
+                    ScalarProgramBlock::default(),
+                ),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+            },
+            initialization: solve::InitializationSolveSystem::default(),
+            discrete: solve::DiscreteSolveSystem {
+                rhs: ScalarProgramBlock::with_source_span(
+                    vec![vec![
+                        LinearOp::LoadY { dst: 0, index: 0 },
+                        LinearOp::LoadP { dst: 1, index: 0 },
+                        LinearOp::Binary {
+                            dst: 2,
+                            op: solve::BinaryOp::Add,
+                            lhs: 0,
+                            rhs: 1,
+                        },
+                        LinearOp::StoreOutput { src: 2 },
+                    ]],
+                    fixture_span!(),
+                ),
+                update_targets: vec![solve::scalar_slot_y(0)],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition::default(),
+            clocks: solve::SolveClockPartition::default(),
+            solve_layout: SolveLayout {
+                solver_maps: SolverNameIndexMaps {
+                    names: vec!["y".to_string()],
+                    name_to_idx: IndexMap::from([("y".to_string(), 0)]),
+                    base_to_indices: IndexMap::from([("y".to_string(), vec![0])]),
+                },
+                state_scalar_count: 0,
+                algebraic_scalar_count: 0,
+                output_scalar_count: 1,
+                parameter_count: 0,
+                compiled_parameter_len: 1,
+                input_scalar_names: vec!["u".to_string()],
+                discrete_real_scalar_names: vec!["y".to_string()],
+                discrete_valued_scalar_names: Vec::new(),
+                relation_memory_parameter_indices: Vec::new(),
+                initial_event_parameter_index: None,
+                pre_param_bindings: Vec::new(),
+            },
+        },
+        artifacts: solve::SolveArtifacts {
+            continuous: solve::ContinuousSolveArtifacts {
+                mass_matrix: Vec::new(),
+                implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
+                implicit_jacobian_v_scalar: zero,
+                full_jacobian_v: ScalarProgramBlock::default(),
+            },
+        },
+        initial_y: vec![0.0],
+        parameters: vec![0.0],
+        external_tables: solve::ExternalTables::default(),
+        visible_names: vec!["y".to_string()],
+        visible_value_rows: ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+        variable_meta: Vec::new(),
+    }
 }

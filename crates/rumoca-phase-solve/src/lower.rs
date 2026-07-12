@@ -375,6 +375,12 @@ pub fn lower_root_relation_memory_targets(
     root_conditions::lower_root_relation_memory_targets(dae_model, layout)
 }
 
+pub fn lower_scheduled_root_conditions(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_ir_solve::ScheduledRootCondition>, LowerError> {
+    root_conditions::lower_scheduled_root_conditions(dae_model)
+}
+
 struct LowerBuilder<'a> {
     layout: &'a VarLayout,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -1228,22 +1234,23 @@ impl<'a> LowerBuilder<'a> {
     }
 
     fn pre_mode_slot_for_key(&self, key: &str) -> Option<ScalarSlot> {
-        if self.value_mode != ValueMode::Pre || key.starts_with("__pre__.") {
+        if self.value_mode != ValueMode::Pre || rumoca_core::is_pre_slot(key) {
             return None;
         }
-        self.layout.binding(format!("__pre__.{key}").as_str())
+        self.layout
+            .binding(rumoca_core::pre_slot_name(key).as_str())
     }
 
     fn pre_mode_base_key(&self, base_key: &str) -> Option<String> {
-        if self.value_mode != ValueMode::Pre || base_key.starts_with("__pre__.") {
+        if self.value_mode != ValueMode::Pre || rumoca_core::is_pre_slot(base_key) {
             return None;
         }
-        let pre_key = format!("__pre__.{base_key}");
+        let pre_key = rumoca_core::pre_slot_name(base_key);
         (self.layout.binding(pre_key.as_str()).is_some()
             || self
                 .indexed_bindings
-                .contains_key(&ComponentReferenceKey::generated(&pre_key)))
-        .then_some(pre_key)
+                .contains_key(&ComponentReferenceKey::generated(pre_key.as_str())))
+        .then(|| pre_key.as_str().to_string())
     }
 
     fn lower_direct_assignment_values_for_key(

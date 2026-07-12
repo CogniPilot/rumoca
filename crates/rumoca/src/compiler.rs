@@ -44,9 +44,10 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
-    render_ast_template_with_name, render_dae_template_with_json,
-    render_dae_template_with_json_and_name, render_flat_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_for_fmi_model_description_context,
+    dae_for_solve_template_context, dae_to_template_json, render_ast_template_with_name,
+    render_dae_template_with_json, render_dae_template_with_json_and_name,
+    render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -82,6 +83,9 @@ pub struct CompilationResult {
     /// Cached solve-template renderer for targets that never read the `dae`
     /// template entry.
     solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
+    /// Cached solve renderer whose `dae` entry is prepared for FMI
+    /// modelDescription XML metadata.
+    fmi_model_description_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -114,394 +118,15 @@ fn build_solve_template_renderer_without_dae(
     SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
 }
 
-fn as_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
-    value.as_object_mut()
-}
-
-fn expr_var_name(expr: &Value) -> Option<&str> {
-    let obj = expr.as_object()?;
-    if let Some(name) = obj
-        .get("VarRef")
-        .and_then(Value::as_object)
-        .and_then(|var_ref| var_ref.get("name"))
-        .and_then(Value::as_str)
-    {
-        return Some(name);
-    }
-    obj.get("ComponentReference")
-        .and_then(Value::as_object)
-        .and_then(|component_ref| component_ref.get("name"))
-        .and_then(Value::as_str)
-}
-
-fn lhs_var_name(expr: &Value) -> Option<&str> {
-    expr.as_str().or_else(|| expr_var_name(expr))
-}
-
-fn extract_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value> {
-    let obj = expr.as_object()?;
-    let bin = obj.get("Binary")?.as_object()?;
-    let lhs = bin.get("lhs")?;
-    let rhs = bin.get("rhs")?;
-    let op = bin.get("op")?.as_object()?;
-    if !op.contains_key("Sub") {
-        return None;
-    }
-
-    if expr_var_name(lhs).is_some_and(|name| name == target) {
-        return Some(rhs.clone());
-    }
-    if expr_var_name(rhs).is_some_and(|name| name == target) {
-        return Some(lhs.clone());
-    }
-    None
-}
-
-fn extract_direct_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value> {
-    let obj = expr.as_object()?;
-    let bin = obj.get("Binary")?.as_object()?;
-    let lhs = bin.get("lhs")?;
-    let rhs = bin.get("rhs")?;
-    let op = bin.get("op")?.as_object()?;
-    if !op.contains_key("Sub") {
-        return None;
-    }
-    if expr_var_name(lhs).is_some_and(|name| name == target) {
-        return Some(rhs.clone());
-    }
-    None
-}
-
-fn collect_assignment_expr_candidates(
-    native: &Value,
-    target: &str,
-    direct_only: bool,
-) -> Vec<Value> {
-    let Some(obj) = native.as_object() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-
-    for key in ["f_z", "f_m", "f_c"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter(|row_obj| {
-                        row_obj
-                            .get("lhs")
-                            .and_then(lhs_var_name)
-                            .is_some_and(|name| name == target)
-                    })
-                    .filter_map(|row_obj| row_obj.get("rhs").cloned()),
-            );
-        }
-    }
-
-    for key in ["f_x", "fx"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter_map(|row_obj| {
-                        let expr = row_obj.get("residual").or_else(|| row_obj.get("rhs"))?;
-                        assignment_expr_for_mode(expr, target, direct_only)
-                    }),
-            );
-        }
-    }
-
-    out
-}
-
-fn assignment_expr_for_mode(expr: &Value, target: &str, direct_only: bool) -> Option<Value> {
-    if direct_only {
-        extract_direct_residual_assignment_expr(expr, target)
-    } else {
-        extract_residual_assignment_expr(expr, target)
-    }
-}
-
-fn expr_complexity(expr: &Value) -> usize {
-    match expr {
-        Value::Object(map) => {
-            1 + map
-                .values()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        Value::Array(items) => {
-            1 + items
-                .iter()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        _ => 1,
-    }
-}
-
-fn is_simple_alias_expr(expr: &Value) -> bool {
-    let is_var_like = |value: &Value| {
-        value
-            .as_object()
-            .is_some_and(|map| map.contains_key("VarRef") || map.contains_key("ComponentReference"))
-    };
-    if is_var_like(expr) {
-        return true;
-    }
-    let Some(unary) = expr
-        .as_object()
-        .and_then(|obj| obj.get("Unary"))
-        .and_then(Value::as_object)
-    else {
-        return false;
-    };
-    unary
-        .get("rhs")
-        .or_else(|| unary.get("arg"))
-        .is_some_and(is_var_like)
-}
-
-fn find_observable_expr_from_native(native: &Value, target: &str) -> Option<Value> {
-    let mut candidates = collect_assignment_expr_candidates(native, target, true);
-    if candidates.is_empty() {
-        candidates = collect_assignment_expr_candidates(native, target, false);
-    }
-    if let Some(best_alias) = candidates
-        .iter()
-        .filter(|expr| is_simple_alias_expr(expr))
-        .min_by_key(|expr| expr_complexity(expr))
-        .cloned()
-    {
-        return Some(best_alias);
-    }
-    candidates.into_iter().max_by_key(|expr| {
-        let non_alias = usize::from(!is_simple_alias_expr(expr));
-        (non_alias, expr_complexity(expr))
-    })
-}
-
-fn find_bridge_expr_from_native(native: &Value, target: &str) -> Option<Value> {
-    let mut candidates = collect_assignment_expr_candidates(native, target, true);
-    if candidates.is_empty() {
-        candidates = collect_assignment_expr_candidates(native, target, false);
-    }
-    candidates.into_iter().min_by_key(|expr| {
-        let alias_penalty = usize::from(!is_simple_alias_expr(expr));
-        (alias_penalty, expr_complexity(expr))
-    })
-}
-
-fn component_ref_name(expr: &Value) -> Option<String> {
-    let obj = expr.as_object()?;
-    let cr = obj.get("ComponentReference")?.as_object()?;
-    if let Some(name) = cr.get("name").and_then(Value::as_str) {
-        return Some(name.to_string());
-    }
-    let parts = cr.get("parts")?.as_array()?;
-    let mut segments = Vec::new();
-    for part in parts {
-        let ident = part.as_object()?.get("ident")?.as_object()?;
-        segments.push(ident.get("text")?.as_str()?.to_string());
-    }
-    (!segments.is_empty()).then(|| segments.join("."))
-}
-
-fn collect_prepared_symbol_names(prepared_obj: &Map<String, Value>) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for key in [
-        "p",
-        "constants",
-        "cp",
-        "x",
-        "y",
-        "z",
-        "m",
-        "w",
-        "u",
-        "x_dot_alias",
-    ] {
-        if let Some(map) = prepared_obj.get(key).and_then(Value::as_object) {
-            out.extend(map.keys().cloned());
-        }
-    }
-    out
-}
-
-fn rewrite_observable_expr_with_native_aliases(
-    native_json: &Value,
-    expr: &Value,
-    prepared_symbols: &HashSet<String>,
-    visiting: &mut HashSet<String>,
-    depth: usize,
-) -> Value {
-    if depth > 24 {
-        return expr.clone();
-    }
-
-    if let Some(obj) = expr.as_object() {
-        if let Some(var_ref) = obj.get("VarRef").and_then(Value::as_object)
-            && let Some(name) = var_ref.get("name").and_then(Value::as_str)
-            && !prepared_symbols.contains(name)
-            && !visiting.contains(name)
-            && let Some(alias_expr) = find_bridge_expr_from_native(native_json, name)
-        {
-            visiting.insert(name.to_string());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(name);
-            return rewritten;
-        }
-
-        if let Some(name) = component_ref_name(expr)
-            && !prepared_symbols.contains(&name)
-            && !visiting.contains(&name)
-            && let Some(alias_expr) = find_bridge_expr_from_native(native_json, &name)
-        {
-            visiting.insert(name.clone());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(&name);
-            return rewritten;
-        }
-
-        return Value::Object(
-            obj.iter()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        rewrite_observable_expr_with_native_aliases(
-                            native_json,
-                            value,
-                            prepared_symbols,
-                            visiting,
-                            depth + 1,
-                        ),
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    if let Some(items) = expr.as_array() {
-        return Value::Array(
-            items
-                .iter()
-                .map(|value| {
-                    rewrite_observable_expr_with_native_aliases(
-                        native_json,
-                        value,
-                        prepared_symbols,
-                        visiting,
-                        depth + 1,
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    expr.clone()
-}
-
-fn augment_prepared_with_native_observables(
-    native_json: &Value,
-    prepared_json: &mut Value,
-) -> Option<usize> {
-    let native_obj = native_json.as_object()?;
-    let prepared_obj = as_object_mut(prepared_json)?;
-    let prepared_y = prepared_obj.get("y").and_then(Value::as_object);
-    let prepared_w = prepared_obj.get("w").and_then(Value::as_object);
-    let prepared_symbols = collect_prepared_symbol_names(prepared_obj);
-
-    let mut observables = Vec::new();
-    for (section_name, causality, native_entries) in [
-        ("y", "local", native_obj.get("y").and_then(Value::as_object)),
-        (
-            "w",
-            "output",
-            native_obj.get("w").and_then(Value::as_object),
-        ),
-    ] {
-        let Some(native_entries) = native_entries else {
-            continue;
-        };
-        for (name, comp) in native_entries {
-            if section_name == "w" && (name.contains('.') || name.contains('[')) {
-                continue;
-            }
-            if prepared_y.is_some_and(|map| map.contains_key(name))
-                || prepared_w.is_some_and(|map| map.contains_key(name))
-            {
-                continue;
-            }
-            let Some(expr_raw) = find_observable_expr_from_native(native_json, name) else {
-                continue;
-            };
-            let mut visiting = HashSet::new();
-            let expr = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &expr_raw,
-                &prepared_symbols,
-                &mut visiting,
-                0,
-            );
-            let comp_obj = comp.as_object();
-            let mut entry = Map::new();
-            entry.insert("name".to_string(), Value::String(name.clone()));
-            entry.insert("dims".to_string(), Value::Array(Vec::new()));
-            entry.insert("expr".to_string(), expr);
-            entry.insert(
-                "causality".to_string(),
-                Value::String(causality.to_string()),
-            );
-            entry.insert(
-                "section".to_string(),
-                Value::String(section_name.to_string()),
-            );
-            for field in ["description", "start", "nominal", "min", "max"] {
-                entry.insert(
-                    field.to_string(),
-                    comp_obj
-                        .and_then(|obj| obj.get(field))
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                );
-            }
-            entry.insert(
-                "unit".to_string(),
-                comp_obj
-                    .and_then(|obj| {
-                        obj.get("unit")
-                            .or_else(|| obj.get("displayUnit"))
-                            .or_else(|| obj.get("display_unit"))
-                    })
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            );
-            entry.insert("fixed".to_string(), Value::Bool(false));
-            entry.insert("is_tunable".to_string(), Value::Bool(false));
-            observables.push(Value::Object(entry));
-        }
-    }
-
-    let n = observables.len();
-    if n > 0 {
-        prepared_obj.insert(
-            "__rumoca_observables".to_string(),
-            Value::Array(observables),
-        );
-    }
-    Some(n)
+fn build_fmi_model_description_renderer(
+    dae_model: &Dae,
+) -> Result<SolveTemplateRenderer, CompilerError> {
+    let problem = lower_solve_problem(dae_model)
+        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
+    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
+    let template_dae = dae_for_fmi_model_description_context(dae_model)?;
+    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
+        .map_err(CompilerError::TemplateError)
 }
 
 impl CompilationResult {
@@ -518,6 +143,7 @@ impl CompilationResult {
             resolved,
             solve_template_renderer: std::sync::OnceLock::new(),
             solve_template_renderer_without_dae: std::sync::OnceLock::new(),
+            fmi_model_description_renderer: std::sync::OnceLock::new(),
         }
     }
 
@@ -805,6 +431,25 @@ impl CompilationResult {
                     "solve template renderer was not initialized after build",
                 ))
             })?;
+        renderer
+            .render_with_name(template, model_name)
+            .map_err(CompilerError::TemplateError)
+    }
+
+    pub fn render_fmi_model_description_template_str_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CompilerError> {
+        if self.fmi_model_description_renderer.get().is_none() {
+            let renderer = build_fmi_model_description_renderer(&self.dae)?;
+            let _ = self.fmi_model_description_renderer.set(renderer);
+        }
+        let renderer = self.fmi_model_description_renderer.get().ok_or_else(|| {
+            CompilerError::TemplateError(CodegenError::template(
+                "FMI modelDescription renderer was not initialized after build",
+            ))
+        })?;
         renderer
             .render_with_name(template, model_name)
             .map_err(CompilerError::TemplateError)
@@ -1393,6 +1038,8 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quick_xml::Reader;
+    use quick_xml::events::{BytesStart, Event};
     use tempfile::tempdir;
 
     fn builtin_fmi2_template(path: &str) -> &'static str {
@@ -1434,6 +1081,130 @@ mod tests {
 
         assert_eq!(result.dae.variables.states.len(), 1);
         assert_eq!(result.balance_detail.state_unknowns, 1);
+    }
+
+    fn fmi_start_expression_source() -> &'static str {
+        r#"
+            model FmiStartExpressions
+                parameter Real p = 2.0;
+                parameter Real q = 3.0;
+                parameter Real r = p + q;
+                Real x(start=p + q, fixed=true);
+                Real y(start=r, fixed=true);
+            equation
+                der(x) = -x;
+                der(y) = -y;
+            end FmiStartExpressions;
+        "#
+    }
+
+    fn render_fmi_model_description(target: &str) -> String {
+        let compiled = Compiler::new()
+            .model("FmiStartExpressions")
+            .compile_str(fmi_start_expression_source(), "FmiStartExpressions.mo")
+            .expect("compile FMI start-expression fixture");
+        let template = rumoca_compile::codegen::templates::builtin_template_source(
+            target,
+            "modelDescription.xml.jinja",
+        )
+        .expect("built-in FMI modelDescription template");
+        compiled
+            .render_fmi_model_description_template_str_with_name(template, "FmiStartExpressions")
+            .expect("render FMI modelDescription")
+    }
+
+    fn xml_attribute(element: &BytesStart<'_>, name: &str) -> Option<String> {
+        element
+            .attributes()
+            .map(|attribute| attribute.expect("well-formed XML attribute"))
+            .find(|attribute| attribute.key.as_ref() == name.as_bytes())
+            .map(|attribute| {
+                attribute
+                    .unescape_value()
+                    .expect("unescapable XML attribute")
+                    .into_owned()
+            })
+    }
+
+    fn fmi2_real_start(xml: &str, variable_name: &str) -> Option<String> {
+        let mut reader = Reader::from_str(xml);
+        let mut inside_variable = false;
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => return None,
+                Ok(Event::Start(element)) if element.name().as_ref() == b"ScalarVariable" => {
+                    inside_variable =
+                        xml_attribute(&element, "name").as_deref() == Some(variable_name);
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if inside_variable && element.name().as_ref() == b"Real" =>
+                {
+                    return xml_attribute(&element, "start");
+                }
+                Ok(Event::End(element)) if element.name().as_ref() == b"ScalarVariable" => {
+                    inside_variable = false;
+                }
+                Ok(_) => {}
+                Err(err) => panic!("not well-formed FMI2 XML: {err}\n{xml}"),
+            }
+        }
+    }
+
+    fn fmi3_float64_start(xml: &str, variable_name: &str) -> Option<String> {
+        let mut reader = Reader::from_str(xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => return None,
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.name().as_ref() == b"Float64"
+                        && xml_attribute(&element, "name").as_deref() == Some(variable_name) =>
+                {
+                    return xml_attribute(&element, "start");
+                }
+                Ok(_) => {}
+                Err(err) => panic!("not well-formed FMI3 XML: {err}\n{xml}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_fmi2_model_description_serializes_start_expressions_as_literals_issue_289() {
+        let xml = render_fmi_model_description("fmi2");
+
+        assert_eq!(
+            fmi2_real_start(&xml, "x").as_deref(),
+            Some("5.0"),
+            "FMI2 x.start should be the folded default literal:\n{xml}"
+        );
+        assert_eq!(
+            fmi2_real_start(&xml, "y").as_deref(),
+            Some("5.0"),
+            "FMI2 y.start should fold a bare parameter reference:\n{xml}"
+        );
+        assert!(
+            !xml.contains("p + q") && !xml.contains(r#"start="r""#),
+            "FMI2 modelDescription must not serialize Modelica start expressions:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn test_fmi3_model_description_serializes_start_expressions_as_literals_issue_289() {
+        let xml = render_fmi_model_description("fmi3");
+
+        assert_eq!(
+            fmi3_float64_start(&xml, "x").as_deref(),
+            Some("5.0"),
+            "FMI3 x.start should be the folded default literal:\n{xml}"
+        );
+        assert_eq!(
+            fmi3_float64_start(&xml, "y").as_deref(),
+            Some("5.0"),
+            "FMI3 y.start should fold a bare parameter reference:\n{xml}"
+        );
+        assert!(
+            !xml.contains("p + q") && !xml.contains(r#"start="r""#),
+            "FMI3 modelDescription must not serialize Modelica start expressions:\n{xml}"
+        );
     }
 
     #[test]

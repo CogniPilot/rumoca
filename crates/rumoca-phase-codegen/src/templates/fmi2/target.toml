@@ -26,6 +26,7 @@ ir = "dae"
 [[files]]
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
+render_context = "fmi-model-description"
 
 [[files]]
 path = "sources/{{ model_name }}.c"

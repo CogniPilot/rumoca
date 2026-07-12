@@ -2,7 +2,7 @@
 //!
 //! Re-exports the primitives crate `rumoca-solver` plus, when the
 //! corresponding features are enabled, the diffsol/rk45 solver entry points
-//! and the I/O `runner` module that drives interactive simulations.
+//! and the scheduled simulation module that drives scheduled scenario simulations.
 
 use indexmap::IndexSet;
 use rumoca_ir_solve as solve;
@@ -28,26 +28,17 @@ pub use rumoca_solver::{
 
 mod build_timing;
 pub mod bulk;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-mod discrete_stepper;
-mod interactive_stepper;
-
-/// Lower a DAE model into the runtime Solve model through the simulation facade.
-pub fn lower_dae_to_solve_model_owned(
-    dae_model: dae::Dae,
-) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
-    rumoca_phase_solve::lower_dae_to_solve_model_owned(dae_model)
-}
-
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-mod sim_stepper;
+pub mod row_eval_trace;
 pub mod sim_trace_compare;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod simulation_session;
+#[cfg(feature = "scheduled-sim")]
+mod simulation_session_api;
 
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod solve_lowering;
 pub use build_timing::BuildSimulationTimings;
 #[cfg(feature = "solver-diffsol")]
@@ -59,18 +50,19 @@ pub use diffsol::{
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub use sim_stepper::{SimStepper, StepperState};
+pub use simulation_session::{SessionState, SimulationSession};
+#[cfg(feature = "scheduled-sim")]
+pub(crate) use simulation_session_api::SimulationSessionApi;
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
 // report types are re-exported from there rather than as root cross-crate uses.
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
     SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
     StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
-    boundary_reduced_dae_for_simulation_artifact, diagnose_structural_singularity, eval_dae_at,
-    jacobian_for_dae, lower_dae_for_gpu_preparation, lower_dae_for_simulation,
+    diagnose_structural_singularity, eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation,
+    lower_dae_for_simulation, lower_for_differentiation_with_overrides,
     lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
     state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
     steady_state_objective_gradient_for_dae, steady_state_parameter_sensitivity_for_dae,
@@ -78,11 +70,22 @@ pub use solve_lowering::{
     structurally_prepared_dae_for_simulation_artifact,
 };
 
+#[cfg(feature = "scenario-config")]
+pub mod scenario_config;
+
 #[cfg(feature = "solver-rk45")]
 pub mod rk45;
 
-#[cfg(feature = "runner")]
-pub mod runner;
+#[cfg(all(
+    feature = "scheduled-sim",
+    feature = "scenario-config",
+    feature = "input-keyboard",
+    feature = "transport-udp",
+    feature = "transport-zenoh",
+    feature = "viewer-web",
+    feature = "process-control"
+))]
+pub mod scheduled_sim;
 
 #[cfg(feature = "report")]
 pub mod report;
@@ -146,7 +149,10 @@ fn simulate_solve_model_rk45(
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-#[cfg(not(feature = "solver-rk45"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-rk45")
+))]
 fn simulate_solve_model_rk45(
     _model: &rumoca_ir_solve::SolveModel,
     _opts: &SimOptions,
@@ -165,7 +171,10 @@ fn simulate_solve_model_diffsol(
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-#[cfg(not(feature = "solver-diffsol"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-diffsol")
+))]
 fn simulate_solve_model_diffsol(
     _model: &rumoca_ir_solve::SolveModel,
     _opts: &SimOptions,
@@ -180,7 +189,7 @@ fn simulate_solve_model_diffsol(
 /// (`NaN`/`inf`) value, automatically re-run once with NaN tracing enabled so
 /// the offending model variable(s) are reported — turning an opaque
 /// "step size too small" into an actionable diagnostic. Intended for
-/// interactive / single-model use (the CLI); bulk callers should use
+/// scheduled single-model use (the CLI); bulk callers should use
 /// [`simulate_with_diagnostics`] to avoid the retry cost.
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub fn simulate_with_diagnostics_auto_nan_trace(
@@ -297,7 +306,10 @@ fn simulate_with_rk45_diagnostics(
     rk45::simulate_with_diagnostics(dae_model, opts)
 }
 
-#[cfg(not(feature = "solver-rk45"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-rk45")
+))]
 fn simulate_with_rk45_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
@@ -315,7 +327,10 @@ fn simulate_with_diffsol_diagnostics(
     diffsol::simulate_with_diagnostics(dae_model, opts)
 }
 
-#[cfg(not(feature = "solver-diffsol"))]
+#[cfg(all(
+    any(feature = "solver-diffsol", feature = "solver-rk45"),
+    not(feature = "solver-diffsol")
+))]
 fn simulate_with_diffsol_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
@@ -325,7 +340,7 @@ fn simulate_with_diffsol_diagnostics(
     ))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "report")]
 pub mod web;
 
 struct VariableSource<'a> {
@@ -622,8 +637,6 @@ pub fn compiled_layout_related_bindings_debug(
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
         .collect())
 }
-
-pub use interactive_stepper::InteractiveStepper;
 
 #[cfg(test)]
 mod tests {

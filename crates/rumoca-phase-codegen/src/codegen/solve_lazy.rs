@@ -378,6 +378,7 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
         &[
             "root_conditions",
             "root_relation_memory_targets",
+            "scheduled_root_conditions",
             "scheduled_time_events",
             "dynamic_time_event_names",
             "dynamic_time_event_rhs",
@@ -398,6 +399,9 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
                 ))),
                 "root_relation_memory_targets" => {
                     Some(Value::from_serialize(&e.root_relation_memory_targets))
+                }
+                "scheduled_root_conditions" => {
+                    Some(Value::from_serialize(&e.scheduled_root_conditions))
                 }
                 "scheduled_time_events" => Some(Value::from_serialize(&e.scheduled_time_events)),
                 "dynamic_time_event_names" => {

@@ -1,0 +1,38 @@
+[package]
+name = "rumoca-tool-galec-lsp"
+description = "Language Server Protocol implementation for GALEC (.alg), the eFMI Algorithm Code language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rumoca-galec-lsp"
+path = "src/main.rs"
+required-features = ["server"]
+
+[dependencies]
+# The WASM-safe layer (position + diagnostics) depends only on lsp-types and the
+# GALEC language module; the parser (the span producer) is behind `parse`.
+# `rumoca_core::Span` values flow through transitively via rumoca-ir-galec's
+# `span_of`, so no direct rumoca-core dependency is needed.
+rumoca-ir-galec = { workspace = true, features = ["parse"] }
+rumoca-lsp-position = { workspace = true }
+lsp-types = { workspace = true }
+
+# Native stdio server only (a future WASM .alg playground reuses the layer above
+# with `default-features = false`). Unlike the Modelica LSP, GALEC's server needs
+# no solver/simulation backends — only parse + validate — so it stays lean.
+tower-lsp = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+
+[features]
+default = ["server"]
+server = ["dep:tower-lsp", "dep:tokio", "dep:clap"]
+
+[dev-dependencies]
+futures-util = { workspace = true }
+
+[lints]
+workspace = true

@@ -1603,7 +1603,7 @@ fn pre_relation_memory_expr(
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } => rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(format!("__pre__.{}", name.as_str())),
+            name: rumoca_core::Reference::from_var_name(rumoca_core::pre_slot_name(name.as_str())),
             subscripts,
             span,
         },

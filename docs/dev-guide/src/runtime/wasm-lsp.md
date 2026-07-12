@@ -12,13 +12,13 @@ completion and diagnostics behave identically everywhere.
 |---|---|
 | `rumoca-tool-lsp` | Language-server logic: diagnostics, completion, hover, semantic tokens, definitions, code actions |
 | `rumoca-tool-fmt`, `rumoca-tool-lint` | Formatter and linter (CLI + LSP + WASM) |
-| `rumoca-bind-wasm` | `wasm-bindgen` API: compile, simulate, steppers, source-root management, LSP functions |
+| `rumoca-bind-wasm` | `wasm-bindgen` API: compile, simulate, simulation sessions, source-root management, LSP functions |
 | `rumoca-bind-python` | Python bindings (`pip install rumoca`) |
 | `packages/rumoca` | npm/WASM package builder; generated packages land under `packages/rumoca/dist/` |
 | `packages/rumoca-web` | Hand-written browser runtime, WebGPU/diffsol drivers, visualization code, and vendored web dependencies |
 | `packages/vscode` | VS Code extension (TypeScript) |
 | `packages/playground` | Browser playground (Monaco workbench over the WASM package) |
-| `docs/user-guide/live/` | The books' live-example runner (mini Monaco editors over the same WASM package) |
+| `docs/user-guide/live/` | The books' live-example harness (mini Monaco editors over the same WASM package) |
 
 ## The WASM API Surface
 
@@ -34,8 +34,8 @@ completion and diagnostics behave identically everywhere.
   whose keys are tunable parameter names and whose values are finite numbers.
 - `model_parameter_metadata(source, model_name)` → tunable parameter metadata used
   by the shared scenario GUI before writing `[parameters]` overrides.
-- `WasmStepper` — step-at-a-time simulation with `set_input`/`get` for
-  interactive use.
+- `WasmSimulationSession` — interactive simulation with `set_input`,
+  `advance_to`, and `get`.
 - `lsp_diagnostics` / `lsp_completion` / `lsp_hover` /
   `lsp_semantic_tokens` … — thin wrappers over `rumoca-tool-lsp` used by
   the playground workers and the books' editors.
@@ -58,5 +58,5 @@ books into one artifact — see [Docs and Pages](../tooling/docs-and-pages.md).
 
 Monaco's Modelica language definition (tokenizer, comments, brackets) lives
 in `packages/rumoca-web/runtime/modelica_language.js` and is imported by both
-the playground and the books' live runner. Edit it there only — the books
+the playground and the books' live harness. Edit it there only — the books
 load it dynamically from the deployed package layout.

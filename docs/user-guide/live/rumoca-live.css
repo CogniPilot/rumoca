@@ -324,6 +324,81 @@
     font-size: 0.8em;
 }
 
+.rumoca-live-codegen {
+    display: grid;
+    gap: 0.6em;
+}
+
+.rumoca-live-codegen-pipeline {
+    display: flex;
+    align-items: center;
+    gap: 0.45em;
+    flex-wrap: wrap;
+    font-size: 0.78em;
+}
+
+.rumoca-live-codegen-stage {
+    border: 1px solid var(--table-border-color, #ccc);
+    border-radius: 4px;
+    padding: 0.25em 0.45em;
+    background: var(--quote-bg, #f6f7f6);
+    font-family: var(--mono-font, "Source Code Pro", monospace);
+}
+
+.rumoca-live-codegen-arrow {
+    opacity: 0.65;
+}
+
+.rumoca-live-codegen details {
+    border: 1px solid var(--table-border-color, #ccc);
+    border-radius: 4px;
+    background: var(--bg, #fff);
+}
+
+.rumoca-live-codegen summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6em;
+    cursor: pointer;
+    padding: 0.4em 0.6em;
+    font-family: var(--mono-font, "Source Code Pro", monospace);
+    font-size: 0.8em;
+}
+
+.rumoca-live-codegen-summary-main {
+    min-width: 0;
+}
+
+.rumoca-live-codegen-kind {
+    display: inline-block;
+    min-width: 12.5em;
+    opacity: 0.75;
+}
+
+.rumoca-live-codegen-name {
+    font-weight: 600;
+}
+
+.rumoca-live-codegen-actions {
+    flex: none;
+}
+
+.rumoca-live-codegen-action {
+    font-size: 0.9em;
+    padding: 0.25em 0.65em;
+}
+
+.rumoca-live-codegen-editor {
+    border-top: 1px solid var(--table-border-color, #ccc);
+}
+
+.rumoca-live-codegen-pre {
+    border-top: 1px solid var(--table-border-color, #ccc);
+    background: var(--quote-bg, #f6f7f6);
+    padding: 0.7em;
+}
+
 .rumoca-live-progress {
     height: 10px;
     background: var(--table-border-color, #ddd);

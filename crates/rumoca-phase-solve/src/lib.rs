@@ -185,7 +185,7 @@ fn checked_layout_remainder(
 fn build_pre_param_bindings(layout: &solve::VarLayout) -> Vec<solve::PreParamBinding> {
     let mut bindings = Vec::new();
     for (name, &slot) in layout.bindings() {
-        let Some(source_name) = name.strip_prefix("__pre__.") else {
+        let Some(source_name) = rumoca_core::pre_slot_base(name) else {
             continue;
         };
         let solve::ScalarSlot::P {
@@ -308,6 +308,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     let timer = timing::stage_start();
     let solve_layout = lower_solve_layout_with_var_layout(dae_model, solver_len, &layout)?;
     timing::log_stage("problem.lower_solve_layout", timer);
+
     let timer = timing::stage_start();
     let runtime_tail_updates = runtime_tail_update_names(dae_model)?;
     let runtime_assignment_equations =
@@ -343,7 +344,6 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         },
     )
     .map_err(|err| lower_problem_context(err, "lower continuous residual rows and targets"))?;
-    dedupe_continuous_y_targets(&mut residual_targets);
     timing::log_stage("problem.lower_residual_rows", timer);
     // Derivative lowering must LOAD retained algebraic unknowns from their projected
     // slot rather than inline their definitions (roadmap 4b): inlining a boundary cell
@@ -579,6 +579,8 @@ fn lower_event_partition_for_profile(
         )?,
         root_relation_memory_targets: lower::lower_root_relation_memory_targets(dae_model, layout)
             .map_err(|err| lower_problem_context(err, "lower root relation memory targets"))?,
+        scheduled_root_conditions: lower::lower_scheduled_root_conditions(dae_model)
+            .map_err(|err| lower_problem_context(err, "lower scheduled root conditions"))?,
         scheduled_time_events: dae_model.events.scheduled_time_events.clone(),
         dynamic_time_event_names: dynamic_events::collect_dynamic_time_event_names(dae_model),
         dynamic_time_event_rhs: solve::ScalarProgramBlock::with_program_spans(
@@ -750,6 +752,26 @@ fn lower_initialization_system(
         residual,
         update_rhs,
         update_targets,
+    })
+}
+
+fn lower_initialization_updates_only(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+) -> Result<solve::InitializationSolveSystem, LowerError> {
+    let update_equations = lower::initial_condition_update_equations(dae_model)
+        .map_err(|err| lower_problem_context(err, "collect initial condition updates"))?;
+    Ok(solve::InitializationSolveSystem {
+        update_rhs: solve::ScalarProgramBlock::with_program_spans(
+            lower_initial_update_rhs(dae_model, layout)
+                .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
+            program_spans_for_owned_equations(&update_equations)?,
+        )?,
+        update_targets: lower_update_targets_from_equations(dae_model, layout, &update_equations)
+            .map_err(|err| {
+            lower_problem_context(err, "lower initial update targets")
+        })?,
+        ..Default::default()
     })
 }
 

@@ -160,8 +160,8 @@ fn symforce_template_can_express_reprojection_residuals_for_ba_style_models() {
 
 // ============================================================================
 // Runtime checks: execute the generated module under an installed symforce.
-// Run via `cargo xtask verify template-runtimes` (CI dev image ships
-// symforce); skipped with a notice when the package is missing locally.
+// Run via `cargo xtask verify template-runtimes`; skipped with a notice when
+// the package is missing locally.
 // ============================================================================
 
 #[cfg(feature = "template-runtime-tests")]
@@ -185,6 +185,25 @@ fn python_has_symforce() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn strict_runtime_dependencies() -> bool {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/template-runtimes/strict")
+        .is_file()
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn symforce_available_or_skip() -> bool {
+    if python_has_symforce() {
+        return true;
+    }
+    if strict_runtime_dependencies() {
+        panic!("symforce not available; strict template runtime checks require it");
+    }
+    eprintln!("SKIP: symforce not available");
+    false
 }
 
 #[cfg(feature = "template-runtime-tests")]
@@ -270,8 +289,7 @@ print(f"HEADERS={sorted(headers)}")
 #[cfg(feature = "template-runtime-tests")]
 #[test]
 fn symforce_runtime_evaluates_generated_residual() {
-    if !python_has_symforce() {
-        eprintln!("SKIP: symforce not available");
+    if !symforce_available_or_skip() {
         return;
     }
     let rendered = render_ball_template();
@@ -303,8 +321,7 @@ fn symforce_runtime_evaluates_generated_residual() {
 #[cfg(feature = "template-runtime-tests")]
 #[test]
 fn symforce_runtime_generates_cpp_residual_jacobians() {
-    if !python_has_symforce() {
-        eprintln!("SKIP: symforce not available");
+    if !symforce_available_or_skip() {
         return;
     }
     let rendered = render_ball_template();

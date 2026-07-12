@@ -37,15 +37,22 @@ members = [
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
     "crates/rumoca-phase-typecheck",
+    # GALEC / eFMI export
+    "crates/rumoca-ir-galec",
+    "crates/rumoca-galec-codegen",
     # Compile pipeline and tools
     "crates/rumoca-compile",
     "crates/rumoca-tool-lint",
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
+    "crates/rumoca-tool-galec-lsp",
+    "crates/rumoca-tool-docs",
+    "crates/rumoca-lsp-position",
     "crates/xtask",
     # Bindings
     "crates/rumoca-bind-wasm",
     "crates/rumoca-bind-wasm-diffsol",
+    "crates/rumoca-bind-wasm-galec",
     "crates/rumoca-bind-python",
     # Compiled execution adapters
     "crates/rumoca-exec-cranelift",
@@ -54,11 +61,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.9"
+version = "0.9.19"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/climamind/rumoca"
-homepage = "https://github.com/climamind/rumoca"
+repository = "https://github.com/CogniPilot/rumoca"
+homepage = "https://github.com/CogniPilot/rumoca"
+
+[workspace.metadata.crane]
+name = "rumoca"
 
 [workspace.dependencies]
 # Internal crates
@@ -104,12 +114,16 @@ rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
+rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }
+rumoca-galec-codegen = { path = "crates/rumoca-galec-codegen" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
 rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
 rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
+rumoca-tool-galec-lsp = { path = "crates/rumoca-tool-galec-lsp", default-features = false }
+rumoca-lsp-position = { path = "crates/rumoca-lsp-position" }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
 rumoca-test-msl = { path = "crates/rumoca-test-msl" }
@@ -131,9 +145,11 @@ minijinja = { version = "2.5", features = ["debug", "preserve_order"] }
 # pulls an incompatible scnr2 minor version.
 parol = "=4.2.2"
 parol_runtime = "=4.2.0"
+quick-xml = "0.37"
 rayon = "1.10"
 rustc-hash = "2.0"
-scnr2 = "=0.3.3"
+sha1 = "0.10"
+scnr2 = "0.3.3"
 sigpipe = "0.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
@@ -145,9 +161,11 @@ thiserror = "2.0"
 toml = "0.8"
 tempfile = "3.10"
 libloading = "0.8"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "3.0"
+uuid = { version = "1", features = ["v4"] }
 walkdir = "2.5"
 zip = "2.4"
 # LSP types (usable from WASM and native, must match tower-lsp's version)
@@ -205,11 +223,10 @@ opt-level = 3
 [profile.release.build-override]
 opt-level = 3
 
-# Compiler-throughput tuning: thin LTO + single codegen unit measurably speed
-# the hot compile/simulate paths; build-time cost is acceptable for release.
+# Keep thin LTO for release runtime quality, but leave codegen units at Cargo's
+# default so CI can use parallel codegen.
 [profile.release]
 lto = "thin"
-codegen-units = 1
 
 # Speed up parser-heavy runtime in normal debug builds.
 [profile.dev.package.rumoca-phase-parse]

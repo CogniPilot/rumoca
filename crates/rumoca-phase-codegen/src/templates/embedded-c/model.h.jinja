@@ -18,11 +18,25 @@
 {%- set derivative_len = solve_blocks.continuous.derivative_rhs.output_count -%}
 {%- set bindings = solve.layout.bindings -%}
 {%- set MODEL = model_name | upper -%}
+{%- set c_symbol_policy = {
+    "separator": "_",
+    "generated_prefixes": ["pre_", "der_"],
+    "reserved": [
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+        "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+        "unsigned", "void", "volatile", "while", "inline", "restrict",
+        "m", "t", "time", "i", "n", "real_t", "pre", "der"
+    ]
+} -%}
+{%- set symbols = target_symbols(dae.symbol_refs | default([]), c_symbol_policy, dae.symbol_aliases | default([])) -%}
 #pragma once
 
 #include <stddef.h>
 
 typedef double real_t;
+
+#define REAL_C(x) ((real_t)(x))
 
 enum {
     {{ MODEL }}_Y_LEN = {{ y_len }},
@@ -40,17 +54,17 @@ enum {
 {%- set key = source_ref(name, var.dims, i + 1) -%}
 {%- set slot = bindings[key] -%}
 {%- if slot and slot.Y is defined %}
-#define {{ MODEL }}_Y_{{ key | sanitize }} {{ slot.Y.index }}  /* {{ kind }} {{ key }} */
+#define {{ MODEL }}_Y_{{ symbol(symbols, key) }} {{ slot.Y.index }}  /* {{ kind }} {{ key }} */
 {%- elif slot and slot.P is defined %}
-#define {{ MODEL }}_P_{{ key | sanitize }} {{ slot.P.index }}  /* {{ kind }} {{ key }} */
+#define {{ MODEL }}_P_{{ symbol(symbols, key) }} {{ slot.P.index }}  /* {{ kind }} {{ key }} */
 {%- endif -%}
 {%- endfor -%}
 {%- else -%}
 {%- set slot = bindings[name] -%}
 {%- if slot and slot.Y is defined %}
-#define {{ MODEL }}_Y_{{ name | sanitize }} {{ slot.Y.index }}  /* {{ kind }} {{ name }} */
+#define {{ MODEL }}_Y_{{ symbol(symbols, name) }} {{ slot.Y.index }}  /* {{ kind }} {{ name }} */
 {%- elif slot and slot.P is defined %}
-#define {{ MODEL }}_P_{{ name | sanitize }} {{ slot.P.index }}  /* {{ kind }} {{ name }} */
+#define {{ MODEL }}_P_{{ symbol(symbols, name) }} {{ slot.P.index }}  /* {{ kind }} {{ name }} */
 {%- endif -%}
 {%- endif -%}
 {%- endfor -%}

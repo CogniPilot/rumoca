@@ -1,6 +1,6 @@
 use super::{
     Cli, Commands, CoverageCommand, PlaygroundCommand, PythonCommand, RepoCliCommand, RepoCommand,
-    RepoCompletionsCommand, RepoGraphCommand, RepoHooksCommand, RepoMslCommand, RepoPolicyCommand,
+    RepoCompletionsCommand, RepoGraphCommand, RepoHooksCommand, RepoPolicyCommand,
     RepoUbuntuCommand, VscodeCommand, WebCommand, classify_candidate,
     docs_wasm_package_is_up_to_date, is_line_count_excluded_rust_file,
 };
@@ -11,7 +11,7 @@ use crate::repo_cli_cmd::{
     shell_path_update_guidance, shell_profile_update, xtask_cli_launcher_contents,
     xtask_cli_launcher_path,
 };
-use crate::verify_cmd::VerifyCommand;
+use crate::verify_cmd::{TemplateRuntimeBackend, VerifyCommand};
 use clap::CommandFactory;
 use clap::Parser;
 use clap::error::ErrorKind;
@@ -121,7 +121,7 @@ fn cli_parses_verify_workspace_job() {
     let cli =
         Cli::try_parse_from(["xtask", "verify", "workspace"]).expect("parse verify workspace");
     match cli.command {
-        Commands::Verify(args) => assert_eq!(args.command, VerifyCommand::Workspace),
+        Commands::Verify(args) => assert!(matches!(args.command, VerifyCommand::Workspace(_))),
         other => panic!("expected verify command, got {other:?}"),
     }
 }
@@ -131,7 +131,33 @@ fn cli_parses_verify_template_runtimes_job() {
     let cli = Cli::try_parse_from(["xtask", "verify", "template-runtimes"])
         .expect("parse verify template-runtimes");
     match cli.command {
-        Commands::Verify(args) => assert_eq!(args.command, VerifyCommand::TemplateRuntimes),
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::All);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_verify_template_runtimes_backend() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "casadi",
+    ])
+    .expect("parse verify template-runtimes --backend casadi");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::Casadi);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
         other => panic!("expected verify command, got {other:?}"),
     }
 }
@@ -226,6 +252,59 @@ fn cli_parses_verify_msl_parity_quality_baseline_flags() {
         Commands::Verify(args) => {
             assert!(matches!(args.command, VerifyCommand::MslParity(_)))
         }
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn verify_msl_parity_shard_parses_and_validates() {
+    let parse = |arg: &str| {
+        let cli = Cli::try_parse_from(["xtask", "verify", "msl-parity", "--shard", arg])
+            .expect("parse verify msl-parity --shard");
+        match cli.command {
+            Commands::Verify(args) => match args.command {
+                VerifyCommand::MslParity(msl) => msl.parse_shard(),
+                other => panic!("expected msl-parity, got {other:?}"),
+            },
+            other => panic!("expected verify command, got {other:?}"),
+        }
+    };
+    assert_eq!(parse("2/4").expect("valid shard"), Some((2, 4)));
+    assert_eq!(parse("1/1").expect("valid shard"), Some((1, 1)));
+    // No --shard => None.
+    let bare = Cli::try_parse_from(["xtask", "verify", "msl-parity"]).expect("parse bare");
+    let Commands::Verify(bare_args) = bare.command else {
+        panic!("expected verify command");
+    };
+    let VerifyCommand::MslParity(bare_msl) = bare_args.command else {
+        panic!("expected msl-parity");
+    };
+    assert_eq!(bare_msl.parse_shard().expect("no shard"), None);
+    // Malformed pairs are rejected (never a silent full-set or empty-shard run).
+    for bad in ["0/4", "5/4", "3", "abc", "1/0", "2/x"] {
+        assert!(parse(bad).is_err(), "expected '{bad}' to be rejected");
+    }
+}
+
+#[test]
+fn cli_parses_verify_msl_parity_prebuilt_workers() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "msl-parity",
+        "--prebuilt-test-binary",
+        "result-msl-test/bin/msl_tests",
+        "--prebuilt-model-worker",
+        "result-msl-test/bin/rumoca-worker",
+        "--prebuilt-sim-worker",
+        "result-sim-worker/bin/rumoca-sim-worker",
+    ])
+    .expect("parse verify msl-parity prebuilt workers");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::MslParity(_) => {}
+            other => panic!("expected msl-parity, got {other:?}"),
+        },
         other => panic!("expected verify command, got {other:?}"),
     }
 }
@@ -476,6 +555,30 @@ fn cli_parses_playground_edit() {
             PlaygroundCommand::Edit(args) => {
                 assert_eq!(args.port, Some(9001));
                 assert!(!args.rayon);
+                assert!(!args.skip_build);
+            }
+            other => panic!("expected playground edit, got {other:?}"),
+        },
+        other => panic!("expected playground command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_playground_edit_skip_build() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "playground",
+        "edit",
+        "--skip-build",
+        "--port",
+        "9002",
+    ])
+    .expect("parse playground edit --skip-build");
+    match cli.command {
+        Commands::Playground(args) => match args.command {
+            PlaygroundCommand::Edit(args) => {
+                assert_eq!(args.port, Some(9002));
+                assert!(args.skip_build);
             }
             other => panic!("expected playground edit, got {other:?}"),
         },
@@ -520,70 +623,11 @@ fn cli_parses_coverage_report() {
 }
 
 #[test]
-fn cli_parses_repo_msl_compatibility_report() {
-    let cli = Cli::try_parse_from(["xtask", "repo", "msl", "compatibility-report"])
-        .expect("parse repo msl compatibility-report");
-    match cli.command {
-        Commands::Repo(args) => match args.command {
-            RepoCommand::Msl(args) => match args.command {
-                RepoMslCommand::CompatibilityReport(_) => {}
-                other => panic!("expected repo msl compatibility-report, got {other:?}"),
-            },
-            other => panic!("expected repo msl, got {other:?}"),
-        },
-        other => panic!("expected repo command, got {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_repo_msl_modelica_test_catalog() {
-    let cli = Cli::try_parse_from(["xtask", "repo", "msl", "modelica-test-catalog"])
-        .expect("parse repo msl modelica-test-catalog");
-    match cli.command {
-        Commands::Repo(args) => match args.command {
-            RepoCommand::Msl(args) => match args.command {
-                RepoMslCommand::ModelicaTestCatalog(_) => {}
-                other => panic!("expected repo msl modelica-test-catalog, got {other:?}"),
-            },
-            other => panic!("expected repo msl, got {other:?}"),
-        },
-        other => panic!("expected repo command, got {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_repo_msl_pr_comment() {
-    let cli = Cli::try_parse_from([
-        "xtask",
-        "repo",
-        "msl",
-        "pr-comment",
-        "--results-dir",
-        "target/msl/results",
-        "--out",
-        "target/msl/results/msl_pr_comment.md",
-    ])
-    .expect("parse repo msl pr-comment");
-    match cli.command {
-        Commands::Repo(args) => match args.command {
-            RepoCommand::Msl(args) => match args.command {
-                RepoMslCommand::PrComment(args) => {
-                    assert_eq!(args.results_dir, Path::new("target/msl/results"));
-                    assert_eq!(
-                        args.out.as_deref(),
-                        Some(Path::new("target/msl/results/msl_pr_comment.md"))
-                    );
-                }
-                other => panic!("expected repo msl pr-comment, got {other:?}"),
-            },
-            other => panic!("expected repo msl, got {other:?}"),
-        },
-        other => panic!("expected repo command, got {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_repo_msl_flamegraph() {
+fn cli_parses_repo_msl_passthrough() {
+    // `repo msl` is a thin passthrough: the typed subcommand surface lives in the
+    // `rumoca-msl-tools` bin (rumoca-test-msl). xtask must capture the subcommand
+    // name and every following flag verbatim (allow_hyphen_values), so it can
+    // forward them unchanged.
     let cli = Cli::try_parse_from([
         "xtask",
         "repo",
@@ -594,43 +638,22 @@ fn cli_parses_repo_msl_flamegraph() {
         "--mode",
         "simulate",
     ])
-    .expect("parse repo msl flamegraph");
+    .expect("parse repo msl passthrough");
     match cli.command {
         Commands::Repo(args) => match args.command {
-            RepoCommand::Msl(args) => match args.command {
-                RepoMslCommand::Flamegraph(args) => {
-                    assert_eq!(args.model, "Modelica.Electrical.Digital.Examples.DFFREG");
-                    assert_eq!(
-                        args.mode,
-                        crate::msl_flamegraph_cmd::MslFlamegraphMode::Simulate
-                    );
-                }
-                other => panic!("expected repo msl flamegraph, got {other:?}"),
-            },
-            other => panic!("expected repo msl, got {other:?}"),
-        },
-        other => panic!("expected repo command, got {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_repo_msl_rerun_model() {
-    let cli = Cli::try_parse_from([
-        "xtask",
-        "repo",
-        "msl",
-        "rerun",
-        "--model",
-        "Modelica.Blocks.Examples.PID_Controller",
-        "--dry-run",
-    ])
-    .expect("parse repo msl rerun");
-    match cli.command {
-        Commands::Repo(args) => match args.command {
-            RepoCommand::Msl(args) => match args.command {
-                RepoMslCommand::Rerun(_) => {}
-                other => panic!("expected repo msl rerun, got {other:?}"),
-            },
+            RepoCommand::Msl(args) => {
+                let expected: Vec<String> = [
+                    "flamegraph",
+                    "--model",
+                    "Modelica.Electrical.Digital.Examples.DFFREG",
+                    "--mode",
+                    "simulate",
+                ]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+                assert_eq!(args.forwarded, expected);
+            }
             other => panic!("expected repo msl, got {other:?}"),
         },
         other => panic!("expected repo command, got {other:?}"),
@@ -885,7 +908,7 @@ fn completion_install_plan_for_fish_needs_no_profile_update() {
 }
 
 #[test]
-fn generated_completions_include_repo_graph_crates_flags_and_repo_msl_commands() {
+fn generated_completions_include_repo_graph_crates_flags_and_repo_msl_passthrough() {
     let mut command = Cli::command();
     let script =
         crate::completion_cmd::render(crate::completion_cmd::ShellKind::Bash, &mut command)
@@ -896,9 +919,14 @@ fn generated_completions_include_repo_graph_crates_flags_and_repo_msl_commands()
     assert!(script.contains("install-vscode-smoke-prereqs"));
     assert!(script.contains("--install-prereqs"));
     assert!(script.contains("--format"));
-    assert!(script.contains("xtask__repo__msl"));
-    assert!(script.contains("promote-quality-baseline"));
-    assert!(script.contains("--baseline"));
+    // The repo subcommand word-list still offers graph/msl/cmm — `msl` is a
+    // completed repo subcommand (this is the user-facing behavior; the exact
+    // clap_complete helper-function naming is an internal detail we don't assert).
+    assert!(script.contains("graph msl cmm"));
+    // `repo msl` is now a passthrough to the `rumoca-msl-tools` bin, so its former
+    // subcommands (and their flags) live in that bin and are intentionally absent
+    // from xtask's own completions.
+    assert!(!script.contains("promote-quality-baseline"));
 }
 
 /// Set a file's modification time to `seconds` after the Unix epoch, so the

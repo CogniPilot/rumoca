@@ -625,6 +625,41 @@ fn requires_static_clock_schedule(expr: &rumoca_core::Expression) -> bool {
     }
 }
 
+pub(super) fn scheduled_sample_root_schedule<'a>(
+    expr: &rumoca_core::Expression,
+    clock_schedules: &'a [dae::ClockSchedule],
+    constants: &HashMap<String, f64>,
+) -> Option<&'a dae::ClockSchedule> {
+    let (period_seconds, phase_seconds) = scheduled_sample_root_timing(expr, constants)?;
+    clock_schedules.iter().find(|schedule| {
+        clock_schedules_equivalent(
+            schedule,
+            &dae::ClockSchedule {
+                period_seconds,
+                phase_seconds,
+                source_span: schedule.source_span,
+            },
+        )
+    })
+}
+
+fn scheduled_sample_root_timing(
+    expr: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+) -> Option<(f64, f64)> {
+    match expr {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args,
+            ..
+        } => sample_start_interval_timing(args, constants),
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            function_sample_start_interval_timing(name.last_segment(), args, constants)
+        }
+        _ => None,
+    }
+}
+
 fn is_non_static_inferred_clock_composition(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
@@ -1020,28 +1055,115 @@ fn propagate_clock_timings_across_equations(
     constants: &HashMap<String, f64>,
     timings: &mut IndexMap<String, dae::ClockSchedule>,
 ) {
-    let candidates = clock_interval_candidate_names(dae_model)
+    let declared = clock_interval_candidate_names(dae_model)
         .into_iter()
         .filter_map(|name| canonical_var_name_key(name, &[], constants))
-        .collect::<HashSet<_>>();
-    let graph = build_clock_equivalence_graph(dae_model, constants, &candidates);
-    let mut seen = HashSet::new();
-    for key in candidates {
-        if seen.contains(&key) {
+        .collect::<IndexSet<_>>();
+    let array_candidates = clock_interval_candidate_variables(dae_model)
+        .filter(|(_, variable)| !variable.dims.is_empty())
+        .filter_map(|(name, variable)| {
+            canonical_var_name_key(name, &[], constants)
+                .map(|canonical| (canonical, variable.dims.clone()))
+        })
+        .collect::<IndexMap<_, _>>();
+    promote_uniform_element_schedules(&array_candidates, timings);
+    let uniform_arrays = array_candidates
+        .keys()
+        .filter(|name| timings.contains_key(*name))
+        .cloned()
+        .collect();
+    let mut candidates = ClockCandidates {
+        declared,
+        uniform_arrays,
+    };
+
+    loop {
+        let graph = build_clock_equivalence_graph(dae_model, constants, &candidates);
+        propagate_clock_timings_in_graph(&candidates, &graph, timings);
+        promote_uniform_element_schedules(&array_candidates, timings);
+
+        let expanded_uniform_arrays = array_candidates
+            .keys()
+            .filter(|name| timings.contains_key(*name))
+            .cloned()
+            .collect::<HashSet<_>>();
+        if expanded_uniform_arrays == candidates.uniform_arrays {
+            break;
+        }
+        candidates.uniform_arrays = expanded_uniform_arrays;
+    }
+}
+
+fn promote_uniform_element_schedules(
+    array_candidates: &IndexMap<String, Vec<i64>>,
+    timings: &mut IndexMap<String, dae::ClockSchedule>,
+) {
+    for (base, dims) in array_candidates {
+        if timings.contains_key(base) {
             continue;
         }
-        let component = collect_clock_equivalence_component(&key, &graph, &mut seen);
+        let Some(element_count) = array_element_count(dims) else {
+            continue;
+        };
+        let element_names =
+            (0..element_count).map(|index| dae::scalar_name_text_for_flat_index(base, dims, index));
+        let mut schedules = element_names.map(|name| timings.get(&name));
+        let Some(Some(first)) = schedules.next() else {
+            continue;
+        };
+        let first = first.clone();
+        if schedules.all(|schedule| {
+            schedule.is_some_and(|schedule| {
+                schedule.period_seconds == first.period_seconds
+                    && schedule.phase_seconds == first.phase_seconds
+            })
+        }) {
+            timings.insert(base.clone(), first);
+        }
+    }
+}
+
+fn array_element_count(dims: &[i64]) -> Option<usize> {
+    dims.iter().try_fold(1usize, |count, dim| {
+        count.checked_mul(usize::try_from(*dim).ok()?)
+    })
+}
+
+fn propagate_clock_timings_in_graph(
+    candidates: &ClockCandidates,
+    graph: &HashMap<String, Vec<String>>,
+    timings: &mut IndexMap<String, dae::ClockSchedule>,
+) {
+    let mut seen = HashSet::new();
+    for key in &candidates.declared {
+        if seen.contains(key) {
+            continue;
+        }
+        let component = collect_clock_equivalence_component(key, graph, &mut seen);
         let Some(timing) = unique_component_clock_timing(&component, timings) else {
             continue;
         };
         for item in component {
-            if let Some(existing) = timings.get(&item) {
-                assert_compatible_clock_schedule(&item, existing, &timing);
-            } else {
-                timings.insert(item, timing.clone());
-            }
+            insert_or_validate_clock_timing(timings, item, &timing);
         }
     }
+}
+
+fn insert_or_validate_clock_timing(
+    timings: &mut IndexMap<String, dae::ClockSchedule>,
+    item: String,
+    timing: &dae::ClockSchedule,
+) {
+    if let Some(existing) = timings.get(&item) {
+        assert_compatible_clock_schedule(&item, existing, timing);
+        return;
+    }
+    timings.insert(item, timing.clone());
+}
+
+struct ClockCandidates {
+    declared: IndexSet<String>,
+    uniform_arrays: HashSet<String>,
 }
 
 fn assert_compatible_clock_schedule(
@@ -1065,7 +1187,7 @@ fn assert_compatible_clock_schedule(
 fn build_clock_equivalence_graph(
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
 ) -> HashMap<String, Vec<String>> {
     let mut graph = HashMap::new();
     let mut assignment_sources = Vec::new();
@@ -1089,7 +1211,7 @@ fn build_clock_equivalence_graph(
 fn add_shared_no_argument_clock_guard_edges(
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
     graph: &mut HashMap<String, Vec<String>>,
 ) {
     let mut guarded_targets = IndexMap::<rumoca_core::Span, IndexSet<String>>::new();
@@ -1103,12 +1225,9 @@ fn add_shared_no_argument_clock_guard_edges(
         let Some(lhs) = eq.lhs.as_ref() else {
             continue;
         };
-        let Some(target) = canonical_var_name_key(lhs.var_name(), &[], constants) else {
+        let Some(target) = clock_candidate_key(lhs.var_name(), &[], constants, candidates) else {
             continue;
         };
-        if !candidates.contains(&target) {
-            continue;
-        }
         let clock_spans = no_argument_clock_guard_spans(&eq.rhs);
         for span in clock_spans {
             guarded_targets
@@ -1189,17 +1308,17 @@ fn add_clock_equivalence_edges(
     target: &str,
     source: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
     graph: &mut HashMap<String, Vec<String>>,
 ) {
-    if !candidates.contains(target) {
+    let Some(target) = resolve_clock_candidate_key(target, candidates) else {
         return;
-    }
+    };
     let mut refs = Vec::new();
     collect_same_clock_var_refs(source, constants, candidates, &mut refs);
     for rhs in refs {
-        insert_clock_equivalence_edge(graph, target, rhs.as_str());
-        insert_clock_equivalence_edge(graph, rhs.as_str(), target);
+        insert_clock_equivalence_edge(graph, target.as_str(), rhs.as_str());
+        insert_clock_equivalence_edge(graph, rhs.as_str(), target.as_str());
     }
 }
 
@@ -1213,7 +1332,7 @@ fn insert_clock_equivalence_edge(graph: &mut HashMap<String, Vec<String>>, lhs: 
 fn collect_same_clock_var_refs(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
     out: &mut Vec<String>,
 ) {
     let mut collector = SameClockVarRefCollector {
@@ -1226,7 +1345,7 @@ fn collect_same_clock_var_refs(
 
 struct SameClockVarRefCollector<'a> {
     constants: &'a HashMap<String, f64>,
-    candidates: &'a HashSet<String>,
+    candidates: &'a ClockCandidates,
     out: &'a mut Vec<String>,
 }
 
@@ -1276,22 +1395,56 @@ fn collect_same_clock_var_ref(
     name: &rumoca_core::VarName,
     subscripts: &[rumoca_core::Subscript],
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
     out: &mut Vec<String>,
 ) {
-    let Some(key) = canonical_var_name_key(name, subscripts, constants) else {
+    let Some(key) = clock_candidate_key(name, subscripts, constants, candidates) else {
         return;
     };
-    if candidates.contains(&key) && !out.iter().any(|existing| existing == &key) {
+    if !out.iter().any(|existing| existing == &key) {
         out.push(key);
     }
+}
+
+fn clock_candidate_key(
+    name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
+    constants: &HashMap<String, f64>,
+    candidates: &ClockCandidates,
+) -> Option<String> {
+    let mut source_name = name.as_str();
+    while let Some(base) = rumoca_core::pre_slot_base(source_name) {
+        source_name = base;
+    }
+    let source_name = rumoca_core::VarName::new(source_name);
+    let key = canonical_var_name_key(&source_name, subscripts, constants)?;
+    resolve_clock_candidate_key(&key, candidates)
+}
+
+fn resolve_clock_candidate_key(key: &str, candidates: &ClockCandidates) -> Option<String> {
+    if candidates.declared.contains(key) {
+        return Some(key.to_string());
+    }
+    let base = rumoca_core::strip_scalar_name_subscripts(key)?;
+    if !candidates.declared.contains(base) {
+        return None;
+    }
+    // MLS §16.2.1 (CLK-005/006) requires one unique clock per clocked
+    // variable, while §16.4 (CLK-009) keeps previous() on that association.
+    // Collapse an element to compact array metadata only after a whole-array
+    // schedule proves uniformity; otherwise preserve the scalar identity.
+    Some(if candidates.uniform_arrays.contains(base) {
+        base.to_string()
+    } else {
+        key.to_string()
+    })
 }
 
 fn collect_same_clock_function_refs(
     name: &rumoca_core::VarName,
     args: &[rumoca_core::Expression],
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
     out: &mut Vec<String>,
 ) {
     let short = name.last_segment();
@@ -1313,7 +1466,7 @@ fn collect_same_clock_builtin_refs(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
     constants: &HashMap<String, f64>,
-    candidates: &HashSet<String>,
+    candidates: &ClockCandidates,
     out: &mut Vec<String>,
 ) {
     let skip_value_arg = matches!(function, rumoca_core::BuiltinFunction::Sample);
@@ -1491,16 +1644,23 @@ fn variable_has_unique_static_clock_fallback_source(
 }
 
 fn clock_interval_candidate_names(dae_model: &dae::Dae) -> Vec<&rumoca_core::VarName> {
+    clock_interval_candidate_variables(dae_model)
+        .map(|(name, _)| name)
+        .collect()
+}
+
+fn clock_interval_candidate_variables(
+    dae_model: &dae::Dae,
+) -> impl Iterator<Item = (&rumoca_core::VarName, &dae::Variable)> {
     dae_model
         .variables
         .states
-        .keys()
-        .chain(dae_model.variables.algebraics.keys())
-        .chain(dae_model.variables.outputs.keys())
-        .chain(dae_model.variables.inputs.keys())
-        .chain(dae_model.variables.discrete_reals.keys())
-        .chain(dae_model.variables.discrete_valued.keys())
-        .collect()
+        .iter()
+        .chain(dae_model.variables.algebraics.iter())
+        .chain(dae_model.variables.outputs.iter())
+        .chain(dae_model.variables.inputs.iter())
+        .chain(dae_model.variables.discrete_reals.iter())
+        .chain(dae_model.variables.discrete_valued.iter())
 }
 
 fn variable_source_matches(
@@ -1615,5 +1775,63 @@ mod tests {
             sources.reverse_targets_for("periodicClock.c").is_none(),
             "ownerless reverse aliases must not manufacture timing inference provenance"
         );
+    }
+
+    #[test]
+    fn clock_candidate_prefers_declared_scalar_over_array_base() {
+        let candidates = ClockCandidates {
+            declared: IndexSet::from(["sampled".to_string(), "sampled[1]".to_string()]),
+            uniform_arrays: HashSet::new(),
+        };
+        let span = test_span(1, 2);
+        let key = clock_candidate_key(
+            &rumoca_core::VarName::new("sampled"),
+            &[rumoca_core::Subscript::generated_index(1, span)],
+            &HashMap::new(),
+            &candidates,
+        );
+
+        assert_eq!(key.as_deref(), Some("sampled[1]"));
+    }
+
+    #[test]
+    fn clock_candidate_maps_nested_pre_slot_element_to_array_base() {
+        let candidates = ClockCandidates {
+            declared: IndexSet::from(["sampled".to_string()]),
+            uniform_arrays: HashSet::from(["sampled".to_string()]),
+        };
+        let span = test_span(1, 2);
+        let key = clock_candidate_key(
+            &rumoca_core::VarName::new("__pre__.__pre__.sampled"),
+            &[rumoca_core::Subscript::generated_index(2, span)],
+            &HashMap::new(),
+            &candidates,
+        );
+
+        assert_eq!(key.as_deref(), Some("sampled"));
+    }
+
+    #[test]
+    fn clock_candidate_preserves_elements_without_uniform_array_schedule() {
+        let candidates = ClockCandidates {
+            declared: IndexSet::from(["sampled".to_string()]),
+            uniform_arrays: HashSet::new(),
+        };
+        let span = test_span(1, 2);
+        let first = clock_candidate_key(
+            &rumoca_core::VarName::new("sampled"),
+            &[rumoca_core::Subscript::generated_index(1, span)],
+            &HashMap::new(),
+            &candidates,
+        );
+        let second = clock_candidate_key(
+            &rumoca_core::VarName::new("sampled"),
+            &[rumoca_core::Subscript::generated_index(2, span)],
+            &HashMap::new(),
+            &candidates,
+        );
+
+        assert_eq!(first.as_deref(), Some("sampled[1]"));
+        assert_eq!(second.as_deref(), Some("sampled[2]"));
     }
 }

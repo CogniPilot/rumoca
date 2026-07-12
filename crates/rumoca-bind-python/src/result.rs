@@ -27,6 +27,7 @@ fn to_py_array(py: Python<'_>, values: &[f64]) -> PyObject {
 }
 
 #[pyclass(module = "rumoca")]
+#[derive(Clone)]
 pub struct Result {
     model_name: String,
     times: Vec<f64>,

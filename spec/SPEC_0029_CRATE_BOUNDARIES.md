@@ -12,8 +12,7 @@ its reading list; illegal coupling should fail before review.
 
 ### 1. Bounded Context Per Task
 
-Each crate's `Cargo.toml` defines exactly what it can see. Read that dependency
-set before editing the crate.
+`Cargo.toml` defines what each crate can see. Read dependencies before editing.
 
 ### 2. Strict DAG Dependency Graph
 
@@ -163,7 +162,7 @@ Re-export guardrails:
   | Facade | Scope | Allowed cross-crate exports |
   |---|---|---|
   | `rumoca-compile` | compilation/session | curated compile, parsing, codegen, analysis APIs |
-  | `rumoca-sim` | simulation/runtime | solver/reporting runner APIs behind features |
+  | `rumoca-sim` | simulation/runtime | solver/reporting/scheduling APIs behind features |
   | `rumoca-codec` | transport-neutral lockstep I/O | `SignalFrame`, codec traits/factories, typed codec config |
 
   These exports stay curated, namespaced, and documented. CLI/bindings may
@@ -230,10 +229,10 @@ default — they rebuild lazily behind dependency fingerprints.
 Rationale: the warm-restore goal is to skip rebuilding front-end and resolved
 dependency inputs on reopen, not to serialize the full downstream pipeline.
 
-### 12. Runtime, Backend, Stepper, And Visualization Layering
+### 12. Runtime, Backend, Simulation Session, And Visualization Layering
 
 ```
-compiler/session → DAE structural → solve-IR lowering → runtime contracts → solver backend → stepper → reporting → visualization
+compiler/session → DAE structural → solve-IR lowering → runtime contracts → solver backend → simulation session → reporting → visualization
 ```
 
 | Rule | Owner | Why |
@@ -243,33 +242,34 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
-| Textual generated artifacts and templates | `rumoca-phase-codegen` | Rendering owns generated C, Rust, CUDA C, MLIR, FMI, and packaging text |
-| Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs; no compiler semantics |
+| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
+| GALEC `.alg` text (recorded exception) | `rumoca-ir-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
+| eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
+| Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
-| Simulation facade/runner | `rumoca-sim` | Composes solvers/reporting/viz behind features |
-| Interactive stepper APIs | separate from runtime contracts | Stepper is one runtime mode, not THE runtime |
+| Simulation facade | `rumoca-sim` | Composes solvers/reporting/viz behind features |
+| Simulation session APIs | separate from runtime contracts | Simulation sessions are the scheduled runtime surface |
 | Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
 | Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |
 | Protocol codecs (FlatBuffers, etc.) | `rumoca-codec-*` | No simulation, no controller, no HTTP, no scene |
 
-Execution adapter crates are not compiler phases. Textual C/Rust/CUDA
-C/MLIR/FMI artifacts are rendered by `rumoca-phase-codegen`; `rumoca-exec-*`
+Execution adapter crates are not compiler phases. `rumoca-exec-*`
 crates wrap tool invocation, ABI adaptation, loading, GPU/accelerator
 integration, packaging, or runtime compilation. Text-only targets stay in
 codegen. Non-codegen phase crates MUST NOT
 depend on target encoder/JIT libraries such as `wasm-encoder`, Cranelift,
 Inkwell, LLVM ORC bindings, CUDA Driver APIs, or NVRTC; backend bytecode,
-native/JIT execution, runtime compilation, and device launch policy belong in
-`rumoca-exec-*` or another backend-facing layer above the IR-lowering phase.
+native/JIT execution, and device launch policy belong in `rumoca-exec-*`, above
+the IR-lowering phase.
 
 Target-language and target-format policy belongs in manifests/templates, not
 Rust control flow. Rust MAY provide generic manifest parsing, template
 rendering, safe path handling, schema validation, and language-neutral feature
 probes over IR data. Rust MUST NOT hard-code target-language capabilities, file
 layouts, emitted language names, or backend feature tables for textual targets
-such as C, Rust, CUDA C, MLIR, FMI, or future custom targets. A textual/codegen
+(C, Rust, CUDA C, MLIR, FMI/eFMI, or future custom targets). A textual/codegen
 target should be addable with `target.toml` plus Jinja templates; required
 capability declarations or unsupported-feature contracts must live in that
 manifest schema and be enforced by generic validation. Unsupported manifest
@@ -279,10 +279,10 @@ gaps without knowing the target language.
 
 JIT targets follow the same layering rule as execution adapters, not textual
 template targets. Cranelift, LLVM ORC/Inkwell, CUDA NVRTC/Driver, and browser
-WebAssembly module compilation are allowed only in backend-facing execution
-crates or host bindings. They consume Solve IR or generated artifacts through a
-stable execution ABI and share the prepared-interpreter equivalence tests used
-by concrete solver backends.
+WebAssembly compilation are allowed only in backend-facing execution crates or
+host bindings. They consume Solve IR or generated artifacts through a stable
+execution ABI and share the prepared-interpreter equivalence tests of concrete
+solver backends.
 
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection
@@ -290,8 +290,7 @@ APIs MUST affect runtime behavior, not only metadata.
 
 ## Dependency Tiers
 
-The workspace crates are organized into six tiers. Dependencies flow strictly
-downward.
+Workspace crates use six tiers. Dependencies flow downward.
 
 ```
 Tier 6 — Binary & bindings: rumoca, bind-python, bind-wasm, contracts
@@ -300,10 +299,6 @@ Tier 4 — Orchestration: rumoca-compile, tool-fmt, tool-lint
 Tier 3 — Phases & evaluation: rumoca-phase-*, rumoca-eval-*
 Tier 2 — IR data: rumoca-ir-*
 Tier 1 — Foundation: rumoca-core
-
-Tier 6 (Binary/Bindings) → Tier 5 (Integration) → Tier 4 (Orchestration) →
-Tier 3 (Phases/Evaluation) → Tier 2 (IR data) → Tier 1 (Foundation).
-Dependencies flow strictly downward.
 ```
 
 Input boundary:
@@ -312,7 +307,7 @@ Input boundary:
   state, and signal mapping only. It MUST NOT depend on concrete adapters or
   native device crates such as `gilrs` or `crossterm`.
 - Concrete adapters depend on `rumoca-input` and translate device events.
-- Facades MAY compose input adapters behind opt-in runner features.
+- Facades MAY compose input adapters behind opt-in scheduling/input features.
 
 Simulation composition:
 

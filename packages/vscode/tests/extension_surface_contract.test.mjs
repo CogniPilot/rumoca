@@ -208,7 +208,7 @@ function inventoryExtensionSurface(source) {
   const scenarioConfigProvider = sliceFrom(
     source,
     "const scenarioEditorProvider: vscode.CustomTextEditorProvider = {",
-    "const currentModelicaEditor = (): vscode.TextEditor | undefined => {",
+    "const simulationDiagnostics = vscode.languages.createDiagnosticCollection('rumoca simulation');",
   );
 
   return {
@@ -367,6 +367,26 @@ test("surface contract: modelica files activate the extension", () => {
   );
 });
 
+test("surface contract: galec (.alg) files activate the extension", () => {
+  const packageJson = readPackageJson();
+
+  assert.ok(
+    Array.isArray(packageJson.activationEvents)
+      && packageJson.activationEvents.includes("onLanguage:galec"),
+    "opening a .alg file should activate the extension so GALEC LSP diagnostics appear",
+  );
+  const galec = (packageJson.contributes?.languages ?? []).find((entry) => entry?.id === "galec");
+  assert.ok(galec, "expected a galec language contribution");
+  assert.ok(
+    (galec.extensions ?? []).includes(".alg"),
+    "galec language should own the .alg extension",
+  );
+  const galecGrammar = (packageJson.contributes?.grammars ?? []).find(
+    (entry) => entry?.language === "galec",
+  );
+  assert.ok(galecGrammar, "expected a galec TextMate grammar for .alg highlighting");
+});
+
 test("surface contract: rumoca-scenario.toml scenario files activate as toml", () => {
   const packageJson = readPackageJson();
   const activationEvents = packageJson.activationEvents ?? [];
@@ -507,7 +527,7 @@ test("surface contract: VS Code has shared scenario GUI command primitives", () 
   const scenarioProviderBlock = sliceFrom(
     source,
     "const scenarioEditorProvider: vscode.CustomTextEditorProvider = {",
-    "const currentModelicaEditor = (): vscode.TextEditor | undefined => {",
+    "const simulationDiagnostics = vscode.languages.createDiagnosticCollection('rumoca simulation');",
   );
   assert.ok(
     scenarioProviderBlock.includes("getScenarioConfigFull(document.uri.toString(), document.getText())"),
@@ -539,6 +559,16 @@ test("surface contract: VS Code has shared scenario GUI command primitives", () 
 test("surface contract: VS Code codegen settings are scenario-owned", () => {
   const source = readExtensionSource();
   const sharedSource = readSharedVisualizationSource();
+  const scenarioProviderBlock = sliceFrom(
+    source,
+    "const scenarioEditorProvider: vscode.CustomTextEditorProvider = {",
+    "const simulationDiagnostics = vscode.languages.createDiagnosticCollection('rumoca simulation');",
+  );
+  const renderCodegenBlock = sliceFrom(
+    source,
+    "const renderConfiguredCodegenScenario = async (",
+    "const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel'",
+  );
 
   assert.equal(
     source.includes("CODEGEN_SETTINGS_STATE_KEY"),
@@ -551,10 +581,14 @@ test("surface contract: VS Code codegen settings are scenario-owned", () => {
     "VS Code should not keep legacy codegen settings workspace state",
   );
   assert.ok(
-    source.includes("rumoca.scenario.getCodegenConfig")
-      && source.includes("rumoca.scenario.setCodegenConfig")
-      && source.includes("rumoca.scenario.setSourceRoots"),
-    "VS Code should load and save codegen scenario settings through scenario commands",
+    scenarioProviderBlock.includes("loadVisualizationShared().applyScenarioConfigEdits")
+      && scenarioProviderBlock.includes("await setScenarioConfig(document.uri.toString(), config, {"),
+    "VS Code should save codegen settings through full scenario config edits",
+  );
+  assert.ok(
+    renderCodegenBlock.includes("const target = trimMaybeString(scenario.target);")
+      && renderCodegenBlock.includes("'rumoca.workspace.renderTarget'"),
+    "VS Code should render codegen scenarios from the scenario-owned target",
   );
   assert.ok(
     source.includes("async function getScenarioConfigFull(")

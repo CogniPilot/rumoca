@@ -7,6 +7,8 @@ at the model it needs.
 
 - `Ball.mo`: bouncing ball with `reinit` event behavior.
 - `Circuit.mo`: small package-style circuit model.
+- `GalecCounter.mo`: fixed-sample discrete model used by the GALEC/eFMI
+  codegen example.
 - `KalmanFilterStepTest.mo`: MSL-backed Kalman filter step test.
 - `NeuralLatentOscillator.mo`: larger latent Neural ODE with learned decoder.
 - `NeuralODEBackprop.mo`: native backpropagation training demonstration.

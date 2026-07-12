@@ -5,7 +5,14 @@ cd "$(dirname "$0")"
 
 ALLOW_UNRESOLVED_FLAGS=""
 case "$(uname -s)" in
-  Linux*)   PLATFORM=x86_64-linux; LIB_EXT=so ;;
+  Linux*)
+    case "$(uname -m)" in
+      x86_64|amd64)   PLATFORM=x86_64-linux ;;
+      arm64|aarch64)  PLATFORM=aarch64-linux ;;
+      *) echo "Unsupported Linux architecture: $(uname -m)"; exit 1 ;;
+    esac
+    LIB_EXT=so
+    ;;
   Darwin*)
     case "$(uname -m)" in
       arm64|aarch64) PLATFORM=aarch64-darwin ;;
@@ -14,195 +21,20 @@ case "$(uname -s)" in
     LIB_EXT=dylib
     ALLOW_UNRESOLVED_FLAGS="-Wl,-undefined,dynamic_lookup"
     ;;
-  MINGW*|MSYS*|CYGWIN*) PLATFORM=x86_64-windows; LIB_EXT=dll ;;
+  MINGW*|MSYS*|CYGWIN*)
+    case "$(uname -m)" in
+      arm64|aarch64) PLATFORM=aarch64-windows ;;
+      *)             PLATFORM=x86_64-windows ;;
+    esac
+    LIB_EXT=dll
+    ;;
   *) echo "Unknown platform"; exit 1 ;;
 esac
 
 mkdir -p binaries/$PLATFORM
-MODEL_BINARY="binaries/$PLATFORM/{{ model_name }}.$LIB_EXT"
-UNRESOLVED_SYMBOLS_FILE="$(mktemp "${TMPDIR:-/tmp}/rumoca-unresolved.XXXXXX")"
-EXTERNAL_LIB_PATHS_FILE="$(mktemp "${TMPDIR:-/tmp}/rumoca-external-libs.XXXXXX")"
-cleanup() {
-  rm -f "$UNRESOLVED_SYMBOLS_FILE" "$EXTERNAL_LIB_PATHS_FILE"
-}
-trap cleanup EXIT INT TERM
+: "${CFLAGS:=-O2}"
+cc -shared -fPIC $CFLAGS -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
 
-set --
-if [ -n "${RUMOCA_EXTERNAL_INCLUDE_DIR:-}" ]; then
-  old_ifs="$IFS"
-  IFS=:
-  for external_include_dir in $RUMOCA_EXTERNAL_INCLUDE_DIR; do
-    [ -n "$external_include_dir" ] || continue
-    if [ ! -d "$external_include_dir" ]; then
-      echo "missing external include directory: $external_include_dir" >&2
-      exit 1
-    fi
-    set -- "$@" "-I$external_include_dir"
-  done
-  IFS="$old_ifs"
-fi
-
-if [ -s resources/externalIncludeDirectories.txt ]; then
-  while IFS= read -r include_dir; do
-    [ -n "$include_dir" ] || continue
-    case "$include_dir" in
-      modelica://*)
-        if [ -z "${RUMOCA_EXTERNAL_INCLUDE_DIR:-}" ]; then
-          echo "external include directories declared in resources/externalDependencies.json; set RUMOCA_EXTERNAL_INCLUDE_DIR for modelica:// include URIs" >&2
-          exit 1
-        fi
-        old_ifs="$IFS"
-        IFS=:
-        for external_include_dir in $RUMOCA_EXTERNAL_INCLUDE_DIR; do
-          [ -n "$external_include_dir" ] || continue
-          if [ ! -d "$external_include_dir" ]; then
-            echo "missing external include directory: $external_include_dir" >&2
-            exit 1
-          fi
-          set -- "$@" "-I$external_include_dir"
-        done
-        IFS="$old_ifs"
-        ;;
-      *)
-        if [ ! -d "$include_dir" ]; then
-          echo "missing external include directory: $include_dir" >&2
-          exit 1
-        fi
-        set -- "$@" "-I$include_dir"
-        ;;
-    esac
-  done <<RUMOCA_EXTERNAL_INCLUDE_DIRECTORIES
-$(awk 'NF && !seen[$0]++' resources/externalIncludeDirectories.txt)
-RUMOCA_EXTERNAL_INCLUDE_DIRECTORIES
-fi
-
-cc -shared -fPIC -O2 $ALLOW_UNRESOLVED_FLAGS "$@" -o "$MODEL_BINARY" sources/{{ model_name }}.c -lm
-nm -u "$MODEL_BINARY" 2>/dev/null | awk '{print $NF}' | sed 's/^_//' | sort -u > "$UNRESOLVED_SYMBOLS_FILE"
-
-external_library_declares_unresolved_symbol() {
-  lib="$1"
-  if [ ! -s resources/externalDependencies.json ]; then
-    return 1
-  fi
-  for symbol in $(awk -v lib="$lib" '
-    /"symbol"[[:space:]]*:/ {
-      symbol=$0
-      sub(/^.*"symbol"[[:space:]]*:[[:space:]]*"/, "", symbol)
-      sub(/".*$/, "", symbol)
-      next
-    }
-    /"libraries"[[:space:]]*:/ && symbol != "" {
-      if ($0 ~ "\"" lib "\"") print symbol
-      symbol=""
-    }
-  ' resources/externalDependencies.json); do
-    if grep -Fxq "$symbol" "$UNRESOLVED_SYMBOLS_FILE"; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-external_library_exports_unresolved_symbol() {
-  lib_file="$1"
-  [ -f "$lib_file" ] || return 1
-  symbols_file="$(mktemp "${TMPDIR:-/tmp}/rumoca-lib-symbols.XXXXXX")"
-  nm -g "$lib_file" 2>/dev/null | awk '{print $NF}' | sed 's/^_//' > "$symbols_file"
-  while IFS= read -r symbol; do
-    [ -n "$symbol" ] || continue
-    if grep -Fxq "$symbol" "$UNRESOLVED_SYMBOLS_FILE"; then
-      rm -f "$symbols_file"
-      return 0
-    fi
-  done < "$symbols_file"
-  rm -f "$symbols_file"
-  return 1
-}
-
-rewrite_darwin_runtime_paths() {
-  case "$PLATFORM" in
-    *darwin) ;;
-    *) return 0 ;;
-  esac
-  command -v install_name_tool >/dev/null 2>&1 || {
-    echo "install_name_tool is required to make Darwin FMU external libraries loader-relative" >&2
-    exit 1
-  }
-  while IFS= read -r external_lib_file; do
-    [ -n "$external_lib_file" ] || continue
-    external_lib_base="$(basename "$external_lib_file")"
-    copied_lib="binaries/$PLATFORM/$external_lib_base"
-    install_name_tool -id "@loader_path/$external_lib_base" "$copied_lib"
-    install_name_tool -change "$external_lib_file" "@loader_path/$external_lib_base" "$MODEL_BINARY" 2>/dev/null || true
-    install_name_tool -change "$external_lib_base" "@loader_path/$external_lib_base" "$MODEL_BINARY" 2>/dev/null || true
-    install_name_tool -change "@rpath/$external_lib_base" "@loader_path/$external_lib_base" "$MODEL_BINARY" 2>/dev/null || true
-  done < "$EXTERNAL_LIB_PATHS_FILE"
-
-  while IFS= read -r source_lib_file; do
-    [ -n "$source_lib_file" ] || continue
-    source_lib="binaries/$PLATFORM/$(basename "$source_lib_file")"
-    while IFS= read -r dependency_lib_file; do
-      [ -n "$dependency_lib_file" ] || continue
-      dependency_base="$(basename "$dependency_lib_file")"
-      install_name_tool -change "$dependency_lib_file" "@loader_path/$dependency_base" "$source_lib" 2>/dev/null || true
-      install_name_tool -change "$dependency_base" "@loader_path/$dependency_base" "$source_lib" 2>/dev/null || true
-      install_name_tool -change "@rpath/$dependency_base" "@loader_path/$dependency_base" "$source_lib" 2>/dev/null || true
-    done < "$EXTERNAL_LIB_PATHS_FILE"
-  done < "$EXTERNAL_LIB_PATHS_FILE"
-}
-
-EXTERNAL_LIBS_NEEDED=0
-if [ -s resources/externalLibraries.txt ]; then
-  while IFS= read -r lib; do
-    [ -n "$lib" ] || continue
-    if [ -z "${RUMOCA_EXTERNAL_LIBRARY_DIR:-}" ]; then
-      if external_library_declares_unresolved_symbol "$lib"; then
-        echo "external runtime libraries declared in resources/externalDependencies.json; set RUMOCA_EXTERNAL_LIBRARY_DIR" >&2
-        exit 1
-      fi
-      continue
-    fi
-    case "$PLATFORM" in
-      *windows) lib_file="$RUMOCA_EXTERNAL_LIBRARY_DIR/$lib.$LIB_EXT" ;;
-      *)        lib_file="$RUMOCA_EXTERNAL_LIBRARY_DIR/lib$lib.$LIB_EXT" ;;
-    esac
-    if external_library_declares_unresolved_symbol "$lib"; then
-      if [ ! -f "$lib_file" ]; then
-        echo "missing external runtime library: $lib_file" >&2
-        exit 1
-      fi
-    elif ! external_library_exports_unresolved_symbol "$lib_file"; then
-      continue
-    fi
-    if [ ! -f "$lib_file" ]; then
-      echo "external runtime libraries declared in resources/externalDependencies.json; set RUMOCA_EXTERNAL_LIBRARY_DIR" >&2
-      exit 1
-    fi
-    set -- "$@" "-L$RUMOCA_EXTERNAL_LIBRARY_DIR" "-l$lib"
-    printf '%s\n' "$lib_file" >> "$EXTERNAL_LIB_PATHS_FILE"
-    EXTERNAL_LIBS_NEEDED=1
-  done <<RUMOCA_EXTERNAL_LIBRARIES
-$(awk 'NF && !seen[$0]++' resources/externalLibraries.txt)
-RUMOCA_EXTERNAL_LIBRARIES
-fi
-
-if [ "$EXTERNAL_LIBS_NEEDED" -eq 1 ]; then
-  case "$PLATFORM" in
-    *darwin) RUNTIME_PATH_FLAGS="-Wl,-rpath,@loader_path" ;;
-    *linux)  RUNTIME_PATH_FLAGS="-Wl,-rpath,\$ORIGIN" ;;
-    *)       RUNTIME_PATH_FLAGS="" ;;
-  esac
-  cc -shared -fPIC -O2 $RUNTIME_PATH_FLAGS "$@" -o "$MODEL_BINARY" sources/{{ model_name }}.c -lm
-  while IFS= read -r external_lib_file; do
-    [ -n "$external_lib_file" ] || continue
-    cp "$external_lib_file" "binaries/$PLATFORM/$(basename "$external_lib_file")"
-  done < "$EXTERNAL_LIB_PATHS_FILE"
-  rewrite_darwin_runtime_paths
-fi
-
-if [ -d resources ]; then
-  zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/ resources/
-else
-  zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
-fi
+rm -f {{ model_name }}.fmu
+zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
 echo "Created {{ model_name }}.fmu"

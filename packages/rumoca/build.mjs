@@ -126,6 +126,7 @@ const webDir = path.join(repoRoot, "packages", "rumoca-web");
 const runtimeFiles = [
   "rumoca_runtime.js",
   "rumoca_diffsol.js",
+  "rumoca_galec.js",
   "rumoca_interactive.js",
   "modelica_language.js",
   "rumoca_worker.js",
@@ -184,6 +185,38 @@ const buildDiffsolAddon = async (pkgDir, args) => {
     "rumoca_bind_wasm_diffsol.js",
     "rumoca_bind_wasm_diffsol_bg.wasm",
     "rumoca_bind_wasm_diffsol.d.ts",
+  ]) {
+    await fs.copyFile(path.join(tmpDir, file), path.join(pkgDir, file));
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true });
+};
+
+// Build the GALEC / eFMI codegen addon and ship it inside the same package.
+// It is a SEPARATE wasm module carrying the GALEC → eFMI Algorithm Code (.alg)
+// + GALEC-derived embedded C projection, imported lazily by rumoca_galec.js
+// only when a user selects a GALEC codegen target — so the main module stays
+// free of the eFMI codegen surface. Only meaningful for `full-web` (the
+// package the editor / docs widgets consume for codegen); `core` omits it.
+const buildGalecAddon = async (pkgDir, args) => {
+  const tmpSubdir = ".galec-build";
+  const tmpDir = path.join(pkgRoot, tmpSubdir);
+  const addonArgs = [
+    "build",
+    "crates/rumoca-bind-wasm-galec",
+    "--target",
+    "web",
+    "--out-dir",
+    pkgOutDirArg(tmpSubdir),
+    args.profile === "dev" ? "--dev" : "--release",
+  ];
+  if (!args.optimize) {
+    addonArgs.push("--no-opt");
+  }
+  run("wasm-pack", addonArgs);
+  for (const file of [
+    "rumoca_bind_wasm_galec.js",
+    "rumoca_bind_wasm_galec_bg.wasm",
+    "rumoca_bind_wasm_galec.d.ts",
   ]) {
     await fs.copyFile(path.join(tmpDir, file), path.join(pkgDir, file));
   }
@@ -270,6 +303,7 @@ const main = async () => {
     // diffsol addon; `core` does not (no lowering export to feed it).
     if (args.variant === "full-web") {
       await buildDiffsolAddon(pkgDir, args);
+      await buildGalecAddon(pkgDir, args);
     }
     await fs.writeFile(
       path.join(pkgDir, "rumoca_package_meta.json"),

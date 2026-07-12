@@ -20,8 +20,8 @@ get slow.
 | File | Role |
 |---|---|
 | `FixedWingSIL.mo` | 6-DOF aero plant, `FixedWingFBW` controller, and `FixedWing` wrapper |
-| `../../../target/cmm/CMM-v0.0.2/LieGroup/package.mo` | SO(3) attitude utilities |
-| `../../../target/cmm/CMM-v0.0.2/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
+| `../../../target/cmm/CMM-a642c381/LieGroups/package.mo` | SO(3) attitude utilities |
+| `../../../target/cmm/CMM-a642c381/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
 | `rumoca-scenario.toml` | Config — `FixedWing` closed-loop Modelica model |
 | `fixedwing_scene.js` | Three.js scene — desert environment + rigged airplane |
 | `../../assets/models/airplane.glb` | Aircraft model with riggable control-surface pivots |
@@ -75,7 +75,7 @@ keyboard drives the aircraft when the viewer page has focus.
 ```
 input engine          rumoca sim                          Browser
   │                       │                                  │
-  │── sticks → stepper ─► │── step FixedWing (dt=10ms)
+  │── sticks → session ─► │── step FixedWing (dt=10ms)
   │   inputs              │   (plant + FBW controller in Modelica)
   │                       │                                  │
   │                       │── viewer JSON ─────── WS ──────► │

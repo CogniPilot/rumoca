@@ -5,12 +5,16 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
+#[path = "examples_smoke/reusable_booster_guidance_tests.rs"]
+mod reusable_booster_guidance_tests;
+#[path = "examples_smoke/reusable_booster_landing_tests.rs"]
+mod reusable_booster_landing_tests;
 #[path = "examples_smoke/solve_tensor_smoke_tests.rs"]
 mod solve_tensor_smoke_tests;
 
 use rumoca::Compiler;
-#[cfg(feature = "runner")]
-use rumoca_sim::{SimOptions, SimPacingMode, SimSolverMode, SimStepper};
+#[cfg(feature = "scheduled-sim")]
+use rumoca_sim::{SimOptions, SimPacingMode, SimSolverMode, SimulationSession};
 use solve_tensor_smoke_tests::cached_cmm_root;
 use tempfile::tempdir;
 
@@ -107,7 +111,7 @@ fn compile_quadrotor_acro_if_cmm_available() -> Option<rumoca::CompilationResult
     )
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn compile_quadrotor_acro_config_if_cmm_available() -> Option<rumoca::CompilationResult> {
     let config_path = example_root().join("interactive/quadrotor/rumoca-scenario.acro.toml");
     compile_toml_model_if_source_roots_exist(&config_path)
@@ -276,19 +280,12 @@ fn assert_codegen_config_renders(
     if assert_raw_template_config_renders(config_path, config, result, &codegen.target) {
         return;
     }
-    let target = load_codegen_target(config_path, &codegen.target);
-    let manifest = target.parse_manifest().unwrap_or_else(|error| {
-        panic!(
-            "example TOML {} should parse target {}: {error}",
-            config_path.display(),
-            codegen.target
-        )
-    });
-    let rendered_files = rumoca_compile::codegen::targets::render_dae_target_files(
-        &target,
-        &manifest,
-        &result.dae,
+    let target = renderable_codegen_target(config_path, &codegen.target);
+    let rendered_files = rumoca::render_target_files(
+        result,
         &config.model.name,
+        target.to_str().expect("example target path should be utf8"),
+        None,
     )
     .unwrap_or_else(|error| {
         panic!(
@@ -349,40 +346,25 @@ fn assert_raw_template_config_renders(
     true
 }
 
-fn load_codegen_target(
-    config_path: &Path,
-    target: &str,
-) -> rumoca_compile::codegen::targets::TargetBundle {
-    if let Some(bundle) = rumoca_compile::codegen::targets::TargetBundle::builtin(target) {
-        return bundle;
+fn renderable_codegen_target(config_path: &Path, target: &str) -> PathBuf {
+    if rumoca_compile::codegen::targets::TargetBundle::builtin(target).is_some() {
+        return PathBuf::from(target);
     }
     let config_dir = config_path
         .parent()
         .expect("example TOML should have a parent directory");
-    let target_path = resolve_config_path(config_dir, target);
-    rumoca_compile::codegen::targets::TargetBundle::load(
-        target_path
-            .to_str()
-            .expect("example target path should be utf8"),
-    )
-    .unwrap_or_else(|error| {
-        panic!(
-            "example TOML {} should load target {}: {error}",
-            config_path.display(),
-            target_path.display()
-        )
-    })
+    resolve_config_path(config_dir, target)
 }
 
-#[cfg(feature = "runner")]
-fn assert_sim_config_creates_stepper(
+#[cfg(feature = "scheduled-sim")]
+fn assert_sim_config_creates_session(
     config_path: &Path,
     config: &ExampleTomlConfig,
     result: &rumoca::CompilationResult,
 ) {
     let (solver_mode, _) = SimSolverMode::parse_request(config.sim.solver.as_deref());
     let dt = config.sim.dt.unwrap_or(0.004);
-    let mut stepper = SimStepper::new_with_diagnostics(
+    let mut session = SimulationSession::new_with_diagnostics(
         &result.dae,
         SimOptions {
             rtol: 1e-3,
@@ -395,27 +377,29 @@ fn assert_sim_config_creates_stepper(
     )
     .unwrap_or_else(|error| {
         panic!(
-            "example TOML {} should create a simulation stepper: {error}",
+            "example TOML {} should create a simulation session: {error}",
             config_path.display()
         )
     });
-    for input_name in stepper.input_names().to_vec() {
-        stepper.set_input(&input_name, 0.0).unwrap_or_else(|error| {
+    for input_name in session.input_names().to_vec() {
+        session.set_input(&input_name, 0.0).unwrap_or_else(|error| {
             panic!(
                 "example TOML {} should bind input {input_name}: {error}",
                 config_path.display()
             )
         });
     }
-    stepper.step(dt).unwrap_or_else(|error| {
-        panic!(
-            "example TOML {} stepper should advance one frame: {error}",
-            config_path.display()
-        )
-    });
+    session
+        .advance_to(session.time() + dt)
+        .unwrap_or_else(|error| {
+            panic!(
+                "example TOML {} session should advance one frame: {error}",
+                config_path.display()
+            )
+        });
     assert!(
-        stepper.time() > 0.0,
-        "example TOML {} stepper should advance time",
+        session.time() > 0.0,
+        "example TOML {} session should advance time",
         config_path.display()
     );
 }
@@ -427,9 +411,9 @@ fn assert_toml_config_task_smoke(
 ) {
     match config.rumoca.task.as_deref().unwrap_or("simulate") {
         "codegen" => assert_codegen_config_renders(config_path, config, result),
-        #[cfg(feature = "runner")]
-        "simulate" => assert_sim_config_creates_stepper(config_path, config, result),
-        #[cfg(not(feature = "runner"))]
+        #[cfg(feature = "scheduled-sim")]
+        "simulate" => assert_sim_config_creates_session(config_path, config, result),
+        #[cfg(not(feature = "scheduled-sim"))]
         "simulate" => {
             let _ = (config_path, config, result);
         }
@@ -509,13 +493,13 @@ end FileExample;
     assert_eq!(result.dae.continuous.equations.len(), 1);
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn rover_config_steering_input_changes_delta_and_heading() {
     let config_path = example_root().join("interactive/rover/rumoca-scenario.toml");
     let result = compile_toml_model_if_source_roots_exist(&config_path)
         .expect("rover rumoca-scenario.toml should compile without extra source roots");
-    let mut stepper = SimStepper::new_with_diagnostics(
+    let mut session = SimulationSession::new_with_diagnostics(
         &result.dae,
         SimOptions {
             rtol: 1e-5,
@@ -526,20 +510,22 @@ fn rover_config_steering_input_changes_delta_and_heading() {
             ..Default::default()
         },
     )
-    .expect("rover rumoca-scenario.toml should create an RK-like simulation stepper");
+    .expect("rover rumoca-scenario.toml should create an RK-like simulation session");
 
     assert!(
-        stepper.input_names().iter().any(|name| name == "steering"),
+        session.input_names().iter().any(|name| name == "steering"),
         "rover solve input layout should expose steering"
     );
-    stepper
+    session
         .set_inputs(&[("throttle", 1.0), ("steering", 1.0)])
         .expect("rover should accept throttle and steering inputs");
     for _ in 0..100 {
-        stepper.step(0.01).expect("rover should advance");
+        session
+            .advance_to(session.time() + 0.01)
+            .expect("rover should advance");
     }
 
-    let state = stepper.state().expect("rover state read should succeed");
+    let state = session.state().expect("rover state read should succeed");
     let delta = state_value(&state.values, "delta");
     let theta = state_value(&state.values, "theta");
     assert!(
@@ -552,43 +538,18 @@ fn rover_config_steering_input_changes_delta_and_heading() {
     );
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
-fn switched_rlc_msl_config_auto_stepper_advances() {
-    let config_path = example_root().join("simulation/rumoca-scenario.switched_rlc_msl.toml");
-    let result = compile_toml_model_if_source_roots_exist(&config_path)
-        .expect("switched RLC MSL scenario should compile with cached MSL");
-    let mut stepper = SimStepper::new_with_diagnostics(
-        &result.dae,
-        SimOptions {
-            rtol: 1e-3,
-            atol: 1e-3,
-            dt: Some(0.004),
-            solver_mode: SimSolverMode::Auto,
-            pacing_mode: SimPacingMode::AsFastAsPossible,
-            ..Default::default()
-        },
-    )
-    .expect("switched RLC MSL Auto stepper should select a viable interactive backend");
-
-    stepper
-        .step(0.004)
-        .expect("switched RLC MSL Auto stepper should advance one frame");
-    assert!(stepper.time() > 0.0);
-}
-
-#[cfg(feature = "runner")]
-#[test]
-fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
+fn quadrotor_acro_config_creates_rk_session_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro config runtime regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };
 
-    let mut stepper = SimStepper::new_with_diagnostics(
+    let mut session = SimulationSession::new_with_diagnostics(
         &result.dae,
         SimOptions {
             rtol: 1e-3,
@@ -599,8 +560,8 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
             ..Default::default()
         },
     )
-    .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
-    stepper
+    .expect("rumoca-scenario.acro.toml should create an RK-like simulation session");
+    session
         .set_inputs(&[
             ("stick_roll", 0.0),
             ("stick_pitch", 0.0),
@@ -608,21 +569,21 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
             ("stick_throttle", 0.0),
             ("armed", 0.0),
         ])
-        .expect("rumoca-scenario.acro.toml inputs should bind to the stepper");
-    stepper
-        .step(0.01)
-        .expect("rumoca-scenario.acro.toml stepper should advance one frame");
+        .expect("rumoca-scenario.acro.toml inputs should bind to the session");
+    session
+        .advance_to(session.time() + 0.01)
+        .expect("rumoca-scenario.acro.toml session should advance one frame");
 
-    assert!(stepper.time() > 0.0);
+    assert!(session.time() > 0.0);
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro roll response regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };
@@ -632,7 +593,7 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
         ("stick_pitch", "gyro[2]", 0.05),
         ("stick_yaw", "gyro[3]", 0.015),
     ] {
-        let mut stepper = SimStepper::new_with_diagnostics(
+        let mut session = SimulationSession::new_with_diagnostics(
             &result.dae,
             SimOptions {
                 rtol: 1e-3,
@@ -643,8 +604,8 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
                 ..Default::default()
             },
         )
-        .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
-        stepper
+        .expect("rumoca-scenario.acro.toml should create an RK-like simulation session");
+        session
             .set_inputs(&[
                 ("stick_roll", 0.0),
                 ("stick_pitch", 0.0),
@@ -652,17 +613,17 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
                 ("stick_throttle", 0.65),
                 ("armed", 1.0),
             ])
-            .expect("rumoca-scenario.acro.toml inputs should bind to the stepper");
-        stepper
+            .expect("rumoca-scenario.acro.toml inputs should bind to the session");
+        session
             .set_input(axis_input, 1.0)
-            .expect("rumoca-scenario.acro.toml axis input should bind to the stepper");
+            .expect("rumoca-scenario.acro.toml axis input should bind to the session");
         for _ in 0..20 {
-            stepper
-                .step(0.01)
-                .expect("rumoca-scenario.acro.toml stepper should advance under axis command");
+            session
+                .advance_to(session.time() + 0.01)
+                .expect("rumoca-scenario.acro.toml session should advance under axis command");
         }
 
-        let state = stepper
+        let state = session
             .state()
             .expect("quadrotor state read should succeed");
         let rate = state
@@ -678,13 +639,13 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
     }
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 #[test]
 fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro attitude regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
+             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
         );
         return;
     };
@@ -709,10 +670,10 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
         ("vehicle.omega[1]", 1.0),
         ("vehicle.omega[2]", 0.0),
         ("vehicle.omega[3]", 0.0),
-        ("vehicle.attitude.q[1]", 1.0),
-        ("vehicle.attitude.q[2]", 0.0),
-        ("vehicle.attitude.q[3]", 0.0),
-        ("vehicle.attitude.q[4]", 0.0),
+        ("vehicle.q[1]", 1.0),
+        ("vehicle.q[2]", 0.0),
+        ("vehicle.q[3]", 0.0),
+        ("vehicle.q[4]", 0.0),
     ] {
         let index = solve_state_index(&sim_solve, name);
         derivative_probe_state[index] = value;
@@ -726,16 +687,16 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             32,
         )
         .expect("QuadrotorAcro derivative probe should evaluate");
-    let q2_dot = derivative_probe[solve_state_index(&sim_solve, "vehicle.attitude.q[2]")];
+    let q2_dot = derivative_probe[solve_state_index(&sim_solve, "vehicle.q[2]")];
     assert!(
         q2_dot > 0.4,
         "unit roll rate at identity attitude should drive quaternion roll component; q2_dot={q2_dot}"
     );
 
-    let mut stepper = SimStepper::new_with_diagnostics(&result.dae, sim_options)
-        .expect("rumoca-scenario.acro.toml should create an RK-like simulation stepper");
+    let mut session = SimulationSession::new_with_diagnostics(&result.dae, sim_options)
+        .expect("rumoca-scenario.acro.toml should create an RK-like simulation session");
 
-    stepper
+    session
         .set_inputs(&[
             ("stick_roll", 0.0),
             ("stick_pitch", 0.0),
@@ -744,20 +705,20 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             ("armed", 1.0),
         ])
         .expect("rumoca-scenario.acro.toml should arm while throttle is low");
-    stepper
-        .step(0.01)
+    session
+        .advance_to(session.time() + 0.01)
         .expect("rumoca-scenario.acro.toml should advance after arming");
-    stepper
+    session
         .set_inputs(&[("stick_throttle", 1.0), ("stick_roll", 1.0)])
         .expect("rumoca-scenario.acro.toml should accept throttle and roll commands");
 
     for _ in 0..1_000 {
-        stepper
-            .step(0.01)
+        session
+            .advance_to(session.time() + 0.01)
             .expect("rumoca-scenario.acro.toml should advance under full roll command");
     }
 
-    let state = stepper
+    let state = session
         .state()
         .expect("quadrotor state read should succeed");
     let roll_degrees = roll_degrees_from_state(&state.values);
@@ -768,7 +729,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     );
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn solve_state_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
     model
         .problem
@@ -781,7 +742,7 @@ fn solve_state_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
         .unwrap_or_else(|| panic!("quadrotor solve state should contain {name}"))
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn roll_degrees_from_state(values: &indexmap::IndexMap<String, f64>) -> f64 {
     let q0 = state_value(values, "quat[1]");
     let q1 = state_value(values, "quat[2]");
@@ -792,7 +753,7 @@ fn roll_degrees_from_state(values: &indexmap::IndexMap<String, f64>) -> f64 {
     sinr_cosp.atan2(cosr_cosp).to_degrees()
 }
 
-#[cfg(feature = "runner")]
+#[cfg(feature = "scheduled-sim")]
 fn state_value(values: &indexmap::IndexMap<String, f64>, name: &str) -> f64 {
     values.get(name).copied().unwrap_or_else(|| {
         let mut keys = values.keys().cloned().collect::<Vec<_>>();

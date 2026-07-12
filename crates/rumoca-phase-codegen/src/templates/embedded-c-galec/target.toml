@@ -1,0 +1,55 @@
+version = 1
+ir = "dae"
+name = "embedded-c-galec"
+# Conformance (SPEC_0034 GAL-024, two-track rule): this target is the
+# non-eFMI track — a GALEC-derived embedded C export that may exist
+# independently of any container. It is NOT an eFMI Production Code
+# container: no LogicalData/BlockMethods manifest mapping, no checksummed
+# ManifestReference, no co-emitted Algorithm Code container. The eFMI
+# Algorithm Code rung is the separate `galec` target.
+description = "GALEC-derived embedded C export (block-state struct + startup/recalibrate/dostep over the projected GALEC block) for fixed-sample discrete models — NOT an eFMI Production Code container (SPEC_0034 GAL-024)"
+execution_mode = "compiled"
+deployment_class = "cpu"
+readiness_level = 2
+completion_message = """GALEC-derived embedded C sources compiled to: {{ out_dir }}
+  {{ model_name }}.h   block-state struct + startup/recalibrate/dostep prototypes
+  {{ model_name }}.c   method definitions printed from the projected GALEC block
+This is a GALEC-derived embedded C export, NOT an eFMI Production Code
+container (SPEC_0034 GAL-024): no eFMU manifest mapping is emitted.
+Compile: cc -Wall -Werror -c {{ out_dir }}/{{ model_name }}.c"""
+
+# Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
+# the galec target: both consume the same DAE → GALEC projection, so
+# admissibility is identical. The gates run before any rendering; the
+# projection re-checks admissibility on the untouched DAE afterwards
+# (GAL-004, additive) and owns the projection-scope wording (GAL-025).
+[capabilities]
+continuous_states = false
+residual_equations = false
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+# D2/GAL-008 split: these templates own the C FILE LAYOUT only (includes,
+# guards, struct/function skeletons, the fixed builtin-helper prelude);
+# every C expression/statement and identifier is printed by the typed Rust
+# printer in rumoca-galec-codegen (c_mangle/c_print) and arrives pre-printed
+# in the template context (`variables[*].c_name`, `methods.*.c_lines`).
+# Templates stay thin — iteration and interpolation, no C syntax logic.
+[[files]]
+path = "{{ model_name }}.h"
+template = "model.h.jinja"
+
+[[files]]
+path = "{{ model_name }}.c"
+template = "model.c.jinja"

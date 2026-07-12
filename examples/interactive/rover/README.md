@@ -9,7 +9,7 @@ directly.
 | File | Role |
 |---|---|
 | `Rover.mo` | Plant model (kinematic bicycle; 5 states: x, y, theta, v, delta) |
-| `rumoca-scenario.toml` | Config: locals, input bindings, direct `[signals.stepper_inputs]` |
+| `rumoca-scenario.toml` | Config: locals, input bindings, direct `[signals.model_inputs]` |
 | `rover_scene.js` | Three.js desert scene: buggy GLB model + chase camera |
 
 ## Controls
@@ -64,16 +64,16 @@ This example omits `[external_interface]`, `[schema]`, `[receive]`, and
 and FB codec compilation.
 
 Model inputs (`throttle`, `steering`) are wired straight from local
-state via `[signals.stepper_inputs]`:
+state via `[signals.model_inputs]`:
 
 ```toml
-[signals.stepper_inputs]
+[signals.model_inputs]
 throttle = "local:throttle"
 steering = "local:steering"
 ```
 
 The input engine writes those locals from the gamepad axes; the sim
-loop applies them to the stepper each frame. No external process.
+loop applies them to the session each frame. No external process.
 
 ## Scene-visualization helpers
 

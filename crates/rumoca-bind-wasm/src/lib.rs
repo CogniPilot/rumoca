@@ -13,9 +13,9 @@ mod gpu_api;
 mod scenario_config_api;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
-pub mod source_root_api;
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
-mod stepper_api;
+mod simulation_session_api;
+pub mod source_root_api;
 mod workspace_config_api;
 
 use std::{
@@ -70,6 +70,8 @@ use crate::simulation_api::{
     model_parameter_metadata_with_workspace_sources_impl, simulate_model_impl,
     simulate_model_with_source_roots_impl, simulate_model_with_workspace_sources_impl,
 };
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+pub use crate::simulation_session_api::WasmSimulationSession;
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots,
     compile_check_with_source_roots_with_options, compile_with_source_roots,
@@ -79,8 +81,6 @@ pub use crate::source_root_api::{
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_workspace_sources,
 };
-#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
-pub use crate::stepper_api::WasmStepper;
 pub use crate::workspace_config_api::workspace_effective_source_roots;
 
 fn checked_vec_with_capacity<T>(capacity: usize, kind: &'static str) -> Result<Vec<T>, JsValue> {
@@ -612,30 +612,11 @@ fn singleton_session_lock() -> Result<MutexGuard<'static, Option<Session>>, JsVa
     }
 }
 
+/// Qualify a bare model name against the single in-memory `input.mo` document
+/// the WASM bindings load, delegating to the shared [`Session::qualify_model_name`]
+/// rule so the `within`-qualification logic lives in one place.
 pub(crate) fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
-    if model_name.contains('.') {
-        return model_name.to_string();
-    }
-
-    let Some(doc) = session.get_document("input.mo") else {
-        return model_name.to_string();
-    };
-    let Some(parsed) = doc.parsed().or(doc.recovered()) else {
-        return model_name.to_string();
-    };
-    if !parsed.classes.contains_key(model_name) {
-        return model_name.to_string();
-    }
-
-    let within = parsed
-        .within
-        .as_ref()
-        .map(ToString::to_string)
-        .filter(|prefix| !prefix.is_empty());
-    within.map_or_else(
-        || model_name.to_string(),
-        |prefix| format!("{prefix}.{model_name}"),
-    )
+    session.qualify_model_name("input.mo", model_name)
 }
 
 fn compile_source_in_session(

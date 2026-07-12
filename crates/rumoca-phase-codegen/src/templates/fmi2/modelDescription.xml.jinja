@@ -1,3 +1,4 @@
+{#- rumoca-render-context: fmi-model-description -#}
 {#- FMI 2.0 Model Exchange modelDescription.xml template. -#}
 {#- Generates FMI metadata from DAE metadata and Solve IR event rows. -#}
 {#- Reference: FMI 2.0.4 specification, §§2.2, 3.2 -#}
@@ -56,15 +57,13 @@
 {%- macro xml_escape(s) -%}
 {{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
 {%- endmacro -%}
+{%- macro real_attr(attr_name, expr, start_index) -%}
+{% if expr is not none %} {{ attr_name }}="{% if start_index is not none %}{{ render_expr_at_index(expr, start_index, cfg) }}{% else %}{{ render_expr(expr, cfg) }}{% endif %}"{% endif %}
+{%- endmacro -%}
 {#- Macro: emit a <ScalarVariable> element -#}
-{%- macro scalar_var(name, vr, causality, variability, var, initial) -%}
-{%- set start_binding_rhs = initial_rhs_for_var(dae, name, cfg) -%}
-{%- if not start_binding_rhs -%}
-{%- set start_binding_rhs = alg_rhs_for_var_with_dae(name, dae, cfg) -%}
-{%- endif -%}
-{%- set has_symbolic_start_binding = start_binding_rhs and not ("WARNING:" in start_binding_rhs) -%}
+{%- macro scalar_var(name, vr, causality, variability, var, initial, start_index) -%}
     <ScalarVariable name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}>
-      <Real{% if var.start is not none and expr_has_var_ref(var.start) != "yes" and not has_symbolic_start_binding %} start="{{ render_xml_attr_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_xml_attr_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_xml_attr_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_xml_attr_expr(var.max, cfg) }}"{% endif %}/>
+      <Real{{ real_attr("start", var.start, start_index) }}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{{ real_attr("nominal", var.nominal, start_index) }}{{ real_attr("min", var.min, start_index) }}{{ real_attr("max", var.max, start_index) }}/>
     </ScalarVariable>
 {%- endmacro -%}
 {#- Macro: emit ScalarVariable for a derivative -#}
@@ -99,11 +98,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "exact", i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "local", "continuous", var, "exact") }}
+{{ scalar_var(name, ns_vr.offset, "local", "continuous", var, "exact", none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -130,11 +129,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "calculated") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "calculated", i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "local", "continuous", var, "calculated") }}
+{{ scalar_var(name, ns_vr.offset, "local", "continuous", var, "calculated", none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -144,11 +143,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "input", "continuous", var, none) }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "input", "continuous", var, none, i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "input", "continuous", var, none) }}
+{{ scalar_var(name, ns_vr.offset, "input", "continuous", var, none, none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -158,11 +157,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "output", "continuous", var, "calculated") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "output", "continuous", var, "calculated", i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "output", "continuous", var, "calculated") }}
+{{ scalar_var(name, ns_vr.offset, "output", "continuous", var, "calculated", none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -172,11 +171,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "parameter", "fixed", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "parameter", "fixed", var, "exact", i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "parameter", "fixed", var, "exact") }}
+{{ scalar_var(name, ns_vr.offset, "parameter", "fixed", var, "exact", none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -186,11 +185,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact", i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(name, ns_vr.offset, "local", "discrete", var, "exact", none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -200,11 +199,11 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact", i + 1) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
-{{ scalar_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(name, ns_vr.offset, "local", "discrete", var, "exact", none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}

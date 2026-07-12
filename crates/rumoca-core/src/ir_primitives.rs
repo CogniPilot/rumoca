@@ -12,6 +12,9 @@ use crate::{Subscript, split_path_with_indices};
 mod component_refs_and_functions;
 pub use component_refs_and_functions::*;
 
+mod generated_names;
+pub use generated_names::*;
+
 /// A unique identifier for a definition (class, component, etc.).
 ///
 /// DefIds are assigned during semantic analysis to enable efficient

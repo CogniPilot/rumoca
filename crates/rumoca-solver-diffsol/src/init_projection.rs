@@ -50,7 +50,6 @@ pub(crate) fn initialize_state_runtime_values(
         model,
         opts,
         runtime,
-        equilibrium_model,
         current_y,
         params,
         current_t: t_start,
@@ -134,7 +133,6 @@ struct StateInitialEventUpdates<'a> {
     model: &'a solve::SolveModel,
     opts: &'a SimOptions,
     runtime: &'a SolveRuntime,
-    equilibrium_model: &'a OdeModel,
     current_y: &'a mut [f64],
     params: &'a mut [f64],
     current_t: f64,
@@ -150,7 +148,6 @@ fn apply_state_initial_event_updates(
         model,
         opts,
         runtime,
-        equilibrium_model,
         current_y,
         params,
         current_t,
@@ -171,16 +168,7 @@ fn apply_state_initial_event_updates(
             dynamic_event,
             apply_without_initial_event: true,
         },
-        |y, p, t| {
-            project_algebraics_and_detect_changes(
-                equilibrium_model,
-                y,
-                p,
-                t,
-                equilibrium_model.state_count_for_projection(),
-                tol,
-            )
-        },
+        |y, p, t| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol),
     )?;
     commit_pre_params_after_event(model, current_y, params, tol);
     Ok(outcome)
@@ -325,7 +313,6 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
     ) -> Result<(), Self::Error> {
         apply_event_updates_with_event_pre(EventUpdateInput {
             runtime: self.runtime,
-            ode_model: self.equilibrium_model,
             y: self.y,
             p: self.params,
             t: right_t,

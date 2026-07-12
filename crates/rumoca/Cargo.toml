@@ -12,17 +12,39 @@ default-run = "rumoca"
 [[bin]]
 name = "rumoca"
 path = "src/main.rs"
+required-features = [
+    "scheduled-sim",
+    "scenario-config",
+    "input-keyboard",
+    "transport-udp",
+    "transport-zenoh",
+    "viewer-web",
+    "process-control",
+]
 
 [features]
-default = ["runner"]
-# Pulls in sim's runner module: transports, codecs, input devices,
-# signal-hook, and viz-web so scenario TOMLs with external_web viewers work
-# in the default CLI. Also brings the binary-only `mimalloc` global allocator
-# and `zip` (FMU export, used only in the runner-gated `fmu` module) — both
-# compile C and would otherwise force C cross-compilation onto pure-Rust
-# library consumers (the Python binding / wasm). Minimal batch-only builds can
-# opt out with `--no-default-features`.
-runner = ["rumoca-sim/runner", "dep:mimalloc", "dep:zip"]
+default = [
+    "scheduled-sim",
+    "scenario-config",
+    "input-keyboard",
+    "input-gamepad",
+    "transport-udp",
+    "transport-zenoh",
+    "viewer-web",
+    "process-control",
+    "native-allocator",
+    "fmu-packaging",
+]
+scheduled-sim = ["rumoca-sim/scheduled-sim"]
+scenario-config = ["rumoca-sim/scenario-config"]
+input-keyboard = ["rumoca-sim/input-keyboard"]
+input-gamepad = ["rumoca-sim/input-gamepad"]
+transport-udp = ["rumoca-sim/transport-udp"]
+transport-zenoh = ["rumoca-sim/transport-zenoh"]
+viewer-web = ["rumoca-sim/viewer-web"]
+process-control = ["rumoca-sim/process-control"]
+native-allocator = ["dep:mimalloc"]
+fmu-packaging = ["dep:zip"]
 examples-smoke-tests = []
 msl-sim-tests = []
 template-runtime-tests = []
@@ -31,13 +53,9 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 [dependencies]
 # Internal crates: CLI consumes the high-level facades only.
 # rumoca-compile wraps all compilation phases.
-# rumoca-sim wraps simulation primitives, solvers, and (under the
-# `runner` feature here) the interactive simulation runner. The HTML `report`
-# renderer is a CLI concern (used only by the runner-gated `cli` module) and is
-# wasm-incompatible (it pulls the non-wasm `web` module), so it is NOT enabled
-# unconditionally — it arrives transitively through `rumoca-sim/runner` when the
-# `runner` feature below is on. Library consumers (the Python binding, wasm
-# builds) thus get only the batch simulation surface.
+# rumoca-sim wraps simulation primitives, solvers, and opt-in axes for scenario
+# config, scheduling, transports, input devices, viewer web UI, and reports.
+# Library consumers select only the axes they need.
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
@@ -47,7 +65,7 @@ rumoca-tool-lint = { workspace = true }
 
 # External dependencies
 anyhow = { workspace = true }
-# Binary-only global allocator; gated behind `runner` (see [features]).
+# Binary-only global allocator; gated behind `native-allocator` (see [features]).
 mimalloc = { workspace = true, optional = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
@@ -61,8 +79,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 walkdir = { workspace = true }
-# Used only by the runner-gated `fmu` module (FMU export = zip archive); pulls
-# C compression backends (bzip2/lzma/zstd), so gate behind `runner`.
+# Used only by FMU packaging (FMU export = zip archive); pulls C compression
+# backends (bzip2/lzma/zstd), so gate behind `fmu-packaging`.
 zip = { workspace = true, optional = true }
 # Reset SIGPIPE to its default disposition so piping into `head` exits cleanly
 # instead of panicking on a broken-pipe write. Encapsulates the one unsafe libc
@@ -70,8 +88,8 @@ zip = { workspace = true, optional = true }
 sigpipe = { workspace = true }
 
 [[example]]
-name = "stepper_demo"
-path = "examples/stepper_demo.rs"
+name = "simulation_session_demo"
+path = "examples/simulation_session_demo.rs"
 
 [[example]]
 name = "quadrotor_sil"
@@ -112,6 +130,21 @@ name = "msl_sim_regression"
 path = "tests/msl_sim_regression.rs"
 required-features = ["msl-sim-tests"]
 
+# Exercises the FMU packaging module end-to-end and unzips the produced `.efmu`
+# via the optional `zip` dependency, so it
+# must not compile under --no-default-features.
+[[test]]
+name = "cli_target_galec"
+path = "tests/cli_target_galec.rs"
+required-features = ["fmu-packaging"]
+
+# Same FMU packaging surface as cli_target_galec, for the
+# two-representation (AlgorithmCode + ProductionCode) container.
+[[test]]
+name = "cli_target_galec_production"
+path = "tests/cli_target_galec_production.rs"
+required-features = ["fmu-packaging"]
+
 [dev-dependencies]
 crossterm = "0.28"
 indexmap = { workspace = true }
@@ -128,6 +161,10 @@ rayon = { workspace = true }
 ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
+# GALEC target CI (tests only): the eFMI id/checksum primitives
+# (`Sha1Hex`/`ManifestId`/`UtcTimestamp`) for recomputing the SHA-1 web and
+# checking id/timestamp discipline over the exact on-disk container bytes.
+rumoca-galec-codegen = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
@@ -139,6 +176,11 @@ rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
+# GALEC target CI (tests only): recompute the SHA-1 checksum web and check
+# manifest.xml well-formedness / attribute order over the exact on-disk bytes.
+# xmllint XSD validation runs the external `xmllint`; the SHA-1 primitive comes
+# through the `rumoca-compile` facade (rumoca-galec-codegen).
+quick-xml = { workspace = true }
 
 [lints]
 workspace = true

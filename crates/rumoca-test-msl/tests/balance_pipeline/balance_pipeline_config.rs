@@ -14,9 +14,49 @@
 use super::*;
 use std::sync::OnceLock;
 
+/// The `rumoca-test-msl` crate directory, resolved at RUNTIME.
+///
+/// Every path the harness reads or writes (the parity config, sim-target JSONs,
+/// the `target/msl` cache/results, the quality baselines) hangs off this. A
+/// normal `cargo test` build bakes the correct `CARGO_MANIFEST_DIR`, but a
+/// PREBUILT binary (built once by Nix/crane and run in a different checkout)
+/// bakes the build-sandbox path — gone, or read-only in the Nix store, at
+/// runtime. So resolve it from the runtime workspace instead: walk up from the
+/// CWD to the `[workspace]` root and take `crates/rumoca-test-msl`. This equals
+/// the baked value for in-tree `cargo test` (whose CWD is the crate dir, one hop
+/// under the workspace root) and is correct for the prebuilt binary (whose CWD
+/// the xtask sets to the workspace root). Falls back to the compile-time manifest
+/// dir if the CWD isn't inside a rumoca workspace.
+pub(crate) fn msl_crate_manifest_dir() -> PathBuf {
+    fn workspace_crate_from(start: &std::path::Path) -> Option<PathBuf> {
+        start.ancestors().find_map(|dir| {
+            let is_workspace_root = dir.join("Cargo.toml").is_file()
+                && fs::read_to_string(dir.join("Cargo.toml"))
+                    .map(|s| s.contains("[workspace]"))
+                    .unwrap_or(false);
+            let crate_dir = dir.join("crates/rumoca-test-msl");
+            (is_workspace_root && crate_dir.join("Cargo.toml").is_file()).then_some(crate_dir)
+        })
+    }
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| workspace_crate_from(&cwd))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// `target/msl` cache dir under the runtime workspace (relocatable).
+pub(crate) fn msl_cache_dir() -> PathBuf {
+    msl_cache_dir_from_manifest(&msl_crate_manifest_dir().to_string_lossy())
+}
+
+/// The runtime workspace root (relocatable).
+pub(crate) fn msl_workspace_root() -> PathBuf {
+    workspace_root_from_manifest_dir(&msl_crate_manifest_dir().to_string_lossy())
+}
+
 /// Fixed config path shared with `cargo xtask verify msl-parity`.
 pub(crate) fn parity_config_path() -> PathBuf {
-    msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR")).join("parity-config.json")
+    msl_cache_dir().join("parity-config.json")
 }
 
 /// Deserialized MSL parity configuration. All fields optional; `None` selects
@@ -61,12 +101,18 @@ pub(crate) struct MslParityConfig {
     /// Opt into the generated simulation-targets file when no explicit file or
     /// committed file applies.
     pub generated_sim_targets_file: Option<bool>,
-    /// Force regeneration of the OMC simulation reference cache.
-    pub force_omc_parity_refresh: Option<bool>,
-    /// OMC reference-generation worker count.
-    pub omc_parity_workers: Option<usize>,
-    /// Whole-stage OMC reference-generation timeout in seconds.
-    pub omc_sim_reference_batch_timeout_secs: Option<u64>,
+    /// 1-based shard index for a sharded parity run (`--shard m/n` → `m`). The
+    /// model set (already ordered slowest-first) is striped round-robin so this
+    /// shard keeps every `shard_count`-th model starting at `shard_index - 1`.
+    pub shard_index: Option<usize>,
+    /// Total shard count for a sharded parity run (`--shard m/n` → `n`).
+    pub shard_count: Option<usize>,
+    /// Fan-in directory holding each shard's `shard-*/msl_results.json`. When
+    /// set, the merge-and-gate entry loads + concatenates those partials,
+    /// recomputes the full-set aggregates, and runs the quality gate once on the
+    /// merged results (the un-sharded gate's job). Kept OUT of the shard/subset
+    /// predicate so the merged run enforces the real baseline ratchet.
+    pub merge_shards_dir: Option<PathBuf>,
 }
 
 /// Load (once) the MSL parity configuration from [`parity_config_path`]. A
@@ -103,7 +149,7 @@ pub(crate) fn msl_results_dir() -> PathBuf {
     if path.is_absolute() {
         return path.clone();
     }
-    workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR")).join(path)
+    msl_workspace_root().join(path)
 }
 
 pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {
@@ -114,5 +160,21 @@ pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {
     if path.is_absolute() {
         return Some(path.clone());
     }
-    Some(workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR")).join(path))
+    Some(msl_workspace_root().join(path))
+}
+
+/// Fan-in directory (`--merge-shards <dir>`) holding each shard's
+/// `shard-*/msl_results.json`. Relative paths resolve from the workspace root
+/// (like [`msl_results_dir`]) so the value is independent of the test process's
+/// CWD — the CI passes a workspace-root-relative `target/msl/shards`, but libtest
+/// runs with CWD set to the crate directory.
+pub(crate) fn merge_shards_dir() -> Option<PathBuf> {
+    let path = parity_config().merge_shards_dir.as_ref()?;
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path.clone());
+    }
+    Some(msl_workspace_root().join(path))
 }

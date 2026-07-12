@@ -21,6 +21,8 @@ name = "Examples.Ball"
 solver = "bdf"
 t_end = 12.0
 dt = 0.01
+atol = 1e-7
+rtol = 1e-6
 source_root_overrides = ["libs/custom"]
 "#,
     )
@@ -33,6 +35,8 @@ source_root_overrides = ["libs/custom"]
         solver: "auto".to_string(),
         t_end: 5.0,
         dt: None,
+        atol: None,
+        rtol: None,
         output_dir: String::new(),
         source_root_paths: vec!["fallback".to_string()],
     };
@@ -41,6 +45,8 @@ source_root_overrides = ["libs/custom"]
     assert_eq!(effective.solver, "bdf");
     assert_eq!(effective.t_end, 12.0);
     assert_eq!(effective.dt, Some(0.01));
+    assert_eq!(effective.atol, Some(1.0e-7));
+    assert_eq!(effective.rtol, Some(1.0e-6));
     assert!(
         effective
             .source_root_paths
@@ -145,6 +151,8 @@ end Ball;
             solver: Some("bdf".to_string()),
             t_end: Some(3.0),
             dt: Some(0.1),
+            atol: Some(1.0e-7),
+            rtol: Some(1.0e-6),
             ..Default::default()
         },
     )
@@ -157,6 +165,8 @@ end Ball;
     assert!(text.contains("name = \"Examples.Ball\""));
     assert!(text.contains("[sim]"));
     assert!(text.contains("solver = \"bdf\""));
+    assert!(text.contains("atol ="));
+    assert!(text.contains("rtol ="));
     assert!(
         temp.path()
             .read_dir()
@@ -179,6 +189,8 @@ end Ball;
     .expect("snapshot");
     assert_eq!(snapshot.effective.solver, "bdf");
     assert_eq!(snapshot.effective.t_end, 3.0);
+    assert_eq!(snapshot.effective.atol, Some(1.0e-7));
+    assert_eq!(snapshot.effective.rtol, Some(1.0e-6));
 }
 
 #[test]
@@ -265,7 +277,7 @@ mode = "auto"
 type = "float"
 default = 0.0
 
-[signals.stepper_inputs]
+[signals.model_inputs]
 throttle = "local:throttle"
 "#,
     );

@@ -331,6 +331,16 @@ pub(super) fn inferred_subscripted_dims(
     Ok(dims)
 }
 
+pub(super) fn subscript_preserves_array_rank(subscript: &rumoca_core::Subscript) -> bool {
+    match subscript {
+        rumoca_core::Subscript::Colon { .. } => true,
+        rumoca_core::Subscript::Expr { expr, .. } => {
+            matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn infer_array_literal_dims(
     elements: &[rumoca_core::Expression],
     is_matrix: bool,

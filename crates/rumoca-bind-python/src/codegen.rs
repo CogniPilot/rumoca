@@ -62,6 +62,17 @@ impl CodegenResult {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    pub(crate) fn save_all_to(
+        &self,
+        out: &str,
+    ) -> std::result::Result<Vec<String>, PyRuntimeStringError> {
+        let root = Path::new(out);
+        self.files
+            .iter()
+            .map(|file| write_one(root, file))
+            .collect()
+    }
 }
 
 #[pymethods]
@@ -92,12 +103,13 @@ impl CodegenResult {
 
     /// Write every file under `out`, creating parent directories. Returns the
     /// list of written paths.
-    fn save_all(&self, out: &str) -> std::result::Result<Vec<String>, PyRuntimeStringError> {
-        let root = Path::new(out);
-        self.files
-            .iter()
-            .map(|file| write_one(root, file))
-            .collect()
+    fn save_all(
+        &self,
+        out: &Bound<'_, PyAny>,
+    ) -> std::result::Result<Vec<String>, PyRuntimeStringError> {
+        let out = crate::scenario::path_string(out)
+            .map_err(|error| PyRuntimeStringError(format!("{error}")))?;
+        self.save_all_to(&out)
     }
 
     fn __repr__(&self) -> String {

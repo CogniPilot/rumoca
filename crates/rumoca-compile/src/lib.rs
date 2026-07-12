@@ -43,6 +43,7 @@ pub mod cache;
 mod codegen_api;
 mod codegen_target;
 mod experiment;
+mod galec_api;
 mod instrumentation;
 #[cfg(test)]
 mod instrumentation_tests;
@@ -135,22 +136,50 @@ pub mod workspace {
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_for_solve_template_context, dae_to_template_json,
-        render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
-        render_dae_template_with_json_and_name, render_dae_template_with_name,
-        render_flat_template_with_name, render_solve_template_with_name,
+        CodegenError, SolveTemplateRenderer, dae_for_fmi_model_description_context,
+        dae_for_solve_template_context, dae_to_template_json, render_ast_template_with_name,
+        render_dae_template, render_dae_template_with_json, render_dae_template_with_json_and_name,
+        render_dae_template_with_name, render_flat_template_with_name,
+        render_solve_template_with_name,
     };
     pub mod targets {
         pub use crate::codegen_target::{
-            BuiltinTargetDescriptor, RenderedTargetFile, TargetBuildKind, TargetBundle,
-            TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile,
-            TargetManifest, TargetTemplateIr, TargetTemplateSource, TensorCapabilities,
-            TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
+            AssetBundle, BuiltinTargetDescriptor, ChecksumNeed, RenderedTargetFile,
+            TargetBuildKind, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
+            TargetFeatureSupport, TargetFile, TargetFileRenderContext, TargetManifest,
+            TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability,
+            TensorLayoutCapability, builtin_target_compatibility_matrix,
             builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
             parse_target_manifest, render_dae_target_files, safe_target_join,
             target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
         };
     }
+}
+
+/// GALEC / eFMI Algorithm Code export facade (SPEC_0034 GAL-010: frontends
+/// reach the `rumoca-galec-codegen` projection only through this module).
+pub mod galec {
+    pub use crate::galec_api::{
+        EMBEDDED_C_GALEC_CONFORMANCE_LINES, EMBEDDED_C_GALEC_CONFORMANCE_SUMMARY,
+        EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET, GALEC_TARGET, GalecCExport,
+        GalecExportError, GalecPackagingPlan, GalecSources, PRODUCTION_CONFORMANCE_LINES,
+        PRODUCTION_CONFORMANCE_SUMMARY, build_scalar_type_map, dae_for_galec_projection,
+        is_galec_target, plan_galec_export, plan_galec_production_export, render_galec_c_export,
+        render_galec_c_files_from_context, render_galec_sources,
+    };
+    pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
+    pub use rumoca_ir_galec::ast::ScalarType;
+
+    /// Curated downward re-export of the eFMI packaging primitives the
+    /// `rumoca` crate's generic container/checksum build step needs
+    /// (SPEC_0029 §8): the SHA-1 primitive and the path/name newtypes live in
+    /// `rumoca-galec-codegen` (Tier 3, below the build step), and the build
+    /// step imports them here rather than taking a direct dependency on the
+    /// projection crate — keeping `rumoca`'s only compiler-facing edge
+    /// `rumoca-compile`.
+    pub use rumoca_galec_codegen::{
+        EfmiError, FilePath, NameWithoutSlashes, Sha1Hex, xml_escape, xs_double,
+    };
 }
 
 /// Read-only DAE analysis helpers exposed through the compile facade.

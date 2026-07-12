@@ -1,0 +1,103 @@
+version = 1
+ir = "dae"
+name = "galec"
+# Conformance ladder (SPEC_0034 GAL-021): this target earns rung 2, the
+# "eFMI Algorithm Code export" claim — a schema-valid eFMU container
+# (__content.xml + schemas/ + one Algorithm Code representation, SHA-1
+# checksums recomputed from the exact written bytes, fresh brace-wrapped
+# UUIDs, strict UTC timestamps), machine-checked in CI by full-container
+# XSD validation and checksum recomputation (crates/rumoca/tests/
+# cli_target_galec.rs). The emitted GALEC also meets "GALEC language
+# conformance": it round-trip parses (print∘parse∘print idempotence,
+# rumoca-ir-galec tests/roundtrip.rs). "eFMI Production Code export" is the
+# galec-production target's claim, not this one's.
+description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with Model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
+execution_mode = "packaged"
+# deployment_class is the deployment FAMILY axis of `rumoca targets` (like
+# "gpu" spanning cuda-c readiness levels), not a conformance claim; the
+# honest rung claim lives in description/completion_message per GAL-021.
+deployment_class = "efmi"
+readiness_level = 2
+# `build = "efmu"` packages this invocation's rendered files into the two
+# eFMU package forms (directory + .efmu zip) — the build-kind pattern is the
+# packaging mechanism, exactly like fmi3's `build = "fmu"`; no CLI flag.
+build = "efmu"
+completion_message = """eFMI Algorithm Code eFMU written to: {{ out_dir }}
+  {{ model_name }}/       eFMU container, directory form (__content.xml + schemas/ + AlgorithmCode/)
+  {{ model_name }}.efmu   eFMU container, zip form (same content, __content.xml at zip root)
+Conformance: "eFMI Algorithm Code export" (SPEC_0034 GAL-021 rung 2) — schema-valid
+eFMU with SHA-1 checksums computed from the written bytes; the emitted GALEC also
+round-trip parses ("GALEC language conformance"). Not claimed by this target:
+eFMI Production Code export (see --target galec-production)."""
+
+# Generic DAE capability gates (SPEC_0034 GAL-006). These run before any
+# rendering; the GALEC projection re-checks admissibility on the untouched
+# DAE afterwards (GAL-004, additive) and owns the projection-scope wording
+# (GAL-025). Clocked when-edge updates are the target's core, so `events`
+# and `clocks` stay true; runtime event *iteration* is not provided.
+[capabilities]
+continuous_states = false
+residual_equations = false
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+# Declared asset bundle (contract §4d): the vendored eFMI Beta-1 XSD tree plus
+# its BSD-3-Clause LICENSE (GAL-023), copied verbatim into schemas/. Assets sit
+# OUTSIDE the render/hash checksum DAG — nothing checksums the XSDs. This
+# declaration is the SOLE mechanism that installs the schemas: the generic
+# declarative build step (contract §4b) copies this bundle, and there is no
+# separate typed schema-install path — removing this bundle ships a schema-less
+# eFMU. (Matches galec-production/target.toml.)
+[[assets]]
+bundle = "efmi-schemas"
+dest = "schemas/"
+
+# `model.alg.jinja` is a passthrough of the typed GALEC printer output
+# (GAL-009 / D3); `manifest.xml.jinja` and `__content.xml.jinja` are the real
+# eFMI manifest templates (contract §3, WI-2) that author every XML element
+# from the product-agnostic context — the typed serializers no longer emit
+# packaging XML (SPEC_0034 D3 amended). All three files render through the
+# declarative checksum-web build step (contract §9 WI-5), which packages the
+# Algorithm Code representation container plus the root `__content.xml` +
+# `schemas/` of the eFMU.
+#
+# The `id` + `[[files.checksums]]` declarations wire the generic declarative
+# checksum web (contract §4a): the Algorithm Code manifest embeds the SHA-1 of
+# the `.alg` bytes (`alg_sha1`); `__content.xml` embeds the SHA-1 of the
+# rendered `manifest.xml` bytes (`ac_manifest_sha1`). The build step renders
+# each producer first, hashes its exact bytes, and threads the digest into the
+# consumer's context (no placeholder ever, contract §4c).
+[[files]]
+id = "alg"
+path = "AlgorithmCode/{{ model_name }}.alg"
+template = "model.alg.jinja"
+
+[[files]]
+id = "ac_manifest"
+path = "AlgorithmCode/manifest.xml"
+template = "manifest.xml.jinja"
+  # File/@checksum edge: the manifest embeds the SHA-1 of the `.alg` bytes.
+  [[files.checksums]]
+  of = "alg"
+  as = "alg_sha1"
+
+[[files]]
+id = "content"
+path = "__content.xml"
+template = "__content.xml.jinja"
+  # ModelRepresentation/@checksum edge: __content.xml embeds the SHA-1 of the
+  # Algorithm Code manifest bytes for the one registered representation.
+  [[files.checksums]]
+  of = "ac_manifest"
+  as = "ac_manifest_sha1"
