@@ -474,12 +474,9 @@ fn merged_external_tables(
     mut tables: Vec<rumoca_core::ExternalTableData>,
     parameter_tables: Vec<rumoca_core::ExternalTableData>,
 ) -> Vec<rumoca_core::ExternalTableData> {
-    let mut seen = tables.iter().map(|table| table.id).collect::<HashSet<_>>();
-    tables.extend(
-        parameter_tables
-            .into_iter()
-            .filter(|table| seen.insert(table.id)),
-    );
+    tables.extend(parameter_tables);
+    let mut seen = HashSet::new();
+    tables.retain(|table| seen.insert(table.id));
     tables.sort_by_key(|table| table.id);
     tables
 }
@@ -487,17 +484,22 @@ fn merged_external_tables(
 #[cfg(test)]
 #[test]
 fn merged_external_tables_deduplicates_and_sorts_explicit_and_parameter_tables() {
-    let table = |id| rumoca_core::ExternalTableData {
+    let table = |id, marker| rumoca_core::ExternalTableData {
         id,
+        data: vec![vec![marker]],
         ..Default::default()
     };
 
-    let merged = merged_external_tables(vec![table(3), table(1)], vec![table(2), table(3)]);
+    let merged = merged_external_tables(
+        vec![table(3, 30.0), table(1, 10.0), table(3, 31.0)],
+        vec![table(2, 20.0), table(3, 32.0)],
+    );
 
     assert_eq!(
         merged.iter().map(|table| table.id).collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
+    assert_eq!(merged[2].data, vec![vec![30.0]]);
 }
 
 fn lower_contract_violation(reason: String, span: rumoca_core::Span) -> LowerError {
