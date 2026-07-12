@@ -101,6 +101,12 @@ pub(crate) struct MslParityConfig {
     /// Opt into the generated simulation-targets file when no explicit file or
     /// committed file applies.
     pub generated_sim_targets_file: Option<bool>,
+    /// Force regeneration of the OMC simulation reference cache.
+    pub force_omc_parity_refresh: Option<bool>,
+    /// OMC reference-generation worker count.
+    pub omc_parity_workers: Option<usize>,
+    /// Whole-stage OMC reference-generation timeout in seconds.
+    pub omc_sim_reference_batch_timeout_secs: Option<u64>,
     /// 1-based shard index for a sharded parity run (`--shard m/n` → `m`). The
     /// model set (already ordered slowest-first) is striped round-robin so this
     /// shard keeps every `shard_count`-th model starting at `shard_index - 1`.
@@ -177,4 +183,29 @@ pub(crate) fn merge_shards_dir() -> Option<PathBuf> {
         return Some(path.clone());
     }
     Some(msl_workspace_root().join(path))
+}
+
+#[test]
+fn msl_parity_config_accepts_omc_and_shard_fields() {
+    let config: MslParityConfig = serde_json::from_str(
+        r#"{
+            "force_omc_parity_refresh": true,
+            "omc_parity_workers": 6,
+            "omc_sim_reference_batch_timeout_secs": 900,
+            "shard_index": 2,
+            "shard_count": 4,
+            "merge_shards_dir": "target/msl/shards"
+        }"#,
+    )
+    .expect("OMC and shard parity fields should deserialize together");
+
+    assert_eq!(config.force_omc_parity_refresh, Some(true));
+    assert_eq!(config.omc_parity_workers, Some(6));
+    assert_eq!(config.omc_sim_reference_batch_timeout_secs, Some(900));
+    assert_eq!(config.shard_index, Some(2));
+    assert_eq!(config.shard_count, Some(4));
+    assert_eq!(
+        config.merge_shards_dir,
+        Some(PathBuf::from("target/msl/shards"))
+    );
 }

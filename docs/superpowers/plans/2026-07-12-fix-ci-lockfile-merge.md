@@ -549,6 +549,65 @@ Expected: all gates exit 0 and only the named files are committed.
 
 ---
 
+### Task 10: Reconcile MSL parity configuration merge fields
+
+**Files:**
+- Modify: `crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_config.rs`
+- Modify: `crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_selection.rs`
+- Test: configuration deserialization test colocated in the balance pipeline tests
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: fork OMC cache/worker/refresh CLI fields from `84e6cfc0`, upstream shard fields from `24209c80`, and xtask's fixed-path `parity-config.json` writer.
+- Produces: one `MslParityConfig` that accepts both field groups under `deny_unknown_fields` and preserves Linux-only selection imports.
+
+- [x] **Step 1: Verify RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-test-msl --all-targets --all-features -- -D warnings
+```
+
+Expected: FAIL on three missing `MslParityConfig` fields and non-Linux unused `IndexSet`.
+
+- [x] **Step 2: Add failing configuration compatibility test**
+
+Deserialize JSON containing all of these fields and assert their values:
+
+```text
+force_omc_parity_refresh
+omc_parity_workers
+omc_sim_reference_batch_timeout_secs
+shard_index
+shard_count
+merge_shards_dir
+```
+
+Run the focused test before implementation. Expected: FAIL because the first three OMC fields are rejected under `deny_unknown_fields`.
+
+- [x] **Step 3: Restore the configuration union**
+
+Add the three optional OMC fields back to `MslParityConfig` while retaining all shard fields. Do not hardcode cache policy, worker count, timeout, or refresh behavior; `xtask` already writes these values into `parity-config.json`.
+
+Gate the `IndexSet` import in `balance_pipeline_selection.rs` with `#[cfg(target_os = "linux")]`, matching its only Linux-specific use.
+
+- [x] **Step 4: Verify and commit with DCO**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-test-msl --features msl-full-test --test msl_tests msl_parity_config
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-test-msl --all-targets --all-features -- -D warnings
+rustup run nightly-2026-02-27 cargo xtask verify lint
+rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
+git diff --check
+git add crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_config.rs \
+  crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_selection.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit --signoff -m "fix(ci): reconcile MSL parity config"
+```
+
+Expected: all commands exit 0 and only the named files are committed.
+
+---
+
 ### Task 9: Reconcile top-level compiler and CLI merge APIs
 
 **Files:**
