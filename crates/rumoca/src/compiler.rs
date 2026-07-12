@@ -1014,6 +1014,11 @@ mod tests {
     use quick_xml::events::{BytesStart, Event};
     use tempfile::tempdir;
 
+    fn builtin_fmi2_template(path: &str) -> &'static str {
+        rumoca_phase_codegen::templates::builtin_template_source("fmi2", path)
+            .expect("FMI2 template should be registered")
+    }
+
     #[test]
     fn test_simple_model() {
         let source = r#"
@@ -1782,6 +1787,184 @@ mod tests {
             "Solve templates should receive scalar DAE rows, while Solve IR still lowers from native DAE"
         );
     }
+
+    #[test]
+    fn test_render_fmi2_model_restores_output_observable_signs() {
+        let source = r#"
+            model OutputAlias
+              Real x(start = 2, fixed = true);
+              output Real y;
+              output Real negY;
+            equation
+              der(x) = -x;
+              y = x;
+              negY = -y;
+            end OutputAlias;
+        "#;
+
+        let result = Compiler::new()
+            .model("OutputAlias")
+            .compile_str(source, "output_alias.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                builtin_fmi2_template("model.c.jinja"),
+                "OutputAlias",
+                TemplateIr::Solve,
+            )
+            .expect("prepared named FMI2 model render should succeed");
+
+        assert!(
+            rendered.contains("y = x;"),
+            "expected output alias y to preserve positive x sign; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("negY = (-y);"),
+            "expected negY to remain the negative alias; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_propagates_tunable_parameter_bindings_on_initialization() {
+        let source = r#"
+            model Child
+              parameter Real p = 1;
+              Real x(start = p, fixed = true);
+            initial equation
+              x = p;
+            equation
+              der(x) = 0;
+            end Child;
+
+            model BindingProbe
+              parameter Real root = 5;
+              Child child(p = root);
+            end BindingProbe;
+        "#;
+
+        let result = Compiler::new()
+            .model("BindingProbe")
+            .compile_str(source, "binding_probe.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                builtin_fmi2_template("model.c.jinja"),
+                "BindingProbe",
+                TemplateIr::Solve,
+            )
+            .expect("prepared FMI2 C render should succeed");
+        let rendered = rendered.replace("\r\n", "\n");
+
+        assert!(
+            rendered.contains("p = root;\n    m->p[1] = p;  /* binding child.p */"),
+            "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("m->x[0] = child_p;  /* initial equation: child.x */"),
+            "FMI2 C must apply direct initial equation x = p after parameter bindings; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("apply_parameter_bindings(m);\n    apply_initial_equations(m);"),
+            "fmi2ExitInitializationMode must apply parameter bindings before initial equations; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "apply_parameter_bindings(m);\n    m->dirty_values = 1;\n    return fmi2OK;"
+            ),
+            "fmi2SetReal must re-apply dependent parameter bindings after batched writes; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_description_resolves_symbolic_starts_to_literals() {
+        let source = r#"
+            model Child
+              parameter Real p = 1;
+              Real x(start = p, fixed = true);
+            initial equation
+              x = p;
+            equation
+              der(x) = 0;
+            end Child;
+
+            model BindingProbe
+              parameter Real root = 5;
+              Child child(p = root);
+            end BindingProbe;
+        "#;
+
+        let result = Compiler::new()
+            .model("BindingProbe")
+            .compile_str(source, "binding_probe.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_fmi_model_description_template_str_with_name(
+                builtin_fmi2_template("modelDescription.xml.jinja"),
+                "BindingProbe",
+            )
+            .expect("prepared FMI2 modelDescription render should succeed");
+        let rendered = rendered.replace("\r\n", "\n");
+
+        assert!(
+            rendered.contains(r#"name="root" valueReference="2" causality="parameter" variability="fixed" initial="exact">
+      <Real start="5.0"/>"#),
+            "numeric parameter starts should still be emitted; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"name="child.p" valueReference="3" causality="parameter" variability="fixed" initial="exact">
+      <Real start="5.0"/>"#),
+            "resolvable symbolic parameter starts must be emitted as typed literals; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"name="child.x" valueReference="0" causality="local" variability="continuous" initial="exact">
+      <Real start="5.0"/>"#),
+            "resolvable symbolic state starts must be emitted as typed literals; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_preserves_array_slice_modifier_bindings() {
+        let source = r#"
+            model Child
+              parameter Real p = 1;
+              Real x(start = p, fixed = true);
+            initial equation
+              x = p;
+            equation
+              der(x) = 0;
+            end Child;
+
+            model ArrayModifierProbe
+              parameter Real root[5] = {11, 12, 13, 14, 15};
+              Child child[5](p = root[1:5]);
+            end ArrayModifierProbe;
+        "#;
+
+        let result = Compiler::new()
+            .model("ArrayModifierProbe")
+            .compile_str(source, "array_modifier_probe.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                builtin_fmi2_template("model.c.jinja"),
+                "ArrayModifierProbe",
+                TemplateIr::Solve,
+            )
+            .expect("prepared FMI2 C render should succeed");
+        let rendered = rendered.replace("\r\n", "\n");
+
+        assert!(
+            rendered.contains(
+                "child_1_p = root_1;\n    m->p[5] = child_1_p;  /* binding child[1].p */"
+            ),
+            "array component modifier bindings must preserve element-wise source dependencies; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("m->x[0] = child_1_p;  /* initial equation: child[1].x */"),
+            "initial equations must use the dependent array modifier parameter; got:\n{rendered}"
+        );
+    }
+
     #[test]
     fn test_strict_reachable_requested_success_ignores_unreachable_failures() {
         let source = r#"

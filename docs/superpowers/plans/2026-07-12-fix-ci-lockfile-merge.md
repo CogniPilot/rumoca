@@ -601,7 +601,7 @@ Add unit tests for CLI overriding config, config overriding default, and neither
 ```bash
 rustup run nightly-2026-02-27 cargo check -p rumoca
 rustup run nightly-2026-02-27 cargo test -p rumoca --lib configured_sim_tolerance
-rustup run nightly-2026-02-27 cargo test -p rumoca --lib fmi_model_description
+rustup run nightly-2026-02-27 cargo test -p rumoca --lib model_description_serializes_start_expressions
 rustup run nightly-2026-02-27 cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression
 rustup run nightly-2026-02-27 cargo clippy -p rumoca --all-targets --all-features -- -D warnings
 ```
