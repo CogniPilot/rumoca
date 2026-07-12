@@ -246,7 +246,7 @@ Restore `fold_known_package_constants_to_literals` and its rewriter/helper set: 
 
 In `lib.rs`, restore parent1's `initialize_dae_metadata` and `nonnumeric_variable_names` helpers. Preserve initialization of all prior metadata plus `metadata.nonnumeric_variable_names` for String values and external-constructor handles. Keep the existing calls to metadata initialization and package-constant folding.
 
-- [ ] **Step 5: Verify focused GREEN**
+- [x] **Step 5: Verify focused GREEN**
 
 Run:
 
@@ -351,7 +351,7 @@ git commit -m "fix(ci): reconcile solve merge artifacts"
 - Consumes: parent1 `json_filter` implementation and its existing test.
 - Produces: a Minijinja environment where the `json` filter is registered by `add_basic_filters`.
 
-- [ ] **Step 1: Verify RED**
+- [x] **Step 1: Verify RED**
 
 ```bash
 rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-codegen --all-targets --all-features -- -D warnings
@@ -359,7 +359,7 @@ rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-codegen --all-targets
 
 Expected: FAIL because `json_filter` is unused.
 
-- [ ] **Step 2: Register the existing filter**
+- [x] **Step 2: Register the existing filter**
 
 Add exactly this registration next to the other basic filters, after `last_segment`:
 
@@ -369,7 +369,7 @@ env.add_filter("json", json_filter);
 
 Do not delete the filter or its test.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 ```bash
 rustup run nightly-2026-02-27 cargo test -p rumoca-phase-codegen codegen_tests::test_json_filter
@@ -393,7 +393,7 @@ Expected: both commands exit 0 and only the codegen file is committed.
 - Consumes: upstream removal of the static indexed-resolution-table test at `24209c80`.
 - Produces: no orphan `int_lit` helper and a strict phase-dae test build.
 
-- [ ] **Step 1: Verify RED**
+- [x] **Step 1: Verify RED**
 
 ```bash
 rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-dae --all-targets --all-features -- -D warnings
@@ -401,11 +401,11 @@ rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-dae --all-targets --a
 
 Expected: FAIL because `runtime_precompute/tests/mod.rs::int_lit` is unused.
 
-- [ ] **Step 2: Remove only the orphan helper**
+- [x] **Step 2: Remove only the orphan helper**
 
 Delete `int_lit` and no other test code. Do not add a fake call; the only parent1 test that used it was removed upstream.
 
-- [ ] **Step 3: Re-run Task 3 exact focused gates**
+- [x] **Step 3: Re-run Task 3 exact focused gates**
 
 Run the six exact phase-dae focused commands from Task 3 Step 5 without warning suppression. Expected: all exit 0.
 
@@ -419,7 +419,7 @@ git diff --check
 
 Expected: all commands exit 0 with the regenerated lockfile and all reconciled source mechanisms.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/rumoca-phase-dae/src/runtime_precompute/tests/mod.rs \

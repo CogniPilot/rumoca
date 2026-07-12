@@ -39,13 +39,6 @@ fn lit(value: f64) -> rumoca_core::Expression {
     }
 }
 
-fn int_lit(value: i64) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Integer(value),
-        span: test_span(20, 24),
-    }
-}
-
 fn clock_call(interval: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Clock").into(),
