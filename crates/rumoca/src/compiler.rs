@@ -151,23 +151,6 @@ impl CompilationResult {
         dae_to_template_json(&self.dae).map_err(CompilerError::TemplateError)
     }
 
-    pub(crate) fn template_json_with_native_observables(&self) -> Result<Value, CompilerError> {
-        let template_dae = self.scalarized_template_dae();
-        let mut prepared_json =
-            dae_to_template_json(&template_dae).map_err(CompilerError::TemplateError)?;
-        self.augment_template_json_with_native_observables(&mut prepared_json)?;
-        Ok(prepared_json)
-    }
-
-    pub(crate) fn augment_template_json_with_native_observables(
-        &self,
-        prepared_json: &mut Value,
-    ) -> Result<(), CompilerError> {
-        let native_json = self.template_json_dae_only()?;
-        let _ = augment_prepared_with_native_observables(&native_json, prepared_json);
-        Ok(())
-    }
-
     fn is_prunable_child(child: &Value) -> bool {
         match child {
             Value::Null => true,
@@ -361,18 +344,7 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        let dae_json = self.template_json_with_native_observables()?;
-        render_dae_template_with_json_and_name(&dae_json, template, model_name)
-            .map_err(CompilerError::TemplateError)
-    }
-
-    pub fn render_template_str_prepared_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-        _scalarize: bool,
-    ) -> Result<String, CompilerError> {
-        let dae_json = self.template_json_with_native_observables()?;
+        let dae_json = self.template_json_dae_only()?;
         render_dae_template_with_json_and_name(&dae_json, template, model_name)
             .map_err(CompilerError::TemplateError)
     }
@@ -1041,11 +1013,6 @@ mod tests {
     use quick_xml::Reader;
     use quick_xml::events::{BytesStart, Event};
     use tempfile::tempdir;
-
-    fn builtin_fmi2_template(path: &str) -> &'static str {
-        rumoca_phase_codegen::templates::builtin_template_source("fmi2", path)
-            .expect("FMI2 template should be registered")
-    }
 
     #[test]
     fn test_simple_model() {
@@ -1815,205 +1782,6 @@ mod tests {
             "Solve templates should receive scalar DAE rows, while Solve IR still lowers from native DAE"
         );
     }
-
-    #[test]
-    fn test_residual_observable_assignment_preserves_rhs_target_sign() {
-        let residual = serde_json::json!({
-            "Binary": {
-                "op": {"Sub": {}},
-                "lhs": {"VarRef": {"name": "x"}},
-                "rhs": {"VarRef": {"name": "y"}}
-            }
-        });
-
-        let restored = extract_residual_assignment_expr(&residual, "y")
-            .expect("residual x - y = 0 should restore y as x");
-
-        assert_eq!(
-            restored,
-            serde_json::json!({"VarRef": {"name": "x"}}),
-            "residual x - y = 0 assigns y = x, not y = -x"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_restores_output_observable_signs() {
-        let source = r#"
-            model OutputAlias
-              Real x(start = 2, fixed = true);
-              output Real y;
-              output Real negY;
-            equation
-              der(x) = -x;
-              y = x;
-              negY = -y;
-            end OutputAlias;
-        "#;
-
-        let result = Compiler::new()
-            .model("OutputAlias")
-            .compile_str(source, "output_alias.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                builtin_fmi2_template("model.c.jinja"),
-                "OutputAlias",
-                true,
-            )
-            .expect("prepared named FMI2 model render should succeed");
-
-        assert!(
-            rendered.contains("y = x;"),
-            "expected output alias y to preserve positive x sign; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("negY = (-y);"),
-            "expected negY to remain the negative alias; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_propagates_tunable_parameter_bindings_on_initialization() {
-        let source = r#"
-            model Child
-              parameter Real p = 1;
-              Real x(start = p, fixed = true);
-            initial equation
-              x = p;
-            equation
-              der(x) = 0;
-            end Child;
-
-            model BindingProbe
-              parameter Real root = 5;
-              Child child(p = root);
-            end BindingProbe;
-        "#;
-
-        let result = Compiler::new()
-            .model("BindingProbe")
-            .compile_str(source, "binding_probe.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                builtin_fmi2_template("model.c.jinja"),
-                "BindingProbe",
-                true,
-            )
-            .expect("prepared FMI2 C render should succeed");
-        let rendered = rendered.replace("\r\n", "\n");
-
-        assert!(
-            rendered.contains("p = root;\n    m->p[1] = p;  /* binding child.p */"),
-            "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("m->x[0] = child_p;  /* initial equation: child.x */"),
-            "FMI2 C must apply direct initial equation x = p after parameter bindings; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("apply_parameter_bindings(m);\n    apply_initial_equations(m);"),
-            "fmi2ExitInitializationMode must apply parameter bindings before initial equations; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains(
-                "apply_parameter_bindings(m);\n    m->dirty_values = 1;\n    return fmi2OK;"
-            ),
-            "fmi2SetReal must re-apply dependent parameter bindings after batched writes; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_description_omits_symbolic_starts() {
-        let source = r#"
-            model Child
-              parameter Real p = 1;
-              Real x(start = p, fixed = true);
-            initial equation
-              x = p;
-            equation
-              der(x) = 0;
-            end Child;
-
-            model BindingProbe
-              parameter Real root = 5;
-              Child child(p = root);
-            end BindingProbe;
-        "#;
-
-        let result = Compiler::new()
-            .model("BindingProbe")
-            .compile_str(source, "binding_probe.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                builtin_fmi2_template("modelDescription.xml.jinja"),
-                "BindingProbe",
-                true,
-            )
-            .expect("prepared FMI2 modelDescription render should succeed");
-        let rendered = rendered.replace("\r\n", "\n");
-
-        assert!(
-            rendered.contains(r#"name="root" valueReference="2" causality="parameter" variability="fixed" initial="exact">
-      <Real start="5.0"/>"#),
-            "numeric parameter starts should still be emitted; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains(r#"name="child.p" valueReference="3" causality="parameter" variability="fixed" initial="exact">
-      <Real/>"#),
-            "symbolic parameter starts must be omitted from FMI2 XML instead of writing non-numeric expressions; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains(r#"name="child.x" valueReference="0" causality="local" variability="continuous" initial="exact">
-      <Real/>"#),
-            "symbolic state starts must be omitted from FMI2 XML instead of writing non-numeric expressions; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_preserves_array_slice_modifier_bindings() {
-        let source = r#"
-            model Child
-              parameter Real p = 1;
-              Real x(start = p, fixed = true);
-            initial equation
-              x = p;
-            equation
-              der(x) = 0;
-            end Child;
-
-            model ArrayModifierProbe
-              parameter Real root[5] = {11, 12, 13, 14, 15};
-              Child child[5](p = root[1:5]);
-            end ArrayModifierProbe;
-        "#;
-
-        let result = Compiler::new()
-            .model("ArrayModifierProbe")
-            .compile_str(source, "array_modifier_probe.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                builtin_fmi2_template("model.c.jinja"),
-                "ArrayModifierProbe",
-                true,
-            )
-            .expect("prepared FMI2 C render should succeed");
-        let rendered = rendered.replace("\r\n", "\n");
-
-        assert!(
-            rendered.contains(
-                "child_1_p = root_1;\n    m->p[5] = child_1_p;  /* binding child[1].p */"
-            ),
-            "array component modifier bindings must preserve element-wise source dependencies; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("m->x[0] = child_1_p;  /* initial equation: child[1].x */"),
-            "initial equations must use the dependent array modifier parameter; got:\n{rendered}"
-        );
-    }
-
     #[test]
     fn test_strict_reachable_requested_success_ignores_unreachable_failures() {
         let source = r#"

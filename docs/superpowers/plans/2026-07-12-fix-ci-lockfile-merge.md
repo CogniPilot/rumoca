@@ -546,3 +546,77 @@ git commit --signoff -m "fix(ci): restore discrete simulation sessions"
 ```
 
 Expected: all gates exit 0 and only the named files are committed.
+
+---
+
+### Task 9: Reconcile top-level compiler and CLI merge APIs
+
+**Files:**
+- Modify: `crates/rumoca/src/compiler.rs`
+- Modify: `crates/rumoca/src/cli.rs`
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: upstream typed FMI model-description renderer at `24209c80`, fork concrete batch tolerances at `84e6cfc0`, and optional scheduled-sim tolerances.
+- Produces: no obsolete JSON observable replay path and deterministic batch tolerance resolution `CLI > config > SimOptions default`.
+
+- [x] **Step 1: Verify RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca
+rustup run nightly-2026-02-27 cargo clippy -p rumoca --all-targets --all-features -- -D warnings
+```
+
+Expected: FAIL on missing observable replay helpers and `Option<f64>` assigned to concrete `f64` tolerances.
+
+- [x] **Step 2: Remove the obsolete compiler replay side channel**
+
+In `compiler.rs`, follow the upstream typed-renderer mechanism:
+
+```text
+- remove template_json_with_native_observables and its missing augment helper call
+- make both normal named-DAE render paths use template_json_dae_only()
+- remove obsolete render_template_str_prepared_with_name
+- remove only the old helper-specific JSON replay tests that call extract_residual_assignment_expr or validate the retired replay path
+```
+
+Do not reintroduce stub helpers. Preserve the typed `dae_for_fmi_model_description_context` and `fmi_model_description_renderer` tests and production paths.
+
+- [x] **Step 3: Resolve concrete batch tolerances without changing scheduled semantics**
+
+In `cli.rs`, add a small helper that resolves a concrete tolerance from CLI/config/default:
+
+```rust
+fn configured_sim_tolerance(cli: Option<f64>, configured: Option<f64>, default: f64) -> f64 {
+    cli.or(configured).unwrap_or(default)
+}
+```
+
+Use it only for non-scheduled batch `SimulationRun.atol` and `.rtol`, with `SimOptions::default().atol/rtol`. Keep scheduled `ScheduledSimArgs.atol/rtol` as `Option<f64>` and keep `configured_sim_option` there.
+
+Add unit tests for CLI overriding config, config overriding default, and neither value falling back to the backend default.
+
+- [ ] **Step 4: Verify focused GREEN**
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca
+rustup run nightly-2026-02-27 cargo test -p rumoca --lib configured_sim_tolerance
+rustup run nightly-2026-02-27 cargo test -p rumoca --lib fmi_model_description
+rustup run nightly-2026-02-27 cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression
+rustup run nightly-2026-02-27 cargo clippy -p rumoca --all-targets --all-features -- -D warnings
+```
+
+Expected: all commands exit 0.
+
+- [ ] **Step 5: Run final gates and commit with DCO**
+
+```bash
+rustup run nightly-2026-02-27 cargo xtask verify lint
+rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
+git diff --check
+git add crates/rumoca/src/compiler.rs crates/rumoca/src/cli.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit --signoff -m "fix(ci): reconcile compiler and CLI merge APIs"
+```
+
+Expected: all gates exit 0 and only the named files are committed.

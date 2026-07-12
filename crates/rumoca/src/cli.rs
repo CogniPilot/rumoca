@@ -896,8 +896,8 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
             t_start: SimOptions::default().t_start,
             t_end: configured_sim_t_end(args.t_end, config.sim.t_end),
             dt: Some(configured_sim_dt(args.dt, config.sim.dt)),
-            atol: configured_sim_option(args.atol, config.sim.atol),
-            rtol: configured_sim_option(args.rtol, config.sim.rtol),
+            atol: configured_sim_tolerance(args.atol, config.sim.atol, SimOptions::default().atol),
+            rtol: configured_sim_tolerance(args.rtol, config.sim.rtol, SimOptions::default().rtol),
             solver_mode,
             solver_label: &solver_label,
             output: args.output.as_deref().or(config.sim.output.as_deref()),
@@ -956,6 +956,34 @@ fn configured_sim_dt(cli_dt: Option<f64>, config_dt: f64) -> f64 {
 
 fn configured_sim_option(cli_value: Option<f64>, config_value: Option<f64>) -> Option<f64> {
     cli_value.or(config_value)
+}
+
+fn configured_sim_tolerance(
+    cli_value: Option<f64>,
+    config_value: Option<f64>,
+    default: f64,
+) -> f64 {
+    cli_value.or(config_value).unwrap_or(default)
+}
+
+#[cfg(test)]
+mod configured_sim_tolerance_tests {
+    use super::configured_sim_tolerance;
+
+    #[test]
+    fn configured_sim_tolerance_prefers_cli_value() {
+        assert_eq!(configured_sim_tolerance(Some(1.0), Some(2.0), 3.0), 1.0);
+    }
+
+    #[test]
+    fn configured_sim_tolerance_uses_configured_value_without_cli_value() {
+        assert_eq!(configured_sim_tolerance(None, Some(2.0), 3.0), 2.0);
+    }
+
+    #[test]
+    fn configured_sim_tolerance_uses_backend_default_without_overrides() {
+        assert_eq!(configured_sim_tolerance(None, None, 3.0), 3.0);
+    }
 }
 
 #[cfg(feature = "scheduled-sim")]
