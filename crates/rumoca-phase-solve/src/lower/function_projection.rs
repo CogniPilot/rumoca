@@ -60,10 +60,16 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 return Ok(None);
             };
-        if let Some(field) = output_field.as_deref()
-            && (!output_is_complex_record(output) || !matches!(field, "re" | "im"))
-        {
-            return Ok(None);
+        if let Some(field) = output_field.as_deref() {
+            let constructor_field = function.is_constructor
+                && output.type_class == Some(rumoca_core::ClassType::Record)
+                && function.inputs.iter().any(|input| input.name == field);
+            let ordinary_complex_field = !function.is_constructor
+                && output_is_complex_record(output)
+                && matches!(field, "re" | "im");
+            if !constructor_field && !ordinary_complex_field {
+                return Ok(None);
+            }
         }
 
         let indices = if output_has_dynamic_dims(output) {
@@ -146,6 +152,16 @@ impl<'a> LowerBuilder<'a> {
             ));
         }
 
+        if function.is_constructor {
+            return self.lower_record_constructor_output_projection(
+                &function,
+                projection,
+                args,
+                caller_scope,
+                call_depth,
+            );
+        }
+
         if projection.indices.is_empty() && projection.output_field.is_none() {
             let values = self.lower_user_function_call_named_output_values(
                 &projection.base_function_name,
@@ -191,6 +207,68 @@ impl<'a> LowerBuilder<'a> {
                     ),
                 }
             })
+        })
+    }
+
+    fn lower_record_constructor_output_projection(
+        &mut self,
+        constructor: &rumoca_core::Function,
+        projection: &FunctionOutputProjection,
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let Some(field) = projection.output_field.as_deref() else {
+            return Err(LowerError::InvalidFunction {
+                name: constructor.name.as_str().to_string(),
+                reason: format!(
+                    "constructor output `{}` requires a selected record field",
+                    projection.output_name
+                ),
+            }
+            .with_fallback_span(projection.span));
+        };
+        let output_is_record = constructor.outputs.iter().any(|output| {
+            output.name == projection.output_name
+                && output.type_class == Some(rumoca_core::ClassType::Record)
+        });
+        if !output_is_record || !projection.indices.is_empty() {
+            return Err(LowerError::InvalidFunction {
+                name: constructor.name.as_str().to_string(),
+                reason: format!(
+                    "constructor output field `{}.{field}` cannot be resolved",
+                    projection.output_name
+                ),
+            }
+            .with_fallback_span(projection.span));
+        }
+        let Some(input) = constructor.inputs.iter().find(|input| input.name == field) else {
+            return Err(LowerError::InvalidFunction {
+                name: constructor.name.as_str().to_string(),
+                reason: format!("constructor does not define field `{field}`"),
+            }
+            .with_fallback_span(projection.span));
+        };
+
+        self.with_local_lower_frame(|this| {
+            let bindings = this.bind_function_inputs_for_name(
+                constructor.name.as_str(),
+                &constructor.inputs,
+                args,
+                caller_scope,
+                call_depth,
+            )?;
+            bindings
+                .scope
+                .get(&generated_scope_key(&input.name))
+                .copied()
+                .ok_or_else(|| {
+                    LowerError::InvalidFunction {
+                        name: constructor.name.as_str().to_string(),
+                        reason: format!("constructor field `{field}` has no bound scalar value"),
+                    }
+                    .with_fallback_span(projection.span)
+                })
         })
     }
 

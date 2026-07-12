@@ -10,6 +10,7 @@ use solve::SolveVisitor;
 use crate::{
     function_validation::{
         collect_function_parameter_call_aliases, is_named_function_arg_marker,
+        validate_constructor_projection_arguments, validate_constructor_projection_definition,
         validate_sim_function_call_name,
     },
     lower::LowerError,
@@ -321,6 +322,8 @@ fn validate_function_calls_resolve(
         dae_model,
         function_param_aliases,
         context,
+        validated_functions: HashSet::new(),
+        active_stack: HashSet::new(),
     };
     validator.visit_expression(expr)
 }
@@ -329,6 +332,8 @@ struct FunctionCallResolveValidator<'a> {
     dae_model: &'a dae::Dae,
     function_param_aliases: &'a HashSet<rumoca_core::VarName>,
     context: &'a str,
+    validated_functions: HashSet<rumoca_core::VarName>,
+    active_stack: HashSet<rumoca_core::VarName>,
 }
 
 impl FallibleExpressionVisitor for FunctionCallResolveValidator<'_> {
@@ -340,18 +345,27 @@ impl FallibleExpressionVisitor for FunctionCallResolveValidator<'_> {
         args: &[rumoca_core::Expression],
         is_constructor: bool,
     ) -> Result<(), Self::Error> {
-        if !is_constructor
-            && !is_named_function_arg_marker(name)
-            && let Err(err) =
+        if !is_constructor && !is_named_function_arg_marker(name) {
+            let validation = (|| {
+                validate_constructor_projection_arguments(self.dae_model, name, args)?;
+                validate_constructor_projection_definition(
+                    self.dae_model,
+                    name,
+                    &mut self.validated_functions,
+                    &mut self.active_stack,
+                    self.function_param_aliases,
+                )?;
                 validate_sim_function_call_name(self.dae_model, name, self.function_param_aliases)
-        {
-            return Err(LowerError::InvalidFunction {
-                name: err.name,
-                reason: format!(
-                    "Solve Appendix-B validation failed in {}: {}",
-                    self.context, err.reason
-                ),
-            });
+            })();
+            if let Err(err) = validation {
+                return Err(LowerError::InvalidFunction {
+                    name: err.name,
+                    reason: format!(
+                        "Solve Appendix-B validation failed in {}: {}",
+                        self.context, err.reason
+                    ),
+                });
+            }
         }
 
         for arg in args {
@@ -1137,6 +1151,115 @@ mod tests {
 
         validate_solve_input_appendix_b_invariants(&dae)
             .expect("record constructors are data constructors, not executable functions");
+    }
+
+    #[test]
+    fn solve_input_validation_allows_record_constructor_output_projection_without_body() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut constructor = Function::new("Pkg.RecordCtor", span);
+        constructor.is_constructor = true;
+        constructor.add_input(FunctionParam::new("re", "Real", span));
+        constructor.add_input(FunctionParam::new("im", "Real", span).with_default(real(0.0, span)));
+        constructor.add_output(
+            FunctionParam::new("result", "Pkg.RecordValue", span)
+                .with_type_class(rumoca_core::ClassType::Record),
+        );
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.RecordCtor"), constructor);
+        dae.continuous.equations.push(dae::Equation::residual(
+            Expression::FunctionCall {
+                name: VarName::new("Pkg.RecordCtor.result.im").into(),
+                args: vec![real(2.0, span)],
+                is_constructor: false,
+                span,
+            },
+            span,
+            "record constructor output field projection",
+        ));
+
+        validate_solve_input_appendix_b_invariants(&dae)
+            .expect("record constructor output projections bind fields without an executable body");
+    }
+
+    #[test]
+    fn solve_input_validation_rejects_unfilled_record_constructor_projection_input() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut constructor = Function::new("Pkg.RecordCtor", span);
+        constructor.is_constructor = true;
+        constructor.add_input(FunctionParam::new("required", "Real", span));
+        constructor.add_output(
+            FunctionParam::new("result", "Pkg.RecordValue", span)
+                .with_type_class(rumoca_core::ClassType::Record),
+        );
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.RecordCtor"), constructor);
+        dae.continuous.equations.push(dae::Equation::residual(
+            Expression::FunctionCall {
+                name: VarName::new("Pkg.RecordCtor.result.required").into(),
+                args: vec![],
+                is_constructor: false,
+                span,
+            },
+            span,
+            "record constructor missing required input",
+        ));
+
+        let err = validate_solve_input_appendix_b_invariants(&dae)
+            .expect_err("unfilled constructor input must remain invalid");
+        assert!(
+            err.reason()
+                .contains("required input `required` is unfilled"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn solve_input_validation_checks_record_constructor_projection_defaults() {
+        let span = fixture_span();
+        let mut dae = dae::Dae::default();
+        let mut constructor = Function::new("Pkg.RecordCtor", span);
+        constructor.is_constructor = true;
+        constructor.add_input(FunctionParam::new("value", "Real", span).with_default(
+            Expression::FunctionCall {
+                name: VarName::new("Pkg.missingBody").into(),
+                args: vec![],
+                is_constructor: false,
+                span,
+            },
+        ));
+        constructor.add_output(
+            FunctionParam::new("result", "Pkg.RecordValue", span)
+                .with_type_class(rumoca_core::ClassType::Record),
+        );
+        dae.symbols
+            .functions
+            .insert(VarName::new("Pkg.RecordCtor"), constructor);
+        dae.symbols.functions.insert(
+            VarName::new("Pkg.missingBody"),
+            Function::new("Pkg.missingBody", span),
+        );
+        dae.continuous.equations.push(dae::Equation::residual(
+            Expression::FunctionCall {
+                name: VarName::new("Pkg.RecordCtor.result.value").into(),
+                args: vec![],
+                is_constructor: false,
+                span,
+            },
+            span,
+            "record constructor invalid default",
+        ));
+
+        let err = validate_solve_input_appendix_b_invariants(&dae)
+            .expect_err("constructor input defaults must still be validated");
+        assert!(
+            err.reason().contains("Pkg.missingBody")
+                && err.reason().contains("function has no executable body"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

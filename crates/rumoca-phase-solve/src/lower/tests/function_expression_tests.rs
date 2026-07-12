@@ -2582,3 +2582,37 @@ fn lower_expression_rejects_unknown_record_constructor_input_field_with_span() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn lower_expression_projects_record_constructor_output_field_with_default() {
+    let span = lower_test_span();
+    let mut constructor = rumoca_core::Function::new("Pkg.RecordCtor", span);
+    constructor.is_constructor = true;
+    constructor
+        .inputs
+        .push(rumoca_core::FunctionParam::new("re", "Real", span));
+    constructor
+        .inputs
+        .push(rumoca_core::FunctionParam::new("im", "Real", span).with_default(real_lit(0.0)));
+    constructor.outputs.push(
+        rumoca_core::FunctionParam::new("result", "Pkg.RecordValue", span)
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+
+    let mut functions = IndexMap::new();
+    functions.insert(constructor.name.clone(), constructor);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.RecordCtor.result.im",
+        )),
+        args: vec![real_lit(2.0)],
+        is_constructor: false,
+        span,
+    };
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("record constructor output fields should project from bound inputs");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert_eq!(read_reg(&regs, lowered.result), 0.0);
+}

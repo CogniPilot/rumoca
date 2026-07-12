@@ -4,7 +4,7 @@ use rumoca_eval_dae as eval;
 use rumoca_ir_dae as dae;
 
 use crate::lower::NAMED_FUNCTION_ARG_PREFIX;
-use crate::projection_suffix::parse_output_projection_suffix;
+use crate::projection_suffix::{OutputProjectionSuffix, parse_output_projection_suffix};
 
 type BuiltinFunction = rumoca_core::BuiltinFunction;
 type ComponentReference = rumoca_core::ComponentReference;
@@ -45,10 +45,13 @@ fn resolve_dae_function_by_key<'a>(
         };
 
         if let Some(field) = projection_suffix.output_field.as_deref() {
-            if !output_is_complex_record(output) {
-                return false;
-            }
-            if !matches!(field, "re" | "im") {
+            let constructor_field = function.is_constructor
+                && output.type_class == Some(rumoca_core::ClassType::Record)
+                && function.inputs.iter().any(|input| input.name == field);
+            let ordinary_complex_field = !function.is_constructor
+                && output_is_complex_record(output)
+                && matches!(field, "re" | "im");
+            if !constructor_field && !ordinary_complex_field {
                 return false;
             }
         }
@@ -100,6 +103,127 @@ fn resolve_dae_function_by_key<'a>(
             None
         }
     })
+}
+
+fn resolve_dae_constructor_projection_by_key<'a>(
+    dae: &'a Dae,
+    requested: &str,
+) -> Option<(&'a rumoca_core::Function, OutputProjectionSuffix)> {
+    rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
+        let function = dae.symbols.functions.get(&VarName::new(base_name))?;
+        if !function.is_constructor {
+            return None;
+        }
+        let projection = parse_output_projection_suffix(suffix)?;
+        let output = function
+            .outputs
+            .iter()
+            .find(|output| output.name == projection.output_name)?;
+        let field = projection.output_field.as_deref()?;
+        if output.type_class != Some(rumoca_core::ClassType::Record)
+            || !projection.indices.is_empty()
+            || !function.inputs.iter().any(|input| input.name == field)
+        {
+            return None;
+        }
+        Some((function, projection))
+    })
+}
+
+pub(super) fn validate_constructor_projection_arguments(
+    dae: &Dae,
+    name: &rumoca_core::Reference,
+    args: &[Expression],
+) -> Result<(), FunctionValidationError> {
+    let Some((constructor, _projection)) =
+        resolve_dae_constructor_projection_by_key(dae, name.as_str())
+    else {
+        return Ok(());
+    };
+
+    let mut named_slots = HashSet::new();
+    let mut positional_count = 0usize;
+    for arg in args {
+        let Expression::FunctionCall {
+            name: marker,
+            args: marker_args,
+            ..
+        } = arg
+        else {
+            positional_count += 1;
+            continue;
+        };
+        let Some(slot) = marker.as_str().strip_prefix(NAMED_FUNCTION_ARG_PREFIX) else {
+            positional_count += 1;
+            continue;
+        };
+        if marker_args.len() != 1 {
+            return Err(FunctionValidationError {
+                name: constructor.name.as_str().to_string(),
+                reason: format!("named argument slot `{slot}` must contain exactly one value"),
+            });
+        }
+        if !constructor.inputs.iter().any(|input| input.name == slot) {
+            return Err(FunctionValidationError {
+                name: constructor.name.as_str().to_string(),
+                reason: format!("constructor does not define input `{slot}`"),
+            });
+        }
+        if !named_slots.insert(slot.to_string()) {
+            return Err(FunctionValidationError {
+                name: constructor.name.as_str().to_string(),
+                reason: format!("named argument slot `{slot}` filled more than once"),
+            });
+        }
+    }
+
+    let mut remaining_positional = positional_count;
+    for input in &constructor.inputs {
+        if named_slots.contains(&input.name) {
+            continue;
+        }
+        if remaining_positional > 0 {
+            remaining_positional -= 1;
+            continue;
+        }
+        if input.default.is_none() {
+            return Err(FunctionValidationError {
+                name: constructor.name.as_str().to_string(),
+                reason: format!("required input `{}` is unfilled", input.name),
+            });
+        }
+    }
+    if remaining_positional > 0 {
+        return Err(FunctionValidationError {
+            name: constructor.name.as_str().to_string(),
+            reason: format!(
+                "constructor received {positional_count} positional arguments for {} available input slots",
+                constructor.inputs.len().saturating_sub(named_slots.len())
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn validate_constructor_projection_definition(
+    dae: &Dae,
+    name: &rumoca_core::Reference,
+    validated_functions: &mut HashSet<VarName>,
+    active_stack: &mut HashSet<VarName>,
+    function_param_aliases: &HashSet<VarName>,
+) -> Result<(), FunctionValidationError> {
+    let Some((constructor, _projection)) =
+        resolve_dae_constructor_projection_by_key(dae, name.as_str())
+    else {
+        return Ok(());
+    };
+    validate_called_function_body(
+        dae,
+        &constructor.name,
+        validated_functions,
+        active_stack,
+        function_param_aliases,
+    )
 }
 
 fn dimension_index_in_bounds(index: usize, dim: i64) -> bool {
@@ -171,6 +295,8 @@ pub(super) fn validate_sim_function_call_name(
         return Ok(());
     }
 
+    let constructor_projection =
+        resolve_dae_constructor_projection_by_key(dae, name.as_str()).is_some();
     let Some(func) = resolve_dae_function(dae, name) else {
         return Err(FunctionValidationError {
             name: name.as_str().to_string(),
@@ -191,6 +317,7 @@ pub(super) fn validate_sim_function_call_name(
     if func.external.is_none()
         && func.body.is_empty()
         && !eval::is_runtime_special_function_name(&func.name)
+        && !constructor_projection
     {
         return Err(FunctionValidationError {
             name: func.name.as_str().to_string(),
@@ -623,6 +750,14 @@ pub(super) fn validate_nested_function_call(
     }
 
     if !is_constructor {
+        validate_constructor_projection_arguments(dae, name, args)?;
+        validate_constructor_projection_definition(
+            dae,
+            name,
+            validated_functions,
+            active_stack,
+            function_param_aliases,
+        )?;
         validate_sim_function_call_name(dae, name, function_param_aliases)?;
         if !is_builtin_or_runtime_special(name) && !function_param_aliases.contains(name.var_name())
         {
