@@ -169,6 +169,14 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
     );
     assert_eq!(name.target_def_id(), Some(constructor_def_id));
     assert_eq!(name.component_ref(), Some(&component_ref));
+
+    prune_unreachable_functions(&mut flat);
+    assert!(
+        flat.functions.values().any(|function| {
+            function.def_id == Some(constructor_def_id) && function.is_constructor
+        }),
+        "canonicalized constructor calls must retain their function by instance identity"
+    );
 }
 
 #[test]
@@ -581,6 +589,7 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
     let request = FunctionRequest {
         name: "ReferenceMoistAir.specificEnthalpy_pTX".to_string(),
         target_def_id: Some(inherited_fn_def),
+        target_instance_id: None,
         component_ref: Some(core_comp_ref_with_def_id(
             &["ReferenceMoistAir", "specificEnthalpy_pTX"],
             inherited_fn_def,
@@ -789,18 +798,23 @@ fn validates_flat_boundary_allows_constructors_without_body() {
 
 #[test]
 fn record_function_signature_keeps_constructor_as_structural_dependency() {
+    let record_def_id = rumoca_core::DefId::new(41);
     let mut function = rumoca_core::Function::new("Pkg.makePose", Span::DUMMY);
     function.add_output(
         rumoca_core::FunctionParam::new("pose", "Pkg.Pose", test_span())
-            .with_type_class(rumoca_core::ClassType::Record),
+            .with_type_class(rumoca_core::ClassType::Record)
+            .with_type_def_id(record_def_id),
     );
 
     let dependencies = collect_function_dep_requests(&function);
-    assert!(
-        dependencies
-            .iter()
-            .any(|dependency| dependency.name == "Pkg.Pose"),
-        "record constructors carry field identity and shape metadata needed after flattening"
+    let constructor = dependencies
+        .iter()
+        .find(|dependency| dependency.name == "Pkg.Pose")
+        .expect("record constructor should remain a structural dependency");
+    assert_eq!(
+        constructor.target_def_id,
+        Some(record_def_id),
+        "record constructor dependencies must preserve declaration identity"
     );
 }
 

@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use super::{infer_dims_from_expr, try_eval_const_boolean_with_scope};
+use super::{
+    extract_named_record_constructor_fields, infer_dims_from_expr,
+    try_eval_const_boolean_with_scope,
+};
 use crate::Context;
 use rumoca_ir_ast as ast;
 
@@ -45,6 +48,21 @@ fn unknown_bool_ref(name: &str) -> ast::Expression {
         span: rumoca_core::Span::DUMMY,
         def_id: None,
     })
+}
+
+fn component_ref(path: &str, def_id: Option<rumoca_core::DefId>) -> ast::ComponentReference {
+    ast::ComponentReference {
+        local: false,
+        parts: path
+            .split('.')
+            .map(|part| ast::ComponentRefPart {
+                ident: token(part),
+                subs: None,
+            })
+            .collect(),
+        span: rumoca_core::Span::DUMMY,
+        def_id,
+    }
 }
 
 fn real_binary(
@@ -146,4 +164,34 @@ fn relational_constant_folding_compares_real_values() {
         try_eval_const_boolean_with_scope(&expr, &Context::default(), ""),
         Some(true)
     );
+}
+
+#[test]
+fn named_record_constructor_extraction_preserves_target_identity() {
+    let record_def_id = rumoca_core::DefId::new(42);
+    let expr = ast::Expression::ClassModification {
+        target: component_ref(
+            "Utilities.ParameterRecords.MachineData",
+            Some(record_def_id),
+        ),
+        modifications: vec![ast::Expression::Modification {
+            target: component_ref("PRef", None),
+            value: Arc::new(real_expr("1000.0")),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        each_flags: vec![false],
+        final_flags: vec![false],
+        redeclare_flags: vec![false],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let (constructor, fields) = extract_named_record_constructor_fields(&expr)
+        .expect("named record constructor should be extracted");
+
+    assert_eq!(constructor.target_def_id(), Some(record_def_id));
+    assert_eq!(
+        constructor.as_str(),
+        "Utilities.ParameterRecords.MachineData"
+    );
+    assert_eq!(fields.len(), 1);
 }

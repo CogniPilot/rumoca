@@ -170,6 +170,52 @@ end Derived;
 }
 
 #[test]
+fn test_record_parameter_type_resolves_through_renamed_package_import() {
+    let source = r#"
+package Modelica
+  package Units
+    package SI
+      operator record ComplexVoltage
+        Real re;
+        Real im;
+      end ComplexVoltage;
+    end SI;
+  end Units;
+end Modelica;
+
+package QuasiStatic
+  import SI = Modelica.Units.SI;
+
+  function activePower
+    input SI.ComplexVoltage voltage[:];
+    output Real power;
+  algorithm
+    power := voltage[1].re;
+  end activePower;
+end QuasiStatic;
+"#;
+    let tree = resolve_test_source(source).expect("resolution should succeed");
+    let function = tree
+        .definitions
+        .classes
+        .get("QuasiStatic")
+        .and_then(|package| package.classes.get("activePower"))
+        .expect("QuasiStatic.activePower should exist");
+    let type_name = function
+        .components
+        .get("voltage")
+        .expect("voltage input should exist")
+        .type_def_id
+        .and_then(|def_id| tree.def_map.get(&def_id));
+
+    assert_eq!(
+        type_name.map(String::as_str),
+        Some("Modelica.Units.SI.ComplexVoltage"),
+        "renamed package imports must preserve the record declaration identity"
+    );
+}
+
+#[test]
 fn test_partial_member_under_replaceable_package_is_not_rejected_in_resolve() {
     let source = r#"
 package PartialMedium

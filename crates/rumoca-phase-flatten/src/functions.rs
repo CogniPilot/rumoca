@@ -52,6 +52,7 @@ use crate::source_spans::required_location_span;
 pub(crate) struct FunctionRequest {
     pub(crate) name: String,
     pub(crate) target_def_id: Option<rumoca_core::DefId>,
+    target_instance_id: Option<rumoca_core::FunctionInstanceId>,
     component_ref: Option<rumoca_core::ComponentReference>,
 }
 
@@ -65,6 +66,9 @@ impl FunctionRequest {
         Self {
             name,
             target_def_id: reference.target_def_id(),
+            target_instance_id: reference
+                .resolved_function()
+                .map(|resolved| resolved.instance_id),
             component_ref,
         }
     }
@@ -73,6 +77,7 @@ impl FunctionRequest {
         Self {
             name: component_ref_name(reference),
             target_def_id: reference.def_id,
+            target_instance_id: None,
             component_ref: Some(reference.clone()),
         }
     }
@@ -84,6 +89,7 @@ impl FunctionRequest {
         Self {
             name,
             target_def_id: reference.def_id,
+            target_instance_id: None,
             component_ref: Some(ast_component_ref_to_core(reference)),
         }
     }
@@ -92,6 +98,16 @@ impl FunctionRequest {
         Self {
             name,
             target_def_id: None,
+            target_instance_id: None,
+            component_ref: None,
+        }
+    }
+
+    fn from_type_param(param: &rumoca_core::FunctionParam) -> Self {
+        Self {
+            name: param.type_name.clone(),
+            target_def_id: param.type_def_id,
+            target_instance_id: None,
             component_ref: None,
         }
     }
@@ -153,6 +169,7 @@ struct FunctionIdentitySet {
 #[derive(Clone)]
 struct FunctionIdentity {
     def_id: Option<rumoca_core::DefId>,
+    instance_id: Option<rumoca_core::FunctionInstanceId>,
     name: String,
 }
 
@@ -160,6 +177,7 @@ impl FunctionIdentitySet {
     fn insert_request(&mut self, request: &FunctionRequest) -> bool {
         self.insert_identity(FunctionIdentity {
             def_id: request.target_def_id,
+            instance_id: request.target_instance_id,
             name: request.name.clone(),
         })
     }
@@ -167,14 +185,20 @@ impl FunctionIdentitySet {
     fn insert_function(&mut self, function: &rumoca_core::Function) -> bool {
         self.insert_identity(FunctionIdentity {
             def_id: function.def_id,
+            instance_id: function.instance_id,
             name: function.name.as_str().to_string(),
         })
     }
 
     fn contains_function(&self, function: &rumoca_core::Function) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| same_function_identity(entry, function.def_id, function.name.as_str()))
+        self.entries.iter().any(|entry| {
+            same_function_identity(
+                entry,
+                function.def_id,
+                function.instance_id,
+                function.name.as_str(),
+            )
+        })
     }
 
     fn contains_name(&self, name: &str) -> bool {
@@ -182,11 +206,9 @@ impl FunctionIdentitySet {
     }
 
     fn insert_identity(&mut self, identity: FunctionIdentity) -> bool {
-        if self
-            .entries
-            .iter()
-            .any(|entry| same_function_identity(entry, identity.def_id, &identity.name))
-        {
+        if self.entries.iter().any(|entry| {
+            same_function_identity(entry, identity.def_id, identity.instance_id, &identity.name)
+        }) {
             return false;
         }
         self.entries.push(identity);
@@ -197,8 +219,12 @@ impl FunctionIdentitySet {
 fn same_function_identity(
     left: &FunctionIdentity,
     right_def_id: Option<rumoca_core::DefId>,
+    right_instance_id: Option<rumoca_core::FunctionInstanceId>,
     right_name: &str,
 ) -> bool {
+    if let (Some(left_id), Some(right_id)) = (left.instance_id, right_instance_id) {
+        return left_id == right_id;
+    }
     match (left.def_id, right_def_id) {
         (Some(left_id), Some(right_id)) => left_id == right_id && left.name == right_name,
         _ => left.name == right_name,
@@ -582,6 +608,9 @@ fn request_seen_in_scope(
 }
 
 fn same_function_request(left: &FunctionRequest, right: &FunctionRequest) -> bool {
+    if let (Some(left_id), Some(right_id)) = (left.target_instance_id, right.target_instance_id) {
+        return left_id == right_id;
+    }
     if let (Some(left_ref), Some(right_ref)) = (&left.component_ref, &right.component_ref)
         && left_ref == right_ref
     {
@@ -1406,7 +1435,7 @@ pub(crate) fn collect_function_dep_requests(func: &rumoca_core::Function) -> Vec
         .chain(func.locals.iter())
     {
         if param.type_class == Some(rumoca_core::ClassType::Record) {
-            deps.insert(FunctionRequest::from_name(param.type_name.clone()));
+            deps.insert(FunctionRequest::from_type_param(param));
         }
         if let Some(default) = &param.default {
             collect_from_expression(default, &mut deps);
