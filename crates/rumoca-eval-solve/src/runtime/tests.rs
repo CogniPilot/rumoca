@@ -116,7 +116,7 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
 }
 
 #[test]
-fn projection_refresh_rows_do_not_shadow_direct_assignment_rows() {
+fn projection_refresh_rows_keep_direct_assignments_as_alternatives() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
@@ -158,10 +158,139 @@ fn projection_refresh_rows_do_not_shadow_direct_assignment_rows() {
 
     let plan = valid_algebraic_refresh_plan(&model, &block);
 
-    assert!(!plan.iterative);
+    assert!(plan.iterative);
     assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].row_idx, 0);
+    assert_eq!(plan.rows[0].row_idx, 1);
     assert_eq!(plan.rows[0].target_index, 1);
+    assert_eq!(plan.rows[0].alternatives.len(), 1);
+    assert_eq!(plan.rows[0].alternatives[0].row_idx, 0);
+    assert_eq!(plan.rows[0].alternatives[0].output_offset, 0);
+}
+
+#[test]
+fn refresh_plan_preserves_blt_causal_primary_over_explicit_target() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["a".to_string(), "b".to_string()],
+                    ..Default::default()
+                },
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![positive_sum_residual_row(), positive_sum_residual_row()],
+                    "blt_causal_primary.mo",
+                )),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(0)),
+                    Some(solve::scalar_slot_y(1)),
+                ],
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![0, 1],
+                        y_indices: vec![0, 1],
+                        causal_steps: vec![
+                            solve::AlgebraicProjectionStep { row: 0, y_index: 1 },
+                            solve::AlgebraicProjectionStep { row: 1, y_index: 0 },
+                        ],
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let block =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("valid implicit RHS should prepare");
+
+    let plan = valid_algebraic_refresh_plan(&model, &block);
+    let a = plan
+        .rows
+        .iter()
+        .find(|row| row.target_index == 0)
+        .expect("a should have a refresh producer");
+    let b = plan
+        .rows
+        .iter()
+        .find(|row| row.target_index == 1)
+        .expect("b should have a refresh producer");
+
+    assert_eq!(a.row_idx, 1, "BLT row 1 must remain a's primary");
+    assert_eq!(b.row_idx, 0, "BLT row 0 must remain b's primary");
+    assert_eq!(
+        a.alternatives
+            .iter()
+            .map(|candidate| (candidate.row_idx, candidate.output_offset))
+            .collect::<Vec<_>>(),
+        vec![(0, 0)],
+        "a's direct row should remain only as a deterministic alternative"
+    );
+    assert_eq!(
+        b.alternatives
+            .iter()
+            .map(|candidate| (candidate.row_idx, candidate.output_offset))
+            .collect::<Vec<_>>(),
+        vec![(1, 0)],
+        "b's direct row should remain only as a deterministic alternative"
+    );
+}
+
+#[test]
+fn refresh_plan_rejects_causal_steps_outside_projection_block() {
+    let mut model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![positive_sum_residual_row(), positive_sum_residual_row()],
+                    "causal_step_membership.mo",
+                )),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![0],
+                        y_indices: vec![0],
+                        causal_steps: Vec::new(),
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let block =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("valid implicit RHS should prepare");
+    let invalid_steps = [
+        (
+            solve::AlgebraicProjectionStep { row: 1, y_index: 0 },
+            "row 1 is not a member",
+        ),
+        (
+            solve::AlgebraicProjectionStep { row: 0, y_index: 1 },
+            "target y[1] is not a member",
+        ),
+    ];
+
+    for (step, expected) in invalid_steps {
+        model.problem.continuous.algebraic_projection_plan.blocks[0].causal_steps = vec![step];
+        let error = match build_algebraic_refresh_plan(&model, &block) {
+            Ok(_) => panic!("causal ownership outside its projection block must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(expected),
+            "error should explain invalid causal membership: {error}"
+        );
+    }
 }
 
 #[test]
@@ -509,7 +638,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
 }
 
 #[test]
-fn refresh_uses_projection_alternative_when_parameter_select_deactivates_primary_row() {
+fn refresh_uses_projection_alternative_when_primary_is_runtime_singular() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {

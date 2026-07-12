@@ -111,26 +111,27 @@ pub(crate) fn build_algebraic_refresh_plan(
     block: &PreparedScalarProgramBlock,
 ) -> Result<RefreshPlan, EvalSolveError> {
     let state_count = model.state_scalar_count();
-    let row_target_rows = algebraic_refresh_rows_from_row_targets(model, block, state_count)?;
-    let mut rows_by_target = IndexMap::new();
-    reserve_refresh_index_map_capacity(
-        &mut rows_by_target,
-        row_target_rows.len(),
-        "row-target map",
-        first_block_span(block.block()),
-    )?;
-    for row in row_target_rows {
-        rows_by_target.insert(row.target_index, row);
-    }
     let projection_rows = algebraic_refresh_rows_from_projection_plan(model, block, state_count)?;
+    let span = first_block_span(block.block());
+    let mut rows_by_target = IndexMap::new();
     reserve_refresh_index_map_capacity(
         &mut rows_by_target,
         projection_rows.len(),
         "projection target map",
-        first_block_span(block.block()),
+        span,
     )?;
     for row in projection_rows {
-        rows_by_target.entry(row.target_index).or_insert(row);
+        merge_refresh_row(&mut rows_by_target, row, span)?;
+    }
+    let row_target_rows = algebraic_refresh_rows_from_row_targets(model, block, state_count)?;
+    reserve_refresh_index_map_capacity(
+        &mut rows_by_target,
+        row_target_rows.len(),
+        "row-target map",
+        span,
+    )?;
+    for row in row_target_rows {
+        merge_refresh_row(&mut rows_by_target, row, span)?;
     }
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
@@ -141,6 +142,55 @@ pub(crate) fn build_algebraic_refresh_plan(
     )?;
     rows.extend(rows_by_target.into_values());
     order_refresh_rows(rows, Arc::new(block.block().clone()), state_count)
+}
+
+fn merge_refresh_row(
+    rows_by_target: &mut IndexMap<usize, AlgebraicRefreshRow>,
+    candidate: AlgebraicRefreshRow,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let target_index = candidate.target_index;
+    let Some(primary) = rows_by_target.get_mut(&target_index) else {
+        rows_by_target.insert(target_index, candidate);
+        return Ok(());
+    };
+    append_refresh_alternative(
+        primary,
+        AlgebraicRefreshCandidate {
+            row_idx: candidate.row_idx,
+            output_offset: candidate.output_offset,
+            assignment_target: candidate.assignment_target,
+        },
+        span,
+    )?;
+    for alternative in candidate.alternatives {
+        append_refresh_alternative(primary, alternative, span)?;
+    }
+    Ok(())
+}
+
+fn append_refresh_alternative(
+    primary: &mut AlgebraicRefreshRow,
+    candidate: AlgebraicRefreshCandidate,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let candidate_key = (candidate.row_idx, candidate.output_offset);
+    if candidate_key == (primary.row_idx, primary.output_offset)
+        || primary
+            .alternatives
+            .iter()
+            .any(|existing| (existing.row_idx, existing.output_offset) == candidate_key)
+    {
+        return Ok(());
+    }
+    reserve_refresh_vec_capacity(
+        &mut primary.alternatives,
+        1,
+        "merged refresh alternatives",
+        span,
+    )?;
+    primary.alternatives.push(candidate);
+    Ok(())
 }
 
 fn algebraic_refresh_rows_from_projection_plan(
@@ -169,81 +219,214 @@ fn algebraic_refresh_rows_from_projection_plan(
         first_block_span(block.block()),
     )?;
     for plan_block in &model.problem.continuous.algebraic_projection_plan.blocks {
-        // A coupled block's `rows` and `y_indices` are independent sets (the
-        // unknowns are even sorted), so each row must be paired with an
-        // unknown it actually determines — positional pairing produces a
-        // convergent but wrong system (a gear-torque row "assigned" to an
-        // unrelated flange torque). Pair by maximum bipartite matching over
-        // real incidence, preferring each row's own implicit target.
         let span = plan_block_span(block.block(), &plan_block.rows, &output_row_positions);
-        let mut eligible_ys = Vec::new();
-        reserve_refresh_vec_capacity(
-            &mut eligible_ys,
-            plan_block.y_indices.len(),
-            "projection eligible-y list",
-            span,
-        )?;
-        eligible_ys.extend(
-            plan_block
-                .y_indices
-                .iter()
-                .copied()
-                .filter(|&y| y >= state_count),
-        );
-        let pairs = match_block_rows_to_targets(
-            &plan_block.rows,
-            &eligible_ys,
+        let pairs = projection_refresh_pairs(
+            plan_block,
+            block,
+            state_count,
+            &output_row_positions,
             &assignment_target,
-            |row_idx, y| {
-                output_row_positions
-                    .get(&row_idx)
-                    .is_some_and(|position| block.row_reads_y(position.program_index, y))
-            },
             span,
         )?;
-        let row_capacity = pairs
-            .len()
-            .checked_add(plan_block.causal_steps.len())
-            .ok_or_else(|| refresh_plan_capacity_error("projection refresh rows", span))?;
-        reserve_refresh_vec_capacity(&mut rows, row_capacity, "projection refresh rows", span)?;
-        for (row_idx, target_index) in pairs {
-            let position = required_program_position(&output_row_positions, row_idx, span)?;
-            let alternatives = projection_row_alternatives(
-                block,
-                &plan_block.rows,
-                target_index,
-                &output_row_positions,
-                &assignment_target,
-                span,
-            )?;
-            rows.push(AlgebraicRefreshRow {
-                row_idx: position.program_index,
-                output_offset: position.output_offset,
-                target_index,
-                assignment_target: assignment_target(row_idx),
-                alternatives,
-            });
+        let mut block_rows = projection_refresh_rows_for_pairs(
+            plan_block,
+            block,
+            &output_row_positions,
+            &assignment_target,
+            pairs,
+            span,
+        )?;
+        reserve_refresh_vec_capacity(&mut rows, block_rows.len(), "projection refresh rows", span)?;
+        rows.append(&mut block_rows);
+    }
+    Ok(rows)
+}
+
+struct ProjectionClaims {
+    pairs: Vec<(usize, usize)>,
+    rows: IndexSet<usize>,
+    targets: IndexSet<usize>,
+}
+
+fn projection_refresh_pairs(
+    plan_block: &solve::AlgebraicProjectionBlock,
+    block: &PreparedScalarProgramBlock,
+    state_count: usize,
+    output_row_positions: &IndexMap<usize, OutputRowPosition>,
+    assignment_target: &dyn Fn(usize) -> Option<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<(usize, usize)>, EvalSolveError> {
+    let eligible_ys = projection_eligible_targets(plan_block, state_count, span)?;
+    let mut claims = projection_causal_claims(plan_block, state_count, span)?;
+    let remaining_rows = unclaimed_projection_values(
+        &plan_block.rows,
+        &claims.rows,
+        "projection unmatched rows",
+        span,
+    )?;
+    let remaining_ys = unclaimed_projection_values(
+        &eligible_ys,
+        &claims.targets,
+        "projection unmatched targets",
+        span,
+    )?;
+    let unmatched = match_block_rows_to_targets(
+        &remaining_rows,
+        &remaining_ys,
+        assignment_target,
+        |row_idx, y| {
+            output_row_positions
+                .get(&row_idx)
+                .is_some_and(|position| block.row_reads_y(position.program_index, y))
+        },
+        span,
+    )?;
+    reserve_refresh_vec_capacity(
+        &mut claims.pairs,
+        unmatched.len(),
+        "projection unmatched refresh pairs",
+        span,
+    )?;
+    claims.pairs.extend(unmatched);
+    Ok(claims.pairs)
+}
+
+fn projection_eligible_targets(
+    plan_block: &solve::AlgebraicProjectionBlock,
+    state_count: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<usize>, EvalSolveError> {
+    let mut targets = Vec::new();
+    reserve_refresh_vec_capacity(
+        &mut targets,
+        plan_block.y_indices.len(),
+        "projection eligible-y list",
+        span,
+    )?;
+    targets.extend(
+        plan_block
+            .y_indices
+            .iter()
+            .copied()
+            .filter(|target| *target >= state_count),
+    );
+    Ok(targets)
+}
+
+fn projection_causal_claims(
+    plan_block: &solve::AlgebraicProjectionBlock,
+    state_count: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<ProjectionClaims, EvalSolveError> {
+    let mut claims = ProjectionClaims {
+        pairs: Vec::new(),
+        rows: IndexSet::new(),
+        targets: IndexSet::new(),
+    };
+    reserve_refresh_vec_capacity(
+        &mut claims.pairs,
+        plan_block.causal_steps.len(),
+        "projection causal pairs",
+        span,
+    )?;
+    reserve_refresh_index_set_capacity(
+        &mut claims.rows,
+        plan_block.causal_steps.len(),
+        "projection claimed rows",
+        span,
+    )?;
+    reserve_refresh_index_set_capacity(
+        &mut claims.targets,
+        plan_block.causal_steps.len(),
+        "projection claimed targets",
+        span,
+    )?;
+    for step in &plan_block.causal_steps {
+        validate_projection_causal_step(plan_block, step, span)?;
+        if step.y_index < state_count
+            || claims.rows.contains(&step.row)
+            || claims.targets.contains(&step.y_index)
+        {
+            continue;
         }
-        for step in &plan_block.causal_steps {
-            if step.y_index >= state_count {
-                let position = required_program_position(&output_row_positions, step.row, span)?;
-                let alternatives = projection_row_alternatives(
-                    block,
-                    &plan_block.rows,
-                    step.y_index,
-                    &output_row_positions,
-                    &assignment_target,
-                    span,
-                )?;
-                rows.push(AlgebraicRefreshRow {
-                    row_idx: position.program_index,
-                    output_offset: position.output_offset,
-                    target_index: step.y_index,
-                    assignment_target: assignment_target(step.row),
-                    alternatives,
-                });
-            }
-        }
+        claims.rows.insert(step.row);
+        claims.targets.insert(step.y_index);
+        claims.pairs.push((step.row, step.y_index));
+    }
+    Ok(claims)
+}
+
+fn validate_projection_causal_step(
+    plan_block: &solve::AlgebraicProjectionBlock,
+    step: &solve::AlgebraicProjectionStep,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    if !plan_block.rows.contains(&step.row) {
+        return Err(EvalSolveError::InvalidRow {
+            message: format!(
+                "algebraic projection causal step row {} is not a member of its block",
+                step.row
+            ),
+            span,
+        });
+    }
+    if !plan_block.y_indices.contains(&step.y_index) {
+        return Err(EvalSolveError::InvalidRow {
+            message: format!(
+                "algebraic projection causal step target y[{}] is not a member of its block",
+                step.y_index
+            ),
+            span,
+        });
+    }
+    Ok(())
+}
+
+fn unclaimed_projection_values(
+    values: &[usize],
+    claimed: &IndexSet<usize>,
+    context: &'static str,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<usize>, EvalSolveError> {
+    let mut remaining = Vec::new();
+    reserve_refresh_vec_capacity(&mut remaining, values.len(), context, span)?;
+    remaining.extend(
+        values
+            .iter()
+            .copied()
+            .filter(|value| !claimed.contains(value)),
+    );
+    Ok(remaining)
+}
+
+fn projection_refresh_rows_for_pairs(
+    plan_block: &solve::AlgebraicProjectionBlock,
+    block: &PreparedScalarProgramBlock,
+    output_row_positions: &IndexMap<usize, OutputRowPosition>,
+    assignment_target: &dyn Fn(usize) -> Option<usize>,
+    pairs: Vec<(usize, usize)>,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<AlgebraicRefreshRow>, EvalSolveError> {
+    let mut rows = Vec::new();
+    reserve_refresh_vec_capacity(&mut rows, pairs.len(), "projection block rows", span)?;
+    for (row_idx, target_index) in pairs {
+        let position = required_program_position(output_row_positions, row_idx, span)?;
+        let alternatives = projection_row_alternatives(
+            block,
+            &plan_block.rows,
+            target_index,
+            output_row_positions,
+            assignment_target,
+            position,
+            span,
+        )?;
+        rows.push(AlgebraicRefreshRow {
+            row_idx: position.program_index,
+            output_offset: position.output_offset,
+            target_index,
+            assignment_target: assignment_target(row_idx),
+            alternatives,
+        });
     }
     Ok(rows)
 }
@@ -410,6 +593,7 @@ fn projection_row_alternatives(
     target_index: usize,
     output_row_positions: &IndexMap<usize, OutputRowPosition>,
     assignment_target: &dyn Fn(usize) -> Option<usize>,
+    primary_position: OutputRowPosition,
     span: Option<rumoca_core::Span>,
 ) -> Result<Vec<AlgebraicRefreshCandidate>, EvalSolveError> {
     let mut alternatives = Vec::new();
@@ -419,9 +603,22 @@ fn projection_row_alternatives(
         "projection row alternatives",
         span,
     )?;
+    let mut seen = IndexSet::new();
+    reserve_refresh_index_set_capacity(
+        &mut seen,
+        rows.len(),
+        "projection alternative positions",
+        span,
+    )?;
     for &row_idx in rows {
         let position = required_program_position(output_row_positions, row_idx, span)?;
-        if !block.row_reads_y(position.program_index, target_index) {
+        let position_key = (position.program_index, position.output_offset);
+        let direct_assignment = assignment_target(row_idx) == Some(target_index)
+            && block.can_evaluate_target_assignment(position.program_index, target_index);
+        if position == primary_position
+            || !seen.insert(position_key)
+            || (!block.row_reads_y(position.program_index, target_index) && !direct_assignment)
+        {
             continue;
         }
         alternatives.push(AlgebraicRefreshCandidate {
@@ -468,8 +665,8 @@ fn build_dependency_refresh_plan(
         "dependency target-to-row map",
         span,
     )?;
-    for row in &full_plan.rows {
-        target_to_row.insert(row.target_index, row.row_idx);
+    for (row_pos, row) in full_plan.rows.iter().enumerate() {
+        target_to_row.insert(row.target_index, row_pos);
     }
     let mut needed = IndexSet::new();
     reserve_refresh_index_set_capacity(
@@ -496,17 +693,18 @@ fn build_dependency_refresh_plan(
         if !needed.insert(index) {
             continue;
         }
-        let Some(row_idx) = target_to_row.get(&index).copied() else {
+        let Some(row_pos) = target_to_row.get(&index).copied() else {
             reserve_refresh_index_set_capacity(&mut missing, 1, "dependency missing set", span)?;
             missing.insert(index);
             continue;
         };
-        for dep in row_all_y_dependencies(implicit_block, row_idx) {
-            if dep >= state_count {
-                reserve_refresh_vec_capacity(&mut stack, 1, "dependency stack", span)?;
-                stack.push(dep);
-            }
-        }
+        push_refresh_dependencies(
+            &full_plan.rows[row_pos],
+            implicit_block,
+            state_count,
+            &mut stack,
+            span,
+        )?;
     }
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
@@ -533,6 +731,23 @@ fn build_dependency_refresh_plan(
     Ok(plan)
 }
 
+fn push_refresh_dependencies(
+    row: &AlgebraicRefreshRow,
+    block: &solve::ScalarProgramBlock,
+    state_count: usize,
+    stack: &mut Vec<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let dependencies = refresh_row_program_indices(row)
+        .flat_map(|row_idx| row_all_y_dependencies(block, row_idx))
+        .filter(|dep| *dep >= state_count);
+    for dep in dependencies {
+        reserve_refresh_vec_capacity(stack, 1, "dependency stack", span)?;
+        stack.push(dep);
+    }
+    Ok(())
+}
+
 fn order_refresh_rows(
     rows: Vec<AlgebraicRefreshRow>,
     block: Arc<solve::ScalarProgramBlock>,
@@ -556,25 +771,15 @@ fn order_refresh_rows(
     reserve_refresh_vec_capacity(&mut indegree, rows.len(), "refresh order indegree", span)?;
     indegree.resize(rows.len(), 0usize);
     for (row_pos, row) in rows.iter().enumerate() {
-        let Some(ops) = block.programs.get(row.row_idx) else {
-            continue;
-        };
-        for dep_index in row_y_dependencies(ops, row.target_index, state_count) {
-            let Some(&dep_pos) = producer_by_target.get(&dep_index) else {
-                continue;
-            };
-            if dep_pos == row_pos || edges[dep_pos].contains(&row_pos) {
-                continue;
-            }
-            reserve_refresh_vec_capacity(
-                &mut edges[dep_pos],
-                1,
-                "refresh order edge list",
-                row_span(&block, row.row_idx),
-            )?;
-            edges[dep_pos].push(row_pos);
-            indegree[row_pos] += 1;
-        }
+        add_refresh_row_edges(
+            row_pos,
+            row,
+            &block,
+            state_count,
+            &producer_by_target,
+            &mut edges,
+            &mut indegree,
+        )?;
     }
     let mut ready = VecDeque::new();
     reserve_refresh_deque_capacity(&mut ready, rows.len(), "refresh order queue", span)?;
@@ -602,10 +807,15 @@ fn order_refresh_rows(
     // would otherwise be left one secant step short of convergence.
     let mut self_nonlinear = false;
     for row in &ordered {
-        if let Some(ops) = block.programs.get(row.row_idx)
-            && row_is_nonlinear_in_target(ops, row.target_index)?
-        {
-            self_nonlinear = true;
+        for program_idx in refresh_row_program_indices(row) {
+            if let Some(ops) = block.programs.get(program_idx)
+                && row_is_nonlinear_in_target(ops, row.target_index)?
+            {
+                self_nonlinear = true;
+                break;
+            }
+        }
+        if self_nonlinear {
             break;
         }
     }
@@ -633,6 +843,45 @@ fn order_refresh_rows(
         missing_dependencies: Vec::new(),
         iterative: requires_iteration,
     })
+}
+
+fn add_refresh_row_edges(
+    row_pos: usize,
+    row: &AlgebraicRefreshRow,
+    block: &solve::ScalarProgramBlock,
+    state_count: usize,
+    producer_by_target: &IndexMap<usize, usize>,
+    edges: &mut [Vec<usize>],
+    indegree: &mut [usize],
+) -> Result<(), EvalSolveError> {
+    let target_index = row.target_index;
+    let dependencies = refresh_row_program_indices(row).flat_map(|program_idx| {
+        block
+            .programs
+            .get(program_idx)
+            .into_iter()
+            .flat_map(move |ops| {
+                row_y_dependencies(ops, target_index, state_count)
+                    .map(move |dep_index| (program_idx, dep_index))
+            })
+    });
+    for (program_idx, dep_index) in dependencies {
+        let Some(&dep_pos) = producer_by_target.get(&dep_index) else {
+            continue;
+        };
+        if dep_pos == row_pos || edges[dep_pos].contains(&row_pos) {
+            continue;
+        }
+        reserve_refresh_vec_capacity(
+            &mut edges[dep_pos],
+            1,
+            "refresh order edge list",
+            row_span(block, program_idx),
+        )?;
+        edges[dep_pos].push(row_pos);
+        indegree[row_pos] += 1;
+    }
+    Ok(())
 }
 
 /// How a register's value depends on the refresh row's own target solver-Y slot,
@@ -955,6 +1204,10 @@ fn row_all_y_dependencies(
         })
 }
 
+fn refresh_row_program_indices(row: &AlgebraicRefreshRow) -> impl Iterator<Item = usize> + '_ {
+    std::iter::once(row.row_idx).chain(row.alternatives.iter().map(|candidate| candidate.row_idx))
+}
+
 fn first_block_span(block: &solve::ScalarProgramBlock) -> Option<rumoca_core::Span> {
     block.first_source_span()
 }
@@ -974,7 +1227,7 @@ fn plan_block_span(
         .or_else(|| first_block_span(block))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct OutputRowPosition {
     program_index: usize,
     output_offset: usize,
@@ -1119,6 +1372,17 @@ fn refresh_plan_capacity_error(
 mod tests {
     use super::*;
 
+    fn test_block(rows: Vec<Vec<solve::LinearOp>>) -> solve::ScalarProgramBlock {
+        solve::ScalarProgramBlock::with_source_span(
+            rows,
+            rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("refresh_plan_test.mo"),
+                1,
+                2,
+            ),
+        )
+    }
+
     #[test]
     fn block_matching_keeps_rows_on_their_own_targets() {
         let rows = [0, 1];
@@ -1134,5 +1398,110 @@ mod tests {
 
         assert!(pairs.contains(&(0, 10)));
         assert!(!pairs.contains(&(0, 11)));
+    }
+
+    #[test]
+    fn dependency_refresh_plan_includes_alternative_row_dependencies() {
+        let model = solve::SolveModel {
+            problem: solve::SolveProblem {
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    algebraic_scalar_count: 2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let block = Arc::new(test_block(vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ]));
+        let full_plan = RefreshPlan {
+            source_block: block,
+            rows: vec![
+                AlgebraicRefreshRow {
+                    row_idx: 0,
+                    output_offset: 0,
+                    target_index: 1,
+                    assignment_target: None,
+                    alternatives: vec![AlgebraicRefreshCandidate {
+                        row_idx: 1,
+                        output_offset: 0,
+                        assignment_target: None,
+                    }],
+                },
+                AlgebraicRefreshRow {
+                    row_idx: 2,
+                    output_offset: 0,
+                    target_index: 2,
+                    assignment_target: None,
+                    alternatives: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut initial_deps = IndexSet::new();
+        initial_deps.insert(1);
+
+        let plan = build_dependency_refresh_plan(&model, &full_plan, initial_deps)
+            .expect("alternative dependency plan should build");
+
+        assert_eq!(
+            plan.rows
+                .iter()
+                .map(|row| row.target_index)
+                .collect::<Vec<_>>(),
+            vec![2, 1],
+            "the alternative's producer must precede the target that may use it"
+        );
+    }
+
+    #[test]
+    fn refresh_plan_is_iterative_when_alternative_is_nonlinear() {
+        let block = Arc::new(test_block(vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::Binary {
+                    dst: 1,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 0,
+                },
+                solve::LinearOp::StoreOutput { src: 1 },
+            ],
+        ]));
+        let rows = vec![AlgebraicRefreshRow {
+            row_idx: 0,
+            output_offset: 0,
+            target_index: 1,
+            assignment_target: None,
+            alternatives: vec![AlgebraicRefreshCandidate {
+                row_idx: 1,
+                output_offset: 0,
+                assignment_target: None,
+            }],
+        }];
+
+        let plan = order_refresh_rows(rows, block, 1).expect("refresh plan should order");
+
+        assert!(
+            plan.iterative,
+            "a nonlinear alternative needs the same iterative convergence guard as the primary"
+        );
     }
 }
