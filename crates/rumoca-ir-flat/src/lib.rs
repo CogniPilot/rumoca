@@ -201,13 +201,12 @@ impl Model {
 
     /// Add a function definition to the model.
     pub fn add_function(&mut self, mut func: Function) {
-        if func.instance_id.is_none() {
-            func.instance_id = self
-                .functions
-                .get(&func.name)
-                .and_then(|existing| existing.instance_id)
-                .or_else(|| next_function_instance_id(&self.functions));
-        }
+        let instance_id = self
+            .functions
+            .get(&func.name)
+            .and_then(|existing| existing.instance_id)
+            .unwrap_or_else(|| next_function_instance_id(&self.functions));
+        func.instance_id = Some(instance_id);
         self.functions.insert(func.name.clone(), func);
     }
 
@@ -273,6 +272,7 @@ impl Model {
                 .validate_shape_contract()
                 .map_err(ModelShapeContractError::Variable)?;
         }
+        let mut function_instances = IndexMap::new();
         for (key, function) in &self.functions {
             if key != &function.name {
                 return Err(ModelShapeContractError::FunctionKeyNameMismatch {
@@ -284,21 +284,38 @@ impl Model {
             function
                 .validate_shape_contract()
                 .map_err(ModelShapeContractError::Function)?;
+            let instance_id = function.instance_id.ok_or_else(|| {
+                ModelShapeContractError::MissingFunctionInstanceId {
+                    function: function.name.clone(),
+                    span: function.span,
+                }
+            })?;
+            if let Some(first) = function_instances.insert(instance_id, function.name.clone()) {
+                return Err(ModelShapeContractError::DuplicateFunctionInstanceId {
+                    instance_id,
+                    first,
+                    second: function.name.clone(),
+                    span: function.span,
+                });
+            }
         }
         Ok(())
     }
 }
 
-fn next_function_instance_id(functions: &VarNameIndexMap<Function>) -> Option<FunctionInstanceId> {
+fn next_function_instance_id(functions: &VarNameIndexMap<Function>) -> FunctionInstanceId {
     let Some(last) = functions
         .values()
         .filter_map(|function| function.instance_id)
         .map(FunctionInstanceId::index)
         .max()
     else {
-        return Some(FunctionInstanceId::new(0));
+        return FunctionInstanceId::new(0);
     };
-    last.checked_add(1).map(FunctionInstanceId::new)
+    FunctionInstanceId::new(
+        last.checked_add(1)
+            .expect("Flat function instance identity space exhausted"),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +332,16 @@ pub enum ModelShapeContractError {
         name: VarName,
         span: Span,
     },
+    MissingFunctionInstanceId {
+        function: VarName,
+        span: Span,
+    },
+    DuplicateFunctionInstanceId {
+        instance_id: FunctionInstanceId,
+        first: VarName,
+        second: VarName,
+        span: Span,
+    },
 }
 
 impl ModelShapeContractError {
@@ -323,7 +350,9 @@ impl ModelShapeContractError {
             Self::Variable(error) => error.span(),
             Self::Function(error) => error.span(),
             Self::VariableKeyNameMismatch { span, .. }
-            | Self::FunctionKeyNameMismatch { span, .. } => *span,
+            | Self::FunctionKeyNameMismatch { span, .. }
+            | Self::MissingFunctionInstanceId { span, .. }
+            | Self::DuplicateFunctionInstanceId { span, .. } => *span,
         }
     }
 }
@@ -582,8 +611,12 @@ mod variable_shape_contract_tests {
     #[test]
     fn add_function_assigns_stable_distinct_exposure_identities() {
         let mut model = Model::new();
-        model.add_function(Function::new("Pkg.A.f", test_span()));
-        model.add_function(Function::new("Pkg.B.f", test_span()));
+        let mut a = Function::new("Pkg.A.f", test_span());
+        a.instance_id = Some(FunctionInstanceId::new(99));
+        let mut b = Function::new("Pkg.B.f", test_span());
+        b.instance_id = Some(FunctionInstanceId::new(99));
+        model.add_function(a);
+        model.add_function(b);
 
         let a_id = model.functions[&VarName::new("Pkg.A.f")]
             .instance_id
@@ -598,6 +631,41 @@ mod variable_shape_contract_tests {
             model.functions[&VarName::new("Pkg.A.f")].instance_id,
             Some(a_id),
             "replacing an exposed definition must preserve its identity"
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_missing_function_instance_identity() {
+        let mut model = Model::new();
+        let function = Function::new("Pkg.f", test_span());
+        model.functions.insert(function.name.clone(), function);
+
+        assert_eq!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::MissingFunctionInstanceId {
+                function: VarName::new("Pkg.f"),
+                span: test_span(),
+            })
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_duplicate_function_instance_identity() {
+        let mut model = Model::new();
+        for name in ["Pkg.A.f", "Pkg.B.f"] {
+            let mut function = Function::new(name, test_span());
+            function.instance_id = Some(FunctionInstanceId::new(7));
+            model.functions.insert(function.name.clone(), function);
+        }
+
+        assert_eq!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::DuplicateFunctionInstanceId {
+                instance_id: FunctionInstanceId::new(7),
+                first: VarName::new("Pkg.A.f"),
+                second: VarName::new("Pkg.B.f"),
+                span: test_span(),
+            })
         );
     }
 

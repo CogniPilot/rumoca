@@ -669,6 +669,7 @@ pub(crate) fn canonicalize_collected_function_calls(
     }
     let mut rewriter = CollectedFunctionCallCanonicalizer {
         canonical_functions,
+        error: None,
     };
 
     for var in flat.variables.values_mut() {
@@ -736,7 +737,10 @@ pub(crate) fn canonicalize_collected_function_calls(
             *statement = rewriter.rewrite_statement(statement);
         }
     }
-    Ok(())
+    match rewriter.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn canonicalize_when_equations(
@@ -797,6 +801,7 @@ struct CanonicalFunction {
 
 struct CollectedFunctionCallCanonicalizer {
     canonical_functions: Vec<CanonicalFunction>,
+    error: Option<FlattenError>,
 }
 
 impl CollectedFunctionCallCanonicalizer {
@@ -809,12 +814,6 @@ impl CollectedFunctionCallCanonicalizer {
                 .canonical_functions
                 .iter()
                 .find(|function| function.instance_id == resolved.instance_id);
-        }
-        if reference
-            .component_ref()
-            .is_some_and(|component_ref| component_ref.to_var_name() != *reference.var_name())
-        {
-            return None;
         }
         let exact = self
             .canonical_functions
@@ -847,6 +846,18 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
         else {
             return self.walk_expression(expr);
         };
+        if let Some(component_ref) = name.component_ref()
+            && component_ref.to_var_name() != *name.var_name()
+        {
+            self.error.get_or_insert_with(|| {
+                FlattenError::inconsistent_function_reference(
+                    name.as_str(),
+                    component_ref.to_var_name().as_str(),
+                    *span,
+                )
+            });
+            return self.walk_expression(expr);
+        }
         let args = self.rewrite_expressions(args);
         if let Some(canonical) = self.canonical_function_for_reference(name) {
             let base_part_count = name

@@ -212,26 +212,23 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
             ),
             args: vec![],
             is_constructor: false,
-            span: Span::DUMMY,
+            span: test_span(),
         },
-        Span::DUMMY,
+        test_span(),
         rumoca_ir_flat::EquationOrigin::ComponentEquation {
             component: "test".to_string(),
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    let error = canonicalize_collected_function_calls(&mut flat)
+        .expect_err("conflicting function identities must fail at the Flat boundary");
 
-    let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
-        panic!("expected function call residual");
-    };
-    assert_eq!(
-        name.as_str(),
-        "Modelica.Media.Interfaces.PartialMedium.setState_pTX"
-    );
-    assert_eq!(name.target_def_id(), Some(function_def_id));
-    assert_eq!(name.component_ref(), Some(&component_ref));
-    assert_eq!(name.resolved_function(), None);
+    assert!(matches!(
+        error,
+        FlattenError::InconsistentFunctionReference { rendered, structured, .. }
+            if rendered == "Modelica.Media.Interfaces.PartialMedium.setState_pTX"
+                && structured == "Modelica.Media.Air.ReferenceMoistAir.setState_pTX"
+    ));
 }
 
 #[test]
