@@ -14,11 +14,11 @@ use crate::initial_values::apply_initial_equations_to_start_values;
 #[cfg(test)]
 use rumoca_eval_dae::build_runtime_parameter_tail_env_with_runtime;
 use rumoca_eval_dae::constant::eval_scalar_const_expr;
-#[cfg(test)]
-use rumoca_eval_dae::eval::external_table_data_for_parameter_values_in;
-use rumoca_eval_dae::eval::{EvalError, EvalRuntimeState, eval_shaped_array_values};
+use rumoca_eval_dae::eval::{
+    EvalError, EvalRuntimeState, eval_shaped_array_values,
+    external_table_data_for_parameter_values_in,
+};
 use rumoca_eval_dae::{
-    all_external_table_data_in_env,
     build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime,
     build_runtime_parameter_tail_env_with_declared_slots_and_runtime, can_broadcast_start_value,
     eval_expr, start_expr_is_nonnumeric,
@@ -445,7 +445,10 @@ fn lower_dae_to_solve_model_inner(
         eval_runtime,
     )
     .map_err(|source| runtime_tail_error(&dae_model, source))?;
-    let external_tables = external_table_data_for_parameter_values_in(&table_env, &parameters);
+    let external_tables = merged_external_tables(
+        crate::lower::external_table_data_for_dae(&dae_model)?,
+        external_table_data_for_parameter_values_in(&table_env, &parameters),
+    );
     crate::timing::log_stage("model.external_tables", timer);
     let (visible_names, visible_value_rows, variable_meta) = lower_runtime_visible_outputs(
         &dae_model,
@@ -465,6 +468,36 @@ fn lower_dae_to_solve_model_inner(
         visible_value_rows,
         variable_meta,
     })
+}
+
+fn merged_external_tables(
+    mut tables: Vec<rumoca_core::ExternalTableData>,
+    parameter_tables: Vec<rumoca_core::ExternalTableData>,
+) -> Vec<rumoca_core::ExternalTableData> {
+    let mut seen = tables.iter().map(|table| table.id).collect::<HashSet<_>>();
+    tables.extend(
+        parameter_tables
+            .into_iter()
+            .filter(|table| seen.insert(table.id)),
+    );
+    tables.sort_by_key(|table| table.id);
+    tables
+}
+
+#[cfg(test)]
+#[test]
+fn merged_external_tables_deduplicates_and_sorts_explicit_and_parameter_tables() {
+    let table = |id| rumoca_core::ExternalTableData {
+        id,
+        ..Default::default()
+    };
+
+    let merged = merged_external_tables(vec![table(3), table(1)], vec![table(2), table(3)]);
+
+    assert_eq!(
+        merged.iter().map(|table| table.id).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
 }
 
 fn lower_contract_violation(reason: String, span: rumoca_core::Span) -> LowerError {

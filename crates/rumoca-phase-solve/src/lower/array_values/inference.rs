@@ -1229,6 +1229,54 @@ impl<'a> LowerBuilder<'a> {
     }
 }
 
+fn record_array_prefix_index(
+    base_ref: &rumoca_core::ComponentReference,
+    candidate_ref: &rumoca_core::ComponentReference,
+) -> Result<Option<usize>, LowerError> {
+    let prefix_len = base_ref.parts.len();
+    if candidate_ref.parts.len() <= prefix_len || candidate_ref.local != base_ref.local {
+        return Ok(None);
+    }
+    let mut index = None;
+    for (base, candidate) in base_ref
+        .parts
+        .iter()
+        .zip(candidate_ref.parts[..prefix_len].iter())
+    {
+        if base.ident != candidate.ident || !base.subs.is_empty() {
+            return Ok(None);
+        }
+        match candidate.subs.as_slice() {
+            [] => {}
+            [subscript] if index.is_none() => {
+                index = Some(static_positive_subscript_index(subscript)?);
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(index)
+}
+
+fn static_positive_subscript_index(
+    subscript: &rumoca_core::Subscript,
+) -> Result<usize, LowerError> {
+    match subscript {
+        rumoca_core::Subscript::Index { value, span } if *value > 0 => {
+            crate::lower::helpers::positive_i64_index(*value, *span)
+        }
+        rumoca_core::Subscript::Index { span, .. } => Err(unsupported_at(
+            "non-positive record-array aggregate index is unsupported",
+            *span,
+        )),
+        rumoca_core::Subscript::Colon { span } | rumoca_core::Subscript::Expr { span, .. } => {
+            Err(unsupported_at(
+                "dynamic record-array aggregate index is unsupported in shape inference",
+                *span,
+            ))
+        }
+    }
+}
+
 fn var_ref_is_translation_constant(
     variables: &dae::DaeVariables,
     name: &rumoca_core::Reference,
@@ -1291,16 +1339,6 @@ fn scalar_singleton_projection(subscripts: &[rumoca_core::Subscript]) -> bool {
             rumoca_core::Subscript::Colon { .. } => true,
             rumoca_core::Subscript::Expr { .. } => false,
         })
-}
-
-fn subscript_preserves_slice_dimension(subscript: &rumoca_core::Subscript) -> bool {
-    match subscript {
-        rumoca_core::Subscript::Colon { .. } => true,
-        rumoca_core::Subscript::Expr { expr, .. } => {
-            matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
-        }
-        rumoca_core::Subscript::Index { .. } => false,
-    }
 }
 
 pub(super) fn concrete_i64_dims(

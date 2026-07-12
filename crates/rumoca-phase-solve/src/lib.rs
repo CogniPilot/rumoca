@@ -344,6 +344,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         },
     )
     .map_err(|err| lower_problem_context(err, "lower continuous residual rows and targets"))?;
+    dedupe_continuous_y_targets(&mut residual_targets);
     timing::log_stage("problem.lower_residual_rows", timer);
     // Derivative lowering must LOAD retained algebraic unknowns from their projected
     // slot rather than inline their definitions (roadmap 4b): inlining a boundary cell
@@ -752,26 +753,6 @@ fn lower_initialization_system(
         residual,
         update_rhs,
         update_targets,
-    })
-}
-
-fn lower_initialization_updates_only(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-) -> Result<solve::InitializationSolveSystem, LowerError> {
-    let update_equations = lower::initial_condition_update_equations(dae_model)
-        .map_err(|err| lower_problem_context(err, "collect initial condition updates"))?;
-    Ok(solve::InitializationSolveSystem {
-        update_rhs: solve::ScalarProgramBlock::with_program_spans(
-            lower_initial_update_rhs(dae_model, layout)
-                .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
-            program_spans_for_owned_equations(&update_equations)?,
-        )?,
-        update_targets: lower_update_targets_from_equations(dae_model, layout, &update_equations)
-            .map_err(|err| {
-            lower_problem_context(err, "lower initial update targets")
-        })?,
-        ..Default::default()
     })
 }
 

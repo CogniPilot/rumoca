@@ -278,3 +278,153 @@ git commit -m "fix(ci): reconcile DAE merge artifacts"
 ```
 
 Expected: repository lint exits 0 and the commit contains only the named files.
+
+---
+
+### Task 4: Reconcile phase-solve merge artifacts
+
+**Files:**
+- Modify: `crates/rumoca-phase-solve/src/lib.rs`
+- Modify: `crates/rumoca-phase-solve/src/solve_model.rs`
+- Modify: `crates/rumoca-phase-solve/src/lower/array_values/inference.rs`
+- Test: focused tests colocated with the three files above
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: parent1 residual-target/runtime-table/record-array mechanisms at `84e6cfc0` and upstream parameter-filtered runtime tables at `24209c80`.
+- Produces: one initialization helper, deduplicated continuous targets, stable union of DAE and referenced runtime tables, and complete record-array dimension inference.
+
+- [x] **Step 1: Verify phase-solve RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca-phase-solve
+```
+
+Expected: FAIL on duplicate `lower_initialization_updates_only`, missing table merge/helper symbols, missing record-array index helpers, and strict-lint fallout.
+
+- [x] **Step 2: Repair `lib.rs` merge hunks**
+
+Keep exactly one `lower_initialization_updates_only`. Restore `dedupe_continuous_y_targets(&mut residual_targets)` immediately after residual-target generation in the rows-and-targets path; do not remove the mutable collection or import. Preserve the first matching Y slot for duplicate targets.
+
+- [x] **Step 3: Repair runtime external-table composition**
+
+In `solve_model.rs`, build `merged_external_tables` from the explicit DAE tables returned by `external_table_data_for_dae(&dae_model)?` plus only runtime tables referenced by parameters from `external_table_data_for_parameter_values_in(env, parameters)`. Deduplicate by table identity and produce stable ordering. Do not restore the old all-environment scan.
+
+- [x] **Step 4: Restore record-array inference helpers**
+
+In `lower/array_values/inference.rs`, restore parent1 `record_array_prefix_index` and `static_positive_subscript_index`, preserving the existing `infer_record_array_aggregate_dims` call. Static positive subscripts contribute an aggregate extent; dynamic, zero, and negative subscripts must retain the existing error behavior.
+
+- [x] **Step 5: Verify focused GREEN and strict crate lint**
+
+```bash
+rustup run nightly-2026-02-27 cargo check -p rumoca-phase-solve
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve lower_initialization_updates_only
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve continuous_row_targets
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve external_table_and_random_tests
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve lower_expression_binds_singleton_vectorized_record_array_field_to_vector_input
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve rejects_non_singleton_vectorized_record_array_field
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-solve --all-targets --all-features -- -D warnings
+```
+
+Expected: all commands exit 0.
+
+- [x] **Step 6: Commit**
+
+```bash
+git diff --check
+git add crates/rumoca-phase-solve/src/lib.rs \
+  crates/rumoca-phase-solve/src/solve_model.rs \
+  crates/rumoca-phase-solve/src/lower/array_values/inference.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit -m "fix(ci): reconcile solve merge artifacts"
+```
+
+---
+
+### Task 5: Restore the codegen JSON filter registration
+
+**Files:**
+- Modify: `crates/rumoca-phase-codegen/src/codegen/mod.rs`
+- Test: existing `codegen_tests::test_json_filter`
+
+**Interfaces:**
+- Consumes: parent1 `json_filter` implementation and its existing test.
+- Produces: a Minijinja environment where the `json` filter is registered by `add_basic_filters`.
+
+- [ ] **Step 1: Verify RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-codegen --all-targets --all-features -- -D warnings
+```
+
+Expected: FAIL because `json_filter` is unused.
+
+- [ ] **Step 2: Register the existing filter**
+
+Add exactly this registration next to the other basic filters, after `last_segment`:
+
+```rust
+env.add_filter("json", json_filter);
+```
+
+Do not delete the filter or its test.
+
+- [ ] **Step 3: Verify and commit**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-codegen codegen_tests::test_json_filter
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-codegen --all-targets --all-features -- -D warnings
+git diff --check
+git add crates/rumoca-phase-codegen/src/codegen/mod.rs
+git commit -m "fix(ci): register codegen JSON filter"
+```
+
+Expected: both commands exit 0 and only the codegen file is committed.
+
+---
+
+### Task 6: Remove orphan test merge residue and run final cross-task gates
+
+**Files:**
+- Modify: `crates/rumoca-phase-dae/src/runtime_precompute/tests/mod.rs`
+- Modify: `docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md`
+
+**Interfaces:**
+- Consumes: upstream removal of the static indexed-resolution-table test at `24209c80`.
+- Produces: no orphan `int_lit` helper and a strict phase-dae test build.
+
+- [ ] **Step 1: Verify RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo clippy -p rumoca-phase-dae --all-targets --all-features -- -D warnings
+```
+
+Expected: FAIL because `runtime_precompute/tests/mod.rs::int_lit` is unused.
+
+- [ ] **Step 2: Remove only the orphan helper**
+
+Delete `int_lit` and no other test code. Do not add a fake call; the only parent1 test that used it was removed upstream.
+
+- [ ] **Step 3: Re-run Task 3 exact focused gates**
+
+Run the six exact phase-dae focused commands from Task 3 Step 5 without warning suppression. Expected: all exit 0.
+
+- [ ] **Step 4: Run final repository gates**
+
+```bash
+rustup run nightly-2026-02-27 cargo xtask verify lint
+rustup run nightly-2026-02-27 cargo check --locked --package xtask --quiet
+git diff --check
+```
+
+Expected: all commands exit 0 with the regenerated lockfile and all reconciled source mechanisms.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/rumoca-phase-dae/src/runtime_precompute/tests/mod.rs \
+  docs/superpowers/plans/2026-07-12-fix-ci-lockfile-merge.md
+git commit -m "fix(ci): remove orphan DAE test helper"
+```
+
+Expected: only the orphan helper and plan completion state are committed.
