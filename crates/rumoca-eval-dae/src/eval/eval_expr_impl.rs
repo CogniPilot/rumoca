@@ -210,7 +210,7 @@ fn validate_function_call_expr<T: SimFloat>(
     if let Some(function) = env.functions.get(name.as_str()) {
         return validate_user_function_call_args(name.as_str(), function, args, env);
     }
-    if let Some((resolved_name, _selection)) = resolve_user_function_target(name.as_str(), env)
+    if let Some((resolved_name, _selection)) = resolve_user_function_reference_target(name, env)
         && let Some(function) = env.functions.get(resolved_name.as_str())
     {
         return validate_user_function_call_args(resolved_name.as_str(), function, args, env);
@@ -1515,8 +1515,8 @@ fn try_eval_field_access<T: SimFloat>(
             return Ok(value);
         }
 
-        let selected = rumoca_core::VarName::new(format!("{}.{}", name.as_str(), field));
-        if function_call_supported(&selected, env) {
+        let selected = name.with_appended_field(field);
+        if function_call_supported(selected.var_name(), env) {
             validate_expr_slice_checked(args, env)?;
             return eval_function_call::<T>(&selected, args, false, env);
         }

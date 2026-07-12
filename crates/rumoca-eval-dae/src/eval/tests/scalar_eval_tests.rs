@@ -784,8 +784,8 @@ fn test_eval_function_call_uses_structured_indexed_output_selection() {
     );
     assert_eq!(
         eval_expr::<f64>(&fn_call("Pkg.randomLike.seedOut[2]", vec![]), &env),
-        Err(EvalError::MissingFunction {
-            name: "Pkg.randomLike.seedOut[2]".to_string()
+        Err(EvalError::MissingBinding {
+            name: "Pkg.randomLike.seedIn".to_string()
         })
     );
 }
@@ -947,6 +947,7 @@ fn test_eval_field_access_scalar_selects_record_function_output() {
     let mut funcs = IndexMap::new();
 
     let mut params = rumoca_core::Function::new("Pkg.Params", rumoca_core::Span::DUMMY);
+    params.is_constructor = true;
     params.add_input(rumoca_core::FunctionParam::new(
         "gain",
         "Real",
@@ -997,6 +998,15 @@ fn test_eval_field_access_scalar_selects_record_function_output() {
 fn test_eval_field_access_scalar_selects_record_function_output_field_assignment() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
+
+    let mut params = rumoca_core::Function::new("Pkg.Params", rumoca_core::Span::DUMMY);
+    params.is_constructor = true;
+    params.add_input(rumoca_core::FunctionParam::new(
+        "gain",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    funcs.insert("Pkg.Params".to_string(), params);
 
     let mut make_params = rumoca_core::Function::new("Pkg.makeParams", rumoca_core::Span::DUMMY);
     make_params.add_output(
@@ -1417,34 +1427,6 @@ fn test_eval_function_call_selected_complex_output_uses_component_var_ref() {
     assert_eq!(
         eval_expr_value::<f64>(&fn_call("Pkg.negJ.x.im", vec![]), &env),
         -1.0
-    );
-}
-
-#[test]
-fn complex_selection_field_matching_uses_top_level_segments() {
-    assert_eq!(
-        complex_field_selection_from_path("Pkg.powerOfJ.x.re"),
-        Some("re")
-    );
-    assert_eq!(
-        complex_field_selection_from_path("Pkg.powerOfJ.x.im"),
-        Some("im")
-    );
-    assert_eq!(
-        complex_field_selection_from_path("Pkg.powerOfJ.x.myre"),
-        None
-    );
-    assert_eq!(
-        complex_field_selection_from_path("Pkg.powerOfJ.x.reAlias"),
-        None
-    );
-    assert_eq!(
-        complex_field_selection_from_path("Pkg.powerOfJ.x[idx.re]"),
-        None
-    );
-    assert_eq!(
-        complex_field_selection_from_path("Pkg.powerOfJ.x[idx.re].im"),
-        Some("im")
     );
 }
 

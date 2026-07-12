@@ -13,8 +13,8 @@ pub(super) struct ScalarProjectionContext<'a> {
     pub(super) complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     pub(super) component_index_map: &'a HashMap<String, HashMap<usize, String>>,
     pub(super) function_output_index_map: &'a super::FunctionOutputProjectionMap,
-    pub(super) function_output_dims_map: &'a HashMap<String, Vec<i64>>,
-    pub(super) dynamic_function_output_map: &'a HashMap<String, String>,
+    pub(super) function_output_dims_map: &'a HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>,
+    pub(super) dynamic_function_output_map: &'a HashMap<rumoca_core::FunctionInstanceId, String>,
     pub(super) record_field_projection_map: &'a super::RecordFieldProjectionMap,
     pub(super) expected_dims: Option<&'a [i64]>,
 }
@@ -334,7 +334,14 @@ fn project_function_call_component(
             expr, name, args, field_idx, span,
         ));
     }
-    if let Some(by_index) = projection.function_output_index_map.get(name.as_str())
+    let instance_id = name
+        .resolved_function()
+        .map(|resolved| resolved.instance_id)
+        .ok_or_else(|| StructuralError::ContractViolation {
+            reason: "function call lacks resolved instance identity".to_string(),
+            span,
+        })?;
+    if let Some(by_index) = projection.function_output_index_map.get(&instance_id)
         && let Some(projected_output) = by_index.get(&field_idx)
     {
         let projected_name = name

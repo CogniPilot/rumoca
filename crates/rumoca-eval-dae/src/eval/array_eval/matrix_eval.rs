@@ -352,7 +352,7 @@ pub(super) fn eval_function_call_matrix_values<T: SimFloat>(
     if output.dims.len() < 2 && output.shape_expr.len() < 2 {
         return Ok(None);
     }
-    let dims = resolve_user_function_output_dims_pub(name.var_name(), args, None, env)?.ok_or(
+    let dims = resolve_user_function_output_dims_pub(name, args, None, env)?.ok_or(
         EvalError::UnsupportedExpression {
             kind: "function output shape",
         },

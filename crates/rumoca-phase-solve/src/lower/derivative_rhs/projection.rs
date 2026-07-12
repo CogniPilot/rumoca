@@ -1580,12 +1580,11 @@ fn projected_declared_function_output_dims(
     requested: &rumoca_core::Reference,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<usize>>, LowerError> {
-    let Some((function_name, function)) =
-        resolve_function_reference(&dae_model.symbols.functions, requested)
+    let Some((_, function)) = resolve_function_reference(&dae_model.symbols.functions, requested)
     else {
         return Ok(None);
     };
-    let Some(projection_suffix) = output_projection_suffix(function_name, requested) else {
+    let Some(projection_suffix) = output_projection_suffix(function, requested) else {
         return Ok(None);
     };
     let (output, output_name) = match function

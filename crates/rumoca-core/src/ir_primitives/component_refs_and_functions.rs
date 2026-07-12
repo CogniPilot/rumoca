@@ -670,6 +670,8 @@ pub struct Function {
     pub name: VarName,
     #[serde(default)]
     pub def_id: Option<DefId>,
+    #[serde(default)]
+    pub instance_id: Option<FunctionInstanceId>,
     pub inputs: Vec<FunctionParam>,
     pub outputs: Vec<FunctionParam>,
     pub locals: Vec<FunctionParam>,
@@ -686,6 +688,7 @@ impl Function {
         Self {
             name: VarName::new(name),
             def_id: None,
+            instance_id: None,
             inputs: Vec::new(),
             outputs: Vec::new(),
             locals: Vec::new(),

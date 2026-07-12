@@ -23,16 +23,6 @@ type VarName = rumoca_core::VarName;
 
 const MAX_FUNC_RECURSION: usize = 64;
 
-fn complex_field_selection_from_path(path: &str) -> Option<&'static str> {
-    if rumoca_core::top_level_path_ends_with(path, "re") {
-        Some("re")
-    } else if rumoca_core::top_level_path_ends_with(path, "im") {
-        Some("im")
-    } else {
-        None
-    }
-}
-
 fn pre_store_array_fill_default() -> f64 {
     0.0
 }
@@ -109,7 +99,7 @@ pub use special::{
 };
 use special::{
     copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
-    resolve_user_function_target,
+    resolve_user_function_reference_target,
 };
 mod eval_expr_impl;
 use array_eval::{

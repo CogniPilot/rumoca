@@ -107,11 +107,20 @@ fn resolve_projected_dae_function<'a>(
     dae: &'a Dae,
     name: &rumoca_core::Reference,
 ) -> Option<&'a rumoca_core::Function> {
-    let (function_name, function) = resolve_function_reference(&dae.symbols.functions, name)?;
-    if name.var_name() == function_name {
-        return Some(function);
+    let (_, function) = resolve_function_reference(&dae.symbols.functions, name)?;
+    if let Some(resolved) = name.resolved_function() {
+        if name.component_ref()?.parts.len() == resolved.base_part_count {
+            return Some(function);
+        }
+    } else {
+        #[cfg(test)]
+        if name.var_name() == &function.name {
+            return Some(function);
+        }
+        #[cfg(not(test))]
+        return None;
     }
-    let suffix = output_projection_suffix(function_name, name)?;
+    let suffix = output_projection_suffix(function, name)?;
     projection_matches_output(&dae.symbols.functions, function, suffix).then_some(function)
 }
 

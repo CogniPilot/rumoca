@@ -262,8 +262,8 @@ pub struct IndexProjectionContext<'a> {
     complex_fields: &'a HashMap<String, [Option<String>; 2]>,
     component_index_map: &'a HashMap<String, HashMap<usize, String>>,
     function_output_index_map: &'a FunctionOutputProjectionMap,
-    function_output_dims_map: &'a HashMap<String, Vec<i64>>,
-    dynamic_function_output_map: &'a HashMap<String, String>,
+    function_output_dims_map: &'a HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>,
+    dynamic_function_output_map: &'a HashMap<rumoca_core::FunctionInstanceId, String>,
     record_field_projection_map: &'a RecordFieldProjectionMap,
     expected_dims: Option<&'a [i64]>,
 }
@@ -382,9 +382,9 @@ impl<'a> IndexProjectionContext<'a> {
                     ExpressionShape::Scalar
                 }
             }
-            Expression::FunctionCall { name, .. } => self
-                .function_output_dims_map
-                .get(name.as_str())
+            Expression::FunctionCall { name, .. } => name
+                .resolved_function()
+                .and_then(|resolved| self.function_output_dims_map.get(&resolved.instance_id))
                 .map(|dims| shape_from_dims(dims))
                 .unwrap_or(ExpressionShape::Other),
             Expression::Index {
@@ -879,9 +879,18 @@ impl<'a> IndexProjectionContext<'a> {
             return Ok(None);
         };
         let field_path = fields.join(".");
+        let instance_id = name
+            .resolved_function()
+            .map(|resolved| resolved.instance_id)
+            .ok_or_else(|| {
+                structural_contract_violation(
+                    "record function call lacks resolved instance identity".to_string(),
+                    span,
+                )
+            })?;
         let Some(selector) = self
             .record_field_projection_map
-            .get(name.as_str())
+            .get(&instance_id)
             .and_then(|fields| fields.get(&field_path))
             .and_then(|by_index| by_index.get(&self.i))
         else {
@@ -911,7 +920,16 @@ impl<'a> IndexProjectionContext<'a> {
         if is_constructor && self.i >= 1 && self.i <= args.len() {
             return self.project(&args[self.i - 1]);
         }
-        if let Some(output_name) = self.dynamic_function_output_map.get(name.as_str())
+        let instance_id = name
+            .resolved_function()
+            .map(|resolved| resolved.instance_id)
+            .ok_or_else(|| {
+                structural_contract_violation(
+                    "function call lacks resolved instance identity".to_string(),
+                    span,
+                )
+            })?;
+        if let Some(output_name) = self.dynamic_function_output_map.get(&instance_id)
             && let Some(dims) = self.expected_dims
             && let Ok(count) = output_scalar_count(dims, span)
             && self.i >= 1
@@ -949,7 +967,7 @@ impl<'a> IndexProjectionContext<'a> {
                 span,
             });
         }
-        if let Some(by_index) = self.function_output_index_map.get(name.as_str())
+        if let Some(by_index) = self.function_output_index_map.get(&instance_id)
             && let Some(projected_output) = by_index.get(&self.i)
         {
             let projected_name = name
@@ -1387,38 +1405,63 @@ pub struct ExpressionScalarizationContext {
     complex_fields: HashMap<String, [Option<String>; 2]>,
     component_index_map: HashMap<String, HashMap<usize, String>>,
     function_output_index_map: FunctionOutputProjectionMap,
-    function_output_dims_map: HashMap<String, Vec<i64>>,
-    dynamic_function_output_map: HashMap<String, String>,
+    function_output_dims_map: HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>,
+    dynamic_function_output_map: HashMap<rumoca_core::FunctionInstanceId, String>,
     record_field_projection_map: RecordFieldProjectionMap,
 }
 
-fn build_dynamic_function_output_map(dae: &Dae) -> HashMap<String, String> {
+fn build_dynamic_function_output_map(
+    dae: &Dae,
+) -> Result<HashMap<rumoca_core::FunctionInstanceId, String>, StructuralError> {
     dae.symbols
         .functions
-        .iter()
-        .filter_map(|(name, function)| {
+        .values()
+        .filter_map(|function| {
             let [output] = function.outputs.as_slice() else {
                 return None;
             };
-            output
-                .dims
-                .iter()
-                .any(|dim| *dim <= 0)
-                .then(|| (name.as_str().to_string(), output.name.clone()))
+            output.dims.iter().any(|dim| *dim <= 0).then(|| {
+                function
+                    .instance_id
+                    .map(|instance_id| (instance_id, output.name.clone()))
+                    .ok_or_else(|| {
+                        structural_contract_violation(
+                            format!(
+                                "function `{}` lacks flattened instance identity",
+                                function.name
+                            ),
+                            function.span,
+                        )
+                    })
+            })
         })
         .collect()
 }
 
-fn build_function_output_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
+fn build_function_output_dims_map(
+    dae: &Dae,
+) -> Result<HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>, StructuralError> {
     dae.symbols
         .functions
-        .iter()
-        .filter_map(|(name, function)| {
+        .values()
+        .filter_map(|function| {
             let [output] = function.outputs.as_slice() else {
                 return None;
             };
-            (output.dims.is_empty() || output.dims.iter().all(|dim| *dim > 0))
-                .then(|| (name.as_str().to_string(), output.dims.clone()))
+            (output.dims.is_empty() || output.dims.iter().all(|dim| *dim > 0)).then(|| {
+                function
+                    .instance_id
+                    .map(|instance_id| (instance_id, output.dims.clone()))
+                    .ok_or_else(|| {
+                        structural_contract_violation(
+                            format!(
+                                "function `{}` lacks flattened instance identity",
+                                function.name
+                            ),
+                            function.span,
+                        )
+                    })
+            })
         })
         .collect()
 }
@@ -1435,8 +1478,8 @@ pub fn build_expression_scalarization_context(
         complex_fields: build_complex_field_map(dae),
         component_index_map: build_component_index_projection_map(dae),
         function_output_index_map: build_function_output_projection_map(dae)?,
-        function_output_dims_map: build_function_output_dims_map(dae),
-        dynamic_function_output_map: build_dynamic_function_output_map(dae),
+        function_output_dims_map: build_function_output_dims_map(dae)?,
+        dynamic_function_output_map: build_dynamic_function_output_map(dae)?,
         record_field_projection_map: build_record_field_projection_map(dae)?,
     })
 }
@@ -1845,8 +1888,8 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
     let complex_fields = build_complex_field_map(dae);
     let component_index_map = build_component_index_projection_map(dae);
     let function_output_index_map = build_function_output_projection_map(dae)?;
-    let function_output_dims_map = build_function_output_dims_map(dae);
-    let dynamic_function_output_map = build_dynamic_function_output_map(dae);
+    let function_output_dims_map = build_function_output_dims_map(dae)?;
+    let dynamic_function_output_map = build_dynamic_function_output_map(dae)?;
     let record_field_projection_map = build_record_field_projection_map(dae)?;
     let projection = ScalarProjectionContext {
         context_span: None,

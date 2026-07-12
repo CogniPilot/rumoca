@@ -1456,6 +1456,7 @@ fn over_budget_function() -> rumoca_core::Function {
     rumoca_core::Function {
         name: rumoca_core::VarName::new("My.explode"),
         def_id: None,
+        instance_id: None,
         inputs: vec![scalar_function_param("x")],
         outputs: vec![scalar_function_param("y")],
         locals: vec![],

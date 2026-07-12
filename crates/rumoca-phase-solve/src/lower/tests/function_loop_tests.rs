@@ -6,6 +6,7 @@ fn lower_expression_unrolls_function_for_loop_over_input_size() {
     let mut sum = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.sum"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param_with_dims("u", &[0])],
         outputs: vec![function_param("out")],
         locals: vec![],

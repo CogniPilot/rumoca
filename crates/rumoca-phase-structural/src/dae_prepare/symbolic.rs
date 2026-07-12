@@ -286,7 +286,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         lhs: &Expression,
         rhs: &Expression,
         span: Span,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         match op {
             OpBinary::Add | OpBinary::AddElem => Some(make_binary(
@@ -345,7 +345,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         lhs: &Expression,
         rhs: &Expression,
         span: Span,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         let lhs_dims = expression_dims(lhs, self.dae)?;
         let rhs_dims = expression_dims(rhs, self.dae)?;
@@ -384,7 +384,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         op: &OpUnary,
         rhs: &Expression,
         span: Span,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         match op {
             OpUnary::Minus | OpUnary::DotMinus => Some(make_unary(
@@ -402,7 +402,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
         branches: &[(Expression, Expression)],
         else_branch: &Expression,
         span: Span,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         let mut differentiated_branches = Vec::with_capacity(branches.len());
         for (cond, value) in branches {
@@ -421,22 +421,19 @@ impl<'a> SymbolicDerivativeContext<'a> {
         name: &rumoca_core::Reference,
         args: &[Expression],
         is_constructor: bool,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         if is_constructor {
             return None;
         }
-        let (function_name, function, output_selector) = resolve_function_call(self.dae, name)?;
-        if active_functions
-            .iter()
-            .any(|active| active == function_name)
-        {
+        let (instance_id, function, output_selector) = resolve_function_call(self.dae, name)?;
+        if active_functions.contains(&instance_id) {
             return None;
         }
         if !function.pure || function.external.is_some() || function.outputs.len() != 1 {
             return None;
         }
-        active_functions.push(function_name.clone());
+        active_functions.push(instance_id);
         let Some(output_expr) =
             function_output_expression(function, args, output_selector.as_ref())
         else {
@@ -451,7 +448,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
     fn differentiate(
         &self,
         expr: &Expression,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         match expr {
             Expression::Literal { value: _, span } => Some(real_literal(0.0, *span)),
@@ -520,7 +517,7 @@ impl<'a> SymbolicDerivativeContext<'a> {
     fn differentiate_der_call(
         &self,
         arg: &Expression,
-        active_functions: &mut Vec<VarName>,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
         let first_derivative = match arg {
             Expression::VarRef {
@@ -596,66 +593,32 @@ fn resolve_function_call<'a>(
     dae: &'a Dae,
     call_name: &rumoca_core::Reference,
 ) -> Option<(
-    &'a VarName,
+    rumoca_core::FunctionInstanceId,
     &'a rumoca_core::Function,
     Option<FunctionOutputSelector>,
 )> {
-    if let Some(def_id) = call_name.target_def_id() {
-        if let Some(exact) = dae
-            .symbols
-            .functions
-            .get_key_value(call_name.var_name())
-            .filter(|(_, function)| function.def_id == Some(def_id))
-        {
-            return Some((exact.0, exact.1, None));
-        }
-        let mut candidates =
-            dae.symbols
-                .functions
-                .iter()
-                .filter_map(|(function_name, function)| {
-                    (function.def_id == Some(def_id))
-                        .then(|| function_projection_selector(function_name, call_name))
-                        .flatten()
-                        .map(|selector| (function_name, function, Some(selector)))
-                });
-        if let Some(candidate) = candidates.next() {
-            return candidates.next().is_none().then_some(candidate);
-        }
-        return None;
-    }
-    if let Some(exact) = dae.symbols.functions.get_key_value(call_name.var_name()) {
-        return Some((exact.0, exact.1, None));
-    }
-    let mut candidates = dae
+    let resolved = call_name.resolved_function()?;
+    let function = dae
         .symbols
         .functions
-        .iter()
-        .filter_map(|(function_name, function)| {
-            function.def_id.is_none().then(|| {
-                function_projection_selector(function_name, call_name)
-                    .map(|selector| (function_name, function, Some(selector)))
-            })?
-        });
-    let candidate = candidates.next()?;
-    candidates.next().is_none().then_some(candidate)
+        .values()
+        .find(|function| function.instance_id == Some(resolved.instance_id))?;
+    let selector = function_projection_selector(resolved, call_name)?;
+    Some((resolved.instance_id, function, selector))
 }
 
 fn function_projection_selector(
-    function_name: &VarName,
+    resolved: rumoca_core::ResolvedFunctionReference,
     call_name: &rumoca_core::Reference,
-) -> Option<FunctionOutputSelector> {
+) -> Option<Option<FunctionOutputSelector>> {
     let call_ref = call_name.component_ref()?;
-    let function_parts = function_name.segments();
-    if call_ref.parts.len() != function_parts.len() + 1
-        || !call_ref.parts[..function_parts.len()]
-            .iter()
-            .zip(function_parts)
-            .all(|(part, expected)| part.subs.is_empty() && part.ident == expected)
-    {
+    if call_ref.parts.len() == resolved.base_part_count {
+        return Some(None);
+    }
+    if call_ref.parts.len() != resolved.base_part_count + 1 {
         return None;
     }
-    let output = call_ref.parts.last()?;
+    let output = call_ref.parts.get(resolved.base_part_count)?;
     let indices = output
         .subs
         .iter()
@@ -664,10 +627,10 @@ fn function_projection_selector(
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
-    Some(FunctionOutputSelector {
+    Some(Some(FunctionOutputSelector {
         output_name: output.ident.clone(),
         indices,
-    })
+    }))
 }
 
 fn bind_function_inputs(

@@ -110,6 +110,7 @@ fn primitive_variable_with_parts(
 
 fn add_pair_constructor(flat_model: &mut flat::Model) {
     let mut constructor = rumoca_core::Function::new("PairRecord", fixture_span());
+    constructor.def_id = Some(rumoca_core::DefId::new(100));
     constructor.is_constructor = true;
     constructor.add_input(
         rumoca_core::FunctionParam::new("alpha", "Real", fixture_span())
@@ -128,6 +129,7 @@ fn add_pair_record_function(flat_model: &mut flat::Model, name: &str) {
     let mut function = rumoca_core::Function::new(name, fixture_span());
     let mut output = rumoca_core::FunctionParam::new("y", "PairRecord", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
+    output.type_def_id = Some(rumoca_core::DefId::new(100));
     function.add_output(output);
     flat_model.functions.insert(function.name.clone(), function);
 }
@@ -154,6 +156,7 @@ fn test_record_function_equation_expands_to_declared_fields() {
     }
 
     let mut constructor = rumoca_core::Function::new("Frames.Orientation", fixture_span());
+    constructor.def_id = Some(rumoca_core::DefId::new(10));
     constructor.is_constructor = true;
     constructor.add_input(
         rumoca_core::FunctionParam::new("T", "Real", fixture_span())
@@ -172,6 +175,7 @@ fn test_record_function_equation_expands_to_declared_fields() {
     let mut null_rotation = rumoca_core::Function::new("Frames.nullRotation", fixture_span());
     let mut output = rumoca_core::FunctionParam::new("R", "Orientation", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
+    output.type_def_id = Some(rumoca_core::DefId::new(10));
     null_rotation.add_output(output);
     flat_model
         .functions
@@ -210,6 +214,7 @@ fn test_record_function_equation_skips_zero_sized_fields() {
     flat_model.variables.insert(alpha.name.clone(), alpha);
 
     let mut constructor = rumoca_core::Function::new("MarkerRecord", fixture_span());
+    constructor.def_id = Some(rumoca_core::DefId::new(100));
     constructor.is_constructor = true;
     constructor.add_input(
         rumoca_core::FunctionParam::new("alpha", "Real", fixture_span())
@@ -227,6 +232,7 @@ fn test_record_function_equation_skips_zero_sized_fields() {
     let mut function = rumoca_core::Function::new("markerIdentity", fixture_span());
     let mut output = rumoca_core::FunctionParam::new("result", "MarkerRecord", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
+    output.type_def_id = Some(rumoca_core::DefId::new(100));
     function.add_output(output);
     flat_model.functions.insert(function.name.clone(), function);
 
@@ -264,6 +270,7 @@ fn test_record_function_equation_expands_nested_flattened_record_fields() {
         .insert(q_def, vec![rumoca_core::DefId::new(203)]);
 
     let mut constructor = rumoca_core::Function::new("PoseRecord", fixture_span());
+    constructor.def_id = Some(rumoca_core::DefId::new(200));
     constructor.is_constructor = true;
     constructor.add_input(
         rumoca_core::FunctionParam::new("rotation_q", "Real", fixture_span())
@@ -277,6 +284,7 @@ fn test_record_function_equation_expands_nested_flattened_record_fields() {
     let mut function = rumoca_core::Function::new("poseIdentity", fixture_span());
     let mut output = rumoca_core::FunctionParam::new("result", "PoseRecord", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
+    output.type_def_id = Some(rumoca_core::DefId::new(200));
     function.add_output(output);
     flat_model.functions.insert(function.name.clone(), function);
 
@@ -526,6 +534,7 @@ fn test_classify_record_function_equation_routes_expanded_fields() {
     }
 
     let mut constructor = rumoca_core::Function::new("Frames.Orientation", fixture_span());
+    constructor.def_id = Some(rumoca_core::DefId::new(10));
     constructor.is_constructor = true;
     constructor.add_input(
         rumoca_core::FunctionParam::new("T", "Real", fixture_span())
@@ -544,6 +553,7 @@ fn test_classify_record_function_equation_routes_expanded_fields() {
     let mut null_rotation = rumoca_core::Function::new("Frames.nullRotation", fixture_span());
     let mut output = rumoca_core::FunctionParam::new("R", "Orientation", fixture_span());
     output.type_class = Some(rumoca_core::ClassType::Record);
+    output.type_def_id = Some(rumoca_core::DefId::new(10));
     null_rotation.add_output(output);
     flat_model
         .functions

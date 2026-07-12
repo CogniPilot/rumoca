@@ -70,25 +70,23 @@ pub fn prepare_dae_for_fmi_model_description(dae: &dae::Dae) -> Result<CodegenDa
 
 pub(crate) fn record_constructor_fields_from_metadata<'a, I>(
     functions: I,
-    type_name: &str,
+    type_def_id: rumoca_core::DefId,
 ) -> Option<Vec<rumoca_core::FunctionParam>>
 where
     I: IntoIterator<Item = (&'a rumoca_core::VarName, &'a rumoca_core::Function)>,
 {
-    // Record params carry their canonical qualified type name (resolved at
-    // flatten function metadata collection), so the constructor lookup is exact.
     functions
         .into_iter()
-        .find(|(name, function)| function.is_constructor && name.as_str() == type_name)
+        .find(|(_, function)| function.is_constructor && function.def_id == Some(type_def_id))
         .map(|(_, function)| function.inputs.clone())
         .filter(|fields| !fields.is_empty())
 }
 
 fn record_fields_from_constructor_metadata(
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-    type_name: &str,
+    type_def_id: rumoca_core::DefId,
 ) -> Option<Vec<String>> {
-    record_constructor_fields_from_metadata(functions.iter(), type_name)
+    record_constructor_fields_from_metadata(functions.iter(), type_def_id)
         .map(|fields| fields.into_iter().map(|param| param.name).collect())
 }
 
@@ -98,17 +96,35 @@ fn record_fields_from_constructor_metadata(
 /// Decompose record-typed function params in the DAE for code generators.
 /// Must NOT be called before simulation — only before codegen rendering.
 pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError> {
-    let record_fields_by_type = dae
+    let mut record_fields_by_type = HashMap::new();
+    for input in dae
         .symbols
         .functions
         .values()
         .flat_map(|function| function.inputs.iter())
         .filter(|input| input.type_class == Some(rumoca_core::ClassType::Record))
-        .filter_map(|input| {
-            record_fields_from_constructor_metadata(&dae.symbols.functions, &input.type_name)
-                .map(|fields| (input.type_name.clone(), fields))
-        })
-        .collect::<HashMap<_, _>>();
+    {
+        let type_def_id = input.type_def_id.ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "record parameter `{}` lacks resolved type identity",
+                    input.name
+                ),
+                input.span,
+            )
+        })?;
+        let fields = record_fields_from_constructor_metadata(&dae.symbols.functions, type_def_id)
+            .ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "record parameter `{}` has no constructor for resolved type identity",
+                    input.name
+                ),
+                input.span,
+            )
+        })?;
+        record_fields_by_type.insert(type_def_id, fields);
+    }
 
     // Identify functions with record params and rewrite their signatures.
     let mut decomp_map: HashMap<String, Vec<(usize, Vec<String>)>> = HashMap::new();
@@ -116,7 +132,9 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) -> Result<(), ToDaeError>
     for (func_name, func) in dae.symbols.functions.iter_mut() {
         let mut decomposed: Vec<(usize, String, Vec<String>)> = Vec::new();
         for (idx, input) in func.inputs.iter().enumerate() {
-            if let Some(fields) = record_fields_by_type.get(&input.type_name) {
+            if let Some(type_def_id) = input.type_def_id
+                && let Some(fields) = record_fields_by_type.get(&type_def_id)
+            {
                 decomposed.push((idx, input.name.clone(), fields.clone()));
             }
         }

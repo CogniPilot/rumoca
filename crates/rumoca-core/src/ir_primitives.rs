@@ -40,6 +40,30 @@ impl Display for DefId {
     }
 }
 
+/// Identity of one exposed function in flattened model scope.
+///
+/// Unlike a source [`DefId`], this distinguishes inherited or redeclared
+/// function instances that originate from the same declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FunctionInstanceId(pub u32);
+
+impl FunctionInstanceId {
+    pub fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
+/// Resolved function target plus the structured base-path boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResolvedFunctionReference {
+    pub instance_id: FunctionInstanceId,
+    pub base_part_count: usize,
+}
+
 /// A unique identifier for a type.
 ///
 /// TypeIds reference entries in the TypeTable and are used throughout
@@ -435,6 +459,7 @@ pub use var_name::{VarName, VarNameId};
 pub struct Reference {
     name: VarName,
     component_ref: Option<ComponentReference>,
+    resolved_function: Option<ResolvedFunctionReference>,
     generated: bool,
 }
 
@@ -443,6 +468,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: None,
+            resolved_function: None,
             generated: false,
         }
     }
@@ -451,6 +477,7 @@ impl Reference {
         Self {
             name,
             component_ref: None,
+            resolved_function: None,
             generated: false,
         }
     }
@@ -459,6 +486,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: None,
+            resolved_function: None,
             generated: true,
         }
     }
@@ -485,6 +513,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            resolved_function: None,
             generated: true,
         }
     }
@@ -493,6 +522,7 @@ impl Reference {
         Self {
             name,
             component_ref: self.component_ref.clone(),
+            resolved_function: self.resolved_function,
             generated: self.generated,
         }
     }
@@ -504,6 +534,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            resolved_function: None,
             generated: false,
         }
     }
@@ -513,6 +544,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            resolved_function: None,
             generated: false,
         }
     }
@@ -548,6 +580,15 @@ impl Reference {
         self.component_ref.as_ref()
     }
 
+    pub fn resolved_function(&self) -> Option<ResolvedFunctionReference> {
+        self.resolved_function
+    }
+
+    pub fn with_resolved_function(mut self, resolved: ResolvedFunctionReference) -> Self {
+        self.resolved_function = Some(resolved);
+        self
+    }
+
     pub fn span(&self) -> Option<Span> {
         self.component_ref
             .as_ref()
@@ -565,9 +606,12 @@ impl Reference {
                         .push(Subscript::generated_index_with_provenance(index, span));
                 }
                 Self::with_component_reference(rendered, reference)
+                    .with_optional_resolved_function(self.resolved_function)
             }
-            _ if self.generated => Self::generated(rendered),
-            _ => Self::new(rendered),
+            _ if self.generated => {
+                Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
+            }
+            _ => Self::new(rendered).with_optional_resolved_function(self.resolved_function),
         }
     }
 
@@ -583,9 +627,12 @@ impl Reference {
                     subs: Vec::new(),
                 });
                 Self::with_component_reference(rendered, reference)
+                    .with_optional_resolved_function(self.resolved_function)
             }
-            _ if self.generated => Self::generated(rendered),
-            _ => Self::new(rendered),
+            _ if self.generated => {
+                Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
+            }
+            _ => Self::new(rendered).with_optional_resolved_function(self.resolved_function),
         }
     }
 
@@ -600,9 +647,19 @@ impl Reference {
         reference.span = span;
         Some(if self.generated {
             Self::generated_component_reference(reference)
+                .with_optional_resolved_function(self.resolved_function)
         } else {
             Self::from_component_reference(reference)
+                .with_optional_resolved_function(self.resolved_function)
         })
+    }
+
+    fn with_optional_resolved_function(
+        mut self,
+        resolved: Option<ResolvedFunctionReference>,
+    ) -> Self {
+        self.resolved_function = resolved;
+        self
     }
 
     pub fn is_generated(&self) -> bool {
@@ -644,6 +701,7 @@ impl PartialEq for Reference {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
             && self.component_ref == other.component_ref
+            && self.resolved_function == other.resolved_function
             && self.generated == other.generated
     }
 }
@@ -653,6 +711,8 @@ struct ReferenceWire {
     name: VarName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     component_ref: Option<ComponentReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_function: Option<ResolvedFunctionReference>,
     #[serde(default, skip_serializing_if = "is_false")]
     generated: bool,
 }
@@ -671,12 +731,19 @@ impl Serialize for Reference {
         }
 
         if !serializer.is_human_readable() {
-            return (&self.name, &self.component_ref, &self.generated).serialize(serializer);
+            return (
+                &self.name,
+                &self.component_ref,
+                &self.resolved_function,
+                &self.generated,
+            )
+                .serialize(serializer);
         }
 
         ReferenceWire {
             name: self.name.clone(),
             component_ref: self.component_ref.clone(),
+            resolved_function: self.resolved_function,
             generated: self.generated,
         }
         .serialize(serializer)
@@ -689,11 +756,17 @@ impl<'de> Deserialize<'de> for Reference {
         D: Deserializer<'de>,
     {
         if !deserializer.is_human_readable() {
-            let (name, component_ref, generated) =
-                <(VarName, Option<ComponentReference>, bool)>::deserialize(deserializer)?;
+            let (name, component_ref, resolved_function, generated) =
+                <(
+                    VarName,
+                    Option<ComponentReference>,
+                    Option<ResolvedFunctionReference>,
+                    bool,
+                )>::deserialize(deserializer)?;
             return Ok(Self {
                 name,
                 component_ref,
+                resolved_function,
                 generated,
             });
         }
@@ -709,11 +782,13 @@ impl<'de> Deserialize<'de> for Reference {
             HumanReference::Name(name) => Ok(Self {
                 name,
                 component_ref: None,
+                resolved_function: None,
                 generated: false,
             }),
             HumanReference::Wire(wire) => Ok(Self {
                 name: wire.name,
                 component_ref: wire.component_ref,
+                resolved_function: wire.resolved_function,
                 generated: wire.generated,
             }),
         }

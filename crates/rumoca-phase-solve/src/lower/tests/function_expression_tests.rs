@@ -497,6 +497,7 @@ fn build_power_of_j_function(
     rumoca_core::Function {
         name: rumoca_core::VarName::new("My.powerOfJ"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("k")],
         outputs: vec![complex_output_param("x")],
         locals: vec![function_param("m")],
@@ -731,6 +732,7 @@ fn lower_expression_inlines_user_function_call() {
     let square_add_one = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.squareAddOne"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("u")],
         outputs: vec![function_param("out")],
         locals: vec![],
@@ -2163,6 +2165,7 @@ fn rot2_function() -> rumoca_core::Function {
     rumoca_core::Function {
         name: rumoca_core::VarName::new("LieGroupsSE2.rot2"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("th")],
         outputs: vec![function_param_with_dims("R", &[2, 2])],
         locals: vec![],

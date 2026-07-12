@@ -159,6 +159,27 @@ fn call_with_span(name: &str, args: Vec<Expression>, span: Span) -> Expression {
     }
 }
 
+fn resolved_call_with_span(
+    name: &str,
+    args: Vec<Expression>,
+    span: Span,
+    instance_id: u32,
+) -> Expression {
+    let component_ref = rumoca_core::component_reference_from_flat_name(&VarName::new(name), span)
+        .expect("structured function reference");
+    let base_part_count = component_ref.parts.len();
+    Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(component_ref)
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(instance_id),
+                base_part_count,
+            }),
+        args,
+        is_constructor: false,
+        span,
+    }
+}
+
 fn der(name: &str) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
@@ -1244,6 +1265,7 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
     let function_def_id = rumoca_core::DefId::new(4_101);
     let mut function = rumoca_core::Function::new("orientationConstraint", test_span());
     function.def_id = Some(function_def_id);
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(4_101));
     function.inputs.push(rumoca_core::FunctionParam::new(
         "Q",
         "Orientation",
@@ -1278,7 +1300,12 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
 
     dae.continuous.equations.push(eq(sub(
         array(vec![int(0)]),
-        call_with_span("orientationConstraint", vec![var("Q")], constraint_span),
+        resolved_call_with_span(
+            "orientationConstraint",
+            vec![var("Q")],
+            constraint_span,
+            4_101,
+        ),
     )));
 
     assert!(expr_contains_var(
@@ -1327,6 +1354,7 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
     let function_def_id = rumoca_core::DefId::new(4_102);
     let mut function = rumoca_core::Function::new("orientationConstraint", test_span());
     function.def_id = Some(function_def_id);
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(4_102));
     function.inputs.push(rumoca_core::FunctionParam::new(
         "Q",
         "Orientation",
@@ -1376,6 +1404,10 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
                 },
             ],
             def_id: Some(function_def_id),
+        })
+        .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+            instance_id: rumoca_core::FunctionInstanceId::new(4_102),
+            base_part_count: 1,
         }),
         args: vec![var("Q")],
         is_constructor: false,

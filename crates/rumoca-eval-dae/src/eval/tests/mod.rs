@@ -295,6 +295,7 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
     let mut functions = IndexMap::new();
 
     let mut orientation = Function::new("Pkg.Orientation", rumoca_core::Span::DUMMY);
+    orientation.is_constructor = true;
     orientation.add_input(
         FunctionParam::new("T", "Real", rumoca_core::Span::source_free_serde_default())
             .with_dims(vec![3, 3]),

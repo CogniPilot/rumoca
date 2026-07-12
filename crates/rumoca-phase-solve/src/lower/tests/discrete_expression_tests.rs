@@ -229,6 +229,7 @@ fn lower_discrete_rhs_uses_first_output_for_array_function_expression() {
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.memoryLike"),
             def_id: None,
+            instance_id: None,
             inputs: vec![],
             outputs: vec![
                 function_param_with_dims("out", &[2]),
@@ -304,6 +305,7 @@ fn lower_discrete_rhs_projects_array_function_output_by_position() {
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.memoryLike"),
             def_id: None,
+            instance_id: None,
             inputs: vec![],
             outputs: vec![
                 function_param_with_dims("out", &[2]),
@@ -386,6 +388,7 @@ fn lower_discrete_rhs_recovers_dynamic_function_output_shape_from_assignments() 
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.dynamicMemoryLike"),
             def_id: None,
+            instance_id: None,
             inputs: vec![],
             outputs: vec![
                 function_param_with_dims("out", &[0, 0]),
@@ -458,6 +461,7 @@ fn lower_expression_indexes_array_function_expression_result() {
         rumoca_core::Function {
             name: rumoca_core::VarName::new("My.vectorResult"),
             def_id: None,
+            instance_id: None,
             inputs: vec![],
             outputs: vec![function_param_with_dims("out", &[2])],
             locals: vec![],

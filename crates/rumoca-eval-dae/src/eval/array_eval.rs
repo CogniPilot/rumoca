@@ -1,6 +1,6 @@
 use super::*;
 use crate::eval::special::{
-    eval_selected_runtime_special_array_output, resolve_runtime_special_target,
+    eval_selected_runtime_special_array_output, resolve_runtime_special_array_target,
 };
 
 mod matrix_eval;
@@ -842,7 +842,7 @@ fn try_eval_function_call_array_values<T: SimFloat>(
     source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
-    if let Some((resolved_name, Some(selection))) = resolve_runtime_special_target(name.as_str())
+    if let Some((resolved_name, selection)) = resolve_runtime_special_array_target(name.as_str())
         && let Some(values) = eval_selected_runtime_special_array_output(
             resolved_name.as_str(),
             &selection,
@@ -853,13 +853,13 @@ fn try_eval_function_call_array_values<T: SimFloat>(
         return Ok(values);
     }
     let (resolved_name, selection) =
-        resolve_user_function_target(name.as_str(), env).ok_or_else(|| {
+        resolve_user_function_reference_target(name, env).ok_or_else(|| {
             EvalError::MissingFunction {
                 name: name.to_string(),
             }
         })?;
     if selection.is_some() {
-        return eval_user_function_array_output_pub(name.var_name(), args, env);
+        return eval_user_function_array_output_pub(name, args, env);
     }
     let function =
         env.functions
@@ -874,7 +874,7 @@ fn try_eval_function_call_array_values<T: SimFloat>(
             kind: "function output shape",
         })?;
     if function_param_has_array_shape(output) {
-        return eval_user_function_array_output_pub(name.var_name(), args, env);
+        return eval_user_function_array_output_pub(name, args, env);
     }
     let size = function_param_size(output)?;
     if size <= 1 {
@@ -1292,7 +1292,7 @@ fn function_call_runtime_dims<T: SimFloat>(
     value_count: usize,
     env: &VarEnv<T>,
 ) -> Result<Vec<usize>, EvalError> {
-    if let Some((resolved_name, Some(selection))) = resolve_runtime_special_target(name.as_str()) {
+    if let Some((resolved_name, selection)) = resolve_runtime_special_array_target(name.as_str()) {
         let Some(values) = eval_selected_runtime_special_array_output(
             resolved_name.as_str(),
             &selection,
@@ -1307,7 +1307,7 @@ fn function_call_runtime_dims<T: SimFloat>(
         return Ok(runtime_vector_dims(values.len()));
     }
 
-    let (resolved_name, selection) = resolve_user_function_target(name.as_str(), env).ok_or(
+    let (resolved_name, selection) = resolve_user_function_reference_target(name, env).ok_or(
         EvalError::UnsupportedExpression {
             kind: "function output shape",
         },
@@ -1333,12 +1333,7 @@ fn function_call_runtime_dims<T: SimFloat>(
                 kind: "function output shape",
             })?,
     };
-    let dims = resolve_user_function_output_dims_pub(
-        &resolved_name,
-        args,
-        Some(output.name.as_str()),
-        env,
-    )?;
+    let dims = resolve_user_function_output_dims_pub(name, args, Some(output.name.as_str()), env)?;
     Ok(dims
         .map(|dims| {
             dims.into_iter()

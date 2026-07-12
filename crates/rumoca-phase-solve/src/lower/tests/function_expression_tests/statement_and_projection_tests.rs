@@ -342,6 +342,7 @@ fn lower_expression_inlines_user_function_if_statement() {
     let abs_like = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.absLike"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("u")],
         outputs: vec![function_param("out")],
         locals: vec![],
@@ -445,6 +446,7 @@ fn lower_expression_inlines_user_function_break_statement() {
     let break_like = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.breakLike"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param_with_dims("bits", &[2])],
         outputs: vec![function_param("out")],
         locals: vec![],
@@ -675,6 +677,7 @@ fn lower_expression_inlines_user_function_for_statement() {
     let repeat_accum = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.repeatAccum"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("u")],
         outputs: vec![function_param("out")],
         locals: vec![],
@@ -928,6 +931,7 @@ fn lower_expression_uses_constant_function_input_in_for_range() {
     let loop_to_n = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.loopToN"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("n")],
         outputs: vec![function_param("out")],
         locals: vec![],
@@ -992,6 +996,7 @@ fn lower_expression_uses_for_index_in_function_assignment_target() {
     let fill_array = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.fillArray"),
         def_id: None,
+        instance_id: None,
         inputs: vec![],
         outputs: vec![function_param("out")],
         locals: vec![function_param_with_dims("m", &[3])],
@@ -1058,6 +1063,7 @@ fn lower_expression_reads_prior_indexed_function_local_matrix_assignment() {
     let fill_matrix = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.fillMatrix"),
         def_id: None,
+        instance_id: None,
         inputs: vec![],
         outputs: vec![function_param("out")],
         locals: vec![function_param_with_dims("m", &[1, 2])],
@@ -1129,6 +1135,7 @@ fn lower_expression_ignores_side_effect_function_statement_without_outputs() {
     let side_effect = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.sideEffect"),
         def_id: None,
+        instance_id: None,
         inputs: vec![function_param("u")],
         outputs: vec![function_param("out")],
         locals: vec![],
@@ -1187,6 +1194,7 @@ fn lower_expression_rejects_unlowered_runtime_special_function_statement_outputs
     let read_line = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.readLineWrapper"),
         def_id: None,
+        instance_id: None,
         inputs: vec![],
         outputs: vec![function_param("out")],
         locals: vec![function_param("line"), function_param("endOfFile")],

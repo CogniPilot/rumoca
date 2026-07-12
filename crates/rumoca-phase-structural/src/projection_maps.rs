@@ -6,9 +6,10 @@ use rumoca_ir_dae as dae;
 use crate::StructuralError;
 
 pub type ProjectionParts = Vec<ComponentRefPart>;
-pub type FunctionOutputProjectionMap = HashMap<String, HashMap<usize, ProjectionParts>>;
+pub type FunctionOutputProjectionMap =
+    HashMap<rumoca_core::FunctionInstanceId, HashMap<usize, ProjectionParts>>;
 pub type RecordFieldProjectionMap =
-    HashMap<String, HashMap<String, HashMap<usize, ProjectionParts>>>;
+    HashMap<rumoca_core::FunctionInstanceId, HashMap<String, HashMap<usize, ProjectionParts>>>;
 
 fn extract_first_component_index(name: &rumoca_core::VarName) -> Option<usize> {
     for segment in name.segments() {
@@ -176,7 +177,17 @@ pub fn build_function_output_projection_map(
     dae: &dae::Dae,
 ) -> Result<FunctionOutputProjectionMap, StructuralError> {
     let mut map = HashMap::new();
-    for (function_name, function) in &dae.symbols.functions {
+    for function in dae.symbols.functions.values() {
+        let instance_id =
+            function
+                .instance_id
+                .ok_or_else(|| StructuralError::ContractViolation {
+                    reason: format!(
+                        "function `{}` lacks flattened instance identity",
+                        function.name
+                    ),
+                    span: function.span,
+                })?;
         let mut by_index = HashMap::new();
         let mut scalar_idx = 1usize;
         for output in &function.outputs {
@@ -207,7 +218,7 @@ pub fn build_function_output_projection_map(
             }
         }
         if !by_index.is_empty() {
-            map.insert(function_name.as_str().to_string(), by_index);
+            map.insert(instance_id, by_index);
         }
     }
     Ok(map)
@@ -215,21 +226,33 @@ pub fn build_function_output_projection_map(
 
 fn append_record_field_projection(
     dae: &dae::Dae,
-    record_type: &str,
+    record_type: rumoca_core::DefId,
     selector_prefix: &[ComponentRefPart],
     field_prefix: &str,
     fields: &mut HashMap<String, HashMap<usize, ProjectionParts>>,
-    active_types: &mut Vec<String>,
+    active_types: &mut Vec<rumoca_core::DefId>,
 ) -> Result<(), StructuralError> {
-    if active_types.iter().any(|active| active == record_type) {
+    if active_types.contains(&record_type) {
         return Ok(());
     }
-    let Some(constructor) = dae.symbols.functions.iter().find_map(|(name, function)| {
-        (function.is_constructor && name.as_str() == record_type).then_some(function)
-    }) else {
-        return Ok(());
+    let selector_span = selector_prefix
+        .last()
+        .map(|part| part.span)
+        .ok_or_else(|| StructuralError::UnspannedContractViolation {
+            reason: "record projection selector is empty".to_string(),
+        })?;
+    let Some(constructor) = dae
+        .symbols
+        .functions
+        .values()
+        .find(|function| function.is_constructor && function.def_id == Some(record_type))
+    else {
+        return Err(StructuralError::ContractViolation {
+            reason: format!("record type {record_type} has no constructor metadata"),
+            span: selector_span,
+        });
     };
-    active_types.push(record_type.to_string());
+    active_types.push(record_type);
     for field in &constructor.inputs {
         let field_path = if field_prefix.is_empty() {
             field.name.clone()
@@ -243,9 +266,16 @@ fn append_record_field_projection(
             subs: vec![],
         });
         if field.type_class == Some(rumoca_core::ClassType::Record) {
+            let field_type_def_id =
+                field
+                    .type_def_id
+                    .ok_or_else(|| StructuralError::ContractViolation {
+                        reason: format!("record field `{field_path}` lacks resolved type identity"),
+                        span: field.span,
+                    })?;
             append_record_field_projection(
                 dae,
-                &field.type_name,
+                field_type_def_id,
                 &selector,
                 &field_path,
                 fields,
@@ -284,7 +314,7 @@ pub fn build_record_field_projection_map(
     dae: &dae::Dae,
 ) -> Result<RecordFieldProjectionMap, StructuralError> {
     let mut map = HashMap::new();
-    for (function_name, function) in &dae.symbols.functions {
+    for function in dae.symbols.functions.values() {
         if function.is_constructor {
             continue;
         }
@@ -294,10 +324,29 @@ pub fn build_record_field_projection_map(
         if output.type_class != Some(rumoca_core::ClassType::Record) {
             continue;
         }
+        let instance_id =
+            function
+                .instance_id
+                .ok_or_else(|| StructuralError::ContractViolation {
+                    reason: format!(
+                        "function `{}` lacks flattened instance identity",
+                        function.name
+                    ),
+                    span: function.span,
+                })?;
+        let type_def_id = output
+            .type_def_id
+            .ok_or_else(|| StructuralError::ContractViolation {
+                reason: format!(
+                    "record output `{}.{}` lacks resolved type identity",
+                    function.name, output.name
+                ),
+                span: output.span,
+            })?;
         let mut fields = HashMap::new();
         append_record_field_projection(
             dae,
-            &output.type_name,
+            type_def_id,
             &[ComponentRefPart {
                 ident: output.name.clone(),
                 span: output.span,
@@ -308,7 +357,7 @@ pub fn build_record_field_projection_map(
             &mut Vec::new(),
         )?;
         if !fields.is_empty() {
-            map.insert(function_name.as_str().to_string(), fields);
+            map.insert(instance_id, fields);
         }
     }
     Ok(map)

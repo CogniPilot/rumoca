@@ -450,12 +450,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         requested: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<Vec<i64>>, LowerError> {
-        let Some((function_name, function)) =
+        let Some((_, function)) =
             resolve_function_reference(&self.dae_model.symbols.functions, requested)
         else {
             return Ok(None);
         };
-        let Some(projection_suffix) = output_projection_suffix(function_name, requested) else {
+        let Some(projection_suffix) = output_projection_suffix(function, requested) else {
             return Ok(None);
         };
         let Some(output) = function

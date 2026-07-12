@@ -1,6 +1,8 @@
 use super::*;
 use rumoca_core::{ClassType, ComponentRefPart, ComponentReference, DefId, Literal, Span, VarName};
 
+const RECORD_DEF_ID: DefId = DefId(8101);
+
 fn test_span(start: usize) -> Span {
     Span::from_offsets(
         rumoca_core::SourceId::from_source_name(file!()),
@@ -19,6 +21,7 @@ fn var_ref(name: &str, span: Span) -> rumoca_core::Expression {
 
 fn record_constructor() -> rumoca_core::Function {
     let mut constructor = rumoca_core::Function::new("Pkg.Record", test_span(1));
+    constructor.def_id = Some(RECORD_DEF_ID);
     constructor.is_constructor = true;
     constructor.add_input(rumoca_core::FunctionParam::new("a", "Real", test_span(1)));
     constructor.add_input(rumoca_core::FunctionParam::new("b", "Real", test_span(1)));
@@ -29,7 +32,8 @@ fn function_with_record_input() -> rumoca_core::Function {
     let mut function = rumoca_core::Function::new("Pkg.f", test_span(1));
     function.add_input(
         rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span(1))
-            .with_type_class(ClassType::Record),
+            .with_type_class(ClassType::Record)
+            .with_type_def_id(RECORD_DEF_ID),
     );
     function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span(1)));
     function
@@ -271,7 +275,7 @@ fn insert_array_size_args_handles_projected_function_calls() {
 }
 
 #[test]
-fn dae_record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
+fn dae_record_param_lowering_rejects_unknown_record_metadata() {
     let mut dae = Dae::default();
     dae.symbols
         .functions
@@ -292,17 +296,7 @@ fn dae_record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
         scalar_count: 1,
     });
 
-    lower_record_function_params_dae(&mut dae).expect("unknown metadata should not rewrite calls");
-
-    let function = dae
-        .symbols
-        .functions
-        .get(&VarName::new("Pkg.f"))
-        .expect("function remains");
-    assert_eq!(function.inputs.len(), 1);
-    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.continuous.equations[0].rhs
-    else {
-        panic!("expected function call");
-    };
-    assert_eq!(args.len(), 1);
+    let err = lower_record_function_params_dae(&mut dae)
+        .expect_err("unknown constructor metadata must be rejected");
+    assert!(matches!(err, ToDaeError::RuntimeContractViolation { .. }));
 }

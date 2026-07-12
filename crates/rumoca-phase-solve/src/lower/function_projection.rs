@@ -23,7 +23,7 @@ impl<'a> LowerBuilder<'a> {
         else {
             return Ok(None);
         };
-        let Some(projection_suffix) = output_projection_suffix(function_name, name) else {
+        let Some(projection_suffix) = output_projection_suffix(function, name) else {
             return Ok(None);
         };
         let output_name = projection_suffix.output_name;

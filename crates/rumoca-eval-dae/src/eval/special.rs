@@ -45,36 +45,121 @@ impl OutputSelection {
     }
 }
 
+pub(in crate::eval) fn resolve_runtime_special_array_target(
+    requested_name: &str,
+) -> Option<(VarName, OutputSelection)> {
+    let (resolved_name, selection) = resolve_runtime_special_target(requested_name)?;
+    if let Some(selection) = selection {
+        return Some((resolved_name, selection));
+    }
+    let [output_name] = runtime_special_output_names(resolved_name.as_str())? else {
+        return None;
+    };
+    Some((resolved_name, OutputSelection::new(*output_name, &[])))
+}
+
 fn declared_output_selection(
     function: &rumoca_core::Function,
-    suffix: &str,
+    requested: &rumoca_core::Reference,
+    resolved: rumoca_core::ResolvedFunctionReference,
 ) -> Option<OutputSelection> {
-    if !function.outputs.iter().any(|output| {
-        suffix == output.name
-            || suffix
-                .strip_prefix(&output.name)
-                .is_some_and(|rest| rest.starts_with('.'))
-    }) {
+    let component_ref = requested.component_ref()?;
+    let suffix = component_ref.parts.get(resolved.base_part_count..)?;
+    if suffix.is_empty() {
+        return Some(OutputSelection::new("", &[]));
+    }
+    let output = suffix.first()?;
+    function
+        .outputs
+        .iter()
+        .any(|candidate| candidate.name == output.ident)
+        .then_some(())?;
+    if suffix[..suffix.len() - 1]
+        .iter()
+        .any(|part| !part.subs.is_empty())
+    {
         return None;
     }
-    let mut selection = OutputSelection::new(suffix, &[]);
-    selection.complex_component = complex_field_selection_from_path(suffix);
+    let indices = suffix
+        .last()?
+        .subs
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let output_path =
+        rumoca_core::ComponentPath::from_parts(suffix.iter().map(|part| part.ident.as_str()));
+    let mut selection = OutputSelection::new(output_path.as_str(), &indices);
+    selection.complex_component = suffix.last().and_then(|part| match part.ident.as_str() {
+        "re" => Some("re"),
+        "im" => Some("im"),
+        _ => None,
+    });
     Some(selection)
 }
 
-pub(in crate::eval) fn resolve_user_function_target<T: SimFloat>(
-    requested_name: &str,
+pub(in crate::eval) fn resolve_user_function_reference_target<T: SimFloat>(
+    requested: &rumoca_core::Reference,
     env: &VarEnv<T>,
 ) -> Option<(VarName, Option<OutputSelection>)> {
-    if resolve_user_function(requested_name, env).is_some() {
-        return Some((VarName::new(requested_name), None));
+    if let Some(resolved) = requested.resolved_function() {
+        let function = env
+            .functions
+            .values()
+            .find(|function| function.instance_id == Some(resolved.instance_id))?;
+        let selection = declared_output_selection(function, requested, resolved)?;
+        return Some((
+            VarName::new(function.name.as_str()),
+            (!selection.output_name.is_empty()).then_some(selection),
+        ));
     }
-
-    rumoca_core::find_map_top_level_splits_rev(requested_name, |base_name, suffix| {
-        let function = resolve_user_function(base_name, env)?;
-        let selection = declared_output_selection(function, suffix)?;
-        Some((VarName::new(base_name), Some(selection)))
-    })
+    if resolve_user_function(requested.as_str(), env).is_some() {
+        return Some((VarName::new(requested.as_str()), None));
+    }
+    #[cfg(test)]
+    {
+        rumoca_core::find_map_top_level_splits_rev(requested.as_str(), |base_name, suffix| {
+            let function = resolve_user_function(base_name, env)?;
+            let component_ref = rumoca_core::component_reference_from_flat_name(
+                &rumoca_core::VarName::new(suffix),
+                rumoca_core::Span::DUMMY,
+            )?;
+            let output = component_ref.parts.first()?;
+            function
+                .outputs
+                .iter()
+                .any(|candidate| candidate.name == output.ident)
+                .then_some(())?;
+            let indices = component_ref
+                .parts
+                .last()?
+                .subs
+                .iter()
+                .map(|subscript| match subscript {
+                    rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let output_path = rumoca_core::ComponentPath::from_parts(
+                component_ref.parts.iter().map(|part| part.ident.as_str()),
+            );
+            let mut selection = OutputSelection::new(output_path.as_str(), &indices);
+            selection.complex_component =
+                component_ref
+                    .parts
+                    .last()
+                    .and_then(|part| match part.ident.as_str() {
+                        "re" => Some("re"),
+                        "im" => Some("im"),
+                        _ => None,
+                    });
+            Some((VarName::new(base_name), Some(selection)))
+        })
+    }
+    #[cfg(not(test))]
+    None
 }
 
 /// Resolve a function call target and return its output names in declaration order.
@@ -95,17 +180,13 @@ pub fn resolve_function_call_outputs_pub<T: SimFloat>(
         return Some((resolved_name, output_names));
     }
 
-    let (resolved_name, selection) = resolve_user_function_target(name.as_str(), env)?;
-    if selection.is_some() {
-        return None;
-    }
-    let func = resolve_user_function(resolved_name.as_str(), env)?;
+    let func = resolve_user_function(name.as_str(), env)?;
     let output_names = func
         .outputs
         .iter()
         .map(|param| param.name.clone())
         .collect();
-    Some((resolved_name, output_names))
+    Some((name.clone(), output_names))
 }
 
 /// DAE-IR wrapper for `resolve_function_call_outputs_pub`.
@@ -113,8 +194,17 @@ pub fn resolve_function_call_outputs_pub_dae<T: SimFloat>(
     name: &rumoca_core::Reference,
     env: &VarEnv<T>,
 ) -> Option<(rumoca_core::VarName, Vec<String>)> {
-    let flat_name = VarName::new(name.as_str());
-    let (resolved, outputs) = resolve_function_call_outputs_pub(&flat_name, env)?;
+    let (resolved, selection) = resolve_user_function_reference_target(name, env)?;
+    if selection.is_some() {
+        return None;
+    }
+    let outputs = env
+        .functions
+        .get(resolved.as_str())?
+        .outputs
+        .iter()
+        .map(|output| output.name.clone())
+        .collect();
     Some((rumoca_core::VarName::new(resolved.as_str()), outputs))
 }
 
@@ -195,11 +285,14 @@ fn seed_resolved_function_scope_dims<T: SimFloat>(
         };
         std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims);
     }
-    seed_record_field_dims(local_env, params);
+    seed_record_field_dims(local_env, params)?;
     Ok(())
 }
 
-fn seed_record_field_dims<T: SimFloat>(local_env: &mut VarEnv<T>, params: &[FunctionParam]) {
+fn seed_record_field_dims<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    params: &[FunctionParam],
+) -> Result<(), EvalError> {
     let mut field_dims = Vec::new();
     for param in params {
         collect_record_field_dims(
@@ -208,40 +301,90 @@ fn seed_record_field_dims<T: SimFloat>(local_env: &mut VarEnv<T>, params: &[Func
             local_env,
             &mut Vec::new(),
             &mut field_dims,
-        );
+        )?;
     }
     let dims = std::sync::Arc::make_mut(&mut local_env.dims);
     dims.extend(field_dims);
+    Ok(())
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum RecordTypeKey {
+    Identity(rumoca_core::DefId),
+    #[cfg(test)]
+    SyntheticName(String),
+}
+
+#[cfg(test)]
+fn synthetic_record_constructor<'a, T: SimFloat>(
+    param: &FunctionParam,
+    env: &'a VarEnv<T>,
+) -> Result<&'a Function, EvalError> {
+    env.functions
+        .get(param.type_name.as_str())
+        .or_else(|| {
+            env.functions.values().find(|candidate| {
+                candidate.is_constructor && candidate.name.last_segment() == param.type_name
+            })
+        })
+        .ok_or_else(|| EvalError::MissingFunction {
+            name: format!("record constructor for `{}`", param.type_name),
+        })
 }
 
 fn collect_record_field_dims<T: SimFloat>(
     prefix: &str,
     param: &FunctionParam,
     env: &VarEnv<T>,
-    type_stack: &mut Vec<String>,
+    type_stack: &mut Vec<RecordTypeKey>,
     field_dims: &mut Vec<(String, Vec<i64>)>,
-) {
-    if param.type_class != Some(rumoca_core::ClassType::Record)
-        || type_stack.iter().any(|name| name == &param.type_name)
-    {
-        return;
+) -> Result<(), EvalError> {
+    if param.type_class != Some(rumoca_core::ClassType::Record) {
+        return Ok(());
     }
-    let Some(constructor) = env.functions.get(param.type_name.as_str()).or_else(|| {
-        env.functions
+    let (constructor, type_key) = if let Some(type_def_id) = param.type_def_id {
+        let type_key = RecordTypeKey::Identity(type_def_id);
+        if type_stack.contains(&type_key) {
+            return Ok(());
+        }
+        let constructor = env
+            .functions
             .values()
-            .find(|candidate| candidate.name.last_segment() == param.type_name)
-    }) else {
-        return;
+            .find(|candidate| candidate.is_constructor && candidate.def_id == Some(type_def_id))
+            .ok_or_else(|| {
+                EvalError::MissingFunction {
+                    name: format!("record constructor for `{}`", param.type_name),
+                }
+                .with_span_if_missing(param.span)
+            })?;
+        (constructor, type_key)
+    } else {
+        #[cfg(test)]
+        {
+            let constructor = synthetic_record_constructor(param, env)?;
+            (
+                constructor,
+                RecordTypeKey::SyntheticName(param.type_name.clone()),
+            )
+        }
+        #[cfg(not(test))]
+        {
+            return Err(EvalError::MissingFunction {
+                name: format!("record constructor identity for `{}`", param.type_name),
+            }
+            .with_span_if_missing(param.span));
+        }
     };
-    type_stack.push(param.type_name.clone());
+    type_stack.push(type_key);
     for field in &constructor.inputs {
         let field_path = format!("{prefix}.{}", field.name);
         if !field.dims.is_empty() {
             field_dims.push((field_path.clone(), field.dims.clone()));
         }
-        collect_record_field_dims(&field_path, field, env, type_stack, field_dims);
+        collect_record_field_dims(&field_path, field, env, type_stack, field_dims)?;
     }
     type_stack.pop();
+    Ok(())
 }
 
 pub(in crate::eval) fn resolved_function_param_dims<T: SimFloat>(
@@ -567,11 +710,11 @@ fn resolve_selection_value<T: SimFloat>(
 }
 
 fn eval_user_function_call<T: SimFloat>(
-    name: &VarName,
+    name: &rumoca_core::Reference,
     args: &[Expression],
     env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
-    let Some((resolved_name, selection)) = resolve_user_function_target(name.as_str(), env) else {
+    let Some((resolved_name, selection)) = resolve_user_function_reference_target(name, env) else {
         return Ok(None);
     };
     let func = resolve_user_function(resolved_name.as_str(), env).ok_or_else(|| {
@@ -613,7 +756,7 @@ fn eval_user_function_call<T: SimFloat>(
         body_len: body.len(),
         is_external: func.external.is_some(),
     };
-    trace_function_call_summary(trace_call, name, &resolved_name, &summary);
+    trace_function_call_summary(trace_call, name.var_name(), &resolved_name, &summary);
     trace_function_call_body_once(trace_call, &resolved_name, &body);
 
     let mut local_env = build_local_function_env(env);
@@ -796,17 +939,11 @@ fn eval_user_function_local_env<T: SimFloat>(
     args: &[Expression],
     env: &VarEnv<T>,
 ) -> Result<(VarName, Vec<FunctionParam>, VarEnv<T>), EvalError> {
-    let (resolved_name, selection) =
-        resolve_user_function_target(name.as_str(), env).ok_or_else(|| {
-            EvalError::MissingFunction {
-                name: name.to_string(),
-            }
+    let resolved_name = resolve_user_function(name.as_str(), env)
+        .map(|function| VarName::new(function.name.as_str()))
+        .ok_or_else(|| EvalError::MissingFunction {
+            name: name.to_string(),
         })?;
-    if selection.is_some() {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "selected function output path",
-        });
-    }
     let func = resolve_user_function(resolved_name.as_str(), env).ok_or_else(|| {
         EvalError::MissingFunction {
             name: resolved_name.to_string(),
@@ -858,12 +995,12 @@ fn eval_user_function_local_env<T: SimFloat>(
 }
 
 pub fn eval_user_function_array_output_pub<T: SimFloat>(
-    name: &VarName,
+    name: &rumoca_core::Reference,
     args: &[Expression],
     env: &VarEnv<T>,
 ) -> Result<Vec<T>, EvalError> {
     let (resolved_name, selection) =
-        resolve_user_function_target(name.as_str(), env).ok_or_else(|| {
+        resolve_user_function_reference_target(name, env).ok_or_else(|| {
             EvalError::MissingFunction {
                 name: name.to_string(),
             }
@@ -907,13 +1044,13 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
 }
 
 pub fn resolve_user_function_output_dims_pub<T: SimFloat>(
-    name: &VarName,
+    name: &rumoca_core::Reference,
     args: &[Expression],
     output_name: Option<&str>,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<i64>>, EvalError> {
     let (resolved_name, selection) =
-        resolve_user_function_target(name.as_str(), env).ok_or_else(|| {
+        resolve_user_function_reference_target(name, env).ok_or_else(|| {
             EvalError::MissingFunction {
                 name: name.to_string(),
             }
@@ -1257,7 +1394,11 @@ fn eval_function_closure_call<T: SimFloat>(
     if merged_args.len() > target.inputs.len() {
         return Ok(None);
     }
-    eval_user_function_call(&closure.target_name, &merged_args, env)
+    eval_user_function_call(
+        &rumoca_core::Reference::from_var_name(closure.target_name.clone()),
+        &merged_args,
+        env,
+    )
 }
 
 fn eval_constructor_call<T: SimFloat>(
@@ -1293,7 +1434,7 @@ fn eval_constructor_call<T: SimFloat>(
 }
 
 pub(super) fn eval_function_call<T: SimFloat>(
-    name: &VarName,
+    name: &rumoca_core::Reference,
     args: &[Expression],
     is_constructor: bool,
     env: &VarEnv<T>,
@@ -1303,20 +1444,20 @@ pub(super) fn eval_function_call<T: SimFloat>(
         return Ok(result);
     }
     if is_constructor {
-        return eval_constructor_call(name, args, env);
+        return eval_constructor_call(name.var_name(), args, env);
     }
     if name.as_str() == "Complex" {
         // MLS §6.7.1: Complex is the built-in operator-record constructor.
         // Flattened/runtime paths may still surface it as a plain function call,
         // so preserve constructor semantics even when `is_constructor` is lost.
-        return eval_constructor_call(name, args, env);
+        return eval_constructor_call(name.var_name(), args, env);
     }
-    if let Some(result) = eval_function_closure_call(name, args, env)? {
+    if let Some(result) = eval_function_closure_call(name.var_name(), args, env)? {
         return Ok(result);
     }
 
-    if is_runtime_special_function_name(name)
-        && let Some(result) = eval_special_function_call(name, args, env)?
+    if is_runtime_special_function_name(name.var_name())
+        && let Some(result) = eval_special_function_call(name.var_name(), args, env)?
     {
         return Ok(result);
     }
@@ -1337,10 +1478,10 @@ pub(super) fn eval_function_call<T: SimFloat>(
     if let Some(builtin) = BuiltinFunction::from_name(&short_name.to_ascii_lowercase()) {
         return eval_builtin(builtin, args, env);
     }
-    if let Some(result) = eval_special_function_call(name, args, env)? {
+    if let Some(result) = eval_special_function_call(name.var_name(), args, env)? {
         return Ok(result);
     }
-    trace_unresolved_user_function(name, env);
+    trace_unresolved_user_function(name.var_name(), env);
 
     Err(EvalError::MissingFunction {
         name: name.to_string(),
@@ -1386,7 +1527,12 @@ pub fn eval_function_call_pub<T: SimFloat>(
     args: &[Expression],
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
-    eval_function_call(name, args, false, env)
+    eval_function_call(
+        &rumoca_core::Reference::from_var_name(name.clone()),
+        args,
+        false,
+        env,
+    )
 }
 
 /// DAE-IR wrapper for `eval_function_call_pub`.
@@ -1397,7 +1543,12 @@ pub fn eval_function_call_pub_dae<T: SimFloat>(
 ) -> Result<T, EvalError> {
     let flat_name = VarName::new(name.as_str());
     let flat_args: Vec<Expression> = args.to_vec();
-    eval_function_call(&flat_name, &flat_args, false, env)
+    eval_function_call(
+        &rumoca_core::Reference::from_var_name(flat_name),
+        &flat_args,
+        false,
+        env,
+    )
 }
 
 /// Evaluate a specific selected function output via its resolved base function name.

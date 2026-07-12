@@ -17,14 +17,17 @@ pub(super) fn selected_function_output_call(
     else {
         return Ok(None);
     };
-    let Some((function_name, _)) = resolve_function_reference(&dae_model.symbols.functions, name)
-    else {
+    let Some((_, function)) = resolve_function_reference(&dae_model.symbols.functions, name) else {
         return Ok(None);
     };
-    if name.var_name() == function_name {
+    let Some(resolved) = name.resolved_function() else {
+        return Ok(None);
+    };
+    if name.component_ref().map(|reference| reference.parts.len()) == Some(resolved.base_part_count)
+    {
         return Ok(None);
     }
-    let Some(projection) = output_projection_suffix(function_name, name) else {
+    let Some(projection) = output_projection_suffix(function, name) else {
         return Ok(None);
     };
     let projection_map = build_function_output_projection_map(dae_model).map_err(|err| {
@@ -44,7 +47,7 @@ pub(super) fn selected_function_output_call(
     if let Some((_, indices)) = selector.last_mut() {
         *indices = projection.indices;
     }
-    if let Some(by_index) = projection_map.get(function_name.as_str()) {
+    if let Some(by_index) = projection_map.get(&resolved.instance_id) {
         for (scalar_index, candidate) in by_index {
             if !projection_parts_match(candidate, &selector) {
                 continue;
@@ -64,10 +67,11 @@ pub(super) fn selected_function_output_call(
                     *span,
                 )
             })?;
-            base_ref.parts.truncate(function_name.segments().len());
+            base_ref.parts.truncate(resolved.base_part_count);
             return Ok(Some((
                 rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::from_component_reference(base_ref),
+                    name: rumoca_core::Reference::from_component_reference(base_ref)
+                        .with_resolved_function(resolved),
                     args: args.clone(),
                     is_constructor: false,
                     span: *span,

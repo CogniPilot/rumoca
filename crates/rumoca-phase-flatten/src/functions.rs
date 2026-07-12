@@ -648,17 +648,31 @@ pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn canonicalize_collected_function_calls(flat: &mut flat::Model) {
+pub(crate) fn canonicalize_collected_function_calls(
+    flat: &mut flat::Model,
+) -> Result<(), FlattenError> {
+    let mut next_instance_id = 0u32;
+    for function in flat.functions.values_mut() {
+        function.instance_id = Some(rumoca_core::FunctionInstanceId::new(next_instance_id));
+        next_instance_id = next_instance_id.checked_add(1).ok_or_else(|| {
+            FlattenError::internal("flattened function instance identity space exhausted")
+        })?;
+    }
     let canonical_functions = flat
         .functions
         .values()
-        .map(|function| CanonicalFunction {
-            name: function.name.as_str().to_string(),
-            def_id: function.def_id,
+        .map(|function| {
+            Ok(CanonicalFunction {
+                name: function.name.as_str().to_string(),
+                def_id: function.def_id,
+                instance_id: function
+                    .instance_id
+                    .ok_or_else(|| FlattenError::internal("missing function instance identity"))?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     if canonical_functions.is_empty() {
-        return;
+        return Ok(());
     }
     let mut rewriter = CollectedFunctionCallCanonicalizer {
         canonical_functions,
@@ -729,6 +743,7 @@ pub(crate) fn canonicalize_collected_function_calls(flat: &mut flat::Model) {
             *statement = rewriter.rewrite_statement(statement);
         }
     }
+    Ok(())
 }
 
 fn canonicalize_when_equations(
@@ -784,6 +799,7 @@ fn canonicalize_function_param_default(
 struct CanonicalFunction {
     name: String,
     def_id: Option<rumoca_core::DefId>,
+    instance_id: rumoca_core::FunctionInstanceId,
 }
 
 struct CollectedFunctionCallCanonicalizer {
@@ -791,33 +807,48 @@ struct CollectedFunctionCallCanonicalizer {
 }
 
 impl CollectedFunctionCallCanonicalizer {
-    fn canonical_name_for_reference(&self, reference: &rumoca_core::Reference) -> Option<String> {
-        if let Some(component_name) = reference.component_ref().map(component_ref_name)
-            && self
+    fn canonical_function_for_reference(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> Option<&CanonicalFunction> {
+        if let Some(resolved) = reference.resolved_function() {
+            return self
                 .canonical_functions
                 .iter()
-                .any(|function| function.name == component_name)
-        {
-            return (component_name != reference.as_str()).then_some(component_name);
+                .find(|function| function.instance_id == resolved.instance_id);
         }
-        if let Some(def_id) = reference.target_def_id()
+        if let Some(component_name) = reference.component_ref().map(component_ref_name)
             && let Some(function) = self
                 .canonical_functions
                 .iter()
-                .find(|function| function.def_id == Some(def_id))
+                .find(|function| function.name == component_name)
         {
-            return (function.name != reference.as_str()).then(|| function.name.clone());
+            return Some(function);
         }
-        self.canonical_name_for(reference.as_str())
+        if let Some(def_id) = reference.target_def_id() {
+            let mut matches = self
+                .canonical_functions
+                .iter()
+                .filter(|function| function.def_id == Some(def_id));
+            let first = matches.next()?;
+            if let Some(second) = matches.next() {
+                return std::iter::once(first)
+                    .chain(std::iter::once(second))
+                    .chain(matches)
+                    .find(|function| function.name == reference.as_str());
+            }
+            return Some(first);
+        }
+        self.canonical_function_for_name(reference.as_str())
     }
 
-    fn canonical_name_for(&self, name: &str) -> Option<String> {
-        if self
+    fn canonical_function_for_name(&self, name: &str) -> Option<&CanonicalFunction> {
+        if let Some(function) = self
             .canonical_functions
             .iter()
-            .any(|candidate| candidate.name == name)
+            .find(|candidate| candidate.name == name)
         {
-            return None;
+            return Some(function);
         }
         let suffix = format!(".{name}");
         let mut matches = self
@@ -825,7 +856,7 @@ impl CollectedFunctionCallCanonicalizer {
             .iter()
             .filter(|candidate| candidate.name.ends_with(&suffix));
         let first = matches.next()?;
-        matches.next().is_none().then(|| first.name.clone())
+        matches.next().is_none().then_some(first)
     }
 }
 
@@ -841,9 +872,18 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
             return self.walk_expression(expr);
         };
         let args = self.rewrite_expressions(args);
-        if let Some(canonical_name) = self.canonical_name_for_reference(name) {
+        if let Some(canonical) = self.canonical_function_for_reference(name) {
+            let base_part_count = name
+                .component_ref()
+                .map(|reference| reference.parts.len())
+                .unwrap_or(0);
             return rumoca_core::Expression::FunctionCall {
-                name: name.with_var_name(rumoca_core::VarName::new(canonical_name)),
+                name: name
+                    .with_var_name(rumoca_core::VarName::new(&canonical.name))
+                    .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                        instance_id: canonical.instance_id,
+                        base_part_count,
+                    }),
                 args,
                 is_constructor: *is_constructor,
                 span: *span,

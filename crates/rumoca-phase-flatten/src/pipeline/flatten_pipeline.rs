@@ -993,7 +993,7 @@ pub(crate) fn finalize_flat_model(
     // canonicalization: both can expose inherited constant aliases in model
     // equations (for example `nX = nS` in a redeclared Medium package).
     substitute_known_constants_in_flat(flat, ctx)?;
-    functions::canonicalize_collected_function_calls(flat);
+    functions::canonicalize_collected_function_calls(flat)?;
     resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;

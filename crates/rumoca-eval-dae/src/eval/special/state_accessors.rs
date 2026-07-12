@@ -327,7 +327,9 @@ fn eval_state_accessor_via_user_helper<T: SimFloat>(
     };
     for suffix in helper_suffixes {
         let helper = VarName::new(format!("{prefix}.{suffix}"));
-        if let Some(v) = eval_user_function_call(&helper, args, env)? {
+        if let Some(v) =
+            eval_user_function_call(&rumoca_core::Reference::from_var_name(helper), args, env)?
+        {
             return Ok(Some(v));
         }
     }

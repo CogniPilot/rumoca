@@ -15,24 +15,26 @@ fn record_fields_from_constructor_metadata(
     functions: &flat::VarNameIndexMap<rumoca_core::Function>,
     type_name: &str,
     type_def_id: Option<rumoca_core::DefId>,
-) -> Option<(String, Vec<rumoca_core::FunctionParam>)> {
-    // Resolved declaration identity owns semantic lookup (SPEC_0001). The
-    // textual name remains a compatibility fallback for synthetic/test IR
-    // created without front-end type metadata.
-    let constructor = type_def_id
-        .and_then(|type_def_id| {
-            functions.values().find(|function| {
-                function.def_id == Some(type_def_id)
-                    && function.is_constructor
-                    && !function.inputs.is_empty()
-            })
-        })
-        .or_else(|| {
-            functions
-                .get(&rumoca_core::VarName::new(type_name))
-                .filter(|function| function.is_constructor && !function.inputs.is_empty())
+    span: rumoca_core::Span,
+) -> Result<(String, Vec<rumoca_core::FunctionParam>), FlattenError> {
+    let type_def_id = type_def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            type_name,
+            "record function parameter type",
+            span,
+        )
+    })?;
+    let constructor = functions
+        .values()
+        .find(|function| function.def_id == Some(type_def_id) && function.is_constructor)
+        .ok_or_else(|| {
+            FlattenError::missing_resolved_class_metadata(
+                type_name,
+                "record constructor metadata",
+                span,
+            )
         })?;
-    Some((
+    Ok((
         constructor.name.as_str().to_string(),
         constructor.inputs.to_vec(),
     ))
@@ -429,26 +431,21 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
 
 /// One decomposition pass. Returns whether any record parameter was decomposed.
 fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, FlattenError> {
-    let record_fields_by_function_input = flat
-        .functions
-        .iter()
-        .flat_map(|(function_name, function)| {
-            function
-                .inputs
-                .iter()
-                .enumerate()
-                .filter(|(_, input)| input.type_class == Some(rumoca_core::ClassType::Record))
-                .filter_map(|(input_index, input)| {
-                    record_fields_from_constructor_metadata(
-                        &flat.functions,
-                        &input.type_name,
-                        input.type_def_id,
-                    )
-                    .map(|metadata| ((function_name.clone(), input_index), metadata))
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<HashMap<_, _>>();
+    let mut record_fields_by_function_input = HashMap::new();
+    for (function_name, function) in &flat.functions {
+        for (input_index, input) in function.inputs.iter().enumerate() {
+            if input.type_class != Some(rumoca_core::ClassType::Record) {
+                continue;
+            }
+            let metadata = record_fields_from_constructor_metadata(
+                &flat.functions,
+                &input.type_name,
+                input.type_def_id,
+                input.span,
+            )?;
+            record_fields_by_function_input.insert((function_name.clone(), input_index), metadata);
+        }
+    }
 
     let mut decomposition_map: HashMap<String, Vec<DecomposedParam>> = HashMap::new();
     let mut local_decomposed_params: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1014,6 +1011,12 @@ mod tests {
     use super::*;
     use rumoca_core::{ClassType, Literal, Span, VarName};
 
+    const RECORD_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7001);
+    const INNER_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7002);
+    const OUTER_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7003);
+    const ROTATION_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7004);
+    const ELEMENT_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7005);
+
     fn test_span() -> Span {
         Span::from_offsets(
             rumoca_core::SourceId::from_source_name("function_lowering_test.mo"),
@@ -1072,6 +1075,7 @@ mod tests {
 
     fn record_constructor() -> rumoca_core::Function {
         let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
+        constructor.def_id = Some(RECORD_DEF_ID);
         constructor.is_constructor = true;
         constructor.add_input(rumoca_core::FunctionParam::new("a", "Real", test_span()));
         constructor.add_input(
@@ -1084,7 +1088,8 @@ mod tests {
         let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
         function.add_input(
             rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
         );
         function.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
         function.body.push(assignment_to(
@@ -1254,6 +1259,7 @@ mod tests {
         function.add_input(
             rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span())
                 .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID)
                 .with_dims(vec![0])
                 .with_shape_expr(vec![rumoca_core::Subscript::colon(Span::DUMMY)]),
         );
@@ -1310,6 +1316,7 @@ mod tests {
         function.add_input(
             rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span())
                 .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID)
                 .with_dims(vec![0])
                 .with_shape_expr(vec![rumoca_core::Subscript::colon(Span::DUMMY)]),
         );
@@ -1352,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
+    fn record_param_lowering_rejects_unknown_record_metadata() {
         let mut flat = flat::Model::new();
         flat.add_function(function_with_record_input());
         flat.add_equation(flat::Equation::new(
@@ -1371,18 +1378,12 @@ mod tests {
             },
         ));
 
-        lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
-
-        let function = flat
-            .functions
-            .get(&VarName::new("Pkg.f"))
-            .expect("function remains");
-        assert_eq!(function.inputs.len(), 1);
-        assert_eq!(function.inputs[0].name, "r");
-        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
-            panic!("expected function call");
-        };
-        assert_eq!(args.len(), 1);
+        let err = lower_record_function_params(&mut flat)
+            .expect_err("missing constructor metadata must be rejected");
+        assert!(matches!(
+            err,
+            FlattenError::MissingResolvedClassMetadata { .. }
+        ));
     }
 
     #[test]
@@ -1393,11 +1394,13 @@ mod tests {
         let mut function = rumoca_core::Function::new("Pkg.copyRecord", Span::DUMMY);
         function.add_input(
             rumoca_core::FunctionParam::new("source", "Pkg.Record", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
         );
         function.add_output(
             rumoca_core::FunctionParam::new("result", "Pkg.Record", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
         );
         function
             .body
@@ -1476,7 +1479,8 @@ mod tests {
         let mut callee = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
         callee.add_input(
             rumoca_core::FunctionParam::new("r", "Pkg.Record", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
         );
         callee.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
         callee.body.push(assignment_to(
@@ -1492,7 +1496,8 @@ mod tests {
         let mut caller = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
         caller.add_input(
             rumoca_core::FunctionParam::new("state", "Pkg.Record", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(RECORD_DEF_ID),
         );
         caller.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
         caller.body.push(assignment_to(
@@ -1534,6 +1539,7 @@ mod tests {
         let mut flat = flat::Model::new();
 
         let mut inner_constructor = rumoca_core::Function::new("Pkg.Inner", Span::DUMMY);
+        inner_constructor.def_id = Some(INNER_DEF_ID);
         inner_constructor.is_constructor = true;
         inner_constructor.add_input(rumoca_core::FunctionParam::new(
             "value",
@@ -1543,17 +1549,20 @@ mod tests {
         flat.add_function(inner_constructor);
 
         let mut outer_constructor = rumoca_core::Function::new("Pkg.Outer", Span::DUMMY);
+        outer_constructor.def_id = Some(OUTER_DEF_ID);
         outer_constructor.is_constructor = true;
         outer_constructor.add_input(
             rumoca_core::FunctionParam::new("inner", "Pkg.Inner", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(INNER_DEF_ID),
         );
         flat.add_function(outer_constructor);
 
         let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
         function.add_input(
             rumoca_core::FunctionParam::new("outer", "Pkg.Outer", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(OUTER_DEF_ID),
         );
         flat.add_function(function);
 
@@ -1584,6 +1593,7 @@ mod tests {
         let mut flat = flat::Model::new();
 
         let mut rotation_constructor = rumoca_core::Function::new("Pkg.Rotation", Span::DUMMY);
+        rotation_constructor.def_id = Some(ROTATION_DEF_ID);
         rotation_constructor.is_constructor = true;
         rotation_constructor.add_input(
             rumoca_core::FunctionParam::new("interfaceMarker", "Real", test_span())
@@ -1595,20 +1605,23 @@ mod tests {
         flat.add_function(rotation_constructor);
 
         let mut element_constructor = rumoca_core::Function::new("Pkg.Element", Span::DUMMY);
+        element_constructor.def_id = Some(ELEMENT_DEF_ID);
         element_constructor.is_constructor = true;
         element_constructor.add_input(
             rumoca_core::FunctionParam::new("position", "Real", test_span()).with_dims(vec![3]),
         );
         element_constructor.add_input(
             rumoca_core::FunctionParam::new("rotation", "Pkg.Rotation", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(ROTATION_DEF_ID),
         );
         flat.add_function(element_constructor);
 
         let mut inverse = rumoca_core::Function::new("Pkg.inverse", Span::DUMMY);
         inverse.add_input(
             rumoca_core::FunctionParam::new("element", "Pkg.Element", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(ELEMENT_DEF_ID),
         );
         inverse.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
         flat.add_function(inverse);
@@ -1616,7 +1629,8 @@ mod tests {
         let mut caller = rumoca_core::Function::new("Pkg.caller", Span::DUMMY);
         caller.add_input(
             rumoca_core::FunctionParam::new("reference", "Pkg.Element", test_span())
-                .with_type_class(ClassType::Record),
+                .with_type_class(ClassType::Record)
+                .with_type_def_id(ELEMENT_DEF_ID),
         );
         caller.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
         caller.body.push(assignment_to(

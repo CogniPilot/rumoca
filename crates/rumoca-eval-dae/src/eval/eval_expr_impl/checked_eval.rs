@@ -25,7 +25,7 @@ pub fn eval_expr<T: SimFloat>(
             ..
         } => {
             validate_expr(expr, env)?;
-            eval_function_call::<T>(name.var_name(), args, *is_constructor, env)
+            eval_function_call::<T>(name, args, *is_constructor, env)
         }
         rumoca_core::Expression::If {
             branches,

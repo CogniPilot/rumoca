@@ -8,7 +8,6 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
-use crate::dae_lowering::record_constructor_fields_from_metadata;
 use crate::discrete_partition::{ResidualDiscreteBucket, classify_residual_discrete_bucket};
 use crate::errors::ToDaeError;
 use crate::name_resolution;
@@ -497,18 +496,55 @@ fn record_field_specs_for_call(
     name: &rumoca_core::Reference,
     is_constructor: bool,
     flat: &flat::Model,
-) -> Option<Vec<RecordFieldSpec>> {
-    let function = flat.functions.get(name.var_name())?;
+) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
+    let function = if let Some(resolved) = name.resolved_function() {
+        flat.functions
+            .values()
+            .find(|function| function.instance_id == Some(resolved.instance_id))
+    } else {
+        #[cfg(test)]
+        {
+            flat.functions.get(name.var_name())
+        }
+        #[cfg(not(test))]
+        {
+            None
+        }
+    };
+    let Some(function) = function else {
+        return Ok(None);
+    };
     let fields = if is_constructor || function.is_constructor {
         function.inputs.clone()
     } else {
         let [output] = function.outputs.as_slice() else {
-            return None;
+            return Ok(None);
         };
         if output.type_class != Some(rumoca_core::ClassType::Record) {
-            return None;
+            return Ok(None);
         }
-        record_constructor_fields_from_metadata(flat.functions.iter(), &output.type_name)?
+        let type_def_id = output.type_def_id.ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "record output `{}.{}` lacks resolved type identity",
+                    function.name, output.name
+                ),
+                output.span,
+            )
+        })?;
+        flat.functions
+            .values()
+            .find(|candidate| candidate.is_constructor && candidate.def_id == Some(type_def_id))
+            .map(|constructor| constructor.inputs.clone())
+            .ok_or_else(|| {
+                ToDaeError::runtime_contract_violation_at(
+                    format!(
+                        "record output `{}.{}` has no constructor for resolved type identity",
+                        function.name, output.name
+                    ),
+                    output.span,
+                )
+            })?
     };
     RecordFieldSpec::from_params(fields)
 }
@@ -519,20 +555,26 @@ struct RecordFieldSpec {
 }
 
 impl RecordFieldSpec {
-    fn from_params(params: Vec<rumoca_core::FunctionParam>) -> Option<Vec<Self>> {
+    fn from_params(
+        params: Vec<rumoca_core::FunctionParam>,
+    ) -> Result<Option<Vec<Self>>, ToDaeError> {
         for param in &params {
-            assert!(
-                param.def_id.is_some(),
-                "record field `{}` has no DefId; record equation expansion requires resolved field identity",
-                param.name
-            );
+            if param.def_id.is_none() {
+                return Err(ToDaeError::runtime_contract_violation_at(
+                    format!(
+                        "record field `{}` lacks resolved identity required for equation expansion",
+                        param.name
+                    ),
+                    param.span,
+                ));
+            }
         }
-        (!params.is_empty()).then(|| {
+        Ok((!params.is_empty()).then(|| {
             params
                 .into_iter()
                 .map(|param| Self { param })
                 .collect::<Vec<_>>()
-        })
+        }))
     }
 
     fn name(&self) -> &str {
@@ -566,14 +608,14 @@ impl RecordFieldSpec {
 fn record_field_specs_for_rhs(
     rhs: &rumoca_core::Expression,
     flat: &flat::Model,
-) -> Option<Vec<RecordFieldSpec>> {
+) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
     match rhs {
         rumoca_core::Expression::FunctionCall {
             name,
             is_constructor,
             ..
         } => record_field_specs_for_call(name, *is_constructor, flat),
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -880,78 +922,6 @@ fn record_field_variables<'a>(
         .collect())
 }
 
-fn component_ref_is_record_descendant(
-    lhs_ref: &rumoca_core::ComponentReference,
-    field_ref: &rumoca_core::ComponentReference,
-) -> bool {
-    let lhs_parts = lhs_ref.parts.as_slice();
-    let field_parts = field_ref.parts.as_slice();
-    if field_parts.len() <= lhs_parts.len() {
-        return false;
-    }
-    let Some(lhs_leaf_index) = lhs_parts.len().checked_sub(1) else {
-        return false;
-    };
-    let field_leaf = &field_parts[field_parts.len() - 1];
-    lhs_parts.iter().enumerate().all(|(index, lhs_part)| {
-        let field_part = &field_parts[index];
-        lhs_part.ident == field_part.ident
-            && if index == lhs_leaf_index {
-                record_owner_subscripts_match(lhs_part, field_part, field_leaf)
-            } else {
-                subscripts_match_semantically(&lhs_part.subs, &field_part.subs)
-            }
-    })
-}
-
-fn record_descendant_field_groups<'a>(
-    lhs_ref: &rumoca_core::Reference,
-    flat: &'a flat::Model,
-    span: rumoca_core::Span,
-) -> Result<Vec<Vec<&'a flat::Variable>>, ToDaeError> {
-    let Some(lhs_component_ref) = lhs_ref.component_ref() else {
-        return Err(ToDaeError::runtime_contract_violation_at(
-            format!(
-                "record equation for `{}` has no structured component reference",
-                lhs_ref.as_str()
-            ),
-            span,
-        ));
-    };
-    let lhs_part_count = lhs_component_ref.parts.len();
-    let mut groups: IndexMap<
-        Vec<String>,
-        Vec<(&flat::Variable, &rumoca_core::ComponentReference)>,
-    > = IndexMap::new();
-    for variable in flat.variables.values() {
-        let Some(field_ref) = variable.component_ref.as_ref() else {
-            continue;
-        };
-        if !component_ref_is_record_descendant(lhs_component_ref, field_ref) {
-            continue;
-        }
-        let field_path = field_ref.parts[lhs_part_count..]
-            .iter()
-            .map(|part| part.ident.clone())
-            .collect::<Vec<_>>();
-        groups
-            .entry(field_path)
-            .or_default()
-            .push((variable, field_ref));
-    }
-    Ok(groups
-        .into_values()
-        .map(|mut variables| {
-            variables
-                .sort_by_key(|(_, field_ref)| record_field_sort_key(lhs_component_ref, field_ref));
-            variables
-                .into_iter()
-                .map(|(variable, _)| variable)
-                .collect()
-        })
-        .collect())
-}
-
 fn record_field_expansion_error(
     lhs_name: &rumoca_core::Reference,
     field: &RecordFieldSpec,
@@ -997,36 +967,7 @@ pub(crate) fn expand_record_field_equation(
         return Ok(None);
     }
 
-    let record_function_result = match rhs.as_ref() {
-        rumoca_core::Expression::FunctionCall {
-            name,
-            is_constructor: false,
-            ..
-        } => flat.functions.get(name.var_name()).is_some_and(|function| {
-            matches!(function.outputs.as_slice(), [output]
-                if output.type_class == Some(rumoca_core::ClassType::Record))
-        }),
-        _ => false,
-    };
-    if record_function_result && record_field_specs_for_rhs(rhs, flat).is_none() {
-        let field_groups = record_descendant_field_groups(lhs_name, flat, *lhs_span)?;
-        let mut equations = Vec::new();
-        for field_vars in field_groups {
-            equations.push(flat::Equation::new_array(
-                field_residual(
-                    field_lhs_expression(&field_vars, eq.span),
-                    rhs_field_expression_from_variables(rhs, lhs_name, &field_vars, eq.span),
-                    eq.span,
-                ),
-                eq.span,
-                eq.origin.clone(),
-                field_scalar_count(&field_vars),
-            ));
-        }
-        return Ok(Some(equations));
-    }
-
-    let Some(field_specs) = record_field_specs_for_rhs(rhs, flat) else {
+    let Some(field_specs) = record_field_specs_for_rhs(rhs, flat)? else {
         return Ok(None);
     };
     let mut equations = Vec::new();
@@ -1052,33 +993,6 @@ pub(crate) fn expand_record_field_equation(
     }
 
     Ok((!equations.is_empty()).then_some(equations))
-}
-
-fn rhs_field_expression_from_variables(
-    rhs: &rumoca_core::Expression,
-    lhs_name: &rumoca_core::Reference,
-    field_vars: &[&flat::Variable],
-    equation_span: rumoca_core::Span,
-) -> rumoca_core::Expression {
-    let span = rhs.span().unwrap_or(equation_span);
-    let mut selected = rhs.clone();
-    let lhs_part_count = lhs_name
-        .component_ref()
-        .map(|reference| reference.parts.len())
-        .unwrap_or(0);
-    if let Some(field_ref) = field_vars
-        .first()
-        .and_then(|variable| variable.component_ref.as_ref())
-    {
-        for part in field_ref.parts.iter().skip(lhs_part_count) {
-            selected = rumoca_core::Expression::FieldAccess {
-                base: Box::new(selected),
-                field: part.ident.clone(),
-                span,
-            };
-        }
-    }
-    selected
 }
 
 fn route_classified_equation(

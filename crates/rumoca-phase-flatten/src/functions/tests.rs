@@ -111,7 +111,7 @@ fn canonicalize_collected_function_calls_uses_unique_suffix_match() {
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat);
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
     let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
         panic!("expected function call residual");
@@ -153,7 +153,7 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
         },
     );
 
-    canonicalize_collected_function_calls(&mut flat);
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
     let Some(rumoca_core::Expression::FunctionCall { name, .. }) = flat
         .variables
@@ -219,7 +219,7 @@ fn canonicalize_collected_function_calls_prefers_structured_exposed_function_nam
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat);
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
     let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
         panic!("expected function call residual");
@@ -286,7 +286,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
     });
     flat.when_clauses.push(when);
 
-    canonicalize_collected_function_calls(&mut flat);
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
     assert_function_call_name(&flat.when_clauses[0].condition, "Pkg.Events.trip");
     let flat::WhenEquation::Conditional {
@@ -342,12 +342,57 @@ fn canonicalize_collected_function_calls_leaves_ambiguous_suffix() {
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat);
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
     let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
         panic!("expected function call residual");
     };
     assert_eq!(name.as_str(), "Polynomials.fitting");
+}
+
+#[test]
+fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_ids() {
+    let mut flat = flat::Model::new();
+    let shared_def_id = rumoca_core::DefId::new(900);
+    for name in ["Pkg.A.f", "Pkg.B.f"] {
+        let mut function = rumoca_core::Function::new(name, test_span());
+        function.def_id = Some(shared_def_id);
+        function
+            .body
+            .push(rumoca_core::Statement::Return { span: test_span() });
+        flat.add_function(function);
+    }
+    let mut call_ref = core_comp_ref_with_def_id(&["Pkg", "B", "f"], shared_def_id);
+    call_ref.span = test_span();
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(call_ref),
+            args: vec![],
+            is_constructor: false,
+            span: test_span(),
+        },
+        test_span(),
+        rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+
+    let expected_instance = flat.functions[&rumoca_core::VarName::new("Pkg.B.f")]
+        .instance_id
+        .expect("flattened function instance identity");
+    let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
+        panic!("expected function call residual");
+    };
+    assert_eq!(name.as_str(), "Pkg.B.f");
+    assert_eq!(
+        name.resolved_function(),
+        Some(rumoca_core::ResolvedFunctionReference {
+            instance_id: expected_instance,
+            base_part_count: 3,
+        })
+    );
 }
 
 #[test]
