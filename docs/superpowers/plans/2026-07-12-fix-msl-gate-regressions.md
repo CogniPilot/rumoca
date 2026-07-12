@@ -103,7 +103,7 @@ target/debug/xtask repo msl rerun --model 'Modelica.Electrical.Analog.Examples.T
 target/debug/xtask repo msl rerun --model 'Modelica.Electrical.Analog.Examples.SwitchWithArc' --results-dir /tmp/rumoca-msl-root-switch
 ```
 
-Expected: no `Interpolation time is not within current step` error.
+Expected: no `Interpolation time is not within current step` error. A root genuinely beyond tolerance must remain a structured error and be repaired at its separate root/tstop lifecycle owner; it must not be hidden by this tolerance task.
 
 **Step 5: Commit and task-review**
 
@@ -248,7 +248,63 @@ git add crates/rumoca-phase-solve crates/rumoca-solver/src/runtime/projection.rs
 git commit -s -m "fix(solve): validate complete algebraic projection"
 ```
 
-### Task 6: Run full gates, synchronize truth, and push
+### Task 6: Lower record-constructor output projections without executable bodies
+
+**Files:**
+- Modify: `crates/rumoca-phase-solve/src/function_validation.rs`
+- Modify: `crates/rumoca-phase-solve/src/lower/function_projection.rs`
+- Test: Appendix-B validation tests under `crates/rumoca-phase-solve/src/`
+- Test: `crates/rumoca-phase-solve/src/lower/tests/function_expression_tests.rs`
+
+**Step 1: Write the failing validation regression**
+
+Add `solve_input_validation_allows_record_constructor_output_projection_without_body`. Build an anonymous constructor function with `is_constructor=true`, positional inputs `re` and `im` where `im` has a default, a record output `result`, and an intentionally empty body. Validate a structural projection call such as `Pkg.RecordCtor.result.im(2.0)` whose synthetic call node is not itself marked constructor.
+
+**Step 2: Prove validator RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve solve_input_validation_allows_record_constructor_output_projection_without_body -- --nocapture
+```
+
+Expected pre-fix failure: Appendix-B resolution finds the base constructor but incorrectly requires an executable body.
+
+**Step 3: Write the failing lowering regression**
+
+Add `lower_expression_projects_record_constructor_output_field_with_default` with the same generic constructor metadata. Lower `Pkg.RecordCtor.result.im(2.0)` and assert that the projected value is the constructor input/default binding for `im` (`0.0`), not a body-local output lookup.
+
+**Step 4: Prove lowering RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve lower_expression_projects_record_constructor_output_field_with_default -- --nocapture
+```
+
+Expected pre-fix failure: `lower_projected_function_call` reports that projected output `result.im` cannot be resolved.
+
+**Step 5: Implement constructor-projection semantics**
+
+- After resolving the base DAE function, classify by its semantic `is_constructor` flag rather than the synthetic projection call flag.
+- Appendix-B validation may accept an empty body only for a valid constructor output projection; it must still validate arguments, defaults, arity, and the requested output/field path.
+- Lower a constructor output field by binding positional/named/default constructor inputs and selecting the matching record field. Reuse existing constructor argument-binding semantics; do not special-case `Complex`, a model name, or `re/im` strings beyond generic field matching.
+- Keep structural scalarization's projection encoding unchanged and retain all validation for ordinary functions.
+
+**Step 6: Verify focused phase and real model**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve function_projection -- --nocapture
+rustup run nightly-2026-02-27 cargo test -p rumoca-phase-solve appendix_b_validation -- --nocapture
+target/debug/xtask repo msl rerun --model 'Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesResonance' --results-dir /tmp/rumoca-msl-series-constructor-fixed
+```
+
+Expected: valid constructor projections lower without an executable body; SeriesResonance passes the former Solve Appendix-B/`Complex.result.im` boundary and reaches runtime.
+
+**Step 7: Commit and task-review**
+
+```bash
+git add crates/rumoca-phase-solve/src/function_validation.rs crates/rumoca-phase-solve/src/lower/function_projection.rs crates/rumoca-phase-solve/src/lower/tests/function_expression_tests.rs
+git commit -s -m "fix(solve): lower record constructor projections"
+```
+
+### Task 7: Run full gates, synchronize truth, and push
 
 **Files:**
 - Modify only if behavior/contracts changed: `spec/` and repository documentation selected by `architecture-sync-guard`
