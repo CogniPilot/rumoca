@@ -304,7 +304,49 @@ git add crates/rumoca-phase-solve/src/function_validation.rs crates/rumoca-phase
 git commit -s -m "fix(solve): lower record constructor projections"
 ```
 
-### Task 7: Run full gates, synchronize truth, and push
+### Task 7: Invalidate deferred roots across earlier scheduled events
+
+**Files:**
+- Modify: `crates/rumoca-eval-solve/src/sim_driver.rs`
+- Test: simulation-driver tests colocated with `sim_driver.rs`
+
+**Step 1: Write the failing scheduled-boundary regression**
+
+Add `scheduled_event_invalidates_deferred_future_root_from_pre_event_trajectory`. Use a fake backend whose free step reports a root after the requested scheduled boundary (for example root `0.500033856224`, boundary `0.5`). The driver must interpolate the left limit, apply/reset the scheduled event at `0.5`, then step again under the post-event trajectory; it must never call `state_mut_back` with the stale pre-event root.
+
+**Step 2: Prove RED**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve scheduled_event_invalidates_deferred_future_root_from_pre_event_trajectory --lib -- --nocapture
+```
+
+Expected pre-fix failure: `pending_root_t` survives the scheduled event reset and is replayed against a backend reset to `0.5`, producing `root time ... is after backend time ...`.
+
+**Step 3: Lock the ordinary-output behavior**
+
+Add `ordinary_output_boundary_preserves_deferred_future_root`. A root beyond a normal output sample remains valid because interpolation does not change the continuous trajectory; the next target may resolve that deferred root. This prevents the repair from deleting all deferred-root behavior.
+
+**Step 4: Fix root lifetime at the orchestration owner**
+
+Treat a deferred root as belonging to the exact continuous trajectory on which it was located. Carry it across an ordinary dense-output sample, but invalidate it when an earlier scheduled event is applied and the backend is reset. Order `pending_root_t` assignment after the scheduled-boundary decision, or clear it explicitly as part of the event reset. Do not clamp the stale root, widen tolerance, or special-case a model/time.
+
+**Step 5: Verify driver and representative model**
+
+```bash
+rustup run nightly-2026-02-27 cargo test -p rumoca-eval-solve sim_driver --lib -- --nocapture
+target/debug/xtask repo msl rerun --model 'Modelica.Electrical.Analog.Examples.SwitchWithArc' --results-dir /tmp/rumoca-msl-switch-root-lifetime-fixed
+```
+
+Expected: the stale `0.500033856224` pre-event root is not replayed after the `0.5` scheduled reset; the model progresses past its former future-root failure.
+
+**Step 6: Commit and task-review**
+
+```bash
+git add crates/rumoca-eval-solve/src/sim_driver.rs
+git commit -s -m "fix(sim): invalidate roots across scheduled resets"
+```
+
+### Task 8: Run full gates, synchronize truth, and push
 
 **Files:**
 - Modify only if behavior/contracts changed: `spec/` and repository documentation selected by `architecture-sync-guard`
