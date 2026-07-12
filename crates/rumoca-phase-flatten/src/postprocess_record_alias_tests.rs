@@ -627,7 +627,96 @@ fn record_alias_canonicalization_projects_nested_owner_record_leaf() {
 }
 
 #[test]
-fn record_alias_canonicalization_projects_decomposed_record_field_to_sibling_leaf() {
+fn record_alias_canonicalization_preserves_distinct_connector_record_endpoints() {
+    let mut model = flat::Model::new();
+    for (index, name) in [
+        "device.i",
+        "device.pin_p.i.re",
+        "device.pin_p.i.im",
+        "device.pin_n.i.re",
+        "device.pin_n.i.im",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_with_def_id(
+                    name,
+                    rumoca_core::DefId::new(800 + index as u32),
+                )),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    let pin_p_def_id = rumoca_core::DefId::new(901);
+    let pin_n_def_id = rumoca_core::DefId::new(902);
+    let pin_p_ref = component_ref_with_def_id("device.pin_p.i", pin_p_def_id);
+    let pin_n_ref = component_ref_with_def_id("device.pin_n.i", pin_n_def_id);
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "device.pin_p.i",
+                    pin_p_ref.clone(),
+                ),
+                subscripts: vec![],
+                span: Span::DUMMY,
+            }),
+            rhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "device.pin_n.i",
+                    pin_n_ref.clone(),
+                ),
+                subscripts: vec![],
+                span: Span::DUMMY,
+            }),
+            span: Span::DUMMY,
+        },
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "device".to_string(),
+        },
+    ));
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &Context::new());
+
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = &model.equations[0].residual else {
+        panic!("expected binary residual");
+    };
+    let rumoca_core::Expression::VarRef {
+        name: pin_p_name, ..
+    } = lhs.as_ref()
+    else {
+        panic!("expected pin_p aggregate reference");
+    };
+    let rumoca_core::Expression::VarRef {
+        name: pin_n_name, ..
+    } = rhs.as_ref()
+    else {
+        panic!("expected pin_n aggregate reference");
+    };
+    assert_eq!(
+        [
+            (pin_p_name.as_str(), pin_p_name.target_def_id()),
+            (pin_n_name.as_str(), pin_n_name.target_def_id()),
+        ],
+        [
+            ("device.pin_p.i", Some(pin_p_def_id)),
+            ("device.pin_n.i", Some(pin_n_def_id)),
+        ]
+    );
+    assert_eq!(pin_p_name.component_ref(), Some(&pin_p_ref));
+    assert_eq!(pin_n_name.component_ref(), Some(&pin_n_ref));
+}
+
+#[test]
+fn record_alias_canonicalization_preserves_decomposed_record_field_without_alias() {
     let mut model = flat::Model::new();
     for name in ["h", "state.phase"] {
         model.add_variable(
@@ -646,18 +735,13 @@ fn record_alias_canonicalization_projects_decomposed_record_field_to_sibling_lea
             component: String::new(),
         },
     ));
-    let mut ctx = Context::new();
-    ctx.record_aliases.insert(
-        rumoca_core::ComponentPath::from_flat_path("other.alias"),
-        rumoca_core::ComponentPath::from_flat_path("other.target"),
-    );
 
-    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+    canonicalize_varrefs_via_record_aliases(&mut model, &Context::new());
 
     let rumoca_core::Expression::VarRef { name, .. } = &model.equations[0].residual else {
-        panic!("expected projected var ref");
+        panic!("expected preserved var ref");
     };
-    assert_eq!(name.as_str(), "h");
+    assert_eq!(name.as_str(), "state.h");
 }
 
 #[test]

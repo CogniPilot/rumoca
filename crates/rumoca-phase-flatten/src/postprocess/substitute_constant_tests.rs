@@ -923,6 +923,98 @@ fn substitute_known_constants_recovers_path_like_string_variable_start() {
 }
 
 #[test]
+fn collapse_index_refs_preserves_structured_distinct_record_endpoints() {
+    let mut model = flat::Model::new();
+    for (index, name) in [
+        "device.i.re",
+        "device.i.im",
+        "device.pin_p.i.re",
+        "device.pin_p.i.im",
+        "device.pin_n.i.re",
+        "device.pin_n.i.im",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(rumoca_core::ComponentReference::from_flat_segments(
+                    name,
+                    test_span(),
+                    Some(rumoca_core::DefId::new(950 + index as u32)),
+                )),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    let source_def_id = rumoca_core::DefId::new(990);
+    let pin_p = var_ref_with_target_def_id("device.pin_p.i", source_def_id);
+    let pin_n = var_ref_with_target_def_id("device.pin_n.i", source_def_id);
+    let rumoca_core::Expression::VarRef {
+        name: expected_pin_p,
+        ..
+    } = &pin_p
+    else {
+        unreachable!("test helper returns a var ref");
+    };
+    let rumoca_core::Expression::VarRef {
+        name: expected_pin_n,
+        ..
+    } = &pin_n
+    else {
+        unreachable!("test helper returns a var ref");
+    };
+    let expected_pin_p = expected_pin_p.clone();
+    let expected_pin_n = expected_pin_n.clone();
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(pin_p),
+            rhs: Box::new(pin_n),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "device".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = &model.equations[0].residual else {
+        panic!("expected connector balance expression");
+    };
+    let rumoca_core::Expression::VarRef {
+        name: actual_pin_p, ..
+    } = lhs.as_ref()
+    else {
+        panic!("expected pin_p aggregate reference");
+    };
+    let rumoca_core::Expression::VarRef {
+        name: actual_pin_n, ..
+    } = rhs.as_ref()
+    else {
+        panic!("expected pin_n aggregate reference");
+    };
+    assert_eq!(
+        [
+            (actual_pin_p.as_str(), actual_pin_p.target_def_id()),
+            (actual_pin_n.as_str(), actual_pin_n.target_def_id()),
+        ],
+        [
+            ("device.pin_p.i", Some(source_def_id)),
+            ("device.pin_n.i", Some(source_def_id)),
+        ]
+    );
+    assert_eq!(actual_pin_p, &expected_pin_p);
+    assert_eq!(actual_pin_n, &expected_pin_n);
+}
+
+#[test]
 fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
     let mut model = flat::Model::new();
     model.add_variable(

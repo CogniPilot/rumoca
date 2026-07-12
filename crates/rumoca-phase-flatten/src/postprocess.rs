@@ -631,6 +631,7 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
             span,
         } = expr
             && subscripts.is_empty()
+            && !name.has_structure()
             && !self.known_flat_vars.contains(name.as_str())
             && !self
                 .known_flat_vars
