@@ -352,7 +352,7 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    fn current_update_target_clock_timing(&self) -> Option<&dae::ClockSchedule> {
+    pub(super) fn current_update_target_clock_timing(&self) -> Option<&dae::ClockSchedule> {
         let target = self.current_update_target?;
         self.clock_timings?.iter().find_map(|(name, timing)| {
             (self.layout.binding(name.as_str()) == Some(target)).then_some(timing)

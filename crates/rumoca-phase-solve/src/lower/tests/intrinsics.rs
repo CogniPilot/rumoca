@@ -246,6 +246,50 @@ fn lower_discrete_rhs_holds_clocked_sample_between_clock_ticks() {
 }
 
 #[test]
+fn lower_discrete_rhs_holds_implicit_clock_sample_time_between_target_ticks() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("simTime"), scalar_var("simTime"));
+    dae_model.clocks.timings.insert(
+        "simTime".to_string(),
+        dae::ClockSchedule {
+            period_seconds: 0.02,
+            phase_seconds: 0.0,
+            source_span: test_span(),
+        },
+    );
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("simTime").into()),
+        rhs: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args: vec![rumoca_core::Expression::VarRef {
+                name: rumoca_core::VarName::new("time").into(),
+                subscripts: vec![],
+                span: test_span(),
+            }],
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: "simTime = sample(time)".to_string(),
+        scalar_count: 1,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_discrete_rhs(&dae_model, &layout)
+        .expect("implicit-clock sample(time) should lower with target hold");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "simTime", 0.0);
+
+    let (_, held) = eval_linear_ops(&rows[0], &[], &p, 0.01);
+    assert_eq!(held.expect("row output"), 0.0);
+
+    let (_, sampled) = eval_linear_ops(&rows[0], &[], &p, 0.02);
+    assert_eq!(sampled.expect("row output"), 0.02);
+}
+
+#[test]
 fn lower_discrete_rhs_holds_vector_clocked_sample_elements_between_ticks() {
     let mut dae_model = dae::Dae::default();
     for name in ["u", "y"] {

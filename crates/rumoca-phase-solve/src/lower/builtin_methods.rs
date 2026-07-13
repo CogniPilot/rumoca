@@ -57,7 +57,24 @@ impl<'a> LowerBuilder<'a> {
                 rumoca_core::BuiltinFunction::Sample,
                 call_span,
             )),
-            [value] => self.lower_clocked_sample_value(value, call_span, scope, call_depth),
+            [value] => {
+                if let Some((phase_seconds, period_seconds, schedule_span)) =
+                    self.current_update_target_clock_timing().map(|timing| {
+                        (
+                            timing.phase_seconds,
+                            timing.period_seconds,
+                            timing.source_span,
+                        )
+                    })
+                {
+                    let phase = self.emit_const_at(phase_seconds, schedule_span)?;
+                    let period = self.emit_const_at(period_seconds, schedule_span)?;
+                    let tick = self.emit_periodic_tick(phase, period, schedule_span)?;
+                    self.lower_clocked_sample_with_tick(value, tick, call_span, scope, call_depth)
+                } else {
+                    self.lower_clocked_sample_value(value, call_span, scope, call_depth)
+                }
+            }
             [_internal_id, start, interval, ..] => {
                 if self.value_mode == ValueMode::Pre {
                     return self.emit_const_at(
