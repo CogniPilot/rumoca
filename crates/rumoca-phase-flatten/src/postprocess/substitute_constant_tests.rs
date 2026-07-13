@@ -574,6 +574,65 @@ fn substitute_known_constants_keeps_live_boolean_output_definition() {
 }
 
 #[test]
+fn substitute_known_constants_replaces_live_class_constant_without_flat_binding() {
+    let mut model = flat::Model::new();
+    let pi_name = rumoca_core::VarName::new("sine.pi");
+    model.add_variable(
+        pi_name.clone(),
+        flat::Variable {
+            name: pi_name,
+            variability: rumoca_core::Variability::Constant(rumoca_core::Token::default()),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let y_name = rumoca_core::VarName::new("sine.y");
+    model.add_variable(
+        y_name.clone(),
+        flat::Variable {
+            name: y_name,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(spanned_var_ref("sine.y")),
+            rhs: Box::new(spanned_var_ref("sine.pi")),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "sine".to_string(),
+        },
+    ));
+
+    // Class constants can be instantiated without retaining their source
+    // binding on the Flat declaration. The compiler-owned class-constant
+    // identity still makes the value structural and safe to substitute.
+    let mut ctx = Context::new();
+    ctx.class_constant_keys.insert("sine.pi".to_string());
+    ctx.real_parameter_values
+        .insert("sine.pi".to_string(), std::f64::consts::PI);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    assert!(matches!(
+        lhs.as_ref(),
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "sine.y"
+    ));
+    assert!(matches!(
+        rhs.as_ref(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if (*value - std::f64::consts::PI).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
 fn substitute_algorithms_uses_instance_parameter_bindings_in_rhs_and_range() {
     let mut model = flat::Model::new();
     for (name, binding) in [("table.y0", 3), ("table.n", 2), ("i", 99)] {

@@ -3146,12 +3146,14 @@ fn substitute_scalar_var_ref(
         return Ok(Some(expr));
     }
     if env.live_vars.contains(key) {
-        // During whole-model postprocessing, a live variable is substitutable
-        // only through its own structural declaration value, handled above.
-        // The broader context also contains pre-evaluated discrete Booleans
-        // used for structural branch selection; treating those as declaration
-        // constants would erase their runtime-visible defining equations.
-        if env.restrict_live_values_to_bindings {
+        // The broader context also contains pre-evaluated discrete values used
+        // for structural branch selection. Keep those runtime-visible unless
+        // compiler-owned metadata independently proves that the name is a
+        // class constant or structural parameter. Class constants may not
+        // retain their source binding on the Flat declaration, so requiring a
+        // declaration value alone would leak them into DAE/Solve as unbound
+        // runtime references.
+        if env.restrict_live_values_to_bindings && !live_value_is_proven_structural(key, env.ctx) {
             return Ok(None);
         }
         if parameter_is_non_structural(key, env) {
@@ -3233,6 +3235,12 @@ fn substitute_scalar_var_ref(
         )?));
     }
     substitute_alias_resolved_scalar_var_ref(key, span, env)
+}
+
+fn live_value_is_proven_structural(key: &str, ctx: &Context) -> bool {
+    ctx.constant_values.contains_key(key)
+        || ctx.class_constant_keys.contains(key)
+        || ctx.structural_params.contains(key)
 }
 
 fn def_id_scoped_lookup_key(name: &rumoca_core::Reference) -> &str {
