@@ -830,6 +830,10 @@ jobs:
       - name: Install system dependencies
         run: scripts/ci/apt-install.sh libudev-dev
 
+      - name: Install OpenModelica
+        shell: bash
+        run: scripts/ci/install-openmodelica.sh
+
       - name: Verify container toolchain
         run: |
           rustc --version
@@ -951,10 +955,6 @@ jobs:
           rm target/msl/msl-v4.1.0.zip
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
-
-      - name: Install OpenModelica
-        shell: bash
-        run: scripts/ci/install-openmodelica.sh
 
       - name: Clean stale MSL results
         shell: bash

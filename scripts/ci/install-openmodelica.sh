@@ -2,7 +2,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-expected_version="$(tr -d '[:space:]' < "$repo_root/toolchains/openmodelica-version")"
+expected_package_version="$(tr -d '[:space:]' < "$repo_root/toolchains/openmodelica-version")"
+if [[ ! "$expected_package_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-[0-9]+$ ]]; then
+  echo "Invalid OpenModelica package pin: $expected_package_version" >&2
+  exit 1
+fi
+expected_version="${BASH_REMATCH[1]}"
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   SUDO=()
 else
@@ -10,13 +15,15 @@ else
 fi
 
 installed_version() {
-  sed -nE 's/^OpenModelica ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p' <<< "$1"
+  local version_output="$1"
+  [[ "$version_output" =~ ^OpenModelica\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
 check_version() {
   local version_output="$1"
   local actual_version
-  actual_version="$(installed_version "$version_output")"
+  actual_version="$(installed_version "$version_output" || true)"
   if [[ "$actual_version" != "$expected_version" ]]; then
     echo "OpenModelica version mismatch: expected $expected_version, got ${actual_version:-unknown}" >&2
     return 1
@@ -42,13 +49,13 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] ht
 
 package_version="$(
   apt-cache madison omc \
-    | awk -v expected="$expected_version" '$3 ~ ("(^|:|~)" expected "([~+.-]|$)") { print $3; exit }'
+    | awk -v expected="$expected_package_version" '$3 == expected { print $3; exit }'
 )"
 if [[ -z "$package_version" ]]; then
-  echo "OpenModelica $expected_version is unavailable from the configured repository" >&2
+  echo "OpenModelica package $expected_package_version is unavailable from the configured repository" >&2
   apt-cache madison omc >&2
   exit 1
 fi
 
-"${SUDO[@]}" apt-get install -y --no-install-recommends "omc=$package_version"
+"${SUDO[@]}" apt-get install -y --no-install-recommends "omc=$expected_package_version"
 check_version "$(omc --version)"
