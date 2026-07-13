@@ -1115,8 +1115,22 @@ pub(super) fn substitute_known_constants_in_flat(
             substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals)?;
         }
     }
-    substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;
-    substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals)?;
+    substitute_algorithms(
+        &mut flat.algorithms,
+        ctx,
+        &live_vars,
+        &no_locals,
+        &var_dims,
+        &var_values,
+    )?;
+    substitute_algorithms(
+        &mut flat.initial_algorithms,
+        ctx,
+        &live_vars,
+        &no_locals,
+        &var_dims,
+        &var_values,
+    )?;
     substitute_variable_annotations(
         flat,
         ctx,
@@ -1819,10 +1833,14 @@ fn substitute_algorithms(
     ctx: &Context,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+    var_values: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
 ) -> Result<(), FlattenError> {
     for algorithm in algorithms {
         for statement in &mut algorithm.statements {
-            substitute_known_constants_statement(statement, ctx, live_vars, locals, "")?;
+            substitute_known_constants_statement_with_dims_and_values(
+                statement, ctx, live_vars, locals, "", var_dims, var_values,
+            )?;
         }
     }
     Ok(())
@@ -2399,6 +2417,19 @@ impl<'a> ConstantSubstitutionEnv<'a> {
             resolving_value: self.resolving_value,
         }
     }
+
+    fn with_locals<'b>(&'b self, locals: &'b HashSet<String>) -> ConstantSubstitutionEnv<'b> {
+        ConstantSubstitutionEnv {
+            ctx: self.ctx,
+            live_vars: self.live_vars,
+            locals,
+            scope: self.scope,
+            prefer_scoped_parameters: self.prefer_scoped_parameters,
+            var_dims: self.var_dims,
+            var_values: self.var_values,
+            resolving_value: self.resolving_value,
+        }
+    }
 }
 
 impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
@@ -2427,6 +2458,12 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
                 }
                 self.walk_expression(expr)
             }
+            rumoca_core::Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                span,
+            } => self.rewrite_array_comprehension(expr, indices, filter.as_deref(), *span),
             other => self.walk_expression(other),
         }
     }
@@ -2446,6 +2483,40 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
 }
 
 impl KnownConstantSubstituter<'_> {
+    fn rewrite_array_comprehension(
+        &self,
+        expr: &rumoca_core::Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&rumoca_core::Expression>,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, FlattenError> {
+        let mut active_locals = self.env.locals.clone();
+        let mut rewritten_indices = Vec::with_capacity(indices.len());
+        for index in indices {
+            let range = KnownConstantSubstituter {
+                env: self.env.with_locals(&active_locals),
+            }
+            .rewrite_expression(&index.range)?;
+            rewritten_indices.push(rumoca_core::ComprehensionIndex {
+                name: index.name.clone(),
+                range,
+            });
+            active_locals.insert(index.name.clone());
+        }
+
+        let mut bound_rewriter = KnownConstantSubstituter {
+            env: self.env.with_locals(&active_locals),
+        };
+        Ok(rumoca_core::Expression::ArrayComprehension {
+            expr: Box::new(bound_rewriter.rewrite_expression(expr)?),
+            indices: rewritten_indices,
+            filter: filter
+                .map(|filter| bound_rewriter.rewrite_expression(filter).map(Box::new))
+                .transpose()?,
+            span,
+        })
+    }
+
     fn rewrite_size_from_declared_dims(
         &self,
         args: &[rumoca_core::Expression],
@@ -2969,7 +3040,45 @@ fn literal_integer(expr: &rumoca_core::Expression) -> Option<i64> {
     }
 }
 
-impl FallibleStatementRewriter for KnownConstantSubstituter<'_> {}
+impl FallibleStatementRewriter for KnownConstantSubstituter<'_> {
+    fn rewrite_statement(
+        &mut self,
+        statement: &rumoca_core::Statement,
+    ) -> Result<rumoca_core::Statement, Self::Error> {
+        let rumoca_core::Statement::For {
+            indices,
+            equations,
+            span,
+        } = statement
+        else {
+            return self.walk_statement(statement);
+        };
+
+        let mut active_locals = self.env.locals.clone();
+        let mut rewritten_indices = Vec::with_capacity(indices.len());
+        for index in indices {
+            let range = KnownConstantSubstituter {
+                env: self.env.with_locals(&active_locals),
+            }
+            .rewrite_expression(&index.range)?;
+            rewritten_indices.push(rumoca_core::ForIndex {
+                ident: index.ident.clone(),
+                range,
+            });
+            active_locals.insert(index.ident.clone());
+        }
+        let equations = KnownConstantSubstituter {
+            env: self.env.with_locals(&active_locals),
+        }
+        .rewrite_statements(equations)?;
+
+        Ok(rumoca_core::Statement::For {
+            indices: rewritten_indices,
+            equations,
+            span: *span,
+        })
+    }
+}
 
 fn substitute_indexed_constant_var_ref(
     name: &rumoca_core::Reference,
@@ -3022,6 +3131,9 @@ fn substitute_scalar_var_ref(
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
     let key = name.as_str();
+    if reference_root_is_local(name, env.locals) {
+        return Ok(None);
+    }
     if let Some(expr) = substitute_flat_variable_value_ref(key, span, env)? {
         return Ok(Some(expr));
     }
@@ -3037,9 +3149,6 @@ fn substitute_scalar_var_ref(
         {
             return Ok(Some(substitute_resolved_constant_expr(key, v, span, env)?));
         }
-        return Ok(None);
-    }
-    if reference_root_is_local(name, env.locals) {
         return Ok(None);
     }
     if inline_index_base_is_live_or_local(key, env.live_vars, env.locals) {
@@ -3365,11 +3474,14 @@ fn substitute_resolved_constant_expr(
         key,
         parent: env.resolving_value,
     };
+    let declaration_locals = HashSet::new();
     KnownConstantSubstituter {
         env: ConstantSubstitutionEnv {
             ctx: env.ctx,
             live_vars: env.live_vars,
-            locals: env.locals,
+            // A variable binding is evaluated in its declaration scope, not in
+            // the caller's algorithm loop/comprehension scope.
+            locals: &declaration_locals,
             scope,
             prefer_scoped_parameters: env.prefer_scoped_parameters,
             var_dims: env.var_dims,
@@ -3923,6 +4035,31 @@ fn substitute_known_constants_statement(
             prefer_scoped_parameters: false,
             var_dims: None,
             var_values: None,
+            resolving_value: None,
+        },
+    }
+    .rewrite_statement(statement)?;
+    Ok(())
+}
+
+fn substitute_known_constants_statement_with_dims_and_values(
+    statement: &mut rumoca_core::Statement,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+    scope: &str,
+    var_dims: &rustc_hash::FxHashMap<String, Vec<i64>>,
+    var_values: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
+) -> Result<(), FlattenError> {
+    *statement = KnownConstantSubstituter {
+        env: ConstantSubstitutionEnv {
+            ctx,
+            live_vars,
+            locals,
+            scope,
+            prefer_scoped_parameters: true,
+            var_dims: Some(var_dims),
+            var_values: Some(var_values),
             resolving_value: None,
         },
     }

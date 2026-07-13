@@ -1,5 +1,6 @@
 //! Regression tests for MSL table-driven no-state simulation behavior.
 
+use rumoca::Compiler;
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_dae as dae;
 use rumoca_sim::{SimOptions, simulate_dae};
@@ -576,4 +577,60 @@ fn native_no_state_simulation_refreshes_table_driven_boolean_discrete_chain() {
         .position(|name| name == "c")
         .expect("trace should contain c");
     assert_eq!(sim.data[c_idx], vec![1.0, 1.0, 0.0]);
+}
+
+#[test]
+fn source_table_algorithm_keeps_last_write_at_each_threshold() {
+    let source = r#"
+block TwoPointTable
+  parameter Integer x[:] = {4};
+  parameter Real t[size(x, 1)] = {1};
+  parameter Integer y0 = 1;
+  final parameter Integer n = size(x, 1);
+  output Integer y;
+algorithm
+  y := y0;
+  for i in 1:n loop
+    if time >= t[i] then
+      y := x[i];
+    end if;
+  end for;
+end TwoPointTable;
+
+model TwoThresholdTable
+  TwoPointTable table(y0 = 3, x = {4, 3}, t = {1, 3});
+end TwoThresholdTable;
+"#;
+    let compiled = Compiler::new()
+        .model("TwoThresholdTable")
+        .compile_str(source, "TwoThresholdTable.mo")
+        .expect("two-threshold table fixture should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 4.0,
+            dt: Some(1.0),
+            ..Default::default()
+        },
+    )
+    .expect("two-threshold table fixture should simulate");
+    let y_idx = sim
+        .names
+        .iter()
+        .position(|name| name == "table.y")
+        .expect("trace should contain table.y");
+    let value_at = |time: f64| {
+        sim.times
+            .iter()
+            .zip(&sim.data[y_idx])
+            .rev()
+            .find(|(sample_time, _)| (**sample_time - time).abs() <= 1.0e-12)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("trace should contain t={time}"))
+    };
+
+    // MLS §11.1/§11.2 and Appendix B: statements and loop iterations execute
+    // sequentially, so the last active assignment owns the algorithm output.
+    assert_eq!(value_at(2.0), 4.0, "first threshold should select x[1]");
+    assert_eq!(value_at(3.0), 3.0, "second threshold should select x[2]");
 }

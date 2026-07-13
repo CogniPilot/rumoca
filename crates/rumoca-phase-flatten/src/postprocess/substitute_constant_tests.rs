@@ -509,6 +509,124 @@ fn substitute_known_constants_uses_instance_parameter_bindings_in_component_equa
 }
 
 #[test]
+fn substitute_algorithms_uses_instance_parameter_bindings_in_rhs_and_range() {
+    let mut model = flat::Model::new();
+    for (name, binding) in [("table.y0", 3), ("table.n", 2), ("i", 99)] {
+        let var_name = rumoca_core::VarName::new(name);
+        model.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(int_literal(binding)),
+                binding_from_modification: true,
+                is_discrete_type: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+    let alias_name = rumoca_core::VarName::new("n");
+    model.add_variable(
+        alias_name.clone(),
+        flat::Variable {
+            name: alias_name,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(var_ref("i")),
+            binding_from_modification: true,
+            is_discrete_type: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.algorithms.push(flat::Algorithm {
+        statements: vec![
+            simple_assignment(var_ref("table.y0")),
+            rumoca_core::Statement::For {
+                indices: vec![rumoca_core::ForIndex {
+                    ident: "i".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(int_literal(1)),
+                        step: None,
+                        end: Box::new(var_ref("table.n")),
+                        span: test_span(),
+                    },
+                }],
+                equations: vec![
+                    simple_assignment(var_ref("i")),
+                    simple_assignment(var_ref("n")),
+                ],
+                span: test_span(),
+            },
+            simple_assignment(rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(var_ref("i")),
+                indices: vec![rumoca_core::ComprehensionIndex {
+                    name: "i".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(int_literal(1)),
+                        step: None,
+                        end: Box::new(int_literal(2)),
+                        span: test_span(),
+                    },
+                }],
+                filter: None,
+                span: test_span(),
+            }),
+        ],
+        outputs: vec![],
+        span: test_span(),
+        origin: "algorithm from table".to_string(),
+    });
+
+    let mut ctx = Context::new();
+    ctx.parameter_values.insert("table.y0".to_string(), 1);
+    ctx.parameter_values.insert("table.n".to_string(), 1);
+    ctx.parameter_values.insert("i".to_string(), 99);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Statement::Assignment { value, .. } = &model.algorithms[0].statements[0]
+    else {
+        panic!("expected initial assignment");
+    };
+    assert_eq!(literal_integer_value(value), Some(3));
+
+    let rumoca_core::Statement::For {
+        indices, equations, ..
+    } = &model.algorithms[0].statements[1]
+    else {
+        panic!("expected table loop");
+    };
+    let rumoca_core::Expression::Range { end, .. } = &indices[0].range else {
+        panic!("expected table loop range");
+    };
+    assert_eq!(literal_integer_value(end), Some(2));
+    let rumoca_core::Statement::Assignment { value, .. } = &equations[0] else {
+        panic!("expected loop-body assignment");
+    };
+    assert!(matches!(
+        value,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "i" && subscripts.is_empty()
+    ));
+    let rumoca_core::Statement::Assignment { value, .. } = &equations[1] else {
+        panic!("expected alias assignment");
+    };
+    assert_eq!(literal_integer_value(value), Some(99));
+
+    let rumoca_core::Statement::Assignment { value, .. } = &model.algorithms[0].statements[2]
+    else {
+        panic!("expected comprehension assignment");
+    };
+    let rumoca_core::Expression::ArrayComprehension { expr, .. } = value else {
+        panic!("expected array comprehension");
+    };
+    assert!(matches!(
+        expr.as_ref(),
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "i" && subscripts.is_empty()
+    ));
+}
+
+#[test]
 fn substitute_known_constants_uses_declared_dims_for_size_before_stale_start() {
     let mut model = flat::Model::new();
     let columns = rumoca_core::VarName::new("lossTable.columns");
