@@ -58,12 +58,17 @@ impl BoundaryScanState {
             if !expr_contains_var(&expr, &substitution.var_name) {
                 continue;
             }
-            let Some(rhs) = apply_substitutions_for_symbolic_candidate(&expr, &self.substitutions)?
+            let Some(rhs) =
+                apply_substitutions_for_symbolic_candidate(&expr, &self.substitutions, dae)?
             else {
                 return Ok(true);
             };
-            if apply_substitutions_for_symbolic_candidate(&rhs, std::slice::from_ref(substitution))?
-                .is_none()
+            if apply_substitutions_for_symbolic_candidate(
+                &rhs,
+                std::slice::from_ref(substitution),
+                dae,
+            )?
+            .is_none()
             {
                 return Ok(true);
             }
@@ -93,7 +98,8 @@ fn scan_boundary_equation(
     }
     let equation = &ctx.dae.continuous.equations[eq_idx];
     let expr = equation_analysis_expr(equation);
-    let Some(eq_rhs) = apply_substitutions_for_symbolic_candidate(&expr, &state.substitutions)?
+    let Some(eq_rhs) =
+        apply_substitutions_for_symbolic_candidate(&expr, &state.substitutions, ctx.dae)?
     else {
         return Ok(());
     };

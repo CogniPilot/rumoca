@@ -740,6 +740,56 @@ fn test_boundary_connection_policy_accepts_scalar_element_of_aggregate_var() {
 }
 
 #[test]
+fn test_boundary_connection_policy_preserves_aggregate_only_scalar_elements() {
+    let mut dae = Dae::new();
+    for name in ["block.product1.u", "block.product2.u"] {
+        let mut variable = test_dae_variable(name);
+        variable.dims = vec![2];
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+    }
+
+    let connection_rhs = Expression::Binary {
+        op: sub_op(),
+        lhs: Box::new(var_ref_idx("block.product1.u", 2)),
+        rhs: Box::new(var_ref_idx("block.product2.u", 1)),
+        span: test_span(),
+    };
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: connection_rhs.clone(),
+        span: test_span(),
+        origin: "connection equation: block.product1.u[2] = block.product2.u[1]".to_string(),
+        scalar_count: 1,
+    });
+    for (output, aggregate) in [
+        ("product1.y", "block.product1.u"),
+        ("product2.y", "block.product2.u"),
+    ] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(output), test_dae_variable(output));
+        dae.continuous.equations.push(residual(
+            var_ref(output),
+            builtin(BuiltinFunction::Product, vec![var_ref(aggregate)]),
+            1,
+            "aggregate-only product input use",
+        ));
+    }
+
+    let live = vec![
+        VarName::new("block.product1.u[2]"),
+        VarName::new("block.product2.u[1]"),
+    ];
+
+    assert!(
+        should_skip_connection_equation(&dae, &connection_rhs, true, &live, &HashSet::new()),
+        "a scalar aggregate leaf whose only non-connection use is the materializable aggregate must keep its connection equation because the base vector storage cannot remove one leaf"
+    );
+}
+
+#[test]
 fn test_boundary_eliminates_scalarized_element_with_boundary_known_derivative_use() {
     let mut dae = Dae::new();
     dae.variables

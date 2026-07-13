@@ -53,6 +53,7 @@ fn substitute_var(expr: &Expression, var: &VarName, replacement: &Expression) ->
             replacement,
             replacement_dims: &substitution.replacement_dims,
             derivative_replacement: None,
+            dae_scope: None,
         }
         .rewrite_expression(expr),
     )
@@ -878,6 +879,183 @@ fn test_aggregate_subscript_substitution_does_not_rewrite_sibling_indexed_compon
 }
 
 #[test]
+fn aggregate_dims_use_structured_indexed_parent_reference_instead_of_leaf_display_name() {
+    let mut dae = Dae::new();
+    let aggregate_name = "analysatorAC.iH1[1].product2.u";
+    let mut aggregate = component_var(aggregate_name);
+    aggregate.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new(aggregate_name), aggregate);
+
+    let scalar_component_ref = component_ref("analysatorAC.iH1[1].product2.u[2]");
+    let scalar_leaf_reference = Reference::with_component_reference("u[2]", scalar_component_ref);
+    let rewriter = RecordFieldAggregateRewriter {
+        aggregate_alias_groups: IndexMap::new(),
+        complex_groups: IndexMap::new(),
+        dae_scope: Some(DaeVariableScope::new(&dae)),
+    };
+
+    assert_eq!(
+        rewriter.aggregate_dims_for_reference(&scalar_leaf_reference),
+        Some(Vec::new()),
+        "the structured reference must resolve the indexed parent vector before projecting leaf index 2"
+    );
+}
+
+#[test]
+fn scoped_scalar_target_does_not_fall_back_when_dae_identity_is_exact() {
+    let mut dae = Dae::new();
+    let exact_name = "plant.parent[1].u[1]";
+    dae.variables
+        .algebraics
+        .insert(VarName::new(exact_name), component_var(exact_name));
+    let substitution = Substitution {
+        var_name: VarName::new(exact_name),
+        var_ref: None,
+        expr: var_ref("source"),
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: Vec::new(),
+    };
+    let scope = DaeVariableScope::new(&dae);
+
+    assert!(
+        scalar_substitution_target_key_in_scope(&substitution, Some(&scope)).is_none(),
+        "an exact DAE scalar must fail closed instead of falling back to a display-string aggregate key"
+    );
+}
+
+#[test]
+fn elimination_substitution_pipeline_keeps_indexed_parent_vector_leaves_distinct() {
+    let mut dae = indexed_parent_elimination_dae();
+    let elimination = eliminate_trivial(&mut dae)
+        .expect("trivial elimination should preserve structured indexed-parent references");
+    for parent in [1, 2] {
+        assert!(
+            elimination.substitutions.iter().any(|substitution| {
+                substitution.var_name.as_str() == format!("plant.parent[{parent}].u[1]")
+            }),
+            "parent {parent} scalar leaf should be eliminated through the real boundary pipeline"
+        );
+    }
+    assert_eq!(
+        dae.continuous.equations.len(),
+        2,
+        "remaining origins: {:?}",
+        dae.continuous
+            .equations
+            .iter()
+            .map(|equation| &equation.origin)
+            .collect::<Vec<_>>()
+    );
+
+    for (index, equation) in dae.continuous.equations.iter().enumerate() {
+        if index >= 2 {
+            break;
+        }
+        let Expression::Binary { rhs, .. } = &equation.rhs else {
+            panic!("expected parent aggregate product residual");
+        };
+        assert!(
+            matches!(
+                rhs.as_ref(),
+                Expression::BuiltinCall { function: BuiltinFunction::Product, args, .. }
+                    if matches!(
+                        args.as_slice(),
+                        [Expression::Array { elements, .. }]
+                            if matches!(
+                                elements.as_slice(),
+                                [Expression::VarRef { name: source, subscripts: source_subscripts, .. },
+                                 Expression::VarRef { name: leaf, subscripts: leaf_subscripts, .. }]
+                                    if source.as_str() == format!("source{}", index + 1)
+                                        && source_subscripts.is_empty()
+                                        && leaf.as_str() == format!("plant.parent[{}].u", index + 1)
+                                        && matches!(leaf_subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 2, .. }])
+                            )
+                    )
+            ),
+            "parent {} vector aggregate must materialize its eliminated leaf: {rhs:?}",
+            index + 1
+        );
+    }
+    assert_indexed_parent_incidence(&dae);
+}
+
+fn indexed_parent_elimination_dae() -> Dae {
+    let mut dae = Dae::new();
+    for parent in [1, 2] {
+        let name = format!("plant.parent[{parent}].u");
+        let mut variable = component_var(&name);
+        variable.dims = vec![2];
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+        let source = format!("source{parent}");
+        dae.variables
+            .parameters
+            .insert(VarName::new(&source), component_var(&source));
+        for output in [format!("y{parent}"), format!("scalar_y{parent}")] {
+            dae.variables
+                .states
+                .insert(VarName::new(&output), component_var(&output));
+        }
+        let aggregate_name = format!("plant.parent[{parent}].u");
+        dae.continuous.equations.push(residual(
+            var_ref(&format!("y{parent}")),
+            builtin(
+                BuiltinFunction::Product,
+                vec![Expression::VarRef {
+                    name: Reference::from_component_reference(component_ref(&aggregate_name)),
+                    subscripts: Vec::new(),
+                    span: test_span(),
+                }],
+            ),
+            1,
+            &format!("parent {parent} aggregate use"),
+        ));
+        let scalar_use = Expression::VarRef {
+            name: Reference::from_component_reference(component_ref(&aggregate_name)),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 1,
+                span: test_span(),
+            }],
+            span: test_span(),
+        };
+        dae.continuous.equations.push(residual(
+            var_ref(&format!("scalar_y{parent}")),
+            scalar_use.clone(),
+            1,
+            &format!("parent {parent} scalar use"),
+        ));
+        dae.continuous.equations.push(residual(
+            scalar_use,
+            var_ref(&format!("source{parent}")),
+            1,
+            &format!("connection equation: plant.parent[{parent}].u[1] = source{parent}"),
+        ));
+    }
+    dae
+}
+
+fn assert_indexed_parent_incidence(dae: &Dae) {
+    let incidence = crate::incidence::build_incidence(dae);
+    let unknown_index = |name: &str| {
+        incidence
+            .unknown_names
+            .iter()
+            .position(|unknown| unknown == &UnknownId::Variable(VarName::new(name)))
+            .unwrap_or_else(|| panic!("missing incidence unknown {name}"))
+    };
+    let parent1_leaf2 = unknown_index("plant.parent[1].u[2]");
+    let parent2_leaf2 = unknown_index("plant.parent[2].u[2]");
+    assert!(incidence.eq_unknowns[0].contains(&parent1_leaf2));
+    assert!(!incidence.eq_unknowns[0].contains(&parent2_leaf2));
+    assert!(incidence.eq_unknowns[1].contains(&parent2_leaf2));
+    assert!(!incidence.eq_unknowns[1].contains(&parent1_leaf2));
+}
+
+#[test]
 fn test_substitute_var_rewrites_exact_indexed_component_without_use_site_component_ref() {
     let expr = Expression::VarRef {
         name: rumoca_core::Reference::new("vehicle.motor[1].tau_inv"),
@@ -989,7 +1167,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
 #[test]
 fn test_partial_scalar_alias_group_rewrites_dae_aggregate_function_argument() {
     let mut dae = Dae::new();
-    let mut u = test_dae_variable("block.u");
+    let mut u = component_var("block.u");
     u.dims = vec![2];
     dae.variables.algebraics.insert(VarName::new("block.u"), u);
     dae.variables

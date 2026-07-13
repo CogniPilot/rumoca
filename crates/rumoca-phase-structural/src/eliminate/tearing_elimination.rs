@@ -55,6 +55,7 @@ pub(super) fn tear_and_eliminate_loop_block(
         let Some(eq_rhs) = apply_substitutions_for_symbolic_candidate(
             &dae.continuous.equations[eq_idx].rhs,
             &trial_substitutions,
+            dae,
         )?
         else {
             return Ok(());
@@ -134,6 +135,7 @@ fn loop_local_incidence(
             let Some(rhs) = apply_substitutions_for_symbolic_candidate(
                 &dae.continuous.equations[eq_idx].rhs,
                 substitutions,
+                dae,
             )?
             else {
                 return Ok(HashSet::new());

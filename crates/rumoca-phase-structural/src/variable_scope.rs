@@ -108,6 +108,30 @@ impl<'a> DaeVariableScope<'a> {
             .transpose()
     }
 
+    pub(crate) fn scalarized_aggregate_target(
+        &self,
+        name: &VarName,
+    ) -> Option<(Reference, Vec<usize>)> {
+        if self.exact(name).is_some() {
+            return None;
+        }
+        let scalar = rumoca_core::parse_scalar_name(name.as_str())?;
+        let base_name = VarName::new(scalar.base);
+        let base_var = self.exact(&base_name)?;
+        if base_var.dims.is_empty() || scalar.indices.len() != base_var.dims.len() {
+            return None;
+        }
+        validate_scalarized_indices(name, &scalar.indices, &base_var.dims, None).ok()?;
+        let indices = scalar
+            .indices
+            .into_iter()
+            .map(usize::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let base = Reference::from_component_reference(base_var.component_ref.clone()?);
+        Some((base, indices))
+    }
+
     pub(crate) fn is_indexed_component_variable(&self, name: &VarName) -> bool {
         self.exact(name)
             .and_then(|var| var.component_ref.as_ref())

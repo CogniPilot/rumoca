@@ -213,20 +213,7 @@ fn expr_references_canonical_scalar(expr: &Expression, var_name: &VarName) -> bo
         assignment_var_ref_name(name.var_name(), subscripts)
             .as_ref()
             .is_some_and(|referenced| referenced == var_name)
-            || aggregate_ref_matches_scalarized_var(name.var_name(), subscripts, var_name)
     })
-}
-
-fn aggregate_ref_matches_scalarized_var(
-    referenced: &VarName,
-    subscripts: &[rumoca_core::Subscript],
-    var_name: &VarName,
-) -> bool {
-    if !subscripts.is_empty() {
-        return false;
-    }
-    rumoca_core::parse_scalar_name(var_name.as_str())
-        .is_some_and(|scalar| referenced.as_str() == scalar.base)
 }
 
 fn connection_alias_ref_is_structurally_known(dae: &Dae, var_name: &VarName) -> bool {

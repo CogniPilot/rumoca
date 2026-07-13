@@ -2,15 +2,18 @@ use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, Reference};
 
 use super::{
     Substitution, aggregate_subscript_ref_matches_var, der_call_matches_scalar_substitution,
-    embedded_alias_indices_for_substitution, var_ref_matches_unknown_for_substitution,
+    embedded_alias_indices_for_substitution, var_ref_matches_unknown_for_substitution_in_scope,
 };
+use crate::variable_scope::DaeVariableScope;
 
-pub(super) fn expr_contains_substitution_target(
+pub(super) fn expr_contains_substitution_target_in_scope(
     expr: &Expression,
     substitution: &Substitution,
+    dae_scope: Option<&DaeVariableScope<'_>>,
 ) -> bool {
     let mut checker = SubstitutionTargetChecker {
         substitution,
+        dae_scope,
         found: false,
     };
     checker.visit_expression(expr);
@@ -19,6 +22,7 @@ pub(super) fn expr_contains_substitution_target(
 
 struct SubstitutionTargetChecker<'a> {
     substitution: &'a Substitution,
+    dae_scope: Option<&'a DaeVariableScope<'a>>,
     found: bool,
 }
 
@@ -31,7 +35,12 @@ impl ExpressionVisitor for SubstitutionTargetChecker<'_> {
 
     fn visit_var_ref(&mut self, name: &Reference, subscripts: &[rumoca_core::Subscript]) {
         if aggregate_subscript_ref_matches_var(name, subscripts, self.substitution)
-            || var_ref_matches_unknown_for_substitution(name, subscripts, self.substitution)
+            || var_ref_matches_unknown_for_substitution_in_scope(
+                name,
+                subscripts,
+                self.substitution,
+                self.dae_scope,
+            )
             || embedded_alias_indices_for_substitution(name, subscripts, self.substitution)
                 .is_some()
         {
