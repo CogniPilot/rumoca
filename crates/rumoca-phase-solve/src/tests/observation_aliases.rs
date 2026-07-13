@@ -191,6 +191,115 @@ fn solve_problem_marks_event_relation_aliases_for_observation_refresh() {
 }
 
 #[test]
+fn solve_problem_marks_lowered_change_pulse_aliases_for_observation_refresh() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["source", "changed", "trigger"] {
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    insert_pre_parameter(&mut dae_model, "source");
+    dae_model
+        .clocks
+        .intervals
+        .insert("changed".to_string(), 0.5);
+    dae_model
+        .clocks
+        .intervals
+        .insert("trigger".to_string(), 0.5);
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            source_ref("changed"),
+            binary(rumoca_core::OpBinary::Neq, var("source"), pre_var("source")),
+            test_span(),
+            "changed = source <> pre(source)",
+        ));
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            source_ref("trigger"),
+            var("changed"),
+            test_span(),
+            "trigger = changed",
+        ));
+
+    let problem = lower_solve_problem(&dae_model)
+        .expect("lowered change pulse and its observation alias should lower");
+
+    // `change(source)` is lowered to `source <> pre(source)`. Its result is an
+    // event-instant pulse, so observation settling must clear both the pulse
+    // and aliases after the event-entry history has been committed.
+    assert_eq!(problem.discrete.observation_refresh, vec![true, true]);
+}
+
+#[test]
+fn solve_problem_only_marks_matching_direct_lowered_change_relations() {
+    let mut dae_model = dae::Dae::default();
+    for name in [
+        "source",
+        "other",
+        "reversed_change",
+        "mismatched_pre",
+        "suppressed_change",
+    ] {
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    insert_pre_parameter(&mut dae_model, "source");
+    insert_pre_parameter(&mut dae_model, "other");
+    for name in ["reversed_change", "mismatched_pre", "suppressed_change"] {
+        dae_model.clocks.intervals.insert(name.to_string(), 0.5);
+    }
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            source_ref("reversed_change"),
+            binary(rumoca_core::OpBinary::Neq, pre_var("source"), var("source")),
+            test_span(),
+            "reversed_change = pre(source) <> source",
+        ));
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            source_ref("mismatched_pre"),
+            binary(rumoca_core::OpBinary::Neq, var("source"), pre_var("other")),
+            test_span(),
+            "mismatched_pre = source <> pre(other)",
+        ));
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(source_ref("suppressed_change")),
+        rhs: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::NoEvent,
+            args: vec![binary(
+                rumoca_core::OpBinary::Neq,
+                var("source"),
+                pre_var("source"),
+            )],
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: "suppressed_change = noEvent(source <> pre(source))".to_string(),
+        scalar_count: 1,
+    });
+
+    let problem = lower_solve_problem(&dae_model)
+        .expect("direct lowered change relation classifications should lower");
+
+    assert_eq!(
+        problem.discrete.observation_refresh,
+        vec![true, false, false]
+    );
+}
+
+#[test]
 fn solve_problem_does_not_observation_refresh_no_event_relation_aliases() {
     let mut dae_model = dae::Dae::default();
     dae_model

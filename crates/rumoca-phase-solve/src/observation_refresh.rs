@@ -134,7 +134,43 @@ fn expression_safe_for_observation_refresh(
 ) -> bool {
     !(expression_contains_clocked_value_operator(dae_model, expr)
         || target_has_clock_metadata(dae_model, lhs.as_str())
-            && expression_contains_lowered_pre_ref(expr))
+            && expression_contains_lowered_pre_ref(expr)
+            && !expression_is_direct_lowered_change_relation(expr))
+}
+
+fn expression_is_direct_lowered_change_relation(expr: &rumoca_core::Expression) -> bool {
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = expr else {
+        return false;
+    };
+    if !matches!(op, rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq) {
+        return false;
+    }
+    current_and_lowered_pre_ref_match(lhs, rhs) || current_and_lowered_pre_ref_match(rhs, lhs)
+}
+
+fn current_and_lowered_pre_ref_match(
+    current: &rumoca_core::Expression,
+    previous: &rumoca_core::Expression,
+) -> bool {
+    let rumoca_core::Expression::VarRef {
+        name: current_name,
+        subscripts: current_subscripts,
+        ..
+    } = current
+    else {
+        return false;
+    };
+    let rumoca_core::Expression::VarRef {
+        name: previous_name,
+        subscripts: previous_subscripts,
+        ..
+    } = previous
+    else {
+        return false;
+    };
+    current_subscripts == previous_subscripts
+        && rumoca_core::pre_slot_base(previous_name.as_str())
+            .is_some_and(|base| base == current_name.as_str())
 }
 
 fn expression_has_observation_pulse(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {
@@ -230,6 +266,8 @@ impl ExpressionVisitor for EventRelationChecker {
                     | rumoca_core::OpBinary::Le
                     | rumoca_core::OpBinary::Gt
                     | rumoca_core::OpBinary::Ge
+                    | rumoca_core::OpBinary::Eq
+                    | rumoca_core::OpBinary::Neq
             )
         {
             self.found = true;

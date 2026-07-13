@@ -923,6 +923,71 @@ fn simulate_no_state_solve_ir_refreshes_periodic_event_indicator_between_ticks()
 }
 
 #[test]
+fn simulate_no_state_solve_ir_clears_lowered_change_pulse_and_alias_after_event() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 5;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec![
+        "tick".to_string(),
+        "source".to_string(),
+        "changed".to_string(),
+        "trigger".to_string(),
+    ];
+    model.problem.solve_layout.pre_param_bindings = vec![solve::PreParamBinding {
+        dest_p_index: 4,
+        source: solve::PreParamSource::P { index: 1 },
+    }];
+    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+        phase_seconds: 0.5,
+        period_seconds: 0.5,
+    }];
+    model.problem.discrete.update_targets = vec![
+        solve::scalar_slot_p(0),
+        solve::scalar_slot_p(1),
+        solve::scalar_slot_p(2),
+        solve::scalar_slot_p(3),
+    ];
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![
+            periodic_tick_row(0.5, 0.5),
+            increment_pre_parameter_on_tick_row(0, 4),
+            change_parameter_row(1, 4),
+            load_parameter_row(2),
+        ],
+        fixture_span!(),
+    );
+    model.problem.discrete.pre_modes = vec![
+        solve::DiscreteEventPreMode::FollowCurrent,
+        solve::DiscreteEventPreMode::EventEntry,
+        solve::DiscreteEventPreMode::EventEntry,
+        solve::DiscreteEventPreMode::FollowCurrent,
+    ];
+    model.problem.discrete.observation_refresh = vec![true, false, true, true];
+    model.parameters = vec![0.0; 5];
+    model.visible_names = vec![
+        "source".to_string(),
+        "changed".to_string(),
+        "trigger".to_string(),
+    ];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 0.75,
+            dt: Some(0.25),
+            ..Default::default()
+        },
+    )
+    .expect("lowered change pulse aliases should settle through the no-state schedule");
+
+    assert_eq!(result.times, vec![0.0, 0.25, 0.5, 0.75]);
+    assert_eq!(result.data[0], vec![0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(result.data[1], vec![0.0; 4]);
+    assert_eq!(result.data[2], vec![0.0; 4]);
+}
+
+#[test]
 fn observation_refresh_keeps_pre_values_fixed_during_settle() {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.parameter_count = 0;
@@ -1144,9 +1209,22 @@ fn change_parameter_row(current_index: usize, pre_index: usize) -> Vec<solve::Li
 }
 
 fn increment_pre_state_on_tick_row() -> Vec<solve::LinearOp> {
+    increment_pre_parameter_on_tick_row(0, 2)
+}
+
+fn increment_pre_parameter_on_tick_row(
+    tick_index: usize,
+    pre_index: usize,
+) -> Vec<solve::LinearOp> {
     vec![
-        solve::LinearOp::LoadP { dst: 0, index: 0 },
-        solve::LinearOp::LoadP { dst: 1, index: 2 },
+        solve::LinearOp::LoadP {
+            dst: 0,
+            index: tick_index,
+        },
+        solve::LinearOp::LoadP {
+            dst: 1,
+            index: pre_index,
+        },
         solve::LinearOp::Const { dst: 2, value: 1.0 },
         solve::LinearOp::Binary {
             dst: 3,
