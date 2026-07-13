@@ -423,7 +423,7 @@ pub(crate) fn infer_expression_form(
             }
         }
         Expression::FieldAccess { base, field, .. } => {
-            infer_projected_result_field_form(base, field, flat, prefix_counts)
+            infer_projected_result_field_form(base, field, prefix_counts)
         }
         Expression::Tuple { .. }
         | Expression::Range { .. }
@@ -435,13 +435,12 @@ pub(crate) fn infer_expression_form(
 fn infer_projected_result_field_form(
     base: &Expression,
     field: &str,
-    flat: &Model,
     metadata: &ScalarInferenceMetadata,
 ) -> ExpressionForm {
     let Expression::FunctionCall { name, .. } = base else {
         return ExpressionForm::Other;
     };
-    let Some(dims) = metadata.projected_result_field_dims(name, field, flat) else {
+    let Some(dims) = metadata.projected_result_field_dims(name, field) else {
         return ExpressionForm::Other;
     };
     match dims {
@@ -576,7 +575,7 @@ pub(crate) fn infer_scalar_count_from_varrefs(
     prefix_counts: &FxHashMap<String, usize>,
 ) -> Option<usize> {
     let mut var_refs = Vec::new();
-    collect_var_refs_skip_reductions(expr, &mut var_refs);
+    collect_var_refs_for_cardinality(expr, &mut var_refs);
 
     infer_scalar_count_from_collected_varrefs(&var_refs, flat, prefix_counts)
 }
@@ -614,7 +613,7 @@ pub(crate) fn infer_flow_sum_scalar_count(
     prefix_counts: &FxHashMap<String, usize>,
 ) -> Option<usize> {
     let mut var_refs = Vec::new();
-    collect_var_refs_skip_reductions(residual, &mut var_refs);
+    collect_var_refs_for_cardinality(residual, &mut var_refs);
     if var_refs.is_empty() {
         return None;
     }

@@ -106,9 +106,8 @@ impl ScalarInferenceMetadata {
         &self,
         function: &rumoca_core::Reference,
         field: &str,
-        flat: &Model,
     ) -> Option<&[i64]> {
-        let function = resolved_function_def_id(function, flat)?;
+        let function = function.component_ref()?.def_id?;
         let key = ProjectedResultFieldKey {
             function,
             field: field.to_string(),
@@ -168,6 +167,11 @@ fn build_projected_result_field_shapes(
     flat: &Model,
 ) -> FxHashMap<ProjectedResultFieldKey, ProjectedResultFieldShape> {
     let mut shapes = FxHashMap::default();
+    let known_function_ids = flat
+        .functions
+        .values()
+        .filter_map(|function| function.def_id)
+        .collect::<FxHashSet<_>>();
     collect_constructor_result_field_shapes(flat, &mut shapes);
     for variable in flat.variables.values() {
         let Some(Expression::FieldAccess { base, field, .. }) = variable.binding.as_ref() else {
@@ -176,7 +180,7 @@ fn build_projected_result_field_shapes(
         let Expression::FunctionCall { name, .. } = base.as_ref() else {
             continue;
         };
-        let Some(function) = resolved_function_def_id(name, flat) else {
+        let Some(function) = resolved_function_def_id(name, &known_function_ids) else {
             continue;
         };
         merge_projected_result_field_shape(
@@ -225,19 +229,14 @@ fn collect_constructor_result_field_shapes(
 
 fn resolved_function_def_id(
     reference: &rumoca_core::Reference,
-    flat: &Model,
+    known_function_ids: &FxHashSet<rumoca_core::DefId>,
 ) -> Option<rumoca_core::DefId> {
-    if let Some(referenced) = reference
+    let referenced = reference
         .component_ref()
-        .and_then(|component_ref| component_ref.def_id)
-    {
-        return flat
-            .functions
-            .values()
-            .any(|function| function.def_id == Some(referenced))
-            .then_some(referenced);
-    }
-    resolve_flat_function(reference.as_str(), flat)?.def_id
+        .and_then(|component_ref| component_ref.def_id)?;
+    known_function_ids
+        .contains(&referenced)
+        .then_some(referenced)
 }
 
 fn concrete_result_field_dims(dims: &[i64]) -> Option<Vec<i64>> {

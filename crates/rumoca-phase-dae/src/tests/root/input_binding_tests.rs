@@ -606,6 +606,65 @@ fn test_is_input_default_equation_false_for_unknown_rhs() {
 }
 
 #[test]
+fn test_input_default_dependency_keeps_projected_function_call_arguments() {
+    let mut flat = Model::new();
+    flat.top_level_input_components
+        .insert("top_input".to_string());
+
+    let mut dae = Dae::new();
+    dae.variables.inputs.insert(
+        rumoca_core::VarName::new("top_input"),
+        Variable::new(
+            rumoca_core::VarName::new("top_input"),
+            crate::test_support::test_span(),
+        ),
+    );
+    dae.variables.algebraics.insert(
+        rumoca_core::VarName::new("continuous_x"),
+        Variable::new(
+            rumoca_core::VarName::new("continuous_x"),
+            crate::test_support::test_span(),
+        ),
+    );
+
+    let eq = rumoca_ir_flat::Equation {
+        residual: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: VarName::new("top_input").into(),
+                subscripts: vec![],
+                span: crate::test_support::test_span(),
+            }),
+            rhs: Box::new(rumoca_core::Expression::FieldAccess {
+                base: Box::new(rumoca_core::Expression::FunctionCall {
+                    name: VarName::new("calc").into(),
+                    args: vec![rumoca_core::Expression::VarRef {
+                        name: VarName::new("continuous_x").into(),
+                        subscripts: vec![],
+                        span: crate::test_support::test_span(),
+                    }],
+                    is_constructor: false,
+                    span: crate::test_support::test_span(),
+                }),
+                field: "field".to_string(),
+                span: crate::test_support::test_span(),
+            }),
+            span: crate::test_support::test_span(),
+        },
+        span: crate::test_support::test_span(),
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "model".to_string(),
+        },
+        scalar_count: 1,
+    };
+
+    assert!(
+        !is_input_default_equation(&eq, &flat, &dae),
+        "continuous function arguments must keep the top-input equation as a constraint"
+    );
+}
+
+#[test]
 fn test_is_input_default_equation_false_for_rhs_input_alias() {
     let mut flat = Model::new();
     flat.top_level_input_components.insert("x_in".to_string());

@@ -149,15 +149,19 @@ fn repeated_indexed_component_candidate_size(
 
 struct VarRefCollectionVisitor<'a> {
     vars: &'a mut Vec<CollectedVarRef>,
-    skip_function_args: bool,
+    mode: VarRefCollectionMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VarRefCollectionMode {
+    Dependencies,
+    Cardinality,
+    SkipFunctionArgs,
 }
 
 impl<'a> VarRefCollectionVisitor<'a> {
-    fn new(vars: &'a mut Vec<CollectedVarRef>, skip_function_args: bool) -> Self {
-        Self {
-            vars,
-            skip_function_args,
-        }
+    fn new(vars: &'a mut Vec<CollectedVarRef>, mode: VarRefCollectionMode) -> Self {
+        Self { vars, mode }
     }
 }
 
@@ -184,7 +188,7 @@ impl rumoca_core::ExpressionVisitor for VarRefCollectionVisitor<'_> {
         args: &[Expression],
         is_constructor: bool,
     ) {
-        if self.skip_function_args {
+        if self.mode == VarRefCollectionMode::SkipFunctionArgs {
             // Function arguments are not shaped like function output.
             return;
         }
@@ -220,7 +224,9 @@ impl rumoca_core::ExpressionVisitor for VarRefCollectionVisitor<'_> {
             });
             return;
         }
-        if matches!(base, Expression::FunctionCall { .. }) {
+        if self.mode == VarRefCollectionMode::Cardinality
+            && matches!(base, Expression::FunctionCall { .. })
+        {
             // The selected result field owns expression shape. Function-call
             // arguments remain dependencies, but their record widths do not
             // determine the result field's equation cardinality.
@@ -314,7 +320,17 @@ fn render_static_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
 /// Reduction builtins like sum(), product() reduce arrays to scalars (MLS §10.3.4),
 /// so their array arguments should not inflate the equation's scalar count.
 pub(crate) fn collect_var_refs_skip_reductions(expr: &Expression, vars: &mut Vec<CollectedVarRef>) {
-    let mut collector = VarRefCollectionVisitor::new(vars, false);
+    let mut collector = VarRefCollectionVisitor::new(vars, VarRefCollectionMode::Dependencies);
+    rumoca_core::ExpressionVisitor::visit_expression(&mut collector, expr);
+}
+
+/// Collect VarRefs that can own expression cardinality.
+///
+/// A selected function-result field takes its shape from result-field metadata,
+/// so its call arguments are excluded here. Semantic dependency collectors use
+/// [`collect_var_refs_skip_reductions`] and still traverse those arguments.
+pub(crate) fn collect_var_refs_for_cardinality(expr: &Expression, vars: &mut Vec<CollectedVarRef>) {
+    let mut collector = VarRefCollectionVisitor::new(vars, VarRefCollectionMode::Cardinality);
     rumoca_core::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
@@ -327,7 +343,7 @@ pub(crate) fn collect_var_refs_skip_reductions_and_function_args(
     expr: &Expression,
     vars: &mut Vec<CollectedVarRef>,
 ) {
-    let mut collector = VarRefCollectionVisitor::new(vars, true);
+    let mut collector = VarRefCollectionVisitor::new(vars, VarRefCollectionMode::SkipFunctionArgs);
     rumoca_core::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
