@@ -21,6 +21,76 @@ struct ParamBinding<'a> {
     binding_from_modification: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct CollectedParamBinding {
+    name: String,
+    binding: Expression,
+    may_be_record_alias: bool,
+    binding_from_modification: bool,
+}
+
+pub(crate) struct ParameterLookupSession {
+    params: Vec<CollectedParamBinding>,
+    var_bindings: Vec<CollectedParamBinding>,
+    dimension_state: DimensionEvaluationState,
+}
+
+#[derive(Default)]
+struct DimensionEvaluationState {
+    dependency_snapshots: rustc_hash::FxHashMap<String, DimensionDependencySnapshot>,
+    #[cfg(test)]
+    dimension_evaluation_attempts: rustc_hash::FxHashMap<String, usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DimensionDependencySnapshot {
+    values: Vec<DimensionDependencyValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DimensionDependencyValue {
+    name: String,
+    integer: Option<i64>,
+    real_bits: Option<u64>,
+    boolean: Option<bool>,
+    string: Option<String>,
+    enumeration: Option<String>,
+    dimensions: Option<Vec<i64>>,
+}
+
+impl ParameterLookupSession {
+    #[cfg(test)]
+    pub(crate) fn dimension_evaluation_attempts(&self, name: &str) -> usize {
+        self.dimension_state
+            .dimension_evaluation_attempts
+            .get(name)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+impl CollectedParamBinding {
+    fn as_view(&self) -> ParamBinding<'_> {
+        ParamBinding {
+            name: &self.name,
+            binding: &self.binding,
+            may_be_record_alias: self.may_be_record_alias,
+            binding_from_modification: self.binding_from_modification,
+        }
+    }
+}
+
+impl From<ParamBinding<'_>> for CollectedParamBinding {
+    fn from(binding: ParamBinding<'_>) -> Self {
+        Self {
+            name: binding.name.to_string(),
+            binding: binding.binding.clone(),
+            may_be_record_alias: binding.may_be_record_alias,
+            binding_from_modification: binding.binding_from_modification,
+        }
+    }
+}
+
 fn insert_record_alias(
     aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
     source_path: rumoca_core::ComponentPath,
@@ -253,20 +323,67 @@ impl Context {
     /// Also tracks structural parameters (Evaluate=true or final) for safe branch selection.
     pub(crate) fn build_parameter_lookup(&mut self, flat: &Model, tree: &ClassTree) {
         let _ = tree; // Used for function evaluation context
-
         self.seed_flat_parameter_constant_keys(flat);
         let params = self.collect_parameters(flat);
-
         self.supplement_record_aliases(&params);
         self.init_array_dimensions(flat);
-
         let var_bindings = Self::collect_var_bindings(flat);
         self.infer_dims_from_literals(flat);
-
-        // Multi-pass evaluation until fixpoint
-        self.run_multipass_evaluation(&params, &var_bindings);
+        let mut dimension_state = DimensionEvaluationState::default();
+        self.run_multipass_evaluation(&params, &var_bindings, &mut dimension_state);
         if self.reconcile_modified_integer_parameter_values(flat) {
-            self.eval_array_dimensions(&var_bindings);
+            self.eval_array_dimensions(&var_bindings, &mut dimension_state);
+        }
+    }
+
+    pub(crate) fn collect_parameter_lookup_session(
+        &mut self,
+        flat: &Model,
+    ) -> ParameterLookupSession {
+        let params = self
+            .collect_parameters(flat)
+            .into_iter()
+            .map(CollectedParamBinding::from)
+            .collect();
+        let var_bindings = Self::collect_var_bindings(flat)
+            .into_iter()
+            .map(CollectedParamBinding::from)
+            .collect();
+        ParameterLookupSession {
+            params,
+            var_bindings,
+            dimension_state: DimensionEvaluationState::default(),
+        }
+    }
+
+    pub(crate) fn build_parameter_lookup_with_session(
+        &mut self,
+        flat: &Model,
+        tree: &ClassTree,
+        session: &mut ParameterLookupSession,
+    ) {
+        let _ = tree; // Used for function evaluation context
+        self.seed_flat_parameter_constant_keys(flat);
+        let ParameterLookupSession {
+            params,
+            var_bindings,
+            dimension_state,
+        } = session;
+        let params = params
+            .iter()
+            .map(CollectedParamBinding::as_view)
+            .collect::<Vec<_>>();
+        let var_bindings = var_bindings
+            .iter()
+            .map(CollectedParamBinding::as_view)
+            .collect::<Vec<_>>();
+        self.supplement_record_aliases(&params);
+        self.init_array_dimensions(flat);
+        self.infer_dims_from_literals(flat);
+
+        self.run_multipass_evaluation(&params, &var_bindings, dimension_state);
+        if self.reconcile_modified_integer_parameter_values(flat) {
+            self.eval_array_dimensions(&var_bindings, dimension_state);
         }
     }
 
@@ -821,6 +938,7 @@ impl Context {
         &mut self,
         params: &[ParamBinding<'_>],
         var_bindings: &[ParamBinding<'_>],
+        dimension_state: &mut DimensionEvaluationState,
     ) {
         const MAX_PASSES: usize = 10;
         for _pass in 0..MAX_PASSES {
@@ -830,7 +948,7 @@ impl Context {
             let real_progress = self.eval_real_params(params);
             let int_progress = self.eval_integer_param_bindings(params);
             let bool_progress = self.eval_boolean_params(params);
-            let dim_progress = self.eval_array_dimensions(var_bindings);
+            let dim_progress = self.eval_array_dimensions(var_bindings, dimension_state);
             let varref_dim_progress = self.propagate_varref_dimensions(var_bindings);
             let alias_progress = self.propagate_through_aliases(params);
             if !enum_progress
@@ -921,7 +1039,11 @@ impl Context {
     ///
     /// Also handles conditional expressions like `table = if cond then A else B`
     /// by evaluating conditions using known boolean and enum parameters.
-    fn eval_array_dimensions(&mut self, var_bindings: &[ParamBinding<'_>]) -> bool {
+    fn eval_array_dimensions(
+        &mut self,
+        var_bindings: &[ParamBinding<'_>],
+        dimension_state: &mut DimensionEvaluationState,
+    ) -> bool {
         let eval_ctx = build_eval_context(
             &self.parameter_values,
             &self.real_parameter_values,
@@ -937,10 +1059,87 @@ impl Context {
             ..
         } in var_bindings
         {
+            let dependency_snapshot = self.dimension_dependency_snapshot(name, binding);
+            if dimension_state
+                .dependency_snapshots
+                .get(*name)
+                .is_some_and(|settled| settled == &dependency_snapshot)
+            {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                *dimension_state
+                    .dimension_evaluation_attempts
+                    .entry((*name).to_string())
+                    .or_default() += 1;
+            }
             new_dims |=
                 self.try_infer_array_dims(name, binding, *binding_from_modification, &eval_ctx);
+            dimension_state
+                .dependency_snapshots
+                .insert((*name).to_string(), dependency_snapshot);
         }
         new_dims
+    }
+
+    fn dimension_dependency_snapshot(
+        &self,
+        owner_name: &str,
+        binding: &Expression,
+    ) -> DimensionDependencySnapshot {
+        let mut references = Vec::new();
+        binding.collect_var_refs(&mut references);
+        let owner_scope = rumoca_core::ComponentPath::from_flat_path(owner_name)
+            .parent()
+            .map(|scope| scope.to_flat_string())
+            .unwrap_or_default();
+        let mut candidate_names = std::collections::BTreeSet::new();
+        for reference in references {
+            for candidate in scoped_lookup_candidates(reference.as_str(), &owner_scope) {
+                candidate_names.insert(candidate.clone());
+                candidate_names.insert(self.resolve_alias(&candidate));
+            }
+        }
+        if binding.contains_subexpression(|expr| matches!(expr, Expression::FieldAccess { .. })) {
+            let dependency_roots = candidate_names
+                .iter()
+                .map(|name| rumoca_core::ComponentPath::from_flat_path(name))
+                .collect::<Vec<_>>();
+            let known_names = self
+                .parameter_values
+                .keys()
+                .chain(self.real_parameter_values.keys())
+                .chain(self.boolean_parameter_values.keys())
+                .chain(self.string_parameter_values.keys())
+                .chain(self.enum_parameter_values.keys())
+                .chain(self.array_dimensions.keys());
+            for known_name in known_names {
+                let known_path = rumoca_core::ComponentPath::from_flat_path(known_name);
+                if dependency_roots
+                    .iter()
+                    .any(|root| known_path == *root || known_path.starts_with(root))
+                {
+                    candidate_names.insert(known_name.clone());
+                }
+            }
+        }
+        let values = candidate_names
+            .into_iter()
+            .map(|name| DimensionDependencyValue {
+                integer: self.parameter_values.get(&name).copied(),
+                real_bits: self
+                    .real_parameter_values
+                    .get(&name)
+                    .map(|value| value.to_bits()),
+                boolean: self.boolean_parameter_values.get(&name).copied(),
+                string: self.string_parameter_values.get(&name).cloned(),
+                enumeration: self.enum_parameter_values.get(&name).cloned(),
+                dimensions: self.array_dimensions.get(&name).cloned(),
+                name,
+            })
+            .collect();
+        DimensionDependencySnapshot { values }
     }
 
     /// Try to infer array dimensions for a single binding.

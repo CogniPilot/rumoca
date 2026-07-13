@@ -188,6 +188,124 @@ mod tests {
         }
     }
 
+    fn symbolic_fill_expr(value: i64, dimensions: &[&str]) -> Expression {
+        let mut args = vec![int_lit(value)];
+        args.extend(dimensions.iter().map(|name| var_ref(name)));
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn settled_symbolic_record_array_dimensions_are_evaluated_once_per_session() {
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        for (name, value) in [("bank.rows", 3), ("bank.columns", 2)] {
+            let name = rumoca_core::VarName::new(name);
+            flat.add_variable(
+                name.clone(),
+                flat::Variable {
+                    name,
+                    variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                    binding: Some(int_lit(value)),
+                    is_discrete_type: true,
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+        let cell_names = (1..=3)
+            .flat_map(|row| (1..=2).map(move |column| format!("bank.cells[{row},{column}].curve")))
+            .collect::<Vec<_>>();
+        for name in &cell_names {
+            let variable_name = rumoca_core::VarName::new(name);
+            flat.add_variable(
+                variable_name.clone(),
+                flat::Variable {
+                    name: variable_name,
+                    binding: Some(symbolic_fill_expr(0, &["bank.rows", "bank.columns"])),
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        let mut ctx = Context::new();
+        let mut session = ctx.collect_parameter_lookup_session(&flat);
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+        let expected_parameters = ctx.parameter_values.clone();
+        let expected_dimensions = ctx.array_dimensions.clone();
+        let expected_flat_bindings = cell_names
+            .iter()
+            .map(|name| {
+                let variable = flat
+                    .variables
+                    .get(&rumoca_core::VarName::new(name))
+                    .expect("record-array field variable");
+                (
+                    name.clone(),
+                    variable.dims.clone(),
+                    variable.binding.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+
+        assert_eq!(ctx.parameter_values, expected_parameters);
+        assert_eq!(ctx.array_dimensions, expected_dimensions);
+        for (name, expected_dims, expected_binding) in expected_flat_bindings {
+            let variable = flat
+                .variables
+                .get(&rumoca_core::VarName::new(&name))
+                .expect("record-array field variable");
+            assert_eq!(variable.dims, expected_dims);
+            match (&variable.binding, expected_binding) {
+                (Some(actual), Some(expected)) => {
+                    assert!(actual.semantically_eq_ignoring_spans(&expected));
+                }
+                (None, None) => {}
+                _ => panic!("flat binding changed for {name}"),
+            }
+            assert_eq!(
+                session.dimension_evaluation_attempts(&name),
+                1,
+                "settled symbolic dimension binding {name} was reevaluated"
+            );
+        }
+    }
+
+    #[test]
+    fn symbolic_dimension_session_retries_when_a_dependency_becomes_available() {
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        let name = rumoca_core::VarName::new("bank.cells[1,1].curve");
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name: name.clone(),
+                binding: Some(symbolic_fill_expr(0, &["bank.pending_rows"])),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let mut ctx = Context::new();
+        let mut session = ctx.collect_parameter_lookup_session(&flat);
+
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+        assert!(!ctx.array_dimensions.contains_key(name.as_str()));
+        assert_eq!(session.dimension_evaluation_attempts(name.as_str()), 1);
+
+        ctx.parameter_values
+            .insert("bank.pending_rows".to_string(), 3);
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+
+        assert_eq!(ctx.array_dimensions.get(name.as_str()), Some(&vec![3]));
+        assert_eq!(session.dimension_evaluation_attempts(name.as_str()), 2);
+    }
+
     fn size_dim_expr(name: &str, dim: i64) -> Expression {
         Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Size,

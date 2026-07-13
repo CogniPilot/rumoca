@@ -911,8 +911,9 @@ fn stabilize_symbolic_component_dimensions(
     tree: &ast::ClassTree,
 ) -> Result<(), FlattenError> {
     let max_passes = overlay.components.len().max(1) + 1;
+    let mut parameter_lookup = ctx.collect_parameter_lookup_session(flat);
     for _ in 0..max_passes {
-        ctx.build_parameter_lookup(flat, tree);
+        ctx.build_parameter_lookup_with_session(flat, tree, &mut parameter_lookup);
         let reconciled = ctx.reconcile_modified_binding_dimensions(flat);
         let recomputed = ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)?;
         if !reconciled && !recomputed {
