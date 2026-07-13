@@ -1,4 +1,6 @@
 use rumoca::Compiler;
+use rumoca_core::ExpressionVisitor;
+use std::collections::HashSet;
 
 const TWO_DIMENSIONAL_COMPONENT_ARRAY: &str = r#"
 block Source
@@ -100,19 +102,87 @@ fn two_dimensional_component_array_qualifies_nested_equations_per_element() {
         )
         .expect("nested equations in a component array must bind to each scalar instance");
 
-    for name in [
-        "stack.cell[1,1].cell.x",
-        "stack.cell[1,2].cell.x",
-        "stack.cell[2,1].cell.x",
-        "stack.cell[2,2].cell.x",
+    for (x, y) in [
+        ("stack.cell[1,1].cell.x", "stack.cell[1,1].cell.y"),
+        ("stack.cell[1,2].cell.x", "stack.cell[1,2].cell.y"),
+        ("stack.cell[2,1].cell.x", "stack.cell[2,1].cell.y"),
+        ("stack.cell[2,2].cell.x", "stack.cell[2,2].cell.y"),
     ] {
         assert!(
             compiled
                 .dae
                 .variables
                 .states
-                .contains_key(&rumoca_core::VarName::new(name)),
-            "nested derivative must classify {name} as a state"
+                .contains_key(&rumoca_core::VarName::new(x)),
+            "nested derivative must classify {x} as a state"
         );
+        assert!(
+            compiled
+                .dae
+                .variables
+                .algebraics
+                .contains_key(&rumoca_core::VarName::new(y)),
+            "nested algebraic equation must retain {y}"
+        );
+
+        let equation_census = compiled
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .map(|equation| EquationCensus::from_expression(&equation.rhs))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            equation_census
+                .iter()
+                .filter(|equation| equation.has_der && equation.refs.contains(x))
+                .count(),
+            1,
+            "expected one indexed der({x}) equation"
+        );
+        assert_eq!(
+            equation_census
+                .iter()
+                .filter(|equation| {
+                    !equation.has_der && equation.refs.contains(x) && equation.refs.contains(y)
+                })
+                .count(),
+            1,
+            "expected one indexed {y} = {x} equation"
+        );
+    }
+}
+
+#[derive(Default)]
+struct EquationCensus {
+    refs: HashSet<String>,
+    has_der: bool,
+}
+
+impl EquationCensus {
+    fn from_expression(expression: &rumoca_core::Expression) -> Self {
+        let mut census = Self::default();
+        census.visit_expression(expression);
+        census
+    }
+}
+
+impl ExpressionVisitor for EquationCensus {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        self.refs.insert(name.as_str().to_string());
+        self.walk_var_ref(name, subscripts);
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        self.has_der |= *function == rumoca_core::BuiltinFunction::Der;
+        self.walk_builtin_call(function, args);
     }
 }
