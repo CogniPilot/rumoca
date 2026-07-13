@@ -4,19 +4,18 @@
 //! variability — every reference resolves (transitively) to a parameter,
 //! constant, structural loop index, or another parameter-variable algebraic, and
 //! never to a state, input, output, or discrete variable — is **constant for the
-//! entire simulation**. Keeping it as a solver algebraic forces every consumer
-//! (e.g. a state derivative) to either re-solve it each step or inline its full
-//! defining expression; the latter duplicates large expressions (coordinate
-//! transforms, immersed-boundary masks) across every kernel that uses them,
-//! bloating codegen and recomputing a constant every step.
+//! entire simulation**. When a state derivative depends on that algebraic, keeping
+//! it in the solver partition forces the derivative to inline or repeatedly solve
+//! the constant definition. Promotion is therefore restricted to algebraics on a
+//! derivative dependency path, plus structured families whose interiors were
+//! deliberately cheapened and must be reconstructed for correctness.
 //!
 //! Promoting it to a derived parameter — moving the variable into the parameter
 //! partition with its defining equation(s) reconstructed into a `Variable.start`
 //! binding, and dropping the now-redundant continuous equations — makes it a value
-//! evaluated once at parameter-set time. Running this BEFORE condition lowering
-//! also means a parameter-variable `if`-condition (e.g. `if sc < pc`) sees `sc` as
-//! a parameter, so it stays directly evaluable instead of allocating an Appendix B
-//! event/condition variable.
+//! evaluated once at parameter-set time. Restricting the transformation to those
+//! consumers preserves the declared DAE algebraic structure for unrelated static
+//! equations.
 //!
 //! The DAE may store array equations either as whole-array assignments or scalarized
 //! into [`dae::StructuredEquationFamily`] blocks. Promotion therefore: (1) promotes
@@ -70,16 +69,21 @@ fn promote(
                 base(target.as_str()).to_string(),
             ))
     };
-    // Every parameter-variable algebraic is invariant for the whole simulation.
-    // Promote it even when no state derivative reaches it: visible observations and
-    // assertion conditions are runtime consumers too, and leaving a large static
-    // submodel in the algebraic partition makes them rebuild the same value at every
-    // output point. Derived parameters preserve the value while evaluating it once.
+    // Only promote algebraics that a state derivative actually depends on
+    // (transitively). That is precisely where inlining a large parameter-variable
+    // definition into the per-step / derivative hot path causes codegen bloat.
+    // Promoting unrelated algebraics would perturb the public DAE structure without
+    // improving the hot path. A *cheapened* family is the exception: flatten already
+    // dropped its per-cell bodies, so it MUST be reconstructed as a parameter for
+    // correctness regardless of reachability.
+    let worthwhile = derivative_reachable_algebraics(dae);
     let mut removable: HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)> =
         HashMap::new();
     for (index, equation) in dae.continuous.equations.iter().enumerate() {
         if let Some((target, binding)) = direct_assignment(equation)
             && promotable.contains(base(target.as_str()))
+            && (worthwhile.contains(base(target.as_str()))
+                || cheapened_algebraic_bases.contains(base(target.as_str())))
             && is_array_variable(&target)
         {
             removable.insert(index, (target, binding.clone()));
@@ -477,6 +481,49 @@ fn binder_range_expr(
         end: int_lit(binder.upper),
         span,
     }
+}
+
+/// Algebraic base names that a state-derivative equation depends on, transitively
+/// through other algebraics' defining equations. Promotion is only worthwhile here:
+/// these are the algebraics whose definitions would otherwise be evaluated or
+/// inlined into the derivative hot path.
+fn derivative_reachable_algebraics(dae: &dae::Dae) -> HashSet<String> {
+    let algebraics: HashSet<String> = dae
+        .variables
+        .algebraics
+        .keys()
+        .map(|key| base(key.as_str()).to_string())
+        .collect();
+    let mut algebraic_refs: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut seed = Vec::new();
+    for equation in &dae.continuous.equations {
+        let mut collector = ReferencedBases::default();
+        collector.visit_expression(&equation.rhs);
+        let referenced_algebraics: HashSet<String> = collector
+            .bases
+            .into_iter()
+            .filter(|reference| algebraics.contains(reference))
+            .collect();
+        if equation.rhs.contains_der() {
+            seed.extend(referenced_algebraics.iter().cloned());
+        }
+        if let Some((target, _)) = direct_assignment(equation) {
+            algebraic_refs
+                .entry(base(target.as_str()).to_string())
+                .or_default()
+                .extend(referenced_algebraics);
+        }
+    }
+    let mut reachable = HashSet::new();
+    while let Some(name) = seed.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        if let Some(references) = algebraic_refs.get(&name) {
+            seed.extend(references.iter().cloned());
+        }
+    }
+    reachable
 }
 
 /// Dependency order of variables that can be promoted without changing the scalar
@@ -1007,6 +1054,14 @@ mod tests {
         }
     }
 
+    fn derivative(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: vec![var_ref(name)],
+            span: test_span(),
+        }
+    }
+
     fn insert_scalar_algebraic(dae_model: &mut dae::Dae, name: &str) {
         let name = rumoca_core::VarName::new(name);
         dae_model
@@ -1052,6 +1107,16 @@ mod tests {
         insert_scalar_algebraic(&mut dae_model, "source");
         push_scalar_equation(&mut dae_model, "dependent", var_ref("source"));
         push_scalar_equation(&mut dae_model, "source", literal(2.0));
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(derivative("state")),
+                rhs: Box::new(var_ref("dependent")),
+                span: test_span(),
+            },
+            test_span(),
+            "state derivative from promotion fixture",
+        ));
 
         promote_parameter_variable_algebraics(&mut dae_model).unwrap();
 
@@ -1064,7 +1129,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["source", "dependent"]
         );
-        assert!(dae_model.continuous.equations.is_empty());
+        assert_eq!(dae_model.continuous.equations.len(), 1);
+        assert!(dae_model.continuous.equations[0].rhs.contains_der());
     }
 
     #[test]
@@ -1141,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn promotes_ordinary_time_invariant_scalar_equation() {
+    fn leaves_time_invariant_scalar_outside_derivative_path_as_algebraic() {
         let span = test_span();
         let name = rumoca_core::VarName::new("staticResult");
         let mut dae_model = dae::Dae::default();
@@ -1160,10 +1226,10 @@ mod tests {
         ));
 
         promote_parameter_variable_algebraics(&mut dae_model)
-            .expect("ordinary invariant scalar should promote");
+            .expect("ordinary invariant scalar should remain valid");
 
-        assert!(dae_model.variables.algebraics.is_empty());
-        assert!(dae_model.variables.parameters.contains_key(&name));
-        assert!(dae_model.continuous.equations.is_empty());
+        assert!(dae_model.variables.algebraics.contains_key(&name));
+        assert!(!dae_model.variables.parameters.contains_key(&name));
+        assert_eq!(dae_model.continuous.equations.len(), 1);
     }
 }
