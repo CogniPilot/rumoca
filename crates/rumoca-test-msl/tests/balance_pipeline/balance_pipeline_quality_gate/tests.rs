@@ -96,6 +96,29 @@ fn panic_message(payload: &Box<dyn Any + Send>) -> String {
     "<non-string panic payload>".to_string()
 }
 
+fn run_in_isolated_default_parity_workspace(test_name: &str, child_marker: &str) {
+    let workspace = tempdir().expect("temporary workspace");
+    fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n")
+        .expect("write workspace manifest");
+    let crate_dir = workspace.path().join("crates/rumoca-test-msl");
+    fs::create_dir_all(&crate_dir).expect("create temporary crate directory");
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"rumoca-test-msl\"\nversion = \"0.0.0\"\n",
+    )
+    .expect("write temporary crate manifest");
+
+    let status = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .current_dir(workspace.path())
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env(child_marker, "1")
+        .status()
+        .expect("run isolated default-parity regression");
+    assert!(status.success(), "isolated regression failed: {test_name}");
+}
+
 fn baseline_quality_template() -> MslQualityBaseline {
     MslQualityBaseline {
         quality_gate_version: MSL_QUALITY_GATE_VERSION,
@@ -211,6 +234,15 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
 
 #[test]
 fn full_quality_gate_rejects_zero_simulation_attempts() {
+    const CHILD_MARKER: &str = "RUMOCA_TEST_ZERO_SIM_ATTEMPTS_CHILD";
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        run_in_isolated_default_parity_workspace(
+            "balance_pipeline::balance_pipeline_quality_gate::tests::full_quality_gate_rejects_zero_simulation_attempts",
+            CHILD_MARKER,
+        );
+        return;
+    }
+
     let mut summary = valid_summary_template();
     summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
 
@@ -919,6 +951,15 @@ fn valid_msl_summary_rejects_resolve_errors() {
 
 #[test]
 fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
+    const CHILD_MARKER: &str = "RUMOCA_TEST_BASELINE_SIM_FLOOR_CHILD";
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        run_in_isolated_default_parity_workspace(
+            "balance_pipeline::balance_pipeline_quality_gate::tests::valid_msl_summary_rejects_baseline_sim_run_below_hard_floor",
+            CHILD_MARKER,
+        );
+        return;
+    }
+
     let mut summary = valid_summary_template();
     summary.total_models = SIM_SET_LIMIT_DEFAULT;
     summary.sim_attempted = SIM_SET_LIMIT_DEFAULT;
