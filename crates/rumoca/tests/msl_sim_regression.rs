@@ -209,8 +209,10 @@ fn exactly_clocked_drive_refreshes_inferred_sample_and_controller_on_same_tick()
     let result = simulate_dae_with_diagnostics(
         &compiled.dae,
         &SimOptions {
-            t_end: 0.21,
-            dt: Some(0.1),
+            // Run the model's full experiment horizon. A short run through the
+            // second clock tick misses later continuous/event instability.
+            t_end: 5.0,
+            max_wall_seconds: Some(10.0),
             ..SimOptions::default()
         },
     )
