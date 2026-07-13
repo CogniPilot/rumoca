@@ -2354,6 +2354,7 @@ fn substitute_known_constants_expr_with_options_and_dims(
             prefer_scoped_parameters,
             var_dims,
             var_values: None,
+            restrict_live_values_to_bindings: false,
             resolving_value: None,
         },
     }
@@ -2379,6 +2380,7 @@ fn substitute_known_constants_expr_with_options_dims_and_values(
             prefer_scoped_parameters,
             var_dims: Some(var_dims),
             var_values: Some(var_values),
+            restrict_live_values_to_bindings: true,
             resolving_value: None,
         },
     }
@@ -2398,6 +2400,7 @@ struct ConstantSubstitutionEnv<'a> {
     prefer_scoped_parameters: bool,
     var_dims: Option<&'a rustc_hash::FxHashMap<String, Vec<i64>>>,
     var_values: Option<&'a rustc_hash::FxHashMap<String, rumoca_core::Expression>>,
+    restrict_live_values_to_bindings: bool,
     resolving_value: Option<&'a ResolvingValue<'a>>,
 }
 
@@ -2417,6 +2420,7 @@ impl<'a> ConstantSubstitutionEnv<'a> {
             prefer_scoped_parameters: self.prefer_scoped_parameters,
             var_dims: self.var_dims,
             var_values: self.var_values,
+            restrict_live_values_to_bindings: self.restrict_live_values_to_bindings,
             resolving_value: self.resolving_value,
         }
     }
@@ -2430,6 +2434,7 @@ impl<'a> ConstantSubstitutionEnv<'a> {
             prefer_scoped_parameters: self.prefer_scoped_parameters,
             var_dims: self.var_dims,
             var_values: self.var_values,
+            restrict_live_values_to_bindings: self.restrict_live_values_to_bindings,
             resolving_value: self.resolving_value,
         }
     }
@@ -3141,6 +3146,14 @@ fn substitute_scalar_var_ref(
         return Ok(Some(expr));
     }
     if env.live_vars.contains(key) {
+        // During whole-model postprocessing, a live variable is substitutable
+        // only through its own structural declaration value, handled above.
+        // The broader context also contains pre-evaluated discrete Booleans
+        // used for structural branch selection; treating those as declaration
+        // constants would erase their runtime-visible defining equations.
+        if env.restrict_live_values_to_bindings {
+            return Ok(None);
+        }
         if parameter_is_non_structural(key, env) {
             return Ok(None);
         }
@@ -3489,6 +3502,7 @@ fn substitute_resolved_constant_expr(
             prefer_scoped_parameters: env.prefer_scoped_parameters,
             var_dims: env.var_dims,
             var_values: env.var_values,
+            restrict_live_values_to_bindings: env.restrict_live_values_to_bindings,
             resolving_value: Some(&resolving_value),
         },
     }
@@ -4038,6 +4052,7 @@ fn substitute_known_constants_statement(
             prefer_scoped_parameters: false,
             var_dims: None,
             var_values: None,
+            restrict_live_values_to_bindings: false,
             resolving_value: None,
         },
     }
@@ -4063,6 +4078,7 @@ fn substitute_known_constants_statement_with_dims_and_values(
             prefer_scoped_parameters: true,
             var_dims: Some(var_dims),
             var_values: Some(var_values),
+            restrict_live_values_to_bindings: true,
             resolving_value: None,
         },
     }

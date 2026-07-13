@@ -509,6 +509,71 @@ fn substitute_known_constants_uses_instance_parameter_bindings_in_component_equa
 }
 
 #[test]
+fn substitute_known_constants_keeps_live_boolean_output_definition() {
+    let mut model = flat::Model::new();
+    let y_name = rumoca_core::VarName::new("source.y");
+    model.add_variable(
+        y_name.clone(),
+        flat::Variable {
+            name: y_name,
+            is_discrete_type: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let k_name = rumoca_core::VarName::new("source.k");
+    model.add_variable(
+        k_name.clone(),
+        flat::Variable {
+            name: k_name,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(true),
+                span: test_span(),
+            }),
+            is_discrete_type: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(spanned_var_ref("source.y")),
+            rhs: Box::new(spanned_var_ref("source.k")),
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "source".to_string(),
+        },
+    ));
+
+    // Structural branch evaluation may know the value of a discrete Boolean,
+    // but that must not erase the runtime-visible output that defines it.
+    let mut ctx = Context::new();
+    ctx.boolean_parameter_values
+        .insert("source.y".to_string(), true);
+    ctx.boolean_parameter_values
+        .insert("source.k".to_string(), true);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let rumoca_core::Expression::Binary { lhs, rhs, .. } = &model.equations[0].residual else {
+        panic!("expected residual assignment");
+    };
+    assert!(matches!(
+        lhs.as_ref(),
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "source.y"
+    ));
+    assert!(matches!(
+        rhs.as_ref(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(true),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn substitute_algorithms_uses_instance_parameter_bindings_in_rhs_and_range() {
     let mut model = flat::Model::new();
     for (name, binding) in [("table.y0", 3), ("table.n", 2), ("i", 99)] {
