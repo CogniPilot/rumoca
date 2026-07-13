@@ -20,8 +20,11 @@ model SampleTime
   block PeriodicClock
     parameter Real period = 0.1;
     ClockOutput y;
+  protected
+    Clock c;
   equation
-    y = Clock(period);
+    c = Clock(period);
+    y = c;
   end PeriodicClock;
 
   block AssignClock
@@ -160,6 +163,35 @@ fn native_simulation_updates_condition_memory_after_clocked_sample_time() {
         (y[1] - 0.1).abs() <= 1.0e-12,
         "MLS §16.5.1 sample(time) should refresh before dependent if-expression projection at the first clock tick; got {}",
         y[1]
+    );
+}
+
+#[test]
+fn native_simulation_rearms_clock_alias_edge_at_every_periodic_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleTime")
+        .compile_str(SAMPLE_TIME_SOURCE, "sample_time.mo")
+        .expect("clocked alias model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.3,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("clocked alias model should simulate");
+
+    let y = trace_values(&sim, "assignClock.y");
+    assert!(
+        (y[1] - 0.1).abs() <= 1.0e-12,
+        "clock alias should activate the assignment at the first periodic tick; got {}",
+        y[1]
+    );
+    assert!(
+        (y[2] - 0.2).abs() <= 1.0e-12,
+        "clock alias should rearm the assignment at the second periodic tick; got {}",
+        y[2]
     );
 }
 

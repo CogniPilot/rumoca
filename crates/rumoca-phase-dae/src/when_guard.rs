@@ -66,7 +66,8 @@ impl BooleanAliasUnfolder<'_> {
         }
         let result = find_condition_definition_rhs(self.dae, name).and_then(|rhs| {
             let unfolded = self.rewrite_child(&rhs);
-            if unfolded.contains_relational_operator() {
+            if unfolded.contains_relational_operator() || is_clock_constructor_condition(&unfolded)
+            {
                 Some(unfolded)
             } else {
                 None
@@ -306,5 +307,39 @@ mod tests {
         .expect("owner span should support generated edge guard");
 
         assert_eq!(guard.span(), Some(owner_span));
+    }
+
+    #[test]
+    fn clock_alias_guard_unfolds_to_constructor_without_boolean_edge() {
+        let span = test_span(10, 20);
+        let mut dae = Dae::default();
+        dae.variables.discrete_valued.insert(
+            flat_to_dae_var_name(&VarName::new("clockAlias")),
+            rumoca_ir_dae::Variable::new(flat_to_dae_var_name(&VarName::new("clockAlias")), span),
+        );
+        dae.discrete
+            .valued_updates
+            .push(rumoca_ir_dae::Equation::explicit(
+                flat_to_dae_var_name(&VarName::new("clockAlias")),
+                Expression::FunctionCall {
+                    name: VarName::new("Clock").into(),
+                    args: vec![Expression::Literal {
+                        value: Literal::Real(0.1),
+                        span,
+                    }],
+                    is_constructor: false,
+                    span,
+                },
+                span,
+                "periodic clock alias",
+            ));
+
+        let guard = when_guard_activation_expr(&dae, &bool_var("clockAlias", span), span)
+            .expect("clock alias should lower to its constructor");
+
+        assert!(
+            is_clock_constructor_condition(&guard),
+            "periodic clock aliases must use direct tick activation, got {guard:?}"
+        );
     }
 }
