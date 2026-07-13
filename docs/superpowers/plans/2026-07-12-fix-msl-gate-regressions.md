@@ -470,3 +470,55 @@ Add focused tests proving that a file over the hard threshold with all required 
 **Step 3: Implement shared semantics and verify**
 
 Make review-scan honor the same explicit exception contract as the canonical architecture test. Keep any useful size audit visible at non-forbidden severity if appropriate. Run xtask focused tests, the architecture gate, the real `repo review-scan --fail-on-forbidden` command, fmt, clippy, and diff-check. Commit with DCO signoff and request independent review before resuming Task 9.
+
+### Task 12: Preserve sequential last-write semantics for table algorithms across events
+
+**Files:**
+- Inspect/modify owning code under `crates/rumoca-phase-dae/src/algorithm_lowering/` and, only if evidence points downstream, discrete-row runtime code under `crates/rumoca-eval-solve/src/runtime/`
+- Test: focused algorithm-lowering and end-to-end discrete event regressions
+
+**Steps:**
+
+1. Add an end-to-end RED for a two-point table algorithm: initialize `y`, iterate `i in 1:2`, and conditionally assign `y := x[i]` for `time >= t[i]`; assert `y=4` after `t=1` and `y=3` after `t=3`.
+2. Use the RED/IR inspection to identify the first semantic loss among instance parameter-array projection, for-loop sequential expansion/last-write ownership, discrete-row generation, and row commit. Do not assume the scheduler is the owner: the Adder4 artifact proves other table instances handle the same `t=3` event.
+3. Repair the first semantic owner without model/table special cases. Preserve sequential algorithm assignment semantics and stable instance identity.
+4. Verify the focused tests and exact `Modelica.Electrical.Digital.Examples.Adder4` trace against OMC. Commit with DCO signoff and independent review.
+
+### Task 13: Preserve shaped discrete enum-array start values
+
+**Files:**
+- Modify as owned: `crates/rumoca-phase-solve/src/solve_model.rs`
+- Modify as owned: `crates/rumoca-eval-dae/src/eval/array_eval.rs`
+- Test: focused start-value evaluation/lowering regressions
+
+**Steps:**
+
+1. Add a RED for a two-element discrete enum array whose start is `fill(enum_literal, 2)`, including generated `__pre__` variables. The current failure is `shaped array value: expected 2 value(s), got 1`.
+2. Fix array evaluation/lowering so declared shape owns cardinality and `fill` preserves both values. Do not special-case Digital models or pad/clamp a mismatched result.
+3. Verify the focused tests and representative DLAT/DFF models; require at least the eight identical-signature failures to cross the former start-value boundary. Commit with DCO signoff and independent review.
+
+### Task 14: Use reference-aware dimensions for indexed aggregate elimination
+
+**Files:**
+- Modify: `crates/rumoca-phase-structural/src/eliminate/mod.rs`
+- Modify/tests as needed: `crates/rumoca-phase-structural/src/variable_scope.rs`
+- Test: structural elimination/incidence regressions
+
+**Steps:**
+
+1. Add a full-pipeline RED with two parent component instances and vector aggregate leaves such as `iH1[1].product2.u[2]` and `spacePhasor_b.v_[2]`. After trivial elimination and incidence reconstruction, assert parent instances do not mix, aggregate uses materialize correctly, and every leaf remains matchable.
+2. Replace leaf-name-only aggregate dimension lookup with the existing structured-reference-aware scope API. Do not reconstruct paths from display strings or add model-specific matching.
+3. Verify structural crate gates plus representative `PolyphaseRectifier` and machine models. Confirm the shared indexed aggregate cohorts cross the former structural-singular boundary before counting IC gains. Commit with DCO signoff and independent review.
+
+### Task 15: Avoid redundant settled symbolic-dimension evaluation
+
+**Files:**
+- Modify: `crates/rumoca-phase-flatten/src/pipeline/flatten_pipeline.rs`
+- Modify as owned: `crates/rumoca-phase-flatten/src/pipeline/context_and_tests.rs`
+- Test: flatten pipeline symbolic-dimension regressions
+
+**Steps:**
+
+1. Add a deterministic RED with a test-only evaluation-attempt counter for a 3-by-2 record/component array with symbolic dimensions. Prove that settled bindings are currently recomputed across outer and inner fixed-point passes; do not use wall-clock time as the unit assertion.
+2. Preserve every fixed-point pass and unresolved-binding retry, but reuse collected bindings and drive reevaluation from pending dependencies/dimension generations. Do not lower pass counts or increase timeout.
+3. Verify identical final parameter/dimension maps and Flat IR, then run `CCCV_Stack`, `CCCV_StackRC`, `CCCV_Cell`, and `CCCV_CellRC` under the unchanged worker budget. Require the full gate Flat floor to recover. Commit with DCO signoff and independent review.
