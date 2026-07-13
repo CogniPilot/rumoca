@@ -1169,13 +1169,15 @@ fn flat_binding_var_values(
     flat.variables
         .iter()
         .filter_map(|(name, var)| {
-            let expr = var.binding.as_ref()?;
+            let has_binding = var.binding.is_some();
+            let expr = var.binding.as_ref().or_else(|| {
+                (var.fixed != Some(false))
+                    .then_some(())
+                    .and(var.start.as_ref())
+            })?;
             if parameter_value_is_structural(flat, name, var, expr)
-                || matches!(
-                    var.variability,
-                    rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-                )
-                || structural_non_real_expr(expr)
+                || has_binding
+                    && structural_non_real_expr(expr)
                     && !variable_type_is_real(flat.variable_type_names.get(name))
             {
                 return Some((name.as_str().to_string(), expr.clone()));
@@ -3087,24 +3089,6 @@ fn substitute_indexed_constant_var_ref(
     span: rumoca_core::Span,
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<Option<rumoca_core::Expression>, FlattenError> {
-    if let Some(base) = substitute_flat_variable_value_ref(name.as_str(), span, env)? {
-        if let Some(selected) = select_constant_index(&base, &subscripts, span, env.ctx) {
-            return Ok(Some(substitute_resolved_constant_expr(
-                name.as_str(),
-                &selected,
-                span,
-                env,
-            )?));
-        }
-        return Ok(Some(rumoca_core::Expression::Index {
-            base: Box::new(base),
-            subscripts,
-            span,
-        }));
-    }
-    if parameter_is_non_structural(name.as_str(), env) {
-        return Ok(None);
-    }
     let constant_expr = match resolve_constant_value_expr_for_ref(name, env.ctx) {
         Some(expr) => expr.clone(),
         None => return Ok(None),
@@ -3304,8 +3288,14 @@ fn substitute_flat_variable_value_ref(
         let Some(value) = var_values.get(&candidate) else {
             continue;
         };
-        let substituted = substitute_resolved_constant_expr(&candidate, value, span, env)?;
-        return Ok(Some(substituted));
+        if reference_key_has_array_shape(&candidate, env.ctx, env.scope)
+            && !constant_expr_preserves_array_shape(value)
+        {
+            continue;
+        }
+        return Ok(Some(substitute_resolved_constant_expr(
+            &candidate, value, span, env,
+        )?));
     }
     Ok(None)
 }
@@ -3321,14 +3311,13 @@ fn resolving_value_stack_contains(mut node: Option<&ResolvingValue<'_>>, key: &s
 }
 
 fn parameter_is_non_structural(key: &str, env: ConstantSubstitutionEnv<'_>) -> bool {
-    scoped_lookup_candidates(key, env.scope)
-        .into_iter()
-        .any(|candidate| {
-            env.ctx.non_structural_params.contains(&candidate)
-                || env.ctx.flat_parameter_constant_keys.contains(&candidate)
-                    && !env.ctx.structural_params.contains(&candidate)
-                    && !env.ctx.class_constant_keys.contains(&candidate)
-        })
+    env.ctx.non_structural_params.contains(key)
+        || (!env.scope.is_empty()
+            && !key.contains('.')
+            && env
+                .ctx
+                .non_structural_params
+                .contains(format!("{}.{}", env.scope, key).as_str()))
 }
 
 fn reference_key_is_structured(key: &str) -> bool {
