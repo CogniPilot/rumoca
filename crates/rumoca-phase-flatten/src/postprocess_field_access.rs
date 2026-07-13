@@ -264,22 +264,27 @@ fn append_flat_subscripts(
     rendered: &mut String,
     subscripts: &[rumoca_core::Subscript],
 ) -> Option<()> {
-    for subscript in subscripts {
-        match subscript {
-            rumoca_core::Subscript::Index { value, .. } => {
-                rendered.push('[');
-                rendered.push_str(&value.to_string());
-                rendered.push(']');
-            }
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                let value = constant_integer_bound(expr)?;
-                rendered.push('[');
-                rendered.push_str(&value.to_string());
-                rendered.push(']');
-            }
-            rumoca_core::Subscript::Colon { .. } => return None,
-        }
+    if subscripts.is_empty() {
+        return Some(());
     }
+
+    let values = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Some(*value),
+            rumoca_core::Subscript::Expr { expr, .. } => constant_integer_bound(expr),
+            rumoca_core::Subscript::Colon { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    rendered.push('[');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            rendered.push(',');
+        }
+        rendered.push_str(&value.to_string());
+    }
+    rendered.push(']');
     Some(())
 }
 
@@ -442,5 +447,26 @@ mod tests {
             panic!("expected nested constructor field access");
         };
         assert_eq!(outer_field, "state");
+    }
+
+    #[test]
+    fn renders_multidimensional_subscripts_as_one_flat_index_group() {
+        let mut rendered = "cell".to_string();
+        append_flat_subscripts(
+            &mut rendered,
+            &[
+                rumoca_core::Subscript::Index {
+                    value: 1,
+                    span: test_span(),
+                },
+                rumoca_core::Subscript::Index {
+                    value: 2,
+                    span: test_span(),
+                },
+            ],
+        )
+        .expect("constant subscripts should render");
+
+        assert_eq!(rendered, "cell[1,2]");
     }
 }
