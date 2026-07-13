@@ -1985,6 +1985,9 @@ pub(crate) struct Context {
     pub array_dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
     /// Source spans for entries in `array_dimensions`.
     pub array_dimension_spans: rustc_hash::FxHashMap<String, rumoca_core::Span>,
+    /// Modified bindings whose effective shape was reconciled from structural
+    /// parameters and must not be replaced by a stale declaration-default binding.
+    pub(crate) reconciled_modified_dimension_names: rustc_hash::FxHashSet<String>,
     /// Parameters marked with annotation(Evaluate=true) or declared final (MLS §18.3).
     /// Only these structural parameters can be used for compile-time branch selection.
     pub structural_params: std::collections::HashSet<String>,

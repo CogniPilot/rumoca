@@ -203,6 +203,9 @@ fn owner_projected_record_field_candidate(
     if owner_parts.len() < 2 {
         return None;
     }
+    if owner_parts.last().map(String::as_str) != Some(field) {
+        return None;
+    }
     let projected_leaf_pos = owner_parts.len() - 2;
     if projected_leaf_pos <= indexed_pos {
         return None;
@@ -210,6 +213,18 @@ fn owner_projected_record_field_candidate(
     let shared_prefix = owner.prefix(indexed_pos)?;
     if !base.starts_with(&shared_prefix) {
         return None;
+    }
+    let owner_sibling_candidate = rumoca_core::ComponentPath::from_parts(
+        owner_parts[..=indexed_pos]
+            .iter()
+            .chain(owner_parts[projected_leaf_pos..].iter())
+            .cloned(),
+    )
+    .to_flat_string();
+    if owner_sibling_candidate != owner.as_str()
+        && known_variables.contains(&owner_sibling_candidate)
+    {
+        return Some(owner_sibling_candidate);
     }
     let mut candidate_parts = owner_parts[..indexed_pos].to_vec();
     candidate_parts.push(format!("{}{}", owner_parts[projected_leaf_pos], subscript));

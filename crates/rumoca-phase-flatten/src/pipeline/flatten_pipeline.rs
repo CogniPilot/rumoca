@@ -913,8 +913,9 @@ fn stabilize_symbolic_component_dimensions(
     let max_passes = overlay.components.len().max(1) + 1;
     for _ in 0..max_passes {
         ctx.build_parameter_lookup(flat, tree);
-        ctx.reconcile_modified_binding_dimensions(flat);
-        if !ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
+        let reconciled = ctx.reconcile_modified_binding_dimensions(flat);
+        let recomputed = ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)?;
+        if !reconciled && !recomputed {
             return Ok(());
         }
     }

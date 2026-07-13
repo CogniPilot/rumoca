@@ -45,6 +45,65 @@ fn self_qualified_var_ref_with_source_leaf(
 }
 
 #[test]
+fn reconciled_modified_record_table_shape_beats_stale_default_binding_shape() {
+    let mut ctx = Context::new();
+    let tree = source_backed_tree();
+    ctx.parameter_values.insert("rows".to_string(), 29);
+    ctx.parameter_values.insert("columns".to_string(), 2);
+    ctx.array_dimensions
+        .insert("stack.cellData.OCV_SOC".to_string(), vec![29, 2]);
+    let row = || Expression::Array {
+        elements: vec![int_lit(0), int_lit(1)],
+        is_matrix: false,
+        span: test_span(),
+    };
+    let name = rumoca_core::VarName::new("stack.cellData.OCV_SOC");
+    let mut flat = flat::Model::default();
+    flat.add_variable(
+        name.clone(),
+        flat::Variable {
+            name: name.clone(),
+            dims: vec![2, 2],
+            binding: Some(Expression::Array {
+                elements: vec![row(), row()],
+                is_matrix: true,
+                span: test_span(),
+            }),
+            binding_from_modification: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut overlay = InstanceOverlay::default();
+    overlay.components.insert(
+        InstanceId::new(1),
+        symbolic_instance(
+            InstanceId::new(1),
+            "stack.cellData.OCV_SOC",
+            vec![
+                ast::Subscript::Expression(component_ref_expr("rows")),
+                ast::Subscript::Expression(component_ref_expr("columns")),
+            ],
+        ),
+    );
+
+    assert!(ctx.reconcile_modified_binding_dimensions(&mut flat));
+    let recomputed = ctx
+        .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+        .expect("modified table dimensions reconcile");
+
+    assert!(!recomputed);
+    assert_eq!(flat.variables.get(&name).unwrap().dims, vec![29, 2]);
+
+    ctx.build_parameter_lookup(&flat, &tree);
+    assert!(!ctx.reconcile_modified_binding_dimensions(&mut flat));
+    assert!(
+        !ctx.recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("fixed point remains stable")
+    );
+}
+
+#[test]
 fn modified_binding_dimensions_replace_stale_declared_shape() {
     let mut ctx = Context::new();
     let tree = source_backed_tree();

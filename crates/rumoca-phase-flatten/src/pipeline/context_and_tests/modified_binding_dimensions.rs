@@ -32,7 +32,7 @@ fn has_nested_modified_integer_target(expr: &Expression) -> bool {
 }
 
 impl Context {
-    pub(crate) fn reconcile_modified_binding_dimensions(&self, flat: &mut Model) -> bool {
+    pub(crate) fn reconcile_modified_binding_dimensions(&mut self, flat: &mut Model) -> bool {
         let mut changed = false;
         let modified_integer_params = modified_integer_param_bindings(flat);
         for (name, var) in &mut flat.variables {
@@ -53,6 +53,8 @@ impl Context {
                 || same_rank_concrete_dims(&inferred_dims, &var.dims)
             {
                 var.dims = inferred_dims;
+                self.reconciled_modified_dimension_names
+                    .insert(name.to_string());
                 changed = true;
             }
         }

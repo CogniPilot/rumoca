@@ -627,6 +627,112 @@ fn record_alias_canonicalization_projects_nested_owner_record_leaf() {
 }
 
 #[test]
+fn record_alias_canonicalization_projects_to_exact_indexed_owner_sibling() {
+    let mut model = flat::Model::new();
+    for name in [
+        "bank.ch[1,2].per.Q",
+        "bank.unrelated.per[1,2].Q",
+        "bank.ch[1,2].unit.per.Q",
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                binding: (name == "bank.ch[1,2].unit.per.Q").then(|| {
+                    rumoca_core::Expression::FieldAccess {
+                        base: Box::new(var_ref("bank.per")),
+                        field: "Q".to_string(),
+                        span: Span::DUMMY,
+                    }
+                }),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &Context::new());
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("bank.ch[1,2].unit.per.Q"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected exact indexed owner sibling");
+    };
+    assert_eq!(name.as_str(), "bank.ch[1,2].per.Q");
+}
+
+#[test]
+fn record_alias_canonicalization_does_not_project_to_unrelated_unique_descendant() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("bank.unrelated.per[1,2].Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.unrelated.per[1,2].Q"),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("bank.ch[1,2].unit.per.Q"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("bank.ch[1,2].unit.per.Q"),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("bank.per")),
+                field: "Q".to_string(),
+                span: Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &Context::new());
+
+    assert!(matches!(
+        model
+            .variables
+            .get(&rumoca_core::VarName::new("bank.ch[1,2].unit.per.Q"))
+            .and_then(|var| var.binding.as_ref()),
+        Some(rumoca_core::Expression::FieldAccess { .. })
+    ));
+}
+
+#[test]
+fn record_alias_canonicalization_requires_field_to_match_owner_leaf() {
+    let mut model = flat::Model::new();
+    for name in ["bank.ch[1].per.Q", "bank.ch[1].unit.per.Q"] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                binding: (name == "bank.ch[1].unit.per.Q").then(|| {
+                    rumoca_core::Expression::FieldAccess {
+                        base: Box::new(var_ref("bank.per")),
+                        field: "P".to_string(),
+                        span: Span::DUMMY,
+                    }
+                }),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    canonicalize_varrefs_via_record_aliases(&mut model, &Context::new());
+
+    assert!(matches!(
+        model
+            .variables
+            .get(&rumoca_core::VarName::new("bank.ch[1].unit.per.Q"))
+            .and_then(|var| var.binding.as_ref()),
+        Some(rumoca_core::Expression::FieldAccess { field, .. }) if field == "P"
+    ));
+}
+
+#[test]
 fn record_alias_canonicalization_preserves_distinct_connector_record_endpoints() {
     let mut model = flat::Model::new();
     for (index, name) in [

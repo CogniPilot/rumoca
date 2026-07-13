@@ -210,6 +210,7 @@ impl Context {
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
             array_dimensions: rustc_hash::FxHashMap::default(),
             array_dimension_spans: rustc_hash::FxHashMap::default(),
+            reconciled_modified_dimension_names: rustc_hash::FxHashSet::default(),
             structural_params: std::collections::HashSet::new(),
             non_structural_params: std::collections::HashSet::new(),
             functions: rustc_hash::FxHashMap::default(),
@@ -364,6 +365,14 @@ impl Context {
         tree: &ClassTree,
     ) -> Option<Vec<i64>> {
         let binding = flat_var.binding.as_ref()?;
+        if flat_var.binding_from_modification
+            && let Some(effective_dims) = self.array_dimensions.get(var_name)
+            && flat_var.dims == *effective_dims
+            && effective_dims.len() == dims_expr.len()
+            && effective_dims.iter().all(|dim| *dim >= 0)
+        {
+            return Some(effective_dims.clone());
+        }
         let name_has_array_element_parent = has_embedded_array_subscript_in_parent(var_name);
         let can_override_shape = if flat_var.binding_from_modification {
             !name_has_array_element_parent
@@ -973,6 +982,16 @@ impl Context {
             Some(dims) => dims,
             None => return false,
         };
+        if binding_from_modification
+            && self.reconciled_modified_dimension_names.contains(name)
+            && self.array_dimensions.get(name).is_some_and(|existing| {
+                existing.len() == inferred_dims.len()
+                    && existing.iter().all(|dim| *dim >= 0)
+                    && inferred_dims.iter().all(|dim| *dim >= 0)
+            })
+        {
+            return false;
+        }
 
         // Check if we should update (MLS §10.1)
         let should_update = self.array_dimensions.get(name).is_none_or(|existing| {
