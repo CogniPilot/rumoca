@@ -961,6 +961,20 @@ fn test_fmi3_derivative_api_renders_from_solver_ad_ir() {
     );
 }
 
+fn assert_fmi3_projection_uses_dae_fallback(dae_json: &serde_json::Value, message: &str) {
+    let rendered = render_template_with_dae_json_and_name(
+        dae_json,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .expect(message);
+    assert!(
+        !rendered.contains("const int y_index = 1;")
+            && !rendered.contains("The Solve-IR projection writes"),
+        "{rendered}"
+    );
+}
+
 #[test]
 fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
     let mut dae = dae::Dae::new();
@@ -1050,16 +1064,9 @@ fn assert_fmi3_projection_fallbacks(dae_json: &serde_json::Value) {
     *causal
         .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/causal_steps")
         .unwrap() = serde_json::json!([{"row": 1, "y_index": 1}]);
-    let rendered = render_template_with_dae_json_and_name(
+    assert_fmi3_projection_uses_dae_fallback(
         &causal,
-        builtin_template("fmi3", "model.c.jinja"),
-        "M",
-    )
-    .expect("unsupported causal projection must use the DAE fallback");
-    assert!(
-        !rendered.contains("const int y_index = 1;")
-            && !rendered.contains("The Solve-IR projection writes"),
-        "{rendered}"
+        "unsupported causal projection must use the DAE fallback",
     );
 
     let mut multi_row = dae_json.clone();
@@ -1069,16 +1076,9 @@ fn assert_fmi3_projection_fallbacks(dae_json: &serde_json::Value) {
     *multi_row
         .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/y_indices")
         .unwrap() = serde_json::json!([1, 1]);
-    let rendered = render_template_with_dae_json_and_name(
+    assert_fmi3_projection_uses_dae_fallback(
         &multi_row,
-        builtin_template("fmi3", "model.c.jinja"),
-        "M",
-    )
-    .expect("unsupported multi-row projection must use the DAE fallback");
-    assert!(
-        !rendered.contains("const int y_index = 1;")
-            && !rendered.contains("The Solve-IR projection writes"),
-        "{rendered}"
+        "unsupported multi-row projection must use the DAE fallback",
     );
 
     let mut unmatched = dae_json.clone();
