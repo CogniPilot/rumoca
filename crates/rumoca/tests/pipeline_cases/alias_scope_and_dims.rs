@@ -111,6 +111,61 @@ end UsesOuterStart;
     );
 }
 
+/// MLS §7.2.4: a same-name modifier forwarding a runtime Boolean input is
+/// still resolved in the enclosing lexical scope. It must not be folded from
+/// the modified child's Boolean default before the flow equation is built.
+#[test]
+fn test_same_name_runtime_boolean_modifier_drives_nested_flow_connector() {
+    let source = r#"
+connector CountPort
+  Real dummy;
+  flow Real count;
+end CountPort;
+
+model FlowAdapter
+  input Boolean localActive;
+  CountPort port;
+equation
+  port.count = if localActive then 1.0 else 0.0;
+end FlowAdapter;
+
+model RuntimeFlowSource
+  output Boolean localActive;
+  FlowAdapter adapter(localActive = localActive);
+  CountPort port;
+equation
+  localActive = time >= 0;
+  connect(adapter.port, port);
+end RuntimeFlowSource;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("runtime Boolean forwarding fixture should parse");
+
+    let result = session
+        .compile_model("RuntimeFlowSource")
+        .expect("runtime Boolean forwarding fixture should compile");
+
+    let flat_code = render_flat_template_with_name(
+        &result.flat,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+        "RuntimeFlowSource",
+    )
+    .expect("flat rendering should succeed");
+
+    assert!(
+        flat_code.contains("adapter.localActive(start = false) = localActive"),
+        "nested runtime Boolean modifier must retain its enclosing source, got:\n{flat_code}"
+    );
+    assert!(
+        flat_code.contains("if adapter.localActive then 1")
+            || flat_code.contains("if adapter.localActive then 1.0"),
+        "nested flow source must remain runtime-dependent, got:\n{flat_code}"
+    );
+}
+
 /// MLS §7.3: extends-clause package redeclarations that forward through a local
 /// alias (`redeclare package Medium = Medium`) must resolve using the active
 /// modification environment when instantiated through a component modifier.

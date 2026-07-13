@@ -1169,13 +1169,15 @@ fn flat_binding_var_values(
     flat.variables
         .iter()
         .filter_map(|(name, var)| {
+            let has_binding = var.binding.is_some();
             let expr = var.binding.as_ref().or_else(|| {
                 (var.fixed != Some(false))
                     .then_some(())
                     .and(var.start.as_ref())
             })?;
             if parameter_value_is_structural(flat, name, var, expr)
-                || structural_non_real_expr(expr)
+                || has_binding
+                    && structural_non_real_expr(expr)
                     && !variable_type_is_real(flat.variable_type_names.get(name))
             {
                 return Some((name.as_str().to_string(), expr.clone()));
