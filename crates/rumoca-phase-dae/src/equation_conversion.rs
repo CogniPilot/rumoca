@@ -2582,6 +2582,18 @@ fn push_explicit_discrete_assignments(
         return Ok(false);
     };
 
+    // Aggregate array targets can be classified from their scalarized DAE
+    // lanes before the residual itself has been scalarized. Keep that residual
+    // in f_m here; DAE scalarization will recover one explicit assignment per
+    // concrete lane with the required component-reference metadata.
+    if equation.scalar_count > 1
+        && assignments
+            .keys()
+            .any(|target| !is_discrete_valued_target(dae, target))
+    {
+        return Ok(false);
+    }
+
     let mut ordered: Vec<_> = assignments.into_iter().collect();
     ordered.sort_unstable_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
 
@@ -2699,12 +2711,32 @@ fn collect_discrete_valued_lhs_target_counts(
             continue;
         }
         for target in crate::discrete_partition::residual_lhs_targets(&equation.residual) {
-            if is_discrete_valued_target(dae, &target) {
-                *counts.entry(target).or_insert(0) += 1;
+            let concrete_targets = discrete_lhs_count_targets(dae, equation, target);
+            for concrete_target in concrete_targets {
+                *counts.entry(concrete_target).or_insert(0) += 1;
             }
         }
     }
     counts
+}
+
+fn discrete_lhs_count_targets(
+    dae: &dae::Dae,
+    equation: &flat::Equation,
+    target: rumoca_core::VarName,
+) -> Vec<rumoca_core::VarName> {
+    if is_discrete_valued_target(dae, &target) {
+        return vec![target];
+    }
+    let Some(reference) =
+        crate::discrete_partition::residual_target_component_reference(&equation.residual, &target)
+    else {
+        return Vec::new();
+    };
+    crate::discrete_partition::scalarized_discrete_targets_for_reference(
+        &dae.variables.discrete_valued,
+        &reference,
+    )
 }
 
 fn collect_discrete_valued_binding_targets(

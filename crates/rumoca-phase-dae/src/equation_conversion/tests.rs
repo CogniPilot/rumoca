@@ -857,6 +857,87 @@ fn test_discrete_alias_assignment_orients_to_unowned_rhs() {
 }
 
 #[test]
+fn test_scalarized_boolean_array_definitions_count_each_concrete_lane() {
+    let declaration = rumoca_core::DefId::new(301);
+    let mut dae_model = dae::Dae::new();
+    for (name, parts) in [
+        (
+            "parallel.split[1].set",
+            vec![("parallel", vec![]), ("split", vec![1]), ("set", vec![])],
+        ),
+        (
+            "parallel.split[2].set",
+            vec![("parallel", vec![]), ("split", vec![2]), ("set", vec![])],
+        ),
+        (
+            "step.inPort[1].set",
+            vec![("step", vec![]), ("inPort", vec![1]), ("set", vec![])],
+        ),
+        ("trigger", vec![("trigger", vec![])]),
+    ] {
+        let name = rumoca_core::VarName::new(name);
+        let mut variable = dae::Variable::new(name.clone(), fixture_span());
+        variable.component_ref = Some(component_ref_with_def_id(parts, Some(declaration)));
+        dae_model.variables.discrete_valued.insert(name, variable);
+    }
+
+    let mut flat_model = flat::Model::new();
+    // Scalarized Flat models need not retain an aggregate declaration map
+    // entry; the source equation's structured LHS remains authoritative.
+    flat_model.equations.push(flat::Equation::new(
+        residual(
+            var_ref_with_parts(
+                "parallel.split.set",
+                vec![("parallel", vec![]), ("split", vec![]), ("set", vec![])],
+            ),
+            var_ref_with_parts("trigger", vec![("trigger", vec![])]),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "parallel".to_string(),
+        },
+    ));
+    flat_model.equations.push(flat::Equation::new(
+        residual(
+            var_ref_with_parts(
+                "parallel.split[2].set",
+                vec![("parallel", vec![]), ("split", vec![2]), ("set", vec![])],
+            ),
+            var_ref_with_parts(
+                "step.inPort[1].set",
+                vec![("step", vec![]), ("inPort", vec![1]), ("set", vec![])],
+            ),
+        ),
+        fixture_span(),
+        flat::EquationOrigin::Connection {
+            lhs: "parallel.split[2].set".to_string(),
+            rhs: "step.inPort[1].set".to_string(),
+        },
+    ));
+
+    let counts = collect_discrete_valued_lhs_target_counts(&dae_model, &flat_model);
+    assert_eq!(
+        counts[&rumoca_core::VarName::new("parallel.split[1].set")],
+        1
+    );
+    assert_eq!(
+        counts[&rumoca_core::VarName::new("parallel.split[2].set")],
+        2
+    );
+
+    let assignments = collect_explicit_discrete_assignments(
+        &flat_model.equations[1].residual,
+        &dae_model,
+        &counts,
+        flat_model.equations[1].span,
+    )
+    .unwrap()
+    .expect("scalarized alias assignment");
+    assert!(assignments.contains_key(&rumoca_core::VarName::new("step.inPort[1].set")));
+    assert!(!assignments.contains_key(&rumoca_core::VarName::new("parallel.split[2].set")));
+}
+
+#[test]
 fn test_discrete_alias_assignment_orients_away_from_binding_owned_target() {
     let mut dae_model = dae::Dae::new();
     for name in [

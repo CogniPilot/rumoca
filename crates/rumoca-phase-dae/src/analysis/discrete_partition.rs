@@ -170,7 +170,7 @@ pub(crate) fn classify_residual_discrete_bucket(
     let mut saw_real = false;
     let mut saw_valued = false;
     for target in targets {
-        match discrete_bucket_for_name(dae, &target) {
+        match discrete_bucket_for_name(dae, residual, &target) {
             Some(NameDiscreteBucket::DiscreteReal) => saw_real = true,
             Some(NameDiscreteBucket::DiscreteValued) => saw_valued = true,
             None => return None,
@@ -227,37 +227,120 @@ fn collect_lhs_targets(lhs: &rumoca_core::Expression, out: &mut Vec<rumoca_core:
 
 fn discrete_bucket_for_name(
     dae: &dae::Dae,
+    residual: &rumoca_core::Expression,
     name: &rumoca_core::VarName,
 ) -> Option<NameDiscreteBucket> {
-    if dae
-        .variables
-        .discrete_valued
-        .contains_key(&flat_to_dae_var_name(name))
-        || subscript_fallback_chain(name.as_str())
-            .into_iter()
-            .any(|candidate| {
-                dae.variables
-                    .discrete_valued
-                    .contains_key(&flat_to_dae_var_name(&candidate))
-            })
+    if partition_contains_target_or_scalarized_lane(&dae.variables.discrete_valued, name)
+        || residual_target_component_reference(residual, name).is_some_and(|reference| {
+            !scalarized_discrete_targets_for_reference(&dae.variables.discrete_valued, &reference)
+                .is_empty()
+        })
     {
         return Some(NameDiscreteBucket::DiscreteValued);
     }
-    if dae
-        .variables
-        .discrete_reals
-        .contains_key(&flat_to_dae_var_name(name))
-        || subscript_fallback_chain(name.as_str())
-            .into_iter()
-            .any(|candidate| {
-                dae.variables
-                    .discrete_reals
-                    .contains_key(&flat_to_dae_var_name(&candidate))
-            })
+    if partition_contains_target_or_scalarized_lane(&dae.variables.discrete_reals, name)
+        || residual_target_component_reference(residual, name).is_some_and(|reference| {
+            !scalarized_discrete_targets_for_reference(&dae.variables.discrete_reals, &reference)
+                .is_empty()
+        })
     {
         return Some(NameDiscreteBucket::DiscreteReal);
     }
     None
+}
+
+fn partition_contains_target_or_scalarized_lane(
+    partition: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
+    target: &rumoca_core::VarName,
+) -> bool {
+    if partition.contains_key(&flat_to_dae_var_name(target))
+        || subscript_fallback_chain(target.as_str())
+            .into_iter()
+            .any(|candidate| partition.contains_key(&flat_to_dae_var_name(&candidate)))
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Return concrete scalar DAE variables produced from an aggregate equation
+/// target. Rendered names are protocol/display data; lane recovery uses the
+/// preserved component-reference parts and subscripts.
+pub(crate) fn scalarized_discrete_targets_for_reference(
+    partition: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
+    target_ref: &rumoca_core::ComponentReference,
+) -> Vec<rumoca_core::VarName> {
+    partition
+        .iter()
+        .filter_map(|(name, candidate)| {
+            let candidate_ref = candidate.component_ref.as_ref()?;
+            (candidate.dims.is_empty()
+                && component_reference_is_scalar_lane_of(candidate_ref, target_ref))
+            .then(|| crate::dae_to_flat_var_name(name))
+        })
+        .collect()
+}
+
+pub(crate) fn residual_target_component_reference(
+    residual: &rumoca_core::Expression,
+    target: &rumoca_core::VarName,
+) -> Option<rumoca_core::ComponentReference> {
+    struct Finder<'a> {
+        target: &'a rumoca_core::VarName,
+        found: Option<rumoca_core::ComponentReference>,
+    }
+
+    impl<'a> rumoca_core::ExpressionVisitor for Finder<'a> {
+        fn visit_var_ref(
+            &mut self,
+            name: &rumoca_core::Reference,
+            _subscripts: &[rumoca_core::Subscript],
+        ) {
+            if self.found.is_none() && name.var_name() == self.target {
+                self.found = name.component_ref().cloned();
+            }
+        }
+    }
+
+    let mut finder = Finder {
+        target,
+        found: None,
+    };
+    finder.visit_expression(residual);
+    finder.found
+}
+
+fn component_reference_is_scalar_lane_of(
+    candidate: &rumoca_core::ComponentReference,
+    aggregate: &rumoca_core::ComponentReference,
+) -> bool {
+    // Instantiation assigns distinct declaration identities to scalar connector
+    // elements, while the source aggregate equation retains the unspecialized
+    // declaration identity. Full scoped path + structured subscripts therefore
+    // define lane identity here; requiring equal DefIds would reject every
+    // legitimately scalarized connector array.
+    if candidate.parts.len() != aggregate.parts.len() {
+        return false;
+    }
+
+    let mut added_scalar_subscript = false;
+    for (candidate_part, aggregate_part) in candidate.parts.iter().zip(&aggregate.parts) {
+        if candidate_part.ident != aggregate_part.ident
+            || candidate_part.subs.len() < aggregate_part.subs.len()
+            || !candidate_part
+                .subs
+                .iter()
+                .zip(&aggregate_part.subs)
+                .all(|(candidate_sub, aggregate_sub)| candidate_sub == aggregate_sub)
+        {
+            return false;
+        }
+        if candidate_part.subs.len() > aggregate_part.subs.len() {
+            added_scalar_subscript = true;
+        }
+    }
+    added_scalar_subscript
 }
 
 /// Returns true when expression contains clocked primitives that make the
@@ -329,4 +412,89 @@ fn is_clock_intrinsic_short_name(short_name: &str) -> bool {
             | "firstTick"
             | "interval"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2)
+    }
+
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        let name = rumoca_core::VarName::new(name);
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                name.as_str(),
+                rumoca_core::component_reference_from_flat_name(&name, test_span()).unwrap(),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        }
+    }
+
+    fn residual(lhs: &str, rhs: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var_ref(lhs)),
+            rhs: Box::new(var_ref(rhs)),
+            span: test_span(),
+        }
+    }
+
+    fn insert_variable(
+        variables: &mut indexmap::IndexMap<rumoca_core::VarName, dae::Variable>,
+        name: &str,
+    ) {
+        let name = rumoca_core::VarName::new(name);
+        let mut variable = dae::Variable::new(name.clone(), test_span());
+        variable.component_ref =
+            rumoca_core::component_reference_from_flat_name(&name, test_span());
+        variables.insert(name, variable);
+    }
+
+    #[test]
+    fn scalarized_boolean_array_target_is_discrete_valued() {
+        let mut dae = dae::Dae::new();
+        for name in ["parallel.split[1].set", "parallel.split[2].set", "trigger"] {
+            insert_variable(&mut dae.variables.discrete_valued, name);
+        }
+        assert_eq!(
+            classify_residual_discrete_bucket(&dae, &residual("parallel.split.set", "trigger")),
+            Some(ResidualDiscreteBucket::DiscreteValued),
+            "the aggregate Boolean target must inherit the partition of both scalarized lanes"
+        );
+    }
+
+    #[test]
+    fn scalarized_continuous_real_array_target_stays_continuous() {
+        let mut dae = dae::Dae::new();
+        for name in ["plant.y[1]", "plant.y[2]"] {
+            insert_variable(&mut dae.variables.algebraics, name);
+        }
+        assert_eq!(
+            classify_residual_discrete_bucket(&dae, &residual("plant.y", "plant.u")),
+            None,
+            "continuous Real array equations must remain in f_x"
+        );
+    }
+
+    #[test]
+    fn scalar_lane_identity_does_not_require_unspecialized_def_id() {
+        let mut aggregate = rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("parallel.split.set"),
+            test_span(),
+        )
+        .unwrap();
+        aggregate.def_id = Some(rumoca_core::DefId::new(10));
+        let mut lane = rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("parallel.split[2].set"),
+            test_span(),
+        )
+        .unwrap();
+        lane.def_id = Some(rumoca_core::DefId::new(20));
+
+        assert!(component_reference_is_scalar_lane_of(&lane, &aggregate));
+    }
 }
