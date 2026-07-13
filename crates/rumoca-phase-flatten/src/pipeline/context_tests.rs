@@ -307,6 +307,37 @@ mod tests {
     }
 
     #[test]
+    fn resolved_symbolic_dimension_retries_after_lowercase_type_ref_input_changes() {
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        let name = rumoca_core::VarName::new("wrapper.output");
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name: name.clone(),
+                binding: Some(symbolic_fill_expr(0, &["Bessel.order"])),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let mut ctx = Context::new();
+        ctx.parameter_values
+            .insert("wrapper.bessel.order".to_string(), 2);
+        let mut session = ctx.collect_parameter_lookup_session(&flat);
+
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+        assert_eq!(ctx.array_dimensions.get(name.as_str()), Some(&vec![2]));
+        assert_eq!(session.dimension_evaluation_attempts(name.as_str()), 1);
+
+        ctx.parameter_values
+            .insert("wrapper.bessel.order".to_string(), 3);
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+
+        assert_eq!(ctx.array_dimensions.get(name.as_str()), Some(&vec![3]));
+        assert_eq!(session.dimension_evaluation_attempts(name.as_str()), 2);
+    }
+
+    #[test]
     fn production_symbolic_dimension_session_matches_uncached_nout_oracle() {
         let tree = source_backed_tree();
         let mut initial_flat = flat::Model::default();

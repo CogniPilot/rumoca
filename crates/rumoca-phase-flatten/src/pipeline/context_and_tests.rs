@@ -37,17 +37,11 @@ pub(crate) struct ParameterLookupSession {
 
 #[derive(Default)]
 struct DimensionEvaluationState {
-    evaluations: rustc_hash::FxHashMap<String, DimensionEvaluationRecord>,
+    evaluation_generations: rustc_hash::FxHashMap<String, u64>,
     lookup_inputs: Option<DimensionLookupInputsSnapshot>,
     lookup_generation: u64,
     #[cfg(test)]
     dimension_evaluation_attempts: rustc_hash::FxHashMap<String, usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DimensionEvaluationRecord {
-    dependencies: DimensionDependencySnapshot,
-    unresolved_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,28 +52,6 @@ struct DimensionLookupInputsSnapshot {
     strings: rustc_hash::FxHashMap<String, String>,
     enumerations: rustc_hash::FxHashMap<String, String>,
     dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DimensionInferenceOutcome {
-    changed: bool,
-    resolved: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DimensionDependencySnapshot {
-    values: Vec<DimensionDependencyValue>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DimensionDependencyValue {
-    name: String,
-    integer: Option<i64>,
-    real_bits: Option<u64>,
-    boolean: Option<bool>,
-    string: Option<String>,
-    enumeration: Option<String>,
-    dimensions: Option<Vec<i64>>,
 }
 
 impl ParameterLookupSession {
@@ -148,41 +120,6 @@ fn binding_targets_embedded_array_element(binding: &Expression) -> bool {
         }
         _ => false,
     }
-}
-
-/// Match the constant evaluator's canonical indexed-key fallback. Array
-/// instances share structural parameters through the first expanded element.
-fn canonicalize_dimension_lookup_indices(path: &str) -> Option<String> {
-    let mut result = String::with_capacity(path.len());
-    let mut chars = path.chars().peekable();
-    let mut changed = false;
-    while let Some(ch) = chars.next() {
-        if ch != '[' {
-            result.push(ch);
-            continue;
-        }
-
-        let mut content = String::new();
-        let mut closed = false;
-        for inner in chars.by_ref() {
-            if inner == ']' {
-                closed = true;
-                break;
-            }
-            content.push(inner);
-        }
-        if closed && content.chars().all(|character| character.is_ascii_digit()) {
-            result.push_str("[1]");
-            changed |= content != "1";
-        } else {
-            result.push('[');
-            result.push_str(&content);
-            if closed {
-                result.push(']');
-            }
-        }
-    }
-    changed.then_some(result)
 }
 
 fn explicit_slice_binding(binding: &Expression) -> bool {
@@ -1103,18 +1040,10 @@ impl Context {
         var_bindings: &[ParamBinding<'_>],
         dimension_state: &mut DimensionEvaluationState,
     ) -> bool {
-        let needs_unresolved_fallback = dimension_state.lookup_inputs.is_none()
-            || dimension_state
-                .evaluations
-                .values()
-                .any(|evaluation| evaluation.unresolved_generation.is_some());
-        if needs_unresolved_fallback {
-            let lookup_inputs = self.dimension_lookup_inputs_snapshot();
-            if dimension_state.lookup_inputs.as_ref() != Some(&lookup_inputs) {
-                dimension_state.lookup_inputs = Some(lookup_inputs);
-                dimension_state.lookup_generation =
-                    dimension_state.lookup_generation.wrapping_add(1);
-            }
+        let lookup_inputs = self.dimension_lookup_inputs_snapshot();
+        if dimension_state.lookup_inputs.as_ref() != Some(&lookup_inputs) {
+            dimension_state.lookup_inputs = Some(lookup_inputs);
+            dimension_state.lookup_generation = dimension_state.lookup_generation.wrapping_add(1);
         }
         let lookup_generation = dimension_state.lookup_generation;
         let eval_ctx = build_eval_context(
@@ -1132,16 +1061,10 @@ impl Context {
             ..
         } in var_bindings
         {
-            let dependency_snapshot = self.dimension_dependency_snapshot(name, binding);
             if dimension_state
-                .evaluations
+                .evaluation_generations
                 .get(*name)
-                .is_some_and(|previous| {
-                    previous.dependencies == dependency_snapshot
-                        && previous
-                            .unresolved_generation
-                            .is_none_or(|generation| generation == lookup_generation)
-                })
+                .is_some_and(|previous| *previous == lookup_generation)
             {
                 continue;
             }
@@ -1152,16 +1075,17 @@ impl Context {
                     .entry((*name).to_string())
                     .or_default() += 1;
             }
-            let outcome =
+            new_dims |=
                 self.try_infer_array_dims(name, binding, *binding_from_modification, &eval_ctx);
-            new_dims |= outcome.changed;
-            dimension_state.evaluations.insert(
-                (*name).to_string(),
-                DimensionEvaluationRecord {
-                    dependencies: dependency_snapshot,
-                    unresolved_generation: (!outcome.resolved).then_some(lookup_generation),
-                },
-            );
+            dimension_state
+                .evaluation_generations
+                .insert((*name).to_string(), lookup_generation);
+        }
+        if new_dims {
+            // Dimension inference writes lookup outputs during this sweep. Treat
+            // those outputs as part of the generation just evaluated so the
+            // next unchanged fixed-point pass can skip settled work.
+            dimension_state.lookup_inputs = Some(self.dimension_lookup_inputs_snapshot());
         }
         new_dims
     }
@@ -1181,89 +1105,6 @@ impl Context {
         }
     }
 
-    fn dimension_dependency_snapshot(
-        &self,
-        owner_name: &str,
-        binding: &Expression,
-    ) -> DimensionDependencySnapshot {
-        let mut references = Vec::new();
-        binding.collect_var_refs(&mut references);
-        let owner_scope = rumoca_core::ComponentPath::from_flat_path(owner_name)
-            .parent()
-            .map(|scope| scope.to_flat_string())
-            .unwrap_or_default();
-        let mut candidate_names = std::collections::BTreeSet::new();
-        for reference in references {
-            let reference_path = rumoca_core::ComponentPath::from_flat_path(reference.as_str());
-            let mut lookup_candidates = scoped_lookup_candidates(reference.as_str(), &owner_scope);
-            lookup_candidates.push(reference.as_str().to_string());
-            lookup_candidates.extend(
-                reference_path
-                    .suffixes_excluding_self()
-                    .map(|suffix| suffix.to_flat_string()),
-            );
-            if reference.as_str() == "nout" {
-                lookup_candidates.extend(scoped_lookup_candidates("columns", &owner_scope));
-                lookup_candidates.push("columns".to_string());
-            }
-            for candidate in lookup_candidates {
-                candidate_names.insert(candidate.clone());
-                candidate_names.insert(self.resolve_alias(&candidate));
-                if let Some(canonical) = canonicalize_dimension_lookup_indices(&candidate) {
-                    candidate_names.insert(canonical.clone());
-                    candidate_names.insert(self.resolve_alias(&canonical));
-                }
-            }
-        }
-        if binding.contains_subexpression(|expr| matches!(expr, Expression::FieldAccess { .. })) {
-            let dependency_roots = candidate_names
-                .iter()
-                .map(|name| rumoca_core::ComponentPath::from_flat_path(name))
-                .collect::<Vec<_>>();
-            let known_names = self
-                .parameter_values
-                .keys()
-                .chain(self.real_parameter_values.keys())
-                .chain(self.boolean_parameter_values.keys())
-                .chain(self.string_parameter_values.keys())
-                .chain(self.enum_parameter_values.keys())
-                .chain(self.array_dimensions.keys());
-            for known_name in known_names {
-                let known_path = rumoca_core::ComponentPath::from_flat_path(known_name);
-                if dependency_roots
-                    .iter()
-                    .any(|root| known_path == *root || known_path.starts_with(root))
-                {
-                    candidate_names.insert(known_name.clone());
-                }
-            }
-        }
-        DimensionDependencySnapshot {
-            values: self.dimension_dependency_values(candidate_names),
-        }
-    }
-
-    fn dimension_dependency_values(
-        &self,
-        names: impl IntoIterator<Item = String>,
-    ) -> Vec<DimensionDependencyValue> {
-        names
-            .into_iter()
-            .map(|name| DimensionDependencyValue {
-                integer: self.parameter_values.get(&name).copied(),
-                real_bits: self
-                    .real_parameter_values
-                    .get(&name)
-                    .map(|value| value.to_bits()),
-                boolean: self.boolean_parameter_values.get(&name).copied(),
-                string: self.string_parameter_values.get(&name).cloned(),
-                enumeration: self.enum_parameter_values.get(&name).cloned(),
-                dimensions: self.array_dimensions.get(&name).cloned(),
-                name,
-            })
-            .collect()
-    }
-
     /// Try to infer array dimensions for a single binding.
     fn try_infer_array_dims(
         &mut self,
@@ -1271,7 +1112,7 @@ impl Context {
         binding: &Expression,
         binding_from_modification: bool,
         user_func_eval_ctx: &rumoca_eval_flat::constant::EvalContext,
-    ) -> DimensionInferenceOutcome {
+    ) -> bool {
         // Skip when the variable is inside an expanded array component element.
         // During array expansion, sub-component modifications (e.g., `L=fill(L1sigma,m)`)
         // are NOT indexed for each element. So `inductor[1].L` gets the same unindexed
@@ -1283,10 +1124,7 @@ impl Context {
             is_computed_shape_binding(binding)
         };
         if has_embedded_array_subscript_in_parent(name) && !binding_can_drive_shape {
-            return DimensionInferenceOutcome {
-                changed: false,
-                resolved: true,
-            };
+            return false;
         }
 
         let inferred = infer_array_dimensions_full_with_functions(
@@ -1304,12 +1142,7 @@ impl Context {
         );
         let inferred_dims = match inferred {
             Some(dims) => dims,
-            None => {
-                return DimensionInferenceOutcome {
-                    changed: false,
-                    resolved: false,
-                };
-            }
+            None => return false,
         };
         if binding_from_modification
             && self.reconciled_modified_dimension_names.contains(name)
@@ -1319,10 +1152,7 @@ impl Context {
                     && inferred_dims.iter().all(|dim| *dim >= 0)
             })
         {
-            return DimensionInferenceOutcome {
-                changed: false,
-                resolved: true,
-            };
+            return false;
         }
 
         // Check if we should update (MLS §10.1)
@@ -1340,15 +1170,9 @@ impl Context {
             tracing::debug!(var = %name, dims = ?inferred_dims, "inferred array dimensions from builtin");
             self.array_dimensions
                 .insert(name.to_string(), inferred_dims);
-            DimensionInferenceOutcome {
-                changed: true,
-                resolved: true,
-            }
+            true
         } else {
-            DimensionInferenceOutcome {
-                changed: false,
-                resolved: true,
-            }
+            false
         }
     }
 
