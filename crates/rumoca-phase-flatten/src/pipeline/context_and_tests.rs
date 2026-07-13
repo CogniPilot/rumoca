@@ -1118,7 +1118,10 @@ impl Context {
                     && changed_dimension_names.contains(binding.name);
                 if evaluation.resolved
                     && (is_only_producer
-                        || !self.binding_may_read_dimension_lookup_outputs(binding.binding))
+                        || !self.binding_may_read_dimension_lookup_outputs(
+                            binding.name,
+                            binding.binding,
+                        ))
                 {
                     evaluation.generation = settled_generation;
                 }
@@ -1142,19 +1145,46 @@ impl Context {
         }
     }
 
-    fn binding_may_read_dimension_lookup_outputs(&self, binding: &Expression) -> bool {
-        if binding.contains_subexpression(|expr| matches!(expr, Expression::FunctionCall { .. })) {
+    fn binding_may_read_dimension_lookup_outputs(
+        &self,
+        owner_name: &str,
+        binding: &Expression,
+    ) -> bool {
+        if binding.contains_subexpression(|expr| {
+            matches!(
+                expr,
+                Expression::FunctionCall { .. }
+                    | Expression::Index { .. }
+                    | Expression::Binary { .. }
+                    | Expression::BuiltinCall {
+                        function: rumoca_core::BuiltinFunction::Size,
+                        ..
+                    }
+            )
+        }) || matches!(
+            binding,
+            Expression::VarRef { .. } | Expression::FieldAccess { .. }
+        ) {
             return true;
         }
+        let owner_scope = rumoca_core::ComponentPath::from_flat_path(owner_name)
+            .parent()
+            .map(|scope| scope.to_flat_string())
+            .unwrap_or_default();
         let mut references = Vec::new();
         binding.collect_var_refs(&mut references);
         references.into_iter().any(|reference| {
-            let name = reference.as_str();
-            !self.parameter_values.contains_key(name)
-                && !self.real_parameter_values.contains_key(name)
-                && !self.boolean_parameter_values.contains_key(name)
-                && !self.string_parameter_values.contains_key(name)
-                && !self.enum_parameter_values.contains_key(name)
+            let candidates = scoped_lookup_candidates(reference.as_str(), &owner_scope);
+            candidates
+                .iter()
+                .any(|candidate| self.array_dimensions.contains_key(candidate))
+                || !candidates.iter().any(|candidate| {
+                    self.parameter_values.contains_key(candidate)
+                        || self.real_parameter_values.contains_key(candidate)
+                        || self.boolean_parameter_values.contains_key(candidate)
+                        || self.string_parameter_values.contains_key(candidate)
+                        || self.enum_parameter_values.contains_key(candidate)
+                })
         })
     }
 
