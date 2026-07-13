@@ -292,14 +292,12 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
     type Error = SimError;
 
     fn on_event_time(&mut self, event_t: f64, _event: RuntimeEventStop) -> Result<(), Self::Error> {
-        refresh_observation_rows_and_relation_memory(
+        let (event_y, event_p) = event_time_observation_values(
             self.model,
-            self.runtime,
-            self.equilibrium_model,
             self.y,
             self.params,
-            event_t,
-            self.tol,
+            self.event_pre_y,
+            self.event_pre_p,
         )?;
         let mut samples = SampleRecorder {
             runtime: Some(self.runtime),
@@ -310,8 +308,8 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
         record_sample_if_new(
             &mut samples,
             SamplePoint {
-                y: self.y,
-                params: self.params,
+                y: &event_y,
+                params: &event_p,
                 t: event_t,
             },
         )?;
@@ -354,4 +352,48 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
         )?;
         Ok(())
     }
+}
+
+fn event_time_observation_values(
+    model: &solve::SolveModel,
+    post_y: &[f64],
+    post_p: &[f64],
+    event_pre_y: &[f64],
+    event_pre_p: &[f64],
+) -> Result<(Vec<f64>, Vec<f64>), SimError> {
+    // Continuous/algebraic equations (including table-backed runtime aliases)
+    // retain their event-entry value at the discontinuity sample. Discrete
+    // equations, however, take their newly settled value at that same event
+    // instant. The right-limit callback subsequently refreshes every runtime
+    // alias and algebraic using the next representable time.
+    let mut observed_y = event_pre_y.to_vec();
+    let mut observed_p = event_pre_p.to_vec();
+    for target in &model.problem.discrete.update_targets {
+        match *target {
+            solve::ScalarSlot::Y { index, .. } => {
+                let value = post_y.get(index).copied().ok_or_else(|| {
+                    SimError::SolveIr(format!(
+                        "event observation update target y[{index}] is out of bounds"
+                    ))
+                })?;
+                let slot = observed_y.get_mut(index).ok_or_else(|| {
+                    SimError::SolveIr(format!("event observation pre snapshot omits y[{index}]"))
+                })?;
+                *slot = value;
+            }
+            solve::ScalarSlot::P { index, .. } => {
+                let value = post_p.get(index).copied().ok_or_else(|| {
+                    SimError::SolveIr(format!(
+                        "event observation update target p[{index}] is out of bounds"
+                    ))
+                })?;
+                let slot = observed_p.get_mut(index).ok_or_else(|| {
+                    SimError::SolveIr(format!("event observation pre snapshot omits p[{index}]"))
+                })?;
+                *slot = value;
+            }
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {}
+        }
+    }
+    Ok((observed_y, observed_p))
 }
