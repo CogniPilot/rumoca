@@ -401,7 +401,11 @@ fn scan_file_size(path: &str, content: &str) -> Vec<ReviewFinding> {
     }
     let line_count = content.lines().count();
     let (severity, rule) = if line_count > 2000 {
-        ("high", "file-size-hard-limit")
+        if has_spec_0021_file_size_exception(content) {
+            ("low", "file-size-exception-audit")
+        } else {
+            ("high", "file-size-hard-limit")
+        }
     } else if line_count >= 1800 {
         ("low", "file-size-near-limit")
     } else {
@@ -412,8 +416,16 @@ fn scan_file_size(path: &str, content: &str) -> Vec<ReviewFinding> {
         rule,
         path: path.to_string(),
         line: 1,
-        excerpt: format!("{line_count} lines"),
+        excerpt: if rule == "file-size-exception-audit" {
+            format!("{line_count} lines with explicit SPEC_0021 file-size exception and split plan")
+        } else {
+            format!("{line_count} lines")
+        },
     }]
+}
+
+fn has_spec_0021_file_size_exception(content: &str) -> bool {
+    content.contains("SPEC_0021") && content.contains("file-size") && content.contains("split plan")
 }
 
 fn is_line_count_checked_rust_source(path: &str) -> bool {
@@ -478,6 +490,10 @@ fn line_trips_ir_behavior_boundary(path: &str, line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn over_limit_rust_source(header: &str) -> String {
+        format!("{header}\n{}", "fn fixture() {}\n".repeat(2001))
+    }
 
     #[test]
     fn scan_content_reports_review_gate_needles() {
@@ -566,6 +582,64 @@ rumoca-eval-dae = { workspace = true }
             &"x\n".repeat(2001),
         );
         assert!(generated_file.is_empty());
+    }
+
+    #[test]
+    fn scan_file_size_accepts_complete_spec_0021_exception_as_non_forbidden_audit() {
+        let content = over_limit_rust_source(
+            "// SPEC_0021 file-size exception: cohesive fixture. split plan: move fixtures by owner.",
+        );
+
+        let findings = scan_file_size("crates/example/src/lib.rs", &content);
+
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.rule != "file-size-hard-limit"),
+            "a complete SPEC_0021 exception must not produce a hard-limit finding: {findings:#?}"
+        );
+        assert_eq!(forbidden_finding_count(&findings), 0);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "file-size-exception-audit"),
+            "the explicit exception should remain visible to reviewers"
+        );
+    }
+
+    #[test]
+    fn scan_file_size_requires_every_spec_0021_exception_marker() {
+        for header in [
+            "// file-size exception: cohesive fixture. split plan: move fixtures by owner.",
+            "// SPEC_0021 exception: cohesive fixture. split plan: move fixtures by owner.",
+            "// SPEC_0021 file-size exception: cohesive fixture.",
+        ] {
+            let findings =
+                scan_file_size("crates/example/src/lib.rs", &over_limit_rust_source(header));
+
+            assert!(
+                findings
+                    .iter()
+                    .any(|finding| finding.rule == "file-size-hard-limit"),
+                "incomplete exception marker set must remain a hard failure: {header}"
+            );
+            assert_eq!(forbidden_finding_count(&findings), 1);
+        }
+    }
+
+    #[test]
+    fn scan_file_size_keeps_new_unexcepted_threshold_crossing_forbidden() {
+        let findings = scan_file_size(
+            "crates/example/src/new_module.rs",
+            &over_limit_rust_source("// New module without an exception"),
+        );
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "file-size-hard-limit")
+        );
+        assert_eq!(forbidden_finding_count(&findings), 1);
     }
 
     #[test]
