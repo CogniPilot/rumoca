@@ -1,12 +1,13 @@
 //! Initial-equation conversion for ToDAE.
 
+use crate::{
+    ScalarInferenceMetadata, ToDaeError, flat_to_dae_expression_with_refs,
+    remap_flat_structured_equations,
+};
 use indexmap::IndexMap;
 use rumoca_core::{Expression, Literal, ProvenanceSpan, Reference, Span, VarName};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use rustc_hash::FxHashMap;
-
-use crate::{ToDaeError, flat_to_dae_expression_with_refs, remap_flat_structured_equations};
 
 /// Determine scalar count for one initial equation.
 ///
@@ -30,11 +31,11 @@ fn initial_equation_scalar_count(
 pub(crate) fn convert_initial_equations<F>(
     dae: &mut dae::Dae,
     flat: &flat::Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
     infer_scalar_count: F,
 ) -> Result<(), ToDaeError>
 where
-    F: Fn(&rumoca_core::Expression, &flat::Model, &FxHashMap<String, usize>) -> usize,
+    F: Fn(&rumoca_core::Expression, &flat::Model, &ScalarInferenceMetadata) -> usize,
 {
     let mut flat_to_dae_index: IndexMap<usize, usize> = IndexMap::new();
 

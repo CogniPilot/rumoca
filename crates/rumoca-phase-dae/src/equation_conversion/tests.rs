@@ -1307,12 +1307,8 @@ fn test_stream_stream_connection_is_not_continuous_dae_residual() {
         );
     }
 
-    classify_equations(
-        &mut dae_model,
-        &flat_model,
-        &rustc_hash::FxHashMap::default(),
-    )
-    .unwrap();
+    let scalar_metadata = crate::build_prefix_counts(&flat_model);
+    classify_equations(&mut dae_model, &flat_model, &scalar_metadata).unwrap();
 
     assert_eq!(
         dae_model.continuous.equations.len(),
@@ -1430,12 +1426,8 @@ fn test_classify_equations_preserves_repeated_residuals_for_validation() {
     }
 
     let mut dae_model = dae::Dae::new();
-    classify_equations(
-        &mut dae_model,
-        &flat_model,
-        &rustc_hash::FxHashMap::default(),
-    )
-    .unwrap();
+    let scalar_metadata = crate::build_prefix_counts(&flat_model);
+    classify_equations(&mut dae_model, &flat_model, &scalar_metadata).unwrap();
 
     assert_eq!(
         dae_model.continuous.equations.len(),

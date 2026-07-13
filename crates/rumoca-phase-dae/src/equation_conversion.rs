@@ -554,7 +554,7 @@ fn skip_equation_pre_classification(
 fn compute_scalar_count(
     eq: &flat::Equation,
     flat: &flat::Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &super::ScalarInferenceMetadata,
     linearized_embedded_lhs_bases: &HashSet<rumoca_core::VarName>,
     stats: &mut EqFilterStats,
     debug_eq_filter: bool,
@@ -2611,7 +2611,7 @@ fn push_explicit_discrete_assignments(
 pub(super) fn classify_equations(
     dae: &mut dae::Dae,
     flat: &flat::Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &super::ScalarInferenceMetadata,
 ) -> Result<(), ToDaeError> {
     let outputs_with_component_eqs = collect_vars_with_component_equations(flat);
     let non_connection_rhs_var_refs = collect_non_connection_rhs_var_refs(flat);

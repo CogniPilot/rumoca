@@ -220,6 +220,12 @@ impl rumoca_core::ExpressionVisitor for VarRefCollectionVisitor<'_> {
             });
             return;
         }
+        if matches!(base, Expression::FunctionCall { .. }) {
+            // The selected result field owns expression shape. Function-call
+            // arguments remain dependencies, but their record widths do not
+            // determine the result field's equation cardinality.
+            return;
+        }
         rumoca_core::ExpressionVisitor::visit_expression(self, base);
     }
 }

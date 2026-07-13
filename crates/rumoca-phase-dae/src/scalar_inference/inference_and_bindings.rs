@@ -76,7 +76,51 @@ pub(crate) fn extract_integer_from_flat_expr(expr: &Expression) -> Option<usize>
 /// For record types like `Orientation = {T[3,3], w[3]}`, the prefix "rev.R_rel" maps to 12
 /// (9 for T + 3 for w), not 2 (number of child entries). This ensures record-level equations
 /// like `rev.R_rel = Frames.planarRotation(...)` get the correct scalar count.
-pub(crate) fn build_prefix_counts(flat: &Model) -> FxHashMap<String, usize> {
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ProjectedResultFieldKey {
+    function: rumoca_core::DefId,
+    field: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProjectedResultFieldShape {
+    Known(Vec<i64>),
+    Unknown,
+}
+
+pub(crate) struct ScalarInferenceMetadata {
+    prefix_counts: FxHashMap<String, usize>,
+    projected_result_fields: FxHashMap<ProjectedResultFieldKey, ProjectedResultFieldShape>,
+}
+
+impl std::ops::Deref for ScalarInferenceMetadata {
+    type Target = FxHashMap<String, usize>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.prefix_counts
+    }
+}
+
+impl ScalarInferenceMetadata {
+    pub(crate) fn projected_result_field_dims(
+        &self,
+        function: &rumoca_core::Reference,
+        field: &str,
+        flat: &Model,
+    ) -> Option<&[i64]> {
+        let function = resolved_function_def_id(function, flat)?;
+        let key = ProjectedResultFieldKey {
+            function,
+            field: field.to_string(),
+        };
+        match self.projected_result_fields.get(&key)? {
+            ProjectedResultFieldShape::Known(dims) => Some(dims),
+            ProjectedResultFieldShape::Unknown => None,
+        }
+    }
+}
+
+pub(crate) fn build_prefix_counts(flat: &Model) -> ScalarInferenceMetadata {
     fn normalize_embedded_subscripts(name: &str) -> String {
         let mut out = String::with_capacity(name.len());
         let mut depth = 0usize;
@@ -114,7 +158,121 @@ pub(crate) fn build_prefix_counts(flat: &Model) -> FxHashMap<String, usize> {
             }
         }
     }
-    counts
+    ScalarInferenceMetadata {
+        prefix_counts: counts,
+        projected_result_fields: build_projected_result_field_shapes(flat),
+    }
+}
+
+fn build_projected_result_field_shapes(
+    flat: &Model,
+) -> FxHashMap<ProjectedResultFieldKey, ProjectedResultFieldShape> {
+    let mut shapes = FxHashMap::default();
+    collect_constructor_result_field_shapes(flat, &mut shapes);
+    for variable in flat.variables.values() {
+        let Some(Expression::FieldAccess { base, field, .. }) = variable.binding.as_ref() else {
+            continue;
+        };
+        let Expression::FunctionCall { name, .. } = base.as_ref() else {
+            continue;
+        };
+        let Some(function) = resolved_function_def_id(name, flat) else {
+            continue;
+        };
+        merge_projected_result_field_shape(
+            &mut shapes,
+            ProjectedResultFieldKey {
+                function,
+                field: field.clone(),
+            },
+            concrete_result_field_dims(&variable.dims),
+        );
+    }
+    shapes
+}
+
+fn collect_constructor_result_field_shapes(
+    flat: &Model,
+    shapes: &mut FxHashMap<ProjectedResultFieldKey, ProjectedResultFieldShape>,
+) {
+    for function in flat.functions.values() {
+        let (Some(function_def_id), [output]) = (function.def_id, function.outputs.as_slice())
+        else {
+            continue;
+        };
+        if output.type_class != Some(rumoca_core::ClassType::Record) {
+            continue;
+        }
+        let Some(fields) = crate::dae_lowering::record_constructor_fields_from_metadata(
+            flat.functions.iter(),
+            &output.type_name,
+        ) else {
+            continue;
+        };
+        for field in fields {
+            let dims = concrete_constructor_result_field_dims(&field);
+            merge_projected_result_field_shape(
+                shapes,
+                ProjectedResultFieldKey {
+                    function: function_def_id,
+                    field: field.name,
+                },
+                dims,
+            );
+        }
+    }
+}
+
+fn resolved_function_def_id(
+    reference: &rumoca_core::Reference,
+    flat: &Model,
+) -> Option<rumoca_core::DefId> {
+    if let Some(referenced) = reference
+        .component_ref()
+        .and_then(|component_ref| component_ref.def_id)
+    {
+        return flat
+            .functions
+            .values()
+            .any(|function| function.def_id == Some(referenced))
+            .then_some(referenced);
+    }
+    resolve_flat_function(reference.as_str(), flat)?.def_id
+}
+
+fn concrete_result_field_dims(dims: &[i64]) -> Option<Vec<i64>> {
+    dims.iter()
+        .all(|dimension| *dimension >= 0)
+        .then(|| dims.to_vec())
+}
+
+fn concrete_constructor_result_field_dims(field: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
+    field
+        .shape_expr
+        .is_empty()
+        .then(|| concrete_result_field_dims(&field.dims))
+        .flatten()
+}
+
+fn merge_projected_result_field_shape(
+    shapes: &mut FxHashMap<ProjectedResultFieldKey, ProjectedResultFieldShape>,
+    key: ProjectedResultFieldKey,
+    dims: Option<Vec<i64>>,
+) {
+    let candidate = dims.map_or(
+        ProjectedResultFieldShape::Unknown,
+        ProjectedResultFieldShape::Known,
+    );
+    match shapes.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(candidate);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if entry.get() != &candidate {
+                entry.insert(ProjectedResultFieldShape::Unknown);
+            }
+        }
+    }
 }
 
 /// Build a prefix-to-children index: maps each dotted prefix to all descendant variable names.

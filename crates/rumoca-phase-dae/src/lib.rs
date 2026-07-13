@@ -1483,7 +1483,7 @@ fn get_output_in_input_output_connection(
 fn classify_equations(
     dae: &mut dae::Dae,
     flat: &flat::Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> Result<(), ToDaeError> {
     equation_conversion::classify_equations(dae, flat, prefix_counts)
 }

@@ -280,7 +280,7 @@ pub(crate) fn infer_binary_expression_form(
     lhs: &Expression,
     rhs: &Expression,
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> ExpressionForm {
     let lhs_form = infer_expression_form(lhs, flat, prefix_counts);
     let rhs_form = infer_expression_form(rhs, flat, prefix_counts);
@@ -324,7 +324,7 @@ pub(crate) fn infer_builtin_expression_form(
     function: &BuiltinFunction,
     args: &[Expression],
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> ExpressionForm {
     if is_reduction_builtin(function) {
         return ExpressionForm::Scalar;
@@ -346,7 +346,7 @@ pub(crate) fn infer_array_expression_form(
     elements: &[Expression],
     is_matrix: bool,
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> ExpressionForm {
     if is_matrix {
         return ExpressionForm::Other;
@@ -367,7 +367,7 @@ pub(crate) fn infer_if_expression_form(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> ExpressionForm {
     let else_form = infer_expression_form(else_branch, flat, prefix_counts);
     if branches
@@ -383,7 +383,7 @@ pub(crate) fn infer_if_expression_form(
 pub(crate) fn infer_expression_form(
     expr: &Expression,
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> ExpressionForm {
     match expr {
         Expression::Literal { value: _, .. } => ExpressionForm::Scalar,
@@ -422,18 +422,40 @@ pub(crate) fn infer_expression_form(
                 _ => ExpressionForm::Other,
             }
         }
+        Expression::FieldAccess { base, field, .. } => {
+            infer_projected_result_field_form(base, field, flat, prefix_counts)
+        }
         Expression::Tuple { .. }
         | Expression::Range { .. }
-        | Expression::FieldAccess { .. }
         | Expression::ArrayComprehension { .. }
         | Expression::Empty { .. } => ExpressionForm::Other,
+    }
+}
+
+fn infer_projected_result_field_form(
+    base: &Expression,
+    field: &str,
+    flat: &Model,
+    metadata: &ScalarInferenceMetadata,
+) -> ExpressionForm {
+    let Expression::FunctionCall { name, .. } = base else {
+        return ExpressionForm::Other;
+    };
+    let Some(dims) = metadata.projected_result_field_dims(name, field, flat) else {
+        return ExpressionForm::Other;
+    };
+    match dims {
+        [] => ExpressionForm::Scalar,
+        [dimension] => ExpressionForm::Vector(*dimension as usize),
+        [rows, columns] => ExpressionForm::Matrix(*rows as usize, *columns as usize),
+        _ => ExpressionForm::Vector(compute_var_size(dims)),
     }
 }
 
 pub(crate) fn infer_equation_scalar_count_from_forms(
     residual: &Expression,
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> Option<usize> {
     let Expression::Binary { op, lhs, rhs, .. } = residual else {
         return None;
@@ -470,7 +492,7 @@ pub(crate) fn infer_equation_scalar_count_from_forms(
 pub(crate) fn infer_equation_scalar_count(
     residual: &Expression,
     flat: &Model,
-    prefix_counts: &FxHashMap<String, usize>,
+    prefix_counts: &ScalarInferenceMetadata,
 ) -> usize {
     // First try extracting size from a simple LHS pattern (var - expr = 0)
     if let Some(size) = extract_lhs_var_size(residual, flat, prefix_counts) {

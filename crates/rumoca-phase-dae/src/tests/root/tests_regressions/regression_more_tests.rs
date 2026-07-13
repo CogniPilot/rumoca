@@ -2375,3 +2375,231 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
         "record-array range LHS should infer array length from indexed scalarized fields"
     );
 }
+
+fn projected_result_field_fixture(field: &str, dims: Vec<i64>) -> Model {
+    let span = crate::test_support::test_span();
+    let function_def_id = rumoca_core::DefId::new(91_001);
+    let mut calc = rumoca_core::Function::new("Pkg.calc", span);
+    calc.def_id = Some(function_def_id);
+    calc.add_input(
+        rumoca_core::FunctionParam::new("params", "Pkg.WideParams", span)
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    calc.add_output(
+        rumoca_core::FunctionParam::new("result", "Pkg.CalcResult", span)
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+
+    let mut flat = Model::new();
+    flat.add_function(calc);
+    for index in 0..48 {
+        let name = format!("params.field{index}");
+        flat.add_variable(
+            VarName::new(name.clone()),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: VarName::new(name),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(span)
+            }),
+        );
+    }
+    for name in ["ird", "D", "Dinternal"] {
+        flat.add_variable(
+            VarName::new(name),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: VarName::new(name),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(span)
+            }),
+        );
+    }
+    let binding = projected_result_field_call(field, function_def_id, span);
+    let shape_name = format!("shape_cache.{field}");
+    flat.add_variable(
+        VarName::new(shape_name.clone()),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new(shape_name),
+            dims,
+            binding: Some(binding),
+            binding_from_modification: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(span)
+        }),
+    );
+    flat
+}
+
+fn projected_result_field_call(
+    field: &str,
+    function_def_id: rumoca_core::DefId,
+    span: rumoca_core::Span,
+) -> Expression {
+    let function_ref = rumoca_core::Reference::with_component_reference(
+        "Pkg.calc",
+        rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "Pkg".to_string(),
+                    span,
+                    subs: vec![],
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "calc".to_string(),
+                    span,
+                    subs: vec![],
+                },
+            ],
+            def_id: Some(function_def_id),
+        },
+    );
+    Expression::FieldAccess {
+        base: Box::new(Expression::FunctionCall {
+            name: function_ref,
+            args: vec![Expression::VarRef {
+                name: VarName::new("params").into(),
+                subscripts: vec![],
+                span,
+            }],
+            is_constructor: false,
+            span,
+        }),
+        field: field.to_string(),
+        span,
+    }
+}
+
+fn subtraction(lhs: Expression, rhs: Expression, span: rumoca_core::Span) -> Expression {
+    Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    }
+}
+
+#[test]
+fn test_infer_scalar_count_scalar_field_function_call_ignores_record_argument_width() {
+    let span = crate::test_support::test_span();
+    let function_def_id = rumoca_core::DefId::new(91_001);
+    let flat = projected_result_field_fixture("resistance", vec![]);
+    let projected = projected_result_field_call("resistance", function_def_id, span);
+    let residual = subtraction(
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(Expression::VarRef {
+                name: VarName::new("ird").into(),
+                subscripts: vec![],
+                span,
+            }),
+            rhs: Box::new(projected),
+            span,
+        },
+        subtraction(
+            Expression::VarRef {
+                name: VarName::new("D").into(),
+                subscripts: vec![],
+                span,
+            },
+            Expression::VarRef {
+                name: VarName::new("Dinternal").into(),
+                subscripts: vec![],
+                span,
+            },
+            span,
+        ),
+        span,
+    );
+
+    let prefix_counts = build_prefix_counts(&flat);
+    assert_eq!(
+        infer_equation_scalar_count(&residual, &flat, &prefix_counts),
+        1
+    );
+}
+
+#[test]
+fn test_infer_scalar_count_array_field_function_call_preserves_field_width() {
+    let span = crate::test_support::test_span();
+    let function_def_id = rumoca_core::DefId::new(91_001);
+    let flat = projected_result_field_fixture("curve", vec![3]);
+    let residual = subtraction(
+        projected_result_field_call("curve", function_def_id, span),
+        Expression::Literal {
+            value: Literal::Real(0.0),
+            span,
+        },
+        span,
+    );
+
+    let prefix_counts = build_prefix_counts(&flat);
+    assert_eq!(
+        infer_equation_scalar_count(&residual, &flat, &prefix_counts),
+        3
+    );
+}
+
+#[test]
+fn test_infer_scalar_count_indexed_function_result_field_is_scalar() {
+    let span = crate::test_support::test_span();
+    let function_def_id = rumoca_core::DefId::new(91_001);
+    let flat = projected_result_field_fixture("curve", vec![3]);
+    let residual = subtraction(
+        Expression::Index {
+            base: Box::new(projected_result_field_call("curve", function_def_id, span)),
+            subscripts: vec![Subscript::generated_index(1, span)],
+            span,
+        },
+        Expression::Literal {
+            value: Literal::Real(0.0),
+            span,
+        },
+        span,
+    );
+
+    let prefix_counts = build_prefix_counts(&flat);
+    assert_eq!(
+        infer_equation_scalar_count(&residual, &flat, &prefix_counts),
+        1
+    );
+}
+
+#[test]
+fn test_infer_function_result_field_conflicting_instance_shapes_remain_unknown() {
+    let span = crate::test_support::test_span();
+    let function_def_id = rumoca_core::DefId::new(91_001);
+    let mut flat = projected_result_field_fixture("curve", vec![3]);
+    flat.add_variable(
+        VarName::new("shape_cache.conflicting_curve"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("shape_cache.conflicting_curve"),
+            dims: vec![4],
+            binding: Some(projected_result_field_call("curve", function_def_id, span)),
+            binding_from_modification: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(span)
+        }),
+    );
+
+    let metadata = build_prefix_counts(&flat);
+    let projected = projected_result_field_call("curve", function_def_id, span);
+    assert_eq!(
+        infer_expression_form(&projected, &flat, &metadata),
+        ExpressionForm::Other
+    );
+}
+
+#[test]
+fn test_infer_function_result_field_dynamic_instance_shape_remains_unknown() {
+    let span = crate::test_support::test_span();
+    let function_def_id = rumoca_core::DefId::new(91_001);
+    let flat = projected_result_field_fixture("curve", vec![-1]);
+    let metadata = build_prefix_counts(&flat);
+    let projected = projected_result_field_call("curve", function_def_id, span);
+
+    assert_eq!(
+        infer_expression_form(&projected, &flat, &metadata),
+        ExpressionForm::Other
+    );
+}
