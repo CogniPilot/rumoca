@@ -93,15 +93,15 @@ fn simulation_settings_from_parts(
         .filter(|seconds| seconds.is_finite())
         .unwrap_or(0.0);
     let mut t_end = experiment_stop_time
-        .filter(|seconds| seconds.is_finite() && *seconds > t_start)
+        .filter(|seconds| seconds.is_finite() && *seconds >= t_start)
         .unwrap_or(t_start + DEFAULT_SIM_END_TIME_SECS);
 
-    if !t_start.is_finite() || !t_end.is_finite() || t_end <= t_start {
+    if !t_start.is_finite() || !t_end.is_finite() || t_end < t_start {
         t_start = 0.0;
         t_end = DEFAULT_SIM_END_TIME_SECS;
     }
     if let Some(stop_time) = simulation_stop_time_override()
-        && stop_time > t_start
+        && stop_time >= t_start
     {
         t_end = stop_time;
     }
@@ -466,4 +466,17 @@ pub(super) fn begin_chunked_render_sim_setup(
     run_simulation: bool,
 ) -> RenderSimSetup {
     RenderSimSetup::new_from_compile_scope(compile_scope_names, run_simulation)
+}
+
+#[cfg(test)]
+mod simulation_settings_tests {
+    use super::simulation_settings_from_parts;
+
+    #[test]
+    fn preserves_zero_duration_experiment_horizon() {
+        let settings = simulation_settings_from_parts(Some(0.0), Some(0.0), None, None, None);
+
+        assert_eq!(settings.t_start, 0.0);
+        assert_eq!(settings.t_end, 0.0);
+    }
 }

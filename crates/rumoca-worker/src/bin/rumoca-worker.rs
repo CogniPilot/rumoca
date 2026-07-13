@@ -636,18 +636,8 @@ fn sim_timeout_secs() -> f64 {
 }
 
 fn simulation_settings(result: &rumoca_compile::compile::DaeCompilationResult) -> SimSettings {
-    let mut t_start = result
-        .experiment_start_time
-        .filter(|seconds| seconds.is_finite())
-        .unwrap_or(0.0);
-    let mut t_end = result
-        .experiment_stop_time
-        .filter(|seconds| seconds.is_finite() && *seconds > t_start)
-        .unwrap_or(t_start + DEFAULT_SIM_END_TIME_SECS);
-    if !t_start.is_finite() || !t_end.is_finite() || t_end <= t_start {
-        t_start = 0.0;
-        t_end = DEFAULT_SIM_END_TIME_SECS;
-    }
+    let (t_start, t_end) =
+        simulation_horizon(result.experiment_start_time, result.experiment_stop_time);
     let tolerance = result
         .experiment_tolerance
         .filter(|value| value.is_finite() && *value > 0.0);
@@ -665,6 +655,23 @@ fn simulation_settings(result: &rumoca_compile::compile::DaeCompilationResult) -
         atol: tolerance,
         solver,
     }
+}
+
+fn simulation_horizon(
+    experiment_start_time: Option<f64>,
+    experiment_stop_time: Option<f64>,
+) -> (f64, f64) {
+    let mut t_start = experiment_start_time
+        .filter(|seconds| seconds.is_finite())
+        .unwrap_or(0.0);
+    let mut t_end = experiment_stop_time
+        .filter(|seconds| seconds.is_finite() && *seconds >= t_start)
+        .unwrap_or(t_start + DEFAULT_SIM_END_TIME_SECS);
+    if !t_start.is_finite() || !t_end.is_finite() || t_end < t_start {
+        t_start = 0.0;
+        t_end = DEFAULT_SIM_END_TIME_SECS;
+    }
+    (t_start, t_end)
 }
 
 fn root_standalone_example_name(model_name: &str) -> bool {
@@ -1474,5 +1481,15 @@ fn main() {
     if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::simulation_horizon;
+
+    #[test]
+    fn simulation_horizon_preserves_zero_duration_experiment() {
+        assert_eq!(simulation_horizon(Some(0.0), Some(0.0)), (0.0, 0.0));
     }
 }

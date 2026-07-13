@@ -1138,6 +1138,31 @@ fn test_compile_extracts_experiment_stop_time() {
 }
 
 #[test]
+fn test_compile_extracts_zero_experiment_stop_time_from_nested_model() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                package P
+                  package Examples
+                    model M
+                      Real x;
+                    equation
+                      x = 1;
+                      annotation(experiment(StopTime=0));
+                    end M;
+                  end Examples;
+                end P;
+                "#,
+        )
+        .unwrap();
+
+    let result = session.compile_model("P.Examples.M").unwrap();
+    assert_eq!(result.experiment_stop_time, Some(0.0));
+}
+
+#[test]
 fn test_compile_ignores_negative_experiment_stop_time() {
     let mut session = Session::default();
     session
