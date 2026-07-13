@@ -41,7 +41,7 @@ The stage checks are cumulative over the fixed root-example denominator:
 parse/IR-AST, flatten/IR-flat, DAE/IR-DAE, solve/IR-Solve,
 initial-condition solve, and simulation. Increasing an early-stage pass count
 is always treated as an improvement; the gate fails when any cumulative stage
-count drops below the committed baseline for the same target set.
+count drops below the resolved baseline for the same target set.
 
 The root-example/full quality gate is fail-closed for OMC parity. OMC must be
 available during parity preparation, and the current
