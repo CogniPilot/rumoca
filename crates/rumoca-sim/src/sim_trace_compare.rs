@@ -617,12 +617,23 @@ fn compare_channel(
     omc_values: &[Option<f64>],
     use_step_hold: bool,
 ) -> Option<ChannelDeviationMetric> {
-    if rumoca_times.len() < 2
-        || omc_times.len() < 2
+    if rumoca_times.is_empty()
+        || omc_times.is_empty()
         || rumoca_times.len() != rumoca_values.len()
         || omc_times.len() != omc_values.len()
     {
         return None;
+    }
+
+    if rumoca_times.len() < 2 || omc_times.len() < 2 {
+        return compare_shared_initial_sample(
+            name,
+            rumoca_times,
+            rumoca_values,
+            omc_times,
+            omc_values,
+            use_step_hold,
+        );
     }
 
     let deduped_grid = channel_comparison_grid(rumoca_times, omc_times)?;
@@ -708,6 +719,54 @@ fn compare_channel(
         normalized_max_abs_error: finite_non_negative_metric(max_abs_error / normalization_scale),
         initial_abs_error,
         initial_bounded_normalized_error,
+    })
+}
+
+fn compare_shared_initial_sample(
+    name: &str,
+    rumoca_times: &[f64],
+    rumoca_values: &[Option<f64>],
+    omc_times: &[f64],
+    omc_values: &[Option<f64>],
+    use_step_hold: bool,
+) -> Option<ChannelDeviationMetric> {
+    if (rumoca_times[0] - omc_times[0]).abs() > GRID_DEDUP_EPS {
+        return None;
+    }
+    let (Some(rumoca), Some(omc)) = (rumoca_values[0], omc_values[0]) else {
+        return None;
+    };
+    if !rumoca.is_finite() || !omc.is_finite() {
+        return None;
+    }
+
+    let initial_abs_error = finite_abs_error(rumoca, omc);
+    let normalization_scale = if use_step_hold {
+        omc.abs().max(1.0).max(NORMALIZATION_SCALE_EPS)
+    } else {
+        omc.abs().max(NORMALIZATION_SCALE_EPS)
+    };
+    let normalized_error = finite_non_negative_metric(initial_abs_error / normalization_scale);
+    let bounded_error = bounded_normalized_error(normalized_error);
+    let shape = if bounded_error <= HIGH_AGREEMENT_CHANNEL_THRESHOLD {
+        TraceDeviationShape::WithinTolerance
+    } else {
+        TraceDeviationShape::WrongInitialValueOnly
+    };
+
+    Some(ChannelDeviationMetric {
+        name: name.to_string(),
+        shape,
+        samples: 1,
+        integral_duration: 0.0,
+        integral_abs_error: 0.0,
+        mean_abs_error: initial_abs_error,
+        normalization_scale,
+        normalized_l1_error: normalized_error,
+        bounded_normalized_l1_error: bounded_error,
+        normalized_max_abs_error: normalized_error,
+        initial_abs_error: Some(initial_abs_error),
+        initial_bounded_normalized_error: Some(bounded_error),
     })
 }
 
@@ -1299,6 +1358,35 @@ mod tests {
         assert!(
             metric.bounded_normalized_l1_score < 1.0e-12,
             "duplicate timestamp collapse should keep settled event value"
+        );
+    }
+
+    #[test]
+    fn compare_trace_uses_single_shared_initial_sample_after_duplicate_collapse() {
+        let rumoca = trace("M", vec![0.0], vec!["x"], vec![vec![0.0]]);
+        let mut omc = trace(
+            "M",
+            vec![0.0, 0.0],
+            vec!["x"],
+            vec![vec![0.0, 0.5_f64.asin()]],
+        );
+        normalize_trace(&mut omc);
+
+        let metric = compare_model_traces("M", &rumoca, &omc)
+            .expect("a legal shared initial sample should be comparable");
+
+        assert_eq!(metric.compared_variables, 1);
+        assert_eq!(metric.samples_compared, 1);
+        assert_eq!(metric.initial_condition.channels_compared, 1);
+        assert_eq!(metric.worst_variables[0].samples, 1);
+        assert_eq!(metric.worst_variables[0].integral_duration, 0.0);
+        assert!(
+            (metric.worst_variables[0]
+                .initial_abs_error
+                .expect("initial error")
+                - 0.5_f64.asin())
+            .abs()
+                <= 1.0e-12
         );
     }
 

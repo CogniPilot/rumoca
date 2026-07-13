@@ -381,6 +381,94 @@ fn simulate_accepts_zero_state_solve_ir_without_building_ode_problem() {
 }
 
 #[test]
+fn simulate_zero_horizon_no_state_model_solves_nonlinear_algebraic_block_at_start() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.algebraic_scalar_count = 1;
+    model.problem.solve_layout.solver_maps.names = vec!["x_zero".to_string()];
+    model.problem.solve_layout.solver_maps.name_to_idx =
+        indexmap::IndexMap::from([("x_zero".to_string(), 0)]);
+    model.problem.solve_layout.solver_maps.base_to_indices =
+        indexmap::IndexMap::from([("x_zero".to_string(), vec![0])]);
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadY { dst: 1, index: 0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::Const {
+                    dst: 3,
+                    value: 0.25,
+                },
+                solve::LinearOp::Binary {
+                    dst: 4,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 2,
+                    rhs: 3,
+                },
+                solve::LinearOp::StoreOutput { src: 4 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 2.0 },
+                solve::LinearOp::LoadY { dst: 1, index: 0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::LoadSeed { dst: 3, index: 0 },
+                solve::LinearOp::Binary {
+                    dst: 4,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 2,
+                    rhs: 3,
+                },
+                solve::LinearOp::StoreOutput { src: 4 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+    model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
+    install_dense_algebraic_projection_plan(&mut model);
+    model.initial_y = vec![1.0];
+    model.visible_names = vec!["x_zero".to_string()];
+    model.visible_value_rows = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 0.0,
+            ..Default::default()
+        },
+    )
+    .expect("zero-horizon no-state model should solve its algebraic block at t_start");
+
+    assert_eq!(result.times, vec![0.0]);
+    assert!(
+        (result.data[0][0] - 0.5).abs() <= 1.0e-7,
+        "expected nonlinear algebraic root 0.5, got {}",
+        result.data[0][0]
+    );
+}
+
+#[test]
 fn simulate_records_visible_runtime_tail_values_for_no_state_models() {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.parameter_count = 0;

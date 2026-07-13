@@ -103,7 +103,7 @@ fn simulation_structural_lowering_drops_nonnumeric_continuous_metadata_rows() {
 }
 
 #[test]
-fn simulation_structural_lowering_drops_named_arg_record_metadata_rows() {
+fn simulation_structural_lowering_preserves_numeric_named_argument_rows() {
     let mut dae = dae::Dae::new();
     dae.variables.algebraics.insert(
         VarName::new("p"),
@@ -118,9 +118,9 @@ fn simulation_structural_lowering_drops_named_arg_record_metadata_rows() {
     });
 
     let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("record metadata rows should not enter structural matching");
+        .expect("numeric named arguments should remain available to structural matching");
 
-    assert!(lowered.dae.continuous.equations.is_empty());
+    assert_eq!(lowered.dae.continuous.equations.len(), 1);
 }
 
 #[test]

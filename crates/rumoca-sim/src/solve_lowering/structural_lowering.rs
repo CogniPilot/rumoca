@@ -236,7 +236,9 @@ fn expression_contains_nonnumeric_metadata(expr: &rumoca_core::Expression) -> bo
                 .as_str()
                 .starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
             {
-                self.found = true;
+                for arg in args {
+                    self.visit_expression(arg);
+                }
                 return;
             }
             for arg in args {
@@ -342,19 +344,74 @@ fn projected_external_table_call_does_not_hide_string_sibling_metadata() {
 
 #[cfg(test)]
 #[test]
-fn projected_external_table_call_does_not_hide_named_metadata_wrapper() {
+fn numeric_named_argument_wrapper_is_not_nonnumeric_metadata() {
     let span = rumoca_core::Span::DUMMY;
+    let named = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new(format!("{}A", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)),
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span,
+        }],
+        is_constructor: false,
+        span,
+    };
     let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.numericFunction"),
+        args: vec![named],
+        is_constructor: false,
+        span,
+    };
+
+    assert!(!expression_contains_nonnumeric_metadata(&expr));
+}
+
+#[cfg(test)]
+#[test]
+fn named_argument_wrapper_does_not_hide_nonnumeric_actual() {
+    let span = rumoca_core::Span::DUMMY;
+    let named = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new(format!(
-            "{}table",
+            "{}fileName",
+            rumoca_core::NAMED_FUNCTION_ARG_PREFIX
+        )),
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("table.csv".to_string()),
+            span,
+        }],
+        is_constructor: false,
+        span,
+    };
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.numericFunction"),
+        args: vec![named],
+        is_constructor: false,
+        span,
+    };
+
+    assert!(expression_contains_nonnumeric_metadata(&expr));
+}
+
+#[cfg(test)]
+#[test]
+fn projected_external_table_call_remains_numeric_inside_named_argument() {
+    let span = rumoca_core::Span::DUMMY;
+    let named = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new(format!(
+            "{}tableValue",
             rumoca_core::NAMED_FUNCTION_ARG_PREFIX
         )),
         args: vec![projected_external_table_test_call()],
         is_constructor: false,
         span,
     };
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Pkg.numericFunction"),
+        args: vec![named],
+        is_constructor: false,
+        span,
+    };
 
-    assert!(expression_contains_nonnumeric_metadata(&expr));
+    assert!(!expression_contains_nonnumeric_metadata(&expr));
 }
 
 fn shift_structured_families_after_equation_removal(
