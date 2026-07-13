@@ -1179,6 +1179,99 @@ end ModifierBindingScope;
     );
 }
 
+#[test]
+fn test_nested_array_parameter_projection_uses_instance_modifier_binding() {
+    let source = r#"
+block Trajectory
+  parameter Real q_end[:] = {1};
+  final parameter Integer nout = size(q_end, 1);
+protected
+  parameter Real p_q_end[nout] = if size(q_end, 1) == 1 then
+      ones(nout)*q_end[1] else q_end;
+  parameter Real p_deltaq[nout] = p_q_end - zeros(nout);
+public
+  output Real q[nout];
+equation
+  q = p_deltaq;
+end Trajectory;
+
+model ModifiedTrajectory
+  Trajectory trajectory(q_end = {3.25});
+end ModifiedTrajectory;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse/resolve/typecheck failed");
+
+    let phase_result = session
+        .compile_model_phases("ModifiedTrajectory")
+        .expect("phase compilation should succeed");
+    let result = match phase_result {
+        PhaseResult::Success(result) => result,
+        other => panic!(
+            "expected successful phase result, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    };
+
+    let binding = result
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new("trajectory.p_deltaq"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("nested projected parameter should retain a binding");
+    #[derive(Default)]
+    struct RealLiteralCollector(Vec<f64>);
+    impl rumoca_core::ExpressionVisitor for RealLiteralCollector {
+        fn visit_literal(&mut self, literal: &rumoca_core::Literal) {
+            if let rumoca_core::Literal::Real(value) = literal {
+                self.0.push(*value);
+            }
+        }
+    }
+    #[derive(Default)]
+    struct VarRefCollector(Vec<String>);
+    impl rumoca_core::ExpressionVisitor for VarRefCollector {
+        fn visit_var_ref(
+            &mut self,
+            name: &rumoca_core::Reference,
+            subscripts: &[rumoca_core::Subscript],
+        ) {
+            self.0.push(name.as_str().to_string());
+            self.walk_var_ref(name, subscripts);
+        }
+    }
+    let mut literals = RealLiteralCollector::default();
+    literals.visit_expression(binding);
+    assert!(
+        literals.0.contains(&3.25),
+        "dependent parameter projection must carry the instance q_end modifier, not the class default: {binding:?}"
+    );
+
+    let output_equation = result
+        .flat
+        .equations
+        .iter()
+        .find(|equation| {
+            let mut refs = VarRefCollector::default();
+            refs.visit_expression(&equation.residual);
+            refs.0.iter().any(|name| name == "trajectory.q")
+        })
+        .expect("projected output should have a defining equation");
+    let mut equation_refs = VarRefCollector::default();
+    equation_refs.visit_expression(&output_equation.residual);
+    assert!(
+        equation_refs
+            .0
+            .iter()
+            .any(|name| name == "trajectory.p_deltaq"),
+        "the equation consuming the projected parameter must retain its runtime parameter reference: {:?}",
+        output_equation.residual
+    );
+}
+
 // =============================================================================
 // CasADi MX template integration tests
 // =============================================================================
