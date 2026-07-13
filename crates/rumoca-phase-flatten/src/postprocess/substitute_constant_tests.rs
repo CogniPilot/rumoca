@@ -633,6 +633,58 @@ fn substitute_known_constants_replaces_live_class_constant_without_flat_binding(
 }
 
 #[test]
+fn substitute_known_constants_preserves_modified_parameter_over_stale_context_constant() {
+    let mut model = flat::Model::new();
+    let source_name = rumoca_core::VarName::new("source.q_end");
+    model.add_variable(
+        source_name.clone(),
+        flat::Variable {
+            name: source_name,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.5),
+                span: test_span(),
+            }),
+            binding_from_modification: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let projected_name = rumoca_core::VarName::new("source.p_q_end");
+    model.add_variable(
+        projected_name.clone(),
+        flat::Variable {
+            name: projected_name.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(spanned_var_ref("source.q_end")),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    // The context still carries the declaration default, while the Flat
+    // variable owns the effective instance modification.
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        "source.q_end".to_string(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: test_span(),
+        },
+    );
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    let binding = model
+        .variables
+        .get(&projected_name)
+        .and_then(|var| var.binding.as_ref())
+        .expect("projected parameter binding should remain");
+    assert!(matches!(
+        binding,
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "source.q_end"
+    ));
+}
+
+#[test]
 fn substitute_algorithms_uses_instance_parameter_bindings_in_rhs_and_range() {
     let mut model = flat::Model::new();
     for (name, binding) in [("table.y0", 3), ("table.n", 2), ("i", 99)] {

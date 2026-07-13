@@ -3238,9 +3238,7 @@ fn substitute_scalar_var_ref(
 }
 
 fn live_value_is_proven_structural(key: &str, ctx: &Context) -> bool {
-    ctx.constant_values.contains_key(key)
-        || ctx.class_constant_keys.contains(key)
-        || ctx.structural_params.contains(key)
+    ctx.class_constant_keys.contains(key) || ctx.structural_params.contains(key)
 }
 
 fn def_id_scoped_lookup_key(name: &rumoca_core::Reference) -> &str {
