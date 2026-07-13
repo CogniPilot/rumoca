@@ -80,6 +80,15 @@ fn max_abs_series_delta(left: &[f64], right: &[f64]) -> f64 {
         .fold(0.0, f64::max)
 }
 
+fn series_value_at(result: &SimResult, name: &str, time: f64) -> f64 {
+    let sample_idx = result
+        .times
+        .iter()
+        .position(|candidate| (*candidate - time).abs() <= 1.0e-12)
+        .unwrap_or_else(|| panic!("simulation result missing t={time}: {:?}", result.times));
+    result_series(result, &[name])[sample_idx]
+}
+
 fn variable_is_state(result: &SimResult, name: &str) -> bool {
     result
         .variable_meta
@@ -182,5 +191,43 @@ fn pid_msl_responds_to_step_error() {
     assert!(
         pid_y_max > 1.0,
         "expected PIDMSL controller output to become nonzero, max |pid.y|={pid_y_max}"
+    );
+}
+
+#[test]
+fn exactly_clocked_drive_refreshes_inferred_sample_and_controller_on_same_tick() {
+    let msl_compiler = require_msl_compiler();
+    let model_path = cached_msl_root()
+        .expect("cached MSL root is required for this concrete example")
+        .join("Modelica 4.1.0/Clocked/Examples/SimpleControlledDrive/ExactlyClockedWithDiscreteController.mo");
+    let compiled = msl_compiler
+        .model(
+            "Modelica.Clocked.Examples.SimpleControlledDrive.ExactlyClockedWithDiscreteController",
+        )
+        .compile_file(model_path.to_string_lossy().as_ref())
+        .expect("ExactlyClockedWithDiscreteController should compile");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.21,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("ExactlyClockedWithDiscreteController should simulate");
+
+    let sampled_speed = series_value_at(&result, "sample1.y", 0.2);
+    let speed = series_value_at(&result, "speed.w", 0.2);
+    assert!(
+        (sampled_speed - speed).abs() <= 1.0e-9 && sampled_speed > 0.1,
+        "the inferred-clock sample must read the projected speed source on the second tick: \
+         sample1.y={sampled_speed}, speed.w={speed}"
+    );
+    let pi_y = series_value_at(&result, "PI.y", 0.2);
+    let held = series_value_at(&result, "hold1.y", 0.2);
+    assert!(
+        (pi_y - 3.3).abs() <= 1.0e-8 && (held - pi_y).abs() <= 1.0e-9,
+        "the PI and hold chain must consume the refreshed sample on the same tick: \
+         PI.y={pi_y}, hold1.y={held}"
     );
 }

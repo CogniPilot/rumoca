@@ -1703,10 +1703,19 @@ fn scalar_projection_block(
         context_span,
     )?;
     y_indices.extend(target_set);
+    let mut causal_steps = lower_vec_with_capacity(
+        1,
+        "scalar algebraic projection causal-step count",
+        context_span,
+    )?;
+    causal_steps.push(solve::AlgebraicProjectionStep { row, y_index });
     Ok(solve::AlgebraicProjectionBlock {
         rows,
         y_indices,
-        causal_steps: Vec::new(),
+        // Preserve the BLT equation-to-unknown match. An explicit row-target
+        // hint may name the other side of an alias residual, but it must not
+        // steal projection ownership from the structurally solved unknown.
+        causal_steps,
     })
 }
 

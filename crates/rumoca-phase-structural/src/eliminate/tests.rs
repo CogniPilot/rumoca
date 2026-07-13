@@ -45,6 +45,25 @@ fn test_dae_variable(path: &str) -> dae::Variable {
     var
 }
 
+#[test]
+fn pre_snapshot_source_survives_boundary_alias_elimination() {
+    let mut dae = dae::Dae::default();
+    dae.variables
+        .algebraics
+        .insert("sample.u".into(), test_dae_variable("sample.u"));
+    dae.variables.parameters.insert(
+        rumoca_core::pre_slot_name("sample.u"),
+        test_dae_variable("__pre__.sample.u"),
+    );
+
+    let protected = runtime_protected_unknown_names(&dae);
+
+    assert!(
+        protected.contains("sample.u"),
+        "pre-lowering must not hide an inferred-clock sample source from structural protection"
+    );
+}
+
 fn substitute_var(expr: &Expression, var: &VarName, replacement: &Expression) -> Expression {
     let substitution = test_substitution(var.as_str(), replacement.clone());
     structural_ok(

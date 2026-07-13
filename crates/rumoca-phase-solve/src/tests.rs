@@ -571,7 +571,9 @@ fn algebraic_projection_plan_uses_blt_scalar_blocks() {
     for block in &plan.blocks {
         assert_eq!(block.rows.len(), 1);
         assert_eq!(block.y_indices.len(), 1);
-        assert!(block.causal_steps.is_empty());
+        assert_eq!(block.causal_steps.len(), 1);
+        assert_eq!(block.causal_steps[0].row, block.rows[0]);
+        assert_eq!(block.causal_steps[0].y_index, block.y_indices[0]);
     }
 }
 
@@ -872,6 +874,13 @@ fn algebraic_projection_scalar_keeps_distinct_explicit_row_target() -> Result<()
     assert_eq!(blocks.len(), 1);
     assert_eq!(blocks[0].rows, vec![7]);
     assert_eq!(blocks[0].y_indices, vec![9, 10]);
+    assert_eq!(blocks[0].causal_steps.len(), 1);
+    assert_eq!(blocks[0].causal_steps[0].row, 7);
+    assert_eq!(
+        blocks[0].causal_steps[0].y_index, 10,
+        "a scalar BLT match must keep ownership of its structurally solved alias; \
+         an explicit row-target hint is only an alternate residual target"
+    );
     Ok(())
 }
 
