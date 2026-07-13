@@ -679,6 +679,30 @@ pub(super) fn load_current_msl_parity_gate_input_optional(
     load_msl_parity_gate_input_optional_from_path(&path, expected_sim_target_models)
 }
 
+fn load_required_msl_parity_gate_input_from_path(
+    path: &Path,
+    expected_sim_target_models: usize,
+) -> io::Result<MslParityGateInput> {
+    if !path.is_file() {
+        return Err(io::Error::other(format!(
+            "required OMC parity reference '{}' is missing; generate the current full-run OMC runtime and trace reference before accepting the MSL quality gate",
+            path.display()
+        )));
+    }
+    let parity = load_msl_parity_gate_input(path)?;
+    validate_parity_total_models(path, &parity, expected_sim_target_models)?;
+    validate_required_msl_parity_gate_input(path, parity)
+}
+
+fn load_current_required_msl_parity_gate_input(
+    expected_sim_target_models: usize,
+) -> io::Result<MslParityGateInput> {
+    load_required_msl_parity_gate_input_from_path(
+        &omc_simulation_reference_path(),
+        expected_sim_target_models,
+    )
+}
+
 fn load_msl_parity_gate_input_optional_from_path(
     path: &Path,
     expected_sim_target_models: usize,
@@ -1013,22 +1037,20 @@ fn ensure_simulation_parity_reference(
 }
 
 pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io::Result<()> {
-    if summary.sim_attempted == 0 {
+    let focused_or_partial = should_skip_msl_quality_gate();
+    if !full_parity_is_required(focused_or_partial, summary.sim_attempted) {
+        if focused_or_partial {
+            println!(
+                "MSL parity stage: skipped because this is a focused/partial run; no full quality-gate parity claim is made."
+            );
+        }
         return Ok(());
     }
     let stage_start = Instant::now();
     let force_refresh = force_omc_parity_refresh_enabled();
 
     let (sim_targets_path, sim_targets) = load_sim_parity_targets()?;
-    let omc_version = match current_omc_version() {
-        Ok(version) => version,
-        Err(error) => {
-            println!(
-                "MSL parity stage: OMC unavailable; skipping parity reference generation ({error})"
-            );
-            return Ok(());
-        }
-    };
+    let omc_version = require_omc_version_for_full_parity(current_omc_version())?;
     let context = ParityStepContext {
         tools_exe: resolve_msl_tools_exe()?,
         omc_version,
@@ -1060,18 +1082,25 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
         sim_ref_start.elapsed().as_secs_f64()
     );
 
-    match load_current_msl_parity_gate_input_optional(sim_targets.len())? {
-        Some(_) => println!("MSL parity reference includes runtime and trace comparison metrics."),
-        None => println!(
-            "MSL parity reference generated without comparable OMC/Rumoca runtime or trace metrics; \
-             compile/simulation quality gates will continue and parity baseline checks will be skipped."
-        ),
-    }
+    load_current_required_msl_parity_gate_input(sim_targets.len())?;
+    println!("MSL parity reference includes required runtime and trace comparison metrics.");
     println!(
         "MSL parity total step time: {:.2}s",
         stage_start.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+fn full_parity_is_required(focused_or_partial: bool, sim_attempted: usize) -> bool {
+    !focused_or_partial && sim_attempted > 0
+}
+
+fn require_omc_version_for_full_parity(result: io::Result<String>) -> io::Result<String> {
+    result.map_err(|error| {
+        io::Error::other(format!(
+            "required OMC prerequisite is unavailable for the full MSL parity run: {error}"
+        ))
+    })
 }
 
 pub(super) fn current_omc_parity_workers() -> usize {
@@ -1779,17 +1808,16 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
     let baseline_path = msl_quality_baseline_path();
     let baseline = load_msl_quality_baseline(&baseline_path)?;
     let parity_input =
-        load_current_msl_parity_gate_input_optional(summary.sim_target_models.len())?;
-    let gate_failure =
-        msl_quality_gate_failure_message(gate_input, &baseline, parity_input.as_ref());
+        load_current_required_msl_parity_gate_input(summary.sim_target_models.len())?;
+    let gate_failure = msl_quality_gate_failure_message(gate_input, &baseline, Some(&parity_input));
 
     if let Some(message) = gate_failure {
         panic!("MSL quality gate: {message}.");
     }
 
     print_compile_and_sim_gate_pass(gate_input, &baseline);
-    print_trace_gate_status(&baseline, parity_input.as_ref());
-    print_runtime_ratio_status(&baseline, parity_input.as_ref());
+    print_trace_gate_status(&baseline, Some(&parity_input));
+    print_runtime_ratio_status(&baseline, Some(&parity_input));
     println!("MSL quality baseline source: {}", baseline_path.display());
 
     Ok(())

@@ -43,6 +43,15 @@ initial-condition solve, and simulation. Increasing an early-stage pass count
 is always treated as an improvement; the gate fails when any cumulative stage
 count drops below the committed baseline for the same target set.
 
+The root-example/full quality gate is fail-closed for OMC parity. OMC must be
+available during parity preparation, and the current
+`omc_simulation_reference.json` must match the active target count and contain
+non-empty system and wall runtime samples plus at least one comparable trace
+with model bucket percentages. Missing OMC, a missing or stale reference, or a
+reference with no comparable runtime/trace metrics fails the run with an
+actionable error; compile and simulation counts alone are not a passing full
+quality gate.
+
 `msl_quality_current.json` also records release review metadata:
 
 - `omc_version` records the OpenModelica build used for OMC trace parity; the
@@ -73,7 +82,9 @@ Promotion requires a full-run snapshot with non-empty `omc_version` metadata.
 Focused debugging runs can use `RUMOCA_MSL_SIM_MATCH`,
 `RUMOCA_MSL_SIM_LIMIT`, `RUMOCA_MSL_SIM_TARGETS_FILE`, or
 `RUMOCA_MSL_TARGET_SCOPE=committed-targets`, but those runs are not baseline
-updates.
+updates. These explicit focused/partial modes skip required OMC parity and say
+so in their output; they do not report or imply that the full quality gate
+passed.
 
 For commit-to-commit regression diffs, run both worktrees with the same focused
 target JSON, then generate machine-readable buckets with:

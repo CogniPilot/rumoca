@@ -221,6 +221,61 @@ fn full_quality_gate_rejects_zero_simulation_attempts() {
 }
 
 #[test]
+fn required_full_parity_rejects_unavailable_omc() {
+    let error = require_omc_version_for_full_parity(Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "omc executable not found",
+    )))
+    .expect_err("a full MSL parity run must require OMC");
+
+    let message = error.to_string();
+    assert!(message.contains("required OMC prerequisite is unavailable"));
+    assert!(message.contains("omc executable not found"));
+}
+
+#[test]
+fn required_full_parity_rejects_reference_without_comparable_metrics() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("omc_simulation_reference.json");
+    let mut payload = valid_simulation_parity_payload();
+    payload["runtime_comparison"]["ratio_stats"]["system_ratio_both_success"] =
+        serde_json::Value::Null;
+    payload["runtime_comparison"]["ratio_stats"]["wall_ratio_both_success"] =
+        serde_json::Value::Null;
+    payload["trace_comparison"]["models_compared"] = json!(0);
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&payload).expect("serialize payload"),
+    )
+    .expect("write payload");
+
+    let error = load_required_msl_parity_gate_input_from_path(&path, 7)
+        .expect_err("full parity preparation must reject zero comparable metrics");
+    let message = error.to_string();
+    assert!(message.contains("missing runtime_ratio_stats"));
+    assert!(message.contains("omc_simulation_reference.json"));
+}
+
+#[test]
+fn full_quality_gate_rejects_missing_current_parity_input() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("omc_simulation_reference.json");
+
+    let error = load_required_msl_parity_gate_input_from_path(&path, 7)
+        .expect_err("a full quality gate must require current parity input");
+    let message = error.to_string();
+    assert!(message.contains("required OMC parity reference"));
+    assert!(message.contains("is missing"));
+}
+
+#[test]
+fn focused_or_partial_runs_do_not_require_full_parity() {
+    assert!(!full_parity_is_required(true, 1));
+    assert!(!full_parity_is_required(false, 0));
+    assert!(full_parity_is_required(false, 1));
+}
+
+#[test]
 fn current_quality_snapshot_marks_only_partial_runs() {
     let summary = valid_summary_template();
     let full = current_msl_quality_snapshot_json(&summary, None, false)

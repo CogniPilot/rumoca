@@ -51,6 +51,15 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   source tag before running this separate gate.
 - Focused subset controls (`RUMOCA_MSL_SIM_MATCH`, `RUMOCA_MSL_SIM_LIMIT`) are
   for iterative simulation work and must not be treated as baseline runs.
+- Full root-example runs require OMC parity and fail closed when OMC is
+  unavailable, the current OMC reference is missing or stale, or it contains no
+  comparable runtime and trace metrics. A passing full gate therefore requires
+  non-empty system and wall runtime samples plus at least one compared trace
+  with model bucket percentages; compile/simulation counts do not substitute
+  for parity.
+- Explicit focused/partial runs keep their existing skip behavior. Their output
+  states that OMC parity is skipped because the run is focused/partial and does
+  not imply that the full MSL quality gate passed.
 - By default, the pipeline uses the root-example baseline scope when no target
   environment override is provided. The committed explicit target file can still
   be selected with `RUMOCA_MSL_TARGET_SCOPE=committed-targets` for local triage,
