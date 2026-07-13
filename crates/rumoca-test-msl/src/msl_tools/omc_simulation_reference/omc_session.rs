@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 /// Poll interval while waiting for the OMC ZeroMQ port file to appear.
 const PORT_FILE_POLL: Duration = Duration::from_millis(20);
+/// Poll interval while waiting for a reply so a dead OMC child is noticed promptly.
+const REPLY_POLL: Duration = Duration::from_millis(20);
 const FALLBACK_DOCKER_OMC_IMAGE: &str = "openmodelica/openmodelica:v1.26.3-minimal";
 
 /// Per-model timing self-reported by OMC's `SimulationResult` record. These are
@@ -173,18 +175,45 @@ impl OmcSession {
 
     /// Evaluate a single OMC expression, waiting at most `timeout` for the reply.
     pub(super) fn eval(&mut self, expr: &str, timeout: Duration) -> Result<String, OmcEvalError> {
-        let millis = i32::try_from(timeout.as_millis().max(1)).unwrap_or(i32::MAX);
-        self.socket
-            .set_rcvtimeo(millis)
-            .map_err(|error| OmcEvalError::Io(anyhow!("set_rcvtimeo failed: {error}")))?;
         self.socket
             .send(expr, 0)
             .map_err(|error| OmcEvalError::Io(anyhow!("send failed: {error}")))?;
-        match self.socket.recv_string(0) {
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(_)) => Err(OmcEvalError::Io(anyhow!("omc reply was not valid utf-8"))),
-            Err(zmq::Error::EAGAIN) => Err(OmcEvalError::Timeout),
-            Err(error) => Err(OmcEvalError::Io(anyhow!("recv failed: {error}"))),
+
+        let started = Instant::now();
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(OmcEvalError::Io(anyhow!(
+                        "omc process exited while waiting for reply (status={status})"
+                    )));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(OmcEvalError::Io(anyhow!(
+                        "failed to poll omc process status while waiting for reply: {error}"
+                    )));
+                }
+            }
+
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(OmcEvalError::Timeout);
+            }
+            let poll = remaining.min(REPLY_POLL);
+            let millis = i32::try_from(poll.as_millis().max(1)).unwrap_or(i32::MAX);
+            self.socket
+                .set_rcvtimeo(millis)
+                .map_err(|error| OmcEvalError::Io(anyhow!("set_rcvtimeo failed: {error}")))?;
+            match self.socket.recv_string(0) {
+                Ok(Ok(reply)) => return Ok(reply),
+                Ok(Err(_)) => {
+                    return Err(OmcEvalError::Io(anyhow!("omc reply was not valid utf-8")));
+                }
+                Err(zmq::Error::EAGAIN) => {}
+                Err(error) => {
+                    return Err(OmcEvalError::Io(anyhow!("recv failed: {error}")));
+                }
+            }
         }
     }
 
@@ -616,6 +645,85 @@ fn extract_record_f64(record: &str, field: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn eval_reports_child_exit_promptly_instead_of_timeout() {
+        let ctx = zmq::Context::new();
+        let endpoint = format!("inproc://omc-dead-child-{}", unique_session_suffix());
+        let server = ctx.socket(zmq::REP).expect("create test REP socket");
+        server.bind(&endpoint).expect("bind test REP socket");
+        let socket = ctx.socket(zmq::REQ).expect("create test REQ socket");
+        socket.connect(&endpoint).expect("connect test REQ socket");
+        let child = Command::new("sh")
+            .args(["-c", "sleep 0.05; exit 23"])
+            .spawn()
+            .expect("spawn short-lived child");
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let mut session = OmcSession {
+            child,
+            socket,
+            _ctx: ctx,
+            port_file: temp.path().join("unused.port"),
+            suffix: unique_session_suffix(),
+        };
+
+        let request_budget = Duration::from_secs(2);
+        let started = Instant::now();
+        let error = session
+            .eval("getVersion()", request_budget)
+            .expect_err("dead child must fail the request");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(error, OmcEvalError::Io(_)),
+            "dead child was misclassified: {error}"
+        );
+        assert!(
+            error.to_string().contains("status=exit status: 23"),
+            "child exit status should be actionable: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "dead child should fail promptly, elapsed={elapsed:?}"
+        );
+
+        drop(server);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn eval_preserves_timeout_for_live_child() {
+        let ctx = zmq::Context::new();
+        let endpoint = format!("inproc://omc-live-child-{}", unique_session_suffix());
+        let server = ctx.socket(zmq::REP).expect("create test REP socket");
+        server.bind(&endpoint).expect("bind test REP socket");
+        let socket = ctx.socket(zmq::REQ).expect("create test REQ socket");
+        socket.connect(&endpoint).expect("connect test REQ socket");
+        let child = Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .spawn()
+            .expect("spawn live child");
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let mut session = OmcSession {
+            child,
+            socket,
+            _ctx: ctx,
+            port_file: temp.path().join("unused.port"),
+            suffix: unique_session_suffix(),
+        };
+
+        let error = session
+            .eval("getVersion()", Duration::from_millis(100))
+            .expect_err("missing reply must exhaust the request budget");
+
+        assert!(
+            matches!(error, OmcEvalError::Timeout),
+            "live child timeout was misclassified: {error}"
+        );
+
+        drop(server);
+    }
 
     #[test]
     fn parse_sim_record_extracts_fields() {
