@@ -434,3 +434,21 @@ Expected: only intentionally ignored local SDD artifacts remain untracked; every
 **Step 6: Push and verify remote main**
 
 Follow the `push` skill and repository branch policy. Push the reviewed branch result to `origin/main`, then fetch/read back the remote SHA and confirm it equals local `HEAD`. If remote main advanced, stop and rebase/merge safely, rerun required gates, and review the new diff before retrying.
+
+### Task 10: Restore the SPEC_0021 runtime-test file-size gate
+
+**Files:**
+- Modify: `crates/rumoca-eval-solve/src/runtime/tests.rs`
+- Create as needed: a focused test submodule under `crates/rumoca-eval-solve/src/runtime/`
+
+**Step 1: Preserve the actual RED**
+
+Use the final workspace-test failure as RED evidence: `architecture_hardening_test::size_and_validation::span_debt::test_rs_files_stay_under_spec_0021_hard_limit` reports `runtime/tests.rs (2041 lines)` over the 2,000-line hard threshold.
+
+**Step 2: Split by behavioral ownership**
+
+Move one coherent group of runtime tests and only their private helpers into a dedicated submodule. Preserve test names/coverage and production behavior. Do not add a SPEC_0021 exception, suppress the architecture test, delete assertions, or mechanically compress code to evade the threshold.
+
+**Step 3: Verify and review**
+
+Run the moved test group, `cargo test -p rumoca-eval-solve --lib`, the exact architecture-hardening gate, fmt, clippy, and diff-check. Commit with DCO signoff and request independent task review before resuming Task 9's full gates.
