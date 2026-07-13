@@ -35,7 +35,7 @@ pub use errors::{ResolveError, ResolveResult};
 pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validate_resolution};
 
 use rumoca_core::{
-    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, ComponentPath, DefId, Diagnostic,
+    BUILTIN_FUNCTIONS, BUILTIN_VARIABLES, BuiltinTypeIdentity, ComponentPath, DefId, Diagnostic,
     DiagnosticSeverity, Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span, maybe_elapsed_ms,
     maybe_start_timer,
 };
@@ -367,13 +367,17 @@ impl Resolver {
     fn register_builtins(&mut self) {
         let global = ScopeId::GLOBAL;
 
-        // Chain all builtins, deduplicating (types appear in both BUILTIN_TYPES and BUILTIN_FUNCTIONS)
-        let all_builtins = BUILTIN_TYPES
-            .iter()
-            .chain(BUILTIN_FUNCTIONS.iter())
-            .chain(BUILTIN_VARIABLES.iter());
+        for builtin_type in BuiltinTypeIdentity::ALL {
+            let name = builtin_type.name();
+            let def_id = self.alloc_def_id(None, name);
+            debug_assert_eq!(def_id, builtin_type.def_id());
+            self.scope_tree
+                .add_member(global, ComponentPath::from_flat_path(name), def_id);
+        }
 
-        for &name in all_builtins {
+        // Types that also act like functions are already present, so keep the
+        // remaining function/variable registration deduplicated.
+        for &name in BUILTIN_FUNCTIONS.iter().chain(BUILTIN_VARIABLES.iter()) {
             if !self.name_to_def.contains_key(name) {
                 let def_id = self.alloc_def_id(None, name);
                 self.scope_tree

@@ -404,6 +404,21 @@ fn test_def_id_zero_is_reserved_for_root_not_builtin() {
 }
 
 #[test]
+fn test_clock_builtin_keeps_compiler_owned_def_id() {
+    let resolver = Resolver::new();
+    let clock_id = resolver
+        .scope_tree
+        .lookup(ScopeId::GLOBAL, &ComponentPath::from_flat_path("Clock"))
+        .expect("Clock builtin should be registered globally");
+
+    assert_eq!(
+        clock_id,
+        rumoca_core::BuiltinTypeIdentity::Clock.def_id(),
+        "downstream Clock identity must track resolver builtin registration"
+    );
+}
+
+#[test]
 fn test_nested_non_encapsulated_class_sees_enclosing_name() {
     let source = r#"
 package P

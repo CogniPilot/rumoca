@@ -498,16 +498,63 @@ pub fn span_to_source_span(span: Span) -> SourceSpan {
 /// - `StateSelect` - Enumeration for state selection hints (MLS §4.4.4.2)
 /// - `AssertionLevel` - Enumeration for assertion levels (MLS §8.3.7)
 pub const BUILTIN_TYPES: &[&str] = &[
-    "Real",
-    "Integer",
-    "Boolean",
-    "String",
-    "ExternalObject",
-    "Clock",
-    // Built-in enumerations (MLS §4.4.4.2, §8.3.7)
-    "StateSelect",
-    "AssertionLevel",
+    BuiltinTypeIdentity::Real.name(),
+    BuiltinTypeIdentity::Integer.name(),
+    BuiltinTypeIdentity::Boolean.name(),
+    BuiltinTypeIdentity::String.name(),
+    BuiltinTypeIdentity::ExternalObject.name(),
+    BuiltinTypeIdentity::Clock.name(),
+    BuiltinTypeIdentity::StateSelect.name(),
+    BuiltinTypeIdentity::AssertionLevel.name(),
 ];
+
+/// Compiler-owned identities for MLS builtin types.
+///
+/// Resolver registers these definitions before user declarations. The typed
+/// identity owns both the canonical name at the source boundary and the
+/// semantic `DefId` carried by resolved Flat/DAE references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BuiltinTypeIdentity {
+    Real,
+    Integer,
+    Boolean,
+    String,
+    ExternalObject,
+    Clock,
+    StateSelect,
+    AssertionLevel,
+}
+
+impl BuiltinTypeIdentity {
+    pub const ALL: [Self; 8] = [
+        Self::Real,
+        Self::Integer,
+        Self::Boolean,
+        Self::String,
+        Self::ExternalObject,
+        Self::Clock,
+        Self::StateSelect,
+        Self::AssertionLevel,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Real => "Real",
+            Self::Integer => "Integer",
+            Self::Boolean => "Boolean",
+            Self::String => "String",
+            Self::ExternalObject => "ExternalObject",
+            Self::Clock => "Clock",
+            Self::StateSelect => "StateSelect",
+            Self::AssertionLevel => "AssertionLevel",
+        }
+    }
+
+    pub const fn def_id(self) -> DefId {
+        DefId(self as u32 + 1)
+    }
+}
 
 /// Built-in functions (MLS §3.7).
 ///

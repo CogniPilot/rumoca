@@ -43,6 +43,7 @@ component and MUST have unique post-instantiation identity.
 | Flat/DAE runtime components use instance-unique identity | Flatten and later | Reused classes create distinct unknowns |
 | `DefId(0)` is reserved for root/global scope | Core ids | Stable sentinel |
 | DefIds are local to a compilation unit | Whole compiler | No cross-unit global registry |
+| Builtin type DefIds come from the compiler-owned typed builtin catalog | Resolve / Core | Downstream phases compare builtin identity without inspecting rendered names |
 
 Instance-unique identity may be represented by a dedicated instance `DefId`, or
 by a small structured key whose identity fields are all `DefId` /

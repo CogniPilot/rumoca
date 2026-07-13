@@ -151,7 +151,9 @@ fn is_direct_initial_condition(expr: &Expression) -> bool {
 fn is_clock_constructor_condition(expr: &Expression) -> bool {
     matches!(
         expr,
-        Expression::FunctionCall { name, .. } if name.last_segment() == "Clock"
+        Expression::FunctionCall { name, .. }
+            if name.target_def_id()
+                == Some(rumoca_core::BuiltinTypeIdentity::Clock.def_id())
     )
 }
 
@@ -282,6 +284,51 @@ mod tests {
         }
     }
 
+    fn function_call_with_target(
+        display_name: &str,
+        target_path: &str,
+        target_def_id: Option<rumoca_core::DefId>,
+        span: rumoca_core::Span,
+    ) -> Expression {
+        let name = match target_def_id {
+            Some(def_id) => rumoca_core::Reference::with_component_reference(
+                display_name,
+                rumoca_core::ComponentReference::from_flat_segments(
+                    target_path,
+                    span,
+                    Some(def_id),
+                ),
+            ),
+            None => rumoca_core::Reference::new(display_name),
+        };
+        Expression::FunctionCall {
+            name,
+            args: vec![Expression::Literal {
+                value: Literal::Real(0.1),
+                span,
+            }],
+            is_constructor: false,
+            span,
+        }
+    }
+
+    fn clock_alias_dae(rhs: Expression, span: rumoca_core::Span) -> Dae {
+        let mut dae = Dae::default();
+        dae.variables.discrete_valued.insert(
+            flat_to_dae_var_name(&VarName::new("clockAlias")),
+            rumoca_ir_dae::Variable::new(flat_to_dae_var_name(&VarName::new("clockAlias")), span),
+        );
+        dae.discrete
+            .valued_updates
+            .push(rumoca_ir_dae::Equation::explicit(
+                flat_to_dae_var_name(&VarName::new("clockAlias")),
+                rhs,
+                span,
+                "periodic clock alias",
+            ));
+        dae
+    }
+
     #[test]
     fn ownerless_when_guard_activation_fails_without_dummy_span() {
         let dae = Dae::default();
@@ -312,27 +359,15 @@ mod tests {
     #[test]
     fn clock_alias_guard_unfolds_to_constructor_without_boolean_edge() {
         let span = test_span(10, 20);
-        let mut dae = Dae::default();
-        dae.variables.discrete_valued.insert(
-            flat_to_dae_var_name(&VarName::new("clockAlias")),
-            rumoca_ir_dae::Variable::new(flat_to_dae_var_name(&VarName::new("clockAlias")), span),
-        );
-        dae.discrete
-            .valued_updates
-            .push(rumoca_ir_dae::Equation::explicit(
-                flat_to_dae_var_name(&VarName::new("clockAlias")),
-                Expression::FunctionCall {
-                    name: VarName::new("Clock").into(),
-                    args: vec![Expression::Literal {
-                        value: Literal::Real(0.1),
-                        span,
-                    }],
-                    is_constructor: false,
-                    span,
-                },
+        let dae = clock_alias_dae(
+            function_call_with_target(
+                "Clock",
+                "Clock",
+                Some(rumoca_core::BuiltinTypeIdentity::Clock.def_id()),
                 span,
-                "periodic clock alias",
-            ));
+            ),
+            span,
+        );
 
         let guard = when_guard_activation_expr(&dae, &bool_var("clockAlias", span), span)
             .expect("clock alias should lower to its constructor");
@@ -340,6 +375,57 @@ mod tests {
         assert!(
             is_clock_constructor_condition(&guard),
             "periodic clock aliases must use direct tick activation, got {guard:?}"
+        );
+    }
+
+    #[test]
+    fn user_function_named_clock_keeps_boolean_edge_activation() {
+        let span = test_span(20, 30);
+        let dae = clock_alias_dae(
+            function_call_with_target(
+                "User.Clock",
+                "User.Clock",
+                Some(rumoca_core::DefId::new(42)),
+                span,
+            ),
+            span,
+        );
+
+        let guard = when_guard_activation_expr(&dae, &bool_var("clockAlias", span), span)
+            .expect("user function alias should retain Boolean edge lowering");
+
+        assert!(
+            matches!(
+                guard,
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Edge,
+                    ..
+                }
+            ),
+            "a user function named Clock must not enter direct clock-tick lowering; got {guard:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_function_named_clock_keeps_boolean_edge_activation() {
+        let span = test_span(30, 40);
+        let dae = clock_alias_dae(
+            function_call_with_target("Clock", "Clock", None, span),
+            span,
+        );
+
+        let guard = when_guard_activation_expr(&dae, &bool_var("clockAlias", span), span)
+            .expect("unresolved function alias should retain Boolean edge lowering");
+
+        assert!(
+            matches!(
+                guard,
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Edge,
+                    ..
+                }
+            ),
+            "an unresolved Clock spelling must not enter direct clock-tick lowering; got {guard:?}"
         );
     }
 }
