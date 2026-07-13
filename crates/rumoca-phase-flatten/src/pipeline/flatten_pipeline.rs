@@ -904,7 +904,7 @@ pub(crate) fn process_class_instances_for_flatten(
     Ok(())
 }
 
-fn stabilize_symbolic_component_dimensions(
+pub(crate) fn stabilize_symbolic_component_dimensions(
     ctx: &mut Context,
     flat: &mut flat::Model,
     overlay: &ast::InstanceOverlay,

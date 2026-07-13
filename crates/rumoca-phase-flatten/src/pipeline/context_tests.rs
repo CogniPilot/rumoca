@@ -306,6 +306,87 @@ mod tests {
         assert_eq!(session.dimension_evaluation_attempts(name.as_str()), 2);
     }
 
+    #[test]
+    fn production_symbolic_dimension_session_matches_uncached_nout_oracle() {
+        let tree = source_backed_tree();
+        let mut initial_flat = flat::Model::default();
+        let width_name = rumoca_core::VarName::new("stack.width");
+        initial_flat.add_variable(
+            width_name.clone(),
+            flat::Variable {
+                name: width_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(int_lit(2)),
+                is_discrete_type: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let columns_name = rumoca_core::VarName::new("stack.cell[2,3].columns");
+        initial_flat.add_variable(
+            columns_name.clone(),
+            flat::Variable {
+                name: columns_name.clone(),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let curve_name = rumoca_core::VarName::new("stack.cell[2,3].curve");
+        initial_flat.add_variable(
+            curve_name.clone(),
+            flat::Variable {
+                name: curve_name.clone(),
+                binding: Some(symbolic_fill_expr(0, &["nout"])),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            symbolic_instance(
+                InstanceId::new(1),
+                columns_name.as_str(),
+                vec![ast::Subscript::Expression(component_ref_expr(
+                    "stack.width",
+                ))],
+            ),
+        );
+
+        let mut cached_flat = initial_flat.clone();
+        let mut cached_ctx = Context::new();
+        stabilize_symbolic_component_dimensions(&mut cached_ctx, &mut cached_flat, &overlay, &tree)
+            .expect("cached production stabilization");
+
+        let mut oracle_flat = initial_flat;
+        let mut oracle_ctx = Context::new();
+        let max_passes = overlay.components.len().max(1) + 1;
+        for _ in 0..max_passes {
+            oracle_ctx.build_parameter_lookup(&oracle_flat, &tree);
+            let reconciled = oracle_ctx.reconcile_modified_binding_dimensions(&mut oracle_flat);
+            let recomputed = oracle_ctx
+                .recompute_symbolic_component_dimensions(&mut oracle_flat, &overlay, &tree)
+                .expect("uncached oracle stabilization");
+            if !reconciled && !recomputed {
+                break;
+            }
+        }
+
+        assert_eq!(
+            oracle_ctx.array_dimensions.get(curve_name.as_str()),
+            Some(&vec![2]),
+            "oracle must resolve nout from the late columns dimension"
+        );
+        assert_eq!(cached_ctx.parameter_values, oracle_ctx.parameter_values);
+        assert_eq!(cached_ctx.array_dimensions, oracle_ctx.array_dimensions);
+        assert_eq!(
+            format!("{cached_flat:#?}"),
+            format!("{oracle_flat:#?}"),
+            "cached production stabilization must preserve the complete Flat IR"
+        );
+    }
+
     fn size_dim_expr(name: &str, dim: i64) -> Expression {
         Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Size,
