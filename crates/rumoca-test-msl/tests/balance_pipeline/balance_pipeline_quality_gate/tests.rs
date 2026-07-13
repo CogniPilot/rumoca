@@ -163,6 +163,7 @@ fn valid_summary_template() -> MslSummary {
 fn selected_target_failures_report_non_sim_ok_models() {
     let mut summary = valid_summary_template();
     summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
+    summary.sim_attempted = summary.sim_target_models.len();
     let mut ok = phase_error_result("A".to_string(), "Success", None, None);
     ok.sim_status = Some("sim_ok".to_string());
     let mut fail = phase_error_result("B".to_string(), "Success", None, None);
