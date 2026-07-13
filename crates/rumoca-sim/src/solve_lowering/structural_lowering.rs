@@ -232,15 +232,6 @@ fn expression_contains_nonnumeric_metadata(expr: &rumoca_core::Expression) -> bo
             if external_table_numeric_intrinsic_reference(name) {
                 return;
             }
-            if name
-                .as_str()
-                .starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
-            {
-                for arg in args {
-                    self.visit_expression(arg);
-                }
-                return;
-            }
             for arg in args {
                 self.visit_expression(arg);
             }
