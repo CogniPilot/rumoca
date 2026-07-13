@@ -11,10 +11,19 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane, fenix }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      crane,
+      fenix,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs { inherit system; };
+        rumocaVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
         # Pin the EXACT toolchain from rust-toolchain.toml (nightly-2026-02-27 +
         # rust-src + wasm32) via fenix, so the Nix build and CI use the same
@@ -44,14 +53,19 @@
         # never pull in packages/ node_modules or examples/.venv.
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
-          filter = path: _type:
-            let rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
-            in pkgs.lib.hasPrefix "crates" rel
+          filter =
+            path: _type:
+            let
+              rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+            in
+            pkgs.lib.hasPrefix "crates" rel
             # examples/ holds the .mo models that crate examples `include_str!`
             # (e.g. quadrotor_sil); keep it but drop the Python venv / node deps.
-            || (pkgs.lib.hasPrefix "examples" rel
-                && !(pkgs.lib.hasInfix ".venv" rel)
-                && !(pkgs.lib.hasInfix "node_modules" rel))
+            || (
+              pkgs.lib.hasPrefix "examples" rel
+              && !(pkgs.lib.hasInfix ".venv" rel)
+              && !(pkgs.lib.hasInfix "node_modules" rel)
+            )
             || pkgs.lib.hasPrefix ".cargo" rel
             || rel == "Cargo.toml"
             || rel == "Cargo.lock"
@@ -77,15 +91,55 @@
         # below reuses it so a code change never recompiles dependencies.
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        rumoca = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
-          doCheck = false; # tests run in CI, not in the package build
-          # A dependency (gamepad/input) links libudev; autoPatchelfHook bakes
-          # the store RPATH into the binaries so they run outside a nix shell.
-          # libgcc_s (compiler runtime) is pulled from stdenv's cc lib.
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
-          buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
-        });
+        rumoca = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            doCheck = false; # tests run in CI, not in the package build
+            # A dependency (gamepad/input) links libudev; autoPatchelfHook bakes
+            # the store RPATH into the binaries so they run outside a nix shell.
+            # libgcc_s (compiler runtime) is pulled from stdenv's cc lib.
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
+            buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
+          }
+        );
+
+        # Store-native Python binding used by cross-repository integration
+        # builds. This replaces the workspace's mutable venv/wheel-by-mtime
+        # staging while retaining Rumoca's pinned fenix toolchain.
+        rumocaPython = pkgs.python312Packages.buildPythonPackage {
+          pname = "rumoca";
+          version = rumocaVersion;
+          pyproject = true;
+          inherit src;
+          sourceRoot = "rumoca-src/crates/rumoca-bind-python";
+          cargoRoot = "../..";
+          cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+            inherit src;
+            cargoRoot = ".";
+            name = "rumoca-${rumocaVersion}-cargo-vendor";
+            hash = "sha256-Vk0Rcz/z16eQOfluUF3dpob9uFES0D1bM09X/AUg5KU=";
+          };
+          nativeBuildInputs = [
+            rustToolchain
+            pkgs.pkg-config
+            pkgs.rustPlatform.cargoSetupHook
+            pkgs.rustPlatform.maturinBuildHook
+          ];
+          # Parser build scripts refresh generated files inside the Cargo
+          # workspace. Nix sources are read-only, so make this derivation's
+          # private build copy writable without mutating the checkout.
+          postPatch = ''
+            chmod -R u+w ../..
+          '';
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          CARGO_TARGET_DIR = "target";
+          doCheck = false;
+          pythonImportsCheck = [ "rumoca" ];
+        };
+
+        rumocaPythonEnv = pkgs.python312.withPackages (_: [ rumocaPython ]);
 
         # Release-mode artifacts for the MSL parity gate, built as one Cargo
         # graph so the shard / merge / ModelicaTest / pinned-library consumers
@@ -96,81 +150,94 @@
         # directory; separate derivations
         # rebuild the same workspace crates and made rumoca-worker a serial
         # extra build.
-        msl-artifacts = craneLib.mkCargoDerivation (commonArgs // {
-          inherit cargoArtifacts;
-          pname = "rumoca-msl-artifacts";
-          buildPhaseCargoCommand = ''
-            cargo build --release \
-              -p rumoca-worker \
-              -p rumoca-test-msl \
-              --features rumoca-test-msl/msl-full-test \
-              --bin rumoca-worker \
-              --bin rumoca-sim-worker \
-              --bin rumoca-msl-tools \
-              --bin rumoca-msl-profile \
-              --test msl_tests
-          '';
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
-          buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            bin=$(find target/release/deps -maxdepth 1 -type f \
-              -name 'msl_tests-*' ! -name '*.d' -perm -u+x | head -1)
-            test -n "$bin" || { echo "msl_tests test binary not found"; exit 1; }
-            cp "$bin" $out/bin/msl_tests
-            cp target/release/rumoca-worker $out/bin/rumoca-worker
-            cp target/release/rumoca-sim-worker $out/bin/rumoca-sim-worker
-            cp target/release/rumoca-msl-tools $out/bin/rumoca-msl-tools
-            cp target/release/rumoca-msl-profile $out/bin/rumoca-msl-profile
-          '';
-        });
-        templateRuntimeShell = extraPackages: craneLib.devShell {
-          inputsFrom = [ rumoca ];
-          packages = extraPackages;
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-            pkgs.gfortran.cc.lib
-            pkgs.stdenv.cc.cc.lib
-            pkgs.zlib
-          ];
-        };
+        msl-artifacts = craneLib.mkCargoDerivation (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            pname = "rumoca-msl-artifacts";
+            buildPhaseCargoCommand = ''
+              cargo build --release \
+                -p rumoca-worker \
+                -p rumoca-test-msl \
+                --features rumoca-test-msl/msl-full-test \
+                --bin rumoca-worker \
+                --bin rumoca-sim-worker \
+                --bin rumoca-msl-tools \
+                --bin rumoca-msl-profile \
+                --test msl_tests
+            '';
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
+            buildInputs = commonArgs.buildInputs ++ [ pkgs.stdenv.cc.cc.lib ];
+            installPhaseCommand = ''
+              mkdir -p $out/bin
+              bin=$(find target/release/deps -maxdepth 1 -type f \
+                -name 'msl_tests-*' ! -name '*.d' -perm -u+x | head -1)
+              test -n "$bin" || { echo "msl_tests test binary not found"; exit 1; }
+              cp "$bin" $out/bin/msl_tests
+              cp target/release/rumoca-worker $out/bin/rumoca-worker
+              cp target/release/rumoca-sim-worker $out/bin/rumoca-sim-worker
+              cp target/release/rumoca-msl-tools $out/bin/rumoca-msl-tools
+              cp target/release/rumoca-msl-profile $out/bin/rumoca-msl-profile
+            '';
+          }
+        );
+        templateRuntimeShell =
+          extraPackages:
+          craneLib.devShell {
+            inputsFrom = [ rumoca ];
+            packages = extraPackages;
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+              pkgs.gfortran.cc.lib
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ];
+          };
         # xtask itself is NOT built here: after the light-xtask split it carries no
         # compiler deps and compiles per-job in seconds, so build-once buys nothing.
         # The MSL merge and ModelicaTest jobs run reporting through the
         # compiler-linked `rumoca-msl-tools` bin, so the MSL artifact bundle
         # includes it and those jobs invoke the prebuilt binary instead of
         # recompiling the stack.
-      in {
+      in
+      {
         packages = {
           default = rumoca;
           rumoca = rumoca;
           # rumoca already builds `--bin rumoca-lsp`; alias so the LSP gate can
           # `nix build .#rumoca-lsp` and read result/bin/rumoca-lsp.
           rumoca-lsp = rumoca;
+          rumoca-python = rumocaPython;
+          rumoca-python-env = rumocaPythonEnv;
           msl-artifacts = msl-artifacts;
         };
 
         checks = {
           inherit rumoca;
-          clippy = craneLib.cargoClippy (commonArgs // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- -D warnings";
-          });
+          clippy = craneLib.cargoClippy (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- -D warnings";
+            }
+          );
           fmt = craneLib.cargoFmt { src = ./.; };
         };
 
         devShells.default = craneLib.devShell {
           inputsFrom = [ rumoca ];
-          packages = pkgs.lib.optionals pkgs.stdenv.isLinux [
-            ciJulia
-          ] ++ [
-            ciPython
-            pkgs.binaryen
-            pkgs.maturin
-            pkgs.mdbook
-            pkgs.nodejs_22
-            pkgs.wasm-pack
-          ];
+          packages =
+            pkgs.lib.optionals pkgs.stdenv.isLinux [
+              ciJulia
+            ]
+            ++ [
+              ciPython
+              pkgs.binaryen
+              pkgs.maturin
+              pkgs.mdbook
+              pkgs.nodejs_22
+              pkgs.wasm-pack
+            ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             pkgs.gfortran.cc.lib
@@ -178,10 +245,11 @@
             pkgs.zlib
           ];
         };
-        devShells.ci-template-core = templateRuntimeShell [];
+        devShells.ci-template-core = templateRuntimeShell [ ];
         devShells.ci-template-python = templateRuntimeShell [ ciPython ];
         devShells.ci-template-julia = templateRuntimeShell (
           pkgs.lib.optionals pkgs.stdenv.isLinux [ ciJulia ]
         );
-      });
+      }
+    );
 }
