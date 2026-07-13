@@ -269,6 +269,62 @@ fn full_quality_gate_rejects_missing_current_parity_input() {
 }
 
 #[test]
+fn full_root_selected_target_switch_still_requires_current_parity() {
+    const CHILD_MARKER: &str = "RUMOCA_TEST_FULL_ROOT_SELECTED_TARGET_PARITY_CHILD";
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let mut summary = valid_summary_template();
+        summary.sim_target_models = vec!["A".to_string()];
+        summary.sim_attempted = 1;
+        summary.sim_ok = 1;
+        let mut result = phase_error_result("A".to_string(), "Success", None, None);
+        result.sim_status = Some("sim_ok".to_string());
+        summary.model_results = vec![result];
+
+        let error = enforce_msl_quality_gate(&summary)
+            .expect_err("full root gate must not bypass required parity via selected-target mode");
+        assert!(error.to_string().contains("required OMC parity reference"));
+        return;
+    }
+
+    let workspace = tempdir().expect("temporary workspace");
+    fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n")
+        .expect("write workspace manifest");
+    let crate_dir = workspace.path().join("crates/rumoca-test-msl");
+    fs::create_dir_all(&crate_dir).expect("create temporary crate directory");
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"rumoca-test-msl\"\nversion = \"0.0.0\"\n",
+    )
+    .expect("write temporary crate manifest");
+    let config_path = workspace.path().join("target/msl/parity-config.json");
+    fs::create_dir_all(config_path.parent().expect("config parent"))
+        .expect("create parity config directory");
+    let results_dir = workspace.path().join("results");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&json!({
+            "results_dir": results_dir,
+            "require_selected_targets_success": true
+        }))
+        .expect("serialize parity config"),
+    )
+    .expect("write parity config");
+
+    let status = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .current_dir(workspace.path())
+        .arg("--exact")
+        .arg("balance_pipeline::balance_pipeline_quality_gate::tests::full_root_selected_target_switch_still_requires_current_parity")
+        .arg("--nocapture")
+        .env(CHILD_MARKER, "1")
+        .status()
+        .expect("run isolated full-root gate regression");
+    assert!(
+        status.success(),
+        "isolated full-root gate regression failed"
+    );
+}
+
+#[test]
 fn focused_or_partial_runs_do_not_require_full_parity() {
     assert!(!full_parity_is_required(true, 1));
     assert!(!full_parity_is_required(false, 0));
@@ -1380,6 +1436,25 @@ fn optional_parity_input_treats_missing_comparison_metrics_as_absent() {
         required.to_string().contains("missing runtime_ratio_stats"),
         "required parity should explain the missing metrics, got {required}"
     );
+}
+
+#[test]
+fn required_full_parity_rejects_trace_only_missing_comparable_metrics() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("omc_simulation_reference.json");
+    let mut payload = valid_simulation_parity_payload();
+    payload["trace_comparison"]["models_compared"] = json!(0);
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&payload).expect("serialize payload"),
+    )
+    .expect("write payload");
+
+    let error = load_required_msl_parity_gate_input_from_path(&path, 7)
+        .expect_err("full parity must reject a reference with no comparable traces");
+    let message = error.to_string();
+    assert!(message.contains("missing comparable trace metrics"));
+    assert!(message.contains("models_compared=0"));
 }
 
 #[test]

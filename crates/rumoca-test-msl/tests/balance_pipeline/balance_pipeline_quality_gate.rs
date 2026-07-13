@@ -816,7 +816,7 @@ fn validate_required_msl_parity_gate_input(
     })?;
     if trace_stats.models_compared == 0 {
         return Err(io::Error::other(format!(
-            "OMC parity file '{}' has models_compared=0 (no OMC/Rumoca traces were compared)",
+            "OMC parity file '{}' is missing comparable trace metrics: models_compared=0 (no OMC/Rumoca traces were compared)",
             path.display()
         )));
     }
@@ -1782,11 +1782,12 @@ pub(super) fn msl_quality_gate_failure_message(
 }
 
 pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
-    if require_selected_targets_success() {
+    let focused_or_partial = should_skip_msl_quality_gate();
+    if require_selected_targets_success() && focused_or_partial {
         return enforce_all_selected_targets_succeeded(summary);
     }
     if summary.sim_attempted == 0 {
-        if should_skip_msl_quality_gate() {
+        if focused_or_partial {
             println!("MSL quality gate: skipped for compile/balance-only run.");
             return Ok(());
         }
@@ -1795,7 +1796,7 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
             summary.sim_target_models.len()
         )));
     }
-    if should_skip_msl_quality_gate() {
+    if focused_or_partial {
         println!(
             "MSL quality gate: skipped for focused/non-baseline run (committed target scope, explicit target file, subset, or partial sim set)."
         );
