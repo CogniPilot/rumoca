@@ -1033,7 +1033,7 @@ fn declaration_binding_source_for_flattening_preserves_literal_modified_single_p
 }
 
 #[test]
-fn declaration_binding_source_for_flattening_skips_non_final_single_part_ref() {
+fn declaration_binding_source_for_flattening_preserves_modified_parameter_sibling_ref() {
     let original = make_comp_ref_expr(&["nNodes"]);
     let resolved = make_int_expr(2);
     let mut comp = make_component("p", "Integer", None);
@@ -1060,7 +1060,73 @@ fn declaration_binding_source_for_flattening_skips_non_final_single_part_ref() {
         &mod_env,
     );
 
+    assert!(matches!(
+        source,
+        Some(ast::Expression::ComponentReference(cref)) if cref.to_string() == "nNodes"
+    ));
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_skips_modified_dynamic_sibling_ref() {
+    let original = make_comp_ref_expr(&["input"]);
+    let resolved = make_int_expr(2);
+    let mut comp = make_component("p", "Integer", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    let input = make_component("input", "Integer", None);
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("input".to_string(), input);
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_ident("input"),
+        ast::ModificationValue::with_source_scope(
+            make_int_expr(20),
+            Some(make_comp_ref_expr(&["input"])),
+            None,
+        ),
+    );
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    );
+
     assert_eq!(source, None);
+}
+
+#[test]
+fn declaration_binding_source_for_flattening_preserves_modified_constant_sibling_ref() {
+    let original = make_comp_ref_expr(&["limit"]);
+    let resolved = make_int_expr(2);
+    let comp = make_component("p", "Integer", None);
+    let mut limit = make_component("limit", "Integer", None);
+    limit.variability = rumoca_core::Variability::Constant(make_token("constant"));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("limit".to_string(), limit);
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_ident("limit"),
+        ast::ModificationValue::with_source_scope(
+            make_int_expr(20),
+            Some(make_comp_ref_expr(&["limit"])),
+            None,
+        ),
+    );
+
+    let source = declaration_binding_source_for_flattening(
+        &comp,
+        &original,
+        &resolved,
+        &effective_components,
+        &mod_env,
+    );
+
+    assert!(matches!(
+        source,
+        Some(ast::Expression::ComponentReference(cref)) if cref.to_string() == "limit"
+    ));
 }
 
 #[test]

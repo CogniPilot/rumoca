@@ -16,7 +16,7 @@ pub(crate) fn declaration_binding_source_for_flattening(
         return None;
     };
     if comp_ref.parts.len() >= 2
-        || single_part_source_ref_is_final_parameter_sibling(
+        || single_part_source_ref_is_modified_parameter_sibling(
             comp_ref,
             comp,
             effective_components,
@@ -28,9 +28,9 @@ pub(crate) fn declaration_binding_source_for_flattening(
     None
 }
 
-fn single_part_source_ref_is_final_parameter_sibling(
+fn single_part_source_ref_is_modified_parameter_sibling(
     comp_ref: &ast::ComponentReference,
-    target_component: &ast::Component,
+    _target_component: &ast::Component,
     effective_components: &IndexMap<String, ast::Component>,
     mod_env: &ast::ModificationEnvironment,
 ) -> bool {
@@ -41,12 +41,10 @@ fn single_part_source_ref_is_final_parameter_sibling(
     let Some(source_component) = effective_components.get(name) else {
         return false;
     };
-    if !parameter_like_component(target_component) && !parameter_like_component(source_component) {
+    if !parameter_like_component(source_component) {
         return false;
     }
-    mod_env
-        .get(&ast::QualifiedName::from_ident(name))
-        .is_some_and(|modifier| modifier.final_)
+    mod_env.get(&ast::QualifiedName::from_ident(name)).is_some()
 }
 
 fn parameter_like_component(component: &ast::Component) -> bool {
