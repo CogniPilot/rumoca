@@ -63,6 +63,43 @@ fn solve_problem_leaves_dynamic_consistency_rows_to_full_tail_validation() {
 }
 
 #[test]
+fn state_free_dynamic_residual_keeps_owner_when_fallback_identity_competes() {
+    let span = projection_plan_span();
+    let residual = vec![vec![
+        solve::LinearOp::LoadP { dst: 0, index: 0 },
+        solve::LinearOp::LoadY { dst: 1, index: 1 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ]];
+    let implicit = build_implicit_rhs_rows(&[], &residual, &[None], 0, 2, span)
+        .expect("state-free implicit rows should build");
+
+    assert_eq!(implicit.residual_to_implicit_rows, vec![Some(1)]);
+    assert_eq!(implicit.rows[1], residual[0]);
+    assert_eq!(implicit.row_targets[1], Some(solve::scalar_slot_y(1)));
+
+    let plan = lower_algebraic_projection_plan(&implicit.rows, &implicit.row_targets, 0, 2, span)
+        .expect("dynamic residual should replace its structurally matched fallback identity");
+    let covered_rows = plan
+        .blocks
+        .iter()
+        .flat_map(|block| block.rows.iter().copied())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(covered_rows, BTreeSet::from([0, 1]));
+    assert!(
+        plan.blocks
+            .iter()
+            .any(|block| { block.rows == vec![1] && block.y_indices == vec![1] })
+    );
+}
+
+#[test]
 fn solve_problem_preserves_duplicate_target_residual_rows() {
     let mut dae_model = dae::Dae::default();
     dae_model

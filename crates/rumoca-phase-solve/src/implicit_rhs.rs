@@ -646,25 +646,15 @@ fn place_targeted_residual_rows(
         residual_to_implicit_rows[residual_idx] = Some(index);
     }
 
-    let structural_fallback_targets = if state_scalar_count == 0 {
-        let mut targets = implicit_rhs_vec_with_capacity(
-            residual.len(),
-            "state-free fallback residual target count",
-            span,
-        )?;
-        targets.resize(residual.len(), None);
-        targets
-    } else {
-        match_unowned_residuals_to_free_algebraics(
-            residual,
-            residual_targets,
-            &placed,
-            occupied,
-            state_scalar_count,
-            solver_scalar_count,
-            span,
-        )?
-    };
+    let structural_fallback_targets = match_unowned_residuals_to_free_algebraics(
+        residual,
+        residual_targets,
+        &placed,
+        occupied,
+        state_scalar_count,
+        solver_scalar_count,
+        span,
+    )?;
     for (residual_idx, target_idx) in structural_fallback_targets.into_iter().enumerate() {
         let Some(target_idx) = target_idx else {
             continue;
@@ -1013,8 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn state_free_system_leaves_fallback_residual_without_synthetic_target()
-    -> Result<(), LowerError> {
+    fn state_free_system_structurally_matches_fallback_residual_owner() -> Result<(), LowerError> {
         let mut rows = vec![zero_rhs_row(), zero_rhs_row(), zero_rhs_row()];
         let mut row_targets = vec![None, None, None];
         let mut occupied = vec![false, false, false];
@@ -1050,9 +1039,9 @@ mod tests {
             test_span(),
         )?;
 
-        assert_eq!(residual_to_implicit_rows, vec![Some(0), Some(1)]);
-        assert_eq!(row_targets[1], None);
-        assert_eq!(rows[1], residual[1]);
+        assert_eq!(residual_to_implicit_rows, vec![Some(0), Some(2)]);
+        assert_eq!(row_targets[2], Some(solve::scalar_slot_y(2)));
+        assert_eq!(rows[2], residual[1]);
         Ok(())
     }
 
