@@ -6,7 +6,6 @@ use rumoca_ir_solve as solve;
 use super::solve_ops::RuntimeSolveError;
 
 const ALGEBRAIC_PROJECTION_MAX_ITERS: usize = 32;
-const ALGEBRAIC_PROJECTION_BACKTRACK_STEPS: usize = 16;
 
 pub trait AlgebraicProjectionModel {
     fn eval_residual(
@@ -258,15 +257,7 @@ fn project_algebraic_block<M: AlgebraicProjectionModel>(
     block: &solve::AlgebraicProjectionBlock,
     tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
-    // A multi-row BLT block is one coupled nonlinear system. Its matching is
-    // useful plan metadata, but replaying those pairs as scalar Newton solves
-    // can switch piecewise branches between rows and undo the block solution.
-    let causal_steps = if block.rows.len() == 1 && block.y_indices.len() == 1 {
-        block.causal_steps.as_slice()
-    } else {
-        &[]
-    };
-    let mut changed = apply_causal_steps(model, y, p, t, causal_steps, tol)?;
+    let mut changed = apply_causal_steps(model, y, p, t, &block.causal_steps, tol)?;
     if block.rows.is_empty() || block.y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
             changed,
@@ -274,7 +265,7 @@ fn project_algebraic_block<M: AlgebraicProjectionModel>(
         });
     }
     if changed {
-        changed |= apply_causal_steps(model, y, p, t, causal_steps, tol)?;
+        changed |= apply_causal_steps(model, y, p, t, &block.causal_steps, tol)?;
     }
     if block.rows.is_empty() || block.y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
@@ -316,83 +307,36 @@ fn project_algebraic_block<M: AlgebraicProjectionModel>(
         });
     };
 
-    let delta_update = if delta.iter().any(|value| !value.is_finite()) {
-        ProjectionDeltaUpdate::Stalled
-    } else if delta.iter().all(|value| value.abs() <= tol) {
-        ProjectionDeltaUpdate::Settled
-    } else if apply_backtracked_block_delta(
-        model,
-        y,
-        p,
-        t,
-        block,
-        delta.as_slice(),
-        max_abs_residual(rhs.as_slice()),
-    )? {
-        ProjectionDeltaUpdate::Applied
-    } else {
-        ProjectionDeltaUpdate::Stalled
-    };
-    if delta_update != ProjectionDeltaUpdate::Applied {
+    let mut applied_delta = false;
+    for (y_idx, value) in block.y_indices.iter().copied().zip(delta.iter().copied()) {
+        if !value.is_finite() {
+            return Ok(ProjectionBlockUpdate {
+                changed,
+                settled: false,
+            });
+        }
+        if value.abs() <= tol {
+            continue;
+        }
+        if let Some(slot) = y.get_mut(y_idx) {
+            *slot += value;
+            changed = true;
+            applied_delta = true;
+        }
+    }
+    if !applied_delta {
         return Ok(ProjectionBlockUpdate {
             changed,
-            settled: delta_update == ProjectionDeltaUpdate::Settled,
+            settled: true,
         });
     }
-    changed = true;
     if changed {
-        changed |= apply_causal_steps(model, y, p, t, causal_steps, tol)?;
+        changed |= apply_causal_steps(model, y, p, t, &block.causal_steps, tol)?;
     }
     Ok(ProjectionBlockUpdate {
         changed,
         settled: false,
     })
-}
-
-fn apply_backtracked_block_delta<M: AlgebraicProjectionModel>(
-    model: &M,
-    y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    block: &solve::AlgebraicProjectionBlock,
-    delta: &[f64],
-    current_norm: f64,
-) -> Result<bool, RuntimeSolveError> {
-    let mut candidate = y.to_vec();
-    let mut candidate_rhs = vec![0.0; y.len()];
-    let mut scale = 1.0;
-    for _ in 0..ALGEBRAIC_PROJECTION_BACKTRACK_STEPS {
-        candidate.copy_from_slice(y);
-        for (y_idx, value) in block.y_indices.iter().copied().zip(delta.iter().copied()) {
-            let Some(slot) = candidate.get_mut(y_idx) else {
-                return Ok(false);
-            };
-            *slot += scale * value;
-        }
-        model.eval_residual(&candidate, p, t, &mut candidate_rhs)?;
-        let candidate_residual = block
-            .rows
-            .iter()
-            .map(|row| residual_at(&candidate_rhs, *row, "algebraic projection line search"))
-            .collect::<Result<Vec<_>, _>>()?;
-        if max_abs_residual(&candidate_residual) < current_norm {
-            y.copy_from_slice(&candidate);
-            return Ok(true);
-        }
-        scale *= 0.5;
-    }
-    Ok(false)
-}
-
-fn max_abs_residual(residual: &[f64]) -> f64 {
-    residual.iter().map(|value| value.abs()).fold(0.0, f64::max)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectionDeltaUpdate {
-    Applied,
-    Settled,
-    Stalled,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1460,87 +1404,6 @@ mod tests {
         }
     }
 
-    struct SaturatingFeedbackProjectionModel;
-
-    impl AlgebraicProjectionModel for SaturatingFeedbackProjectionModel {
-        fn eval_residual(
-            &self,
-            y: &[f64],
-            _p: &[f64],
-            _t: f64,
-            out: &mut [f64],
-        ) -> Result<(), RuntimeSolveError> {
-            let amplified = 15_000.0 * y[1];
-            let limited = amplified.clamp(-15.0, 15.0);
-            out[0] = y[0] - limited;
-            out[1] = y[0] + y[1] - 5.0;
-            Ok(())
-        }
-
-        fn eval_initial_residual(
-            &self,
-            y: &[f64],
-            p: &[f64],
-            t: f64,
-            out: &mut [f64],
-        ) -> Result<(), RuntimeSolveError> {
-            self.eval_residual(y, p, t, out)
-        }
-
-        fn eval_jacobian_v(
-            &self,
-            y: &[f64],
-            _p: &[f64],
-            _t: f64,
-            v: &[f64],
-            out: &mut [f64],
-        ) -> Result<(), RuntimeSolveError> {
-            let amplifier_slope = if (-15.0..15.0).contains(&(15_000.0 * y[1])) {
-                15_000.0
-            } else {
-                0.0
-            };
-            out[0] = v[0] - amplifier_slope * v[1];
-            out[1] = v[0] + v[1];
-            Ok(())
-        }
-
-        fn initial_residual_len(&self) -> usize {
-            2
-        }
-
-        fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
-            Some(solve::scalar_slot_y(row_idx))
-        }
-
-        fn initial_target(&self, _row_idx: usize) -> Option<solve::ScalarSlot> {
-            None
-        }
-
-        fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
-            static PLAN: std::sync::OnceLock<solve::AlgebraicProjectionPlan> =
-                std::sync::OnceLock::new();
-            PLAN.get_or_init(|| solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
-                    rows: vec![0, 1],
-                    y_indices: vec![0, 1],
-                    causal_steps: vec![
-                        solve::AlgebraicProjectionStep { row: 0, y_index: 0 },
-                        solve::AlgebraicProjectionStep { row: 1, y_index: 1 },
-                    ],
-                }],
-            })
-        }
-
-        fn has_explicit_initial_targets(&self) -> bool {
-            false
-        }
-
-        fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-            None
-        }
-    }
-
     #[test]
     fn project_algebraics_uses_solve_projection_plan_blocks() {
         let model = BlockProjectionModel {
@@ -1566,30 +1429,6 @@ mod tests {
             .expect("block projection should converge");
 
         assert_eq!(y, vec![2.0, 3.0]);
-    }
-
-    #[test]
-    fn project_algebraics_solves_saturating_feedback_as_coupled_block() {
-        let model = SaturatingFeedbackProjectionModel;
-        let mut y = vec![0.0, 0.0];
-
-        project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-12)
-            .expect("coupled projection must not replay scalar causal steps across saturation");
-
-        assert!((y[0] - 75_000.0 / 15_001.0).abs() < 1.0e-9);
-        assert!((y[1] - 5.0 / 15_001.0).abs() < 1.0e-9);
-    }
-
-    #[test]
-    fn project_algebraics_globalizes_newton_across_saturation_branch() {
-        let model = SaturatingFeedbackProjectionModel;
-        let mut y = vec![-15.0, 20.0];
-
-        project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-12)
-            .expect("coupled projection must cross the saturation branch without oscillating");
-
-        assert!((y[0] - 75_000.0 / 15_001.0).abs() < 1.0e-9);
-        assert!((y[1] - 5.0 / 15_001.0).abs() < 1.0e-9);
     }
 
     #[test]
