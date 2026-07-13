@@ -452,3 +452,21 @@ Move one coherent group of runtime tests and only their private helpers into a d
 **Step 3: Verify and review**
 
 Run the moved test group, `cargo test -p rumoca-eval-solve --lib`, the exact architecture-hardening gate, fmt, clippy, and diff-check. Commit with DCO signoff and request independent task review before resuming Task 9's full gates.
+
+### Task 11: Align review-scan with SPEC_0021 file-size exceptions
+
+**Files:**
+- Modify: `crates/xtask/src/review_scan_cmd.rs`
+- Test: focused tests colocated with the review-scan command
+
+**Step 1: Preserve the actual RED**
+
+The canonical architecture gate accepts an over-2,000-line Rust file only when it contains the complete `SPEC_0021`, `file-size`, and `split plan` exception markers. `repo review-scan --fail-on-forbidden` currently ignores those markers and reports every changed over-limit file as forbidden. Thirteen branch-touched files are already over the threshold on `origin/main` and carry valid exceptions, so the scan fails while architecture hardening passes.
+
+**Step 2: Add policy-parity tests**
+
+Add focused tests proving that a file over the hard threshold with all required markers does not produce a forbidden hard-limit finding, while a file missing any required marker still does. Preserve hard failure for a new unexcepted threshold crossing; do not use base line count as a blanket grandfathering rule.
+
+**Step 3: Implement shared semantics and verify**
+
+Make review-scan honor the same explicit exception contract as the canonical architecture test. Keep any useful size audit visible at non-forbidden severity if appropriate. Run xtask focused tests, the architecture gate, the real `repo review-scan --fail-on-forbidden` command, fmt, clippy, and diff-check. Commit with DCO signoff and request independent review before resuming Task 9.
