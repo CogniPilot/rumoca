@@ -320,7 +320,7 @@ fn def_id_canonicalization_resolves_inherited_bare_binding_to_owner_sibling() {
 }
 
 #[test]
-fn def_id_canonicalization_prefers_nearest_inherited_ref_across_alias_owner() {
+fn def_id_canonicalization_does_not_guess_deeper_unrelated_inherited_ref() {
     let mut model = flat::Model::new();
     let source_def = rumoca_core::DefId::new(6239);
     for (name, instance_def) in [
@@ -328,6 +328,10 @@ fn def_id_canonicalization_prefers_nearest_inherited_ref_across_alias_owner() {
         (
             "system.configuration.degraded",
             rumoca_core::DefId::new(40001),
+        ),
+        (
+            "system.consumer.unrelated.degraded",
+            rumoca_core::DefId::new(40002),
         ),
     ] {
         model.add_variable(
@@ -368,7 +372,166 @@ fn def_id_canonicalization_prefers_nearest_inherited_ref_across_alias_owner() {
     let rumoca_core::Expression::VarRef { name, .. } = binding else {
         panic!("expected varref binding");
     };
-    assert_eq!(name.as_str(), "system.configuration.degraded");
+    assert_eq!(name.as_str(), "degraded");
+}
+
+#[test]
+fn def_id_canonicalization_does_not_guess_tied_shared_ancestor_ref() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(6240);
+    for (name, instance_def) in [
+        ("system.left.degraded", rumoca_core::DefId::new(40003)),
+        ("system.right.degraded", rumoca_core::DefId::new(40004)),
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_with_def_id(name, instance_def)),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        model.symbol_ancestry.insert(instance_def, vec![source_def]);
+    }
+    model.add_variable(
+        rumoca_core::VarName::new("system.consumer.value"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("system.consumer.value"),
+            binding: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "degraded",
+                    component_ref_with_def_id("degraded", source_def),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("system.consumer.value"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected varref binding");
+    };
+    assert_eq!(name.as_str(), "degraded");
+}
+
+#[test]
+fn def_id_canonicalization_does_not_guess_zero_shared_ancestor_ref() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(6241);
+    let instance_def = rumoca_core::DefId::new(40005);
+    model.add_variable(
+        rumoca_core::VarName::new("configuration.degraded"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("configuration.degraded"),
+            component_ref: Some(component_ref_with_def_id(
+                "configuration.degraded",
+                instance_def,
+            )),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.symbol_ancestry.insert(instance_def, vec![source_def]);
+    model.add_variable(
+        rumoca_core::VarName::new("system.consumer.value"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("system.consumer.value"),
+            binding: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "degraded",
+                    component_ref_with_def_id("degraded", source_def),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("system.consumer.value"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected varref binding");
+    };
+    assert_eq!(name.as_str(), "degraded");
+}
+
+#[test]
+fn def_id_canonicalization_then_record_alias_uses_explicit_instance_ownership() {
+    let mut model = flat::Model::new();
+    let source_def = rumoca_core::DefId::new(6242);
+    for (name, instance_def) in [
+        ("configuration.degraded", rumoca_core::DefId::new(40006)),
+        (
+            "system.configuration.degraded",
+            rumoca_core::DefId::new(40007),
+        ),
+        (
+            "system.consumer.unrelated.degraded",
+            rumoca_core::DefId::new(40008),
+        ),
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_with_def_id(name, instance_def)),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        model.symbol_ancestry.insert(instance_def, vec![source_def]);
+    }
+    model.add_variable(
+        rumoca_core::VarName::new("system.configuration.value"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("system.configuration.value"),
+            binding: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "degraded",
+                    component_ref_with_def_id("degraded", source_def),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = Context::new();
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("system.configuration"),
+        rumoca_core::ComponentPath::from_flat_path("configuration"),
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+    canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("system.configuration.value"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected varref binding");
+    };
+    assert_eq!(name.as_str(), "configuration.degraded");
 }
 
 #[test]
