@@ -796,6 +796,15 @@ fn collapse_repeated_field_tail_to_known_var(
     let mut path = candidate;
     while let Some((prefix, field)) = rendered_path_last_segment(path) {
         if !prefix.ends_with(field) {
+            // An indexed component element is an instance boundary, not a
+            // redundant record-field segment.  For example,
+            // `stack.cell[1,1].cell` must not collapse to the aggregate
+            // projection `stack.cell` merely because that projection exists.
+            if rendered_path_last_segment(prefix).is_some_and(|(_, penultimate)| {
+                rumoca_core::split_trailing_subscript_suffix(penultimate).is_some()
+            }) {
+                return None;
+            }
             return collapse_penultimate_field_to_known_var(path, span, known_flat_vars);
         }
         path = prefix;

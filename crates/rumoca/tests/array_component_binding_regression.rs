@@ -54,3 +54,65 @@ fn two_dimensional_component_array_retains_nested_declaration_bindings() {
         assert!(binding.is_some(), "missing declaration binding for {name}");
     }
 }
+
+const TWO_DIMENSIONAL_COMPONENT_ARRAY_NESTED_EQUATIONS: &str = r#"
+partial model BaseDynamicLeaf
+  Real x(start=0, fixed=true);
+  Real y;
+equation
+  der(x) = 1;
+  y = x;
+end BaseDynamicLeaf;
+
+model DynamicLeaf
+  extends BaseDynamicLeaf;
+end DynamicLeaf;
+
+partial model BaseCellWithNestedEquations
+  replaceable BaseDynamicLeaf cell;
+end BaseCellWithNestedEquations;
+
+model CellWithNestedEquations
+  extends BaseCellWithNestedEquations(redeclare DynamicLeaf cell);
+end CellWithNestedEquations;
+
+partial model BaseTwoDimensionalComponentArrayNestedEquations
+  replaceable BaseCellWithNestedEquations cell[2,2];
+end BaseTwoDimensionalComponentArrayNestedEquations;
+
+model StackWithNestedEquations
+  extends BaseTwoDimensionalComponentArrayNestedEquations(
+    redeclare CellWithNestedEquations cell);
+end StackWithNestedEquations;
+
+model TwoDimensionalComponentArrayNestedEquations
+  StackWithNestedEquations stack;
+end TwoDimensionalComponentArrayNestedEquations;
+"#;
+
+#[test]
+fn two_dimensional_component_array_qualifies_nested_equations_per_element() {
+    let compiled = Compiler::new()
+        .model("TwoDimensionalComponentArrayNestedEquations")
+        .compile_str(
+            TWO_DIMENSIONAL_COMPONENT_ARRAY_NESTED_EQUATIONS,
+            "array_component_nested_equations.mo",
+        )
+        .expect("nested equations in a component array must bind to each scalar instance");
+
+    for name in [
+        "stack.cell[1,1].cell.x",
+        "stack.cell[1,2].cell.x",
+        "stack.cell[2,1].cell.x",
+        "stack.cell[2,2].cell.x",
+    ] {
+        assert!(
+            compiled
+                .dae
+                .variables
+                .states
+                .contains_key(&rumoca_core::VarName::new(name)),
+            "nested derivative must classify {name} as a state"
+        );
+    }
+}
