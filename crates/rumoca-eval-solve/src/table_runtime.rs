@@ -313,7 +313,11 @@ fn eval_table_1d_lookup(
     }
 
     let last_idx = table.data.len() - 1;
-    let k = lookup_segment_index(table, x_real)?;
+    let k = if out_of_range && x < x_min {
+        0
+    } else {
+        lookup_segment_index(table, x_real)?
+    };
     let next_idx = (k + 1).min(last_idx);
     let x0 = table_row_x(table, k)?;
     let x1 = table_row_x(table, next_idx)?;
@@ -362,7 +366,7 @@ fn lookup_segment_index(
             table_id: table.id,
             reason: "table requires at least two rows for segment lookup",
         })?;
-    if x_real <= table_row_x(table, 0)? {
+    if x_real < table_row_x(table, 0)? {
         return Ok(0);
     }
     if x_real >= table_row_x(table, last_idx)? {

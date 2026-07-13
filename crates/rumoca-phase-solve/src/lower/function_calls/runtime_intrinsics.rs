@@ -67,7 +67,11 @@ impl ExternalTableRecordKind {
 pub(in crate::lower) fn external_table_intrinsic_kind(
     call_name: &str,
 ) -> Option<ExternalTableIntrinsicKind> {
-    match intrinsic_short_name(call_name) {
+    let short_name = match crate::path_utils::scope_split(call_name) {
+        Some((function_name, "y")) => intrinsic_short_name(function_name),
+        _ => intrinsic_short_name(call_name),
+    };
+    match short_name {
         "getTimeTableTmin" => Some(ExternalTableIntrinsicKind::Bounds {
             table: ExternalTableRecordKind::CombiTimeTable,
             upper: false,

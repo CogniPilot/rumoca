@@ -209,6 +209,36 @@ fn lower_external_table_lookup_consumes_repeated_flattened_constructor_record_ar
 }
 
 #[test]
+fn lower_external_table_lookup_accepts_projected_output_with_constructor_arg() {
+    let mut args = vec![external_time_table_constructor()];
+    args.extend([int(1), real(0.5), real(1.0), real(0.0)]);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from(
+            "Modelica.Blocks.Tables.Internal.getTimeTableValueNoDer.y",
+        ),
+        args,
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let lowered = lower_expression(
+        &expr,
+        &rumoca_ir_solve::VarLayout::default(),
+        &IndexMap::new(),
+    )
+    .expect("projected table lookup with constructor arg should lower");
+
+    assert!(
+        lowered
+            .ops
+            .iter()
+            .any(|op| matches!(op, rumoca_ir_solve::LinearOp::TableLookup { .. })),
+        "lowered ops should include a host-backed table lookup: {:?}",
+        lowered.ops
+    );
+}
+
+#[test]
 fn lower_external_table_lookup_reuses_structural_table_id_for_flattened_record_fields() {
     let mut args = vec![
         var_ref("block.table.tableName"),

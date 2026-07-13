@@ -2,7 +2,10 @@ use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use std::sync::Arc;
 
-use super::{LowerError, helpers::variable_size, size_binding_key};
+use super::{
+    LowerError, function_calls::external_table_intrinsic_kind, helpers::variable_size,
+    size_binding_key,
+};
 
 pub(super) fn structural_bindings(
     dae_model: &dae::Dae,
@@ -632,20 +635,8 @@ fn eval_values(
 fn is_external_table_function(name: &rumoca_core::Reference) -> bool {
     matches!(
         name.last_segment(),
-        "ExternalCombiTimeTable"
-            | "ExternalCombiTable1D"
-            | "getTimeTableTmin"
-            | "getTimeTableTmax"
-            | "getTimeTableValueNoDer"
-            | "getTimeTableValueNoDer2"
-            | "getTimeTableValue"
-            | "getNextTimeEvent"
-            | "getTable1DAbscissaUmin"
-            | "getTable1DAbscissaUmax"
-            | "getTable1DValueNoDer"
-            | "getTable1DValueNoDer2"
-            | "getTable1DValue"
-    )
+        "ExternalCombiTimeTable" | "ExternalCombiTable1D"
+    ) || external_table_intrinsic_kind(name.as_str()).is_some()
 }
 
 fn eval_external_table_function(

@@ -426,7 +426,7 @@ pub(super) fn eval_table_1d_lookup_with_runtime<T: SimFloat>(
     }
 
     let last_idx = spec.data.len() - 1;
-    let k = if x_real <= spec.data[0][0] {
+    let k = if (out_of_range && x.real() < x_min) || x_real < spec.data[0][0] {
         0usize
     } else if x_real >= spec.data[last_idx][0] {
         last_idx.saturating_sub(1)

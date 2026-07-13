@@ -226,6 +226,12 @@ fn expression_contains_nonnumeric_metadata(expr: &rumoca_core::Expression) -> bo
             args: &[rumoca_core::Expression],
             _is_constructor: bool,
         ) {
+            // Table intrinsics are numeric even though their constructor
+            // metadata contains String fields. Skip only this call's argument
+            // subtree; nonnumeric siblings and wrappers must still be seen.
+            if external_table_numeric_intrinsic_reference(name) {
+                return;
+            }
             if name
                 .as_str()
                 .starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
@@ -248,6 +254,107 @@ fn expression_contains_nonnumeric_metadata(expr: &rumoca_core::Expression) -> bo
     let mut visitor = Visitor { found: false };
     rumoca_core::ExpressionVisitor::visit_expression(&mut visitor, expr);
     visitor.found
+}
+
+fn external_table_numeric_intrinsic_reference(name: &rumoca_core::Reference) -> bool {
+    if external_table_numeric_intrinsic(name.last_segment()) {
+        return true;
+    }
+
+    // Scalarization represents a scalar function result as an exact output
+    // projection (`function.y`). Match that structured shape explicitly; a
+    // generic suffix match would accidentally preserve unrelated String-valued
+    // calls whose names merely contain an intrinsic name.
+    let segments = name.segments();
+    segments.last() == Some(&"y")
+        && segments
+            .get(segments.len().saturating_sub(2))
+            .is_some_and(|function| external_table_numeric_intrinsic(function))
+}
+
+fn external_table_numeric_intrinsic(short_name: &str) -> bool {
+    matches!(
+        short_name,
+        "getTimeTableTmin"
+            | "getTimeTableTmax"
+            | "getNextTimeEvent"
+            | "getTimeTableValueNoDer"
+            | "getTimeTableValueNoDer2"
+            | "getTimeTableValue"
+            | "getTable1DAbscissaUmin"
+            | "getTable1DAbscissaUmax"
+            | "getTable1DValueNoDer"
+            | "getTable1DValueNoDer2"
+            | "getTable1DValue"
+    )
+}
+
+#[cfg(test)]
+fn projected_external_table_test_call() -> rumoca_core::Expression {
+    let span = rumoca_core::Span::DUMMY;
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new(
+            "Modelica.Blocks.Tables.Internal.getTimeTableValueNoDer.y",
+        ),
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("NoName".to_string()),
+            span,
+        }],
+        is_constructor: false,
+        span,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn projected_external_table_numeric_intrinsic_survives_metadata_pruning() {
+    let span = rumoca_core::Span::DUMMY;
+    let mut model = dae::Dae::default();
+    model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: projected_external_table_test_call(),
+        span,
+        origin: "scalarized external table lookup".to_string(),
+        scalar_count: 1,
+    });
+
+    remove_nonnumeric_continuous_equations(&mut model);
+
+    assert_eq!(model.continuous.equations.len(), 1);
+}
+
+#[cfg(test)]
+#[test]
+fn projected_external_table_call_does_not_hide_string_sibling_metadata() {
+    let span = rumoca_core::Span::DUMMY;
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(projected_external_table_test_call()),
+        rhs: Box::new(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String("metadata".to_string()),
+            span,
+        }),
+        span,
+    };
+
+    assert!(expression_contains_nonnumeric_metadata(&expr));
+}
+
+#[cfg(test)]
+#[test]
+fn projected_external_table_call_does_not_hide_named_metadata_wrapper() {
+    let span = rumoca_core::Span::DUMMY;
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new(format!(
+            "{}table",
+            rumoca_core::NAMED_FUNCTION_ARG_PREFIX
+        )),
+        args: vec![projected_external_table_test_call()],
+        is_constructor: false,
+        span,
+    };
+
+    assert!(expression_contains_nonnumeric_metadata(&expr));
 }
 
 fn shift_structured_families_after_equation_removal(
