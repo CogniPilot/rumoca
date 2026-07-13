@@ -636,9 +636,7 @@ end TwoThresholdTable;
     assert_eq!(value_at(3.0), 3.0, "second threshold should select x[2]");
 }
 
-#[test]
-fn source_instance_modifiers_materialize_boolean_and_integer_time_tables() {
-    let source = r#"
+const MODIFIED_TABLES_SOURCE: &str = r#"
 package Modelica
 package Blocks
 package Types
@@ -724,9 +722,100 @@ model ModifiedTables
   IntegerTable integerTable(table = [0, 1; .025, 2; .05, 0; .075, -1]);
 end ModifiedTables;
 "#;
+
+struct LookupCallCounter(usize);
+
+impl rumoca_core::ExpressionVisitor for LookupCallCounter {
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+    ) {
+        let segments = name.segments();
+        if name.last_segment() == "getTimeTableValueNoDer"
+            || (segments.last() == Some(&"y")
+                && segments.get(segments.len().saturating_sub(2))
+                    == Some(&"getTimeTableValueNoDer"))
+        {
+            self.0 += 1;
+        }
+        self.walk_function_call(name, args, is_constructor);
+    }
+}
+
+#[derive(Default)]
+struct TableLookupCounter(usize);
+
+impl SolveVisitor for TableLookupCounter {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _kind: LinearOpSliceKind,
+        _op_index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        if matches!(op, LinearOp::TableLookup { .. }) {
+            self.0 += 1;
+        }
+        Ok(())
+    }
+}
+
+fn prepared_lookup_call_count(prepared_dae: &dae::Dae) -> usize {
+    let mut counter = LookupCallCounter(0);
+    for equation in &prepared_dae.continuous.equations {
+        rumoca_core::ExpressionVisitor::visit_expression(&mut counter, &equation.rhs);
+    }
+    counter.0
+}
+
+fn solve_lookup_count(solve_model: &rumoca_ir_solve::SolveModel) -> usize {
+    let mut counter = TableLookupCounter::default();
+    counter
+        .visit_solve_model(solve_model)
+        .expect("infallible SolveModel traversal");
+    counter.0
+}
+
+fn lookup_table(tables: &[rumoca_core::ExternalTableData], table_id: u64, time: f64) -> f64 {
+    let row = [
+        LinearOp::Const {
+            dst: 0,
+            value: table_id as f64,
+        },
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::Const {
+            dst: 2,
+            value: time,
+        },
+        LinearOp::TableLookup {
+            dst: 3,
+            table_id: 0,
+            column: 1,
+            input: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+    rumoca_eval_solve::eval_row_with_context(
+        &row,
+        &[],
+        &[],
+        time,
+        rumoca_eval_solve::RowEvalContext {
+            external_tables: Some(tables),
+            ..Default::default()
+        },
+    )
+    .expect("materialized SolveModel TableLookup op should evaluate")
+}
+
+#[test]
+fn source_instance_modifiers_materialize_boolean_and_integer_time_tables() {
     let compiled = Compiler::new()
         .model("ModifiedTables")
-        .compile_str(source, "ModifiedTables.mo")
+        .compile_str(MODIFIED_TABLES_SOURCE, "ModifiedTables.mo")
         .expect("real Modelica table fixture should compile");
     let options = SimOptions {
         t_end: 0.15,
@@ -736,34 +825,9 @@ end ModifiedTables;
     let prepared_dae =
         rumoca_sim::structurally_prepared_dae_for_simulation_artifact(&compiled.dae, &options)
             .expect("real Modelica table fixture should survive structural preparation");
-    struct LookupCallCounter(usize);
-    impl rumoca_core::ExpressionVisitor for LookupCallCounter {
-        fn visit_function_call(
-            &mut self,
-            name: &rumoca_core::Reference,
-            args: &[rumoca_core::Expression],
-            is_constructor: bool,
-        ) {
-            let segments = name.segments();
-            if name.last_segment() == "getTimeTableValueNoDer"
-                || (segments.last() == Some(&"y")
-                    && segments.get(segments.len().saturating_sub(2))
-                        == Some(&"getTimeTableValueNoDer"))
-            {
-                self.0 += 1;
-            }
-            self.walk_function_call(name, args, is_constructor);
-        }
-    }
-    let mut prepared_lookup_counter = LookupCallCounter(0);
-    for equation in &prepared_dae.continuous.equations {
-        rumoca_core::ExpressionVisitor::visit_expression(
-            &mut prepared_lookup_counter,
-            &equation.rhs,
-        );
-    }
     assert_eq!(
-        prepared_lookup_counter.0, 2,
+        prepared_lookup_call_count(&prepared_dae),
+        2,
         "numeric table equations must not be pruned as String metadata"
     );
     let solve_model = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &options)
@@ -787,29 +851,8 @@ end ModifiedTables;
         "IntegerTable modifier must materialize its matrix; tables={tables:?}"
     );
 
-    #[derive(Default)]
-    struct TableLookupCounter(usize);
-    impl SolveVisitor for TableLookupCounter {
-        type Error = std::convert::Infallible;
-
-        fn visit_linear_op(
-            &mut self,
-            _kind: LinearOpSliceKind,
-            _op_index: usize,
-            op: &LinearOp,
-        ) -> Result<(), Self::Error> {
-            if matches!(op, LinearOp::TableLookup { .. }) {
-                self.0 += 1;
-            }
-            Ok(())
-        }
-    }
-    let mut lookup_counter = TableLookupCounter::default();
-    lookup_counter
-        .visit_solve_model(&solve_model)
-        .expect("infallible SolveModel traversal");
     assert!(
-        lookup_counter.0 >= 2,
+        solve_lookup_count(&solve_model) >= 2,
         "both qualified getTimeTableValueNoDer equations must survive structural lowering"
     );
 
@@ -821,41 +864,9 @@ end ModifiedTables;
         .iter()
         .find(|table| table.data.len() == 4)
         .expect("IntegerTable data");
-    let lookup = |table_id: u64, time: f64| {
-        let row = [
-            LinearOp::Const {
-                dst: 0,
-                value: table_id as f64,
-            },
-            LinearOp::Const { dst: 1, value: 1.0 },
-            LinearOp::Const {
-                dst: 2,
-                value: time,
-            },
-            LinearOp::TableLookup {
-                dst: 3,
-                table_id: 0,
-                column: 1,
-                input: 2,
-            },
-            LinearOp::StoreOutput { src: 3 },
-        ];
-        rumoca_eval_solve::eval_row_with_context(
-            &row,
-            &[],
-            &[],
-            time,
-            rumoca_eval_solve::RowEvalContext {
-                external_tables: Some(tables),
-                ..Default::default()
-            },
-        )
-        .expect("materialized SolveModel TableLookup op should evaluate")
-    };
-
-    assert_eq!(lookup(boolean_table.id, 0.049), 0.0);
-    assert_eq!(lookup(boolean_table.id, 0.05), 1.0);
-    assert_eq!(lookup(boolean_table.id, 0.149), 1.0);
-    assert_eq!(lookup(boolean_table.id, 0.15), 0.0);
-    assert_eq!(lookup(integer_table.id, 0.0), 1.0);
+    assert_eq!(lookup_table(tables, boolean_table.id, 0.049), 0.0);
+    assert_eq!(lookup_table(tables, boolean_table.id, 0.05), 1.0);
+    assert_eq!(lookup_table(tables, boolean_table.id, 0.149), 1.0);
+    assert_eq!(lookup_table(tables, boolean_table.id, 0.15), 0.0);
+    assert_eq!(lookup_table(tables, integer_table.id, 0.0), 1.0);
 }
