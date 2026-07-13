@@ -11,6 +11,39 @@ pub(super) fn projection_vec_with_capacity<T>(
     Ok(values)
 }
 
+pub(super) fn selected_assignment_indices(
+    dims: &[i64],
+    selectors: &[ProjectionAssignmentSelector],
+    target: &str,
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    let count = scalar_count_for_dims(dims, "selected assignment target", span)?;
+    let mut selected =
+        projection_vec_with_capacity(count, "selected assignment target scalar count", span)?;
+    for flat_index in 0..count {
+        let subscripts = required_flat_index_to_subscripts(dims, flat_index, span)?;
+        let is_selected = selectors
+            .iter()
+            .zip(&subscripts)
+            .all(|(selector, subscript)| match selector {
+                ProjectionAssignmentSelector::Index(index) => {
+                    usize::try_from(*index).ok() == Some(*subscript)
+                }
+                ProjectionAssignmentSelector::All => true,
+            });
+        if is_selected {
+            selected.push(flat_index);
+        }
+    }
+    if selected.is_empty() {
+        return Err(LowerError::contract_violation(
+            format!("selected assignment to `{target}` selects no target elements"),
+            span,
+        ));
+    }
+    Ok(selected)
+}
+
 fn reserve_projection_capacity<T>(
     values: &mut Vec<T>,
     additional: usize,

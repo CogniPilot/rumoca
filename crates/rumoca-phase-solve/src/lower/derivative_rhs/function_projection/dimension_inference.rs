@@ -197,7 +197,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 let Some(size) = args.first() else {
                     return Ok(None);
                 };
-                let size = self.compile_time_int(&self.substitute(size, scope)?, scope, span)?;
+                let size = self.compile_time_int(size, scope, span)?;
                 copy_projection_dims(&[size, size], "identity matrix dimension count", span)
                     .map(Some)
             }
@@ -232,7 +232,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         let mut dims =
             projection_vec_with_capacity(args.len(), "array constructor dimension count", span)?;
         for arg in args {
-            let dim = self.compile_time_int(&self.substitute(arg, scope)?, scope, span)?;
+            let dim = self.compile_time_int(arg, scope, span)?;
             if dim < 0 {
                 return Err(LowerError::contract_violation(
                     format!("array constructor dimension must be non-negative, got {dim}"),

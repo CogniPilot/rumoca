@@ -44,8 +44,9 @@
 {% set solve_implicit_output_indices = solve_blocks.continuous.implicit_rhs.scalar_programs.output_indices if solve_blocks is defined and solve_blocks.continuous is defined and solve_blocks.continuous.implicit_rhs is defined and solve_blocks.continuous.implicit_rhs.scalar_programs is defined else [] %}
 {% set solve_projection_blocks = solve.continuous.algebraic_projection_plan.blocks if solve is defined and solve.continuous is defined and solve.continuous.algebraic_projection_plan is defined and solve.continuous.algebraic_projection_plan.blocks is defined else [] %}
 {% set solve_state_count = solve.solve_layout.state_scalar_count if solve is defined and solve.solve_layout is defined and solve.solve_layout.state_scalar_count is defined else 0 %}
+{% set solve_projection_count = (solve.solve_layout.algebraic_scalar_count + solve.solve_layout.output_scalar_count) if solve is defined and solve.solve_layout is defined and solve.solve_layout.algebraic_scalar_count is defined and solve.solve_layout.output_scalar_count is defined else 0 %}
 {# Rust validates and prepares the projection schedule before C emission. #}
-{% set solve_projection_schedule = fmi3_scalar_projection_schedule(solve_projection_blocks, solve_implicit_programs, solve_implicit_output_indices, solve_state_count) %}
+{% set solve_projection_schedule = fmi3_scalar_projection_schedule(solve_projection_blocks, solve_implicit_programs, solve_implicit_output_indices, solve_state_count, solve_projection_count) %}
 {% set solve_projection_fast = solve_projection_schedule | length > 0 %}
 {% set solve_full_jacobian_rows = solve_full_jacobian_rows if solve_full_jacobian_rows is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else []) %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
@@ -233,17 +234,10 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define __rumoca_named_arg___verboseRead(x) (x)
 #define __rumoca_named_arg___verboseExtrapolation(x) (x)
 
-/* =========================================================================
- * Enumeration literal constants
- * ========================================================================= */
-{% for name, ordinal in dae.enum_literal_ordinals | items %}
-#define {{ symbol(symbols, name) }} {{ ordinal }}
-{% endfor %}
-
-/* Enumeration type constructors — identity macros for enum type casts */
-{% for type_name in dae.enum_type_names | default([]) %}
-#define {{ symbol(symbols, type_name) }}(x) (x)
-{% endfor %}
+/* Enumeration literals have already been lowered to numeric Solve IR values,
+   and FMI implementation defaults are numeric literals. Emitting source-level
+   enum aliases here would pollute the C preprocessor namespace (for example,
+   Axis.x would otherwise collide with ModelInstance.x). */
 
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}
@@ -697,8 +691,16 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
     double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
 {% endfor %}
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.p | items %}
@@ -769,9 +771,18 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->constants[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
     {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->constants[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
 {% endfor %}
 
 {% set ns_idx = namespace(offset=0) %}
@@ -856,7 +867,7 @@ static void compute_algebraics(ModelInstance* m) {
 {% for assignment in solve_projection_schedule %}
     {
         const int y_index = {{ assignment.y_index }};
-        const double value = {{ render_solve_target_assignment_c(solve_implicit_programs[assignment.program_index], assignment.y_index, solve_row_c_cfg) }};
+{{ render_solve_target_assignment_block_c(solve_implicit_programs[assignment.program_index], assignment.y_index, solve_row_c_cfg) }}
         if (!isfinite(value)) {
             m->evaluation_error = 1;
             return;

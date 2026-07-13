@@ -3,7 +3,7 @@
 //! This module converts instance equations to flat equations in
 //! residual form (0 = residual).
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 mod shape_inference;
 pub(crate) use shape_inference::{
@@ -463,7 +463,7 @@ pub(crate) fn flatten_equation_with_def_map(
 
             // Preserve simple equations as a single residual equation.
             // Array scalarization and counting are handled downstream.
-            let residual = make_residual(ctx, &lhs, &rhs, prefix, def_map)?;
+            let residual = make_residual(ctx, &lhs, &rhs, prefix, def_map, None)?;
             let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
             if scalar_count == 0 {
                 return Ok(FlattenedEquations::default());
@@ -552,6 +552,7 @@ fn make_residual(
     rhs: &ast::Expression,
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
+    locals: Option<&HashSet<String>>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     // Create: lhs - rhs
     let residual = ast::Expression::Binary {
@@ -567,6 +568,7 @@ fn make_residual(
         &ctx.current_imports,
         def_map,
         ctx,
+        locals,
     )
 }
 
@@ -1032,7 +1034,7 @@ fn expand_for_equation(
     // every binder -- including the outer one when this is a nested `for i for j` --
     // stays symbolic. Needed BEFORE the cheapen decision: a parameter-variability
     // family is only cheapenable when its template can rebuild the promoted value.
-    let template = capture_comprehension_template(ctx, equations, prefix, def_map);
+    let template = capture_comprehension_template(ctx, indices, equations, prefix, def_map);
 
     // A regular family lowered with materialization off keeps only its corner cells
     // (base + one neighbor per binder) with full bodies; the interior cells get a
@@ -1124,12 +1126,17 @@ fn expand_for_equation(
 /// path in charge for those shapes.
 fn capture_comprehension_template(
     ctx: &Context,
+    indices: &[ast::ForIndex],
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Option<rumoca_core::ComprehensionTemplate> {
     let mut body = Vec::new();
-    collect_template_residuals(ctx, equations, prefix, def_map, &mut body)?;
+    let locals = indices
+        .iter()
+        .map(|index| index.ident.text.to_string())
+        .collect::<HashSet<_>>();
+    collect_template_residuals(ctx, equations, prefix, def_map, &locals, &mut body)?;
     (!body.is_empty()).then_some(rumoca_core::ComprehensionTemplate { body })
 }
 
@@ -1143,17 +1150,21 @@ fn collect_template_residuals(
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
+    locals: &HashSet<String>,
     body: &mut Vec<rumoca_core::Expression>,
 ) -> Option<()> {
     for equation in equations {
         match equation {
             ast::Equation::Simple { lhs, rhs } => {
-                body.push(make_residual(ctx, lhs, rhs, prefix, def_map).ok()?);
+                body.push(make_residual(ctx, lhs, rhs, prefix, def_map, Some(locals)).ok()?);
             }
             ast::Equation::For {
-                equations: inner, ..
+                indices,
+                equations: inner,
             } => {
-                collect_template_residuals(ctx, inner, prefix, def_map, body)?;
+                let mut nested_locals = locals.clone();
+                nested_locals.extend(indices.iter().map(|index| index.ident.text.to_string()));
+                collect_template_residuals(ctx, inner, prefix, def_map, &nested_locals, body)?;
             }
             _ => return None,
         }

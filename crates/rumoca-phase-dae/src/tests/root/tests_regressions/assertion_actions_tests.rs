@@ -117,3 +117,44 @@ fn test_todae_lowers_initial_assert_equation_to_initial_event_action() {
         "initial assertions must remain gated to initialization"
     );
 }
+
+#[test]
+fn test_todae_terminal_when_assert_does_not_create_continuous_roots() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+    let span = crate::test_support::test_span();
+    let terminal = Expression::BuiltinCall {
+        function: BuiltinFunction::Terminal,
+        args: Vec::new(),
+        span,
+    };
+    let abs_x = Expression::BuiltinCall {
+        function: BuiltinFunction::Abs,
+        args: vec![make_var_ref("x")],
+        span,
+    };
+    let condition = Expression::Binary {
+        op: rumoca_core::OpBinary::Lt,
+        lhs: Box::new(abs_x),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Real(1.0e-6),
+            span,
+        }),
+        span,
+    };
+    let mut when_clause = flat::WhenClause::new(terminal, span);
+    when_clause.add_equation(flat::WhenEquation::assert(
+        condition,
+        string_lit("terminal assertion failed"),
+        span,
+        "assert in when terminal clause",
+    ));
+    flat.when_clauses.push(when_clause);
+
+    let dae = lower_assertion_model(&flat);
+
+    assert!(
+        dae.events.synthetic_root_conditions.is_empty(),
+        "terminal-only assertion expressions are evaluated at termination and must not be monitored as continuous roots"
+    );
+}

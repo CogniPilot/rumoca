@@ -671,10 +671,8 @@ fn copy_selected_input_fields_for_validation<T: SimFloat>(
     let src_prefix = format!("{arg_path}.");
     let dst_prefix = format!("{input_name}.");
     let mut copied = false;
-    for (key, value) in &env.vars {
-        let Some(suffix) = key.strip_prefix(&src_prefix) else {
-            continue;
-        };
+    for (key, value) in env.vars.entries_with_prefix(&src_prefix) {
+        let suffix = &key[src_prefix.len()..];
         local_env.set(&format!("{dst_prefix}{suffix}"), *value);
         copied = true;
     }
@@ -975,6 +973,12 @@ pub(in crate::eval) fn validate_array_argument<T: SimFloat>(
             if args.len() == 1 && builtin_accepts_array_argument(*function) =>
         {
             validate_array_argument(&args[0], env)
+        }
+        // A subscripted reference may still be array-valued when a range or
+        // colon selects a slice. Validate it through the array evaluator instead
+        // of recursively treating the range expression as a scalar subscript.
+        rumoca_core::Expression::VarRef { subscripts, .. } if !subscripts.is_empty() => {
+            eval_array_values(expr, env).map(|_| ())
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
@@ -1323,6 +1327,17 @@ pub(super) fn try_eval_field_access_path<T: SimFloat>(
         } => {
             if subscripts.is_empty() {
                 Ok(Some(name.as_str().to_string()))
+            } else if subscripts.iter().any(|subscript| {
+                matches!(subscript, rumoca_core::Subscript::Colon { .. })
+                    || matches!(
+                        subscript,
+                        rumoca_core::Subscript::Expr { expr, .. }
+                            if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+                    )
+            }) {
+                // A range/colon denotes an array slice, not one scalar binding
+                // path. Let the caller fall back to array-value evaluation.
+                Ok(None)
             } else {
                 let indices = eval_subscript_indices(subscripts, env)?;
                 Ok(Some(dae::format_subscript_key(name.as_str(), &indices)))

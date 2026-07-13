@@ -613,6 +613,7 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
                         constant_expression_root_row(),
                         param_minus_time_root_row(0),
                         direct_param_visible_value_row(1),
+                        indexed_param_root_row(),
                         time_plus_one_root_row(),
                     ],
                     "root_plan.mo",
@@ -630,19 +631,96 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
         .as_ref()
         .expect("root condition plan should build");
 
-    assert_eq!(plan.evaluated_rows, vec![2, 3]);
-    assert_eq!(plan.search_rows, vec![3]);
+    assert_eq!(plan.evaluated_rows, vec![2, 3, 4]);
+    assert_eq!(plan.search_rows, vec![4]);
 
     let full = runtime
         .eval_root_conditions_from_solver_y(1.0, &[], &model.parameters)
         .expect("full root values should evaluate");
-    assert_eq!(full, vec![5.0, 1.5, 9.0, 2.0]);
+    assert_eq!(full, vec![5.0, 1.5, 9.0, 9.0, 2.0]);
 
-    let mut search = vec![0.0; 4];
+    let mut search = vec![0.0; 5];
     runtime
         .eval_root_search_conditions_into(1.0, &[], &model.parameters, 1.0e-12, 1, &mut search)
         .expect("search root values should evaluate");
-    assert_eq!(search, vec![1.0, 1.0, 1.0, 2.0]);
+    assert_eq!(search, vec![1.0, 1.0, 1.0, 1.0, 2.0]);
+}
+
+#[test]
+fn root_condition_plan_neutralizes_parameter_static_algebraic_outputs() {
+    let model = algebraic_output_root_model(assignment_residual_row());
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let plan = runtime
+        .root_condition_plan
+        .as_ref()
+        .expect("root condition plan should build");
+
+    assert_eq!(plan.evaluated_rows, vec![0]);
+    assert!(plan.search_rows.is_empty());
+
+    let full = runtime
+        .eval_root_conditions_from_solver_y(0.0, &[0.0, 2.0], &[])
+        .expect("full root value should evaluate");
+    assert_eq!(full, vec![2.0]);
+
+    let mut search = vec![0.0];
+    runtime
+        .eval_root_search_conditions_into(0.0, &[0.0], &[], 1.0e-12, 1, &mut search)
+        .expect("search root value should evaluate");
+    assert_eq!(search, vec![1.0]);
+}
+
+#[test]
+fn root_condition_plan_keeps_state_dependent_algebraic_outputs_dynamic() {
+    let model = algebraic_output_root_model(add_assignment_residual_row(1, 0, 1.0));
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let plan = runtime
+        .root_condition_plan
+        .as_ref()
+        .expect("root condition plan should build");
+
+    assert_eq!(plan.evaluated_rows, vec![0]);
+    assert_eq!(plan.search_rows, vec![0]);
+
+    let mut search = vec![0.0];
+    runtime
+        .eval_root_search_conditions_into(0.0, &[3.0], &[], 1.0e-12, 1, &mut search)
+        .expect("search root value should evaluate");
+    assert_eq!(search, vec![4.0]);
+}
+
+fn algebraic_output_root_model(implicit_row: Vec<solve::LinearOp>) -> solve::SolveModel {
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string(), "output".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![derivative_placeholder_row(0), implicit_row],
+                    "algebraic_output_root.mo",
+                )),
+                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: spanned_block(
+                    vec![direct_y_visible_value_row(1)],
+                    "algebraic_output_root.mo",
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0, 2.0],
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -879,6 +957,19 @@ fn direct_param_visible_value_row(index: usize) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::LoadP { dst: 0, index },
         solve::LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
+fn indexed_param_root_row() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::Const { dst: 0, value: 1.0 },
+        solve::LinearOp::LoadIndexedP {
+            dst: 1,
+            base: 0,
+            count: 2,
+            index: 0,
+        },
+        solve::LinearOp::StoreOutput { src: 1 },
     ]
 }
 

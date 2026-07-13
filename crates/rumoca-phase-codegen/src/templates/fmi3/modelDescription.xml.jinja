@@ -49,10 +49,7 @@
 {%- set n_clocks = n_periodic_clocks + n_triggered_clocks -%}
 {%- set vr_clk   = vr_m + nvar_m -%}
 {%- set vr_time  = vr_clk + n_clocks -%}
-{%- set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] -%}
-{%- set solve_dynamic_time_rows = solve.events.dynamic_time_event_rhs.programs if solve is defined and solve.events is defined and solve.events.dynamic_time_event_rhs is defined and solve.events.dynamic_time_event_rhs.programs is defined else [] -%}
-{%- set solve_event_actions = solve.events.actions if solve is defined and solve.events is defined and solve.events.actions is defined else [] -%}
-{%- set cosim_supported = solve_root_rows | length == 0 and solve_dynamic_time_rows | length == 0 and solve_event_actions | length == 0 and dae.relation | default([]) | length == 0 and dae.synthetic_root_conditions | default([]) | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 and dae.z | length == 0 and dae.m | length == 0 -%}
+{%- set cosim_supported = dae.relation | default([]) | length == 0 and dae.synthetic_root_conditions | default([]) | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 and dae.z | length == 0 and dae.m | length == 0 -%}
 {%- set units = namespace(names=["s"]) -%}
 {%- for vars in [dae.x, dae.y, dae.u, dae.w, dae.p, dae.z, dae.m] -%}
 {%- for name, var in vars | items -%}

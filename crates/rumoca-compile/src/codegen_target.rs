@@ -129,6 +129,7 @@ pub struct TargetFile {
 #[serde(rename_all = "kebab-case")]
 pub enum TargetFileRenderContext {
     FmiModelDescription,
+    FmiImplementation,
 }
 
 /// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
@@ -1109,6 +1110,28 @@ render_context = "fmi-model-description"
         assert_eq!(
             manifest.files[0].render_context,
             Some(TargetFileRenderContext::FmiModelDescription)
+        );
+    }
+
+    #[test]
+    fn target_manifest_parses_fmi_implementation_render_context() {
+        let manifest = super::parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "custom"
+
+[[files]]
+path = "sources/model.c"
+template = "model.c.jinja"
+render_context = "fmi-implementation"
+"#,
+        )
+        .expect("parse target manifest with FMI implementation context");
+
+        assert_eq!(
+            manifest.files[0].render_context,
+            Some(TargetFileRenderContext::FmiImplementation)
         );
     }
 

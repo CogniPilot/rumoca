@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use crate::errors::render_err;
-use minijinja::Value;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
+use minijinja::{Environment, Value};
 use rumoca_ir_solve as solve;
 
 use super::render_expr::get_field;
@@ -52,6 +52,17 @@ pub(super) use template_partition::{
     kernel_workgroup_count, scalar_kernel_chunk_count, scalar_program_block_source_span,
     scalar_program_row_span, wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
 };
+
+pub(super) fn register_target_assignment_functions(env: &mut Environment<'static>) {
+    env.add_function(
+        "render_solve_target_assignment_c",
+        render_solve_target_assignment_c_function,
+    );
+    env.add_function(
+        "render_solve_target_assignment_block_c",
+        render_solve_target_assignment_block_c_function,
+    );
+}
 
 // ─── Typed scalar-program rows ───────────────────────────────────────────────
 //
@@ -120,6 +131,15 @@ fn render_solve_target_assignment_typed_c(
     for op in ops {
         output = render_solve_op_typed(op, cfg, SolveRowDialect::C, &mut regs, output)?;
     }
+    render_solve_target_assignment_value(ops, target_y_index, &regs, output)
+}
+
+fn render_solve_target_assignment_value(
+    ops: &[solve::LinearOp],
+    target_y_index: usize,
+    regs: &[String],
+    output: Option<String>,
+) -> RenderResult {
     let output = output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))?;
     let shape = rumoca_eval_solve::target_assignment_shape(ops)
         .map_err(|error| render_err(format!("invalid target-assignment row: {error}")))?;
@@ -129,7 +149,7 @@ fn render_solve_target_assignment_typed_c(
             expr_reg,
             ..
         }) if shape_target == target_y_index => solve_reg(
-            &regs,
+            regs,
             solve_reg_index(expr_reg, "target-assignment expression register")?,
         ),
         Some(rumoca_eval_solve::TargetAssignmentShape::Affine {
@@ -141,13 +161,13 @@ fn render_solve_target_assignment_typed_c(
             ..
         }) if shape_target == target_y_index => {
             let offset = solve_reg(
-                &regs,
+                regs,
                 solve_reg_index(offset_reg, "target-assignment offset register")?,
             )?;
             let coefficient = coefficient_reg
                 .map(|reg| {
                     solve_reg(
-                        &regs,
+                        regs,
                         solve_reg_index(reg, "target-assignment coefficient register")?,
                     )
                 })
@@ -171,6 +191,86 @@ fn render_solve_target_assignment_typed_c(
             "Solve-IR row cannot directly assign projection y[{target_y_index}]"
         ))),
     }
+}
+
+/// Render one scalar projection as bounded C statements rather than a deeply
+/// nested expression. Materializing every non-leaf register keeps C expression
+/// depth constant, which substantially reduces native compiler time for large
+/// Lie-group rows without changing the Solve IR evaluation order.
+fn render_solve_target_assignment_block_typed_c(
+    ops: &[solve::LinearOp],
+    target_y_index: usize,
+    cfg: &SolveRowCConfig,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut output = None;
+    let mut body = String::new();
+    for op in ops {
+        output = render_solve_op_typed(op, cfg, SolveRowDialect::C, &mut regs, output)?;
+        let Some(dst) = solve_typed_nonleaf_destination(op)? else {
+            continue;
+        };
+        let expr = solve_reg(&regs, dst)?;
+        let name = format!("__r{dst}");
+        body.push_str(&format!("        const double {name} = {expr};\n"));
+        store_solve_reg(&mut regs, dst, name)?;
+    }
+    let value = render_solve_target_assignment_value(ops, target_y_index, &regs, output)?;
+    body.push_str(&format!("        const double value = {value};\n"));
+    Ok(body)
+}
+
+fn solve_typed_nonleaf_destination(
+    op: &solve::LinearOp,
+) -> Result<Option<usize>, minijinja::Error> {
+    use solve::LinearOp;
+    let dst = match op {
+        LinearOp::LoadIndexedP { dst, .. }
+        | LinearOp::LoadIndexedSeed { dst, .. }
+        | LinearOp::LinearSolveComponent { dst, .. }
+        | LinearOp::Unary { dst, .. }
+        | LinearOp::Binary { dst, .. }
+        | LinearOp::Compare { dst, .. }
+        | LinearOp::Select { dst, .. } => *dst,
+        LinearOp::Const { .. }
+        | LinearOp::LoadTime { .. }
+        | LinearOp::LoadY { .. }
+        | LinearOp::LoadP { .. }
+        | LinearOp::LoadSeed { .. }
+        | LinearOp::Move { .. }
+        | LinearOp::StoreOutput { .. } => return optional_solve_render_miss(),
+        other => {
+            return Err(render_err(format!(
+                "unsupported solve LinearOp in target assignment: {}",
+                other.kind_name()
+            )));
+        }
+    };
+    Ok(Some(solve_reg_index(
+        dst,
+        "target-assignment temporary destination register",
+    )?))
+}
+
+fn optional_solve_render_miss<T>() -> Result<Option<T>, minijinja::Error> {
+    Ok(Option::None)
+}
+
+pub(in crate::codegen) fn render_solve_target_assignment_block_c_function(
+    row: Value,
+    target_y_index: Value,
+    config: Value,
+) -> RenderResult {
+    let target_y_index = target_y_index
+        .as_usize()
+        .ok_or_else(|| render_err("target-assignment Y index must be a non-negative integer"))?;
+    let Some(typed) = row.downcast_object_ref::<SolveRowValue>() else {
+        return Err(render_err(
+            "target-assignment block rendering requires a typed scalar Solve-IR row",
+        ));
+    };
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_target_assignment_block_typed_c(typed.ops(), target_y_index, &cfg)
 }
 
 fn render_solve_row_for(

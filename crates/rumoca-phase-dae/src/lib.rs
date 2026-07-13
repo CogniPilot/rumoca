@@ -94,7 +94,7 @@ use when_conversion::convert_when_clause;
 pub use balance::{BalanceError, balance, balance_detail, equations_unknowns, is_balanced};
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
-    prepare_dae_for_codegen, prepare_dae_for_fmi_model_description,
+    prepare_dae_for_codegen, prepare_dae_for_fmi_model_description, project_dae_for_fmi_metadata,
     scalarize_phantom_vector_equations,
 };
 pub use errors::{ToDaeError, ToDaeResult};
@@ -312,10 +312,6 @@ pub fn to_dae_with_options(
         }
         Ok::<(), ToDaeError>(())
     })?;
-    run_todae_phase(todae_subphase_timing, "assertion_actions", || {
-        assertion_actions::lower_assert_equations_to_event_actions(&mut dae, flat)
-    })?;
-
     // Process model/initial algorithms strictly through equation lowering.
     run_todae_phase(todae_subphase_timing, "algorithm_lowering", || {
         lower_algorithms_to_equations(&mut dae, flat)
@@ -342,6 +338,12 @@ pub fn to_dae_with_options(
     // immersed-boundary masks) out of the per-step / derivative hot path.
     run_todae_phase(todae_subphase_timing, "promote_parameter_variable", || {
         promote_parameter_variable::promote_parameter_variable_algebraics(&mut dae)
+    })?;
+    // Lower assertions after invariant algebraics have become derived parameters.
+    // This lets assertion constant folding and later Solve lowering see the same
+    // once-per-parameter-set classification as ordinary equation consumers.
+    run_todae_phase(todae_subphase_timing, "assertion_actions", || {
+        assertion_actions::lower_assert_equations_to_event_actions(&mut dae, flat)
     })?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
         populate_canonical_conditions(&mut dae)

@@ -131,7 +131,8 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
     let prefix = QualifiedName::from_dotted("tank");
 
     let qualified =
-        qualify_expression_imports_with_def_map_ctx(&expr, &prefix, &imports, None, &ctx).unwrap();
+        qualify_expression_imports_with_def_map_ctx(&expr, &prefix, &imports, None, &ctx, None)
+            .unwrap();
 
     let rumoca_core::Expression::FunctionCall { name, args, .. } = qualified else {
         panic!("expected function call");

@@ -26,8 +26,12 @@ pub(crate) fn build_fmu(
     let lib_path = bin_dir.join(format!("{model_identifier}.{lib_ext}"));
 
     eprintln!("  compiling {}", c_path.display());
-    let status = Command::new("cc")
-        .args(["-shared", "-fPIC", "-O2", "-o"])
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let cflags = std::env::var("CFLAGS").unwrap_or_else(|_| "-Og".to_string());
+    let status = Command::new(compiler)
+        .args(["-shared", "-fPIC"])
+        .args(cflags.split_whitespace())
+        .arg("-o")
         .arg(&lib_path)
         .arg(&c_path)
         .arg("-lm")

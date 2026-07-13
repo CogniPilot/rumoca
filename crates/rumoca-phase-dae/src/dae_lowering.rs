@@ -64,6 +64,23 @@ pub fn prepare_dae_for_fmi_model_description(dae: &dae::Dae) -> Result<CodegenDa
     Ok(CodegenDae { dae: prepared })
 }
 
+/// Project the DAE to the metadata needed by FMI XML and native Solve-IR
+/// implementations before folding numeric attributes. Evaluation still uses
+/// the complete source DAE, so parameter and user-function starts retain their
+/// semantics without cloning numerical equation graphs into the result.
+pub fn project_dae_for_fmi_metadata(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError> {
+    let mut projected = Dae::new();
+    projected.schema_version = dae.schema_version;
+    projected.variables = dae.variables.clone();
+    projected.conditions = dae.conditions.clone();
+    projected.events = dae.events.clone();
+    projected.clocks = dae.clocks.clone();
+    projected.metadata.model_description = dae.metadata.model_description.clone();
+    projected.metadata.symbol_ancestry = dae.metadata.symbol_ancestry.clone();
+    crate::fmi_metadata_values::fold_fmi_model_description_values_from_source(&mut projected, dae)?;
+    Ok(CodegenDae { dae: projected })
+}
+
 // =============================================================================
 // Record function parameter decomposition (DAE level)
 // =============================================================================

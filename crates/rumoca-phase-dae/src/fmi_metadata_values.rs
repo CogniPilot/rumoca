@@ -14,6 +14,7 @@ use rumoca_ir_dae::{
     Dae, DaeVariableMutVisitor, DaeVariablePartition, DaeVisitor, Variable, VariableOrigin,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 type FmiEvalResult<T> = Result<T, FmiEvalError>;
 
@@ -24,7 +25,49 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
     dae: &mut Dae,
 ) -> Result<(), ToDaeError> {
     let dims = collect_variable_dims(dae)?;
-    let values = collect_best_effort_fmi_metadata_values(dae, &dims)?;
+    let runtime =
+        rumoca_eval_dae::build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+            dae,
+            &[],
+            0.0,
+            Arc::new(rumoca_eval_dae::EvalRuntimeState::new()),
+        )
+        .map_err(|err| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "could not prepare default parameter evaluation for FMI modelDescription: {err}"
+            ))
+        })?;
+    let values = collect_best_effort_fmi_metadata_values(dae, &dims, &runtime)?;
+    rewrite_fmi_model_description_values(dae, &dims, &runtime, &values)
+}
+
+pub(crate) fn fold_fmi_model_description_values_from_source(
+    target: &mut Dae,
+    source: &Dae,
+) -> Result<(), ToDaeError> {
+    let dims = collect_variable_dims(source)?;
+    let runtime =
+        rumoca_eval_dae::build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+            source,
+            &[],
+            0.0,
+            Arc::new(rumoca_eval_dae::EvalRuntimeState::new()),
+        )
+        .map_err(|err| {
+            ToDaeError::runtime_metadata_violation(format!(
+                "could not prepare default parameter evaluation for FMI modelDescription: {err}"
+            ))
+        })?;
+    let values = collect_best_effort_fmi_metadata_values(source, &dims, &runtime)?;
+    rewrite_fmi_model_description_values(target, &dims, &runtime, &values)
+}
+
+fn rewrite_fmi_model_description_values(
+    target: &mut Dae,
+    dims: &HashMap<FmiValueKey, Vec<i64>>,
+    runtime: &rumoca_eval_dae::VarEnv<f64>,
+    values: &HashMap<FmiValueKey, FmiConstValue>,
+) -> Result<(), ToDaeError> {
     let mut rewrite_error = Ok(());
     let rewrite = |var: &mut Variable, _is_parameter: bool| {
         if rewrite_error.is_err() {
@@ -35,8 +78,9 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
                 var,
                 FmiNumericAttribute::Start,
                 expr,
-                &values,
-                &dims,
+                values,
+                dims,
+                runtime,
             ) {
                 Ok(expr) => var.start = Some(expr),
                 Err(err) => {
@@ -50,8 +94,9 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
                 var,
                 FmiNumericAttribute::Min,
                 expr,
-                &values,
-                &dims,
+                values,
+                dims,
+                runtime,
             ) {
                 Ok(expr) => var.min = Some(expr),
                 Err(err) => {
@@ -65,8 +110,9 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
                 var,
                 FmiNumericAttribute::Max,
                 expr,
-                &values,
-                &dims,
+                values,
+                dims,
+                runtime,
             ) {
                 Ok(expr) => var.max = Some(expr),
                 Err(err) => {
@@ -80,8 +126,9 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
                 var,
                 FmiNumericAttribute::Nominal,
                 expr,
-                &values,
-                &dims,
+                values,
+                dims,
+                runtime,
             ) {
                 Ok(expr) => var.nominal = Some(expr),
                 Err(err) => rewrite_error = Err(err),
@@ -89,7 +136,7 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
         }
     };
 
-    FmiMetadataRewriter { rewrite }.visit_variables_mut(&mut dae.variables);
+    FmiMetadataRewriter { rewrite }.visit_variables_mut(&mut target.variables);
     rewrite_error
 }
 
@@ -227,18 +274,22 @@ impl FmiConstValue {
                 Ok(())
             }
             Self::Real(_) => Err(FmiEvalError::NonFinite),
+            Self::Bool(value) => {
+                out.push(if *value { 1.0 } else { 0.0 });
+                Ok(())
+            }
             Self::Array(elements) => {
                 for element in elements {
                     element.flatten_numeric(out)?;
                 }
                 Ok(())
             }
-            Self::Bool(_) | Self::String(_) => Err(FmiEvalError::NonNumeric),
+            Self::String(_) => Err(FmiEvalError::NonNumeric),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FmiEvalError {
     PendingDependency,
     Unsupported(&'static str),
@@ -253,6 +304,7 @@ enum FmiEvalError {
     DivisionByZero,
     Overflow,
     MissingDefId,
+    FunctionEvaluation(String),
 }
 
 impl std::fmt::Display for FmiEvalError {
@@ -271,6 +323,9 @@ impl std::fmt::Display for FmiEvalError {
             Self::DivisionByZero => write!(f, "division by zero"),
             Self::Overflow => write!(f, "integer overflow while evaluating metadata"),
             Self::MissingDefId => write!(f, "structured reference is missing DefId metadata"),
+            Self::FunctionEvaluation(detail) => {
+                write!(f, "function evaluation failed: {detail}")
+            }
         }
     }
 }
@@ -278,6 +333,7 @@ impl std::fmt::Display for FmiEvalError {
 struct FmiMetadataEnv<'a> {
     values: &'a HashMap<FmiValueKey, FmiConstValue>,
     dims: &'a HashMap<FmiValueKey, Vec<i64>>,
+    runtime: &'a rumoca_eval_dae::VarEnv<f64>,
 }
 
 fn collect_variable_dims(dae: &Dae) -> Result<HashMap<FmiValueKey, Vec<i64>>, ToDaeError> {
@@ -320,6 +376,7 @@ impl DaeVisitor for VariableDimsCollector<'_> {
 fn collect_best_effort_fmi_metadata_values(
     dae: &Dae,
     dims: &HashMap<FmiValueKey, Vec<i64>>,
+    runtime: &rumoca_eval_dae::VarEnv<f64>,
 ) -> Result<HashMap<FmiValueKey, FmiConstValue>, ToDaeError> {
     let mut values: HashMap<FmiValueKey, FmiConstValue> = HashMap::new();
 
@@ -351,6 +408,7 @@ fn collect_best_effort_fmi_metadata_values(
                 let env = FmiMetadataEnv {
                     values: &values,
                     dims,
+                    runtime,
                 };
                 try_eval_fmi_const_expr(expr, &env)
             };
@@ -375,9 +433,14 @@ fn fmi_numeric_attribute_literal_expression(
     expr: &Expression,
     values: &HashMap<FmiValueKey, FmiConstValue>,
     dims: &HashMap<FmiValueKey, Vec<i64>>,
+    runtime: &rumoca_eval_dae::VarEnv<f64>,
 ) -> Result<Expression, ToDaeError> {
     let span = attr.span(var, expr)?;
-    let env = FmiMetadataEnv { values, dims };
+    let env = FmiMetadataEnv {
+        values,
+        dims,
+        runtime,
+    };
     let value = try_eval_fmi_const_expr(expr, &env)
         .map_err(|err| fmi_metadata_not_serializable_error(var, attr, expr, err))?;
     fmi_numeric_value_to_expression(var, value, span)
@@ -389,14 +452,23 @@ fn fmi_numeric_value_to_expression(
     value: FmiConstValue,
     span: Span,
 ) -> FmiEvalResult<Expression> {
-    if let FmiConstValue::Real(value) = value {
-        if !value.is_finite() {
-            return Err(FmiEvalError::NonFinite);
+    match &value {
+        FmiConstValue::Real(value) => {
+            if !value.is_finite() {
+                return Err(FmiEvalError::NonFinite);
+            }
+            return Ok(Expression::Literal {
+                value: Literal::Real(*value),
+                span,
+            });
         }
-        return Ok(Expression::Literal {
-            value: Literal::Real(value),
-            span,
-        });
+        FmiConstValue::Bool(value) => {
+            return Ok(Expression::Literal {
+                value: Literal::Real(if *value { 1.0 } else { 0.0 }),
+                span,
+            });
+        }
+        FmiConstValue::String(_) | FmiConstValue::Array(_) => {}
     }
 
     let mut values = Vec::new();
@@ -483,12 +555,18 @@ fn try_eval_fmi_const_expr(
         Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = try_eval_fmi_const_expr(lhs, env)?;
             let rhs = try_eval_fmi_const_expr(rhs, env)?;
-            eval_fmi_binary(op, lhs, rhs)
+            let has_array =
+                matches!(&lhs, FmiConstValue::Array(_)) || matches!(&rhs, FmiConstValue::Array(_));
+            match eval_fmi_binary(op, lhs, rhs) {
+                Err(FmiEvalError::NonNumeric) if has_array => {
+                    eval_fmi_runtime_numeric_expr(expr, env)
+                }
+                result => result,
+            }
         }
         Expression::BuiltinCall { function, args, .. } => eval_fmi_builtin(*function, args, env),
-        Expression::FunctionCall { name, args, .. } => {
-            eval_fmi_named_function(name.last_segment(), args, env)
-        }
+        Expression::FunctionCall { name, args, .. } => eval_fmi_named_function(name, args, env),
+        Expression::FieldAccess { .. } => eval_fmi_runtime_numeric_expr(expr, env),
         Expression::If {
             branches,
             else_branch,
@@ -512,6 +590,20 @@ fn try_eval_fmi_const_expr(
             start, step, end, ..
         } => eval_fmi_range(start, step.as_deref(), end, env),
         _ => Err(FmiEvalError::Unsupported("expression kind")),
+    }
+}
+
+fn eval_fmi_runtime_numeric_expr(
+    expr: &Expression,
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<FmiConstValue> {
+    let values = rumoca_eval_dae::eval_array_values::<f64>(expr, env.runtime)
+        .map_err(|err| FmiEvalError::FunctionEvaluation(err.to_string()))?;
+    match values.as_slice() {
+        [value] => Ok(FmiConstValue::Real(*value)),
+        _ => Ok(FmiConstValue::Array(
+            values.into_iter().map(FmiConstValue::Real).collect(),
+        )),
     }
 }
 
@@ -733,6 +825,7 @@ fn eval_fmi_builtin(
             let count = fmi_array_count(args, 0, env)?;
             Ok(FmiConstValue::Array(vec![FmiConstValue::Real(1.0); count]))
         }
+        BuiltinFunction::Identity => eval_fmi_identity(args, env),
         BuiltinFunction::Fill => {
             let value = eval_arg(args, 0, env)?;
             let count = fmi_array_count(args, 1, env)?;
@@ -761,6 +854,26 @@ fn eval_fmi_builtin(
         }
         _ => eval_fmi_math_builtin(function, args, env),
     }
+}
+
+fn eval_fmi_identity(
+    args: &[Expression],
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<FmiConstValue> {
+    let dimension = usize::try_from(eval_arg(args, 0, env)?.as_index()?)
+        .map_err(|_| FmiEvalError::InvalidIndex)?;
+    let count = dimension
+        .checked_mul(dimension)
+        .ok_or(FmiEvalError::Overflow)?;
+    let mut values = vec![FmiConstValue::Real(0.0); count];
+    for index in 0..dimension {
+        let offset = index
+            .checked_mul(dimension)
+            .and_then(|offset| offset.checked_add(index))
+            .ok_or(FmiEvalError::Overflow)?;
+        values[offset] = FmiConstValue::Real(1.0);
+    }
+    Ok(FmiConstValue::Array(values))
 }
 
 fn eval_arg(
@@ -794,19 +907,36 @@ fn eval_fmi_math_builtin(
 }
 
 fn eval_fmi_named_function(
-    short_name: &str,
+    name: &Reference,
     args: &[Expression],
     env: &FmiMetadataEnv<'_>,
 ) -> FmiEvalResult<FmiConstValue> {
+    let short_name = name.last_segment();
+
+    if let Ok(values) =
+        rumoca_eval_dae::eval::eval_user_function_array_output_pub::<f64>(name, args, env.runtime)
+    {
+        return match values.as_slice() {
+            [value] => Ok(FmiConstValue::Real(*value)),
+            _ => Ok(FmiConstValue::Array(
+                values.into_iter().map(FmiConstValue::Real).collect(),
+            )),
+        };
+    }
+
     if short_name == "substring" {
         return eval_fmi_substring(args, env).map(FmiConstValue::String);
     }
     if short_name == "ln" {
         return eval_fmi_builtin(BuiltinFunction::Log, args, env);
     }
-    let function =
-        BuiltinFunction::from_name(short_name).ok_or(FmiEvalError::Unsupported("function"))?;
-    eval_fmi_builtin(function, args, env)
+    if let Some(function) = BuiltinFunction::from_name(short_name) {
+        return eval_fmi_builtin(function, args, env);
+    }
+
+    rumoca_eval_dae::eval_function_call_pub::<f64>(name.var_name(), args, env.runtime)
+        .map(FmiConstValue::Real)
+        .map_err(|err| FmiEvalError::FunctionEvaluation(err.to_string()))
 }
 
 fn eval_fmi_substring(args: &[Expression], env: &FmiMetadataEnv<'_>) -> FmiEvalResult<String> {

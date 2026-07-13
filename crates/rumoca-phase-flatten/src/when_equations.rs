@@ -76,6 +76,7 @@ pub(crate) fn flatten_when_block(
         &ctx.current_imports,
         def_map,
         ctx,
+        None,
     )?;
 
     let mut clause = flat::WhenClause::new(condition, span);
@@ -182,6 +183,7 @@ fn flatten_when_if_equation(
             &ctx.current_imports,
             def_map,
             ctx,
+            None,
         )?;
         let mut branch_eqs = Vec::new();
 
@@ -379,7 +381,7 @@ fn flatten_when_simple_equation(
 
         // Qualify the function call expression
         let function =
-            qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx)?;
+            qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
         let origin = format!(
             "when equation multi-output assignment to ({})",
             outputs
@@ -396,7 +398,8 @@ fn flatten_when_simple_equation(
 
     // Simple single-target assignment
     let target = extract_assignment_target(lhs, prefix)?;
-    let value = qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx)?;
+    let value =
+        qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
     let origin = format!("when equation assignment to {}", target);
     Ok(Some(flat::WhenEquation::assign(
         target, value, span, origin,
@@ -553,9 +556,9 @@ fn flatten_assert_call(
     }
 
     let condition =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx)?;
+        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx, None)?;
     let message =
-        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx)?;
+        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
     let origin = "assert in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::assert(
@@ -580,7 +583,7 @@ fn flatten_terminate_call(
     }
 
     let message =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx)?;
+        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx, None)?;
     let origin = "terminate in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::terminate(message, span, origin)))
@@ -604,7 +607,7 @@ fn flatten_reinit_call(
 
     let state = extract_assignment_target(&args[0], prefix)?;
     let value =
-        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx)?;
+        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
     let origin = format!("reinit({})", state);
 
     // Note: EQN-016 validation (reinit target must be state) is done in ToDae phase

@@ -998,6 +998,18 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
             causal_steps: Vec::new(),
         }],
     };
+    assert!(fmi3_native_projection_available(&problem).unwrap());
+    let mut unsupported_problem = problem.clone();
+    unsupported_problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks[0]
+        .causal_steps
+        .push(solve::AlgebraicProjectionStep { row: 1, y_index: 1 });
+    assert!(!fmi3_native_projection_available(&unsupported_problem).unwrap());
+    let mut incomplete_problem = problem.clone();
+    incomplete_problem.solve_layout.algebraic_scalar_count = 2;
+    assert!(!fmi3_native_projection_available(&incomplete_problem).unwrap());
     let object = dae_json.as_object_mut().unwrap();
     object.insert("__ir_kind".to_string(), serde_json::json!("solve"));
     object.insert("solve".to_string(), serde_json::to_value(problem).unwrap());
@@ -1011,11 +1023,28 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
 
     assert!(!rendered.contains("static double __rumoca_implicit_row"));
     assert!(rendered.contains("const int y_index = 1;"), "{rendered}");
+    assert!(rendered.contains("const double __r2 ="), "{rendered}");
     assert!(rendered.contains("const double value = 2.0;"), "{rendered}");
     assert!(rendered.contains("__rumoca_solve_set_y(m, y_index, value)"));
     assert!(
         rendered.contains("The Solve-IR projection writes the algebraic and output Y segments")
     );
+
+    assert_fmi3_projection_fallbacks(&dae_json);
+}
+
+fn assert_fmi3_projection_fallbacks(dae_json: &serde_json::Value) {
+    let mut incomplete = dae_json.clone();
+    *incomplete
+        .pointer_mut("/solve/solve_layout/algebraic_scalar_count")
+        .unwrap() = serde_json::json!(2);
+    let rendered = render_template_with_dae_json_and_name(
+        &incomplete,
+        builtin_template("fmi3", "model.c.jinja"),
+        "M",
+    )
+    .unwrap();
+    assert!(!rendered.contains("const int y_index = 1;"), "{rendered}");
 
     let mut causal = dae_json.clone();
     *causal
@@ -1052,7 +1081,7 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
         "{rendered}"
     );
 
-    let mut unmatched = dae_json;
+    let mut unmatched = dae_json.clone();
     *unmatched
         .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/rows/0")
         .unwrap() = serde_json::json!(99);

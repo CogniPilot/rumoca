@@ -265,20 +265,21 @@ fn test_todae_keeps_parameter_only_if_conditions_out_of_event_memory() {
         rhs: Box::new(int(2)),
         span: test_span(23, 24),
     };
+    let x = dae_model
+        .variables
+        .parameters
+        .get(&VarName::new("x"))
+        .expect("a parameter-only definition should become a derived parameter");
     assert!(
         matches!(
-            &dae_model.continuous.equations[0].rhs,
-            rumoca_core::Expression::Binary { rhs, .. }
-                if matches!(
-                    rhs.as_ref(),
-                    rumoca_core::Expression::If { branches, .. }
-                        if rumoca_core::expressions_semantically_equal(
-                            &branches[0].0,
-                            &lowered_condition,
-                        )
+            x.start.as_ref(),
+            Some(rumoca_core::Expression::If { branches, .. })
+                if rumoca_core::expressions_semantically_equal(
+                    &branches[0].0,
+                    &lowered_condition,
                 )
         ),
-        "the parameter condition should remain directly evaluable by initialization lowering"
+        "the parameter condition should remain directly evaluable during parameter initialization"
     );
 }
 

@@ -878,8 +878,8 @@ fn test_fmi3_cosimulation_uses_opt_in_fixed_rk4() {
         "the generic backend must not embed a vehicle-specific RK4 step"
     );
     assert!(
-        builtin_template("fmi3", "build.sh.jinja").contains("${CFLAGS:=-O2}"),
-        "the packaged FMU build should allow a caller-selected integration policy"
+        builtin_template("fmi3", "build.sh.jinja").contains("${CFLAGS:=-Og}"),
+        "the packaged FMU build should default to fast native compilation while allowing caller-selected flags"
     );
 }
 

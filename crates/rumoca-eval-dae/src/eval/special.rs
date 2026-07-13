@@ -201,12 +201,21 @@ fn try_enter_function_recursion_for(
     })
 }
 
-fn build_local_function_env<T: SimFloat>(env: &VarEnv<T>) -> VarEnv<T> {
+fn build_local_function_env<T: SimFloat>(
+    env: &VarEnv<T>,
+    inputs: &[FunctionParam],
+    outputs: &[FunctionParam],
+    locals: &[FunctionParam],
+) -> VarEnv<T> {
     let mut local_env = VarEnv::<T>::new();
     local_env.vars = crate::eval::VarScope::child_of(&env.vars);
+    for param in inputs.iter().chain(outputs).chain(locals) {
+        local_env.vars.hide_parent_namespace(&param.name);
+    }
     local_env.runtime = env.runtime.clone();
     local_env.functions = env.functions.clone();
-    local_env.dims = env.dims.clone();
+    // Function dimensions are lexical; the caller's local shapes must not leak
+    // into identically named inputs, outputs, or locals in this call frame.
     local_env.start_exprs = env.start_exprs.clone();
     local_env.clock_intervals = env.clock_intervals.clone();
     local_env.enum_literal_ordinals = env.enum_literal_ordinals.clone();
@@ -688,7 +697,7 @@ fn eval_user_function_call<T: SimFloat>(
     trace_function_call_summary(trace_call, name.var_name(), &resolved_name, &summary);
     trace_function_call_body_once(trace_call, &resolved_name, &body);
 
-    let mut local_env = build_local_function_env(env);
+    let mut local_env = build_local_function_env(env, &inputs, &outputs, &locals);
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
     // Bind arguments/defaults and execute the body under the call-stack context
     // so selected function calls (`*.re` / `*.im`) propagate correctly.
@@ -956,7 +965,7 @@ fn eval_user_function_local_env<T: SimFloat>(
         });
     };
 
-    let mut local_env = build_local_function_env(env);
+    let mut local_env = build_local_function_env(env, &inputs, &outputs, &locals);
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
     let trace_call = function_trace_match_enabled(name.as_str(), resolved_name.as_str());
     trace_function_call_summary(
@@ -1018,7 +1027,7 @@ pub fn eval_user_function_array_output_pub<T: SimFloat>(
         });
     };
 
-    let mut local_env = build_local_function_env(env);
+    let mut local_env = build_local_function_env(env, &inputs, &outputs, &locals);
     seed_static_function_scope_dims(&mut local_env, &inputs, &outputs, &locals);
     let complex_component = selection
         .as_ref()
@@ -1066,7 +1075,8 @@ pub fn resolve_user_function_output_dims_pub<T: SimFloat>(
         return Ok(None);
     }
 
-    let mut local_env = build_local_function_env(env);
+    let mut local_env =
+        build_local_function_env(env, &function.inputs, &function.outputs, &function.locals);
     seed_static_function_scope_dims(
         &mut local_env,
         &function.inputs,
@@ -1172,10 +1182,9 @@ fn selected_input_fields<T: SimFloat>(
     dst_prefix: &str,
 ) -> Vec<(String, T)> {
     let mut selected = Vec::new();
-    for (key, value) in &env.vars {
-        if let Some(suffix) = key.strip_prefix(src_prefix) {
-            selected.push((format!("{dst_prefix}{suffix}"), *value));
-        }
+    for (key, value) in env.vars.entries_with_prefix(src_prefix) {
+        let suffix = &key[src_prefix.len()..];
+        selected.push((format!("{dst_prefix}{suffix}"), *value));
     }
     selected
 }

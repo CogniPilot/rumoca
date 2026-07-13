@@ -33,8 +33,7 @@ pub(super) fn eval_table_matrix_arg<T: SimFloat>(
         } if subscripts.is_empty() => {
             let Some(flat_values) = array_values_from_env_name(name.as_str(), env)? else {
                 return Ok(env
-                    .start_exprs
-                    .get(name.as_str())
+                    .visible_start_expr(name.as_str())
                     .map(|start_expr| eval_table_matrix_arg(start_expr, env))
                     .transpose()?
                     .flatten());
@@ -87,7 +86,7 @@ fn table_matrix_from_flat_values<T: SimFloat>(
         return Ok(start_matrix);
     }
     if flat_values.is_empty() {
-        if let Some(start_expr) = env.start_exprs.get(name)
+        if let Some(start_expr) = env.visible_start_expr(name)
             && let Some(start_matrix) = eval_table_matrix_arg(start_expr, env)?
         {
             return Ok(start_matrix);
@@ -107,7 +106,7 @@ fn richer_table_start_matrix<T: SimFloat>(
     flat_len: usize,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
-    let Some(start_expr) = env.start_exprs.get(name) else {
+    let Some(start_expr) = env.visible_start_expr(name) else {
         return Ok(None);
     };
     if matches!(start_expr, rumoca_core::Expression::VarRef { name: start_name, .. } if start_name.as_str() == name)

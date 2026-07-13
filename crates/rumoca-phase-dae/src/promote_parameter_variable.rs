@@ -18,10 +18,11 @@
 //! a parameter, so it stays directly evaluable instead of allocating an Appendix B
 //! event/condition variable.
 //!
-//! The DAE stores array equations scalarized (one residual per element) and groups
-//! them into [`dae::StructuredEquationFamily`] blocks. Promotion therefore: (1)
-//! only promotes variables whose every defining equation sits inside a structured
-//! family that is *entirely* promotable (never splitting a family); (2)
+//! The DAE may store array equations either as whole-array assignments or scalarized
+//! into [`dae::StructuredEquationFamily`] blocks. Promotion therefore: (1) promotes
+//! ordinary scalar and standalone whole-array assignments directly, and only
+//! promotes structured variables whose entire family is promotable (never
+//! splitting a family); (2)
 //! reconstructs each promoted array variable's per-element bindings, in equation
 //! order, into a flat array `start` expression; and (3) drops the emptied families
 //! and shifts the surviving families' `first_equation_index` to match the compacted
@@ -29,7 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_core::ExpressionVisitor;
+use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
 use rumoca_ir_dae as dae;
 
 use crate::errors::ToDaeError;
@@ -69,22 +70,16 @@ fn promote(
                 base(target.as_str()).to_string(),
             ))
     };
-    // Only promote algebraics that a state derivative actually depends on
-    // (transitively). That is precisely where inlining a large parameter-variable
-    // definition into the per-step / derivative hot path causes codegen bloat;
-    // promoting a constant array no consumer reads buys nothing and would only
-    // perturb the equation structure of otherwise-trivial models. A *cheapened*
-    // family is the exception: its per-cell bodies were already dropped at flatten, so
-    // it MUST be promoted (reconstructed from the template) for correctness regardless
-    // of reachability — otherwise its `0.0` interiors would survive.
-    let worthwhile = derivative_reachable_algebraics(dae);
+    // Every parameter-variable algebraic is invariant for the whole simulation.
+    // Promote it even when no state derivative reaches it: visible observations and
+    // assertion conditions are runtime consumers too, and leaving a large static
+    // submodel in the algebraic partition makes them rebuild the same value at every
+    // output point. Derived parameters preserve the value while evaluating it once.
     let mut removable: HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)> =
         HashMap::new();
     for (index, equation) in dae.continuous.equations.iter().enumerate() {
         if let Some((target, binding)) = direct_assignment(equation)
             && promotable.contains(base(target.as_str()))
-            && (worthwhile.contains(base(target.as_str()))
-                || cheapened_algebraic_bases.contains(base(target.as_str())))
             && is_array_variable(&target)
         {
             removable.insert(index, (target, binding.clone()));
@@ -101,6 +96,7 @@ fn promote(
         &removable,
         &dae.continuous.structured_equations,
         dae.continuous.equations.len(),
+        dae,
     );
     if family_removed.is_empty() {
         return Ok(());
@@ -111,7 +107,8 @@ fn promote(
     // reference a value that does not exist at parameter-evaluation time (it is
     // still a solver algebraic). Iteratively drop candidates that reference a
     // non-promoted algebraic, then keep only the surviving variables' equations.
-    let promoted_vars = dependency_closed_promotions(&removable, &family_removed, dae);
+    let promotion_order = dependency_ordered_promotions(&removable, &family_removed, dae);
+    let promoted_vars: HashSet<&str> = promotion_order.iter().map(String::as_str).collect();
     let removed: HashSet<usize> = family_removed
         .into_iter()
         .filter(|index| {
@@ -159,7 +156,11 @@ fn promote(
 
     // Move each promoted variable into the parameter partition with a reconstructed
     // array binding (a scalar variable keeps its single binding).
-    for (key, bindings) in grouped {
+    for promoted_name in promotion_order {
+        let key = rumoca_core::VarName::new(promoted_name);
+        let Some(bindings) = grouped.shift_remove(&key) else {
+            continue;
+        };
         let Some((name, mut var)) = dae.variables.algebraics.shift_remove_entry(&key) else {
             continue;
         };
@@ -268,9 +269,9 @@ fn cheapened_algebraic_family_bases(dae: &dae::Dae) -> HashSet<String> {
 /// session reports the failing model instead of aborting the process) and points at the
 /// offending family. It should be unreachable in practice — flatten only cheapens
 /// parameter-variability ∩ derivative-reachable families (see
-/// `rumoca_phase_flatten`'s `param_variability::parameter_variability_family_bases`,
-/// which mirrors [`derivative_reachable_algebraics`]); the guard exists to catch drift
-/// between those two analyses before it becomes a silent miscompile.
+/// `rumoca_phase_flatten`'s `param_variability::parameter_variability_family_bases`);
+/// the guard exists to catch drift between those analyses before it becomes a silent
+/// miscompile.
 fn enforce_cheapened_algebraic_families_promoted(dae: &dae::Dae) -> Result<(), ToDaeError> {
     let survivors = cheapened_algebraic_families(dae);
     let Some(&(_, span)) = survivors.first() else {
@@ -362,10 +363,17 @@ fn comprehension_starts_from_families(
         if degenerate {
             continue;
         }
+        let binder_names = indices
+            .iter()
+            .map(|index| index.name.clone())
+            .collect::<HashSet<_>>();
         for body in &template.body {
             if let Some((target, rhs)) = residual_template_target_and_rhs(body) {
+                let mut rewriter = ComprehensionBinderRewriter {
+                    binder_names: &binder_names,
+                };
                 let comprehension = rumoca_core::Expression::ArrayComprehension {
-                    expr: Box::new(rhs.clone()),
+                    expr: Box::new(rewriter.rewrite_expression(rhs)),
                     indices: indices.clone(),
                     filter: None,
                     span: family.span,
@@ -375,6 +383,30 @@ fn comprehension_starts_from_families(
         }
     }
     result
+}
+
+struct ComprehensionBinderRewriter<'a> {
+    binder_names: &'a HashSet<String>,
+}
+
+impl ExpressionRewriter for ComprehensionBinderRewriter<'_> {
+    fn rewrite_var_ref_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let binder_name = self
+            .binder_names
+            .iter()
+            .find(|binder| name.as_str() == binder.as_str());
+        let name = binder_name.map_or_else(|| name.clone(), rumoca_core::Reference::generated);
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts: self.rewrite_subscripts(subscripts),
+            span,
+        }
+    }
 }
 
 /// Extract `(target_base, rhs)` from a residual template body `lhs - rhs` whose target
@@ -447,80 +479,59 @@ fn binder_range_expr(
     }
 }
 
-/// Algebraic base names that a state-derivative equation depends on, transitively
-/// through other algebraics' defining equations. Promotion is only worthwhile here
-/// — these are the algebraics whose definitions would otherwise be inlined into the
-/// derivative hot path.
-fn derivative_reachable_algebraics(dae: &dae::Dae) -> HashSet<String> {
-    let algebraics: HashSet<String> = dae
-        .variables
-        .algebraics
-        .keys()
-        .map(|k| base(k.as_str()).to_string())
-        .collect();
-    // Each algebraic's defining-equation algebraic references (for transitive walk).
-    let mut algebraic_refs: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut seed: Vec<String> = Vec::new();
-    for equation in &dae.continuous.equations {
-        let mut collector = ReferencedBases {
-            bases: HashSet::new(),
-        };
-        collector.visit_expression(&equation.rhs);
-        let referenced_algebraics: HashSet<String> = collector
-            .bases
-            .into_iter()
-            .filter(|r| algebraics.contains(r))
-            .collect();
-        if equation.rhs.contains_der() {
-            // A state-derivative equation: its algebraic reads are reachable roots.
-            seed.extend(referenced_algebraics.iter().cloned());
-        }
-        if let Some((target, _)) = direct_assignment(equation) {
-            algebraic_refs
-                .entry(base(target.as_str()).to_string())
-                .or_default()
-                .extend(referenced_algebraics);
-        }
-    }
-    let mut reachable = HashSet::new();
-    while let Some(name) = seed.pop() {
-        if !reachable.insert(name.clone()) {
-            continue;
-        }
-        if let Some(refs) = algebraic_refs.get(&name) {
-            seed.extend(refs.iter().cloned());
-        }
-    }
-    reachable
+/// Dependency order of variables that can be promoted without changing the scalar
+/// equation balance, splitting a structured family, or creating cyclic parameter
+/// bindings. Derived parameters are appended in this order because parameter start
+/// evaluation expects every dependency to precede its consumers.
+struct PromotionGraph {
+    candidate_order: Vec<String>,
+    algebraic_refs: HashMap<String, HashSet<String>>,
+    promoted: HashSet<String>,
 }
 
-/// The set of variable base names that can be promoted without dangling
-/// dependencies: starting from every family-eligible candidate, iteratively drop
-/// any variable whose binding references an algebraic that is not itself promoted.
-fn dependency_closed_promotions(
+fn build_promotion_graph(
     removable: &HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)>,
     family_removed: &HashSet<usize>,
     dae: &dae::Dae,
-) -> HashSet<String> {
+) -> PromotionGraph {
     let algebraics: HashSet<String> = dae
         .variables
         .algebraics
         .keys()
         .map(|k| base(k.as_str()).to_string())
         .collect();
-    // Per-candidate-variable: the algebraic base names its binding references.
+    let mut all_indices: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, (target, _)) in removable {
+        all_indices
+            .entry(base(target.as_str()).to_string())
+            .or_default()
+            .push(*index);
+    }
+
+    // Per-candidate-variable: its equation scalar count and the algebraic base
+    // names referenced by its reconstructed binding.
     let mut algebraic_refs: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut equation_scalar_counts: HashMap<String, usize> = HashMap::new();
     for index in family_removed {
         let Some((target, binding)) = removable.get(index) else {
             continue;
         };
-        let mut collector = ReferencedBases {
-            bases: HashSet::new(),
+        let Some(equation) = dae.continuous.equations.get(*index) else {
+            continue;
         };
+        let target_base = base(target.as_str()).to_string();
+        let Some(total) = equation_scalar_counts
+            .get(&target_base)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(equation.scalar_count)
+        else {
+            continue;
+        };
+        equation_scalar_counts.insert(target_base.clone(), total);
+        let mut collector = ReferencedBases::default();
         collector.visit_expression(binding);
-        let entry = algebraic_refs
-            .entry(base(target.as_str()).to_string())
-            .or_default();
+        let entry = algebraic_refs.entry(target_base).or_default();
         entry.extend(
             collector
                 .bases
@@ -528,25 +539,174 @@ fn dependency_closed_promotions(
                 .filter(|r| algebraics.contains(r)),
         );
     }
-    let mut promoted: HashSet<String> = algebraic_refs.keys().cloned().collect();
+    let candidate_order = dae
+        .variables
+        .algebraics
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<Vec<_>>();
+    let promoted = candidate_order
+        .iter()
+        .filter(|name| {
+            promotion_candidate_is_complete(
+                name,
+                &algebraic_refs,
+                &all_indices,
+                &equation_scalar_counts,
+                family_removed,
+                dae,
+            )
+        })
+        .cloned()
+        .collect();
+    PromotionGraph {
+        candidate_order,
+        algebraic_refs,
+        promoted,
+    }
+}
+
+fn promotion_candidate_is_complete(
+    name: &str,
+    algebraic_refs: &HashMap<String, HashSet<String>>,
+    all_indices: &HashMap<String, Vec<usize>>,
+    equation_scalar_counts: &HashMap<String, usize>,
+    family_removed: &HashSet<usize>,
+    dae: &dae::Dae,
+) -> bool {
+    let Some(variable) = dae
+        .variables
+        .algebraics
+        .get(&rumoca_core::VarName::new(name))
+    else {
+        return false;
+    };
+    let Some(variable_size) = variable.try_size().ok() else {
+        return false;
+    };
+    algebraic_refs.contains_key(name)
+        && all_indices
+            .get(name)
+            .is_some_and(|indices| indices.iter().all(|index| family_removed.contains(index)))
+        && equation_scalar_counts.get(name).copied() == Some(variable_size)
+}
+
+fn prune_dangling_promotions(
+    promoted: &mut HashSet<String>,
+    algebraic_refs: &HashMap<String, HashSet<String>>,
+) {
     loop {
-        let to_remove: Vec<String> = promoted
+        let to_remove = promoted
             .iter()
-            .filter(|var| {
-                algebraic_refs
-                    .get(var.as_str())
-                    .is_some_and(|refs| refs.iter().any(|r| r != *var && !promoted.contains(r)))
-            })
+            .filter(|var| promotion_has_dangling_reference(var, promoted, algebraic_refs))
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
         if to_remove.is_empty() {
-            break;
+            return;
         }
         for var in to_remove {
             promoted.remove(&var);
         }
     }
-    promoted
+}
+
+fn promotion_has_dangling_reference(
+    var: &str,
+    promoted: &HashSet<String>,
+    algebraic_refs: &HashMap<String, HashSet<String>>,
+) -> bool {
+    algebraic_refs.get(var).is_some_and(|refs| {
+        refs.iter()
+            .any(|reference| reference == var || !promoted.contains(reference))
+    })
+}
+
+fn dependency_ordered_promotions(
+    removable: &HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)>,
+    family_removed: &HashSet<usize>,
+    dae: &dae::Dae,
+) -> Vec<String> {
+    let PromotionGraph {
+        candidate_order,
+        algebraic_refs,
+        mut promoted,
+    } = build_promotion_graph(removable, family_removed, dae);
+
+    let family_targets = structured_family_targets(removable, family_removed, dae);
+    loop {
+        prune_dangling_promotions(&mut promoted, &algebraic_refs);
+
+        let split_family_targets = family_targets
+            .iter()
+            .filter(|targets| {
+                targets
+                    .iter()
+                    .any(|target| !promoted.contains(target.as_str()))
+            })
+            .flat_map(|targets| targets.iter().cloned())
+            .collect::<HashSet<_>>();
+        let before_family_prune = promoted.len();
+        promoted.retain(|name| !split_family_targets.contains(name));
+        if promoted.len() != before_family_prune {
+            continue;
+        }
+
+        let order = topological_promotion_order(&candidate_order, &algebraic_refs, &promoted);
+        if order.len() == promoted.len() {
+            return order;
+        }
+        let acyclic: HashSet<&str> = order.iter().map(String::as_str).collect();
+        promoted.retain(|name| acyclic.contains(name.as_str()));
+    }
+}
+
+fn structured_family_targets(
+    removable: &HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)>,
+    family_removed: &HashSet<usize>,
+    dae: &dae::Dae,
+) -> Vec<HashSet<String>> {
+    dae.continuous
+        .structured_equations
+        .iter()
+        .filter_map(|family| {
+            let total: usize = family.equation_counts.iter().sum();
+            let indices = family.first_equation_index..family.first_equation_index + total;
+            if !indices.clone().all(|index| family_removed.contains(&index)) {
+                return None;
+            }
+            Some(
+                indices
+                    .filter_map(|index| removable.get(&index))
+                    .map(|(target, _)| base(target.as_str()).to_string())
+                    .collect(),
+            )
+        })
+        .filter(|targets: &HashSet<String>| !targets.is_empty())
+        .collect()
+}
+
+fn topological_promotion_order(
+    candidate_order: &[String],
+    algebraic_refs: &HashMap<String, HashSet<String>>,
+    promoted: &HashSet<String>,
+) -> Vec<String> {
+    let mut remaining = promoted.clone();
+    let mut order = Vec::with_capacity(remaining.len());
+    loop {
+        let next = candidate_order.iter().find(|candidate| {
+            remaining.contains(candidate.as_str())
+                && algebraic_refs.get(candidate.as_str()).is_none_or(|refs| {
+                    refs.iter()
+                        .all(|reference| !remaining.contains(reference.as_str()))
+                })
+        });
+        let Some(next) = next else {
+            break;
+        };
+        remaining.remove(next.as_str());
+        order.push(next.clone());
+    }
+    order
 }
 
 /// Restrict the removable equation set so no structured family is split: an
@@ -556,6 +716,7 @@ fn removable_indices_respecting_families(
     removable: &HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)>,
     families: &[dae::StructuredEquationFamily],
     equation_count: usize,
+    dae: &dae::Dae,
 ) -> HashSet<usize> {
     // Map each equation index to its owning family (if any).
     let mut family_of: Vec<Option<usize>> = vec![None; equation_count];
@@ -582,14 +743,19 @@ fn removable_indices_respecting_families(
         .keys()
         .copied()
         .filter(|index| match family_of.get(*index).copied().flatten() {
-            // Promote only variables defined by a *structured* (array/grid)
-            // equation family — that is where inlining a parameter-variable
-            // definition into every consumer actually bloats codegen. Scalar
-            // standalone algebraics (e.g. connection aliases, algorithm outputs)
-            // keep their classification, which other passes may rely on, and the
-            // benefit of promoting a single scalar is negligible anyway.
             Some(family_index) => family_all_removable[family_index],
-            None => false,
+            None => removable.get(index).is_some_and(|(target, _)| {
+                let base_name = rumoca_core::VarName::new(base(target.as_str()).to_string());
+                let Some(equation) = dae.continuous.equations.get(*index) else {
+                    return false;
+                };
+                let Some(variable) = dae.variables.algebraics.get(&base_name) else {
+                    return false;
+                };
+                target.as_str() == base(target.as_str())
+                    && ((variable.dims.is_empty() && equation.origin.starts_with("equation from "))
+                        || (!variable.dims.is_empty() && equation.scalar_count > 1))
+            }),
         })
         .collect()
 }
@@ -637,6 +803,14 @@ fn parameter_variable_algebraics(dae: &dae::Dae) -> HashSet<String> {
             .map(|k| base(k.as_str()).to_string())
             .collect::<HashSet<String>>()
     };
+    let mut static_references = base_names(&dae.variables.parameters);
+    static_references.extend(base_names(&dae.variables.constants));
+    static_references.extend(
+        dae.symbols
+            .enum_literal_ordinals
+            .keys()
+            .map(|name| base(name).to_string()),
+    );
     let mut disqualifying = base_names(&dae.variables.states);
     disqualifying.extend(base_names(&dae.variables.inputs));
     disqualifying.extend(base_names(&dae.variables.outputs));
@@ -660,9 +834,7 @@ fn parameter_variable_algebraics(dae: &dae::Dae) -> HashSet<String> {
         if !algebraics.contains(&target) {
             continue;
         }
-        let mut collector = ReferencedBases {
-            bases: HashSet::new(),
-        };
+        let mut collector = ReferencedBases::default();
         collector.visit_expression(binding);
         definitions
             .entry(target)
@@ -684,6 +856,7 @@ fn parameter_variable_algebraics(dae: &dae::Dae) -> HashSet<String> {
                     &disqualifying,
                     &algebraics,
                     &parameter_variable,
+                    &static_references,
                 )
             });
             if provable {
@@ -701,13 +874,16 @@ fn parameter_variable_algebraics(dae: &dae::Dae) -> HashSet<String> {
 /// Whether a single reference `r` in `target`'s defining expression keeps `target`
 /// classifiable as parameter-variable: a state/input/output/discrete reference
 /// breaks it; another algebraic must already be proven parameter-variable (or be
-/// `target` itself); anything else (parameter, constant, loop index) is fine.
+/// `target` itself); every other reference must resolve to a known parameter,
+/// constant, or enumeration literal. Array-comprehension indices are removed by
+/// [`ReferencedBases`] as lexical locals.
 fn reference_is_parameter_variable(
     r: &str,
     target: &str,
     disqualifying: &HashSet<String>,
     algebraics: &HashSet<String>,
     parameter_variable: &HashSet<String>,
+    static_references: &HashSet<String>,
 ) -> bool {
     if r == "time" {
         return false;
@@ -718,7 +894,7 @@ fn reference_is_parameter_variable(
     if algebraics.contains(r) {
         return r == target || parameter_variable.contains(r);
     }
-    true
+    static_references.contains(r)
 }
 
 /// Interpret an equation as `target := binding`, handling both explicit
@@ -762,8 +938,10 @@ fn whole_var_ref(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName>
     }
 }
 
+#[derive(Default)]
 struct ReferencedBases {
     bases: HashSet<String>,
+    local_names: HashMap<String, usize>,
 }
 
 impl ExpressionVisitor for ReferencedBases {
@@ -772,10 +950,32 @@ impl ExpressionVisitor for ReferencedBases {
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) {
-        self.bases
-            .insert(base(name.var_name().as_str()).to_string());
+        let name = base(name.var_name().as_str());
+        if !self.local_names.contains_key(name) {
+            self.bases.insert(name.to_string());
+        }
         for subscript in subscripts {
             self.visit_subscript(subscript);
+        }
+    }
+
+    fn enter_scope(&mut self, scope: rumoca_core::ExpressionScope<'_>) {
+        let rumoca_core::ExpressionScope::ArrayComprehension(indices) = scope;
+        for index in indices {
+            *self.local_names.entry(index.name.clone()).or_default() += 1;
+        }
+    }
+
+    fn exit_scope(&mut self, scope: rumoca_core::ExpressionScope<'_>) {
+        let rumoca_core::ExpressionScope::ArrayComprehension(indices) = scope;
+        for index in indices {
+            let Some(depth) = self.local_names.get_mut(index.name.as_str()) else {
+                continue;
+            };
+            *depth -= 1;
+            if *depth == 0 {
+                self.local_names.remove(index.name.as_str());
+            }
         }
     }
 }
@@ -784,11 +984,56 @@ impl ExpressionVisitor for ReferencedBases {
 mod tests {
     use super::*;
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("promotion_test.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn literal(value: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: test_span(),
+        }
+    }
+
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::generated(name),
+            subscripts: Vec::new(),
+            span: test_span(),
+        }
+    }
+
+    fn insert_scalar_algebraic(dae_model: &mut dae::Dae, name: &str) {
+        let name = rumoca_core::VarName::new(name);
+        dae_model
+            .variables
+            .algebraics
+            .insert(name.clone(), dae::Variable::new(name, test_span()));
+    }
+
+    fn push_scalar_equation(
+        dae_model: &mut dae::Dae,
+        target: &str,
+        binding: rumoca_core::Expression,
+    ) {
+        dae_model.continuous.equations.push(dae::Equation::explicit(
+            rumoca_core::VarName::new(target),
+            binding,
+            test_span(),
+            "equation from promotion fixture",
+        ));
+    }
+
     #[test]
     fn time_is_not_parameter_variable_reference() {
         let disqualifying = HashSet::new();
         let algebraics = HashSet::new();
         let parameter_variable = HashSet::from(["time".to_string()]);
+        let static_references = HashSet::new();
 
         assert!(!reference_is_parameter_variable(
             "time",
@@ -796,6 +1041,129 @@ mod tests {
             &disqualifying,
             &algebraics,
             &parameter_variable,
+            &static_references,
         ));
+    }
+
+    #[test]
+    fn promoted_parameters_are_ordered_before_their_consumers() {
+        let mut dae_model = dae::Dae::default();
+        insert_scalar_algebraic(&mut dae_model, "dependent");
+        insert_scalar_algebraic(&mut dae_model, "source");
+        push_scalar_equation(&mut dae_model, "dependent", var_ref("source"));
+        push_scalar_equation(&mut dae_model, "source", literal(2.0));
+
+        promote_parameter_variable_algebraics(&mut dae_model).unwrap();
+
+        assert_eq!(
+            dae_model
+                .variables
+                .parameters
+                .keys()
+                .map(rumoca_core::VarName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["source", "dependent"]
+        );
+        assert!(dae_model.continuous.equations.is_empty());
+    }
+
+    #[test]
+    fn unresolved_aggregate_reference_prevents_promotion() {
+        let mut dae_model = dae::Dae::default();
+        insert_scalar_algebraic(&mut dae_model, "result");
+        push_scalar_equation(&mut dae_model, "result", var_ref("component.array.field"));
+
+        promote_parameter_variable_algebraics(&mut dae_model).unwrap();
+
+        assert!(
+            dae_model
+                .variables
+                .algebraics
+                .contains_key(&rumoca_core::VarName::new("result"))
+        );
+        assert_eq!(dae_model.continuous.equations.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_scalar_definitions_do_not_change_equation_balance() {
+        let mut dae_model = dae::Dae::default();
+        insert_scalar_algebraic(&mut dae_model, "result");
+        push_scalar_equation(&mut dae_model, "result", literal(1.0));
+        push_scalar_equation(&mut dae_model, "result", literal(2.0));
+
+        promote_parameter_variable_algebraics(&mut dae_model).unwrap();
+
+        assert!(
+            dae_model
+                .variables
+                .algebraics
+                .contains_key(&rumoca_core::VarName::new("result"))
+        );
+        assert_eq!(dae_model.continuous.equations.len(), 2);
+    }
+
+    #[test]
+    fn template_binder_is_rewritten_to_comprehension_local() {
+        let binder_names = HashSet::from(["i".to_string()]);
+        let mut rewriter = ComprehensionBinderRewriter {
+            binder_names: &binder_names,
+        };
+        let rewritten = rewriter.rewrite_expression(&rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("i"),
+            subscripts: Vec::new(),
+            span: test_span(),
+        });
+
+        let rumoca_core::Expression::VarRef { name, .. } = rewritten else {
+            panic!("binder reference should remain a variable reference");
+        };
+        assert_eq!(name.as_str(), "i");
+        assert!(name.is_generated());
+    }
+
+    #[test]
+    fn qualified_component_with_binder_suffix_is_not_rewritten() {
+        let binder_names = HashSet::from(["i".to_string()]);
+        let mut rewriter = ComprehensionBinderRewriter {
+            binder_names: &binder_names,
+        };
+        let rewritten = rewriter.rewrite_expression(&rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("pathPlanning.path.i"),
+            subscripts: Vec::new(),
+            span: test_span(),
+        });
+
+        let rumoca_core::Expression::VarRef { name, .. } = rewritten else {
+            panic!("component reference should remain a variable reference");
+        };
+        assert_eq!(name.as_str(), "pathPlanning.path.i");
+        assert!(!name.is_generated());
+    }
+
+    #[test]
+    fn promotes_ordinary_time_invariant_scalar_equation() {
+        let span = test_span();
+        let name = rumoca_core::VarName::new("staticResult");
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .variables
+            .algebraics
+            .insert(name.clone(), dae::Variable::new(name.clone(), span));
+        dae_model.continuous.equations.push(dae::Equation::explicit(
+            name.clone(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(3.0),
+                span,
+            },
+            span,
+            "equation from static fixture",
+        ));
+
+        promote_parameter_variable_algebraics(&mut dae_model)
+            .expect("ordinary invariant scalar should promote");
+
+        assert!(dae_model.variables.algebraics.is_empty());
+        assert!(dae_model.variables.parameters.contains_key(&name));
+        assert!(dae_model.continuous.equations.is_empty());
     }
 }

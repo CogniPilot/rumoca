@@ -337,6 +337,7 @@ impl<T> Clone for VarScope<T> {
 struct VarScopeFrame<T> {
     local: IndexMap<String, T>,
     parent: Option<VarScope<T>>,
+    hidden_parent_namespaces: HashSet<String>,
 }
 
 pub struct VarScopeIter<'a, T> {
@@ -357,6 +358,7 @@ impl<T> Default for VarScope<T> {
             frame: Arc::new(VarScopeFrame {
                 local: IndexMap::new(),
                 parent: None,
+                hidden_parent_namespaces: HashSet::new(),
             }),
         }
     }
@@ -372,16 +374,21 @@ impl<T> VarScope<T> {
             frame: Arc::new(VarScopeFrame {
                 local: IndexMap::new(),
                 parent: Some(parent.clone()),
+                hidden_parent_namespaces: HashSet::new(),
             }),
         }
     }
 
     pub fn get(&self, name: &str) -> Option<&T> {
         self.frame.local.get(name).or_else(|| {
-            self.frame
-                .parent
-                .as_ref()
-                .and_then(|parent| parent.get(name))
+            (!self.parent_namespace_is_hidden(name))
+                .then(|| {
+                    self.frame
+                        .parent
+                        .as_ref()
+                        .and_then(|parent| parent.get(name))
+                })
+                .flatten()
         })
     }
 
@@ -415,6 +422,60 @@ impl<T> VarScope<T> {
         self.frame.local.iter()
     }
 
+    /// Visible entries whose names begin with `prefix`, in the same stable order and
+    /// with the same child-frame shadowing semantics as [`Self::iter`].
+    ///
+    /// Record argument binding commonly needs only a handful of fields from a scope
+    /// containing hundreds of unrelated model variables. Filtering each frame before
+    /// building the shadow-position map avoids hashing and materializing that entire
+    /// scope for every nested function call.
+    pub(crate) fn entries_with_prefix(&self, prefix: &str) -> Vec<(&String, &T)> {
+        let mut entries = Vec::new();
+        let mut positions = FxHashMap::default();
+        self.collect_entries_with_prefix(prefix, &mut entries, &mut positions);
+        entries
+    }
+
+    /// Whether a scalar in this frame hides array or record entries in a caller frame.
+    pub(crate) fn local_scalar_shadows_parent_namespace(&self, name: &str) -> bool {
+        if self.frame.parent.is_none() || !self.frame.local.contains_key(name) {
+            return false;
+        }
+
+        !self.frame.local.keys().any(|key| {
+            key.strip_prefix(name)
+                .is_some_and(|suffix| suffix.starts_with('[') || suffix.starts_with('.'))
+        })
+    }
+
+    pub(crate) fn parent_namespace_is_hidden(&self, name: &str) -> bool {
+        if self.frame.hidden_parent_namespaces.contains(name) {
+            return true;
+        }
+        name.char_indices().any(|(index, separator)| {
+            matches!(separator, '[' | '.')
+                && self.frame.hidden_parent_namespaces.contains(&name[..index])
+        })
+    }
+
+    fn remove_hidden_parent_entries<'a>(
+        &self,
+        entries: &mut Vec<(&'a String, &'a T)>,
+        positions: &mut FxHashMap<&'a str, usize>,
+    ) {
+        if self.frame.hidden_parent_namespaces.is_empty() {
+            return;
+        }
+        entries.retain(|(name, _)| !self.parent_namespace_is_hidden(name));
+        positions.clear();
+        positions.extend(
+            entries
+                .iter()
+                .enumerate()
+                .map(|(index, (name, _))| (name.as_str(), index)),
+        );
+    }
+
     fn ordered_entries(&self) -> Vec<(&String, &T)> {
         if self.frame.parent.is_none() {
             return self.frame.local.iter().collect();
@@ -432,8 +493,32 @@ impl<T> VarScope<T> {
     ) {
         if let Some(parent) = &self.frame.parent {
             parent.collect_ordered_entries(entries, positions);
+            self.remove_hidden_parent_entries(entries, positions);
         }
         for (name, value) in &self.frame.local {
+            if let Some(index) = positions.get(name.as_str()).copied() {
+                entries[index] = (name, value);
+            } else {
+                positions.insert(name.as_str(), entries.len());
+                entries.push((name, value));
+            }
+        }
+    }
+
+    fn collect_entries_with_prefix<'a>(
+        &'a self,
+        prefix: &str,
+        entries: &mut Vec<(&'a String, &'a T)>,
+        positions: &mut FxHashMap<&'a str, usize>,
+    ) {
+        if let Some(parent) = &self.frame.parent {
+            parent.collect_entries_with_prefix(prefix, entries, positions);
+            self.remove_hidden_parent_entries(entries, positions);
+        }
+        for (name, value) in &self.frame.local {
+            if !name.starts_with(prefix) {
+                continue;
+            }
             if let Some(index) = positions.get(name.as_str()).copied() {
                 entries[index] = (name, value);
             } else {
@@ -445,6 +530,12 @@ impl<T> VarScope<T> {
 }
 
 impl<T: Clone> VarScope<T> {
+    pub(crate) fn hide_parent_namespace(&mut self, name: &str) {
+        Arc::make_mut(&mut self.frame)
+            .hidden_parent_namespaces
+            .insert(name.to_string());
+    }
+
     pub fn insert(&mut self, name: String, value: T) -> Option<T> {
         Arc::make_mut(&mut self.frame).local.insert(name, value)
     }
@@ -563,6 +654,12 @@ impl<T: SimFloat> Default for VarEnv<T> {
 impl<T: SimFloat> VarEnv<T> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn visible_start_expr(&self, name: &str) -> Option<&rumoca_core::Expression> {
+        (!self.vars.parent_namespace_is_hidden(name))
+            .then(|| self.start_exprs.get(name))
+            .flatten()
     }
 
     pub fn with_isolated_runtime(mut self) -> Self {
@@ -687,7 +784,7 @@ pub(super) fn previous_start_or_default<T: SimFloat>(
         return Ok(T::zero());
     };
 
-    if let Some(start) = env.start_exprs.get(name.as_str()) {
+    if let Some(start) = env.visible_start_expr(name.as_str()) {
         if !subscripts.is_empty() {
             let span = expression_source_span(arg)
                 .or_else(|| expression_source_span(start))
@@ -1179,8 +1276,7 @@ fn start_expr_is_nonnumeric_inner(
             if env.enum_literal_ordinals.contains_key(key) || !visited.insert(key.to_string()) {
                 return false;
             }
-            env.start_exprs
-                .get(key)
+            env.visible_start_expr(key)
                 .is_some_and(|start| start_expr_is_nonnumeric_inner(start, env, visited))
         }
         rumoca_core::Expression::VarRef { .. } | rumoca_core::Expression::Empty { .. } => false,

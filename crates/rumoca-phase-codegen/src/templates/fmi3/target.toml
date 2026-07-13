@@ -16,6 +16,7 @@ render_context = "fmi-model-description"
 [[files]]
 path = "sources/{{ model_name }}.c"
 template = "model.c.jinja"
+render_context = "fmi-implementation"
 
 [[files]]
 path = "sources/fmi3PlatformTypes.h"
