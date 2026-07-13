@@ -201,18 +201,24 @@ impl DefIdVarRefIndex {
             } else {
                 OwnerScopeMode::DescendantOnly
             };
-            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner, mode)
-                .or_else(|| {
-                    (!is_class_qualified_reference(name)).then(|| {
-                        resolve_best_owner_scoped_candidate(
-                            name,
-                            raw_leaf,
-                            candidates,
-                            owner,
-                            OwnerScopeMode::EnclosingOnly,
-                        )
-                    })?
-                });
+            let owner_scoped =
+                resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner, mode)
+                    .or_else(|| {
+                        (!is_class_qualified_reference(name)).then(|| {
+                            resolve_best_owner_scoped_candidate(
+                                name,
+                                raw_leaf,
+                                candidates,
+                                owner,
+                                OwnerScopeMode::EnclosingOnly,
+                            )
+                        })?
+                    });
+            return owner_scoped.or_else(|| {
+                (!is_class_qualified_reference(name)).then(|| {
+                    resolve_best_shared_ancestor_candidate(raw, raw_leaf, candidates, owner)
+                })?
+            });
         }
         if name.target_def_id().is_some() {
             return None;
@@ -229,6 +235,36 @@ impl DefIdVarRefIndex {
         }
         None
     }
+}
+
+fn resolve_best_shared_ancestor_candidate(
+    raw: &str,
+    raw_leaf: &str,
+    candidates: &[IndexedVarRef],
+    owner: Option<&str>,
+) -> Option<String> {
+    let owner_path = rumoca_core::ComponentPath::from_flat_path(owner?);
+    let mut scored = candidates
+        .iter()
+        .filter(|candidate| candidate.leaf == raw_leaf)
+        .filter_map(|candidate| {
+            let shared = owner_path
+                .parts()
+                .iter()
+                .zip(candidate.path.parts())
+                .take_while(|(owner, candidate)| owner == candidate)
+                .count();
+            (shared > 0).then_some((shared, candidate))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by_key(|(shared, _)| *shared);
+    let (best_score, best) = scored.last()?;
+    let ambiguous = scored
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|(score, _)| score == best_score);
+    (!ambiguous && best.name != raw).then(|| best.name.clone())
 }
 
 pub(super) fn aggregate_projection_ref(name: &str) -> Option<String> {
