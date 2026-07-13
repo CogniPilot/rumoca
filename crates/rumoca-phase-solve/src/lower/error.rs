@@ -37,6 +37,13 @@ pub enum LowerError {
         function: String,
         span: rumoca_core::Span,
     },
+    /// Function-output projection encountered a runtime-dependent while loop.
+    /// The outer projection boundary declines so ordinary Solve-IR function
+    /// lowering can preserve the loop with conditional register updates.
+    DynamicWhileProjection {
+        function: String,
+        span: rumoca_core::Span,
+    },
     /// A subscript whose value is only known at runtime, in a position that
     /// requires a compile-time index. Observation lowering declines on this.
     DynamicSubscript,
@@ -93,6 +100,10 @@ impl std::fmt::Display for LowerError {
             Self::ProjectionBudgetExceeded { function, .. } => write!(
                 f,
                 "function `{function}` projection exceeded the inline node budget"
+            ),
+            Self::DynamicWhileProjection { function, .. } => write!(
+                f,
+                "function `{function}` has a runtime-dependent while loop"
             ),
             Self::DynamicSubscript
             | Self::ForRangeUnknownDimension { .. }
@@ -166,6 +177,9 @@ impl LowerError {
             Self::ProjectionBudgetExceeded { function, .. } => {
                 format!("function `{function}` projection exceeded the inline node budget")
             }
+            Self::DynamicWhileProjection { function, .. } => {
+                format!("function `{function}` has a runtime-dependent while loop")
+            }
             Self::DynamicSubscript => "dynamic subscript expressions are unsupported".to_string(),
             Self::ForRangeUnknownDimension { name } => {
                 format!("size() in for-loop range requires known dimension `{name}`")
@@ -204,6 +218,9 @@ impl LowerError {
             Self::ProjectionBudgetExceeded { function, .. } => {
                 format!("function `{function}` projection exceeded the inline node budget")
             }
+            Self::DynamicWhileProjection { function, .. } => {
+                format!("function `{function}` has a runtime-dependent while loop")
+            }
             Self::DynamicSubscript
             | Self::ForRangeUnknownDimension { .. }
             | Self::MissingActualArgument { .. }
@@ -219,6 +236,7 @@ impl LowerError {
             Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
             Self::Scalarization { span, .. } => *span,
             Self::ProjectionBudgetExceeded { span, .. } if !span.is_dummy() => Some(*span),
+            Self::DynamicWhileProjection { span, .. } if !span.is_dummy() => Some(*span),
             Self::MissingActualArgument { span, .. } if !span.is_dummy() => Some(*span),
             Self::Spanned { source, span } => source
                 .source_span()
@@ -243,6 +261,18 @@ impl LowerError {
     /// True for a projection budget decline, looking through span wrappers.
     pub fn is_projection_budget_exceeded(&self) -> bool {
         self.projection_budget_exceeded_parts().is_some()
+    }
+
+    /// True when projection must defer a dynamic while loop to ordinary
+    /// Solve-IR function lowering, looking through context/span wrappers.
+    pub fn is_dynamic_while_projection(&self) -> bool {
+        match self {
+            Self::DynamicWhileProjection { .. } => true,
+            Self::Spanned { source, .. } | Self::WithContext { source, .. } => {
+                source.is_dynamic_while_projection()
+            }
+            _ => false,
+        }
     }
 
     pub fn is_missing_binding(&self) -> bool {

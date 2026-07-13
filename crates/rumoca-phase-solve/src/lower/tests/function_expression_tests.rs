@@ -526,6 +526,209 @@ fn lower_expression_binds_partial_function_input_closure() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn lower_expression_evaluates_captured_partial_function_in_dynamic_while() {
+    let mut sine_residual = rumoca_core::Function::new("Pkg.sineResidual", lower_test_span());
+    for input in ["u", "A", "w", "s"] {
+        sine_residual.inputs.push(function_param(input));
+    }
+    sine_residual.outputs.push(function_param("y"));
+    sine_residual.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(var("A")),
+                rhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Sin,
+                    args: vec![rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Mul,
+                        lhs: Box::new(var("w")),
+                        rhs: Box::new(var("u")),
+                        span: lower_test_span(),
+                    }],
+                    span: lower_test_span(),
+                }),
+                span: lower_test_span(),
+            }),
+            rhs: Box::new(var("s")),
+            span: lower_test_span(),
+        },
+        span: lower_test_span(),
+    });
+
+    let mut solve = rumoca_core::Function::new("Pkg.solve", lower_test_span());
+    solve.inputs.push(rumoca_core::FunctionParam {
+        type_class: Some(rumoca_core::ClassType::Function),
+        type_name: "Modelica.Math.Nonlinear.Interfaces.partialScalarFunction".to_string(),
+        ..rumoca_core::FunctionParam::new(
+            "f",
+            "Modelica.Math.Nonlinear.Interfaces.partialScalarFunction",
+            lower_test_span(),
+        )
+    });
+    solve.inputs.push(function_param("u_min"));
+    solve.inputs.push(function_param("u_max"));
+    solve.outputs.push(function_param("root"));
+    for local in ["a", "b", "mid", "f_mid", "i"] {
+        solve.locals.push(function_param(local));
+    }
+    solve.locals.push(
+        rumoca_core::FunctionParam::new("found", "Boolean", lower_test_span()).with_default(
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(false),
+                span: lower_test_span(),
+            },
+        ),
+    );
+    let assign = |name: &str, value: rumoca_core::Expression| rumoca_core::Statement::Assignment {
+        comp: component_ref(name),
+        value,
+        span: lower_test_span(),
+    };
+    let binary = |op, lhs, rhs| rumoca_core::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: lower_test_span(),
+    };
+    solve.body = vec![
+        assign("a", var("u_min")),
+        assign("b", var("u_max")),
+        assign("i", real_lit(0.0)),
+        rumoca_core::Statement::While {
+            block: rumoca_core::StatementBlock {
+                cond: rumoca_core::Expression::Unary {
+                    op: rumoca_core::OpUnary::Not,
+                    rhs: Box::new(var("found")),
+                    span: lower_test_span(),
+                },
+                stmts: vec![
+                    assign(
+                        "mid",
+                        binary(
+                            rumoca_core::OpBinary::Div,
+                            binary(rumoca_core::OpBinary::Add, var("a"), var("b")),
+                            real_lit(2.0),
+                        ),
+                    ),
+                    assign(
+                        "f_mid",
+                        rumoca_core::Expression::FunctionCall {
+                            name: rumoca_core::Reference::from_component_reference(
+                                source_component_ref_from_name("f"),
+                            ),
+                            args: vec![var("mid")],
+                            is_constructor: false,
+                            span: lower_test_span(),
+                        },
+                    ),
+                    rumoca_core::Statement::If {
+                        cond_blocks: vec![rumoca_core::StatementBlock {
+                            cond: binary(rumoca_core::OpBinary::Ge, var("i"), real_lit(59.0)),
+                            stmts: vec![
+                                assign(
+                                    "found",
+                                    rumoca_core::Expression::Literal {
+                                        value: rumoca_core::Literal::Boolean(true),
+                                        span: lower_test_span(),
+                                    },
+                                ),
+                                assign("root", var("mid")),
+                            ],
+                        }],
+                        else_block: Some(vec![
+                            rumoca_core::Statement::If {
+                                cond_blocks: vec![rumoca_core::StatementBlock {
+                                    cond: binary(
+                                        rumoca_core::OpBinary::Gt,
+                                        var("f_mid"),
+                                        real_lit(0.0),
+                                    ),
+                                    stmts: vec![assign("b", var("mid"))],
+                                }],
+                                else_block: Some(vec![assign("a", var("mid"))]),
+                                span: lower_test_span(),
+                            },
+                            assign(
+                                "i",
+                                binary(rumoca_core::OpBinary::Add, var("i"), real_lit(1.0)),
+                            ),
+                        ]),
+                        span: lower_test_span(),
+                    },
+                ],
+            },
+            span: lower_test_span(),
+        },
+    ];
+
+    let mut functions = IndexMap::new();
+    functions.insert(sine_residual.name.clone(), sine_residual);
+    functions.insert(solve.name.clone(), solve);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Pkg.solve",
+        )),
+        args: vec![
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name("Pkg.sineResidual"),
+                ),
+                args: vec![
+                    named_arg("A", real_lit(1.0)),
+                    named_arg("w", real_lit(1.0)),
+                    named_arg("s", real_lit(-0.5)),
+                ],
+                is_constructor: true,
+                span: lower_test_span(),
+            },
+            real_lit(-1.7),
+            real_lit(1.7),
+        ],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    let mut dae_model = dae::Dae::default();
+    dae_model.symbols.functions = functions.clone();
+    let projected = crate::lower::derivative_rhs::function_call_projected_scalars_with_owner(
+        &expr,
+        &dae_model,
+        &IndexMap::new(),
+        lower_test_span(),
+    )
+    .expect("dynamic scalar function calls should decline projection without failing lowering");
+    assert!(projected.is_none());
+
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
+        .expect("captured partial function in a dynamic while should lower");
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+
+    assert!((read_reg(&regs, lowered.result) - 0.5_f64.asin()).abs() <= 1e-12);
+
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("x_zero"), scalar_var("x_zero"));
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: binary(rumoca_core::OpBinary::Sub, var("x_zero"), expr),
+        span: lower_test_span(),
+        origin: "dynamic while function residual".to_string(),
+        scalar_count: 1,
+    });
+    let layout = build_var_layout(&dae_model).expect("residual layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("dynamic while projection should decline to ordinary residual lowering");
+    let residual = eval_linear_ops(&rows[0], &[0.0], &[], 0.0)
+        .1
+        .expect("residual output");
+    assert!((residual + 0.5_f64.asin()).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_binds_constructor_actual_to_flattened_record_inputs_with_defaults() {
     let mut function = rumoca_core::Function::new("Pkg.drop", lower_test_span());
     function

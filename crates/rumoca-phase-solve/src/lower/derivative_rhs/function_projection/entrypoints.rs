@@ -11,10 +11,11 @@ pub(in crate::lower) fn function_projected_residuals_with_owner(
     };
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
     if let Some((call, field)) = function_field_access(rhs)
-        && let Some(call_outputs) = analysis.top_level_function_call_outputs(
-            call,
-            inherited_projection_source_span(call.span(), owner_span),
-        )?
+        && let Some(call_outputs) =
+            dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+                call,
+                inherited_projection_source_span(call.span(), owner_span),
+            ))?
     {
         let Some(target_base) = plain_var_ref_name(lhs) else {
             return Ok(None);
@@ -28,10 +29,11 @@ pub(in crate::lower) fn function_projected_residuals_with_owner(
         )?));
     }
     if let Some((call, field)) = function_field_access(lhs)
-        && let Some(call_outputs) = analysis.top_level_function_call_outputs(
-            call,
-            inherited_projection_source_span(call.span(), owner_span),
-        )?
+        && let Some(call_outputs) =
+            dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+                call,
+                inherited_projection_source_span(call.span(), owner_span),
+            ))?
     {
         let Some(target_base) = plain_var_ref_name(rhs) else {
             return Ok(None);
@@ -44,10 +46,12 @@ pub(in crate::lower) fn function_projected_residuals_with_owner(
             owner_span,
         )?));
     }
-    if let Some(call_outputs) = analysis.top_level_function_call_outputs(
-        rhs,
-        inherited_projection_source_span(rhs.span(), owner_span),
-    )? {
+    if let Some(call_outputs) =
+        dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+            rhs,
+            inherited_projection_source_span(rhs.span(), owner_span),
+        ))?
+    {
         let Some(target_base) = plain_var_ref_name(lhs) else {
             return Ok(None);
         };
@@ -58,10 +62,12 @@ pub(in crate::lower) fn function_projected_residuals_with_owner(
             owner_span,
         )?));
     }
-    if let Some(call_outputs) = analysis.top_level_function_call_outputs(
-        lhs,
-        inherited_projection_source_span(lhs.span(), owner_span),
-    )? {
+    if let Some(call_outputs) =
+        dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+            lhs,
+            inherited_projection_source_span(lhs.span(), owner_span),
+        ))?
+    {
         let Some(target_base) = plain_var_ref_name(rhs) else {
             return Ok(None);
         };
@@ -94,10 +100,11 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
 ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
     if let Some((call, scalar_index)) = selected_function_output_call(expr, dae_model)? {
-        let Some(outputs) = analysis.top_level_function_call_outputs(
-            &call,
-            inherited_projection_source_span(call.span(), owner_span),
-        )?
+        let Some(outputs) =
+            dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+                &call,
+                inherited_projection_source_span(call.span(), owner_span),
+            ))?
         else {
             return Ok(None);
         };
@@ -122,10 +129,11 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
         return Ok(Some(values));
     }
     if let Some((call, field)) = function_field_access(expr)
-        && let Some(outputs) = analysis.top_level_function_call_outputs(
-            call,
-            inherited_projection_source_span(call.span(), owner_span),
-        )?
+        && let Some(outputs) =
+            dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+                call,
+                inherited_projection_source_span(call.span(), owner_span),
+            ))?
     {
         let scope = FunctionProjectionScope::default();
         let mut selected = projection_vec_with_capacity(
@@ -155,10 +163,12 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
             return Ok(Some(selected));
         }
     }
-    if let Some(outputs) = analysis.top_level_function_call_outputs(
-        expr,
-        inherited_projection_source_span(expr.span(), owner_span),
-    )? {
+    if let Some(outputs) =
+        dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+            expr,
+            inherited_projection_source_span(expr.span(), owner_span),
+        ))?
+    {
         return projected_output_expressions(
             analysis.resolve_projected_scalar_field_outputs(outputs, owner_span)?,
             owner_span,
@@ -171,6 +181,15 @@ pub(in crate::lower) fn function_call_projected_scalars_with_owner(
         return Ok(Some(values));
     }
     Ok(None)
+}
+
+fn dynamic_while_projection_decline<T>(
+    result: Result<Option<T>, LowerError>,
+) -> Result<Option<T>, LowerError> {
+    match result {
+        Err(err) if err.is_dynamic_while_projection() => Ok(None),
+        result => result,
+    }
 }
 
 pub(in crate::lower) fn function_call_projected_output_groups_with_owner(
@@ -191,10 +210,11 @@ pub(in crate::lower) fn function_call_projected_output_groups_with_owner(
         return Ok(None);
     };
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
-    let Some(outputs) = analysis.top_level_function_call_outputs(
-        expr,
-        inherited_projection_source_span(expr.span(), owner_span),
-    )?
+    let Some(outputs) =
+        dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+            expr,
+            inherited_projection_source_span(expr.span(), owner_span),
+        ))?
     else {
         return Ok(None);
     };
@@ -261,10 +281,11 @@ fn projected_qualified_function_output_scalars(
             is_constructor: false,
             span: *span,
         };
-        let Some(outputs) = analysis.top_level_function_call_outputs(
-            &call,
-            inherited_projection_source_span(call.span(), owner_span),
-        )?
+        let Some(outputs) =
+            dynamic_while_projection_decline(analysis.top_level_function_call_outputs(
+                &call,
+                inherited_projection_source_span(call.span(), owner_span),
+            ))?
         else {
             return Ok(None);
         };

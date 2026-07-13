@@ -1888,13 +1888,10 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         for _ in 0..MAX_STATIC_WHILE_PROJECTION_ITERATIONS {
             let condition = self.substitute(&block.cond, scope)?;
             let Some(value) = self.compile_time_scalar_in_scope(&condition, scope)? else {
-                return Err(unsupported_at(
-                    format!(
-                        "function `{}` contains a while statement with a non-static condition",
-                        function.name
-                    ),
+                return Err(LowerError::DynamicWhileProjection {
+                    function: function.name.to_string(),
                     span,
-                ));
+                });
             };
             if value == 0.0 {
                 return Ok(());
