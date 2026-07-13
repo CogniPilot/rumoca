@@ -37,11 +37,17 @@ pub(crate) struct ParameterLookupSession {
 
 #[derive(Default)]
 struct DimensionEvaluationState {
-    evaluation_generations: rustc_hash::FxHashMap<String, u64>,
+    evaluations: rustc_hash::FxHashMap<String, DimensionEvaluationRecord>,
     lookup_inputs: Option<DimensionLookupInputsSnapshot>,
     lookup_generation: u64,
     #[cfg(test)]
     dimension_evaluation_attempts: rustc_hash::FxHashMap<String, usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DimensionEvaluationRecord {
+    generation: u64,
+    resolved: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +58,12 @@ struct DimensionLookupInputsSnapshot {
     strings: rustc_hash::FxHashMap<String, String>,
     enumerations: rustc_hash::FxHashMap<String, String>,
     dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DimensionInferenceOutcome {
+    changed: bool,
+    resolved: bool,
 }
 
 impl ParameterLookupSession {
@@ -1054,6 +1066,7 @@ impl Context {
             &self.functions,
         );
         let mut new_dims = false;
+        let mut changed_dimension_names = std::collections::BTreeSet::new();
         for ParamBinding {
             name,
             binding,
@@ -1062,9 +1075,9 @@ impl Context {
         } in var_bindings
         {
             if dimension_state
-                .evaluation_generations
+                .evaluations
                 .get(*name)
-                .is_some_and(|previous| *previous == lookup_generation)
+                .is_some_and(|previous| previous.generation == lookup_generation)
             {
                 continue;
             }
@@ -1075,17 +1088,41 @@ impl Context {
                     .entry((*name).to_string())
                     .or_default() += 1;
             }
-            new_dims |=
+            let outcome =
                 self.try_infer_array_dims(name, binding, *binding_from_modification, &eval_ctx);
-            dimension_state
-                .evaluation_generations
-                .insert((*name).to_string(), lookup_generation);
+            new_dims |= outcome.changed;
+            if outcome.changed {
+                changed_dimension_names.insert((*name).to_string());
+            }
+            dimension_state.evaluations.insert(
+                (*name).to_string(),
+                DimensionEvaluationRecord {
+                    generation: lookup_generation,
+                    resolved: outcome.resolved,
+                },
+            );
         }
         if new_dims {
-            // Dimension inference writes lookup outputs during this sweep. Treat
-            // those outputs as part of the generation just evaluated so the
-            // next unchanged fixed-point pass can skip settled work.
+            // A producer can make a dimension available after an earlier
+            // consumer already failed in this sweep. Advance the generation,
+            // promote only records that actually resolved, and leave failed or
+            // skipped records stale so the next fixed-point pass retries them.
+            dimension_state.lookup_generation = dimension_state.lookup_generation.wrapping_add(1);
             dimension_state.lookup_inputs = Some(self.dimension_lookup_inputs_snapshot());
+            let settled_generation = dimension_state.lookup_generation;
+            for binding in var_bindings {
+                let Some(evaluation) = dimension_state.evaluations.get_mut(binding.name) else {
+                    continue;
+                };
+                let is_only_producer = changed_dimension_names.len() == 1
+                    && changed_dimension_names.contains(binding.name);
+                if evaluation.resolved
+                    && (is_only_producer
+                        || !self.binding_may_read_dimension_lookup_outputs(binding.binding))
+                {
+                    evaluation.generation = settled_generation;
+                }
+            }
         }
         new_dims
     }
@@ -1105,6 +1142,22 @@ impl Context {
         }
     }
 
+    fn binding_may_read_dimension_lookup_outputs(&self, binding: &Expression) -> bool {
+        if binding.contains_subexpression(|expr| matches!(expr, Expression::FunctionCall { .. })) {
+            return true;
+        }
+        let mut references = Vec::new();
+        binding.collect_var_refs(&mut references);
+        references.into_iter().any(|reference| {
+            let name = reference.as_str();
+            !self.parameter_values.contains_key(name)
+                && !self.real_parameter_values.contains_key(name)
+                && !self.boolean_parameter_values.contains_key(name)
+                && !self.string_parameter_values.contains_key(name)
+                && !self.enum_parameter_values.contains_key(name)
+        })
+    }
+
     /// Try to infer array dimensions for a single binding.
     fn try_infer_array_dims(
         &mut self,
@@ -1112,7 +1165,7 @@ impl Context {
         binding: &Expression,
         binding_from_modification: bool,
         user_func_eval_ctx: &rumoca_eval_flat::constant::EvalContext,
-    ) -> bool {
+    ) -> DimensionInferenceOutcome {
         // Skip when the variable is inside an expanded array component element.
         // During array expansion, sub-component modifications (e.g., `L=fill(L1sigma,m)`)
         // are NOT indexed for each element. So `inductor[1].L` gets the same unindexed
@@ -1124,7 +1177,10 @@ impl Context {
             is_computed_shape_binding(binding)
         };
         if has_embedded_array_subscript_in_parent(name) && !binding_can_drive_shape {
-            return false;
+            return DimensionInferenceOutcome {
+                changed: false,
+                resolved: true,
+            };
         }
 
         let inferred = infer_array_dimensions_full_with_functions(
@@ -1142,7 +1198,12 @@ impl Context {
         );
         let inferred_dims = match inferred {
             Some(dims) => dims,
-            None => return false,
+            None => {
+                return DimensionInferenceOutcome {
+                    changed: false,
+                    resolved: false,
+                };
+            }
         };
         if binding_from_modification
             && self.reconciled_modified_dimension_names.contains(name)
@@ -1152,7 +1213,10 @@ impl Context {
                     && inferred_dims.iter().all(|dim| *dim >= 0)
             })
         {
-            return false;
+            return DimensionInferenceOutcome {
+                changed: false,
+                resolved: true,
+            };
         }
 
         // Check if we should update (MLS §10.1)
@@ -1170,9 +1234,15 @@ impl Context {
             tracing::debug!(var = %name, dims = ?inferred_dims, "inferred array dimensions from builtin");
             self.array_dimensions
                 .insert(name.to_string(), inferred_dims);
-            true
+            DimensionInferenceOutcome {
+                changed: true,
+                resolved: true,
+            }
         } else {
-            false
+            DimensionInferenceOutcome {
+                changed: false,
+                resolved: true,
+            }
         }
     }
 

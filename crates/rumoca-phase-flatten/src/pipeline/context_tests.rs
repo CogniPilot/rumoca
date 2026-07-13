@@ -338,6 +338,104 @@ mod tests {
     }
 
     #[test]
+    fn same_sweep_consumer_retries_after_later_binding_produces_dimensions() {
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        let consumer_name = rumoca_core::VarName::new("B");
+        flat.add_variable(
+            consumer_name.clone(),
+            flat::Variable {
+                name: consumer_name.clone(),
+                binding: Some(Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Fill,
+                    args: vec![int_lit(0), size_dim_expr("A", 1)],
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let producer_name = rumoca_core::VarName::new("A");
+        flat.add_variable(
+            producer_name.clone(),
+            flat::Variable {
+                name: producer_name.clone(),
+                binding: Some(symbolic_fill_expr(0, &["n"])),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let mut ctx = Context::new();
+        ctx.parameter_values.insert("n".to_string(), 3);
+        let mut session = ctx.collect_parameter_lookup_session(&flat);
+
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+
+        assert_eq!(
+            ctx.array_dimensions.get(producer_name.as_str()),
+            Some(&vec![3])
+        );
+        assert_eq!(
+            ctx.array_dimensions.get(consumer_name.as_str()),
+            Some(&vec![3])
+        );
+        assert_eq!(
+            session.dimension_evaluation_attempts(consumer_name.as_str()),
+            2
+        );
+    }
+
+    #[test]
+    fn same_sweep_resolved_consumer_retries_after_producer_dimension_changes() {
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        let consumer_name = rumoca_core::VarName::new("B");
+        flat.add_variable(
+            consumer_name.clone(),
+            flat::Variable {
+                name: consumer_name.clone(),
+                binding: Some(Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Fill,
+                    args: vec![int_lit(0), size_dim_expr("A", 1)],
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let producer_name = rumoca_core::VarName::new("A");
+        flat.add_variable(
+            producer_name.clone(),
+            flat::Variable {
+                name: producer_name.clone(),
+                dims: vec![2],
+                binding: Some(symbolic_fill_expr(0, &["n"])),
+                binding_from_modification: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let mut ctx = Context::new();
+        ctx.parameter_values.insert("n".to_string(), 3);
+        let mut session = ctx.collect_parameter_lookup_session(&flat);
+
+        ctx.build_parameter_lookup_with_session(&flat, &tree, &mut session);
+
+        assert_eq!(
+            ctx.array_dimensions.get(producer_name.as_str()),
+            Some(&vec![3])
+        );
+        assert_eq!(
+            ctx.array_dimensions.get(consumer_name.as_str()),
+            Some(&vec![3])
+        );
+        assert_eq!(
+            session.dimension_evaluation_attempts(consumer_name.as_str()),
+            2
+        );
+    }
+
+    #[test]
     fn production_symbolic_dimension_session_matches_uncached_nout_oracle() {
         let tree = source_backed_tree();
         let mut initial_flat = flat::Model::default();
