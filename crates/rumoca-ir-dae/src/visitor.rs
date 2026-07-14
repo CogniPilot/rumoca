@@ -90,6 +90,12 @@ pub trait DaeVisitor {
     fn visit_event_actions(&mut self, actions: &[crate::DaeEventAction]) {
         for action in actions {
             self.visit_expression(&action.condition);
+            match &action.kind {
+                crate::DaeEventActionKind::Assert { message }
+                | crate::DaeEventActionKind::Terminate { message } => {
+                    self.visit_expression(message);
+                }
+            }
         }
     }
 
@@ -191,8 +197,109 @@ pub trait DaeExpressionRewriter: ExpressionRewriter {
     fn rewrite_event_actions(&mut self, actions: &mut [crate::DaeEventAction]) {
         for action in actions {
             action.condition = self.rewrite_expression(&action.condition);
+            match &mut action.kind {
+                crate::DaeEventActionKind::Assert { message }
+                | crate::DaeEventActionKind::Terminate { message } => {
+                    *message = self.rewrite_expression(message);
+                }
+            }
         }
     }
+}
+
+/// Equation-bearing partitions in the canonical DAE expression traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaeEquationPartition {
+    Continuous,
+    Initialization,
+    DiscreteReal,
+    DiscreteValued,
+    Condition,
+}
+
+/// Fallible counterpart to [`DaeExpressionRewriter`].
+///
+/// This owns the same schema surface so transformations that can fail do not
+/// maintain a second, incomplete partition list.
+pub trait TryDaeExpressionRewriter {
+    type Error;
+
+    fn try_rewrite_dae(&mut self, dae: &mut crate::Dae) -> Result<(), Self::Error> {
+        self.try_rewrite_equations(
+            DaeEquationPartition::Continuous,
+            &mut dae.continuous.equations,
+        )?;
+        self.try_rewrite_equations(
+            DaeEquationPartition::Initialization,
+            &mut dae.initialization.equations,
+        )?;
+        self.try_rewrite_equations(
+            DaeEquationPartition::DiscreteReal,
+            &mut dae.discrete.real_updates,
+        )?;
+        self.try_rewrite_equations(
+            DaeEquationPartition::DiscreteValued,
+            &mut dae.discrete.valued_updates,
+        )?;
+        self.try_rewrite_equations(
+            DaeEquationPartition::Condition,
+            &mut dae.conditions.equations,
+        )?;
+        self.try_rewrite_expression_slots(&mut dae.conditions.relations)?;
+        self.try_rewrite_expression_slots(&mut dae.events.synthetic_root_conditions)?;
+        self.try_rewrite_event_actions(&mut dae.events.event_actions)?;
+        self.try_rewrite_expression_slots(&mut dae.clocks.constructor_exprs)?;
+        self.try_rewrite_expression_slots(&mut dae.clocks.triggered_conditions)?;
+        Ok(())
+    }
+
+    fn try_rewrite_equations(
+        &mut self,
+        partition: DaeEquationPartition,
+        equations: &mut [crate::Equation],
+    ) -> Result<(), Self::Error> {
+        for equation in equations {
+            self.try_rewrite_equation(partition, equation)?;
+        }
+        Ok(())
+    }
+
+    fn try_rewrite_equation(
+        &mut self,
+        _partition: DaeEquationPartition,
+        equation: &mut crate::Equation,
+    ) -> Result<(), Self::Error> {
+        equation.rhs = self.try_rewrite_expression(&equation.rhs)?;
+        Ok(())
+    }
+
+    fn try_rewrite_expression_slots(
+        &mut self,
+        expressions: &mut [Expression],
+    ) -> Result<(), Self::Error> {
+        for expression in expressions {
+            *expression = self.try_rewrite_expression(expression)?;
+        }
+        Ok(())
+    }
+
+    fn try_rewrite_event_actions(
+        &mut self,
+        actions: &mut [crate::DaeEventAction],
+    ) -> Result<(), Self::Error> {
+        for action in actions {
+            action.condition = self.try_rewrite_expression(&action.condition)?;
+            match &mut action.kind {
+                crate::DaeEventActionKind::Assert { message }
+                | crate::DaeEventActionKind::Terminate { message } => {
+                    *message = self.try_rewrite_expression(message)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn try_rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error>;
 }
 
 pub enum StatementScope<'a> {

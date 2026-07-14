@@ -267,7 +267,7 @@ fn test_orphan_drop_does_not_keep_scalarized_unknown_by_base_alias_only() {
         VarName::new("resistor.plug_p.pin[2].v.im"),
         test_dae_variable("resistor.plug_p.pin[2].v.im"),
     );
-    dae.variables.parameters.insert(
+    dae.variables.inputs.insert(
         VarName::new("resistor.plug_p.pin"),
         test_dae_variable("resistor.plug_p.pin"),
     );
@@ -543,77 +543,169 @@ fn field_access(base: Expression, field: &str) -> Expression {
     }
 }
 
-#[test]
-fn boundary_fixpoint_cleanup_removes_only_unreferenced_substitution_targets() {
+fn boundary_alias_fixture() -> Dae {
     let mut dae = Dae::new();
-    for name in [
-        "component.T_heatPort",
-        "component.heatPort.T",
-        "referenced_non_target",
-        "preexisting_orphan",
-    ] {
+    for name in ["alias", "preexisting_orphan"] {
         dae.variables
             .algebraics
             .insert(VarName::new(name), test_dae_variable(name));
     }
+    dae.variables.parameters.insert(
+        VarName::new("external_source"),
+        test_dae_variable("external_source"),
+    );
     dae.continuous.equations.push(dae::Equation {
         lhs: None,
         rhs: Expression::Binary {
             op: sub_op(),
-            lhs: Box::new(var_ref("referenced_non_target")),
-            rhs: Box::new(lit(1.0)),
+            lhs: Box::new(var_ref("external_source")),
+            rhs: Box::new(var_ref("alias")),
             span: Span::DUMMY,
         },
         span: Span::DUMMY,
-        origin: "retained equation".to_string(),
+        origin: "alias definition".to_string(),
         scalar_count: 1,
     });
-    dae.continuous.equations.push(dae::Equation {
+    dae
+}
+
+fn runtime_equation(origin: &str, rhs: Expression) -> dae::Equation {
+    dae::Equation {
         lhs: None,
-        rhs: Expression::Binary {
-            op: sub_op(),
-            lhs: Box::new(var_ref("component.heatPort.T")),
-            rhs: Box::new(lit(293.15)),
+        rhs,
+        span: Span::DUMMY,
+        origin: origin.to_string(),
+        scalar_count: 1,
+    }
+}
+
+fn builtin(function: BuiltinFunction, arg: Expression) -> Expression {
+    Expression::BuiltinCall {
+        function,
+        args: vec![arg],
+        span: Span::DUMMY,
+    }
+}
+
+fn event_message(action: &dae::DaeEventAction) -> &Expression {
+    match &action.kind {
+        dae::DaeEventActionKind::Assert { message }
+        | dae::DaeEventActionKind::Terminate { message } => message,
+    }
+}
+
+#[test]
+fn boundary_fixpoint_rewrites_every_plain_dae_surface_before_retiring_target() {
+    let mut dae = boundary_alias_fixture();
+    dae.initialization
+        .equations
+        .push(runtime_equation("initial", var_ref("alias")));
+    dae.events.synthetic_root_conditions.push(var_ref("alias"));
+    dae.clocks.constructor_exprs.push(var_ref("alias"));
+    dae.clocks.triggered_conditions.push(var_ref("alias"));
+    for kind in [
+        dae::DaeEventActionKind::Assert {
+            message: var_ref("alias"),
+        },
+        dae::DaeEventActionKind::Terminate {
+            message: var_ref("alias"),
+        },
+    ] {
+        dae.events.event_actions.push(dae::DaeEventAction {
+            condition: var_ref("alias"),
+            kind,
             span: Span::DUMMY,
+            origin: "event action".to_string(),
+        });
+    }
+
+    let result = resolve_boundary_equations_to_fixpoint(&mut dae).unwrap();
+    let alias = VarName::new("alias");
+
+    assert!(
+        result.substitutions.iter().any(|sub| sub.var_name == alias),
+        "substitutions: {:?}",
+        result
+            .substitutions
+            .iter()
+            .map(|sub| sub.var_name.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(!dae.variables.algebraics.contains_key(&alias));
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("preexisting_orphan"))
+    );
+    assert!(
+        dae.initialization
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_var(&eq.rhs, &alias))
+    );
+    assert!(
+        dae.events
+            .synthetic_root_conditions
+            .iter()
+            .all(|expr| !expr_contains_var(expr, &alias))
+    );
+    assert!(
+        dae.clocks
+            .constructor_exprs
+            .iter()
+            .all(|expr| !expr_contains_var(expr, &alias))
+    );
+    assert!(
+        dae.clocks
+            .triggered_conditions
+            .iter()
+            .all(|expr| !expr_contains_var(expr, &alias))
+    );
+    assert!(dae.events.event_actions.iter().all(|action| {
+        !expr_contains_var(&action.condition, &alias)
+            && !expr_contains_var(event_message(action), &alias)
+    }));
+}
+
+#[test]
+fn boundary_fixpoint_keeps_target_referenced_by_pre_edge_change_surfaces() {
+    let mut dae = boundary_alias_fixture();
+    dae.initialization.equations.push(runtime_equation(
+        "initial pre",
+        builtin(BuiltinFunction::Pre, var_ref("alias")),
+    ));
+    dae.clocks
+        .triggered_conditions
+        .push(builtin(BuiltinFunction::Edge, var_ref("alias")));
+    dae.events.event_actions.push(dae::DaeEventAction {
+        condition: lit(1.0),
+        kind: dae::DaeEventActionKind::Terminate {
+            message: builtin(BuiltinFunction::Change, var_ref("alias")),
         },
         span: Span::DUMMY,
-        origin: "similarly named replacement remains live".to_string(),
-        scalar_count: 1,
+        origin: "terminate".to_string(),
     });
-    dae.events
-        .synthetic_root_conditions
-        .push(var_ref("component.T_heatPort"));
-    let substitutions = vec![
-        substitution_for_var(
-            &dae,
-            VarName::new("component.T_heatPort"),
-            var_ref("component.heatPort.T"),
-        )
-        .unwrap(),
-    ];
 
-    finalize_boundary_substitution_targets(&mut dae, &substitutions).unwrap();
+    let result = resolve_boundary_equations_to_fixpoint(&mut dae).unwrap();
+    let alias = VarName::new("alias");
 
-    assert!(
-        !dae.variables
-            .algebraics
-            .contains_key(&VarName::new("component.T_heatPort")),
-        "a replacement with overlapping component path text is not an exact reference to the substitution target"
-    );
+    assert!(result.substitutions.iter().any(|sub| sub.var_name == alias));
+    assert!(dae.variables.algebraics.contains_key(&alias));
+    assert!(expr_contains_var(
+        &dae.initialization.equations[0].rhs,
+        &alias
+    ));
+    assert!(expr_contains_var(
+        &dae.clocks.triggered_conditions[0],
+        &alias
+    ));
+    assert!(expr_contains_var(
+        event_message(&dae.events.event_actions[0]),
+        &alias
+    ));
     assert!(
         dae.variables
             .algebraics
-            .contains_key(&VarName::new("referenced_non_target"))
-    );
-    assert_eq!(
-        exact_reference_expr_name_in_dae(&dae, &dae.events.synthetic_root_conditions[0]),
-        Some(VarName::new("component.heatPort.T")),
-        "runtime roots must consume the same boundary substitution before its target is retired"
-    );
-    assert!(
-        dae.variables
-            .algebraics
-            .contains_key(&VarName::new("preexisting_orphan")),
-        "preexisting unconstrained unknowns must remain visible to singularity diagnostics"
+            .contains_key(&VarName::new("preexisting_orphan"))
     );
 }

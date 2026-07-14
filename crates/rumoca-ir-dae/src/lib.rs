@@ -45,9 +45,10 @@ pub use types::{
     remap_structured_families_after_expansion, structured_equation_slot,
 };
 pub use visitor::{
-    AlgorithmOutputCollector, ContainsDerChecker, ContainsDerOfStateChecker, DaeExpressionRewriter,
-    DaeVariableMutVisitor, DaeVisitor, ImplicitSampleChecker, StateVariableCollector,
-    StatementScope, StatementVisitor, VarRefCollector, VarRefWithSubscriptsCollector,
+    AlgorithmOutputCollector, ContainsDerChecker, ContainsDerOfStateChecker, DaeEquationPartition,
+    DaeExpressionRewriter, DaeVariableMutVisitor, DaeVisitor, ImplicitSampleChecker,
+    StateVariableCollector, StatementScope, StatementVisitor, TryDaeExpressionRewriter,
+    VarRefCollector, VarRefWithSubscriptsCollector,
 };
 
 /// Scalar counts for canonical runtime variable partitions.

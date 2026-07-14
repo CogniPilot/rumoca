@@ -88,8 +88,8 @@ use rumoca_core::ExpressionVisitor;
 #[cfg(test)]
 use rumoca_ir_dae::expr_contains_der_of;
 use rumoca_ir_dae::{
-    DerivativeNameMatcher, expr_contains_der_of_any, expr_contains_var, split_complex_field_suffix,
-    subscripts_all_one, var_ref_matches_unknown,
+    DaeVisitor, DerivativeNameMatcher, expr_contains_der_of_any, expr_contains_var,
+    split_complex_field_suffix, subscripts_all_one, var_ref_matches_unknown,
 };
 
 type Dae = dae::Dae;
@@ -394,18 +394,32 @@ fn finalize_boundary_substitution_targets(
     apply_substitutions_to_dae_partitions(dae, substitutions)?;
     for substitution in substitutions {
         let name = &substitution.var_name;
-        let referenced_by_continuous_equation = dae
-            .continuous
-            .equations
-            .iter()
-            .any(|equation| expr_contains_var(&equation_analysis_expr(equation), name));
-        if referenced_by_continuous_equation || runtime_partition_or_event_refs_var(dae, name) {
+        if dae_expression_surfaces_ref_var(dae, name) {
             continue;
         }
         dae.variables.algebraics.shift_remove(name);
         dae.variables.outputs.shift_remove(name);
     }
     Ok(())
+}
+
+fn dae_expression_surfaces_ref_var(dae: &Dae, name: &VarName) -> bool {
+    let mut visitor = DaeReferenceVisitor { name, found: false };
+    visitor.visit_dae(dae);
+    visitor.found
+}
+
+struct DaeReferenceVisitor<'a> {
+    name: &'a VarName,
+    found: bool,
+}
+
+impl DaeVisitor for DaeReferenceVisitor<'_> {
+    fn visit_expression(&mut self, expression: &Expression) {
+        if !self.found && expr_contains_var(expression, self.name) {
+            self.found = true;
+        }
+    }
 }
 
 fn resolve_boundary_and_direct_demotions_to_fixpoint(
@@ -673,6 +687,7 @@ fn finish_boundary_elimination(
         dae.continuous.equations.remove(idx);
     }
     shift_structured_families_after_equation_removal(dae, &eliminated_eq_indices);
+    apply_substitutions_to_dae_partitions(dae, &substitutions)?;
     for name in fully_resolved_continuous_unknowns(
         dae,
         &resolved,
@@ -704,7 +719,7 @@ fn fully_resolved_continuous_unknowns(
     {
         if is_runtime_protected_unknown(name, runtime_protected_unknowns)
             || runtime_defined_discrete_targets.contains(name.as_str())
-            || runtime_partition_or_event_refs_var(dae, name)
+            || dae_expression_surfaces_ref_var(dae, name)
         {
             continue;
         }

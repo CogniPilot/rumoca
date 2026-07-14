@@ -1697,6 +1697,13 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
 #[test]
 fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
     let mut dae = Dae::new();
+    dae.initialization.equations.push(dae::Equation {
+        lhs: None,
+        rhs: var_ref("alias"),
+        span: Span::DUMMY,
+        origin: "initial".to_string(),
+        scalar_count: 1,
+    });
     dae.discrete.real_updates.push(dae::Equation {
         lhs: Some(VarName::new("z").into()),
         rhs: var_ref("alias"),
@@ -1718,10 +1725,15 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
     dae.events.event_actions.push(dae::DaeEventAction {
         condition: var_ref("alias"),
         kind: dae::DaeEventActionKind::Terminate {
-            message: rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::String("stop".to_string()),
-                span: Span::DUMMY,
-            },
+            message: var_ref("alias"),
+        },
+        span: Span::DUMMY,
+        origin: "assert".to_string(),
+    });
+    dae.events.event_actions.push(dae::DaeEventAction {
+        condition: var_ref("alias"),
+        kind: dae::DaeEventActionKind::Assert {
+            message: var_ref("alias"),
         },
         span: Span::DUMMY,
         origin: "assert".to_string(),
@@ -1740,6 +1752,10 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
         &substitutions,
     ));
 
+    assert!(contains_exact_var_ref(
+        &dae.initialization.equations[0].rhs,
+        "source"
+    ));
     assert!(contains_exact_var_ref(
         &dae.discrete.real_updates[0].rhs,
         "source"
@@ -1764,10 +1780,14 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
         &dae.clocks.triggered_conditions[0],
         "source"
     ));
-    assert!(contains_exact_var_ref(
-        &dae.events.event_actions[0].condition,
-        "source"
-    ));
+    assert!(dae.events.event_actions.iter().all(|action| {
+        let message = match &action.kind {
+            dae::DaeEventActionKind::Assert { message }
+            | dae::DaeEventActionKind::Terminate { message } => message,
+        };
+        contains_exact_var_ref(&action.condition, "source")
+            && contains_exact_var_ref(message, "source")
+    }));
 }
 
 #[test]

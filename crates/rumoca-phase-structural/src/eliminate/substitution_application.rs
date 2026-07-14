@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use rumoca_core::{Literal, OpUnary};
+use rumoca_ir_dae::{DaeEquationPartition, TryDaeExpressionRewriter};
 
 use super::{
     Dae, Expression, OpBinary, Substitution, VarName,
@@ -115,8 +116,11 @@ pub(super) fn apply_substitutions_to_dae_partitions(
     let mut rewriter = SubstitutionDaeRewriter {
         substitutions,
         derivative_replacements: DerivativeReplacementCache::new(&derivative_source),
+        touched_continuous_equations: Vec::new(),
     };
-    rewriter.rewrite_dae(dae)
+    rewriter.try_rewrite_dae(dae)?;
+    super::drop_structured_families_touching_equations(dae, &rewriter.touched_continuous_equations);
+    Ok(())
 }
 
 fn apply_substitutions_in_order_with_derivatives_and_dae(
@@ -351,53 +355,33 @@ fn apply_substitutions_to_equation(
 struct SubstitutionDaeRewriter<'a> {
     substitutions: &'a [Substitution],
     derivative_replacements: DerivativeReplacementCache<'a>,
+    touched_continuous_equations: Vec<usize>,
 }
 
-impl SubstitutionDaeRewriter<'_> {
-    fn rewrite_dae(&mut self, dae: &mut Dae) -> Result<(), StructuralError> {
-        let touched_equations =
-            self.rewrite_equations_collecting_changes(&mut dae.continuous.equations)?;
-        super::drop_structured_families_touching_equations(dae, &touched_equations);
-        self.rewrite_equations(&mut dae.initialization.equations)?;
-        self.rewrite_equations(&mut dae.discrete.real_updates)?;
-        self.rewrite_equations(&mut dae.discrete.valued_updates)?;
-        self.rewrite_equations(&mut dae.conditions.equations)?;
-        self.rewrite_expression_slots(&mut dae.conditions.relations)?;
-        self.rewrite_expression_slots(&mut dae.events.synthetic_root_conditions)?;
-        self.rewrite_event_actions(&mut dae.events.event_actions)?;
-        self.rewrite_expression_slots(&mut dae.clocks.constructor_exprs)?;
-        self.rewrite_expression_slots(&mut dae.clocks.triggered_conditions)?;
-        Ok(())
-    }
+impl TryDaeExpressionRewriter for SubstitutionDaeRewriter<'_> {
+    type Error = StructuralError;
 
-    fn rewrite_equations(
+    fn try_rewrite_equations(
         &mut self,
+        partition: DaeEquationPartition,
         equations: &mut [rumoca_ir_dae::Equation],
     ) -> Result<(), StructuralError> {
-        for equation in equations {
-            self.rewrite_equation(equation)?;
-        }
-        Ok(())
-    }
-
-    fn rewrite_equations_collecting_changes(
-        &mut self,
-        equations: &mut [rumoca_ir_dae::Equation],
-    ) -> Result<Vec<usize>, StructuralError> {
-        let mut touched = Vec::new();
         for (index, equation) in equations.iter_mut().enumerate() {
             let original_lhs = equation.lhs.clone();
             let original_rhs = equation.rhs.clone();
-            self.rewrite_equation(equation)?;
-            if equation.lhs != original_lhs || equation.rhs != original_rhs {
-                touched.push(index);
+            self.try_rewrite_equation(partition, equation)?;
+            if partition == DaeEquationPartition::Continuous
+                && (equation.lhs != original_lhs || equation.rhs != original_rhs)
+            {
+                self.touched_continuous_equations.push(index);
             }
         }
-        Ok(touched)
+        Ok(())
     }
 
-    fn rewrite_equation(
+    fn try_rewrite_equation(
         &mut self,
+        _partition: DaeEquationPartition,
         equation: &mut rumoca_ir_dae::Equation,
     ) -> Result<(), StructuralError> {
         apply_substitutions_to_equation(
@@ -407,33 +391,13 @@ impl SubstitutionDaeRewriter<'_> {
         )
     }
 
-    fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, StructuralError> {
+    fn try_rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, StructuralError> {
         apply_substitutions_in_order_with_derivatives_and_dae(
             expr,
             self.substitutions,
             self.derivative_replacements.dae,
             &mut self.derivative_replacements,
         )
-    }
-
-    fn rewrite_expression_slots(
-        &mut self,
-        expressions: &mut [Expression],
-    ) -> Result<(), StructuralError> {
-        for expression in expressions {
-            *expression = self.rewrite_expression(expression)?;
-        }
-        Ok(())
-    }
-
-    fn rewrite_event_actions(
-        &mut self,
-        actions: &mut [rumoca_ir_dae::DaeEventAction],
-    ) -> Result<(), StructuralError> {
-        for action in actions {
-            action.condition = self.rewrite_expression(&action.condition)?;
-        }
-        Ok(())
     }
 }
 
