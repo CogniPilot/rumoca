@@ -1,8 +1,8 @@
 use crate::errors::ToDaeError;
 use crate::fmi_metadata_values::fold_fmi_model_description_values_to_literals;
 use rumoca_core::{
-    BuiltinFunction, ComponentRefPart, ComponentReference, DefId, Expression, Literal, OpBinary,
-    Reference, SourceId, Span, Subscript, VarName,
+    BuiltinFunction, ComponentRefPart, ComponentReference, DefId, Expression, Function,
+    FunctionParam, Literal, OpBinary, Reference, SourceId, Span, Statement, Subscript, VarName,
 };
 use rumoca_ir_dae::{Dae, Variable, VariableOrigin};
 
@@ -438,5 +438,99 @@ fn fmi_model_description_folds_array_constructors_and_ranges() {
             .as_ref()
             .expect("rangeVar start"),
         &[1.0, 2.0, 3.0],
+    );
+}
+
+#[test]
+fn fmi_model_description_folds_identity_matrix_start() {
+    let mut dae = Dae::new();
+    let mut rotation = state(
+        "rotation",
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Identity,
+            args: vec![integer(3)],
+            span: test_span(39, 40),
+        },
+    );
+    rotation.dims = vec![3, 3];
+    dae.variables
+        .states
+        .insert(VarName::new("rotation"), rotation);
+
+    fold_fmi_model_description_values_to_literals(&mut dae)
+        .unwrap_or_else(|err| panic!("FMI identity folding should succeed: {err}"));
+
+    assert_real_array(
+        dae.variables.states[&VarName::new("rotation")]
+            .start
+            .as_ref()
+            .expect("rotation start"),
+        &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    );
+}
+
+#[test]
+fn fmi_model_description_folds_array_returning_user_function_start() {
+    let mut dae = Dae::new();
+    let mut vector = Function::new("Pkg.vector", test_span(41, 42));
+    vector.add_output(
+        FunctionParam::new("v_out", "Real", test_span(41, 42))
+            .with_dims(vec![2])
+            .with_default(array(vec![real(2.0), real(3.0)])),
+    );
+    vector.body = vec![Statement::Empty {
+        span: test_span(41, 42),
+    }];
+    dae.symbols
+        .functions
+        .insert(VarName::new("Pkg.vector"), vector);
+
+    let mut output = state(
+        "output",
+        Expression::FunctionCall {
+            name: VarName::new("Pkg.vector").into(),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(43, 44),
+        },
+    );
+    output.dims = vec![2];
+    dae.variables.states.insert(VarName::new("output"), output);
+
+    fold_fmi_model_description_values_to_literals(&mut dae)
+        .unwrap_or_else(|err| panic!("FMI user-function array folding should succeed: {err}"));
+
+    assert_real_array(
+        dae.variables.states[&VarName::new("output")]
+            .start
+            .as_ref()
+            .expect("output start"),
+        &[2.0, 3.0],
+    );
+}
+
+#[test]
+fn fmi_model_description_encodes_boolean_start_for_numeric_runtime_slot() {
+    let mut dae = Dae::new();
+    dae.variables.discrete_valued.insert(
+        VarName::new("valid"),
+        state(
+            "valid",
+            Expression::Literal {
+                value: Literal::Boolean(false),
+                span: test_span(45, 46),
+            },
+        ),
+    );
+
+    fold_fmi_model_description_values_to_literals(&mut dae)
+        .unwrap_or_else(|err| panic!("FMI Boolean start folding should succeed: {err}"));
+
+    assert_real(
+        dae.variables.discrete_valued[&VarName::new("valid")]
+            .start
+            .as_ref()
+            .expect("valid start"),
+        0.0,
     );
 }

@@ -93,6 +93,37 @@ impl SolveTemplateRenderer {
         })
     }
 
+    /// Build a renderer by taking ownership of the lowered Solve IR. Target
+    /// builders that do not reuse these values avoid cloning the complete
+    /// program and artifact graphs into the lazy template context.
+    pub fn new_owned_with_dae(
+        problem: solve::SolveProblem,
+        artifacts: solve::SolveArtifacts,
+        dae_model: dae::Dae,
+    ) -> Result<Self, CodegenError> {
+        Self::new_owned_with_shared_dae(problem, artifacts, std::sync::Arc::new(dae_model))
+    }
+
+    pub fn new_owned_with_shared_dae(
+        problem: solve::SolveProblem,
+        artifacts: solve::SolveArtifacts,
+        dae_model: std::sync::Arc<dae::Dae>,
+    ) -> Result<Self, CodegenError> {
+        let dae_entry = Value::from_object(LazyDaeTemplateJson {
+            dae: dae_model.clone(),
+            value: std::sync::OnceLock::new(),
+        });
+        Ok(Self {
+            context: solve_render_context_value_with_arcs(
+                std::sync::Arc::new(problem),
+                std::sync::Arc::new(artifacts),
+                None,
+                dae_entry,
+            )?,
+            guard_dae: Some(dae_model),
+        })
+    }
+
     pub fn render(&self, template: &str) -> Result<String, CodegenError> {
         let mut env = create_environment();
         env.add_template("inline", template)?;
@@ -132,12 +163,26 @@ fn solve_render_context_value_with_dae(
     model_name: Option<&str>,
     dae_entry: Value,
 ) -> Result<Value, CodegenError> {
+    solve_render_context_value_with_arcs(
+        std::sync::Arc::new(solve_problem.clone()),
+        std::sync::Arc::new(artifacts.clone()),
+        model_name,
+        dae_entry,
+    )
+}
+
+fn solve_render_context_value_with_arcs(
+    problem_arc: std::sync::Arc<solve::SolveProblem>,
+    artifacts_arc: std::sync::Arc<solve::SolveArtifacts>,
+    model_name: Option<&str>,
+    dae_entry: Value,
+) -> Result<Value, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
     // ~150k-op model costs O(one program) here instead of ~5 GB of eager `Value`
     // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
-    let problem_arc = std::sync::Arc::new(solve_problem.clone());
-    let artifacts_arc = std::sync::Arc::new(artifacts.clone());
+    let solve_problem = problem_arc.as_ref();
+    let artifacts = artifacts_arc.as_ref();
     let solve_value = super::solve_lazy::solve_value(problem_arc.clone(), artifacts_arc.clone())?;
     let artifacts_value = super::solve_lazy::artifacts_value(artifacts_arc.clone())?;
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;

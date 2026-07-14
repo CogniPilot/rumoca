@@ -118,7 +118,7 @@ impl SolveRuntime {
         trace_refresh_plan(model, "derivative", &derivative_refresh);
         trace_refresh_plan(model, "root", &root_refresh);
         let visible_value_plan = visible_value_plan(model);
-        let root_condition_plan = root_condition_plan(model);
+        let root_condition_plan = root_condition_plan(model, &root_refresh);
         Ok(Self {
             model: model.clone(),
             state_count: model.state_scalar_count(),

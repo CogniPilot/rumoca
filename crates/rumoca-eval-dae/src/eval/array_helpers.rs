@@ -166,7 +166,7 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
 ) -> Result<Option<Vec<T>>, EvalError> {
     if let Some(dims) = env.dims.get(name) {
         let scalar_count = dims.iter().map(|&d| d.max(0) as usize).product::<usize>();
-        if scalar_count > 1 {
+        if scalar_count > 0 {
             if let Some(values) = collect_dense_shaped_values_generic(name, dims, scalar_count, env)
             {
                 return Ok(Some(values));
@@ -178,6 +178,15 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
                 collect_dense_record_field_indexed_values_generic(name, scalar_count, env)
             {
                 return Ok(Some(values));
+            }
+            if env.vars.parent_namespace_is_hidden(name) {
+                let keys = cached_indexed_keys(&env.runtime, name, scalar_count);
+                let missing = keys
+                    .iter()
+                    .find(|key| env.vars.get(key.as_str()).is_none())
+                    .map(|key| key.as_str().to_string())
+                    .unwrap_or_else(|| name.to_string());
+                return Err(EvalError::MissingBinding { name: missing });
             }
         }
         if scalar_count == 0
@@ -199,7 +208,7 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
 
     if let Some(dims) = env.dims.get(name)
         && !dims.is_empty()
-        && let Some(start_expr) = env.start_exprs.get(name)
+        && let Some(start_expr) = env.visible_start_expr(name)
         && !matches!(start_expr, Expression::VarRef { name: start_name, .. } if start_name.as_str() == name)
     {
         let values = if dims.len() >= 2 {
@@ -214,6 +223,10 @@ pub(super) fn array_values_from_env_name_generic<T: SimFloat>(
         if values.len() > 1 {
             return Ok(Some(values));
         }
+    }
+
+    if env.vars.local_scalar_shadows_parent_namespace(name) {
+        return Ok(None);
     }
 
     Ok(collect_indexed_array_values_generic(name, env)

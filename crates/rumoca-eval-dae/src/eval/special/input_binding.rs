@@ -30,10 +30,17 @@ pub(super) fn bind_user_function_inputs<T: SimFloat>(
             if copy_record_constructor_input_fields(local_env, param, arg_expr, caller_env)? {
                 continue;
             }
-            if let Ok(value) = eval_expr::<T>(arg_expr, caller_env) {
+            let scalar_bound = if let Ok(value) = eval_expr::<T>(arg_expr, caller_env) {
                 bind_function_scalar_input(local_env, function_name, &param.name, value);
-            }
-            if let Some(arg_path) = try_eval_field_access_path(arg_expr, caller_env)? {
+                true
+            } else {
+                false
+            };
+            let may_need_record_fields = param.type_class == Some(rumoca_core::ClassType::Record)
+                || (!scalar_bound && param.dims.is_empty() && param.shape_expr.is_empty());
+            if may_need_record_fields
+                && let Some(arg_path) = try_eval_field_access_path(arg_expr, caller_env)?
+            {
                 copy_selected_input_fields(local_env, &param.name, &arg_path, caller_env)?;
             }
             let _ = copy_record_function_output_fields(local_env, param, arg_expr, caller_env)?;

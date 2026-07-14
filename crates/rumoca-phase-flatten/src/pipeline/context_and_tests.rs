@@ -1777,19 +1777,17 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     } else {
         imports
     };
-    qualify_expression_with_effective_imports(expr, prefix, imports, def_map, opts, None)
+    qualify_expression_with_effective_imports(expr, prefix, imports, def_map, opts, None, None)
 }
 
-/// Like `qualify_expression_imports_with_def_map`, but receives flatten context
-/// semantic metadata. The context is currently used by class-reference
-/// canonicalization in qualification call sites; keeping this entry point
-/// prevents those call sites from falling back to context-free qualification.
+/// Qualify with flatten-context semantic metadata for class-reference canonicalization.
 pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     expr: &ast::Expression,
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
     ctx: &Context,
+    locals: Option<&std::collections::HashSet<String>>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let opts = qualify::QualifyOptions {
         preserve_def_id: true,
@@ -1813,6 +1811,7 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
         def_map,
         opts,
         instance_name.as_deref(),
+        locals,
     )
 }
 
@@ -1823,8 +1822,14 @@ fn qualify_expression_with_effective_imports(
     def_map: Option<&crate::ResolveDefMap>,
     opts: qualify::QualifyOptions,
     instance_name: Option<&str>,
+    locals: Option<&std::collections::HashSet<String>>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
+    let qualified = locals.map_or_else(
+        || qualify::qualify_expression_with_imports(expr, prefix, opts, imports),
+        |locals| {
+            qualify::qualify_expression_with_imports_and_locals(expr, prefix, opts, locals, imports)
+        },
+    );
     crate::ast_lower::expression_from_ast_with_context(
         &qualified,
         crate::ast_lower::LoweringContext {

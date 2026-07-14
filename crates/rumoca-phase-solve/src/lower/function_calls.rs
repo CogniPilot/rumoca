@@ -1965,7 +1965,7 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 0.0
             };
-            std::sync::Arc::make_mut(&mut self.structural_bindings)
+            self.local_const_bindings
                 .insert(super::size_binding_key(name, idx + 1), dim);
         }
         Ok(())
@@ -1981,7 +1981,8 @@ impl<'a> LowerBuilder<'a> {
         self.known_empty_local_arrays.shift_remove(name);
         for dimension in 1.. {
             let key = super::size_binding_key(name, dimension);
-            if std::sync::Arc::make_mut(&mut self.structural_bindings)
+            if self
+                .local_const_bindings
                 .shift_remove(key.as_str())
                 .is_none()
             {

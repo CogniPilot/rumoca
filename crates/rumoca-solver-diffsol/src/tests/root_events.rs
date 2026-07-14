@@ -2,6 +2,7 @@ use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
 
+use super::unit_integrator_model;
 use crate::simulate;
 
 macro_rules! fixture_span {
@@ -74,6 +75,65 @@ fn strict_post_crossing_reinit_evaluates_on_event_right_limit() {
         result.times,
         result.data[0],
         result.data[1]
+    );
+}
+
+#[test]
+fn state_only_bdf_uses_search_values_for_parameter_static_roots() {
+    let mut model = unit_integrator_model();
+    model.problem.solve_layout.parameter_count = 1;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![0.0];
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const {
+                dst: 3,
+                value: 100.0,
+            },
+            solve::LinearOp::Select {
+                dst: 4,
+                cond: 2,
+                if_true: 3,
+                if_false: 0,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ]],
+        fixture_span!(),
+    );
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.001,
+            dt: Some(0.001),
+            ..Default::default()
+        },
+    )
+    .expect("a parameter-static root should not retrigger the BDF solver");
+
+    let final_x = result.data[0]
+        .last()
+        .copied()
+        .expect("x should be recorded");
+    assert!(
+        (final_x - 0.001).abs() <= 1.0e-8,
+        "a static zero root incorrectly fired a state reinit: x={final_x}"
     );
 }
 

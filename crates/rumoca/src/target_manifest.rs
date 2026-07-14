@@ -322,6 +322,9 @@ fn render_raw_template(
         Some(TargetFileRenderContext::FmiModelDescription) => result
             .render_fmi_model_description_template_str_with_name(&template, &model_identifier)
             .with_context(|| format!("Render raw FMI modelDescription template: {target}")),
+        Some(TargetFileRenderContext::FmiImplementation) => result
+            .render_fmi_implementation_template_str_with_name(&template, &model_identifier)
+            .with_context(|| format!("Render raw FMI implementation template: {target}")),
         None => result
             .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
             .with_context(|| format!("Render raw template: {target}")),
@@ -344,6 +347,7 @@ fn raw_template_render_context(template: &str) -> Result<Option<TargetFileRender
         };
         return match value.trim() {
             "fmi-model-description" => Ok(Some(TargetFileRenderContext::FmiModelDescription)),
+            "fmi-implementation" => Ok(Some(TargetFileRenderContext::FmiImplementation)),
             other => bail!("unknown raw template render context '{other}'"),
         };
     }
@@ -748,6 +752,9 @@ fn render_manifest_template(
     match context {
         Some(TargetFileRenderContext::FmiModelDescription) => result
             .render_fmi_model_description_template_str_with_name(template, model_identifier)
+            .map_err(Into::into),
+        Some(TargetFileRenderContext::FmiImplementation) => result
+            .render_fmi_implementation_template_str_with_name(template, model_identifier)
             .map_err(Into::into),
         None => renderer.render(result, template, model_identifier),
     }

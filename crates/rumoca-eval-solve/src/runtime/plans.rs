@@ -1,6 +1,8 @@
 use rumoca_ir_solve as solve;
 use rumoca_solver::RuntimeSolveError;
+use std::collections::BTreeSet;
 
+use crate::refresh_plan::RefreshPlan;
 use crate::{self as solve_eval, RowEvalContext};
 
 #[derive(Clone, Copy)]
@@ -102,7 +104,10 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
     })
 }
 
-pub(super) fn root_condition_plan(model: &solve::SolveModel) -> Option<RootConditionPlan> {
+pub(super) fn root_condition_plan(
+    model: &solve::SolveModel,
+    root_refresh: &RefreshPlan,
+) -> Option<RootConditionPlan> {
     let roots = &model.problem.events.root_conditions;
     if roots.row_count() != roots.output_count() || !roots.uses_local_contiguous_output_indices() {
         return None;
@@ -110,6 +115,7 @@ pub(super) fn root_condition_plan(model: &solve::SolveModel) -> Option<RootCondi
     let mut entries = Vec::with_capacity(roots.row_count());
     let mut evaluated_rows = Vec::new();
     let mut search_rows = Vec::new();
+    let static_y = parameter_static_refresh_targets(root_refresh, model.state_scalar_count());
     for (row_idx, row) in roots.programs.iter().enumerate() {
         if solve::ScalarProgramBlock::program_output_count(row) != 1 {
             return None;
@@ -123,7 +129,7 @@ pub(super) fn root_condition_plan(model: &solve::SolveModel) -> Option<RootCondi
             entries.push(RootConditionPlanEntry::ConstantNonZero(value));
             continue;
         }
-        if parameter_static_root(row) {
+        if parameter_static_root(row, &static_y) {
             entries.push(RootConditionPlanEntry::StaticParameter);
             evaluated_rows.push(row_idx);
             continue;
@@ -223,8 +229,53 @@ fn constant_root_op_allowed(op: &solve::LinearOp) -> bool {
     )
 }
 
-fn parameter_static_root(row: &[solve::LinearOp]) -> bool {
-    row.iter().all(parameter_static_root_op_allowed)
+fn parameter_static_root(row: &[solve::LinearOp], static_y: &BTreeSet<usize>) -> bool {
+    row.iter().all(|op| match op {
+        solve::LinearOp::LoadY { index, .. } => static_y.contains(index),
+        _ => parameter_static_root_op_allowed(op),
+    })
+}
+
+fn parameter_static_refresh_targets(plan: &RefreshPlan, state_count: usize) -> BTreeSet<usize> {
+    let mut static_targets = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for refresh_row in &plan.rows {
+            if static_targets.contains(&refresh_row.target_index) {
+                continue;
+            }
+            let Some(row) = plan.source_block.programs.get(refresh_row.row_idx) else {
+                continue;
+            };
+            if parameter_static_refresh_row(
+                row,
+                refresh_row.target_index,
+                state_count,
+                &static_targets,
+            ) {
+                static_targets.insert(refresh_row.target_index);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    static_targets
+}
+
+fn parameter_static_refresh_row(
+    row: &[solve::LinearOp],
+    target_index: usize,
+    state_count: usize,
+    static_targets: &BTreeSet<usize>,
+) -> bool {
+    row.iter().all(|op| match op {
+        solve::LinearOp::LoadY { index, .. } => {
+            *index == target_index || (*index >= state_count && static_targets.contains(index))
+        }
+        _ => parameter_static_root_op_allowed(op),
+    })
 }
 
 fn parameter_static_root_op_allowed(op: &solve::LinearOp) -> bool {
@@ -232,6 +283,7 @@ fn parameter_static_root_op_allowed(op: &solve::LinearOp) -> bool {
         op,
         solve::LinearOp::Const { .. }
             | solve::LinearOp::LoadP { .. }
+            | solve::LinearOp::LoadIndexedP { .. }
             | solve::LinearOp::Move { .. }
             | solve::LinearOp::Unary { .. }
             | solve::LinearOp::Binary { .. }

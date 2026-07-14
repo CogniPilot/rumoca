@@ -88,7 +88,7 @@ impl FunctionProjectionAnalysis<'_> {
     ) -> Result<rumoca_core::Subscript, LowerError> {
         match subscript {
             rumoca_core::Subscript::Expr { expr, span } => {
-                let value = self.compile_time_int(&self.substitute(expr, scope)?, scope, *span)?;
+                let value = self.compile_time_int(expr, scope, *span)?;
                 Ok(rumoca_core::Subscript::Index { value, span: *span })
             }
             rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => {
@@ -103,15 +103,14 @@ impl FunctionProjectionAnalysis<'_> {
         scope: &FunctionProjectionScope,
         span: rumoca_core::Span,
     ) -> Result<Vec<i64>, LowerError> {
-        let range = self.substitute(range, scope)?;
         match range {
             rumoca_core::Expression::Range {
                 start, step, end, ..
             } => {
-                let start = self.compile_time_int(&start, scope, span)?;
-                let end = self.compile_time_int(&end, scope, span)?;
+                let start = self.compile_time_int(start, scope, span)?;
+                let end = self.compile_time_int(end, scope, span)?;
                 let step = match step {
-                    Some(step) => self.compile_time_int(&step, scope, span)?,
+                    Some(step) => self.compile_time_int(step, scope, span)?,
                     None => 1,
                 };
                 if step == 0 {
@@ -139,7 +138,7 @@ impl FunctionProjectionAnalysis<'_> {
                     "function projection scalar range value count",
                     span,
                 )?;
-                values.push(self.compile_time_int(&range, scope, span)?);
+                values.push(self.compile_time_int(range, scope, span)?);
                 Ok(values)
             }
         }
@@ -169,6 +168,16 @@ impl FunctionProjectionAnalysis<'_> {
             return Ok(Some(value));
         }
         match expr {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => {
+                if let Some(bound) = scope.full.get(name.as_str())
+                    && !is_same_plain_var_ref(bound, name.as_str())
+                {
+                    return self.compile_time_scalar_with_scope(bound, scope, span);
+                }
+                Ok(self.compile_time_scalar(expr))
+            }
             rumoca_core::Expression::Unary { op, rhs, .. } => {
                 let Some(value) = self.compile_time_scalar_with_scope(rhs, scope, span)? else {
                     return Ok(None);
@@ -223,7 +232,16 @@ impl FunctionProjectionAnalysis<'_> {
                 name, subscripts, ..
             } if subscripts.is_empty() => match scope.dims.get(name.as_str()) {
                 Some(dims) => Some(dims.clone()),
-                None => self.expr_dims_with_owner(array, scope, 0, span)?,
+                None => scope
+                    .full
+                    .iter()
+                    .find_map(|(formal, actual)| {
+                        is_same_plain_var_ref(actual, name.as_str())
+                            .then(|| scope.dims.get(formal))
+                            .flatten()
+                    })
+                    .cloned()
+                    .or(self.expr_dims_with_owner(array, scope, 0, span)?),
             },
             _ => self.expr_dims_with_owner(array, scope, 0, span)?,
         };

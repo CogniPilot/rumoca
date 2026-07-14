@@ -401,8 +401,9 @@ impl<'a> LowerBuilder<'a> {
             return Ok(1.0);
         }
         let key = size_binding_key(name.as_str(), dim);
-        self.structural_bindings
+        const_scope
             .get(key.as_str())
+            .or_else(|| self.structural_bindings.get(key.as_str()))
             .copied()
             .ok_or_else(|| LowerError::ForRangeUnknownDimension {
                 name: name.as_str().to_string(),

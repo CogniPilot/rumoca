@@ -76,6 +76,52 @@ fn production_statement_eval_does_not_call_default_evaluator() {
     );
 }
 
+#[test]
+fn array_argument_validation_accepts_range_slice_var_ref() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("v".to_string(), vec![6])]));
+    set_array_entries(&mut env, "v", &[6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let slice = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("v"),
+        subscripts: vec![rumoca_core::Subscript::expr(
+            Box::new(rumoca_core::Expression::Range {
+                start: Box::new(int_lit(2)),
+                step: None,
+                end: Box::new(int_lit(4)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rumoca_core::Span::DUMMY,
+        )],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    validate_array_argument(&slice, &env).expect("range slice should be a valid array argument");
+    assert_eq!(eval_array_values(&slice, &env), Ok(vec![2.0, 3.0, 4.0]));
+
+    let mut sum_slice = Function::new("Pkg.sumSlice", rumoca_core::Span::DUMMY);
+    sum_slice.add_input(
+        FunctionParam::new("x", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
+    sum_slice.add_output(
+        FunctionParam::new("y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_default(rumoca_core::Expression::BuiltinCall {
+                function: BuiltinFunction::Sum,
+                args: vec![var("x")],
+                span: rumoca_core::Span::DUMMY,
+            }),
+    );
+    sum_slice.body = vec![Statement::Empty {
+        span: rumoca_core::Span::DUMMY,
+    }];
+    env.functions = Arc::new(IndexMap::from([("Pkg.sumSlice".to_string(), sum_slice)]));
+
+    assert_eq!(
+        eval_expr::<f64>(&fn_call("Pkg.sumSlice", vec![slice]), &env),
+        Ok(9.0)
+    );
+}
+
 fn default_zero_match_count(source: &str) -> usize {
     let patterns = [
         "T::zero()",

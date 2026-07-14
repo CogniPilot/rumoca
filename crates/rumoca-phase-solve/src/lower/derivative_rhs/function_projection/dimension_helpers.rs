@@ -369,31 +369,34 @@ pub(super) fn projection_assignment_target(
     if last.subs.is_empty() {
         return Ok(ProjectionAssignmentTarget {
             base: component_ref.to_var_name().as_str().to_string(),
-            indices: None,
+            selectors: None,
             span,
         });
     }
-    let mut indices = projection_vec_with_capacity(
+    let mut selectors = projection_vec_with_capacity(
         last.subs.len(),
         "function assignment target subscript count",
         span,
     )?;
     for subscript in &last.subs {
-        let index = match subscript {
-            rumoca_core::Subscript::Index { value, span } if *value > 0 => Ok(*value),
+        let selector = match subscript {
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => {
+                Ok(ProjectionAssignmentSelector::Index(*value))
+            }
+            rumoca_core::Subscript::Colon { .. } => Ok(ProjectionAssignmentSelector::All),
             _ => Err(unsupported_at(
                 "dynamic function assignment target subscripts cannot be projected",
                 subscript.span(),
             )),
         }?;
-        indices.push(index);
+        selectors.push(selector);
     }
     last.subs.clear();
     Ok(ProjectionAssignmentTarget {
         base: rumoca_core::Reference::from_component_reference(base_ref)
             .as_str()
             .to_string(),
-        indices: Some(indices),
+        selectors: Some(selectors),
         span,
     })
 }
@@ -738,6 +741,7 @@ pub(super) fn binary_mul_dims(
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<i64>>, LowerError> {
     Ok(match (lhs_dims, rhs_dims) {
+        ([], []) => Some(Vec::new()),
         ([], dims) if !dims.is_empty() => Some(copy_projection_dims(
             dims,
             "scalar lhs product dimension count",

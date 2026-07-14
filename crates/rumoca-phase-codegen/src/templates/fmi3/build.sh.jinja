@@ -30,8 +30,9 @@ case "$(uname -s)" in
 esac
 
 mkdir -p binaries/$PLATFORM
-: "${CFLAGS:=-O2}"
-cc -shared -fPIC $CFLAGS -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
+: "${CC:=cc}"
+: "${CFLAGS:=-Og}"
+"$CC" -shared -fPIC $CFLAGS -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
 
 rm -f {{ model_name }}.fmu
 zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/

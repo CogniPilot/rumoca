@@ -40,13 +40,19 @@ pub(super) struct MatrixVectorProductDims<'a> {
 
 pub(super) struct ProjectionAssignmentTarget {
     pub(super) base: String,
-    pub(super) indices: Option<Vec<i64>>,
+    pub(super) selectors: Option<Vec<ProjectionAssignmentSelector>>,
     pub(super) span: rumoca_core::Span,
 }
 
-pub(super) struct IndexedAssignment<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProjectionAssignmentSelector {
+    Index(i64),
+    All,
+}
+
+pub(super) struct SelectedAssignment<'a> {
     pub(super) target: &'a str,
-    pub(super) indices: &'a [i64],
+    pub(super) selectors: &'a [ProjectionAssignmentSelector],
     pub(super) value: &'a rumoca_core::Expression,
     pub(super) span: rumoca_core::Span,
     pub(super) depth: usize,

@@ -51,6 +51,7 @@ pub(super) fn flatten_assert_equation(
             &lowering.ctx.current_imports,
             lowering.def_map,
             lowering.ctx,
+            None,
         )?,
         level
             .map(|expr| {
@@ -60,6 +61,7 @@ pub(super) fn flatten_assert_equation(
                     &lowering.ctx.current_imports,
                     lowering.def_map,
                     lowering.ctx,
+                    None,
                 )
             })
             .transpose()?,
@@ -106,6 +108,7 @@ pub(super) fn flatten_assert_function_call(
             &lowering.ctx.current_imports,
             lowering.def_map,
             lowering.ctx,
+            None,
         )?,
         level
             .map(|expr| {
@@ -115,6 +118,7 @@ pub(super) fn flatten_assert_function_call(
                     &lowering.ctx.current_imports,
                     lowering.def_map,
                     lowering.ctx,
+                    None,
                 )
             })
             .transpose()?,
@@ -166,6 +170,7 @@ fn qualify_assert_condition(
             &ctx.current_imports,
             def_map,
             ctx,
+            None,
         );
     }
     let rewritten = rewrite_structural_assert_condition(ctx, condition, prefix);
@@ -179,6 +184,7 @@ fn qualify_assert_condition(
         &ctx.current_imports,
         def_map,
         ctx,
+        None,
     )
 }
 

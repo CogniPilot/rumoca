@@ -40,8 +40,9 @@ use std::path::Path;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, SolveTemplateRenderer, dae_for_fmi_model_description_context,
-    dae_for_solve_template_context, dae_to_template_json, render_ast_template_with_name,
+    CodegenError, SolveTemplateRenderer, dae_for_fmi_implementation_context,
+    dae_for_fmi_native_implementation_context, dae_for_solve_template_context,
+    dae_to_template_json, fmi3_native_projection_available, render_ast_template_with_name,
     render_dae_template_with_json, render_dae_template_with_json_and_name,
     render_flat_template_with_name,
 };
@@ -79,9 +80,16 @@ pub struct CompilationResult {
     /// Cached solve-template renderer for targets that never read the `dae`
     /// template entry.
     solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
-    /// Cached solve renderer whose `dae` entry is prepared for FMI
-    /// modelDescription XML metadata.
-    fmi_model_description_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
+    /// Separate XML and implementation renderers built together: FMI metadata
+    /// folding and numerical Solve IR lowering run concurrently, while each
+    /// renderer retains its own lazy symbol/materialization state.
+    fmi_template_renderers: std::sync::OnceLock<FmiTemplateRenderers>,
+}
+
+#[derive(Debug)]
+struct FmiTemplateRenderers {
+    model_description: SolveTemplateRenderer,
+    implementation: SolveTemplateRenderer,
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -101,7 +109,7 @@ fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRendere
     let artifacts = lower_solve_artifacts(&problem)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
     let template_dae = dae_for_solve_template_context(dae_model)?;
-    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
+    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, template_dae)
         .map_err(CompilerError::TemplateError)
 }
 
@@ -114,15 +122,47 @@ fn build_solve_template_renderer_without_dae(
     SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
 }
 
-fn build_fmi_model_description_renderer(
-    dae_model: &Dae,
-) -> Result<SolveTemplateRenderer, CompilerError> {
-    let problem = lower_solve_problem(dae_model)
-        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
-    let template_dae = dae_for_fmi_model_description_context(dae_model)?;
-    SolveTemplateRenderer::new_with_dae(&problem, &artifacts, template_dae)
-        .map_err(CompilerError::TemplateError)
+fn build_fmi_template_renderers(dae_model: &Dae) -> Result<FmiTemplateRenderers, CompilerError> {
+    let (metadata, numerical) = rayon::join(
+        || {
+            dae_for_fmi_native_implementation_context(dae_model)
+                .map(std::sync::Arc::new)
+                .map_err(CompilerError::TemplateError)
+        },
+        || {
+            let problem = lower_solve_problem(dae_model).map_err(|err| {
+                CompilerError::TemplateError(CodegenError::template(err.to_string()))
+            })?;
+            let artifacts = lower_solve_artifacts(&problem).map_err(|err| {
+                CompilerError::TemplateError(CodegenError::template(err.to_string()))
+            })?;
+            let native_projection = (dae_model.variables.algebraics.is_empty()
+                && dae_model.variables.outputs.is_empty())
+                || fmi3_native_projection_available(&problem)
+                    .map_err(CompilerError::TemplateError)?;
+            Ok::<_, CompilerError>((problem, artifacts, native_projection))
+        },
+    );
+    let metadata = metadata?;
+    let (problem, artifacts, native_projection) = numerical?;
+    let model_description = SolveTemplateRenderer::new_owned_with_shared_dae(
+        rumoca_ir_solve::SolveProblem::default(),
+        rumoca_ir_solve::SolveArtifacts::default(),
+        metadata.clone(),
+    )
+    .map_err(CompilerError::TemplateError)?;
+    let implementation = if native_projection {
+        SolveTemplateRenderer::new_owned_with_shared_dae(problem, artifacts, metadata)
+            .map_err(CompilerError::TemplateError)?
+    } else {
+        let template_dae = dae_for_fmi_implementation_context(dae_model)?;
+        SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, template_dae)
+            .map_err(CompilerError::TemplateError)?
+    };
+    Ok(FmiTemplateRenderers {
+        model_description,
+        implementation,
+    })
 }
 
 impl CompilationResult {
@@ -139,7 +179,7 @@ impl CompilationResult {
             resolved,
             solve_template_renderer: std::sync::OnceLock::new(),
             solve_template_renderer_without_dae: std::sync::OnceLock::new(),
-            fmi_model_description_renderer: std::sync::OnceLock::new(),
+            fmi_template_renderers: std::sync::OnceLock::new(),
         }
     }
 
@@ -409,16 +449,37 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        if self.fmi_model_description_renderer.get().is_none() {
-            let renderer = build_fmi_model_description_renderer(&self.dae)?;
-            let _ = self.fmi_model_description_renderer.set(renderer);
+        if self.fmi_template_renderers.get().is_none() {
+            let renderers = build_fmi_template_renderers(&self.dae)?;
+            let _ = self.fmi_template_renderers.set(renderers);
         }
-        let renderer = self.fmi_model_description_renderer.get().ok_or_else(|| {
+        let renderers = self.fmi_template_renderers.get().ok_or_else(|| {
             CompilerError::TemplateError(CodegenError::template(
-                "FMI modelDescription renderer was not initialized after build",
+                "FMI template renderers were not initialized after build",
             ))
         })?;
-        renderer
+        renderers
+            .model_description
+            .render_with_name(template, model_name)
+            .map_err(CompilerError::TemplateError)
+    }
+
+    pub fn render_fmi_implementation_template_str_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CompilerError> {
+        if self.fmi_template_renderers.get().is_none() {
+            let renderers = build_fmi_template_renderers(&self.dae)?;
+            let _ = self.fmi_template_renderers.set(renderers);
+        }
+        let renderers = self.fmi_template_renderers.get().ok_or_else(|| {
+            CompilerError::TemplateError(CodegenError::template(
+                "FMI template renderers were not initialized after build",
+            ))
+        })?;
+        renderers
+            .implementation
             .render_with_name(template, model_name)
             .map_err(CompilerError::TemplateError)
     }

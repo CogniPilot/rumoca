@@ -442,7 +442,7 @@ impl<'a> LowerBuilder<'a> {
                     step.as_deref(),
                     end,
                     range_span,
-                    &const_scope,
+                    const_scope,
                     "array slice range",
                 )?;
                 let mut indices =
@@ -457,7 +457,7 @@ impl<'a> LowerBuilder<'a> {
             _ => single_usize_vec(
                 self.eval_compile_time_positive_index_at(
                     expr,
-                    &const_scope,
+                    const_scope,
                     "array slice index",
                     span,
                 )?,
@@ -469,10 +469,8 @@ impl<'a> LowerBuilder<'a> {
         Ok(indices)
     }
 
-    fn compile_time_slice_bindings(&self, _scope: &Scope) -> IndexMap<String, f64> {
-        let mut bindings = (*self.structural_bindings).clone();
-        bindings.extend(self.local_const_bindings.clone());
-        bindings
+    fn compile_time_slice_bindings(&self, _scope: &Scope) -> &IndexMap<String, f64> {
+        &self.local_const_bindings
     }
 
     fn required_dynamic_selection_span(

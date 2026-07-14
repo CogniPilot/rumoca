@@ -35,7 +35,7 @@ mod tests;
 use dimension_helpers::{
     FunctionScopeSubstituter, append_projected_outputs, array_expression_dims,
     assignment_projection_dims, binary_mul_dims, constructor_input_projection_dims,
-    copy_projection_dims, declared_dims, elementwise_binary_dims,
+    copy_projection_dims, declared_dims, dimension_mismatch_error, elementwise_binary_dims,
     exact_declared_function_output_dims, flat_index_from_indices, flatten_array_elements,
     formal_actual_projection_dims, is_ignorable_projection_statement, is_same_plain_var_ref,
     named_actual_span, named_argument_spans, projected_declared_output_dims,
@@ -57,8 +57,9 @@ use inline_budget::{
 };
 use loop_projection::ForProjectionCtx;
 use projection_helpers::{
-    ArrayProjectionValueCtx, IfStatementProjection, IndexedAssignment, MatrixVectorProductDims,
-    ProjectionAssignmentTarget, ProjectionValueCtx, ScalarSelectionCtx, array_element_scalar_width,
+    ArrayProjectionValueCtx, IfStatementProjection, MatrixVectorProductDims,
+    ProjectionAssignmentSelector, ProjectionAssignmentTarget, ProjectionValueCtx,
+    ScalarSelectionCtx, SelectedAssignment, array_element_scalar_width,
     inherited_projection_source_span, inherited_projection_span, matrix_column_child_flat_index,
     matrix_column_operand_count, matrix_elements_are_row_literals,
     outputs_contain_unresolved_function_scope_refs, projection_actual_with_span,
@@ -664,9 +665,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         let target = self.substitute_component_reference(target, scope)?;
         let target = projection_assignment_target(&target)?;
         if target
-            .indices
+            .selectors
             .as_ref()
-            .is_some_and(|indices| !indices.is_empty())
+            .is_some_and(|selectors| !selectors.is_empty())
         {
             return Err(unsupported_at(
                 "indexed procedure-call output targets cannot be projected",
@@ -747,13 +748,13 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         if exceeds_projection_node_budget(&value) {
             return Err(projection_budget_exceeded(function));
         }
-        if let Some(indices) = target.indices.as_deref() {
+        if let Some(selectors) = target.selectors.as_deref() {
             let indexed_span = inherited_projection_span(target.span, assignment_span);
-            self.apply_indexed_assignment(
+            self.apply_selected_assignment(
                 function,
-                IndexedAssignment {
+                SelectedAssignment {
                     target: &target.base,
-                    indices,
+                    selectors,
                     value: &value,
                     span: indexed_span,
                     depth: depth + 1,
@@ -817,63 +818,92 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         Ok(())
     }
 
-    fn apply_indexed_assignment(
+    fn apply_selected_assignment(
         &self,
         function: &rumoca_core::Function,
-        assignment: IndexedAssignment<'_>,
+        assignment: SelectedAssignment<'_>,
         scope: &mut FunctionProjectionScope,
     ) -> Result<(), LowerError> {
         let target = assignment.target;
         let span = assignment.span;
-        if self
-            .expr_dims_with_owner(assignment.value, scope, assignment.depth + 1, span)?
-            .is_some_and(|dims| !dims.is_empty())
-        {
-            return Err(unsupported_at(
-                format!("indexed assignment to scalar element `{target}` received an array value"),
-                span,
-            ));
-        }
         let dims = if let Some(dims) = scope.dims.get(target) {
             copy_projection_dims(dims, "indexed assignment scope dimension count", span)?
         } else {
             declared_dims(function, target)?
                 .ok_or_else(|| guarded_assignment_without_base(target, span))?
         };
-        let flat_index = flat_index_from_indices(
-            &dims,
-            assignment.indices,
-            span,
-            "indexed assignment flat index",
-        )?
-        .ok_or_else(|| {
-            let dims = format_i64_dims(&dims);
-            let indices = format_i64_dims(assignment.indices);
-            LowerError::contract_violation(
+        if dims.len() != assignment.selectors.len() || dims.is_empty() {
+            return Err(LowerError::contract_violation(
                 format!(
-                    "indexed assignment to `{target}` uses out-of-bounds index {indices} for dimensions {dims}"
+                    "selected assignment to `{target}` uses {} selectors for dimensions {}",
+                    assignment.selectors.len(),
+                    format_i64_dims(&dims)
                 ),
                 span,
-            )
-        })?;
+            ));
+        }
+        let selected = selected_assignment_indices(&dims, assignment.selectors, target, span)?;
+        let selected_dims = dims
+            .iter()
+            .zip(assignment.selectors)
+            .filter_map(|(dim, selector)| {
+                matches!(selector, ProjectionAssignmentSelector::All).then_some(*dim)
+            })
+            .collect::<Vec<_>>();
+        let value_dims =
+            self.expr_dims_with_owner(assignment.value, scope, assignment.depth + 1, span)?;
+        if value_dims.as_deref().unwrap_or_default() != selected_dims {
+            return Err(dimension_mismatch_error(
+                &format!("selected assignment to `{target}`"),
+                &selected_dims,
+                value_dims.as_deref().unwrap_or_default(),
+                span,
+            ));
+        }
+        let assigned_values = if selected_dims.is_empty() {
+            vec![self.substitute(assignment.value, scope)?]
+        } else {
+            self.project_value_scalars(
+                assignment.value,
+                &selected_dims,
+                scope,
+                assignment.depth + 1,
+                span,
+            )?
+            .ok_or_else(|| {
+                unsupported_at("selected assignment value could not be projected", span)
+            })?
+        };
+        if assigned_values.len() != selected.len() {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "selected assignment to `{target}` projected {} values for {} target elements",
+                    assigned_values.len(),
+                    selected.len()
+                ),
+                span,
+            ));
+        }
         let mut values = scope
             .scalars
             .get(target)
             .cloned()
             .ok_or_else(|| guarded_assignment_without_base(target, span))?;
-        let Some(slot) = values.get_mut(flat_index) else {
-            return Err(LowerError::contract_violation(
-                format!(
-                    "indexed assignment to `{target}` flat index {flat_index} is missing from scalar projection"
-                ),
-                span,
-            ));
-        };
-        let slot_value = self.substitute(assignment.value, scope)?.with_span(span);
-        if exceeds_projection_node_budget(&slot_value) {
-            return Err(projection_budget_exceeded(function));
+        for (flat_index, value) in selected.into_iter().zip(assigned_values) {
+            let Some(slot) = values.get_mut(flat_index) else {
+                return Err(LowerError::contract_violation(
+                    format!(
+                        "selected assignment to `{target}` flat index {flat_index} is missing from scalar projection"
+                    ),
+                    span,
+                ));
+            };
+            let value = value.with_span(span);
+            if exceeds_projection_node_budget(&value) {
+                return Err(projection_budget_exceeded(function));
+            }
+            *slot = value;
         }
-        *slot = slot_value;
         scope.scalars.insert(target.to_string(), values);
         scope.dims.insert(target.to_string(), dims);
         Ok(())

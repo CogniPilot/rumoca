@@ -159,6 +159,86 @@ fn projected_scope_dimensions_override_full_binding_dimensions() {
 }
 
 #[test]
+fn size_uses_resolved_callee_dims_after_following_full_alias() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope
+        .full
+        .insert("B".to_string(), local_var("callerRightHandSide"));
+    scope.dims.insert("B".to_string(), vec![3, 1]);
+    scope
+        .scalars
+        .insert("B".to_string(), vec![real(1.0), real(2.0), real(3.0)]);
+    let size = builtin(
+        rumoca_core::BuiltinFunction::Size,
+        vec![
+            local_var("B"),
+            rumoca_core::Expression::Literal {
+                value: Literal::Integer(1),
+                span: test_span(),
+            },
+        ],
+    );
+
+    let substituted = analysis.substitute(&size, &scope)?;
+    assert_eq!(
+        analysis.compile_time_int(&substituted, &scope, test_span())?,
+        3
+    );
+    Ok(())
+}
+
+#[test]
+fn static_colon_assignment_projects_array_into_matrix_column() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut function = rumoca_core::Function::new("My.columnAssign", test_span());
+    function
+        .locals
+        .push(function_param_with_dims("rightHandSide", &[3, 1]));
+    let mut scope = FunctionProjectionScope::default();
+    analysis.initialize_projected_declared_arrays(&function, &mut scope, 0, test_span())?;
+    let statement = rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference {
+            local: false,
+            span: test_span(),
+            parts: vec![rumoca_core::ComponentRefPart {
+                ident: "rightHandSide".to_string(),
+                span: test_span(),
+                subs: vec![
+                    rumoca_core::Subscript::Colon { span: test_span() },
+                    rumoca_core::Subscript::Index {
+                        value: 1,
+                        span: test_span(),
+                    },
+                ],
+            }],
+            def_id: None,
+        },
+        value: array(vec![real(1.0), real(2.0), real(3.0)], false),
+        span: test_span(),
+    };
+
+    analysis.apply_assignment(
+        &function,
+        &statement,
+        &mut scope,
+        &mut Vec::new(),
+        0,
+        test_span(),
+    )?;
+
+    assert_eq!(
+        scope.scalars.get("rightHandSide"),
+        Some(&vec![real(1.0), real(2.0), real(3.0)])
+    );
+    Ok(())
+}
+
+#[test]
 fn substitution_reads_current_projected_indexed_assignment() -> Result<(), LowerError> {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();
@@ -402,6 +482,12 @@ fn array_binary_projection_rejects_unknown_operand_dimensions_with_span() {
         err.reason(),
         "binary lhs has unknown dimensions".to_string()
     );
+}
+
+#[test]
+fn scalar_scalar_product_dimensions_are_scalar() -> Result<(), LowerError> {
+    assert_eq!(binary_mul_dims(&[], &[], test_span())?, Some(Vec::new()));
+    Ok(())
 }
 
 #[test]

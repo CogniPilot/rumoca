@@ -124,6 +124,54 @@ fn var_scope_child_falls_through_and_shadows_without_parent_copy() {
     assert_eq!(entries, vec![("a", 1.0), ("b", 20.0), ("c", 3.0)]);
 }
 
+#[test]
+fn var_scope_hidden_namespace_never_falls_through_to_parent_components() {
+    let mut parent = VarScope::new();
+    parent.insert("p".to_string(), 10.0);
+    parent.insert("p[1]".to_string(), 11.0);
+    parent.insert("p.field".to_string(), 12.0);
+    parent.insert("preserved".to_string(), 13.0);
+
+    let mut child = VarScope::child_of(&parent);
+    child.hide_parent_namespace("p");
+    child.insert("p[1]".to_string(), 21.0);
+
+    assert_eq!(child.get("p"), None);
+    assert_eq!(child.get("p[1]"), Some(&21.0));
+    assert_eq!(child.get("p.field"), None);
+    assert_eq!(child.get("preserved"), Some(&13.0));
+    assert_eq!(
+        child
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect::<Vec<_>>(),
+        vec![("preserved", 13.0), ("p[1]", 21.0)]
+    );
+}
+
+#[test]
+fn var_scope_prefix_entries_filter_before_preserving_child_shadowing() {
+    let mut parent = VarScope::new();
+    parent.insert("state.position.x".to_string(), 1.0);
+    parent.insert("unrelated".to_string(), 99.0);
+    parent.insert("state.position.y".to_string(), 2.0);
+
+    let mut child = VarScope::child_of(&parent);
+    child.insert("state.position.x".to_string(), 10.0);
+    child.insert("state.velocity.x".to_string(), 3.0);
+    child.insert("alsoUnrelated".to_string(), 100.0);
+
+    let entries = child
+        .entries_with_prefix("state.position.")
+        .into_iter()
+        .map(|(name, value)| (name.as_str(), *value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries,
+        vec![("state.position.x", 10.0), ("state.position.y", 2.0)]
+    );
+}
+
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
@@ -953,6 +1001,115 @@ fn range_subscript(start: i64, end: i64) -> rumoca_core::Subscript {
         }),
         rumoca_core::Span::DUMMY,
     )
+}
+
+#[test]
+fn scalar_function_local_shadows_caller_array_dimensions() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([
+        ("B".to_string(), vec![2, 2]),
+        ("rotation".to_string(), vec![3]),
+    ]));
+    set_array_entries(&mut env, "B", &[2, 2], &[0.0, 1.0, 0.0, 0.0]);
+    set_array_entries(&mut env, "rotation", &[3], &[1.0, 2.0, 3.0]);
+
+    let mut exp_map = Function::new("Pkg.expMap", rumoca_core::Span::DUMMY);
+    exp_map.add_input(
+        FunctionParam::new("v", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
+    exp_map.add_output(
+        FunctionParam::new("q", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![4]),
+    );
+    exp_map.locals.push(FunctionParam::new(
+        "B",
+        "Real",
+        rumoca_core::Span::source_free_serde_default(),
+    ));
+    exp_map.body = vec![
+        Statement::Assignment {
+            comp: comp_ref("B"),
+            value: lit(0.5),
+            span: rumoca_core::Span::DUMMY,
+        },
+        Statement::Assignment {
+            comp: comp_ref("q"),
+            value: arr(vec![var("B"), lit(1.0), lit(2.0), lit(3.0)], false),
+            span: rumoca_core::Span::DUMMY,
+        },
+    ];
+    env.functions = Arc::new(IndexMap::from([("Pkg.expMap".to_string(), exp_map)]));
+
+    let expression = fn_call("Pkg.expMap", vec![var("rotation")]);
+
+    assert_eq!(
+        eval_array_values::<f64>(&expression, &env),
+        Ok(vec![0.5, 1.0, 2.0, 3.0])
+    );
+}
+
+#[test]
+fn incomplete_function_local_array_never_falls_through_to_caller_array() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("p".to_string(), vec![4])]));
+    set_array_entries(&mut env, "p", &[4], &[10.0, 20.0, 30.0, 40.0]);
+
+    let mut function = Function::new("Pkg.incomplete", rumoca_core::Span::DUMMY);
+    function.add_input(
+        FunctionParam::new("u", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3]),
+    );
+    function.add_output(
+        FunctionParam::new("r", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![4]),
+    );
+    function.locals.push(
+        FunctionParam::new("p", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![4]),
+    );
+    function.body = vec![
+        Statement::Assignment {
+            comp: comp_ref_index("p", 1),
+            value: indexed_var("u", &[1]),
+            span: rumoca_core::Span::DUMMY,
+        },
+        Statement::Assignment {
+            comp: comp_ref_index("p", 2),
+            value: indexed_var("u", &[2]),
+            span: rumoca_core::Span::DUMMY,
+        },
+        Statement::Assignment {
+            comp: comp_ref_index("p", 3),
+            value: indexed_var("u", &[3]),
+            span: rumoca_core::Span::DUMMY,
+        },
+        Statement::Assignment {
+            comp: comp_ref("r"),
+            value: Expression::VarRef {
+                name: Reference::new("p"),
+                subscripts: vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)],
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        },
+    ];
+    env.functions = Arc::new(IndexMap::from([("Pkg.incomplete".to_string(), function)]));
+
+    let result = eval_array_values::<f64>(
+        &fn_call(
+            "Pkg.incomplete",
+            vec![arr(vec![lit(1.0), lit(2.0), lit(3.0)], false)],
+        ),
+        &env,
+    );
+    assert_eq!(
+        result
+            .as_ref()
+            .err()
+            .and_then(EvalError::missing_binding_name),
+        Some("p[4]")
+    );
 }
 
 #[test]
