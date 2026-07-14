@@ -42,4 +42,15 @@ The former Stack/StackRC deficit was closed at its producing mechanisms rather t
 
 The complete mechanism chain passed independent review. At clean semantic commit `9e8f2e09a31e4e8f8834f121db3825ec883318c3`, focused structural admission is balanced for all controls: `CCCV_Stack` `134/134`, `CCCV_StackRC` `176/176`, `CCCV_Cell` `19/19`, and `CCCV_CellRC` `20/20`.
 
+## Finalization and handoff
+
+- `f84f3cb3` split oversized regression modules without changing behavior;
+- `3ba4b26d` gave the Clock fixture compiler-owned builtin `DefId` identity;
+- `21ccab5d` extracted the structural runtime-partition test helper;
+- `6a5be4b9` replaced hidden fixture sentinels with deterministic spans and an explicit fixed marker.
+
+The complete documentation gate, formatting, strict workspace all-target/all-feature clippy, `cargo test --workspace`, and review scan all passed; review scan reported zero forbidden findings. DCO and clean-worktree checks passed. The final independent review's only finding was stale completed work in the active plan, which this closeout removes.
+
+No branch push was performed because the user did not authorize one. This is handoff state, not an active problem.
+
 Detailed implementation scripts, stale worktree paths, obsolete pre-fix counts, and already completed checklists were removed. Git history and the cited clean artifacts are the authoritative audit trail.
