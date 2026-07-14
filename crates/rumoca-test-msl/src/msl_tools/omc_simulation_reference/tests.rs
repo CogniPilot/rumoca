@@ -369,6 +369,7 @@ fn cached_success_without_materialized_trace_source_is_not_reusable() {
         &omc_trace_dir.join(format!("{model_name}.json")),
         &SimTrace {
             model_name: Some(model_name.to_string()),
+            n_states: None,
             times: vec![0.0],
             names: vec!["y".to_string()],
             data: vec![vec![Some(1.0)]],
@@ -597,6 +598,7 @@ fn quantify_trace_differences_includes_error_status_model_with_existing_traces()
     let model_name = "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedSine".to_string();
     let trace = SimTrace {
         model_name: Some(model_name.clone()),
+        n_states: None,
         times: vec![0.0, 0.5, 1.0],
         names: vec!["y".to_string()],
         data: vec![vec![Some(0.0), Some(1.0), Some(0.0)]],
@@ -644,6 +646,7 @@ fn quantify_trace_differences_includes_error_status_model_with_existing_traces()
 fn trace_output_summary_rolls_up_initial_condition_stats() {
     let rumoca = SimTrace {
         model_name: Some("M".to_string()),
+        n_states: None,
         times: vec![0.0, 0.5, 1.0],
         names: vec!["x".to_string(), "y".to_string()],
         data: vec![
@@ -654,6 +657,7 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
     };
     let omc = SimTrace {
         model_name: Some("M".to_string()),
+        n_states: None,
         times: vec![0.0, 0.5, 1.0],
         names: vec!["x".to_string(), "y".to_string()],
         data: vec![

@@ -101,6 +101,7 @@ fn compare_state_sets(
 }
 
 fn rumoca_state_names(trace: &SimTrace) -> Option<BTreeSet<String>> {
+    let expected_state_count = trace.n_states?;
     let states = trace
         .variable_meta
         .as_ref()?
@@ -108,6 +109,9 @@ fn rumoca_state_names(trace: &SimTrace) -> Option<BTreeSet<String>> {
         .filter(|meta| meta.role.as_deref() == Some("state"))
         .map(|meta| meta.name.clone())
         .collect::<BTreeSet<_>>();
+    if expected_state_count != states.len() {
+        return None;
+    }
     Some(states)
 }
 
@@ -192,6 +196,35 @@ mod tests {
         let states = extract_omc_state_names_from_init_xml(xml);
 
         assert_eq!(states, BTreeSet::from(["a&b".to_string(), "x".to_string()]));
+    }
+
+    #[test]
+    fn rejects_state_metadata_count_that_disagrees_with_trace_contract() {
+        let trace = serde_json::from_value::<SimTrace>(serde_json::json!({
+            "model_name": "BrokenMetadata",
+            "n_states": 2,
+            "times": [0.0],
+            "names": ["x"],
+            "data": [[0.0]],
+            "variable_meta": [{"name": "x", "role": "state"}]
+        }))
+        .expect("trace fixture should deserialize");
+
+        assert_eq!(rumoca_state_names(&trace), None);
+    }
+
+    #[test]
+    fn rejects_state_metadata_without_trace_state_count_contract() {
+        let trace = serde_json::from_value::<SimTrace>(serde_json::json!({
+            "model_name": "MissingContract",
+            "times": [0.0],
+            "names": ["x"],
+            "data": [[0.0]],
+            "variable_meta": [{"name": "x", "role": "state"}]
+        }))
+        .expect("trace fixture should deserialize");
+
+        assert_eq!(rumoca_state_names(&trace), None);
     }
 
     #[test]

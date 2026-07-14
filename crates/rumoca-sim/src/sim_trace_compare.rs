@@ -24,6 +24,8 @@ pub const SEVERE_CHANNEL_MAX_THRESHOLD: f64 = 0.80;
 pub struct SimTrace {
     #[serde(default)]
     pub model_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_states: Option<usize>,
     pub times: Vec<f64>,
     pub names: Vec<String>,
     pub data: Vec<Vec<Option<f64>>>,
@@ -1148,6 +1150,7 @@ mod tests {
     fn trace(model_name: &str, times: Vec<f64>, names: Vec<&str>, data: Vec<Vec<f64>>) -> SimTrace {
         SimTrace {
             model_name: Some(model_name.to_string()),
+            n_states: None,
             times,
             names: names.into_iter().map(ToOwned::to_owned).collect(),
             data: data
@@ -1411,6 +1414,7 @@ mod tests {
     fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
         let rumoca = SimTrace {
             model_name: Some("M".to_string()),
+            n_states: None,
             times: vec![0.0, 1.0],
             names: vec!["y".to_string()],
             data: vec![vec![Some(0.0), Some(1.0)]],
@@ -1424,6 +1428,7 @@ mod tests {
         };
         let omc = SimTrace {
             model_name: Some("M".to_string()),
+            n_states: None,
             times: vec![0.0, 0.5, 1.0],
             names: vec!["y".to_string()],
             data: vec![vec![Some(0.0), Some(0.0), Some(1.0)]],
@@ -1442,6 +1447,7 @@ mod tests {
     fn discrete_only_model_traces_contribute_to_metrics() {
         let rumoca = SimTrace {
             model_name: Some("M".to_string()),
+            n_states: None,
             times: vec![0.0, 1.0],
             names: vec!["q".to_string()],
             data: vec![vec![Some(0.0), Some(1.0)]],
@@ -1455,6 +1461,7 @@ mod tests {
         };
         let omc = SimTrace {
             model_name: Some("M".to_string()),
+            n_states: None,
             times: vec![0.0, 0.5, 1.0],
             names: vec!["q".to_string()],
             data: vec![vec![Some(0.0), Some(0.0), Some(1.0)]],

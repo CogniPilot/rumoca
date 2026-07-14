@@ -258,6 +258,7 @@ fn trace_from_sim_result(model_name: &str, sim: &SimResult) -> SimTrace {
     };
     SimTrace {
         model_name: Some(model_name.to_string()),
+        n_states: Some(sim.n_states),
         times: sim.times.clone(),
         names: sim.names.clone(),
         data,
@@ -400,6 +401,7 @@ fn load_omc_csv_as_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> 
 
     Ok(SimTrace {
         model_name: Some(model_name.to_string()),
+        n_states: None,
         times,
         names,
         data,
@@ -852,6 +854,7 @@ mod tests {
     fn trace(model: &str, times: Vec<f64>, names: Vec<&str>, data: Vec<Vec<f64>>) -> SimTrace {
         SimTrace {
             model_name: Some(model.to_string()),
+            n_states: None,
             times,
             names: names.into_iter().map(ToOwned::to_owned).collect(),
             data: data

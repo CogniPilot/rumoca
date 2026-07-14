@@ -11,7 +11,7 @@ use super::entry::{lower_dae_for_simulation, lower_dae_for_simulation_with_stage
 use super::probe::{eval_dae_at, jacobian_for_dae};
 use super::structural_lowering::{
     metadata_attachment_lower_error, prepare_dae_after_boundary_elimination,
-    structurally_lower_dae_for_simulation,
+    reconcile_state_selection_metadata, structurally_lower_dae_for_simulation,
 };
 
 fn sim_source_span(source: u64, start: usize, end: usize) -> Span {
@@ -416,10 +416,72 @@ fn simulation_structural_lowering_reports_state_metadata_before_elimination() {
         .expect("y should remain visible");
 
     let selected_count = usize::from(x_meta.is_state) + usize::from(y_meta.is_state);
+    assert_eq!(model.state_scalar_count(), 1);
     assert_eq!(
-        selected_count, 1,
-        "exact alias component should report one selected state"
+        selected_count,
+        model.state_scalar_count(),
+        "reported state metadata must match the final solve layout"
     );
+}
+
+#[test]
+fn simulation_metadata_matches_final_state_partition_bidirectionally() {
+    let mut final_dae = dae::Dae::new();
+    final_dae.variables.states.insert(
+        VarName::new("selected"),
+        dae::Variable::new(VarName::new("selected"), fixture_span()),
+    );
+    final_dae.variables.algebraics.insert(
+        VarName::new("demoted"),
+        dae::Variable::new(VarName::new("demoted"), fixture_span()),
+    );
+
+    let mut metadata_dae = dae::Dae::new();
+    metadata_dae.variables.states.insert(
+        VarName::new("demoted"),
+        dae::Variable::new(VarName::new("demoted"), fixture_span()),
+    );
+    metadata_dae.variables.algebraics.insert(
+        VarName::new("selected"),
+        dae::Variable::new(VarName::new("selected"), fixture_span()),
+    );
+
+    reconcile_state_selection_metadata(&final_dae, &mut metadata_dae)
+        .expect("final state partition should reconcile metadata roles");
+
+    assert_eq!(
+        metadata_dae
+            .variables
+            .states
+            .keys()
+            .map(VarName::as_str)
+            .collect::<Vec<_>>(),
+        ["selected"]
+    );
+    assert_eq!(
+        metadata_dae
+            .variables
+            .algebraics
+            .keys()
+            .map(VarName::as_str)
+            .collect::<Vec<_>>(),
+        ["demoted"]
+    );
+}
+
+#[test]
+fn simulation_metadata_reconciliation_rejects_missing_final_state() {
+    let mut final_dae = dae::Dae::new();
+    final_dae.variables.states.insert(
+        VarName::new("selected"),
+        dae::Variable::new(VarName::new("selected"), fixture_span()),
+    );
+    let mut metadata_dae = dae::Dae::new();
+
+    let error = reconcile_state_selection_metadata(&final_dae, &mut metadata_dae)
+        .expect_err("missing metadata for a final state must fail closed");
+
+    assert!(error.to_string().contains("selected"), "got: {error}");
 }
 
 #[test]

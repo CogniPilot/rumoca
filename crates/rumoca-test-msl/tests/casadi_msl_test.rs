@@ -262,6 +262,7 @@ fn casadi_simulate(
 
     Ok(SimTrace {
         model_name: Some(model_name.to_string()),
+        n_states: None,
         times,
         names,
         data,
@@ -272,6 +273,7 @@ fn casadi_simulate(
 fn sim_result_to_trace(sim: &SimResult, model_name: &str) -> SimTrace {
     SimTrace {
         model_name: Some(model_name.to_string()),
+        n_states: Some(sim.n_states),
         times: sim.times.clone(),
         names: sim.names.clone(),
         data: sim

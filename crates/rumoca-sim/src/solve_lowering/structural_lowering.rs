@@ -647,13 +647,10 @@ fn mark_state_selection_metadata(
     )
     .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     log_solve_lowering_done("structural.demote_state_selection_dae", timer);
-    log_solve_lowering_start("structural.mark_constrained_dummy_states_in_metadata");
+    log_solve_lowering_start("structural.reconcile_state_selection_metadata");
     let timer = stage_timer_start();
-    mark_constrained_dummy_states_in_metadata(&state_selection_dae, metadata_dae);
-    log_solve_lowering_done(
-        "structural.mark_constrained_dummy_states_in_metadata",
-        timer,
-    );
+    reconcile_state_selection_metadata(&state_selection_dae, metadata_dae)?;
+    log_solve_lowering_done("structural.reconcile_state_selection_metadata", timer);
     Ok(())
 }
 
@@ -747,16 +744,37 @@ fn validate_residual_shapes_for_simulation(
     Ok(())
 }
 
-fn mark_constrained_dummy_states_in_metadata(
-    structural_dae: &dae::Dae,
+pub(super) fn reconcile_state_selection_metadata(
+    final_dae: &dae::Dae,
     metadata_dae: &mut dae::Dae,
-) {
-    for state_name in
-        rumoca_phase_structural::dae_prepare::constrained_dummy_state_names(structural_dae)
-    {
-        let name = rumoca_core::VarName::new(state_name);
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    let demoted_names = metadata_dae
+        .variables
+        .states
+        .keys()
+        .filter(|name| !final_dae.variables.states.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in demoted_names {
         if let Some(var) = metadata_dae.variables.states.shift_remove(&name) {
             metadata_dae.variables.algebraics.insert(name, var);
         }
     }
+
+    for (name, final_var) in &final_dae.variables.states {
+        if metadata_dae.variables.states.contains_key(name) {
+            continue;
+        }
+        let Some(var) = metadata_dae.variables.algebraics.shift_remove(name) else {
+            let reason = format!(
+                "final selected state `{}` is missing from simulation metadata",
+                name.as_str()
+            );
+            return Err(rumoca_phase_solve::SolveModelLowerError::Lower(
+                lower_contract_error_from_optional_span(reason, Some(final_var.source_span)),
+            ));
+        };
+        metadata_dae.variables.states.insert(name.clone(), var);
+    }
+    Ok(())
 }

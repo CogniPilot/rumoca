@@ -1328,6 +1328,7 @@ fn load_omc_csv_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> {
     }
     Ok(SimTrace {
         model_name: Some(model_name.to_string()),
+        n_states: None,
         times,
         names,
         data,
