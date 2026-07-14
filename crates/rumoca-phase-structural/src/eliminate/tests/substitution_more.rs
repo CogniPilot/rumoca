@@ -1711,6 +1711,13 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
         origin: "f_z".to_string(),
         scalar_count: 1,
     });
+    dae.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(VarName::new("m").into()),
+        rhs: var_ref("alias"),
+        span: Span::DUMMY,
+        origin: "f_m".to_string(),
+        scalar_count: 1,
+    });
     dae.conditions.equations.push(dae::Equation {
         lhs: Some(VarName::new("c").into()),
         rhs: var_ref("alias"),
@@ -1758,6 +1765,10 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
     ));
     assert!(contains_exact_var_ref(
         &dae.discrete.real_updates[0].rhs,
+        "source"
+    ));
+    assert!(contains_exact_var_ref(
+        &dae.discrete.valued_updates[0].rhs,
         "source"
     ));
     assert!(contains_exact_var_ref(
