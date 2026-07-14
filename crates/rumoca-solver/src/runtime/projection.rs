@@ -375,6 +375,13 @@ fn project_causal_step<M: AlgebraicProjectionModel>(
             y.len()
         )));
     }
+    if let Some(target_value) = model.eval_implicit_target_value(step.row, step.y_index, y, p, t)? {
+        if !target_value.is_finite() || y[step.y_index] == target_value {
+            return Ok(false);
+        }
+        y[step.y_index] = target_value;
+        return Ok(true);
+    }
     let mut rhs = vec![0.0; y.len()];
     let mut seed = vec![0.0; y.len()];
     let mut jv = vec![0.0; y.len()];
@@ -538,11 +545,12 @@ fn projection_error<M: AlgebraicProjectionModel>(
         .max_by(|(_, lhs), (_, rhs)| residual_sort_key(*lhs).total_cmp(&residual_sort_key(*rhs)));
     match worst {
         Some((row, value)) => {
+            let absolute_row = state_count + row;
             let target = model
-                .target_name_for_row(state_count + row)
+                .target_name_for_row(absolute_row)
                 .map_or(String::new(), |name| format!(" target={name}"));
             RuntimeSolveError::solve_ir(format!(
-                "{message}: max residual row={row}{target} value={value:.6e} norm={:.6e}",
+                "{message}: max residual row={absolute_row}{target} value={value:.6e} norm={:.6e}",
                 residual_norm(residual)
             ))
         }
@@ -1205,6 +1213,81 @@ mod tests {
         }
     }
 
+    struct DirectAssignmentProjectionModel {
+        plan: solve::AlgebraicProjectionPlan,
+        assignment_value: f64,
+    }
+
+    impl AlgebraicProjectionModel for DirectAssignmentProjectionModel {
+        fn eval_residual(
+            &self,
+            y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = y[0] - 2.0;
+            Ok(())
+        }
+
+        fn eval_initial_residual(
+            &self,
+            y: &[f64],
+            p: &[f64],
+            t: f64,
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            self.eval_residual(y, p, t, out)
+        }
+
+        fn eval_jacobian_v(
+            &self,
+            _y: &[f64],
+            _p: &[f64],
+            _t: f64,
+            v: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            out[0] = v[0];
+            Ok(())
+        }
+
+        fn initial_residual_len(&self) -> usize {
+            0
+        }
+
+        fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+            (row_idx == 0).then(|| solve::scalar_slot_y(0))
+        }
+
+        fn initial_target(&self, _row_idx: usize) -> Option<solve::ScalarSlot> {
+            None
+        }
+
+        fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+            &self.plan
+        }
+
+        fn has_explicit_initial_targets(&self) -> bool {
+            false
+        }
+
+        fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
+            None
+        }
+
+        fn eval_implicit_target_value(
+            &self,
+            row_idx: usize,
+            target_y_index: usize,
+            _y: &[f64],
+            _p: &[f64],
+            t: f64,
+        ) -> Result<Option<f64>, RuntimeSolveError> {
+            Ok((row_idx == 0 && target_y_index == 0).then_some(self.assignment_value + t))
+        }
+    }
+
     struct RectInitialProjectionModel;
 
     impl AlgebraicProjectionModel for RectInitialProjectionModel {
@@ -1432,6 +1515,31 @@ mod tests {
     }
 
     #[test]
+    fn project_algebraics_solves_targeted_loop_simultaneously_without_causal_steps() {
+        let model = BlockProjectionModel {
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0, 1],
+                    y_indices: vec![0, 1],
+                    causal_steps: Vec::new(),
+                }],
+            },
+            initial_residual_len: 0,
+        };
+        let mut y = vec![0.0, 0.0];
+
+        project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-12)
+            .expect("targeted algebraic loop should converge through the simultaneous solve");
+
+        let mut residual = vec![f64::NAN; 2];
+        model
+            .eval_residual(&y, &[], 0.0, &mut residual)
+            .expect("residual evaluation should succeed");
+        assert_eq!(y, vec![2.0, 3.0]);
+        assert_eq!(residual, vec![0.0, 0.0]);
+    }
+
+    #[test]
     fn project_algebraics_rejects_nonzero_residual_row_omitted_from_plan() {
         let model = BlockProjectionModel {
             plan: solve::AlgebraicProjectionPlan {
@@ -1486,6 +1594,18 @@ mod tests {
             err.to_string()
                 .contains("state count 2 exceeds vector length 1")
         );
+    }
+
+    #[test]
+    fn projection_error_reports_absolute_implicit_row_index() {
+        let model = BlockProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            initial_residual_len: 0,
+        };
+
+        let error = projection_error(&model, 3, "projection failed", &[0.25, 0.5]);
+
+        assert!(error.to_string().contains("max residual row=4"));
     }
 
     #[test]
@@ -1547,6 +1667,104 @@ mod tests {
             err.to_string()
                 .contains("references residual row 2, but the model evaluated only 2")
         );
+    }
+
+    #[test]
+    fn project_causal_step_applies_direct_assignment_without_target_incidence() {
+        let model = DirectAssignmentProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            assignment_value: 2.0,
+        };
+        let mut y = vec![0.0];
+        let step = solve::AlgebraicProjectionStep { row: 0, y_index: 0 };
+
+        let changed = project_causal_step(&model, &mut y, &[], 0.0, &step, 1.0e-12)
+            .expect("direct assignment projection should succeed");
+
+        assert!(changed);
+        assert_eq!(y, vec![2.0]);
+    }
+
+    #[test]
+    fn project_causal_step_rejects_mismatched_direct_assignment_target() {
+        let model = DirectAssignmentProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            assignment_value: 2.0,
+        };
+        let mut y = vec![0.0, 0.0];
+        let step = solve::AlgebraicProjectionStep { row: 0, y_index: 1 };
+
+        let changed = project_causal_step(&model, &mut y, &[], 0.0, &step, 1.0e-12)
+            .expect("mismatched target should fall back to residual projection");
+
+        assert!(!changed);
+        assert_eq!(y, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn project_causal_step_preserves_sub_tolerance_time_assignment_change() {
+        let model = DirectAssignmentProjectionModel {
+            plan: solve::AlgebraicProjectionPlan::default(),
+            assignment_value: 2.0,
+        };
+        let t = f64::from_bits(2.0f64.to_bits() + 1) - 2.0;
+        let target = 2.0 + t;
+        let mut y = vec![2.0];
+        let step = solve::AlgebraicProjectionStep { row: 0, y_index: 0 };
+
+        let changed = project_causal_step(&model, &mut y, &[], t, &step, 1.0e-6)
+            .expect("direct assignment must preserve a representable right-limit change");
+
+        assert!(changed);
+        assert_eq!(y, vec![target]);
+    }
+
+    #[test]
+    fn project_algebraics_validates_direct_assignment_against_full_residual() {
+        let model = DirectAssignmentProjectionModel {
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    causal_steps: vec![solve::AlgebraicProjectionStep { row: 0, y_index: 0 }],
+                }],
+            },
+            assignment_value: 2.0,
+        };
+        let mut y = vec![0.0];
+
+        project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-12)
+            .expect("consistent direct assignment should satisfy the full residual");
+
+        let mut residual = vec![f64::NAN];
+        model
+            .eval_residual(&y, &[], 0.0, &mut residual)
+            .expect("residual evaluation should succeed");
+        assert_eq!(y, vec![2.0]);
+        assert_eq!(residual, vec![0.0]);
+    }
+
+    #[test]
+    fn project_algebraics_rejects_direct_assignment_that_disagrees_with_residual() {
+        let model = DirectAssignmentProjectionModel {
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    causal_steps: vec![solve::AlgebraicProjectionStep { row: 0, y_index: 0 }],
+                }],
+            },
+            assignment_value: 3.0,
+        };
+        let mut y = vec![0.0];
+
+        project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-12)
+            .expect_err("inconsistent direct assignment must not be masked as converged");
+        let mut residual = vec![f64::NAN];
+        model
+            .eval_residual(&y, &[], 0.0, &mut residual)
+            .expect("residual evaluation should succeed");
+        assert_ne!(residual, vec![0.0]);
     }
 
     #[test]
