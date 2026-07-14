@@ -354,6 +354,10 @@ pub(crate) fn validate_model(model: &solve::SolveModel) -> Result<(), SimError> 
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the general ODE builder forwards independently owned solver callback state"
+)]
 pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -384,6 +388,11 @@ pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the reduced ODE builder assembles three stateful diffsol callbacks"
+)]
 pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -475,35 +484,27 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         with_runtime_params(&root_params, p.as_slice(), |params| {
             let mut trial = root_accepted.borrow().root.clone();
             let evaluated = root_runtime.eval_root_search_conditions_with_guess_into(
-                t,
-                y.as_slice(),
-                params,
-                &mut trial,
-                tol,
-                EVENT_UPDATE_MAX_ITERS,
-                out.as_mut_slice(),
+                solve_eval::RootSearchInput {
+                    t,
+                    state: y.as_slice(),
+                    params,
+                    guess: &mut trial,
+                    tol,
+                    max_iters: EVENT_UPDATE_MAX_ITERS,
+                    out: out.as_mut_slice(),
+                },
             );
             let root_start = root_start_time_for_eval.get();
             let initialized = evaluated.and_then(|()| {
-                if t == root_start {
-                    match &*root_start_mode_for_eval.borrow() {
-                        RootStartMode::Initial => root_runtime
-                            .neutralize_initial_root_search_values(
-                                params,
-                                tol,
-                                out.as_mut_slice(),
-                            )?,
-                        RootStartMode::Root(overrides) => root_runtime
-                            .apply_consumed_root_search_overrides(
-                                params,
-                                tol,
-                                overrides,
-                                out.as_mut_slice(),
-                            )?,
-                        RootStartMode::Scheduled => {}
-                    }
-                }
-                Ok(())
+                initialize_root_search_values_at_time(
+                    &root_runtime,
+                    params,
+                    tol,
+                    &root_start_mode_for_eval.borrow(),
+                    out.as_mut_slice(),
+                    t,
+                    root_start,
+                )
             });
             if initialized.is_err() {
                 fill_eval_error(out.as_mut_slice());
@@ -532,6 +533,10 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the internal ODE builder owns independent root and runtime callback state"
+)]
 fn build_ode_problem_with_initial(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -588,25 +593,15 @@ fn build_ode_problem_with_initial(
                 out.as_mut_slice(),
             );
             let initialized = evaluated.and_then(|()| {
-                if t == root_start_time_for_eval.get() {
-                    match &*root_start_mode_for_eval.borrow() {
-                        RootStartMode::Initial => root_runtime
-                            .neutralize_initial_root_search_values(
-                                params,
-                                tol,
-                                out.as_mut_slice(),
-                            )?,
-                        RootStartMode::Root(overrides) => root_runtime
-                            .apply_consumed_root_search_overrides(
-                                params,
-                                tol,
-                                overrides,
-                                out.as_mut_slice(),
-                            )?,
-                        RootStartMode::Scheduled => {}
-                    }
-                }
-                Ok(())
+                initialize_root_search_values_at_time(
+                    &root_runtime,
+                    params,
+                    tol,
+                    &root_start_mode_for_eval.borrow(),
+                    out.as_mut_slice(),
+                    t,
+                    root_start_time_for_eval.get(),
+                )
             });
             if initialized.is_err() {
                 fill_eval_error(out.as_mut_slice());
@@ -647,6 +642,27 @@ fn build_ode_problem_with_initial(
         .root(root_fn, model.problem.events.root_conditions.len().max(1))
         .build()
         .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
+}
+
+fn initialize_root_search_values_at_time(
+    runtime: &SolveRuntime,
+    params: &[f64],
+    tol: f64,
+    mode: &RootStartMode,
+    out: &mut [f64],
+    t: f64,
+    root_start: f64,
+) -> Result<(), RuntimeSolveError> {
+    if t != root_start {
+        return Ok(());
+    }
+    match mode {
+        RootStartMode::Initial => runtime.neutralize_initial_root_search_values(params, tol, out),
+        RootStartMode::Root(overrides) => {
+            runtime.apply_consumed_root_search_overrides(params, tol, overrides, out)
+        }
+        RootStartMode::Scheduled => Ok(()),
+    }
 }
 
 fn fill_eval_error(out: &mut [f64]) {

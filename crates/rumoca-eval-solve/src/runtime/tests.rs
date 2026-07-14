@@ -1334,15 +1334,15 @@ fn explicit_branch_seeds_refresh_only_their_dependency_plan() {
     let mut root_seed = vec![99.0, 42.0];
     let mut root = [f64::NAN];
     runtime
-        .eval_root_search_conditions_with_guess_into(
-            0.0,
-            &[3.0],
-            &[],
-            &mut root_seed,
-            1.0e-12,
-            32,
-            &mut root,
-        )
+        .eval_root_search_conditions_with_guess_into(RootSearchInput {
+            t: 0.0,
+            state: &[3.0],
+            params: &[],
+            guess: &mut root_seed,
+            tol: 1.0e-12,
+            max_iters: 32,
+            out: &mut root,
+        })
         .expect("root branch should settle");
 
     let mut observation_seed = vec![99.0, 42.0];
@@ -1363,14 +1363,7 @@ fn coupled_projection_preserves_the_accepted_local_branch() {
     use solve::{BinaryOp, ComputeBlock};
 
     let mut model = linear_algebraic_loop_state_model();
-    // Artifact-derived minimal analogue of the ThyristorBridge2Pulse_R
-    // projection failure. The fixed-point map has a nearby physical root at
-    // a=b=1 and a remote root at a=b=100. Starting from the accepted branch
-    // a=b=1.1,
-    // plain Gauss-Seidel follows the attracting map to 100; branch-local
-    // Newton on the coupled residual must instead preserve the nearby root.
-    //
-    // a = b; b = F(a), where F(a) = a - (a - 1) * (a - 100) / 99.
+    // a = b; b = F(a), with nearby root 1 and remote root 100.
     model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
         vec![
             vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
@@ -1466,12 +1459,129 @@ fn coupled_projection_preserves_the_accepted_local_branch() {
     let second = runtime
         .eval_state_derivatives_with_guess(0.0, &[0.0], &[], &mut projected_seed, tol, 256)
         .expect("reprojecting the accepted branch should settle");
+    assert!((first[0] - second[0]).abs() <= tol);
+}
+
+#[test]
+fn tolerance_converged_projection_does_not_polish_to_remote_root() {
+    use solve::LinearOp::{Binary, Const, LoadY, StoreOutput};
+    use solve::{BinaryOp, ComputeBlock};
+
+    let mut model = linear_algebraic_loop_state_model();
+    let epsilon = 1.0e-6;
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                LoadY { dst: 0, index: 1 },
+                LoadY { dst: 1, index: 2 },
+                Binary {
+                    dst: 2,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                StoreOutput { src: 2 },
+            ],
+            vec![
+                LoadY { dst: 0, index: 1 },
+                Const {
+                    dst: 1,
+                    value: 100.0,
+                },
+                Binary {
+                    dst: 2,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                Const {
+                    dst: 3,
+                    value: epsilon,
+                },
+                Binary {
+                    dst: 4,
+                    op: BinaryOp::Mul,
+                    lhs: 2,
+                    rhs: 3,
+                },
+                Binary {
+                    dst: 5,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 4,
+                },
+                LoadY { dst: 6, index: 2 },
+                Binary {
+                    dst: 7,
+                    op: BinaryOp::Sub,
+                    lhs: 6,
+                    rhs: 5,
+                },
+                StoreOutput { src: 7 },
+            ],
+        ],
+        "ill_scaled_branch_projection.mo",
+    ));
+    model.initial_y = vec![0.0, 0.0, 0.0];
+    let runtime = SolveRuntime::new(&model).expect("ill-scaled projection should prepare");
+    assert!(runtime.algebraic_refresh.iterative);
+
+    let mut accepted_seed = model.initial_y.clone();
+    runtime
+        .full_solver_y_with_guess(0.0, &[0.0], &[], &mut accepted_seed, 1.0e-4, 32)
+        .expect("already-tolerant accepted branch should settle");
+
     assert!(
-        (first[0] - second[0]).abs() <= tol,
-        "accepted-seed update changed derivative output from {} to {}",
-        first[0],
-        second[0]
+        accepted_seed[1].abs() <= 1.0e-6 && accepted_seed[2].abs() <= 1.0e-6,
+        "tolerance polish jumped to the remote root: {accepted_seed:?}"
     );
+}
+
+#[test]
+fn confirmed_root_override_wins_after_other_relation_memories_update() {
+    use solve::LinearOp::{LoadY, StoreOutput};
+
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model.problem.solve_layout.relation_memory_parameter_indices = vec![0, 1];
+    model.initial_y = vec![-1.0, -1.0];
+    model.problem.events.root_conditions = spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![LoadY { dst: 0, index: 1 }, StoreOutput { src: 0 }],
+        ],
+        "coincident_relation_roots.mo",
+    );
+    model.problem.events.root_relation_memory_targets = vec![
+        Some(solve::ScalarSlot::P {
+            index: 0,
+            byte_offset: 0,
+        }),
+        Some(solve::ScalarSlot::P {
+            index: 1,
+            byte_offset: 0,
+        }),
+    ];
+    let runtime = SolveRuntime::new(&model).expect("coincident relation roots should prepare");
+    let mut y = model.initial_y.clone();
+    let mut p = vec![0.0, 0.0];
+
+    runtime
+        .settle_projected_runtime_and_relation_memory_with_overrides(
+            ProjectedRuntimeSettleInput {
+                y: &mut y,
+                p: &mut p,
+                t: 0.0,
+                tol: 1.0e-12,
+                max_iters: 8,
+                root_relation_overrides: &[(0, 0.0)],
+            },
+            |_, _| Ok(false),
+        )
+        .expect("relation memory update should converge atomically");
+
+    assert_eq!(p, vec![0.0, 1.0]);
 }
 
 #[test]

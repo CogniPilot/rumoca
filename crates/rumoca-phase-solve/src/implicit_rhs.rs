@@ -745,8 +745,8 @@ fn augment_residual_ownership(
             owner_by_y[target] = Some(residual_idx);
         }
     }
-    for residual_idx in 0..residual.len() {
-        if placed[residual_idx] {
+    for (residual_idx, is_placed) in placed.iter().copied().enumerate().take(residual.len()) {
+        if is_placed {
             continue;
         }
         let mut visited = implicit_rhs_vec_with_capacity(

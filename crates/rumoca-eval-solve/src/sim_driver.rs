@@ -24,8 +24,8 @@ use rumoca_solver::{
 };
 
 use crate::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, SimulationRuntimeState, SolveRuntime,
-    next_runtime_event_stop,
+    EventUpdateRowFilter, ProjectedEventUpdateInput, ProjectedRuntimeSettleInput,
+    SimulationRuntimeState, SolveRuntime, next_runtime_event_stop,
 };
 
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
@@ -394,18 +394,30 @@ struct EventPre<'a> {
     p: &'a [f64],
 }
 
+struct EventUpdateKernelInput<'a> {
+    y: &'a mut [f64],
+    p: &'a mut [f64],
+    t: f64,
+    tol: f64,
+    root_relation_overrides: &'a [(usize, f64)],
+    pre: EventPre<'a>,
+}
+
 /// Apply the projected discrete-event update at `t`, using the backend's
 /// `project_algebraics` as the projection callback (shared by every backend).
 fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
     runtime: &SolveRuntime,
     backend: &St,
-    y: &mut [f64],
-    p: &mut [f64],
-    t: f64,
-    tol: f64,
-    root_relation_overrides: &[(usize, f64)],
-    pre: EventPre<'_>,
+    input: EventUpdateKernelInput<'_>,
 ) -> Result<(), SimDriverError> {
+    let EventUpdateKernelInput {
+        y,
+        p,
+        t,
+        tol,
+        root_relation_overrides,
+        pre,
+    } = input;
     let outcome = runtime.apply_projected_event_update(
         ProjectedEventUpdateInput {
             y,
@@ -434,12 +446,14 @@ fn settle_kernel<St: SolverAdvanceBackend + ?Sized>(
     root_relation_overrides: &[(usize, f64)],
 ) -> Result<(), SimDriverError> {
     runtime.settle_projected_runtime_and_relation_memory_with_overrides(
-        y,
-        p,
-        t,
-        tol,
-        EVENT_UPDATE_MAX_ITERS,
-        root_relation_overrides,
+        ProjectedRuntimeSettleInput {
+            y,
+            p,
+            t,
+            tol,
+            max_iters: EVENT_UPDATE_MAX_ITERS,
+            root_relation_overrides,
+        },
         |y, p| backend.project_algebraics(y, p, t, tol),
     )?;
     Ok(())
@@ -530,14 +544,16 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
             apply_event_update_kernel(
                 self.runtime,
                 self.backend,
-                self.y,
-                self.p,
-                event_t,
-                self.tol,
-                &[],
-                EventPre {
-                    y: &self.event_pre_y,
-                    p: &self.event_pre_p,
+                EventUpdateKernelInput {
+                    y: self.y,
+                    p: self.p,
+                    t: event_t,
+                    tol: self.tol,
+                    root_relation_overrides: &[],
+                    pre: EventPre {
+                        y: &self.event_pre_y,
+                        p: &self.event_pre_p,
+                    },
                 },
             )?;
             self.record(event_t)?;
@@ -563,14 +579,16 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
         apply_event_update_kernel(
             self.runtime,
             self.backend,
-            self.y,
-            self.p,
-            right_t,
-            self.tol,
-            &[],
-            EventPre {
-                y: &self.event_pre_y,
-                p: &self.event_pre_p,
+            EventUpdateKernelInput {
+                y: self.y,
+                p: self.p,
+                t: right_t,
+                tol: self.tol,
+                root_relation_overrides: &[],
+                pre: EventPre {
+                    y: &self.event_pre_y,
+                    p: &self.event_pre_p,
+                },
             },
         )?;
         if self.root_t.is_some() {
@@ -891,14 +909,16 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     apply_event_update_kernel(
         ctx.runtime,
         backend,
-        state.current_y,
-        state.params,
-        right_t,
-        tol,
-        &root_relation_overrides,
-        EventPre {
-            y: &event_pre_y,
-            p: &event_pre_p,
+        EventUpdateKernelInput {
+            y: state.current_y,
+            p: state.params,
+            t: right_t,
+            tol,
+            root_relation_overrides: &root_relation_overrides,
+            pre: EventPre {
+                y: &event_pre_y,
+                p: &event_pre_p,
+            },
         },
     )?;
     settle_kernel(

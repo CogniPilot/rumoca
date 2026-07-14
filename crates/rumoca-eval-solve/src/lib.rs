@@ -60,7 +60,7 @@ pub use refresh_plan::algebraic_projection_producer_programs;
 pub use runtime::{
     AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
     ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    SolveRuntime, apply_discrete_slot_value,
+    ProjectedRuntimeSettleInput, RootSearchInput, SolveRuntime, apply_discrete_slot_value,
 };
 pub use runtime_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,

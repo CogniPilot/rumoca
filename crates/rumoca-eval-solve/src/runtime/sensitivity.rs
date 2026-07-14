@@ -475,7 +475,7 @@ impl SolveRuntime {
             unit_seed,
         } = &mut *scratch;
         // (1) Linearization point: project the algebraics from the state.
-        if let Some(guess) = guess.as_deref_mut() {
+        if let Some(guess) = &mut guess {
             if guess.len() != self.solver_count {
                 copy_runtime_values_into(guess, &self.model.initial_y, "Jacobian solver guess")?;
                 resize_runtime_values(guess, self.solver_count, 0.0, "Jacobian solver guess")?;
@@ -489,7 +489,7 @@ impl SolveRuntime {
             self.populate_solver_y_from_state(solver_y, state)?;
         }
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
-        if let Some(guess) = guess.as_deref_mut() {
+        if let Some(guess) = guess {
             guess.copy_from_slice(solver_y);
         }
         // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),

@@ -1,6 +1,7 @@
 use super::*;
 use rumoca_eval_solve::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, apply_discrete_slot_values,
+    EventUpdateRowFilter, ProjectedEventUpdateInput, ProjectedRuntimeSettleInput,
+    apply_discrete_slot_values,
 };
 use rumoca_solver::{
     EventActionOutcome, EventPreMode, NoStateEventStep, NoStateOrchestrationBackend,
@@ -29,6 +30,10 @@ pub(crate) fn settle_algebraics_and_relation_memory(
         .map_err(Into::into)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "event projection requires both solve models, mutable stores, and root overrides"
+)]
 pub(crate) fn settle_algebraics_and_relation_memory_with_overrides(
     runtime: &SolveRuntime,
     model: &OdeModel,
@@ -41,12 +46,14 @@ pub(crate) fn settle_algebraics_and_relation_memory_with_overrides(
 ) -> Result<(), SimError> {
     runtime
         .settle_projected_runtime_and_relation_memory_with_overrides(
-            y,
-            p,
-            t,
-            tol,
-            EVENT_UPDATE_MAX_ITERS,
-            root_relation_overrides,
+            ProjectedRuntimeSettleInput {
+                y,
+                p,
+                t,
+                tol,
+                max_iters: EVENT_UPDATE_MAX_ITERS,
+                root_relation_overrides,
+            },
             move |y, p| project_algebraics_and_detect_changes(model, y, p, t, state_count, tol),
         )
         .map_err(Into::into)

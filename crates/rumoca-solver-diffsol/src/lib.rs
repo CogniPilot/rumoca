@@ -530,13 +530,8 @@ fn simulate_state_only_bdf(
         },
         &initial_observations,
     )?;
-
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
-    let accepted_solver_y: AcceptedSolverY = Rc::new(RefCell::new(AcceptedSolverSeeds {
-        derivative: current_y.clone(),
-        root: current_y.clone(),
-        observation: current_y.clone(),
-    }));
+    let accepted_solver_y = initial_accepted_solver_y(&current_y);
     let root_start_time = Rc::new(Cell::new(current_t));
     let root_start_mode = Rc::new(RefCell::new(RootStartMode::Initial));
     let eval_counters = new_bdf_eval_counters();
@@ -571,9 +566,6 @@ fn simulate_state_only_bdf(
         mode: DiffsolMode::StateOnly,
     });
 
-    // Drive the reduced state-only solver through the *same* backend-neutral
-    // output / event / root loop as the general path; `DiffsolMode::StateOnly`
-    // (inside the backend) projects the reduced state to the full solver_y.
     let result = simulate_state_targets(
         model,
         opts,
@@ -607,6 +599,14 @@ fn simulate_state_only_bdf(
             current_y,
         },
     )
+}
+
+fn initial_accepted_solver_y(current_y: &[f64]) -> AcceptedSolverY {
+    Rc::new(RefCell::new(AcceptedSolverSeeds {
+        derivative: current_y.to_vec(),
+        root: current_y.to_vec(),
+        observation: current_y.to_vec(),
+    }))
 }
 
 fn initial_state_only_bdf_state<Eqn>(
@@ -763,15 +763,16 @@ where
         let state_count = self.model.state_scalar_count().min(native.len());
         let mut root = accepted.borrow().root.clone();
         let mut out = vec![0.0; self.model.problem.events.root_conditions.len().max(1)];
-        self.runtime.eval_root_search_conditions_with_guess_into(
-            t,
-            &native[..state_count],
-            params,
-            &mut root,
-            self.tol(),
-            EVENT_UPDATE_MAX_ITERS,
-            &mut out,
-        )?;
+        self.runtime
+            .eval_root_search_conditions_with_guess_into(solve_eval::RootSearchInput {
+                t,
+                state: &native[..state_count],
+                params,
+                guess: &mut root,
+                tol: self.tol(),
+                max_iters: EVENT_UPDATE_MAX_ITERS,
+                out: &mut out,
+            })?;
         accepted.borrow_mut().root = root;
         Ok(())
     }
@@ -895,13 +896,15 @@ where
                 let mut root_out =
                     vec![0.0; self.model.problem.events.root_conditions.len().max(1)];
                 self.runtime.eval_root_search_conditions_with_guess_into(
-                    t,
-                    &native,
-                    params,
-                    &mut root,
-                    self.tol(),
-                    EVENT_UPDATE_MAX_ITERS,
-                    &mut root_out,
+                    solve_eval::RootSearchInput {
+                        t,
+                        state: &native,
+                        params,
+                        guess: &mut root,
+                        tol: self.tol(),
+                        max_iters: EVENT_UPDATE_MAX_ITERS,
+                        out: &mut root_out,
+                    },
                 )?;
                 let mut observation = current_y.to_vec();
                 self.runtime.full_solver_y_with_guess(

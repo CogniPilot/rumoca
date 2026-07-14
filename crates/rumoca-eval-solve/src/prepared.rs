@@ -495,12 +495,13 @@ impl PreparedScalarProgramBlock {
         let mut found = None;
         for (program_index, row) in self.block.programs.iter().enumerate() {
             for output_offset in 0..ScalarProgramBlock::program_output_count(row) {
-                if self.block.output_indices.get(stored_ordinal).copied() == Some(output_index) {
-                    if found.is_some() {
-                        return None;
-                    }
-                    found = Some((program_index, output_offset));
-                }
+                let is_requested_output =
+                    self.block.output_indices.get(stored_ordinal).copied() == Some(output_index);
+                record_unique_program_position(
+                    &mut found,
+                    (program_index, output_offset),
+                    is_requested_output,
+                )?;
                 stored_ordinal = stored_ordinal.checked_add(1)?;
             }
         }
@@ -817,6 +818,21 @@ impl PreparedScalarProgramBlock {
         }
         Ok(())
     }
+}
+
+fn record_unique_program_position(
+    found: &mut Option<(usize, usize)>,
+    position: (usize, usize),
+    is_requested_output: bool,
+) -> Option<()> {
+    if !is_requested_output {
+        return Some(());
+    }
+    if found.is_some() {
+        return None;
+    }
+    *found = Some(position);
+    Some(())
 }
 
 struct RowEvalRequest<'a> {

@@ -29,6 +29,8 @@ use crate::{
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
 type ResetFn = Box<dyn FnMut(f64, &BdfResetSnapshot) -> Result<(), SimError>>;
+type EventResetFn = Box<dyn FnMut(f64, &[(usize, f64)]) -> Result<(), SimError>>;
+type ProjectFn = Box<dyn FnMut(f64, &[usize]) -> Result<Vec<(usize, f64)>, SimError>>;
 const SESSION_ADVANCE_EVENT_LIMIT: usize = 256;
 
 pub struct SimulationSession {
@@ -46,10 +48,10 @@ struct BdfSession {
     step_fn: StepFn,
     time_fn: Box<dyn Fn() -> f64>,
     y_fn: Box<dyn Fn() -> Vec<f64>>,
-    event_reset_fn: Box<dyn FnMut(f64, &[(usize, f64)]) -> Result<(), SimError>>,
+    event_reset_fn: EventResetFn,
     reset_fn: ResetFn,
     refresh_input_fn: Box<dyn FnMut() -> Result<(), SimError>>,
-    project_fn: Box<dyn FnMut(f64, &[usize]) -> Result<Vec<(usize, f64)>, SimError>>,
+    project_fn: ProjectFn,
     runtime: SolveRuntime,
     runtime_params: RuntimeParameters,
     reset_snapshot: BdfResetSnapshot,
@@ -722,7 +724,7 @@ fn make_project_fn<Eqn, S>(
     runtime: SolveRuntime,
     params: RuntimeParameters,
     opts: &SimOptions,
-) -> Result<Box<dyn FnMut(f64, &[usize]) -> Result<Vec<(usize, f64)>, SimError>>, SimError>
+) -> Result<ProjectFn, SimError>
 where
     Eqn: diffsol::OdeEquations<T = f64> + 'static,
     Eqn::V: VectorHost<T = f64>,
@@ -747,6 +749,10 @@ where
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "session event projection bridges solver state, runtime state, and root metadata"
+)]
 fn project_session_algebraics<Eqn, S>(
     solver: &Rc<RefCell<S>>,
     solve_model: &solve::SolveModel,
