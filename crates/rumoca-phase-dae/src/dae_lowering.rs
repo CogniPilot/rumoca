@@ -1078,13 +1078,34 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     let known_names = build_known_var_name_set(dae);
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
     let array_dims = build_array_dims_map(dae);
+    let record_array_projection_aliases = build_record_array_projection_alias_map(dae);
     let record_array_fields = build_record_array_field_map(dae);
 
-    canonicalize_embedded_subscript_equation_list(&mut dae.continuous.equations, &array_dims)?;
-    canonicalize_embedded_subscript_equation_list(&mut dae.initialization.equations, &array_dims)?;
-    canonicalize_embedded_subscript_equation_list(&mut dae.discrete.real_updates, &array_dims)?;
-    canonicalize_embedded_subscript_equation_list(&mut dae.discrete.valued_updates, &array_dims)?;
-    canonicalize_embedded_subscript_equation_list(&mut dae.conditions.equations, &array_dims)?;
+    canonicalize_embedded_subscript_equation_list(
+        &mut dae.continuous.equations,
+        &array_dims,
+        &record_array_projection_aliases,
+    )?;
+    canonicalize_embedded_subscript_equation_list(
+        &mut dae.initialization.equations,
+        &array_dims,
+        &record_array_projection_aliases,
+    )?;
+    canonicalize_embedded_subscript_equation_list(
+        &mut dae.discrete.real_updates,
+        &array_dims,
+        &record_array_projection_aliases,
+    )?;
+    canonicalize_embedded_subscript_equation_list(
+        &mut dae.discrete.valued_updates,
+        &array_dims,
+        &record_array_projection_aliases,
+    )?;
+    canonicalize_embedded_subscript_equation_list(
+        &mut dae.conditions.equations,
+        &array_dims,
+        &record_array_projection_aliases,
+    )?;
 
     // Expanding an array equation into scalar rows shifts every later row, so the
     // partitions that carry structured families (continuous, initialization) must
@@ -1618,6 +1639,53 @@ fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
     dims_map
 }
 
+fn build_record_array_projection_alias_map(dae: &Dae) -> HashMap<String, rumoca_core::Reference> {
+    let mut aliases = HashMap::new();
+    for partition in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, variable) in partition {
+            append_record_array_projection_aliases(&mut aliases, name, variable);
+        }
+    }
+    aliases
+}
+
+fn append_record_array_projection_aliases(
+    aliases: &mut HashMap<String, rumoca_core::Reference>,
+    name: &rumoca_core::VarName,
+    variable: &dae::Variable,
+) {
+    let Some(component_ref) = variable.component_ref.as_ref() else {
+        return;
+    };
+    for index in 0..component_ref.parts.len().saturating_sub(1) {
+        if component_ref.parts[index].subs.is_empty() {
+            continue;
+        }
+        let mut projection = component_ref.clone();
+        let subscripts = std::mem::take(&mut projection.parts[index].subs);
+        projection
+            .parts
+            .last_mut()
+            .expect("component reference with an indexed part has a leaf")
+            .subs
+            .extend(subscripts);
+        let projection_name =
+            rumoca_core::ComponentPath::from_component_reference(&projection).to_flat_string();
+        aliases.entry(projection_name).or_insert_with(|| {
+            rumoca_core::Reference::with_component_reference(name.as_str(), component_ref.clone())
+        });
+    }
+}
+
 fn build_record_array_field_map(dae: &Dae) -> RecordArrayFieldMap {
     let mut fields: HashMap<String, (BTreeMap<usize, rumoca_core::Reference>, Vec<i64>)> =
         HashMap::new();
@@ -1715,9 +1783,11 @@ fn single_positive_index_subscript(subscripts: &[rumoca_core::Subscript]) -> Opt
 fn canonicalize_embedded_subscript_equation_list(
     equations: &mut [dae::Equation],
     array_dims: &HashMap<String, Vec<i64>>,
+    record_array_projection_aliases: &HashMap<String, rumoca_core::Reference>,
 ) -> Result<(), ToDaeError> {
     let mut canonicalizer = EmbeddedSubscriptCanonicalizer {
         array_dims,
+        record_array_projection_aliases,
         error: None,
     };
     for equation in equations {
@@ -1734,6 +1804,7 @@ fn canonicalize_embedded_subscript_equation_list(
 
 struct EmbeddedSubscriptCanonicalizer<'a> {
     array_dims: &'a HashMap<String, Vec<i64>>,
+    record_array_projection_aliases: &'a HashMap<String, rumoca_core::Reference>,
     error: Option<ToDaeError>,
 }
 
@@ -1748,6 +1819,13 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
             return rumoca_core::Expression::VarRef {
                 name: name.clone(),
                 subscripts: subscripts.to_vec(),
+                span,
+            };
+        }
+        if let Some(reference) = self.record_array_projection_alias(name, subscripts) {
+            return rumoca_core::Expression::VarRef {
+                name: reference,
+                subscripts: Vec::new(),
                 span,
             };
         }
@@ -1816,6 +1894,30 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
 }
 
 impl EmbeddedSubscriptCanonicalizer<'_> {
+    fn record_array_projection_alias(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) -> Option<rumoca_core::Reference> {
+        if subscripts.is_empty() {
+            return self
+                .record_array_projection_aliases
+                .get(name.as_str())
+                .cloned();
+        }
+        let mut projection = name.component_ref()?.clone();
+        projection
+            .parts
+            .last_mut()?
+            .subs
+            .extend_from_slice(subscripts);
+        let projection_name =
+            rumoca_core::ComponentPath::from_component_reference(&projection).to_flat_string();
+        self.record_array_projection_aliases
+            .get(&projection_name)
+            .cloned()
+    }
+
     fn record_error(
         &mut self,
         error: ToDaeError,

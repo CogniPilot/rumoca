@@ -926,6 +926,82 @@ end MiniBusTranscriptionArr;
             "GALEC projection should keep the redundant output-to-known bus connection skipped; origins={projection_origins:?}"
         );
     }
+
+    /// Regression pattern from a stack bus containing an array of nested
+    /// connectors. The aggregate field projection (`inBus.cellBus.x`) is only
+    /// a view over the connected scalar lanes (`inBus.cellBus[1,1].x`, ...),
+    /// not an unused discrete expandable member.
+    #[test]
+    fn t10k_08_nested_expandable_bus_array_projection_stays_continuous() {
+        let source = r#"
+connector RealInput = input Real;
+connector RealOutput = output Real;
+
+connector CellBus
+    Real x;
+end CellBus;
+
+expandable connector StackBus
+    CellBus cellBus[2,1];
+end StackBus;
+
+block GainR
+    RealInput u;
+    RealOutput y;
+equation
+    y = u;
+end GainR;
+
+model NestedBusTranscription
+    StackBus inBus;
+    StackBus outBus;
+protected
+    GainR g[2,1];
+equation
+    connect(g.u, inBus.cellBus.x);
+    connect(g.y, outBus.cellBus.x);
+end NestedBusTranscription;
+
+block BusSource
+    StackBus bus;
+equation
+    bus.cellBus.x = fill(1.0, 2, 1);
+end BusSource;
+
+model NestedBusTranscriptionSystem
+    BusSource source;
+    NestedBusTranscription transcription;
+equation
+    connect(source.bus, transcription.inBus);
+end NestedBusTranscriptionSystem;
+"#;
+
+        let r = assert_compiles(source, "NestedBusTranscriptionSystem");
+        assert_eq!(r.balance, 0);
+        assert!(
+            r.dae
+                .variables
+                .discrete_reals
+                .keys()
+                .all(|name| name.as_str() != "transcription.inBus.cellBus.x"
+                    && name.as_str() != "transcription.outBus.cellBus.x"),
+            "connected aggregate projections must not become discrete variables"
+        );
+        let origins = r
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .map(|equation| equation.origin.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            origins.iter().any(|origin| {
+                origin.contains("transcription.inBus.cellBus.x")
+                    && origin.contains("transcription.g[1,1].u")
+            }),
+            "input-side scalar lane connection must remain in f_x; origins={origins:?}"
+        );
+    }
 }
 
 // =============================================================================

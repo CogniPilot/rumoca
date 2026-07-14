@@ -718,6 +718,36 @@ fn categorize_algebraic(
     }
 }
 
+fn expandable_aggregate_projection_names(flat: &flat::Model) -> HashSet<rumoca_core::VarName> {
+    let mut projections = HashSet::new();
+    for candidate in flat.variables.values() {
+        if !candidate.from_expandable_connector || !candidate.is_primitive {
+            continue;
+        }
+        let Some(component_ref) = candidate.component_ref.as_ref() else {
+            continue;
+        };
+        for (index, part) in component_ref.parts.iter().enumerate() {
+            if part.subs.is_empty() {
+                continue;
+            }
+            let mut projection = component_ref.clone();
+            projection.parts[index].subs.clear();
+            let projection_name = projection.to_var_name();
+            if flat
+                .variables
+                .get(&projection_name)
+                .is_some_and(|aggregate| {
+                    aggregate.from_expandable_connector && !aggregate.dims.is_empty()
+                })
+            {
+                projections.insert(projection_name);
+            }
+        }
+    }
+    projections
+}
+
 fn has_clocked_binding(var: &flat::Variable) -> bool {
     var.binding
         .as_ref()
@@ -828,9 +858,19 @@ fn classify_variables(
         .keys()
         .map(|name| name.as_str().to_string())
         .collect();
+    let expandable_aggregate_projections = expandable_aggregate_projection_names(flat);
 
     for (name, var) in &flat.variables {
         if variable_analysis::is_external_constructor_handle(flat, name, var) {
+            continue;
+        }
+
+        // A nested array inside an expandable connector can be represented by
+        // both an aggregate field projection (`bus.cells.x`) and its concrete
+        // structured lanes (`bus.cells[1].x`, ...). The aggregate is only a
+        // view used to expand connection equations, not a second runtime
+        // variable with discrete semantics.
+        if expandable_aggregate_projections.contains(name) {
             continue;
         }
 
