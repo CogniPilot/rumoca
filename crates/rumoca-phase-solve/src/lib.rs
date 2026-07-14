@@ -1703,10 +1703,26 @@ fn scalar_projection_block(
         context_span,
     )?;
     y_indices.extend(target_set);
+    let causal_steps = row_targets
+        .get(row)
+        .copied()
+        .flatten()
+        .and_then(|target| match target {
+            solve::ScalarSlot::Y { index, .. } => Some(index),
+            _ => None,
+        })
+        .filter(|target| y_indices.contains(target))
+        .map(|target| {
+            vec![solve::AlgebraicProjectionStep {
+                row,
+                y_index: target,
+            }]
+        })
+        .unwrap_or_default();
     Ok(solve::AlgebraicProjectionBlock {
         rows,
         y_indices,
-        causal_steps: Vec::new(),
+        causal_steps,
     })
 }
 
@@ -1751,37 +1767,11 @@ fn lower_algebraic_loop_projection_block(
     if rows.is_empty() || y_indices.is_empty() {
         return Ok(None);
     }
-    let causal_steps =
-        matched_projection_steps(equations, unknowns, projection_incidence, context_span)?;
     Ok(Some(solve::AlgebraicProjectionBlock {
         rows,
         y_indices,
-        causal_steps,
+        causal_steps: Vec::new(),
     }))
-}
-
-fn matched_projection_steps(
-    equations: &[EquationRef],
-    unknowns: &[UnknownId],
-    projection_incidence: &ProjectionIncidence,
-    context_span: rumoca_core::Span,
-) -> Result<Vec<solve::AlgebraicProjectionStep>, LowerError> {
-    let step_count = equations.len().min(unknowns.len());
-    let mut steps = lower_vec_with_capacity(
-        step_count,
-        "algebraic loop projection matched step count",
-        context_span,
-    )?;
-    for (equation, unknown) in equations.iter().zip(unknowns.iter()) {
-        let Some(y_index) = projection_y_index(unknown, projection_incidence) else {
-            continue;
-        };
-        steps.push(solve::AlgebraicProjectionStep {
-            row: equation.0,
-            y_index,
-        });
-    }
-    Ok(steps)
 }
 
 fn loop_projection_target_set(

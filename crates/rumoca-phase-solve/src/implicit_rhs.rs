@@ -646,6 +646,19 @@ fn place_targeted_residual_rows(
         residual_to_implicit_rows[residual_idx] = Some(index);
     }
 
+    augment_residual_ownership(
+        rows,
+        row_targets,
+        occupied,
+        residual,
+        residual_targets,
+        state_scalar_count,
+        solver_scalar_count,
+        &mut placed,
+        residual_to_implicit_rows,
+        span,
+    )?;
+
     let structural_fallback_targets = match_unowned_residuals_to_free_algebraics(
         residual,
         residual_targets,
@@ -687,6 +700,117 @@ fn place_targeted_residual_rows(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn augment_residual_ownership(
+    rows: &mut [Vec<solve::LinearOp>],
+    row_targets: &mut [Option<solve::ScalarSlot>],
+    occupied: &mut [bool],
+    residual: &[Vec<solve::LinearOp>],
+    residual_targets: &[Option<solve::ScalarSlot>],
+    state_scalar_count: usize,
+    solver_scalar_count: usize,
+    placed: &mut [bool],
+    residual_to_implicit_rows: &mut [Option<usize>],
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let projection_set = (state_scalar_count..solver_scalar_count).collect();
+    let mut candidates =
+        implicit_rhs_vec_with_capacity(residual.len(), "residual ownership candidate count", span)?;
+    for (residual_idx, row) in residual.iter().enumerate() {
+        let mut row_candidates = super::collect_algebraic_y_indices_for_row(row, &projection_set)
+            .into_iter()
+            .collect::<Vec<_>>();
+        row_candidates.sort_unstable();
+        if let Some(solve::ScalarSlot::Y { index, .. }) =
+            residual_targets.get(residual_idx).copied().flatten()
+            && index >= state_scalar_count
+            && index < solver_scalar_count
+        {
+            row_candidates.retain(|candidate| *candidate != index);
+            row_candidates.insert(0, index);
+        }
+        candidates.push(row_candidates);
+    }
+
+    let mut owner_by_y = implicit_rhs_vec_with_capacity(
+        solver_scalar_count,
+        "residual ownership target count",
+        span,
+    )?;
+    owner_by_y.resize(solver_scalar_count, None);
+    for (residual_idx, target) in residual_to_implicit_rows.iter().copied().enumerate() {
+        if let Some(target) = target {
+            owner_by_y[target] = Some(residual_idx);
+        }
+    }
+    for residual_idx in 0..residual.len() {
+        if placed[residual_idx] {
+            continue;
+        }
+        let mut visited = implicit_rhs_vec_with_capacity(
+            solver_scalar_count,
+            "residual ownership visited target count",
+            span,
+        )?;
+        visited.resize(solver_scalar_count, false);
+        let _ = augment_residual_owner(
+            residual_idx,
+            &candidates,
+            &mut owner_by_y,
+            &mut visited,
+            state_scalar_count,
+        );
+    }
+
+    for index in state_scalar_count..solver_scalar_count {
+        rows[index] = implicit_rhs_y_identity_row(index, span)?;
+        row_targets[index] = None;
+        occupied[index] = false;
+    }
+    placed.fill(false);
+    residual_to_implicit_rows.fill(None);
+    for (target_idx, residual_idx) in owner_by_y.into_iter().enumerate() {
+        let Some(residual_idx) = residual_idx else {
+            continue;
+        };
+        rows[target_idx] = residual[residual_idx].clone();
+        row_targets[target_idx] = match residual_targets.get(residual_idx).copied().flatten() {
+            Some(solve::ScalarSlot::Y { index, .. }) if index < state_scalar_count => {
+                Some(implicit_rhs_y_slot(index, span)?)
+            }
+            _ => Some(implicit_rhs_y_slot(target_idx, span)?),
+        };
+        occupied[target_idx] = true;
+        placed[residual_idx] = true;
+        residual_to_implicit_rows[residual_idx] = Some(target_idx);
+    }
+    Ok(())
+}
+
+fn augment_residual_owner(
+    residual_idx: usize,
+    candidates: &[Vec<usize>],
+    owner_by_y: &mut [Option<usize>],
+    visited: &mut [bool],
+    state_scalar_count: usize,
+) -> bool {
+    for target_idx in candidates[residual_idx].iter().copied() {
+        if target_idx < state_scalar_count || target_idx >= owner_by_y.len() || visited[target_idx]
+        {
+            continue;
+        }
+        visited[target_idx] = true;
+        let can_claim = owner_by_y[target_idx].is_none_or(|owner| {
+            augment_residual_owner(owner, candidates, owner_by_y, visited, state_scalar_count)
+        });
+        if can_claim {
+            owner_by_y[target_idx] = Some(residual_idx);
+            return true;
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -950,6 +1074,75 @@ mod tests {
             })
         );
         assert_eq!(residual_to_implicit_rows, vec![Some(2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn unowned_residual_displaces_connection_target_to_preserve_real_producers()
+    -> Result<(), LowerError> {
+        let span = test_span();
+        let assignment = vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ];
+        let physical = vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::LoadY { dst: 3, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 2,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ];
+        let connection = vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::LoadY { dst: 1, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ];
+        let residual = vec![assignment.clone(), physical.clone(), connection.clone()];
+        let targets = vec![
+            Some(solve::scalar_slot_y(0)),
+            None,
+            Some(solve::scalar_slot_y(1)),
+        ];
+
+        let implicit = build_implicit_rhs_rows(&[], &residual, &targets, 0, 3, span)?;
+
+        assert_eq!(
+            implicit.residual_to_implicit_rows,
+            vec![Some(0), Some(1), Some(2)]
+        );
+        assert_eq!(implicit.rows, vec![assignment, physical, connection]);
+        assert_eq!(
+            implicit.row_targets,
+            vec![
+                Some(solve::scalar_slot_y(0)),
+                Some(solve::scalar_slot_y(1)),
+                Some(solve::scalar_slot_y(2)),
+            ]
+        );
         Ok(())
     }
 
