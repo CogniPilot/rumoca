@@ -354,8 +354,11 @@ fn lower_runtime_visible_outputs(
         lower_visible_observations(dae_model, layout, visible_expressions)?;
     crate::timing::log_stage("model.lower_visible_observations", timer);
     let timer = crate::timing::stage_start();
-    let variable_meta =
-        build_variable_meta(metadata_dae_model.unwrap_or(dae_model), &visible_names)?;
+    let variable_meta = build_variable_meta(
+        metadata_dae_model.unwrap_or(dae_model),
+        dae_model,
+        &visible_names,
+    )?;
     crate::timing::log_stage("model.build_variable_meta", timer);
     Ok((visible_names, visible_value_rows, variable_meta))
 }
@@ -1674,46 +1677,149 @@ fn div_op() -> OpBinary {
     OpBinary::Div
 }
 
+fn final_state_scalar_spans(
+    final_dae_model: &dae::Dae,
+) -> Result<IndexMap<String, rumoca_core::Span>, SolveModelLowerError> {
+    let mut scalars = IndexMap::new();
+    for (name, var) in &final_dae_model.variables.states {
+        let names = scalar_names(name.as_str(), var)?;
+        reserve_solve_model_index_map_capacity(
+            &mut scalars,
+            names.len(),
+            "final state metadata scalar count",
+            var.source_span,
+        )?;
+        for name in names {
+            scalars.insert(name, var.source_span);
+        }
+    }
+    Ok(scalars)
+}
+
+fn final_variable_meta_role(
+    source_role: &'static str,
+    source_is_state: bool,
+    scalar_name: &str,
+    final_state_scalars: &IndexMap<String, rumoca_core::Span>,
+) -> (&'static str, bool) {
+    if final_state_scalars.contains_key(scalar_name) {
+        ("state", true)
+    } else if source_role == "state" || source_role == "algebraic" {
+        ("algebraic", false)
+    } else {
+        (source_role, source_is_state)
+    }
+}
+
+fn validate_visible_state_metadata(
+    final_dae_model: &dae::Dae,
+    final_state_scalars: &IndexMap<String, rumoca_core::Span>,
+    visible_names: &[String],
+    by_scalar: &IndexMap<String, solve::SolveVariableMeta>,
+    meta: &[solve::SolveVariableMeta],
+) -> Result<(), SolveModelLowerError> {
+    for (name, span) in final_state_scalars {
+        if !visible_names.contains(name) || by_scalar.contains_key(name) {
+            continue;
+        }
+        return Err(SolveModelLowerError::Lower(lower_contract_violation(
+            format!("final selected state `{name}` is missing from simulation metadata"),
+            *span,
+        )));
+    }
+    let reported_state_count = meta.iter().filter(|item| item.is_state).count();
+    let visible_final_state_count = visible_names
+        .iter()
+        .filter(|name| final_state_scalars.contains_key(*name))
+        .count();
+    if reported_state_count != visible_final_state_count {
+        return Err(SolveModelLowerError::Lower(lower_contract_violation(
+            format!(
+                "simulation metadata reports {reported_state_count} state scalars but {visible_final_state_count} visible scalars belong to the final solve state partition"
+            ),
+            dae_model_span(final_dae_model, "final state metadata scalar count")?,
+        )));
+    }
+    Ok(())
+}
+
+fn build_scalar_variable_meta(
+    var: &dae::Variable,
+    scalar_name: String,
+    role: &str,
+    is_state: bool,
+    event_discontinuous_names: &IndexSet<String>,
+) -> solve::SolveVariableMeta {
+    let (value_type, variability, time_domain) = variable_meta_classification(role, is_state);
+    let time_domain = if continuous_real_role_is_event_discontinuous(
+        role,
+        &scalar_name,
+        event_discontinuous_names,
+    ) {
+        Some("event-discontinuous".to_string())
+    } else {
+        time_domain
+    };
+    solve::SolveVariableMeta {
+        name: scalar_name,
+        source_span: var.source_span,
+        role: role.to_string(),
+        is_state,
+        value_type,
+        variability,
+        time_domain,
+        unit: var.unit.clone(),
+        start: var.start.as_ref().map(|expr| format!("{expr:?}")),
+        min: var.min.as_ref().map(|expr| format!("{expr:?}")),
+        max: var.max.as_ref().map(|expr| format!("{expr:?}")),
+        nominal: var.nominal.as_ref().map(|expr| format!("{expr:?}")),
+        fixed: var.fixed,
+        description: var.description.clone(),
+    }
+}
+
 fn build_variable_meta(
-    dae_model: &dae::Dae,
+    metadata_dae_model: &dae::Dae,
+    final_dae_model: &dae::Dae,
     visible_names: &[String],
 ) -> Result<Vec<solve::SolveVariableMeta>, SolveModelLowerError> {
-    let event_discontinuous_names = event_discontinuous_scalar_names(dae_model)?;
-    let vars = dae_model
+    let event_discontinuous_names = event_discontinuous_scalar_names(metadata_dae_model)?;
+    let final_state_scalars = final_state_scalar_spans(final_dae_model)?;
+    let vars = metadata_dae_model
         .variables
         .states
         .iter()
         .map(|(name, var)| (name, var, "state", true))
         .chain(
-            dae_model
+            metadata_dae_model
                 .variables
                 .algebraics
                 .iter()
                 .map(|(name, var)| (name, var, "algebraic", false)),
         )
         .chain(
-            dae_model
+            metadata_dae_model
                 .variables
                 .outputs
                 .iter()
                 .map(|(name, var)| (name, var, "output", false)),
         )
         .chain(
-            dae_model
+            metadata_dae_model
                 .variables
                 .inputs
                 .iter()
                 .map(|(name, var)| (name, var, "input", false)),
         )
         .chain(
-            dae_model
+            metadata_dae_model
                 .variables
                 .discrete_reals
                 .iter()
                 .map(|(name, var)| (name, var, "discrete-real", false)),
         )
         .chain(
-            dae_model
+            metadata_dae_model
                 .variables
                 .discrete_valued
                 .iter()
@@ -1721,11 +1827,6 @@ fn build_variable_meta(
         );
     let mut by_scalar = IndexMap::new();
     for (name, var, role, is_state) in vars {
-        let (value_type, variability, time_domain) = variable_meta_classification(role, is_state);
-        let start_text = var.start.as_ref().map(|expr| format!("{expr:?}"));
-        let min_text = var.min.as_ref().map(|expr| format!("{expr:?}"));
-        let max_text = var.max.as_ref().map(|expr| format!("{expr:?}"));
-        let nominal_text = var.nominal.as_ref().map(|expr| format!("{expr:?}"));
         let scalar_names = scalar_names(name.as_str(), var)?;
         reserve_solve_model_index_map_capacity(
             &mut by_scalar,
@@ -1734,40 +1835,22 @@ fn build_variable_meta(
             var.source_span,
         )?;
         for scalar_name in scalar_names {
-            let time_domain = if continuous_real_role_is_event_discontinuous(
-                role,
-                &scalar_name,
-                &event_discontinuous_names,
-            ) {
-                Some("event-discontinuous".to_string())
-            } else {
-                time_domain.clone()
-            };
-            by_scalar.insert(
+            let (role, is_state) =
+                final_variable_meta_role(role, is_state, &scalar_name, &final_state_scalars);
+            let variable_meta = build_scalar_variable_meta(
+                var,
                 scalar_name.clone(),
-                solve::SolveVariableMeta {
-                    name: scalar_name,
-                    source_span: var.source_span,
-                    role: role.to_string(),
-                    is_state,
-                    value_type: value_type.clone(),
-                    variability: variability.clone(),
-                    time_domain: time_domain.clone(),
-                    unit: var.unit.clone(),
-                    start: start_text.clone(),
-                    min: min_text.clone(),
-                    max: max_text.clone(),
-                    nominal: nominal_text.clone(),
-                    fixed: var.fixed,
-                    description: var.description.clone(),
-                },
+                role,
+                is_state,
+                &event_discontinuous_names,
             );
+            by_scalar.insert(scalar_name, variable_meta);
         }
     }
     let mut meta = solve_model_vec_with_capacity(
         visible_names.len(),
         "visible variable metadata count",
-        dae_model_span(dae_model, "visible variable metadata count")
+        dae_model_span(metadata_dae_model, "visible variable metadata count")
             .map_err(SolveModelLowerError::Lower)?,
     )?;
     for name in visible_names {
@@ -1775,6 +1858,13 @@ fn build_variable_meta(
             meta.push(variable_meta.clone());
         }
     }
+    validate_visible_state_metadata(
+        final_dae_model,
+        &final_state_scalars,
+        visible_names,
+        &by_scalar,
+        &meta,
+    )?;
     Ok(meta)
 }
 

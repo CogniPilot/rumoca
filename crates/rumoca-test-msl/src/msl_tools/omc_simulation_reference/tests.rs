@@ -598,11 +598,11 @@ fn quantify_trace_differences_includes_error_status_model_with_existing_traces()
     let model_name = "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedSine".to_string();
     let trace = SimTrace {
         model_name: Some(model_name.clone()),
-        n_states: None,
+        n_states: Some(0),
         times: vec![0.0, 0.5, 1.0],
         names: vec!["y".to_string()],
         data: vec![vec![Some(0.0), Some(1.0), Some(0.0)]],
-        variable_meta: None,
+        variable_meta: Some(Vec::new()),
     };
     write_pretty_json(&omc_trace_dir.join(format!("{model_name}.json")), &trace)
         .expect("write omc trace");

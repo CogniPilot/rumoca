@@ -446,7 +446,7 @@ pub(super) fn structurally_lower_dae_for_simulation(
     let PreparedStructuralDaes {
         source_dae,
         mut lowered,
-        mut metadata_dae,
+        metadata_dae,
     } = prepare_structural_daes(dae_model, opts)?;
     if dae_model.variables.states.is_empty() {
         let mut residual_shape_dae = source_dae.clone();
@@ -501,7 +501,6 @@ pub(super) fn structurally_lower_dae_for_simulation(
     }
     apply_simulation_elimination(&mut lowered, &elimination.substitutions)?;
     trace_simulation_elimination(&lowered, &elimination.substitutions);
-    mark_state_selection_metadata(&lowered, &mut metadata_dae)?;
     let visible_expressions =
         visible_expressions_after_elimination(&source_dae, &elimination.substitutions, opts)?;
 
@@ -632,28 +631,6 @@ fn trace_simulation_elimination(
     }
 }
 
-fn mark_state_selection_metadata(
-    structural_dae: &dae::Dae,
-    metadata_dae: &mut dae::Dae,
-) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
-    log_solve_lowering_start("structural.clone_state_selection_dae");
-    let timer = stage_timer_start();
-    let mut state_selection_dae = structural_dae.clone();
-    log_solve_lowering_done("structural.clone_state_selection_dae", timer);
-    log_solve_lowering_start("structural.demote_state_selection_dae");
-    let timer = stage_timer_start();
-    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(
-        &mut state_selection_dae,
-    )
-    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
-    log_solve_lowering_done("structural.demote_state_selection_dae", timer);
-    log_solve_lowering_start("structural.reconcile_state_selection_metadata");
-    let timer = stage_timer_start();
-    reconcile_state_selection_metadata(&state_selection_dae, metadata_dae)?;
-    log_solve_lowering_done("structural.reconcile_state_selection_metadata", timer);
-    Ok(())
-}
-
 fn visible_expressions_after_elimination(
     source_dae: &dae::Dae,
     substitutions: &[rumoca_phase_structural::eliminate::Substitution],
@@ -741,40 +718,5 @@ fn validate_residual_shapes_for_simulation(
 ) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
     let layout = rumoca_phase_solve::build_var_layout(dae_model)?;
     rumoca_phase_solve::lower::lower_residual(dae_model, &layout)?;
-    Ok(())
-}
-
-pub(super) fn reconcile_state_selection_metadata(
-    final_dae: &dae::Dae,
-    metadata_dae: &mut dae::Dae,
-) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
-    let demoted_names = metadata_dae
-        .variables
-        .states
-        .keys()
-        .filter(|name| !final_dae.variables.states.contains_key(*name))
-        .cloned()
-        .collect::<Vec<_>>();
-    for name in demoted_names {
-        if let Some(var) = metadata_dae.variables.states.shift_remove(&name) {
-            metadata_dae.variables.algebraics.insert(name, var);
-        }
-    }
-
-    for (name, final_var) in &final_dae.variables.states {
-        if metadata_dae.variables.states.contains_key(name) {
-            continue;
-        }
-        let Some(var) = metadata_dae.variables.algebraics.shift_remove(name) else {
-            let reason = format!(
-                "final selected state `{}` is missing from simulation metadata",
-                name.as_str()
-            );
-            return Err(rumoca_phase_solve::SolveModelLowerError::Lower(
-                lower_contract_error_from_optional_span(reason, Some(final_var.source_span)),
-            ));
-        };
-        metadata_dae.variables.states.insert(name.clone(), var);
-    }
     Ok(())
 }

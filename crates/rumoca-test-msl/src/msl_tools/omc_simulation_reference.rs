@@ -1514,7 +1514,8 @@ fn quantify_trace_differences(
             }
         };
         let state_selection =
-            state_selection::compare_model_state_selection(paths, model_name, &rumoca_trace);
+            state_selection::compare_model_state_selection(paths, model_name, &rumoca_trace)
+                .with_context(|| format!("invalid state metadata contract for `{model_name}`"))?;
         report.models.insert(
             model_name.clone(),
             TraceModelMetric {

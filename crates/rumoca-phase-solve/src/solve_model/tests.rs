@@ -958,6 +958,177 @@ fn lower_seeds_start_dependencies_removed_by_structural_metadata() {
 }
 
 #[test]
+fn lower_reports_final_partial_array_state_partition_in_metadata() {
+    let mut dae_model = dae::Dae::default();
+    let mut p = scalar_var("p");
+    p.dims = vec![3];
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("p"), p);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(plain_var("p[1]", solve_model_test_span()), var("time")),
+        solve_model_test_span(),
+        "direct p[1] trajectory",
+    ));
+    for index in 2..=3 {
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            sub(
+                der(plain_var(
+                    format!("p[{index}]").as_str(),
+                    solve_model_test_span(),
+                )),
+                real_expr(0.0),
+            ),
+            solve_model_test_span(),
+            format!("p[{index}] ODE"),
+        ));
+    }
+    let metadata_dae = dae_model.clone();
+    let parent = dae_model
+        .variables
+        .states
+        .shift_remove(&rumoca_core::VarName::new("p"))
+        .expect("parent array state");
+    for index in 1..=3 {
+        let name = rumoca_core::VarName::new(format!("p[{index}]"));
+        let mut scalar = parent.clone();
+        scalar.name = name.clone();
+        scalar.dims.clear();
+        if index == 1 {
+            dae_model.variables.algebraics.insert(name, scalar);
+        } else {
+            dae_model.variables.states.insert(name, scalar);
+        }
+    }
+    let visible = (1..=3)
+        .map(|index| VisibleExpression {
+            name: format!("p[{index}]"),
+            expr: plain_var(format!("p[{index}]").as_str(), solve_model_test_span()),
+        })
+        .collect();
+
+    let model = lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata(
+        dae_model,
+        visible,
+        &metadata_dae,
+    )
+    .expect("partial array state partition should lower");
+
+    let roles = model
+        .variable_meta
+        .iter()
+        .map(|meta| (meta.name.as_str(), meta.role.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roles,
+        [("p[1]", "algebraic"), ("p[2]", "state"), ("p[3]", "state")]
+    );
+    assert_eq!(model.state_scalar_count(), 2);
+    assert_eq!(
+        model
+            .variable_meta
+            .iter()
+            .filter(|meta| meta.is_state)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn lower_reports_final_late_promote_and_demote_partition_in_metadata() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    let mut y = scalar_var("y");
+    y.state_select = rumoca_core::StateSelect::Prefer;
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("y"), y);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(var("x"), var("y")),
+        solve_model_test_span(),
+        "direct x alias",
+    ));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(der(var("y")), real_expr(1.0)),
+        solve_model_test_span(),
+        "y ODE",
+    ));
+    let mut metadata_dae = dae_model.clone();
+    let x = metadata_dae
+        .variables
+        .algebraics
+        .shift_remove(&rumoca_core::VarName::new("x"))
+        .expect("x metadata");
+    let y = metadata_dae
+        .variables
+        .states
+        .shift_remove(&rumoca_core::VarName::new("y"))
+        .expect("y metadata");
+    metadata_dae
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), x);
+    metadata_dae
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("y"), y);
+    let visible = ["x", "y"]
+        .into_iter()
+        .map(|name| VisibleExpression {
+            name: name.to_string(),
+            expr: var(name),
+        })
+        .collect();
+
+    let model = lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata(
+        dae_model,
+        visible,
+        &metadata_dae,
+    )
+    .expect("late state promotion and demotion should lower");
+
+    let roles = model
+        .variable_meta
+        .iter()
+        .map(|meta| (meta.name.as_str(), meta.role.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(roles, [("x", "algebraic"), ("y", "state")]);
+    assert_eq!(model.state_scalar_count(), 1);
+    assert_eq!(
+        model
+            .variable_meta
+            .iter()
+            .filter(|meta| meta.is_state)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn build_variable_meta_rejects_final_state_missing_from_metadata() {
+    let mut final_dae = dae::Dae::default();
+    final_dae
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    let mut metadata_dae = dae::Dae::default();
+    metadata_dae
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("dummy"), scalar_var("dummy"));
+
+    let error = build_variable_meta(&metadata_dae, &final_dae, &["x".to_string()])
+        .expect_err("missing final-state metadata must fail closed");
+
+    assert!(error.to_string().contains("x"), "got: {error}");
+}
+
+#[test]
 fn lower_rejects_missing_binding_in_explicit_start_guess() {
     let start_span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_solve_solve_model_tests_source_7.mo"),
@@ -1332,8 +1503,8 @@ fn variable_meta_marks_relation_driven_real_output_event_discontinuous() {
         scalar_count: 1,
     });
 
-    let meta =
-        build_variable_meta(&dae_model, &["y".to_string()]).expect("valid meta should build");
+    let meta = build_variable_meta(&dae_model, &dae_model, &["y".to_string()])
+        .expect("valid meta should build");
 
     assert_eq!(meta.len(), 1);
     assert_eq!(meta[0].variability.as_deref(), Some("continuous"));
@@ -1371,8 +1542,8 @@ fn variable_meta_marks_guarded_residual_output_event_discontinuous() {
         scalar_count: 1,
     });
 
-    let meta =
-        build_variable_meta(&dae_model, &["y".to_string()]).expect("valid meta should build");
+    let meta = build_variable_meta(&dae_model, &dae_model, &["y".to_string()])
+        .expect("valid meta should build");
 
     assert_eq!(meta.len(), 1);
     assert_eq!(meta[0].variability.as_deref(), Some("continuous"));
@@ -1421,8 +1592,8 @@ fn variable_meta_propagates_event_discontinuity_through_algebraic_dependency() {
         scalar_count: 1,
     });
 
-    let meta =
-        build_variable_meta(&dae_model, &["y".to_string()]).expect("valid meta should build");
+    let meta = build_variable_meta(&dae_model, &dae_model, &["y".to_string()])
+        .expect("valid meta should build");
 
     assert_eq!(meta.len(), 1);
     assert_eq!(meta[0].time_domain.as_deref(), Some("event-discontinuous"));

@@ -1,4 +1,5 @@
 use super::{MslPaths, TraceQuantification};
+use anyhow::{Result, bail};
 use rumoca_sim::sim_trace_compare::SimTrace;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -37,10 +38,12 @@ pub(super) fn compare_model_state_selection(
     paths: &MslPaths,
     model_name: &str,
     rumoca_trace: &SimTrace,
-) -> Option<StateSelectionMetric> {
+) -> Result<Option<StateSelectionMetric>> {
     let rumoca_states = rumoca_state_names(rumoca_trace)?;
-    let omc_states = load_omc_state_names(paths, model_name)?;
-    Some(compare_state_sets(&rumoca_states, &omc_states))
+    let Some(omc_states) = load_omc_state_names(paths, model_name) else {
+        return Ok(None);
+    };
+    Ok(Some(compare_state_sets(&rumoca_states, &omc_states)))
 }
 
 pub(super) fn state_selection_summary(report: &TraceQuantification) -> StateSelectionSummary {
@@ -100,19 +103,25 @@ fn compare_state_sets(
     }
 }
 
-fn rumoca_state_names(trace: &SimTrace) -> Option<BTreeSet<String>> {
-    let expected_state_count = trace.n_states?;
-    let states = trace
-        .variable_meta
-        .as_ref()?
+fn rumoca_state_names(trace: &SimTrace) -> Result<BTreeSet<String>> {
+    let Some(expected_state_count) = trace.n_states else {
+        bail!("rumoca trace is missing the n_states metadata contract");
+    };
+    let Some(variable_meta) = trace.variable_meta.as_ref() else {
+        bail!("rumoca trace is missing variable_meta state metadata");
+    };
+    let states = variable_meta
         .iter()
         .filter(|meta| meta.role.as_deref() == Some("state"))
         .map(|meta| meta.name.clone())
         .collect::<BTreeSet<_>>();
     if expected_state_count != states.len() {
-        return None;
+        bail!(
+            "rumoca trace declares {expected_state_count} states but metadata reports {}",
+            states.len()
+        );
     }
-    Some(states)
+    Ok(states)
 }
 
 fn load_omc_state_names(paths: &MslPaths, model_name: &str) -> Option<BTreeSet<String>> {
@@ -210,7 +219,7 @@ mod tests {
         }))
         .expect("trace fixture should deserialize");
 
-        assert_eq!(rumoca_state_names(&trace), None);
+        assert!(rumoca_state_names(&trace).is_err());
     }
 
     #[test]
@@ -224,7 +233,36 @@ mod tests {
         }))
         .expect("trace fixture should deserialize");
 
-        assert_eq!(rumoca_state_names(&trace), None);
+        assert!(rumoca_state_names(&trace).is_err());
+    }
+
+    #[test]
+    fn invalid_state_metadata_contract_is_not_dropped_as_missing_comparison() {
+        let trace = serde_json::from_value::<SimTrace>(serde_json::json!({
+            "model_name": "BrokenMetadata",
+            "n_states": 2,
+            "times": [0.0],
+            "names": ["x"],
+            "data": [[0.0]],
+            "variable_meta": [{"name": "x", "role": "state"}]
+        }))
+        .expect("trace fixture should deserialize");
+        let root = std::path::PathBuf::from("/nonexistent-state-contract-test");
+        let paths = MslPaths {
+            repo_root: root.clone(),
+            msl_dir: root.clone(),
+            results_dir: root.clone(),
+            flat_dir: root.clone(),
+            work_dir: root.clone(),
+            sim_work_dir: root.clone(),
+            omc_trace_dir: root.clone(),
+            rumoca_trace_dir: root,
+        };
+
+        let error = compare_model_state_selection(&paths, "BrokenMetadata", &trace)
+            .expect_err("invalid producer metadata must fail the parity comparison");
+
+        assert!(error.to_string().contains("declares 2 states"));
     }
 
     #[test]
