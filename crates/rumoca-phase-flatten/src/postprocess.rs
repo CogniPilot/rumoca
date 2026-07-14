@@ -873,6 +873,14 @@ fn collapse_penultimate_field_to_known_var(
     let (prefix, leaf) = rendered_path_last_segment(path)?;
     let (base, _) = rendered_path_last_segment(prefix)?;
     let candidate = format!("{base}.{leaf}");
+    if rumoca_core::split_trailing_subscript_suffix(base).is_some() {
+        // Removing a field directly below an indexed component would cross a
+        // concrete instance boundary.  The only valid collapse in this shape
+        // is the array-of-record projection spelling (`states[1].phase.h` ->
+        // `states.h[1]`), where the index moves to the projected field.
+        return alternate_array_field_path(&candidate)
+            .and_then(|alternate| known_path_expression(&alternate, span, known_flat_vars));
+    }
     known_path_expression(&candidate, span, known_flat_vars)
 }
 
