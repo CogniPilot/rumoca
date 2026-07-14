@@ -453,6 +453,12 @@ impl Model {
         Ok(CodegenResult::new(target.to_string(), files))
     }
 
+    /// Simulate the compiled model and return named time-series columns.
+    ///
+    /// `t` is an end time or `(start, end)` tuple. `params` applies tunable
+    /// parameter overrides, `start` applies scalar state start values, and
+    /// `inputs` applies constant scalar model inputs before initialization.
+    /// Time-varying Python input callables are not currently supported.
     #[pyo3(signature = (
         t=None, *, dt=None, config=None, params=None, start=None, inputs=None
     ))]
@@ -463,15 +469,8 @@ impl Model {
         config: Option<SimConfig>,
         params: Option<HashMap<String, f64>>,
         start: Option<HashMap<String, f64>>,
-        inputs: Option<&Bound<'_, PyAny>>,
+        inputs: Option<HashMap<String, f64>>,
     ) -> ApiResult<SimPyResult> {
-        if inputs.is_some() {
-            return Err(ApiError::Sim(
-                "time-varying inputs= are a fast-follower (roadmap §8); not yet available"
-                    .to_string(),
-            ));
-        }
-
         // Merge with_params/with_start handles with call-time overrides
         // (call-time wins), then validate before building options.
         let param_overrides = merge_overrides(&self.param_overrides, &to_pairs(params));
@@ -486,6 +485,7 @@ impl Model {
         let mut opts = self.build_sim_options(t_start, t_end, dt, config.unwrap_or_default());
         opts.param_overrides = param_overrides;
         opts.start_overrides = start_overrides;
+        opts.input_overrides = to_pairs(inputs);
 
         // Release the GIL for the solve; `with_gil` is cheap when already held.
         // Bind `&Dae` before the closure so it captures a `Send` reference, not

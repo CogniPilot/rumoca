@@ -16,6 +16,8 @@ _native.cpython*
 *.so
 .claude/
 .vscode/
+!examples/.vscode/
+!examples/.vscode/settings.json
 dev/
 gh-pages/
 docs/*/book/

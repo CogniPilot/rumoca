@@ -1,4 +1,4 @@
-//! Solver-neutral application of a request's tunable-parameter and state-start
+//! Solver-neutral application of a request's tunable-parameter, constant-input, and state-start
 //! overrides onto a freshly lowered solve model. Every backend (diffsol, rk45)
 //! funnels through here so overrides behave identically regardless of engine.
 
@@ -134,6 +134,24 @@ pub(crate) fn apply_simulation_overrides(
             }
             solve_model.parameters[index] = *value;
         }
+    }
+
+    for (name, value) in &opts.input_overrides {
+        if !dae_model
+            .variables
+            .inputs
+            .keys()
+            .any(|key| key.as_str() == name)
+        {
+            return Err(reject(format!("`{name}` is not an input of this model")));
+        }
+        let Some(solve::ScalarSlot::P { index, .. }) = solve_model.problem.layout.binding(name)
+        else {
+            return Err(reject(format!(
+                "`{name}` has no runtime input slot and cannot be set for simulation"
+            )));
+        };
+        solve_model.parameters[index] = *value;
     }
 
     if !opts.start_overrides.is_empty() {

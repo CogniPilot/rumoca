@@ -138,6 +138,9 @@ pub struct SimOptions {
     /// a runtime slot may be overridden; structural/folded/depended-upon names
     /// are rejected so an override is never silently dropped.
     pub param_overrides: Vec<(String, f64)>,
+    /// Constant model-input values applied before initialization. Interactive
+    /// sessions may subsequently change these values while stepping.
+    pub input_overrides: Vec<(String, f64)>,
     /// State start-value overrides applied after lowering, keyed by scalar state
     /// name. These seed the initialization solve.
     pub start_overrides: Vec<(String, f64)>,
@@ -157,6 +160,7 @@ impl Default for SimOptions {
             diffsol_method: DiffsolMethod::Bdf,
             pacing_mode: SimPacingMode::AsFastAsPossible,
             param_overrides: Vec::new(),
+            input_overrides: Vec::new(),
             start_overrides: Vec::new(),
         }
     }

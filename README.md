@@ -265,6 +265,12 @@ The installer defaults to:
 pip install rumoca
 ```
 
+The package provides typed sessions, model introspection, reusable parameter
+sweeps, constant simulation inputs, plotting/dataframe helpers, symbolic
+exports, and FMI code generation. See the
+[Python API guide](crates/rumoca-bind-python/README.md) for examples and editor
+autocomplete setup.
+
 ## Developer CLI
 
 Contributor workflows are standardized through the `rum` developer CLI.

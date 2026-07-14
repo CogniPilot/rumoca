@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from os import PathLike
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence, TypedDict
+from typing import Any, Literal, Mapping, Sequence, TypedDict
 
 from ._magic import (
     load_ipython_extension as load_ipython_extension,
@@ -21,8 +21,20 @@ Form = Literal["dae", "solve"]
 Solver = Literal["auto", "rk-like", "bdf", "esdirk34", "trbdf2"] | str
 Level = Literal["error", "warning", "note", "help"]
 ParamKind = Literal["tunable", "structural"]
-Input = float | tuple[Any, Any] | Callable[[float], float]
+Input = float
 Pathish = str | Path | PathLike[str]
+CodegenTarget = Literal[
+    "fmi2",
+    "fmi3",
+    "casadi-mx",
+    "casadi-sx",
+    "casadi-solve",
+    "jax",
+    "jax-solve",
+    "sympy",
+    "galec",
+    "galec-production",
+] | str
 
 __all__: Sequence[str]
 
@@ -38,6 +50,13 @@ def solvers() -> list[SolverInfo]: ...
 
 # ── session ─────────────────────────────────────────────────────────────────
 class Session:
+    """Reusable compiler session that owns source roots and compilation caches.
+
+    Reuse one session when loading multiple models or running parameter sweeps.
+    ``roots`` contains Modelica library directories; ``workspace`` loads roots
+    from Rumoca workspace/scenario configuration.
+    """
+
     roots: list[str]
     def __init__(
         self,
@@ -70,36 +89,65 @@ class Session:
 
 # ── the hub ─────────────────────────────────────────────────────────────────
 class Model:
+    """Compiled Modelica model and entry point for inspection, simulation, and export."""
+
     name: str
     states: VarView
     algebraics: VarView
     inputs: VarView
     outputs: VarView
     parameters: ParamView
-    def summary(self) -> str: ...
+    def summary(self) -> str:
+        """Return a compact count of states, algebraics, inputs, outputs, and parameters."""
+        ...
     def structure(self) -> StructuralInfo: ...
     def to_dict(self, stage: Stage = ...) -> dict[str, Any]: ...
     def to_json(self, stage: Stage = ..., *, pretty: bool = ...) -> str: ...
     def save_json(self, path: Pathish, stage: Stage = ...) -> None: ...
-    def render(self, target: str) -> str: ...
-    def codegen(self, target: str) -> CodegenResult: ...
+    def render(self, target: CodegenTarget) -> str:
+        """Render a target and concatenate its generated files into one string."""
+        ...
+    def codegen(self, target: CodegenTarget) -> CodegenResult:
+        """Generate a built-in target such as ``fmi3``, preserving individual files."""
+        ...
     def to_casadi(
         self, form: Form = ..., *, mode: Literal["mx", "sx"] = ...
     ) -> CasadiModel | SolveExport: ...
     def to_jax(self, form: Form = ...) -> JaxModel | SolveExport: ...
     def to_sympy(self) -> SympyModel: ...
-    def with_params(self, *, recompile: bool = ..., **overrides: float) -> Model: ...
-    def with_start(self, **overrides: float) -> Model: ...
+    def with_params(self, *, recompile: bool = ..., **overrides: float) -> Model:
+        """Return a model handle carrying parameter overrides.
+
+        Tunable overrides reuse the compiled artifact. Set ``recompile=True``
+        for structural parameters that affect instantiation or dimensions.
+        """
+        ...
+    def with_start(self, **overrides: float) -> Model:
+        """Return a model handle carrying scalar state start-value overrides."""
+        ...
     def simulate(
         self,
-        t: float | tuple[float, float] | Any = ...,
+        t: float | tuple[float, float] = ...,
         *,
         dt: float | None = ...,
         config: SimConfig | None = ...,
         params: Mapping[str, float] | None = ...,
         start: Mapping[str, float] | None = ...,
         inputs: Mapping[str, Input] | None = ...,
-    ) -> Result: ...
+    ) -> Result:
+        """Simulate the compiled model and return named time-series columns.
+
+        Args:
+            t: End time, or an inclusive ``(start, end)`` span.
+            dt: Requested output sampling interval.
+            config: Solver tolerances, backend, and wall-time limit.
+            params: Tunable scalar parameter values for this run.
+            start: Scalar state start values for this run.
+            inputs: Constant scalar model inputs, applied before initialization.
+
+        Time-varying input callables are not currently supported.
+        """
+        ...
     def objective_gradient(
         self,
         objective: str,
@@ -112,6 +160,12 @@ class Model:
     def _repr_html_(self) -> str: ...
 
 class SimConfig:
+    """Numerical solver controls for ``Model.simulate``.
+
+    Explicit keyword arguments passed directly to ``simulate`` take precedence
+    over values in this object.
+    """
+
     solver: str | None
     rtol: float | None
     atol: float | None
@@ -129,12 +183,16 @@ class SimConfig:
 
 # ── views ───────────────────────────────────────────────────────────────────
 class VarView(Sequence[VariableInfo]):
+    """Ordered, name-addressable view of model variables."""
+
     names: list[str]
     def __getitem__(self, key: str | int) -> VariableInfo: ...  # type: ignore[override]
     def __len__(self) -> int: ...
     def __contains__(self, key: object) -> bool: ...
 
 class ParamView(Sequence[ParameterInfo]):
+    """Ordered, name-addressable view of model parameter metadata."""
+
     names: list[str]
     def __getitem__(self, key: str | int) -> ParameterInfo: ...  # type: ignore[override]
     def __len__(self) -> int: ...
@@ -156,6 +214,8 @@ class VariableInfo:
 # but is a distinct runtime class (not a subclass) — declared standalone so
 # `isinstance`/type checks match reality.
 class ParameterInfo:
+    """Parameter metadata, declared value, and tunable/structural classification."""
+
     name: str
     unit: str | None
     quantity: str | None
@@ -182,6 +242,12 @@ class StructuralInfo:
 
 # ── results & exports ───────────────────────────────────────────────────────
 class Result:
+    """Named simulation columns backed directly by the native simulation result.
+
+    Access a flattened variable with ``result["position[3]"]``. NumPy,
+    pandas, and matplotlib helpers are imported lazily.
+    """
+
     model: str
     time: Any
     names: list[str]
@@ -245,6 +311,8 @@ class GeneratedFile:
     content: str
 
 class CodegenResult:
+    """Generated target files returned by ``Model.codegen``."""
+
     target: str
     files: list[GeneratedFile]
     paths: list[str]

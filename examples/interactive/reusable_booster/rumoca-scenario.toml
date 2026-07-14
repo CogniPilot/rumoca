@@ -1,40 +1,12 @@
 source_roots = ["../../../target/cmm/CMM-a642c381"]
 
-[rumoca]
-version = "1"
-task = "simulate"
-
-[model]
-file = "ReusableBoosterLanding.mo"
-name = "ReusableBoosterLanding"
-
-[parameters]
-launch_burn_duration = 6.0
-launch_thrust_fraction = 0.62
-landing_trigger_speed = 8.0
-landing_duration = 18.0
-rcs_authority = 1.0
-wind_speed = 5.0
-wind_direction_deg = 35.0
-wind_speed_variation = 0.0
-wind_direction_variation_deg = 15.0
-wind_variation_period = 10.0
-dryden_intensity = 4.0
-wave_heave_amplitude = 0.35
-wave_roll_amplitude_deg = 1.2
-wave_pitch_amplitude_deg = 0.8
-wave_period = 8.5
-
-[sim]
-dt = 0.05
-t_end = 75.0
-mode = "realtime"
-solver = "rk-like"
-atol = 1e-6
-rtol = 1e-6
-
 [input]
 mode = "keyboard"
+
+[input.keyboard.keys.Space]
+action = "toggle"
+debounce_ms = 500
+state = "launch_command"
 
 [input.keyboard.keys.q]
 action = "signal"
@@ -44,77 +16,104 @@ signal = "quit"
 action = "signal"
 signal = "reset"
 
-[input.keyboard.keys.Space]
-action = "toggle"
-debounce_ms = 500
-state = "launch_command"
-
-[locals.launch_command]
-default = false
-type = "bool"
-
-[locals.wind_speed_setting]
-default = 5.0
-type = "float"
-
-[locals.wind_direction_setting]
-default = 35.0
-type = "float"
-
-[locals.wind_swing_setting]
-default = 15.0
-type = "float"
-
-[locals.gust_setting]
-default = 4.0
+[locals.attitude_gain_setting]
+default = 1
 type = "float"
 
 [locals.deck_heave_setting]
 default = 0.35
 type = "float"
 
-[locals.deck_roll_setting]
-default = 1.2
-type = "float"
-
 [locals.deck_pitch_setting]
 default = 0.8
 type = "float"
 
+[locals.deck_roll_setting]
+default = 1.2
+type = "float"
+
+[locals.gust_setting]
+default = 4
+type = "float"
+
+[locals.launch_command]
+default = false
+type = "bool"
+
 [locals.position_gain_setting]
-default = 1.0
-type = "float"
-
-[locals.velocity_gain_setting]
-default = 1.0
-type = "float"
-
-[locals.attitude_gain_setting]
-default = 1.0
+default = 1
 type = "float"
 
 [locals.rate_gain_setting]
-default = 1.0
+default = 1
 type = "float"
+
+[locals.velocity_gain_setting]
+default = 1
+type = "float"
+
+[locals.wind_direction_setting]
+default = 35
+type = "float"
+
+[locals.wind_speed_setting]
+default = 5
+type = "float"
+
+[locals.wind_swing_setting]
+default = 15
+type = "float"
+
+[model]
+file = "ReusableBoosterLanding.mo"
+name = "ReusableBoosterLanding"
+
+[parameters]
+dryden_intensity = 4
+landing_duration = 18
+landing_trigger_speed = 8
+launch_burn_duration = 6
+launch_thrust_fraction = 0.62
+rcs_authority = 1
+wave_heave_amplitude = 0.35
+wave_period = 8.5
+wave_pitch_amplitude_deg = 0.8
+wave_roll_amplitude_deg = 1.2
+wind_direction_deg = 35
+wind_direction_variation_deg = 15
+wind_speed = 5
+wind_speed_variation = 0
+wind_variation_period = 10
+
+[plot]
+views = []
 
 [reset]
 on_signal = "reset"
-reset_session = true
 reset_locals = true
+reset_session = true
+
+[rumoca]
+task = "simulate"
+version = "1"
 
 [signals.model_inputs]
-launch_command = { from = "local:launch_command", when_false = 0, when_true = 1 }
-wind_speed_input = "local:wind_speed_setting"
+attitude_gain_scale_input = "local:attitude_gain_setting"
+dryden_intensity_input = "local:gust_setting"
+position_gain_scale_input = "local:position_gain_setting"
+rate_gain_scale_input = "local:rate_gain_setting"
+velocity_gain_scale_input = "local:velocity_gain_setting"
+wave_heave_amplitude_input = "local:deck_heave_setting"
+wave_pitch_amplitude_input = "local:deck_pitch_setting"
+wave_roll_amplitude_input = "local:deck_roll_setting"
 wind_direction_input = "local:wind_direction_setting"
 wind_direction_variation_input = "local:wind_swing_setting"
-dryden_intensity_input = "local:gust_setting"
-wave_heave_amplitude_input = "local:deck_heave_setting"
-wave_roll_amplitude_input = "local:deck_roll_setting"
-wave_pitch_amplitude_input = "local:deck_pitch_setting"
-position_gain_scale_input = "local:position_gain_setting"
-velocity_gain_scale_input = "local:velocity_gain_setting"
-attitude_gain_scale_input = "local:attitude_gain_setting"
-rate_gain_scale_input = "local:rate_gain_setting"
+wind_speed_input = "local:wind_speed_setting"
+
+[signals.model_inputs.launch_command]
+from = "local:launch_command"
+when_false = 0
+when_true = 1
 
 [signals.viewer]
 altitude = "model:altitude"
@@ -132,6 +131,13 @@ deck_q2 = "model:deck_quat[3]"
 deck_q3 = "model:deck_quat[4]"
 deck_roll = "model:deck_roll_display"
 deck_roll_setting = "local:deck_roll_setting"
+est_px = "model:estimated_position[1]"
+est_py = "model:estimated_position[2]"
+est_pz = "model:estimated_position[3]"
+est_var_x = "model:estimated_position_variance[1]"
+est_var_y = "model:estimated_position_variance[2]"
+est_var_z = "model:estimated_position_variance[3]"
+estimator_error = "model:estimator_position_error"
 frame = "runtime:frame_num"
 gimbal_x = "model:gimbal_x"
 gimbal_y = "model:gimbal_y"
@@ -139,10 +145,13 @@ gps_px = "model:gps_position_measurement[1]"
 gps_py = "model:gps_position_measurement[2]"
 gps_pz = "model:gps_position_measurement[3]"
 gps_update = "model:gps_update"
+gps_var_x = "model:gps_measurement_variance[1]"
+gps_var_y = "model:gps_measurement_variance[2]"
+gps_var_z = "model:gps_measurement_variance[3]"
+gust_setting = "local:gust_setting"
 gust_vx = "model:dryden_gust_velocity[1]"
 gust_vy = "model:dryden_gust_velocity[2]"
 gust_vz = "model:dryden_gust_velocity[3]"
-gust_setting = "local:gust_setting"
 impact_speed = "model:impact_speed"
 impact_tilt = "model:impact_tilt_deg"
 leg_deploy = "model:leg_deploy"
@@ -151,46 +160,37 @@ mission_phase = "model:mission_phase"
 omega_x = "model:omega[1]"
 omega_y = "model:omega[2]"
 omega_z = "model:omega[3]"
-est_px = "model:estimated_position[1]"
-est_py = "model:estimated_position[2]"
-est_pz = "model:estimated_position[3]"
-est_var_x = "model:estimated_position_variance[1]"
-est_var_y = "model:estimated_position_variance[2]"
-est_var_z = "model:estimated_position_variance[3]"
-estimator_error = "model:estimator_position_error"
-gps_var_x = "model:gps_measurement_variance[1]"
-gps_var_y = "model:gps_measurement_variance[2]"
-gps_var_z = "model:gps_measurement_variance[3]"
-plan_p0x = "model:plan_initial_position[1]"
-plan_p0y = "model:plan_initial_position[2]"
-plan_p0z = "model:plan_initial_position[3]"
 plan_a0x = "model:plan_initial_acceleration[1]"
 plan_a0y = "model:plan_initial_acceleration[2]"
 plan_a0z = "model:plan_initial_acceleration[3]"
-plan_pf_x = "model:plan_target_position[1]"
-plan_pf_y = "model:plan_target_position[2]"
-plan_pf_z = "model:plan_target_position[3]"
-plan_vf_x = "model:plan_target_velocity[1]"
-plan_vf_y = "model:plan_target_velocity[2]"
-plan_vf_z = "model:plan_target_velocity[3]"
 plan_af_x = "model:plan_target_acceleration[1]"
 plan_af_y = "model:plan_target_acceleration[2]"
 plan_af_z = "model:plan_target_acceleration[3]"
+plan_p0x = "model:plan_initial_position[1]"
+plan_p0y = "model:plan_initial_position[2]"
+plan_p0z = "model:plan_initial_position[3]"
+plan_pf_x = "model:plan_target_position[1]"
+plan_pf_y = "model:plan_target_position[2]"
+plan_pf_z = "model:plan_target_position[3]"
 plan_tf = "model:plan_duration"
 plan_v0x = "model:plan_initial_velocity[1]"
 plan_v0y = "model:plan_initial_velocity[2]"
 plan_v0z = "model:plan_initial_velocity[3]"
+plan_vf_x = "model:plan_target_velocity[1]"
+plan_vf_y = "model:plan_target_velocity[2]"
+plan_vf_z = "model:plan_target_velocity[3]"
+position_gain_setting = "local:position_gain_setting"
 px = "model:position[1]"
 py = "model:position[2]"
 pz = "model:position[3]"
-position_gain_setting = "local:position_gain_setting"
 q1 = "model:quat[2]"
 q2 = "model:quat[3]"
 q3 = "model:quat[4]"
-rcs_roll_negative = "model:rcs_roll_negative"
-rcs_roll_positive = "model:rcs_roll_positive"
+rate_gain_setting = "local:rate_gain_setting"
 rcs_operating_fraction = "model:rcs_operating_fraction"
 rcs_propellant_used = "model:rcs_propellant_used"
+rcs_roll_negative = "model:rcs_roll_negative"
+rcs_roll_positive = "model:rcs_roll_positive"
 rcs_x_negative = "model:rcs_x_negative"
 rcs_x_positive = "model:rcs_x_positive"
 rcs_y_negative = "model:rcs_y_negative"
@@ -199,23 +199,22 @@ ref_px = "model:reference_position[1]"
 ref_py = "model:reference_position[2]"
 ref_pz = "model:reference_position[3]"
 reference_feasible = "model:reference_feasible"
+support_margin = "model:support_margin"
+supporting_legs = "model:supporting_legs"
 t = "model:time"
 thrust = "model:thrust_fraction"
-tracking_error = "model:tracking_error"
-supporting_legs = "model:supporting_legs"
-support_margin = "model:support_margin"
 touchdown_normal_speed = "model:touchdown_normal_speed"
 touchdown_tangential_speed = "model:touchdown_tangential_speed"
-rate_gain_setting = "local:rate_gain_setting"
+tracking_error = "model:tracking_error"
+velocity_gain_setting = "local:velocity_gain_setting"
 vx = "model:velocity[1]"
 vy = "model:velocity[2]"
 vz = "model:velocity[3]"
-velocity_gain_setting = "local:velocity_gain_setting"
 wall_ms = "runtime:wall_ms"
-wind_direction_setting = "local:wind_direction_setting"
 wind_direction = "model:wind_direction_display"
-wind_speed_setting = "local:wind_speed_setting"
+wind_direction_setting = "local:wind_direction_setting"
 wind_speed = "model:wind_speed_display"
+wind_speed_setting = "local:wind_speed_setting"
 wind_swing_setting = "local:wind_swing_setting"
 wind_vx = "model:wind_velocity[1]"
 wind_vy = "model:wind_velocity[2]"
@@ -224,13 +223,18 @@ wind_vy = "model:wind_velocity[2]"
 default = 1
 from = "model:quat[1]"
 
-[plot]
-views = []
+[sim]
+atol = 0.000001
+dt = 0.05
+mode = "realtime"
+rtol = 0.000001
+solver = "rk-like"
+t_end = 75
 
 [transport.http]
+asset_dir = "../../assets"
 port = 8080
 scene = "reusable_booster_scene.js"
-asset_dir = "../../assets"
 
 [transport.websocket]
 port = 8081
@@ -238,11 +242,6 @@ port = 8081
 [viewer]
 mode = "external_web"
 status_title = "Reusable Booster Landing"
-
-[[viewer.frame]]
-name = "body"
-position = ["px", "py", "pz"]
-quaternion = ["q0", "q1", "q2", "q3"]
 
 [[viewer.controls.keyboard]]
 action = "Launch"
@@ -263,3 +262,17 @@ keys = "T"
 [[viewer.controls.keyboard]]
 action = "Quit"
 keys = "Q"
+
+[[viewer.frame]]
+name = "body"
+position = [
+    "px",
+    "py",
+    "pz",
+]
+quaternion = [
+    "q0",
+    "q1",
+    "q2",
+    "q3",
+]

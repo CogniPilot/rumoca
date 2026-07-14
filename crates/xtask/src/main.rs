@@ -793,7 +793,7 @@ fn cmd_install_git_hooks() -> Result<()> {
 
 fn cmd_build_python(args: BuildPythonArgs) -> Result<()> {
     let root = repo_root();
-    let python_dir = root.join("bindings/python");
+    let python_dir = root.join("crates/rumoca-bind-python");
     ensure!(
         python_dir.is_dir(),
         "missing python bindings dir: {}",
@@ -834,7 +834,7 @@ fn cmd_build_python(args: BuildPythonArgs) -> Result<()> {
     let mut verify = Command::new("python");
     verify
         .arg("-c")
-        .arg("import rumoca; print(rumoca.__version__)")
+        .arg("import rumoca; print(rumoca.version())")
         .current_dir(&root);
     match verify.output() {
         Ok(output) if output.status.success() => {

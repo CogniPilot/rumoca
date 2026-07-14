@@ -175,6 +175,32 @@ def test_overrides_are_solver_independent() -> None:
     assert abs(out - math.exp(-3)) < 1e-2
 
 
+def test_constant_input_override_changes_trajectory() -> None:
+    source = (
+        "model Driven input Real u; Real x(start=0); "
+        "equation der(x)=u; end Driven;"
+    )
+    m = _loads(source, model="Driven")
+    for solver, tolerance in (("bdf", 1e-6), ("rk-like", 1e-6)):
+        out = m.simulate(
+            t=1.0,
+            dt=0.1,
+            inputs={"u": 2.5},
+            config=rm.SimConfig(solver=solver),
+        )["x"][-1]
+        assert abs(out - 2.5) < tolerance
+
+
+def test_unknown_input_override_is_typed_error() -> None:
+    m = _loads(DECAY, model="Decay")
+    try:
+        m.simulate(t=0.1, inputs={"nope": 1.0})
+    except rm.SimulationError:
+        pass
+    else:
+        raise AssertionError("unknown input name should raise SimulationError")
+
+
 def test_unknown_start_override_is_keyerror() -> None:
     m = _loads(DECAY, model="Decay")
     try:
