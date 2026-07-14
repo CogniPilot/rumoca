@@ -51,6 +51,19 @@ The complete mechanism chain passed independent review. At clean semantic commit
 
 The complete documentation gate, formatting, strict workspace all-target/all-feature clippy, `cargo test --workspace`, and review scan all passed; review scan reported zero forbidden findings. DCO and clean-worktree checks passed. The final independent review's only finding was stale completed work in the active plan, which this closeout removes.
 
+## Full promoted-ratchet closure
+
+The remaining full-gate regressions were closed at their owning mechanisms:
+
+- `046a2691` stops cache-only symbolic-dimension repairs from restarting the Flat fixpoint; `HeatingSystem` now reaches ToDae in 2.74 seconds instead of exhausting the unchanged 45-second Flat budget;
+- `b35191ce` preserves a surviving physical producer when derivative-dependent aggregate leaves are structurally eliminated;
+- `63c1d7ee` assigns residual ownership from complete producer incidence and keeps coupled rows simultaneous;
+- `e7d8de30` projects coupled algebraics from the accepted local branch;
+- `58be4144` refreshes direct and coupled algebraic observations, consumes root relations atomically, and performs branch-preserving consistency polish before publishing reconstructed connection flows;
+- `6c546777` preserves accepted derivative/root/observation seeds across BDF restarts, clamps scheduled left limits, retains the triggering root index, and defers deadline roots consistently in session mode.
+
+The unchanged `cargo xtask verify msl-parity` gate passed over all 566 MSL 4.1.0 root examples. The final snapshot records Parse `566`, Flat `565`, DAE `556`, Solve `406`, balanced `543`, simulation success `182`, compared traces `174`, no-severe traces `151`, and exact state-set matches `158`. The resolved promoted baseline was not changed; no timeout, selected target, trace exclusion, tolerance, or parity requirement was relaxed.
+
 No branch push was performed because the user did not authorize one. This is handoff state, not an active problem.
 
 Detailed implementation scripts, stale worktree paths, obsolete pre-fix counts, and already completed checklists were removed. Git history and the cited clean artifacts are the authoritative audit trail.
