@@ -4,12 +4,14 @@
 
 use diffsol::{OdeSolverMethod, VectorHost};
 use indexmap::IndexMap;
-use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
+use rumoca_eval_solve::{
+    self as solve_eval, SolveRuntime, sim_driver::post_root_relation_overrides,
+};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
     SimOptions, event_solver_step_cap, runtime_root_event_application_time, time_match_with_tol,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -18,9 +20,11 @@ use crate::runtime::{
     initialize_no_state_runtime,
 };
 use crate::{
-    LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
+    EventUpdateInput, LinearSolver, OdeModel, RuntimeParameters, SimError,
+    apply_event_updates_with_event_pre, bdf_derivative_guess,
     build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
-    settle_algebraics_and_relation_memory, solver_call, validate_model, write_state_to_solver,
+    settle_algebraics_and_relation_memory, settle_algebraics_and_relation_memory_with_overrides,
+    solver_call, validate_model, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
@@ -42,15 +46,16 @@ struct BdfSession {
     step_fn: StepFn,
     time_fn: Box<dyn Fn() -> f64>,
     y_fn: Box<dyn Fn() -> Vec<f64>>,
-    event_reset_fn: Box<dyn FnMut(f64) -> Result<(), SimError>>,
+    event_reset_fn: Box<dyn FnMut(f64, &[(usize, f64)]) -> Result<(), SimError>>,
     reset_fn: ResetFn,
     refresh_input_fn: Box<dyn FnMut() -> Result<(), SimError>>,
-    project_fn: Box<dyn FnMut() -> Result<(), SimError>>,
+    project_fn: Box<dyn FnMut(f64, &[usize]) -> Result<Vec<(usize, f64)>, SimError>>,
     runtime: SolveRuntime,
     runtime_params: RuntimeParameters,
     reset_snapshot: BdfResetSnapshot,
     input_values: IndexMap<String, f64>,
     inputs_dirty: bool,
+    pending_root: Option<SessionPendingRoot>,
 }
 
 #[derive(Clone)]
@@ -60,9 +65,15 @@ struct BdfResetSnapshot {
     params: Vec<f64>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct StepAdvance {
-    hit_root: bool,
+    root: Option<SessionPendingRoot>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionPendingRoot {
+    t: f64,
+    indices: Vec<usize>,
 }
 
 struct RuntimeOnlyDriver {
@@ -318,6 +329,8 @@ impl BdfSession {
             model,
             &opts,
             runtime_params.clone(),
+            Rc::new(Cell::new(opts.t_start)),
+            Rc::new(RefCell::new(crate::RootStartMode::Initial)),
             opts.t_start,
             initial_y.clone(),
             ode_model.clone(),
@@ -360,7 +373,7 @@ impl BdfSession {
         let event_reset_model = model.clone();
         let event_reset_opts = opts.clone();
         let event_reset_params = runtime_params.clone();
-        let event_reset_fn = Box::new(move |t_start: f64| {
+        let event_reset_fn = Box::new(move |t_start: f64, overrides: &[(usize, f64)]| {
             let initial_y = {
                 let solver = event_reset_solver.borrow();
                 solver.state().y.as_slice().to_vec()
@@ -368,19 +381,12 @@ impl BdfSession {
             let ode_model = Arc::new(OdeModel::new(&event_reset_model)?);
             let reset_runtime = SolveRuntime::new(&event_reset_model)?;
             let root_runtime = Arc::new(reset_runtime.clone());
-            let initial_y = settled_problem_y(
-                &event_reset_model,
-                &reset_runtime,
-                &ode_model,
-                &event_reset_opts,
-                &event_reset_params,
-                t_start,
-                initial_y,
-            )?;
             let problem = build_ode_problem_with_runtime_params_and_initial(
                 &event_reset_model,
                 &event_reset_opts,
                 event_reset_params.clone(),
+                Rc::new(Cell::new(t_start)),
+                Rc::new(RefCell::new(crate::RootStartMode::Root(overrides.to_vec()))),
                 t_start,
                 initial_y.clone(),
                 ode_model.clone(),
@@ -445,6 +451,7 @@ impl BdfSession {
             reset_snapshot,
             input_values: IndexMap::new(),
             inputs_dirty: false,
+            pending_root: None,
         })
     }
 
@@ -481,17 +488,27 @@ impl BdfSession {
             if target_time <= current_time {
                 return Ok(());
             }
+            if let Some(root) = self.pending_root.take() {
+                let reset_time = runtime_root_event_application_time(root.t, target_time);
+                let overrides = (self.project_fn)(reset_time, &root.indices)?;
+                (self.event_reset_fn)(reset_time, &overrides)?;
+                continue;
+            }
             if self.inputs_dirty {
                 (self.refresh_input_fn)()?;
                 self.inputs_dirty = false;
             }
             let advance = (self.step_fn)(target_time - current_time)?;
-            if !advance.hit_root {
+            let Some(root) = advance.root else {
+                return Ok(());
+            };
+            if time_match_with_tol(root.t, target_time) {
+                self.pending_root = Some(root);
                 return Ok(());
             }
-            (self.project_fn)()?;
-            let reset_time = runtime_root_event_application_time(self.time(), target_time);
-            (self.event_reset_fn)(reset_time)?;
+            let reset_time = runtime_root_event_application_time(root.t, target_time);
+            let overrides = (self.project_fn)(reset_time, &root.indices)?;
+            (self.event_reset_fn)(reset_time, &overrides)?;
         }
         Err(SimError::SolverError(format!(
             "event processing did not settle before t={target_time}"
@@ -501,6 +518,7 @@ impl BdfSession {
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.inputs_dirty = false;
+        self.pending_root = None;
         (self.reset_fn)(t_start, &self.reset_snapshot)
     }
 
@@ -704,7 +722,7 @@ fn make_project_fn<Eqn, S>(
     runtime: SolveRuntime,
     params: RuntimeParameters,
     opts: &SimOptions,
-) -> Result<Box<dyn FnMut() -> Result<(), SimError>>, SimError>
+) -> Result<Box<dyn FnMut(f64, &[usize]) -> Result<Vec<(usize, f64)>, SimError>>, SimError>
 where
     Eqn: diffsol::OdeEquations<T = f64> + 'static,
     Eqn::V: VectorHost<T = f64>,
@@ -714,7 +732,7 @@ where
     let event_model = model.clone();
     let state_count = model.state_scalar_count();
     let tol = opts.atol.max(1.0e-10);
-    Ok(Box::new(move || {
+    Ok(Box::new(move |event_t, root_indices| {
         project_session_algebraics(
             &solver,
             &event_model,
@@ -723,44 +741,61 @@ where
             &params,
             state_count,
             tol,
+            event_t,
+            root_indices,
         )
     }))
 }
 
 fn project_session_algebraics<Eqn, S>(
     solver: &Rc<RefCell<S>>,
-    _solve_model: &solve::SolveModel,
+    solve_model: &solve::SolveModel,
     runtime: &SolveRuntime,
     model: &OdeModel,
     params: &RuntimeParameters,
     state_count: usize,
     tol: f64,
-) -> Result<(), SimError>
+    event_t: f64,
+    root_indices: &[usize],
+) -> Result<Vec<(usize, f64)>, SimError>
 where
     Eqn: diffsol::OdeEquations<T = f64> + 'static,
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'static, Eqn>,
 {
     let mut solver = solver.borrow_mut();
-    let t = solver.state().t;
     let mut y = solver.state().y.as_slice().to_vec();
+    let event_pre_y = y.clone();
+    let event_pre_p = params.borrow().clone();
+    let overrides = post_root_relation_overrides(solve_model, root_indices, &event_pre_p, tol)?;
     {
         let mut params = params.borrow_mut();
-        settle_algebraics_and_relation_memory(
+        settle_algebraics_and_relation_memory_with_overrides(
             runtime,
             model,
             &mut y,
             params.as_mut_slice(),
-            t,
+            event_t,
             state_count,
             tol,
+            &overrides,
         )?;
-        apply_event_updates(runtime, model, &mut y, params.as_mut_slice(), t, tol)?;
+        apply_event_updates_with_event_pre(EventUpdateInput {
+            runtime,
+            ode_model: model,
+            y: &mut y,
+            p: params.as_mut_slice(),
+            t: event_t,
+            tol,
+            event_pre_y: &event_pre_y,
+            event_pre_p: &event_pre_p,
+            root_relation_overrides: &overrides,
+        })?;
     }
     solver.state_mut().y.as_mut_slice().copy_from_slice(&y);
     let state = solver.state_clone();
     solver.set_state(state);
-    Ok(())
+    Ok(overrides)
 }
 
 fn step_solver_by<Eqn, S>(
@@ -816,7 +851,7 @@ where
                 diffsol::OdeSolverStopReason::TstopReached
                 | diffsol::OdeSolverStopReason::InternalTimestep,
             ) => continue,
-            Ok(diffsol::OdeSolverStopReason::RootFound(t_root, _)) => {
+            Ok(diffsol::OdeSolverStopReason::RootFound(t_root, root_index)) => {
                 // The free-running step overshoots the root (the solver state
                 // sits at the natural step end, past `t_root`). The caller's
                 // event handling assumes the solver is *at* the event instant,
@@ -829,7 +864,12 @@ where
                     solver
                         .state_mut_back(event_t)
                         .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
-                    return Ok(StepAdvance { hit_root: true });
+                    return Ok(StepAdvance {
+                        root: Some(SessionPendingRoot {
+                            t: event_t,
+                            indices: vec![root_index],
+                        }),
+                    });
                 }
                 // Root lies beyond the requested interval: land on `target` and
                 // defer the crossing to the next step, which resumes from
@@ -1072,6 +1112,11 @@ mod tests {
         assert_eq!(session.get("force").unwrap(), Some(0.0));
 
         session
+            .advance_to(0.1)
+            .expect("repeating the same deadline must be idempotent");
+        assert_eq!(session.get("force").unwrap(), Some(0.0));
+
+        session
             .advance_to(0.101)
             .expect("next advance should process the event right-limit");
 
@@ -1241,6 +1286,7 @@ mod tests {
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::StoreOutput { src: 0 },
                     ]]),
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
                     ..Default::default()
                 },
                 clocks: solve::SolveClockPartition::default(),

@@ -330,6 +330,7 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
             tol: self.tol,
             event_pre_y: self.event_pre_y,
             event_pre_p: self.event_pre_p,
+            root_relation_overrides: &[],
         })?;
         refresh_observation_rows_and_relation_memory(
             self.model,

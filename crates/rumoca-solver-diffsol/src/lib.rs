@@ -16,7 +16,11 @@ mod prepared;
 mod runtime;
 pub mod session;
 
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 use bdf::can_use_state_only_bdf;
 pub(crate) use bdf::{
@@ -30,7 +34,8 @@ use diffsol::{
 };
 use init_projection::{EventObservation, initialize_state_runtime_values};
 use rumoca_eval_solve::sim_driver::{
-    SimDriverError, SolverAdvanceBackend, StateTrajectory, StepOutcome, simulate_state_targets,
+    RootStartBoundary, SimDriverError, SolverAdvanceBackend, StateTrajectory, StepOutcome,
+    simulate_state_targets,
 };
 use rumoca_eval_solve::{
     self as solve_eval, RowEvalContext, SolveRuntime, current_dynamic_time_event_stop,
@@ -44,10 +49,12 @@ use rumoca_solver::{
     replace_last_visible_values, runtime_event_horizon, runtime_root_event_application_time,
     timeline::sample_time_match_with_tol,
 };
+#[cfg(test)]
+pub(crate) use runtime::apply_event_updates;
 pub(crate) use runtime::{
-    EventUpdateInput, apply_event_updates, apply_event_updates_with_event_pre,
-    apply_initialization_updates, seed_initial_discrete_values,
-    settle_algebraics_and_relation_memory,
+    EventUpdateInput, apply_event_updates_with_event_pre, apply_initialization_updates,
+    seed_initial_discrete_values, settle_algebraics_and_relation_memory,
+    settle_algebraics_and_relation_memory_with_overrides,
 };
 use runtime::{check_no_state_initialization, simulate_no_state_solve_ir};
 
@@ -56,6 +63,40 @@ type Vector = <Matrix as MatrixCommon>::V;
 type Scalar = <Matrix as MatrixCommon>::T;
 pub(crate) type LinearSolver = FaerSparseLU<f64>;
 pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
+#[derive(Clone)]
+pub(crate) struct AcceptedSolverSeeds {
+    derivative: Vec<f64>,
+    root: Vec<f64>,
+    observation: Vec<f64>,
+}
+pub(crate) type AcceptedSolverY = Rc<RefCell<AcceptedSolverSeeds>>;
+pub(crate) type RootStartTime = Rc<Cell<f64>>;
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RootStartMode {
+    Initial,
+    Root(Vec<(usize, f64)>),
+    Scheduled,
+}
+pub(crate) type RootStartModeHandle = Rc<RefCell<RootStartMode>>;
+
+fn with_root_start_boundary<T, E>(
+    time: &RootStartTime,
+    mode: &RootStartModeHandle,
+    new_time: f64,
+    new_mode: RootStartMode,
+    reset: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let old_time = time.get();
+    let old_mode = mode.borrow().clone();
+    time.set(new_time);
+    *mode.borrow_mut() = new_mode;
+    let result = reset();
+    if result.is_err() {
+        time.set(old_time);
+        *mode.borrow_mut() = old_mode;
+    }
+    result
+}
 pub use error::SimError;
 pub(crate) use ode::{
     OdeModel, build_ode_problem_with_runtime_params_and_initial,
@@ -143,10 +184,14 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
         &mut current_t,
     )?;
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    let root_start_time = Rc::new(Cell::new(current_t));
+    let root_start_mode = Rc::new(RefCell::new(RootStartMode::Initial));
     let problem = build_ode_problem_with_runtime_params_and_initial(
         model,
         opts,
         runtime_params,
+        root_start_time,
+        root_start_mode,
         current_t,
         current_y.clone(),
         equilibrium_model.clone(),
@@ -229,12 +274,16 @@ fn simulate_with_states(
 
     // Shared runtime params captured by ODE closures and updated by event handlers.
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    let root_start_time = Rc::new(Cell::new(current_t));
+    let root_start_mode = Rc::new(RefCell::new(RootStartMode::Initial));
     // Build the ODE problem once — the persistent BDF solver borrows it for the
     // full simulation lifetime.
     let problem = build_ode_problem_with_runtime_params_and_initial(
         model,
         opts,
         runtime_params.clone(),
+        root_start_time.clone(),
+        root_start_mode.clone(),
         current_t,
         current_y.clone(),
         equilibrium_model.clone(),
@@ -246,6 +295,8 @@ fn simulate_with_states(
         equilibrium_model,
         runtime,
         runtime_params: runtime_params.clone(),
+        root_start_time,
+        root_start_mode,
         problem: &problem,
         current_y: &current_y,
         params: &params,
@@ -292,6 +343,8 @@ where
     equilibrium_model: &'a Arc<OdeModel>,
     runtime: &'a Arc<SolveRuntime>,
     runtime_params: RuntimeParameters,
+    root_start_time: RootStartTime,
+    root_start_mode: RootStartModeHandle,
     problem: &'a OdeSolverProblem<Eqn>,
     current_y: &'b [f64],
     params: &'b [f64],
@@ -311,6 +364,8 @@ where
         equilibrium_model,
         runtime,
         runtime_params,
+        root_start_time,
+        root_start_mode,
         problem,
         current_y,
         params,
@@ -338,6 +393,9 @@ where
                     equilibrium_model: equilibrium_model.as_ref(),
                     runtime: runtime.as_ref(),
                     runtime_params,
+                    root_start_time,
+                    root_start_mode,
+                    accepted_solver_y: None,
                     opts,
                     mode: DiffsolMode::General,
                 },
@@ -362,6 +420,9 @@ where
                     equilibrium_model: equilibrium_model.as_ref(),
                     runtime: runtime.as_ref(),
                     runtime_params,
+                    root_start_time,
+                    root_start_mode,
+                    accepted_solver_y: None,
                     opts,
                     mode: DiffsolMode::General,
                 },
@@ -471,11 +532,21 @@ fn simulate_state_only_bdf(
     )?;
 
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    let accepted_solver_y: AcceptedSolverY = Rc::new(RefCell::new(AcceptedSolverSeeds {
+        derivative: current_y.clone(),
+        root: current_y.clone(),
+        observation: current_y.clone(),
+    }));
+    let root_start_time = Rc::new(Cell::new(current_t));
+    let root_start_mode = Rc::new(RefCell::new(RootStartMode::Initial));
     let eval_counters = new_bdf_eval_counters();
     let problem = build_state_ode_problem_with_runtime_params_and_initial(
         model,
         opts,
         runtime_params.clone(),
+        root_start_time.clone(),
+        root_start_mode.clone(),
+        accepted_solver_y.clone(),
         current_t,
         current_state.clone(),
         eval_counters.clone(),
@@ -493,6 +564,9 @@ fn simulate_state_only_bdf(
         equilibrium_model,
         runtime,
         runtime_params: runtime_params.clone(),
+        root_start_time,
+        root_start_mode,
+        accepted_solver_y: Some(accepted_solver_y),
         opts,
         mode: DiffsolMode::StateOnly,
     });
@@ -603,6 +677,10 @@ struct DiffsolAdvanceBackend<'a, Eqn, S> {
     equilibrium_model: &'a OdeModel,
     runtime: &'a SolveRuntime,
     runtime_params: RuntimeParameters,
+    root_start_time: RootStartTime,
+    root_start_mode: RootStartModeHandle,
+    accepted_solver_y: Option<AcceptedSolverY>,
+    pending_reset_seed: RefCell<Option<AcceptedSolverSeeds>>,
     opts: &'a SimOptions,
     mode: DiffsolMode,
     _eqn: std::marker::PhantomData<fn() -> Eqn>,
@@ -614,6 +692,9 @@ struct DiffsolAdvanceBackendInputs<'a, S> {
     equilibrium_model: &'a OdeModel,
     runtime: &'a SolveRuntime,
     runtime_params: RuntimeParameters,
+    root_start_time: RootStartTime,
+    root_start_mode: RootStartModeHandle,
+    accepted_solver_y: Option<AcceptedSolverY>,
     opts: &'a SimOptions,
     mode: DiffsolMode,
 }
@@ -631,6 +712,10 @@ where
             equilibrium_model: inputs.equilibrium_model,
             runtime: inputs.runtime,
             runtime_params: inputs.runtime_params,
+            root_start_time: inputs.root_start_time,
+            root_start_mode: inputs.root_start_mode,
+            accepted_solver_y: inputs.accepted_solver_y,
+            pending_reset_seed: RefCell::new(None),
             opts: inputs.opts,
             mode: inputs.mode,
             _eqn: std::marker::PhantomData,
@@ -639,6 +724,79 @@ where
 
     fn tol(&self) -> f64 {
         self.opts.atol.max(1.0e-10)
+    }
+
+    fn project_observation_and_commit(
+        &self,
+        native: &[f64],
+        t: f64,
+        params: &[f64],
+    ) -> Result<Vec<f64>, SimDriverError> {
+        let Some(accepted) = &self.accepted_solver_y else {
+            return Ok(native.to_vec());
+        };
+        let state_count = self.model.state_scalar_count().min(native.len());
+        let mut seeds = accepted.borrow().clone();
+        let mut observation = seeds.observation;
+        self.runtime.full_solver_y_with_guess(
+            t,
+            &native[..state_count],
+            params,
+            &mut observation,
+            self.tol(),
+            EVENT_UPDATE_MAX_ITERS,
+        )?;
+        seeds.observation = observation.clone();
+        *accepted.borrow_mut() = seeds;
+        Ok(observation)
+    }
+
+    fn project_root_and_commit(
+        &self,
+        native: &[f64],
+        t: f64,
+        params: &[f64],
+    ) -> Result<(), SimDriverError> {
+        let Some(accepted) = &self.accepted_solver_y else {
+            return Ok(());
+        };
+        let state_count = self.model.state_scalar_count().min(native.len());
+        let mut root = accepted.borrow().root.clone();
+        let mut out = vec![0.0; self.model.problem.events.root_conditions.len().max(1)];
+        self.runtime.eval_root_search_conditions_with_guess_into(
+            t,
+            &native[..state_count],
+            params,
+            &mut root,
+            self.tol(),
+            EVENT_UPDATE_MAX_ITERS,
+            &mut out,
+        )?;
+        accepted.borrow_mut().root = root;
+        Ok(())
+    }
+
+    fn project_derivative_and_commit(
+        &self,
+        native: &[f64],
+        t: f64,
+        params: &[f64],
+    ) -> Result<(), SimDriverError> {
+        let Some(accepted) = &self.accepted_solver_y else {
+            return Ok(());
+        };
+        let state_count = self.model.state_scalar_count().min(native.len());
+        let mut derivative = accepted.borrow().derivative.clone();
+        let _ = self.runtime.eval_state_derivatives_with_guess(
+            t,
+            &native[..state_count],
+            params,
+            &mut derivative,
+            self.tol(),
+            EVENT_UPDATE_MAX_ITERS,
+        )?;
+        accepted.borrow_mut().derivative = derivative;
+        Ok(())
     }
 }
 
@@ -657,10 +815,25 @@ where
     }
 
     fn step(&mut self) -> Result<StepOutcome, SimDriverError> {
-        match solver_call("BDF step", || self.solver.step()).map_err(sim_to_driver)? {
+        let reason = solver_call("BDF step", || self.solver.step()).map_err(sim_to_driver)?;
+        if matches!(
+            reason,
+            OdeSolverStopReason::TstopReached | OdeSolverStopReason::InternalTimestep
+        ) && self.accepted_solver_y.is_some()
+        {
+            let t = self.solver.state().t;
+            let native = self.solver.state().y.as_slice().to_vec();
+            let params = self.runtime_params.borrow().clone();
+            self.project_derivative_and_commit(&native, t, &params)?;
+            self.project_root_and_commit(&native, t, &params)?;
+        }
+        match reason {
             OdeSolverStopReason::TstopReached => Ok(StepOutcome::Stop),
             OdeSolverStopReason::InternalTimestep => Ok(StepOutcome::Internal),
-            OdeSolverStopReason::RootFound(t_root, _) => Ok(StepOutcome::Root { t_root }),
+            OdeSolverStopReason::RootFound(t_root, root_index) => Ok(StepOutcome::Root {
+                t_root,
+                root_indices: vec![root_index],
+            }),
         }
     }
 
@@ -689,16 +862,7 @@ where
     ) -> Result<Vec<f64>, SimDriverError> {
         match self.mode {
             DiffsolMode::General => Ok(native.to_vec()),
-            DiffsolMode::StateOnly => {
-                let state_count = self.model.state_scalar_count().min(native.len());
-                Ok(self.runtime.full_solver_y(
-                    t,
-                    &native[..state_count],
-                    params,
-                    self.tol(),
-                    EVENT_UPDATE_MAX_ITERS,
-                )?)
-            }
+            DiffsolMode::StateOnly => self.project_observation_and_commit(native, t, params),
         }
     }
 
@@ -718,13 +882,41 @@ where
             DiffsolMode::StateOnly => {
                 let state_count = self.model.state_scalar_count().min(current_y.len());
                 let native = current_y[..state_count].to_vec();
-                let dy = self.runtime.eval_state_derivatives(
+                let mut derivative = current_y.to_vec();
+                let dy = self.runtime.eval_state_derivatives_with_guess(
                     t,
                     &native,
                     params,
+                    &mut derivative,
                     self.tol(),
                     EVENT_UPDATE_MAX_ITERS,
                 )?;
+                let mut root = current_y.to_vec();
+                let mut root_out =
+                    vec![0.0; self.model.problem.events.root_conditions.len().max(1)];
+                self.runtime.eval_root_search_conditions_with_guess_into(
+                    t,
+                    &native,
+                    params,
+                    &mut root,
+                    self.tol(),
+                    EVENT_UPDATE_MAX_ITERS,
+                    &mut root_out,
+                )?;
+                let mut observation = current_y.to_vec();
+                self.runtime.full_solver_y_with_guess(
+                    t,
+                    &native,
+                    params,
+                    &mut observation,
+                    self.tol(),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+                *self.pending_reset_seed.borrow_mut() = Some(AcceptedSolverSeeds {
+                    derivative,
+                    root,
+                    observation,
+                });
                 Ok((native, dy))
             }
         }
@@ -737,17 +929,45 @@ where
         params: &[f64],
         t: f64,
         h_cap: f64,
+        boundary: RootStartBoundary<'_>,
     ) -> Result<(), SimDriverError> {
-        reset_solver_state(
-            &mut self.solver,
-            &self.runtime_params,
-            native_y,
-            native_dy,
-            params,
+        let new_mode = match boundary {
+            RootStartBoundary::Scheduled => RootStartMode::Scheduled,
+            RootStartBoundary::Root(overrides) => RootStartMode::Root(overrides.to_vec()),
+        };
+        let result = with_root_start_boundary(
+            &self.root_start_time,
+            &self.root_start_mode,
             t,
-            h_cap,
-        )
-        .map_err(sim_to_driver)
+            new_mode,
+            || {
+                reset_solver_state(
+                    &mut self.solver,
+                    &self.runtime_params,
+                    native_y,
+                    native_dy,
+                    params,
+                    t,
+                    h_cap,
+                )
+                .map_err(sim_to_driver)
+            },
+        );
+        match result {
+            Ok(()) => {
+                if let (Some(accepted), Some(seed)) = (
+                    self.accepted_solver_y.as_ref(),
+                    self.pending_reset_seed.borrow_mut().take(),
+                ) {
+                    *accepted.borrow_mut() = seed;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.pending_reset_seed.borrow_mut().take();
+                Err(error)
+            }
+        }
     }
 
     fn prefer_exact_output_steps(&self) -> bool {

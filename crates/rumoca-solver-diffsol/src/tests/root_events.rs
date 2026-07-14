@@ -33,6 +33,7 @@ fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
     assert!(result.data[0].last().copied().unwrap() > 2.1);
 
     model.problem.events.root_conditions = solve::ScalarProgramBlock::default();
+    model.problem.events.root_relation_memory_targets.clear();
     let no_event = simulate(
         &model,
         &SimOptions {
@@ -122,6 +123,7 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
@@ -147,7 +149,9 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    model.problem.solve_layout.compiled_parameter_len = 1;
     model.initial_y = vec![0.0];
+    model.parameters = vec![0.0];
     model.visible_names = vec!["x".to_string()];
     model
 }
@@ -187,6 +191,7 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    model.problem.events.root_relation_memory_targets = vec![None];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(1)];
     model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::Fixed];
     model.problem.discrete.rhs = falling_ball_strict_reinit_rhs();

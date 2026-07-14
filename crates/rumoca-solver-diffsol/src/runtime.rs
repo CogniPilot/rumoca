@@ -29,6 +29,29 @@ pub(crate) fn settle_algebraics_and_relation_memory(
         .map_err(Into::into)
 }
 
+pub(crate) fn settle_algebraics_and_relation_memory_with_overrides(
+    runtime: &SolveRuntime,
+    model: &OdeModel,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    state_count: usize,
+    tol: f64,
+    root_relation_overrides: &[(usize, f64)],
+) -> Result<(), SimError> {
+    runtime
+        .settle_projected_runtime_and_relation_memory_with_overrides(
+            y,
+            p,
+            t,
+            tol,
+            EVENT_UPDATE_MAX_ITERS,
+            root_relation_overrides,
+            move |y, p| project_algebraics_and_detect_changes(model, y, p, t, state_count, tol),
+        )
+        .map_err(Into::into)
+}
+
 pub(crate) fn apply_event_updates(
     runtime: &SolveRuntime,
     ode_model: &OdeModel,
@@ -48,6 +71,7 @@ pub(crate) fn apply_event_updates(
         tol,
         event_pre_y: &event_pre_y,
         event_pre_p: &event_pre_p,
+        root_relation_overrides: &[],
     })
 }
 
@@ -60,6 +84,7 @@ pub(crate) struct EventUpdateInput<'a> {
     pub(crate) tol: f64,
     pub(crate) event_pre_y: &'a [f64],
     pub(crate) event_pre_p: &'a [f64],
+    pub(crate) root_relation_overrides: &'a [(usize, f64)],
 }
 
 pub(crate) fn apply_event_updates_with_event_pre(
@@ -81,6 +106,7 @@ fn apply_event_updates_with_filter(
         tol,
         event_pre_y,
         event_pre_p,
+        root_relation_overrides,
     } = input;
     let outcome = runtime.apply_projected_event_update(
         ProjectedEventUpdateInput {
@@ -92,7 +118,7 @@ fn apply_event_updates_with_filter(
             event_pre_p,
             max_iters: EVENT_UPDATE_MAX_ITERS,
             row_filter,
-            root_relation_overrides: &[],
+            root_relation_overrides,
         },
         project_algebraics_callback(ode_model, t, tol),
     )?;

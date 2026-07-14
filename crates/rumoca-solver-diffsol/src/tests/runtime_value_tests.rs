@@ -64,6 +64,7 @@ fn simulate_no_state_solve_ir_stops_for_root_event_updates() {
         ]],
         fixture_span!(),
     );
+    model.problem.events.root_relation_memory_targets = vec![None];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
@@ -166,6 +167,7 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
         ]],
         fixture_span!(),
     );
+    model.problem.events.root_relation_memory_targets = vec![None];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
@@ -289,6 +291,7 @@ fn root_event_update_model(root_time: f64) -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    model.problem.events.root_relation_memory_targets = vec![None];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },

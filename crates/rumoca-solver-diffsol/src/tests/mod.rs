@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn root_start_boundary_is_visible_during_reset_and_rolls_back_on_failure() {
+    let time = Rc::new(Cell::new(1.0));
+    let mode = Rc::new(RefCell::new(RootStartMode::Initial));
+
+    let error = with_root_start_boundary(
+        &time,
+        &mode,
+        2.0,
+        RootStartMode::Root(vec![(3, 1.0)]),
+        || -> Result<(), &'static str> {
+            assert_eq!(time.get(), 2.0);
+            assert_eq!(*mode.borrow(), RootStartMode::Root(vec![(3, 1.0)]));
+            Err("reset failed")
+        },
+    )
+    .expect_err("failed reset should surface");
+
+    assert_eq!(error, "reset failed");
+    assert_eq!(time.get(), 1.0);
+    assert_eq!(*mode.borrow(), RootStartMode::Initial);
+}
+
 macro_rules! fixture_span {
     () => {
         solve::source_span_from_offsets(49, 0, 1)
@@ -181,7 +204,7 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
 }
 
 #[test]
-fn state_only_bdf_rejects_loop_projection_until_loop_reduction_is_supported() {
+fn state_only_bdf_accepts_partial_causal_hints_with_complete_producer_closure() {
     let mut model = projected_derivative_model();
     model
         .problem
@@ -223,20 +246,15 @@ fn state_only_bdf_rejects_loop_projection_until_loop_reduction_is_supported() {
     );
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
         blocks: vec![solve::AlgebraicProjectionBlock {
-            // For loop blocks these are sets, not row-target pairs. The
-            // producer map must use causal_steps instead.
             rows: vec![2, 1],
             y_indices: vec![1, 2],
-            causal_steps: vec![
-                solve::AlgebraicProjectionStep { row: 1, y_index: 1 },
-                solve::AlgebraicProjectionStep { row: 2, y_index: 2 },
-            ],
+            causal_steps: vec![solve::AlgebraicProjectionStep { row: 1, y_index: 1 }],
         }],
     };
 
     assert!(
-        !can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
-        "loop projection needs the general implicit DAE path until reduced loop sensitivities are proven"
+        can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
+        "partial causal hints must not hide the remaining executable producer closure"
     );
 }
 
