@@ -490,6 +490,23 @@ impl PreparedScalarProgramBlock {
         self.block.output_indices.get(stored_ordinal).copied()
     }
 
+    pub fn program_position_for_output_index(&self, output_index: usize) -> Option<(usize, usize)> {
+        let mut stored_ordinal = 0usize;
+        let mut found = None;
+        for (program_index, row) in self.block.programs.iter().enumerate() {
+            for output_offset in 0..ScalarProgramBlock::program_output_count(row) {
+                if self.block.output_indices.get(stored_ordinal).copied() == Some(output_index) {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some((program_index, output_offset));
+                }
+                stored_ordinal = stored_ordinal.checked_add(1)?;
+            }
+        }
+        found
+    }
+
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;

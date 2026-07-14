@@ -11,6 +11,7 @@
 //! backend only provides a `SolverAdvanceBackend` adapter.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use rumoca_ir_solve as solve;
@@ -40,7 +41,16 @@ pub enum StepOutcome {
     /// Took an internal adaptive step (did not reach a stop/root).
     Internal,
     /// A zero-crossing root was located at `t_root`.
-    Root { t_root: f64 },
+    Root {
+        t_root: f64,
+        root_indices: Vec<usize>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum RootStartBoundary<'a> {
+    Scheduled,
+    Root(&'a [(usize, f64)]),
 }
 
 /// Error surfaced by the driver. Backend (`SolverAdvanceBackend`) failures arrive as
@@ -98,6 +108,7 @@ pub trait SolverAdvanceBackend {
         params: &[f64],
         t: f64,
         h_cap: f64,
+        boundary: RootStartBoundary<'_>,
     ) -> Result<(), SimDriverError>;
     /// Whether output points should be reached by stepping the solver exactly
     /// onto them (true) rather than by dense-output interpolation (false), for
@@ -179,6 +190,12 @@ enum PendingRootAction {
     Continue,
 }
 
+#[derive(Clone)]
+struct PendingRoot {
+    t: f64,
+    indices: Vec<usize>,
+}
+
 /// Buffers for one full [`simulate_state_targets`] run.
 pub struct StateTrajectory<'a> {
     pub params: &'a mut Vec<f64>,
@@ -217,7 +234,7 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
     let runtime = state.runtime;
     let runtime_state = state.runtime_state;
     let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
-    let mut pending_root_t: Option<f64> = None;
+    let mut pending_root: Option<PendingRoot> = None;
     let make_ctx = || AdvanceContext {
         model,
         opts,
@@ -235,7 +252,7 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
         let tol = opts.atol.max(1.0e-12);
         while target > *state.current_t + tol {
             match resolve_pending_root(
-                &mut pending_root_t,
+                &mut pending_root,
                 make_ctx(),
                 AdvanceState {
                     current_y: state.current_y,
@@ -260,7 +277,13 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
                 *state.current_t,
                 target,
             )?;
-            let mut deferred_root: Option<f64> = None;
+            // Time-event equations may select their post-event branch at the
+            // exact boundary. Stop continuous integration at the previous
+            // representable instant so an implicit solver never evaluates the
+            // discontinuous right-side RHS before the event update is applied.
+            let solver_stop_time =
+                event_stop.map_or(stop_time, |_| event_left_limit_time(stop_time));
+            let mut deferred_root: Option<PendingRoot> = None;
             let hit_root = advance_to_target_once(
                 make_ctx(),
                 AdvanceState {
@@ -268,20 +291,21 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
                     params: state.params,
                     current_t: state.current_t,
                 },
-                stop_time,
+                solver_stop_time,
                 event_stop,
                 backend,
                 &mut deferred_root,
             )?;
-            if let Some(prt) = deferred_root {
-                pending_root_t = Some(prt);
+            if let Some(root) = deferred_root {
+                pending_root = Some(root);
             }
-            let event_stop_reached =
-                event_stop.is_some() && sample_time_match_with_tol(*state.current_t, stop_time);
+            let event_stop_reached = event_stop.is_some()
+                && sample_time_match_with_tol(*state.current_t, solver_stop_time);
             if let Some(event) = event_stop
                 && event_stop_reached
                 && !hit_root
             {
+                *state.current_t = stop_time;
                 apply_scheduled_time_event(
                     make_ctx(),
                     AdvanceState {
@@ -299,7 +323,7 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
                 )?;
                 // A deferred root belongs to the continuous trajectory that
                 // the scheduled-event reset just replaced.
-                pending_root_t = None;
+                pending_root = None;
             }
             if event_stop_reached {
                 stop_schedule.advance_past(*state.current_t);
@@ -323,16 +347,17 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
 }
 
 fn resolve_pending_root<St: SolverAdvanceBackend + ?Sized>(
-    pending_root_t: &mut Option<f64>,
+    pending_root: &mut Option<PendingRoot>,
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
     backend: &mut St,
     stop_schedule: &mut SolveStopSchedule,
 ) -> Result<PendingRootAction, SimDriverError> {
-    let Some(prt) = *pending_root_t else {
+    let Some(root) = pending_root.clone() else {
         return Ok(PendingRootAction::None);
     };
+    let prt = root.t;
     if !sample_time_match_with_tol(target, prt) && target < prt {
         let y_at = backend.interpolate(target)?;
         *state.current_t = target;
@@ -344,8 +369,8 @@ fn resolve_pending_root<St: SolverAdvanceBackend + ?Sized>(
         return Ok(PendingRootAction::Break);
     }
 
-    *pending_root_t = None;
-    handle_root_crossing(ctx, state, prt, target, backend)?;
+    *pending_root = None;
+    handle_root_crossing(ctx, state, prt, &root.indices, target, backend)?;
     stop_schedule.advance_past(backend.time());
     Ok(PendingRootAction::Continue)
 }
@@ -378,6 +403,7 @@ fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
     p: &mut [f64],
     t: f64,
     tol: f64,
+    root_relation_overrides: &[(usize, f64)],
     pre: EventPre<'_>,
 ) -> Result<(), SimDriverError> {
     let outcome = runtime.apply_projected_event_update(
@@ -390,7 +416,7 @@ fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
             event_pre_p: pre.p,
             max_iters: EVENT_UPDATE_MAX_ITERS,
             row_filter: EventUpdateRowFilter::All,
-            root_relation_overrides: &[],
+            root_relation_overrides,
         },
         |y, p| backend.project_algebraics(y, p, t, tol),
     )?;
@@ -405,13 +431,15 @@ fn settle_kernel<St: SolverAdvanceBackend + ?Sized>(
     p: &mut [f64],
     t: f64,
     tol: f64,
+    root_relation_overrides: &[(usize, f64)],
 ) -> Result<(), SimDriverError> {
-    runtime.settle_projected_runtime_and_relation_memory(
+    runtime.settle_projected_runtime_and_relation_memory_with_overrides(
         y,
         p,
         t,
         tol,
         EVENT_UPDATE_MAX_ITERS,
+        root_relation_overrides,
         |y, p| backend.project_algebraics(y, p, t, tol),
     )?;
     Ok(())
@@ -506,6 +534,7 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
                 self.p,
                 event_t,
                 self.tol,
+                &[],
                 EventPre {
                     y: &self.event_pre_y,
                     p: &self.event_pre_p,
@@ -538,6 +567,7 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
             self.p,
             right_t,
             self.tol,
+            &[],
             EventPre {
                 y: &self.event_pre_y,
                 p: &self.event_pre_p,
@@ -551,6 +581,7 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
                 self.p,
                 right_t,
                 self.tol,
+                &[],
             )?;
         } else {
             self.record(right_t)?;
@@ -572,6 +603,7 @@ fn refresh_interpolated_sample_state<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         target,
         ctx.opts.atol.max(1.0e-10),
+        &[],
     )?;
     backend.refresh_observation(state.current_y, state.params, target)?;
     ctx.runtime_params
@@ -632,7 +664,11 @@ fn reinitialize_solver_after_time_event<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         t_right,
         tol,
+        &[],
     )?;
+    ctx.runtime_params
+        .borrow_mut()
+        .copy_from_slice(state.params);
     let (native_y, native_dy) = backend.reset_vectors(state.current_y, state.params, t_right)?;
     backend.reset(
         &native_y,
@@ -640,6 +676,7 @@ fn reinitialize_solver_after_time_event<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         *state.current_t,
         rumoca_solver::event_solver_step_cap(ctx.opts.dt),
+        RootStartBoundary::Scheduled,
     )
 }
 
@@ -649,7 +686,7 @@ fn advance_to_target_once<St: SolverAdvanceBackend + ?Sized>(
     target: f64,
     event_stop: Option<RuntimeEventStop>,
     backend: &mut St,
-    deferred_root: &mut Option<f64>,
+    deferred_root: &mut Option<PendingRoot>,
 ) -> Result<bool, SimDriverError> {
     if event_stop.is_some() {
         return advance_to_scheduled_stop(ctx, state, target, backend, deferred_root);
@@ -662,13 +699,14 @@ fn advance_to_scheduled_stop<St: SolverAdvanceBackend + ?Sized>(
     state: AdvanceState<'_>,
     target: f64,
     backend: &mut St,
-    deferred_root: &mut Option<f64>,
+    _deferred_root: &mut Option<PendingRoot>,
 ) -> Result<bool, SimDriverError> {
-    // A scheduled event is the left limit of the continuous trajectory. Keep
-    // the adaptive solver's natural history and interpolate at the event
-    // boundary; pinning a BDF stop can survive a coincident root/reset and make
-    // the next step reject `stop time == current time`.
-    advance_output_interval(ctx, state, target, backend, deferred_root)
+    // Scheduled equations may switch branch at the exact event time. Clamp the
+    // solver to the previous representable instant so it cannot evaluate the
+    // post-event RHS before the runtime applies the event update. A root before
+    // that stop is processed immediately; the following loop iteration installs
+    // a fresh stop on the reset solver, so no stale tstop survives a reset.
+    advance_output_interval_clamped(ctx, state, target, backend)
 }
 
 fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
@@ -676,7 +714,7 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
     state: AdvanceState<'_>,
     target: f64,
     backend: &mut St,
-    deferred_root: &mut Option<f64>,
+    deferred_root: &mut Option<PendingRoot>,
 ) -> Result<bool, SimDriverError> {
     // Backends whose interpolation re-projects algebraics (reduced-state) ask to
     // land exactly on each output point near discontinuities; otherwise we keep
@@ -710,12 +748,22 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
         };
         match outcome {
             StepOutcome::Stop | StepOutcome::Internal => {}
-            StepOutcome::Root { t_root } => {
+            StepOutcome::Root {
+                t_root,
+                root_indices,
+            } => {
                 trace_step_event("output-root", backend.time(), Some(t_root));
                 let root_after_target =
                     t_root > target && !sample_time_match_with_tol(t_root, target);
                 if !root_after_target {
-                    return handle_root_crossing(ctx, state, t_root, target, backend);
+                    return handle_root_crossing(
+                        ctx,
+                        state,
+                        t_root,
+                        &root_indices,
+                        target,
+                        backend,
+                    );
                 }
                 let y_at_target = backend.interpolate(target)?;
                 *state.current_t = target;
@@ -723,7 +771,10 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
                     .params
                     .copy_from_slice(ctx.runtime_params.borrow().as_slice());
                 write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
-                *deferred_root = Some(t_root);
+                *deferred_root = Some(PendingRoot {
+                    t: t_root,
+                    indices: root_indices,
+                });
                 return Ok(false);
             }
         }
@@ -772,9 +823,12 @@ fn advance_output_interval_clamped<St: SolverAdvanceBackend + ?Sized>(
                 return Ok(false);
             }
             StepOutcome::Internal => continue,
-            StepOutcome::Root { t_root } => {
+            StepOutcome::Root {
+                t_root,
+                root_indices,
+            } => {
                 trace_step_event("output-root-clamped", backend.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, backend);
+                return handle_root_crossing(ctx, state, t_root, &root_indices, target, backend);
             }
         }
     }
@@ -784,6 +838,7 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     t_root: f64,
+    root_indices: &[usize],
     target: f64,
     backend: &mut St,
 ) -> Result<bool, SimDriverError> {
@@ -823,6 +878,8 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         state.params,
     )?;
     state.current_y.copy_from_slice(&event_pre_y);
+    let root_relation_overrides =
+        post_root_relation_overrides(ctx.model, root_indices, &event_pre_p, tol)?;
     bracket_event_limits_kernel(
         backend,
         &mut event_pre_y,
@@ -838,6 +895,7 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         right_t,
         tol,
+        &root_relation_overrides,
         EventPre {
             y: &event_pre_y,
             p: &event_pre_p,
@@ -850,8 +908,12 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         right_t,
         tol,
+        &root_relation_overrides,
     )?;
     commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
+    ctx.runtime_params
+        .borrow_mut()
+        .copy_from_slice(state.params);
     backend.trace_post_event_state(state.current_y, state.params, *state.current_t);
     let (native_y, native_dy) =
         backend.reset_vectors(state.current_y, state.params, *state.current_t)?;
@@ -861,8 +923,58 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         *state.current_t,
         rumoca_solver::event_solver_step_cap(ctx.opts.dt),
+        RootStartBoundary::Root(&root_relation_overrides),
     )?;
     Ok(true)
+}
+
+pub fn post_root_relation_overrides(
+    model: &solve::SolveModel,
+    root_indices: &[usize],
+    params: &[f64],
+    tol: f64,
+) -> Result<Vec<(usize, f64)>, RuntimeSolveError> {
+    let root_count = model.problem.events.root_conditions.output_count();
+    let targets = &model.problem.events.root_relation_memory_targets;
+    if root_count != targets.len() {
+        return Err(RuntimeSolveError::solve_ir(format!(
+            "root relation metadata length {} does not match root output count {root_count}",
+            targets.len()
+        )));
+    }
+    let mut overrides = Vec::new();
+    for root_index in root_indices.iter().copied().collect::<BTreeSet<_>>() {
+        if root_index >= root_count || root_index >= targets.len() {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "root crossing index {root_index} is outside root metadata (roots={root_count}, targets={})",
+                targets.len()
+            )));
+        }
+        let Some(target) = targets[root_index] else {
+            continue;
+        };
+        let solve::ScalarSlot::P { index, .. } = target else {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "root crossing index {root_index} has non-parameter relation memory target"
+            )));
+        };
+        let current = params.get(index).copied().ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "root crossing index {root_index} relation memory parameter {index} is outside parameter storage"
+            ))
+        })?;
+        let post = if current.abs() <= tol {
+            1.0
+        } else if (current - 1.0).abs() <= tol {
+            0.0
+        } else {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "root crossing index {root_index} relation memory value {current} is not boolean"
+            )));
+        };
+        overrides.push((root_index, post));
+    }
+    Ok(overrides)
 }
 
 fn trace_step_event(kind: &str, solver_t: f64, root_t: Option<f64>) {
@@ -876,9 +988,52 @@ fn trace_step_event(kind: &str, solver_t: f64, root_t: Option<f64>) {
 mod tests {
     use super::*;
 
+    fn relation_root_model(target: Option<solve::ScalarSlot>) -> solve::SolveModel {
+        let mut model = solve::SolveModel::default();
+        model.problem.events.root_conditions = solve::ScalarProgramBlock {
+            programs: vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            program_spans: vec![rumoca_core::Span::DUMMY],
+            output_indices: vec![0],
+        };
+        model.problem.events.root_relation_memory_targets = vec![target];
+        model
+    }
+
+    #[test]
+    fn root_relation_overrides_deduplicate_indices_and_toggle_parameter_memory() {
+        let model = relation_root_model(Some(solve::scalar_slot_p(0)));
+
+        let overrides = post_root_relation_overrides(&model, &[0, 0], &[0.0], 1.0e-12)
+            .expect("confirmed root should toggle relation memory exactly once");
+
+        assert_eq!(overrides, vec![(0, 1.0)]);
+    }
+
+    #[test]
+    fn root_relation_overrides_fail_closed_for_non_parameter_target() {
+        let model = relation_root_model(Some(solve::scalar_slot_y(0)));
+
+        let error = post_root_relation_overrides(&model, &[0], &[0.0], 1.0e-12)
+            .expect_err("non-parameter relation memory must not infer a crossing direction");
+
+        assert!(error.to_string().contains("non-parameter"));
+    }
+
     enum TrajectoryStep {
-        Internal { solver_t: f64 },
-        Root { solver_t: f64, t_root: f64 },
+        Internal {
+            solver_t: f64,
+        },
+        Stop {
+            solver_t: f64,
+        },
+        Root {
+            solver_t: f64,
+            t_root: f64,
+            root_indices: Vec<usize>,
+        },
     }
 
     struct TrajectoryGenerationBackend {
@@ -887,7 +1042,9 @@ mod tests {
         generation: usize,
         step_generations: Vec<usize>,
         pinned_times: Vec<f64>,
+        stop_times: Vec<f64>,
         reset_count: usize,
+        exact_output_steps: bool,
     }
 
     impl TrajectoryGenerationBackend {
@@ -898,7 +1055,9 @@ mod tests {
                 generation: 0,
                 step_generations: Vec::new(),
                 pinned_times: Vec::new(),
+                stop_times: Vec::new(),
                 reset_count: 0,
+                exact_output_steps: false,
             }
         }
     }
@@ -923,17 +1082,27 @@ mod tests {
                     self.time = solver_t;
                     Ok(StepOutcome::Internal)
                 }
-                TrajectoryStep::Root { solver_t, t_root } => {
+                TrajectoryStep::Stop { solver_t } => {
                     self.time = solver_t;
-                    Ok(StepOutcome::Root { t_root })
+                    Ok(StepOutcome::Stop)
+                }
+                TrajectoryStep::Root {
+                    solver_t,
+                    t_root,
+                    root_indices,
+                } => {
+                    self.time = solver_t;
+                    Ok(StepOutcome::Root {
+                        t_root,
+                        root_indices,
+                    })
                 }
             }
         }
 
-        fn set_stop_time(&mut self, _stop_time: f64) -> Result<(), SimDriverError> {
-            Err(SimDriverError::Backend(
-                "trajectory test must use free dense-output stepping".into(),
-            ))
+        fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimDriverError> {
+            self.stop_times.push(stop_time);
+            Ok(())
         }
 
         fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimDriverError> {
@@ -983,6 +1152,7 @@ mod tests {
             _params: &[f64],
             t: f64,
             _h_cap: f64,
+            _boundary: RootStartBoundary<'_>,
         ) -> Result<(), SimDriverError> {
             self.time = t;
             self.generation += 1;
@@ -991,7 +1161,7 @@ mod tests {
         }
 
         fn prefer_exact_output_steps(&self) -> bool {
-            false
+            self.exact_output_steps
         }
 
         fn project_algebraics(
@@ -1051,11 +1221,13 @@ mod tests {
         model: &solve::SolveModel,
         times: &[f64],
         steps: impl IntoIterator<Item = TrajectoryStep>,
+        exact_output_steps: bool,
     ) -> (
         Result<(), SimDriverError>,
         TrajectoryGenerationBackend,
         Vec<f64>,
         f64,
+        Vec<f64>,
     ) {
         let runtime = SolveRuntime::new(model).expect("empty runtime should prepare");
         let runtime_state = SimulationRuntimeState::new();
@@ -1063,13 +1235,14 @@ mod tests {
             atol: 1.0e-12,
             ..SimOptions::default()
         };
-        let runtime_params = Rc::new(RefCell::new(Vec::new()));
+        let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
         let mut current_y = Vec::new();
-        let mut params = Vec::new();
+        let mut params = model.parameters.clone();
         let mut data = Vec::new();
         let mut recorded_times = Vec::new();
         let mut current_t = 0.0;
         let mut backend = TrajectoryGenerationBackend::new(steps);
+        backend.exact_output_steps = exact_output_steps;
 
         let result = simulate_state_targets(
             model,
@@ -1088,31 +1261,60 @@ mod tests {
             },
         );
 
-        (result, backend, recorded_times, current_t)
+        (result, backend, recorded_times, current_t, params)
     }
 
     #[test]
     fn scheduled_event_invalidates_deferred_future_root_from_pre_event_trajectory() {
-        const ROOT_T: f64 = 0.500_033_856_224;
         let mut model = solve::SolveModel::default();
         model.problem.events.scheduled_time_events.push(0.5);
+        let left_t = event_left_limit_time(0.5);
 
-        let (result, backend, recorded_times, current_t) = run_trajectory_driver(
+        let (result, backend, recorded_times, current_t, _params) = run_trajectory_driver(
+            &model,
+            &[1.0],
+            [
+                TrajectoryStep::Stop { solver_t: left_t },
+                TrajectoryStep::Internal { solver_t: 1.0 },
+            ],
+            false,
+        );
+
+        result.expect("scheduled reset must replace the prior trajectory at its left limit");
+        assert!(backend.pinned_times.is_empty());
+        assert_eq!(backend.step_generations, vec![0, 1]);
+        assert_eq!(backend.stop_times, vec![left_t]);
+        assert_eq!(backend.reset_count, 1);
+        assert_eq!(recorded_times.last(), Some(&1.0));
+        assert_eq!(current_t, 1.0);
+    }
+
+    #[test]
+    fn root_before_scheduled_event_reinstalls_stop_after_reset() {
+        let mut model = solve::SolveModel::default();
+        model.problem.events.scheduled_time_events.push(0.5);
+        let left_t = event_left_limit_time(0.5);
+        let root_t = 0.49;
+
+        let (result, backend, recorded_times, current_t, _params) = run_trajectory_driver(
             &model,
             &[1.0],
             [
                 TrajectoryStep::Root {
-                    solver_t: ROOT_T,
-                    t_root: ROOT_T,
+                    solver_t: root_t,
+                    t_root: root_t,
+                    root_indices: Vec::new(),
                 },
+                TrajectoryStep::Stop { solver_t: left_t },
                 TrajectoryStep::Internal { solver_t: 1.0 },
             ],
+            false,
         );
 
-        result.expect("scheduled reset must invalidate roots from the prior trajectory");
-        assert!(backend.pinned_times.is_empty());
-        assert_eq!(backend.step_generations, vec![0, 1]);
-        assert_eq!(backend.reset_count, 1);
+        result.expect("root reset before a scheduled event must not retain a stale stop");
+        assert_eq!(backend.stop_times, vec![left_t, left_t]);
+        assert_eq!(backend.step_generations, vec![0, 1, 2]);
+        assert_eq!(backend.reset_count, 2);
         assert_eq!(recorded_times.last(), Some(&1.0));
         assert_eq!(current_t, 1.0);
     }
@@ -1122,16 +1324,18 @@ mod tests {
         const ROOT_T: f64 = 0.500_033_856_224;
         let model = solve::SolveModel::default();
 
-        let (result, backend, recorded_times, current_t) = run_trajectory_driver(
+        let (result, backend, recorded_times, current_t, _params) = run_trajectory_driver(
             &model,
             &[0.5, 1.0],
             [
                 TrajectoryStep::Root {
                     solver_t: ROOT_T,
                     t_root: ROOT_T,
+                    root_indices: Vec::new(),
                 },
                 TrajectoryStep::Internal { solver_t: 1.0 },
             ],
+            false,
         );
 
         result.expect("ordinary dense output must preserve the deferred root");
@@ -1140,6 +1344,60 @@ mod tests {
         assert_eq!(backend.reset_count, 1);
         assert_eq!(recorded_times, vec![0.5, 1.0]);
         assert_eq!(current_t, 1.0);
+    }
+
+    #[test]
+    fn deferred_root_preserves_relation_override_indices() {
+        const ROOT_T: f64 = 0.500_033_856_224;
+        let mut model = relation_root_model(Some(solve::scalar_slot_p(0)));
+        model.parameters = vec![0.0];
+
+        let (result, _backend, _recorded_times, _current_t, params) = run_trajectory_driver(
+            &model,
+            &[0.5, 1.0],
+            [
+                TrajectoryStep::Root {
+                    solver_t: ROOT_T,
+                    t_root: ROOT_T,
+                    root_indices: vec![0],
+                },
+                TrajectoryStep::Internal { solver_t: 1.0 },
+            ],
+            false,
+        );
+
+        result.expect("deferred root should retain relation override metadata");
+        assert_eq!(params, vec![1.0]);
+    }
+
+    #[test]
+    fn free_and_clamped_root_paths_apply_relation_override_indices() {
+        for exact_output_steps in [false, true] {
+            let mut model = relation_root_model(Some(solve::scalar_slot_p(0)));
+            model.parameters = vec![0.0];
+            let followup = if exact_output_steps {
+                TrajectoryStep::Stop { solver_t: 1.0 }
+            } else {
+                TrajectoryStep::Internal { solver_t: 1.0 }
+            };
+
+            let (result, _backend, _recorded_times, _current_t, params) = run_trajectory_driver(
+                &model,
+                &[1.0],
+                [
+                    TrajectoryStep::Root {
+                        solver_t: 0.5,
+                        t_root: 0.5,
+                        root_indices: vec![0],
+                    },
+                    followup,
+                ],
+                exact_output_steps,
+            );
+
+            result.expect("root path should apply relation override metadata");
+            assert_eq!(params, vec![1.0]);
+        }
     }
 
     struct ForwardInterpolationRejectingBackend {
@@ -1204,6 +1462,7 @@ mod tests {
             _params: &[f64],
             t: f64,
             _h_cap: f64,
+            _boundary: RootStartBoundary<'_>,
         ) -> Result<(), SimDriverError> {
             self.time = t;
             Ok(())
@@ -1300,6 +1559,7 @@ mod tests {
                 current_t: &mut current_t,
             },
             t_root,
+            &[],
             1.0,
             &mut backend,
         );
@@ -1314,6 +1574,58 @@ mod tests {
         assert!(handled);
         assert_eq!(backend.pinned_times, vec![1.0]);
         assert_eq!(current_t, 1.0);
+    }
+
+    #[test]
+    fn root_handler_applies_relation_override_through_event_update_and_settle() {
+        let mut model = relation_root_model(Some(solve::scalar_slot_p(0)));
+        model.parameters = vec![0.0, 0.0];
+        model.problem.discrete.rhs = solve::ScalarProgramBlock {
+            programs: vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            program_spans: vec![rumoca_core::Span::DUMMY],
+            output_indices: vec![0],
+        };
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
+        model.problem.discrete.observation_refresh = vec![false];
+        model.problem.solve_layout.relation_memory_parameter_indices = vec![0];
+        let runtime = SolveRuntime::new(&model).expect("relation runtime should prepare");
+        let opts = SimOptions {
+            atol: 1.0e-12,
+            ..SimOptions::default()
+        };
+        let runtime_params = Rc::new(RefCell::new(vec![0.0, 0.0]));
+        let mut current_y = Vec::new();
+        let mut params = vec![0.0, 0.0];
+        let mut current_t = 1.0;
+        let mut backend = ForwardInterpolationRejectingBackend {
+            time: 1.0,
+            pinned_times: Vec::new(),
+        };
+
+        handle_root_crossing(
+            AdvanceContext {
+                model: &model,
+                opts: &opts,
+                runtime: &runtime,
+                runtime_params: &runtime_params,
+            },
+            AdvanceState {
+                current_y: &mut current_y,
+                params: &mut params,
+                current_t: &mut current_t,
+            },
+            1.0,
+            &[0],
+            2.0,
+            &mut backend,
+        )
+        .expect("root handler should apply the confirmed post-crossing relation memory");
+
+        assert_eq!(params, vec![1.0, 1.0]);
     }
 
     #[test]

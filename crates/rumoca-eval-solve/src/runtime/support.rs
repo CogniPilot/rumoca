@@ -21,22 +21,6 @@ pub(super) struct NewtonProbe<'a> {
     pub(super) params: &'a [f64],
 }
 
-/// Apply the eliminated Newton steps; false when any step is non-finite.
-pub(super) fn apply_newton_steps(
-    x: &mut [f64],
-    augmented: &crate::linear_solve::AugmentedMatrix,
-) -> bool {
-    let m = x.len();
-    for (j, value) in x.iter_mut().enumerate() {
-        let step = augmented.get(j, m);
-        if !step.is_finite() {
-            return false;
-        }
-        *value += step;
-    }
-    true
-}
-
 pub(super) fn zero_runtime_values(
     len: usize,
     context: &'static str,

@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve as solve;
@@ -144,6 +147,22 @@ pub(crate) fn build_algebraic_refresh_plan(
     order_refresh_rows(rows, Arc::new(block.block().clone()), state_count)
 }
 
+/// Return the executable implicit program that produces each algebraic
+/// projection target. This is the same producer assignment used by the
+/// runtime refresh plan; projection hints only influence matching order.
+pub fn algebraic_projection_producer_programs(
+    model: &solve::SolveModel,
+) -> Result<BTreeMap<usize, usize>, EvalSolveError> {
+    let block =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)?;
+    let plan = build_algebraic_refresh_plan(model, &block)?;
+    Ok(plan
+        .rows
+        .into_iter()
+        .map(|row| (row.target_index, row.row_idx))
+        .collect())
+}
+
 fn merge_refresh_row(
     rows_by_target: &mut IndexMap<usize, AlgebraicRefreshRow>,
     candidate: AlgebraicRefreshRow,
@@ -242,12 +261,6 @@ fn algebraic_refresh_rows_from_projection_plan(
     Ok(rows)
 }
 
-struct ProjectionClaims {
-    pairs: Vec<(usize, usize)>,
-    rows: IndexSet<usize>,
-    targets: IndexSet<usize>,
-}
-
 fn projection_refresh_pairs(
     plan_block: &solve::AlgebraicProjectionBlock,
     block: &PreparedScalarProgramBlock,
@@ -257,22 +270,12 @@ fn projection_refresh_pairs(
     span: Option<rumoca_core::Span>,
 ) -> Result<Vec<(usize, usize)>, EvalSolveError> {
     let eligible_ys = projection_eligible_targets(plan_block, state_count, span)?;
-    let mut claims = projection_causal_claims(plan_block, state_count, span)?;
-    let remaining_rows = unclaimed_projection_values(
+    let structural_targets =
+        projection_structural_target_preferences(plan_block, state_count, span)?;
+    match_block_rows_to_targets(
         &plan_block.rows,
-        &claims.rows,
-        "projection unmatched rows",
-        span,
-    )?;
-    let remaining_ys = unclaimed_projection_values(
         &eligible_ys,
-        &claims.targets,
-        "projection unmatched targets",
-        span,
-    )?;
-    let unmatched = match_block_rows_to_targets(
-        &remaining_rows,
-        &remaining_ys,
+        &|row_idx| structural_targets.get(&row_idx).copied(),
         assignment_target,
         |row_idx, y| {
             output_row_positions
@@ -280,15 +283,7 @@ fn projection_refresh_pairs(
                 .is_some_and(|position| block.row_reads_y(position.program_index, y))
         },
         span,
-    )?;
-    reserve_refresh_vec_capacity(
-        &mut claims.pairs,
-        unmatched.len(),
-        "projection unmatched refresh pairs",
-        span,
-    )?;
-    claims.pairs.extend(unmatched);
-    Ok(claims.pairs)
+    )
 }
 
 fn projection_eligible_targets(
@@ -313,47 +308,26 @@ fn projection_eligible_targets(
     Ok(targets)
 }
 
-fn projection_causal_claims(
+fn projection_structural_target_preferences(
     plan_block: &solve::AlgebraicProjectionBlock,
     state_count: usize,
     span: Option<rumoca_core::Span>,
-) -> Result<ProjectionClaims, EvalSolveError> {
-    let mut claims = ProjectionClaims {
-        pairs: Vec::new(),
-        rows: IndexSet::new(),
-        targets: IndexSet::new(),
-    };
-    reserve_refresh_vec_capacity(
-        &mut claims.pairs,
+) -> Result<IndexMap<usize, usize>, EvalSolveError> {
+    let mut preferences = IndexMap::new();
+    reserve_refresh_index_map_capacity(
+        &mut preferences,
         plan_block.causal_steps.len(),
-        "projection causal pairs",
-        span,
-    )?;
-    reserve_refresh_index_set_capacity(
-        &mut claims.rows,
-        plan_block.causal_steps.len(),
-        "projection claimed rows",
-        span,
-    )?;
-    reserve_refresh_index_set_capacity(
-        &mut claims.targets,
-        plan_block.causal_steps.len(),
-        "projection claimed targets",
+        "projection structural target preferences",
         span,
     )?;
     for step in &plan_block.causal_steps {
         validate_projection_causal_step(plan_block, step, span)?;
-        if step.y_index < state_count
-            || claims.rows.contains(&step.row)
-            || claims.targets.contains(&step.y_index)
-        {
+        if step.y_index < state_count {
             continue;
         }
-        claims.rows.insert(step.row);
-        claims.targets.insert(step.y_index);
-        claims.pairs.push((step.row, step.y_index));
+        preferences.entry(step.row).or_insert(step.y_index);
     }
-    Ok(claims)
+    Ok(preferences)
 }
 
 fn validate_projection_causal_step(
@@ -380,23 +354,6 @@ fn validate_projection_causal_step(
         });
     }
     Ok(())
-}
-
-fn unclaimed_projection_values(
-    values: &[usize],
-    claimed: &IndexSet<usize>,
-    context: &'static str,
-    span: Option<rumoca_core::Span>,
-) -> Result<Vec<usize>, EvalSolveError> {
-    let mut remaining = Vec::new();
-    reserve_refresh_vec_capacity(&mut remaining, values.len(), context, span)?;
-    remaining.extend(
-        values
-            .iter()
-            .copied()
-            .filter(|value| !claimed.contains(value)),
-    );
-    Ok(remaining)
 }
 
 fn projection_refresh_rows_for_pairs(
@@ -439,6 +396,7 @@ fn projection_refresh_rows_for_pairs(
 fn match_block_rows_to_targets(
     rows: &[usize],
     ys: &[usize],
+    structural_target: &dyn Fn(usize) -> Option<usize>,
     assignment_target: &dyn Fn(usize) -> Option<usize>,
     reads: impl Fn(usize, usize) -> bool,
     span: Option<rumoca_core::Span>,
@@ -457,22 +415,9 @@ fn match_block_rows_to_targets(
     )?;
     matched_row_for_y.resize(ys.len(), None);
 
-    let mut row_fixed = Vec::new();
-    reserve_refresh_vec_capacity(&mut row_fixed, rows.len(), "matching fixed rows", span)?;
-    row_fixed.resize(rows.len(), false);
-    for (row_pos, row_idx) in rows.iter().copied().enumerate() {
-        let Some(y_pos) = assignment_target(row_idx).and_then(|y| y_pos.get(&y).copied()) else {
-            continue;
-        };
-        if matched_row_for_y[y_pos].is_none() {
-            matched_row_for_y[y_pos] = Some(row_pos);
-            row_fixed[row_pos] = true;
-        }
-    }
-
     let mut adjacency = Vec::new();
     reserve_refresh_vec_capacity(&mut adjacency, rows.len(), "matching adjacency", span)?;
-    for (row_pos, &row_idx) in rows.iter().enumerate() {
+    for &row_idx in rows {
         let mut candidates = Vec::new();
         let candidate_capacity = y_pos.len();
         reserve_refresh_vec_capacity(
@@ -481,8 +426,19 @@ fn match_block_rows_to_targets(
             "matching candidates",
             span,
         )?;
+        for preferred in [structural_target(row_idx), assignment_target(row_idx)] {
+            let Some(y) = preferred else {
+                continue;
+            };
+            if let Some(pos) = y_pos.get(&y).copied()
+                && reads(row_idx, y)
+                && !candidates.contains(&pos)
+            {
+                candidates.push(pos);
+            }
+        }
         for (&y, &pos) in &y_pos {
-            if matched_row_for_y[pos].is_none() && !row_fixed[row_pos] && reads(row_idx, y) {
+            if reads(row_idx, y) && !candidates.contains(&pos) {
                 candidates.push(pos);
             }
         }
@@ -510,10 +466,7 @@ fn match_block_rows_to_targets(
         }
         false
     }
-    for (row_pos, fixed) in row_fixed.iter().enumerate().take(rows.len()) {
-        if *fixed {
-            continue;
-        }
+    for row_pos in 0..rows.len() {
         let mut visited = Vec::new();
         reserve_refresh_vec_capacity(&mut visited, ys.len(), "matching visited flags", span)?;
         visited.resize(ys.len(), false);
@@ -1384,20 +1337,22 @@ mod tests {
     }
 
     #[test]
-    fn block_matching_keeps_rows_on_their_own_targets() {
+    fn block_matching_uses_real_incidence_when_target_hint_competes() {
         let rows = [0, 1];
         let ys = [10, 11];
         let pairs = match_block_rows_to_targets(
             &rows,
             &ys,
+            &|_| None,
             &|row| (row == 0).then_some(10),
             |row, y| matches!((row, y), (0, 11) | (1, 10)),
             None,
         )
         .expect("matching should succeed");
 
-        assert!(pairs.contains(&(0, 10)));
-        assert!(!pairs.contains(&(0, 11)));
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&(0, 11)));
+        assert!(pairs.contains(&(1, 10)));
     }
 
     #[test]

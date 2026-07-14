@@ -38,9 +38,9 @@ use plans::{
     direct_time_root_value, direct_visible_value, root_condition_plan, visible_value_plan,
 };
 use support::{
-    NewtonProbe, apply_newton_steps, copy_runtime_values, copy_runtime_values_into,
-    reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
-    write_refresh_targets, zero_runtime_values,
+    NewtonProbe, copy_runtime_values, copy_runtime_values_into, reserve_runtime_index_map_capacity,
+    reserve_runtime_vec_capacity, resize_runtime_values, write_refresh_targets,
+    zero_runtime_values,
 };
 
 struct RefreshSlotArgs<'a> {
@@ -217,7 +217,7 @@ impl SolveRuntime {
             copy_runtime_values_into(guess, &self.model.initial_y, "initial solver guess")?;
             resize_runtime_values(guess, self.solver_count, 0.0, "initial solver guess")?;
         }
-        self.populate_solver_y_from_state(guess, state)?;
+        self.overwrite_state_slots_preserving_algebraics(guess, state)?;
         self.refresh_algebraic_and_output_slots(t, guess, params, tol, max_iters)
     }
 
@@ -317,42 +317,13 @@ impl SolveRuntime {
             tol,
             max_iters,
         } = args;
-        // Snapshot the targets: if Gauss-Seidel diverges (coupled loop with
-        // gain > 1, e.g. torque loops through a gear ratio), Newton restarts
-        // from these values rather than the diverged iterates.
+        // Coupled projection blocks may have multiple fixed points. Iterating
+        // their assignment map can converge cleanly to a remote, non-physical
+        // root even when the caller supplied an accepted local branch seed.
+        // Solve the coupled residual directly from that seed so branch
+        // continuity, rather than fixed-point attraction, selects the root.
         let snapshot = self.refresh_target_snapshot(rows, solver_y)?;
-        let mut last_max = RefreshIterationMax {
-            delta: 0.0,
-            target: None,
-        };
-        // A coupled cycle with gain > 1 (any geared torque loop) makes the
-        // sweep delta grow monotonically; burning the full iteration budget
-        // before falling back is pure waste, so bail to Newton after a few
-        // consecutive growing sweeps.
-        const MAX_GROWING_SWEEPS: usize = 3;
-        let mut growing_sweeps = 0usize;
-        for iter_idx in 0..max_iters {
-            let previous_delta = last_max.delta;
-            match self.refresh_slots_iteration(rows, t, solver_y, params) {
-                Ok(iteration_max) => last_max = iteration_max,
-                Err(error) => {
-                    // Divergence to non-finite values: retry with Newton from
-                    // the snapshot before giving up.
-                    tracing::debug!(target: "rumoca_eval_solve::refresh", "retrying refresh with Newton after sweep error: {error}");
-                    return self.refresh_slots_newton(rows, &snapshot, t, solver_y, params, tol);
-                }
-            }
-            self.trace_refresh_iteration(iter_idx, &last_max);
-            if last_max.delta <= tol {
-                return Ok(());
-            }
-            let growing = iter_idx > 0 && last_max.delta > previous_delta;
-            growing_sweeps = if growing { growing_sweeps + 1 } else { 0 };
-            if growing_sweeps >= MAX_GROWING_SWEEPS {
-                break;
-            }
-        }
-        self.refresh_slots_newton(rows, &snapshot, t, solver_y, params, tol)
+        self.refresh_slots_newton(rows, &snapshot, t, solver_y, params, tol, max_iters)
     }
 
     fn refresh_target_snapshot(
@@ -379,6 +350,7 @@ impl SolveRuntime {
         solver_y: &mut [f64],
         params: &[f64],
         tol: f64,
+        requested_max_iters: usize,
     ) -> Result<(), RuntimeSolveError> {
         const MAX_NEWTON_REFRESH_ROWS: usize = 256;
         const MAX_NEWTON_ITERS: usize = 25;
@@ -397,17 +369,16 @@ impl SolveRuntime {
         let mut x = Vec::new();
         reserve_runtime_vec_capacity(&mut x, snapshot.len(), "Newton iterate")?;
         x.extend(snapshot);
-        for _ in 0..MAX_NEWTON_ITERS {
+        let max_newton_iters = requested_max_iters.max(MAX_NEWTON_ITERS);
+        let mut convergence_polish_steps = 0usize;
+        for _ in 0..max_newton_iters {
             let f_base = self.refresh_newton_sweep(rows, &x, t, solver_y, params)?;
             let mut residual = Vec::new();
             reserve_runtime_vec_capacity(&mut residual, x.len(), "Newton residual")?;
             residual.extend(x.iter().zip(&f_base).map(|(xi, fi)| xi - fi));
             let max_residual = residual.iter().fold(0.0_f64, |acc, r| acc.max(r.abs()));
             tracing::debug!(target: "rumoca_eval_solve::refresh", "newton residual={max_residual:e}");
-            if max_residual <= tol {
-                write_refresh_targets(rows, &x, solver_y);
-                return Ok(());
-            }
+            let converged = max_residual <= tol;
             let probe = NewtonProbe {
                 rows,
                 x: &x,
@@ -418,13 +389,87 @@ impl SolveRuntime {
             };
             let mut augmented = self.refresh_newton_augmented(probe, solver_y)?;
             if crate::linear_solve::gaussian_eliminate(&mut augmented).is_none() {
+                if converged {
+                    write_refresh_targets(rows, &x, solver_y);
+                    return Ok(());
+                }
                 return Err(self.refresh_newton_failure(rows));
             }
-            if !apply_newton_steps(&mut x, &augmented) {
+            let improved = self.apply_damped_refresh_newton_step(
+                rows,
+                &mut x,
+                &augmented,
+                max_residual,
+                t,
+                solver_y,
+                params,
+            )?;
+            // A tolerance-converged coupled solve still carries the residual
+            // directly into reconstructed connection-flow observations. One
+            // final Newton correction preserves the already-selected branch
+            // while polishing affine conservation identities (for example a
+            // grounded pin current reconstructed as the difference of two
+            // equal branch currents) to floating-point consistency.
+            if converged && (!improved || max_residual == 0.0 || convergence_polish_steps >= 3) {
+                write_refresh_targets(rows, &x, solver_y);
+                return Ok(());
+            }
+            if converged {
+                convergence_polish_steps += 1;
+                continue;
+            }
+            if !improved {
                 return Err(self.refresh_newton_failure(rows));
             }
         }
         Err(self.refresh_newton_failure(rows))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_damped_refresh_newton_step(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        x: &mut Vec<f64>,
+        augmented: &crate::linear_solve::AugmentedMatrix,
+        base_norm: f64,
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        const MAX_BACKTRACKS: usize = 24;
+        const ARMIJO_SLOPE: f64 = 1.0e-4;
+        let m = x.len();
+        let mut alpha = 1.0;
+        for _ in 0..MAX_BACKTRACKS {
+            let mut trial = x.clone();
+            for (j, value) in trial.iter_mut().enumerate() {
+                let step = augmented.get(j, m);
+                if !step.is_finite() {
+                    write_refresh_targets(rows, x, solver_y);
+                    return Ok(false);
+                }
+                *value += alpha * step;
+            }
+            let f_trial = match self.refresh_newton_sweep(rows, &trial, t, solver_y, params) {
+                Ok(values) => values,
+                Err(_) => {
+                    alpha *= 0.5;
+                    continue;
+                }
+            };
+            let trial_norm = trial
+                .iter()
+                .zip(&f_trial)
+                .map(|(xi, fi)| (xi - fi).abs())
+                .fold(0.0_f64, f64::max);
+            if trial_norm.is_finite() && trial_norm <= base_norm * (1.0 - ARMIJO_SLOPE * alpha) {
+                *x = trial;
+                return Ok(true);
+            }
+            alpha *= 0.5;
+        }
+        write_refresh_targets(rows, x, solver_y);
+        Ok(false)
     }
 
     /// Evaluate the refresh map `F` at `x` (writing `x` into the target slots
@@ -495,32 +540,6 @@ impl SolveRuntime {
                 target: None,
             },
         )
-    }
-
-    fn refresh_slots_iteration(
-        &self,
-        rows: &[AlgebraicRefreshRow],
-        t: f64,
-        solver_y: &mut [f64],
-        params: &[f64],
-    ) -> Result<RefreshIterationMax, RuntimeSolveError> {
-        let mut max_delta: f64 = 0.0;
-        let mut max_target = None;
-        for refresh_row in rows {
-            let row_idx = refresh_row.row_idx;
-            let index = refresh_row.target_index;
-            let value = self.eval_refresh_row(refresh_row, t, solver_y, params)?;
-            let delta = (solver_y[index] - value).abs();
-            if delta > max_delta {
-                max_delta = delta;
-                max_target = Some((index, row_idx, value));
-            }
-            solver_y[index] = value;
-        }
-        Ok(RefreshIterationMax {
-            delta: max_delta,
-            target: max_target,
-        })
     }
 
     fn eval_refresh_row(
@@ -712,27 +731,6 @@ impl SolveRuntime {
                 row.row_idx,
                 self.solver_name(row.target_index)
             ),
-        }
-    }
-
-    fn trace_refresh_iteration(&self, iter_idx: usize, max: &RefreshIterationMax) {
-        // `tracing::debug!` self-gates; the only off-path work is a name lookup.
-        if let Some((index, row_idx, value)) = max.target {
-            let name = self
-                .model
-                .problem
-                .solve_layout
-                .solver_maps
-                .names
-                .get(index)
-                .map_or("<unnamed>", String::as_str);
-            tracing::debug!(
-                target: "rumoca_eval_solve::refresh",
-                "refresh iter {iter_idx}: max_delta={:.6e} target={name} y[{index}] row={row_idx} value={value:.6e}",
-                max.delta
-            );
-        } else {
-            tracing::debug!(target: "rumoca_eval_solve::refresh", "refresh iter {iter_idx}: no targeted algebraics");
         }
     }
 
@@ -986,6 +984,162 @@ impl SolveRuntime {
             },
         )?;
         self.write_planned_root_search_conditions(plan, &solver_y, params, t, out)
+    }
+
+    /// Evaluate root-search values from an explicit algebraic branch seed.
+    ///
+    /// The caller owns `guess`: state slots are replaced by `state`, while the
+    /// remaining solver slots retain the supplied branch before the root
+    /// dependency projection is settled. This keeps adaptive-solver trial
+    /// callbacks free of hidden mutable runtime state.
+    pub fn eval_root_search_conditions_with_guess_into(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &[f64],
+        guess: &mut Vec<f64>,
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let roots = &self.model.problem.events.root_conditions;
+        if roots.is_empty() {
+            if let Some(first) = out.first_mut() {
+                *first = 1.0;
+            }
+            return Ok(());
+        }
+        if guess.len() != self.solver_count {
+            copy_runtime_values_into(guess, &self.model.initial_y, "root solver guess")?;
+            resize_runtime_values(guess, self.solver_count, 0.0, "root solver guess")?;
+        }
+        self.overwrite_state_slots_preserving_algebraics(guess, state)?;
+        let Some(plan) = &self.root_condition_plan else {
+            self.refresh_slots_with_plan(
+                &self.root_refresh,
+                RefreshSlotArgs {
+                    t,
+                    solver_y: guess,
+                    params,
+                    tol,
+                    max_iters,
+                },
+            )?;
+            return self.eval_root_conditions_from_refreshed_solver_y(t, guess, params, out);
+        };
+        self.validate_root_plan_output_len(plan, out)?;
+        if plan.search_rows.is_empty() {
+            return self.write_planned_root_search_defaults(plan, params, t, out);
+        }
+        self.refresh_slots_with_plan(
+            &self.root_refresh,
+            RefreshSlotArgs {
+                t,
+                solver_y: guess,
+                params,
+                tol,
+                max_iters,
+            },
+        )?;
+        self.write_planned_root_search_conditions(plan, guess, params, t, out)
+    }
+
+    pub fn neutralize_initial_root_search_values(
+        &self,
+        params: &[f64],
+        tol: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let root_count = self.model.problem.events.root_conditions.output_count();
+        let targets = &self.model.problem.events.root_relation_memory_targets;
+        if targets.len() != root_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "root relation metadata length {} does not match root output count {root_count}",
+                targets.len()
+            )));
+        }
+        if out.len() < root_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "root search output has {} values for {root_count} roots",
+                out.len()
+            )));
+        }
+        for (root_index, target) in targets.iter().copied().enumerate() {
+            if out[root_index] != 0.0 {
+                continue;
+            }
+            let Some(target) = target else {
+                continue;
+            };
+            let solve::ScalarSlot::P { index, .. } = target else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "root crossing index {root_index} has non-parameter relation memory target"
+                )));
+            };
+            let current = params.get(index).copied().ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "root crossing index {root_index} relation memory parameter {index} is outside parameter storage"
+                ))
+            })?;
+            out[root_index] = if current.abs() <= tol {
+                1.0
+            } else if (current - 1.0).abs() <= tol {
+                -1.0
+            } else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "root crossing index {root_index} relation memory value {current} is not boolean"
+                )));
+            };
+        }
+        Ok(())
+    }
+
+    pub fn apply_consumed_root_search_overrides(
+        &self,
+        params: &[f64],
+        tol: f64,
+        overrides: &[(usize, f64)],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let root_count = self.model.problem.events.root_conditions.output_count();
+        let targets = &self.model.problem.events.root_relation_memory_targets;
+        if targets.len() != root_count || out.len() < root_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "root relation metadata/output shape does not match {root_count} roots"
+            )));
+        }
+        for &(root_index, post) in overrides {
+            let target = targets.get(root_index).copied().flatten().ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "consumed root index {root_index} has no relation memory target"
+                ))
+            })?;
+            let solve::ScalarSlot::P { index, .. } = target else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "consumed root index {root_index} has non-parameter relation memory target"
+                )));
+            };
+            let current = params.get(index).copied().ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "consumed root index {root_index} relation memory parameter {index} is outside parameter storage"
+                ))
+            })?;
+            if (current - post).abs() > tol {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "consumed root index {root_index} post-side {post} does not match relation memory {current}"
+                )));
+            }
+            out[root_index] = if post.abs() <= tol {
+                1.0
+            } else if (post - 1.0).abs() <= tol {
+                -1.0
+            } else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "consumed root index {root_index} post-side {post} is not boolean"
+                )));
+            };
+        }
+        Ok(())
     }
 
     pub fn next_planned_time_root(
@@ -1311,12 +1465,42 @@ impl SolveRuntime {
     where
         P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
     {
+        self.settle_projected_runtime_and_relation_memory_with_overrides(
+            y,
+            p,
+            t,
+            tol,
+            max_iters,
+            &[],
+            &mut project_algebraics,
+        )
+    }
+
+    pub fn settle_projected_runtime_and_relation_memory_with_overrides<P>(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        max_iters: usize,
+        root_relation_overrides: &[(usize, f64)],
+        mut project_algebraics: P,
+    ) -> Result<(), RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
         for _ in 0..max_iters {
             let mut changed =
-                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+                self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             changed |= project_algebraics(y, p)?;
             changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            if root_relation_overrides.is_empty() {
+                changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            } else {
+                changed |=
+                    self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
+            }
             if !changed {
                 return Ok(());
             }
@@ -1762,7 +1946,32 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         copy_runtime_values_into(solver_y, &self.model.initial_y, "solver y initial values")?;
         resize_runtime_values(solver_y, self.solver_count, 0.0, "solver y")?;
-        for (dst, src) in solver_y.iter_mut().zip(state.iter().copied()) {
+        self.overwrite_state_slots_preserving_algebraics(solver_y, state)
+    }
+
+    fn overwrite_state_slots_preserving_algebraics(
+        &self,
+        solver_y: &mut [f64],
+        state: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if solver_y.len() != self.solver_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "solver y has {} values, expected {}",
+                solver_y.len(),
+                self.solver_count
+            )));
+        }
+        if state.len() < self.state_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "state has {} values, expected at least {}",
+                state.len(),
+                self.state_count
+            )));
+        }
+        for (dst, src) in solver_y[..self.state_count]
+            .iter_mut()
+            .zip(state.iter().copied())
+        {
             *dst = src;
         }
         Ok(())

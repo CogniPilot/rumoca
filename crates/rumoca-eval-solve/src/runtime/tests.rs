@@ -727,6 +727,64 @@ fn derivative_refresh_errors_on_missing_algebraic_producer() {
 }
 
 #[test]
+fn derivative_refresh_uses_complete_incidence_matching_despite_competing_hints() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "a".to_string(), "b".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 2,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        derivative_placeholder_row(0),
+                        derivative_placeholder_row(2),
+                        derivative_placeholder_row(1),
+                    ],
+                    "complete_producer_implicit.mo",
+                )),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(0)),
+                    Some(solve::scalar_slot_y(1)),
+                    None,
+                ],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![derivative_placeholder_row(2)],
+                    "complete_producer_derivative.mo",
+                )),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![1, 2],
+                        y_indices: vec![1, 2],
+                        causal_steps: vec![solve::AlgebraicProjectionStep { row: 1, y_index: 1 }],
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0; 3],
+        ..Default::default()
+    };
+
+    let runtime = SolveRuntime::new(&model).expect("complete producer graph should prepare");
+
+    assert!(runtime.derivative_refresh.missing_dependencies.is_empty());
+    assert!(
+        runtime
+            .algebraic_refresh
+            .rows
+            .iter()
+            .any(|row| row.row_idx == 1 && row.target_index == 2)
+    );
+}
+
+#[test]
 fn visible_values_for_names_preserves_requested_order() {
     let model = solve::SolveModel {
         visible_names: vec!["b".to_string(), "a".to_string()],
@@ -1237,6 +1295,251 @@ fn state_jacobian_includes_projection_forward_sensitivity() {
         (out[0] - k).abs() <= 1.0e-9,
         "expected total state Jacobian {k}, got {} (projection sensitivity missing?)",
         out[0]
+    );
+}
+
+#[test]
+fn explicit_branch_seeds_refresh_only_their_dependency_plan() {
+    use solve::LinearOp::{Const, LoadY, StoreOutput};
+
+    let mut model = projection_coupled_state_model(2.0);
+    // The derivative and root depend only on the state. The full observation
+    // projection still owns algebraic `a = 2*x`.
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }]],
+            "branch_seed_derivative.mo",
+        ));
+    model.problem.events.root_conditions = spanned_block(
+        vec![vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }]],
+        "branch_seed_root.mo",
+    );
+    model.problem.events.root_relation_memory_targets = vec![None];
+    let runtime = SolveRuntime::new(&model).expect("valid branch-seed runtime should prepare");
+
+    let mut derivative_seed = vec![99.0, 42.0];
+    let mut derivative = [f64::NAN];
+    runtime
+        .eval_state_derivatives_with_guess_into(
+            0.0,
+            &[3.0],
+            &[],
+            &mut derivative_seed,
+            1.0e-12,
+            32,
+            &mut derivative,
+        )
+        .expect("derivative branch should settle");
+
+    let mut root_seed = vec![99.0, 42.0];
+    let mut root = [f64::NAN];
+    runtime
+        .eval_root_search_conditions_with_guess_into(
+            0.0,
+            &[3.0],
+            &[],
+            &mut root_seed,
+            1.0e-12,
+            32,
+            &mut root,
+        )
+        .expect("root branch should settle");
+
+    let mut observation_seed = vec![99.0, 42.0];
+    runtime
+        .full_solver_y_with_guess(0.0, &[3.0], &[], &mut observation_seed, 1.0e-12, 32)
+        .expect("full observation projection should settle");
+
+    assert_eq!(derivative_seed, vec![3.0, 42.0]);
+    assert_eq!(root_seed, vec![3.0, 42.0]);
+    assert_eq!(observation_seed, vec![3.0, 6.0]);
+    assert_eq!(derivative, [0.0]);
+    assert_eq!(root, [3.0]);
+}
+
+#[test]
+fn coupled_projection_preserves_the_accepted_local_branch() {
+    use solve::LinearOp::{Binary, Const, LoadY, StoreOutput};
+    use solve::{BinaryOp, ComputeBlock};
+
+    let mut model = linear_algebraic_loop_state_model();
+    // Artifact-derived minimal analogue of the ThyristorBridge2Pulse_R
+    // projection failure. The fixed-point map has a nearby physical root at
+    // a=b=1 and a remote root at a=b=100. Starting from the accepted branch
+    // a=b=1.1,
+    // plain Gauss-Seidel follows the attracting map to 100; branch-local
+    // Newton on the coupled residual must instead preserve the nearby root.
+    //
+    // a = b; b = F(a), where F(a) = a - (a - 1) * (a - 100) / 99.
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                LoadY { dst: 0, index: 1 },
+                LoadY { dst: 1, index: 2 },
+                Binary {
+                    dst: 2,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                StoreOutput { src: 2 },
+            ],
+            vec![
+                LoadY { dst: 0, index: 1 },
+                Const { dst: 1, value: 1.0 },
+                Binary {
+                    dst: 2,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                Const {
+                    dst: 3,
+                    value: 100.0,
+                },
+                Binary {
+                    dst: 4,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 3,
+                },
+                Binary {
+                    dst: 5,
+                    op: BinaryOp::Mul,
+                    lhs: 2,
+                    rhs: 4,
+                },
+                Const {
+                    dst: 6,
+                    value: 1.0 / 99.0,
+                },
+                Binary {
+                    dst: 7,
+                    op: BinaryOp::Mul,
+                    lhs: 5,
+                    rhs: 6,
+                },
+                Binary {
+                    dst: 8,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 7,
+                },
+                LoadY { dst: 9, index: 2 },
+                Binary {
+                    dst: 10,
+                    op: BinaryOp::Sub,
+                    lhs: 9,
+                    rhs: 8,
+                },
+                StoreOutput { src: 10 },
+            ],
+        ],
+        "accepted_branch_projection.mo",
+    ));
+    model.initial_y = vec![0.0, 1.1, 1.1];
+    let runtime = SolveRuntime::new(&model).expect("valid multi-root projection runtime");
+    assert!(runtime.algebraic_refresh.iterative);
+
+    let tol = 1.0e-8;
+    let mut accepted_seed = vec![0.0, 1.1, 1.1];
+    let first = runtime
+        .eval_state_derivatives_with_guess(0.0, &[0.0], &[], &mut accepted_seed, tol, 256)
+        .expect("accepted branch projection should settle");
+    let map = accepted_seed[1] - (accepted_seed[1] - 1.0) * (accepted_seed[1] - 100.0) / 99.0;
+    let residual = (accepted_seed[1] - accepted_seed[2])
+        .abs()
+        .max((accepted_seed[2] - map).abs());
+    assert!(
+        (accepted_seed[1] - 1.0).abs() <= tol,
+        "projection jumped from the accepted local branch to {}",
+        accepted_seed[1]
+    );
+    assert!((accepted_seed[2] - 1.0).abs() <= tol);
+    assert!(
+        residual <= tol,
+        "projection residual {residual} exceeds {tol}"
+    );
+
+    let mut projected_seed = accepted_seed.clone();
+    let second = runtime
+        .eval_state_derivatives_with_guess(0.0, &[0.0], &[], &mut projected_seed, tol, 256)
+        .expect("reprojecting the accepted branch should settle");
+    assert!(
+        (first[0] - second[0]).abs() <= tol,
+        "accepted-seed update changed derivative output from {} to {}",
+        first[0],
+        second[0]
+    );
+}
+
+#[test]
+fn converged_coupled_projection_polishes_reconstructed_zero_flow() {
+    use solve::LinearOp::{Binary, Const, LoadY, StoreOutput};
+    use solve::{BinaryOp, ComputeBlock};
+
+    // Artifact-derived analogue of the severe `ground.p.i` channels in
+    // IdealTriacCircuit and HBridge_TrianglePWM_RL. Structural elimination
+    // reconstructs the grounded flow as the difference of two branch currents;
+    // those currents belong to a coupled projection block. A merely
+    // tolerance-converged solve leaks its residual into that observation even
+    // though the physical connection flow is exactly zero.
+    let mut model = linear_algebraic_loop_state_model();
+    let coupled_row = |target: usize, other: usize| {
+        vec![
+            LoadY {
+                dst: 0,
+                index: target,
+            },
+            Const { dst: 1, value: 2.0 },
+            Binary {
+                dst: 2,
+                op: BinaryOp::Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+            LoadY {
+                dst: 3,
+                index: other,
+            },
+            Binary {
+                dst: 4,
+                op: BinaryOp::Sub,
+                lhs: 2,
+                rhs: 3,
+            },
+            Const { dst: 5, value: 1.0 },
+            Binary {
+                dst: 6,
+                op: BinaryOp::Sub,
+                lhs: 4,
+                rhs: 5,
+            },
+            StoreOutput { src: 6 },
+        ]
+    };
+    model.problem.continuous.implicit_rhs = ComputeBlock::from_scalar_program_block(spanned_block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            coupled_row(1, 2),
+            coupled_row(2, 1),
+        ],
+        "ground_flow_projection.mo",
+    ));
+    model.initial_y = vec![0.0, 1.0 + 5.0e-11, 1.0 - 5.0e-11];
+    let runtime = SolveRuntime::new(&model).expect("coupled flow fixture should prepare");
+    assert!(runtime.algebraic_refresh.iterative);
+
+    let mut observation = model.initial_y.clone();
+    runtime
+        .full_solver_y_with_guess(0.0, &[0.0], &[], &mut observation, 1.0e-10, 32)
+        .expect("coupled observation projection should settle");
+
+    assert!(
+        (observation[1] - observation[2]).abs() <= 4.0 * f64::EPSILON,
+        "reconstructed grounded flow retained projection residual: {:?}",
+        observation
     );
 }
 

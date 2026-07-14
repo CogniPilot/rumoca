@@ -9,6 +9,27 @@ fn fixture_span() -> rumoca_core::Span {
     )
 }
 
+#[test]
+fn output_index_maps_to_program_position_when_outputs_are_reordered() {
+    let row = |value| {
+        vec![
+            LinearOp::Const { dst: 0, value },
+            LinearOp::StoreOutput { src: 0 },
+        ]
+    };
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+        vec![row(1.0), row(2.0)],
+        vec![fixture_span(), fixture_span()],
+        vec![5, 2],
+    )
+    .expect("reordered output fixture should be valid");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("fixture should prepare");
+
+    assert_eq!(prepared.program_position_for_output_index(5), Some((0, 0)));
+    assert_eq!(prepared.program_position_for_output_index(2), Some((1, 0)));
+    assert_eq!(prepared.program_position_for_output_index(0), None);
+}
+
 // Regression: `reg_depends_on_y_index` used to recurse over the register DAG
 // without memoization, so a row whose affine coefficient/offset is a deeply
 // shared sub-expression (typical of inlined matrix products) took O(2^depth)

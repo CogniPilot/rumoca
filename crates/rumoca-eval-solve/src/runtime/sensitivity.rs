@@ -37,6 +37,27 @@ impl SolveRuntime {
         self.eval_derivative_jacobian_v_with_seed(lin, state, seed, self.state_count, out)
     }
 
+    /// State Jacobian-vector product at an explicitly seeded algebraic branch.
+    /// The supplied guess is settled in place, so callers can use a private
+    /// trial copy without mutating the accepted branch shared by an integrator.
+    pub fn eval_state_jacobian_v_ad_with_guess_into(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        state: &[f64],
+        seed: &[f64],
+        guess: &mut Vec<f64>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.eval_derivative_jacobian_v_with_seed_and_guess(
+            lin,
+            state,
+            seed,
+            self.state_count,
+            Some(guess),
+            out,
+        )
+    }
+
     /// Like [`Self::eval_state_jacobian_v_ad_into`], but the input `seed` spans
     /// the full `[solver-y | parameter]` space and is copied in its entirety, so
     /// parameter tangents are honored. Seeding a unit vector in a parameter slot
@@ -426,6 +447,25 @@ impl SolveRuntime {
         seed_copy_len: usize,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        self.eval_derivative_jacobian_v_with_seed_and_guess(
+            lin,
+            state,
+            seed,
+            seed_copy_len,
+            None,
+            out,
+        )
+    }
+
+    fn eval_derivative_jacobian_v_with_seed_and_guess(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        state: &[f64],
+        seed: &[f64],
+        seed_copy_len: usize,
+        mut guess: Option<&mut Vec<f64>>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
         let AlgebraicLinearization { t, params, settle } = lin;
         validate_derivative_output_len(out, self.state_count)?;
         let mut scratch = self.derivative_scratch.borrow_mut();
@@ -435,8 +475,23 @@ impl SolveRuntime {
             unit_seed,
         } = &mut *scratch;
         // (1) Linearization point: project the algebraics from the state.
-        self.populate_solver_y_from_state(solver_y, state)?;
+        if let Some(guess) = guess.as_deref_mut() {
+            if guess.len() != self.solver_count {
+                copy_runtime_values_into(guess, &self.model.initial_y, "Jacobian solver guess")?;
+                resize_runtime_values(guess, self.solver_count, 0.0, "Jacobian solver guess")?;
+            }
+            solver_y.clear();
+            solver_y.extend_from_slice(guess);
+        }
+        if guess.is_some() {
+            self.overwrite_state_slots_preserving_algebraics(solver_y, state)?;
+        } else {
+            self.populate_solver_y_from_state(solver_y, state)?;
+        }
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
+        if let Some(guess) = guess.as_deref_mut() {
+            guess.copy_from_slice(solver_y);
+        }
         // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),
         // so the seed vector spans `[solver-y | parameter]` space. We copy the
         // leading `seed_copy_len` entries from the caller (state-only for the
