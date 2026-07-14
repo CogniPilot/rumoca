@@ -117,11 +117,20 @@ fn component_reference_path_matches(
             .parts
             .iter()
             .zip(&target.parts)
-            .all(|(expression, target)| {
-                expression.ident == target.ident
-                    && exact_subscript_values(&expression.subs)
-                        == exact_subscript_values(&target.subs)
-            })
+            .all(|(expression, target)| component_ref_part_matches(expression, target))
+}
+
+fn component_ref_part_matches(expression: &ComponentRefPart, target: &ComponentRefPart) -> bool {
+    if expression.ident != target.ident {
+        return false;
+    }
+    let Some(expression_subscripts) = exact_subscript_values(&expression.subs) else {
+        return false;
+    };
+    let Some(target_subscripts) = exact_subscript_values(&target.subs) else {
+        return false;
+    };
+    expression_subscripts == target_subscripts
 }
 
 fn exact_subscript_values(subscripts: &[Subscript]) -> Option<Vec<i64>> {

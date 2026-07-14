@@ -885,6 +885,49 @@ fn structured_substitution_requires_unique_dae_target_identity() {
 }
 
 #[test]
+fn structured_substitution_rejects_non_concrete_component_ref_part_subscripts() {
+    let target = "plant.sensor.u";
+    let expression_subscript = |name: &str| rumoca_core::Subscript::Expr {
+        expr: Box::new(var_ref(name)),
+        span: test_span(),
+    };
+    let cases = [
+        (expression_subscript("i"), expression_subscript("i")),
+        (expression_subscript("i"), expression_subscript("j")),
+        (
+            rumoca_core::Subscript::colon(test_span()),
+            rumoca_core::Subscript::colon(test_span()),
+        ),
+    ];
+    for (target_subscript, expression_subscript) in cases {
+        let mut target_ref = structured_ref_with_identity(target, false, Some(42));
+        target_ref.parts.last_mut().unwrap().subs = vec![target_subscript];
+        let mut dae = dae::Dae::default();
+        let mut target_var = test_dae_variable(target);
+        target_var.component_ref = Some(target_ref);
+        dae.variables
+            .outputs
+            .insert(VarName::new(target), target_var);
+
+        let mut expression_ref = structured_ref_with_identity(target, false, Some(42));
+        expression_ref.parts.last_mut().unwrap().subs = vec![expression_subscript];
+        let expr = Expression::VarRef {
+            name: Reference::from_component_reference(expression_ref),
+            subscripts: Vec::new(),
+            span: test_span(),
+        };
+        let substitution = test_substitution(target, var_ref("replacement"));
+
+        let result = apply_dae_substitution(&dae, &expr, substitution);
+
+        assert_eq!(
+            result, expr,
+            "non-concrete component_ref part subscript must fail closed"
+        );
+    }
+}
+
+#[test]
 fn structured_substitution_preserves_pre_edge_change_arguments() {
     let target = "plant.sensor.u";
     let (dae, substitution) = structured_substitution_fixture(target, false, Some(42));
