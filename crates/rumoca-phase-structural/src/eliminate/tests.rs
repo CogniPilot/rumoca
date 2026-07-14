@@ -707,9 +707,11 @@ fn test_substitute_var_projects_embedded_array_alias_component() {
 fn substitution_with_dae_context_rewrites_indexed_component_field_reference() {
     let mut dae = dae::Dae::default();
     let target = "stack.cell[1,1].cell.ocv_soc.u";
+    let mut target_var = component_var(target);
+    target_var.component_ref.as_mut().unwrap().def_id = Some(rumoca_core::DefId(42));
     dae.variables
         .outputs
-        .insert(VarName::new(target), test_dae_variable(target));
+        .insert(VarName::new(target), target_var);
     let indexed_cell = Expression::Index {
         base: Box::new(var_ref("stack.cell")),
         subscripts: vec![
@@ -744,6 +746,164 @@ fn substitution_with_dae_context_rewrites_indexed_component_field_reference() {
         matches!(result, Expression::VarRef { ref name, .. } if name.as_str() == "replacement"),
         "nested indexed component field reference should be rewritten as one scalar target: {result:?}"
     );
+}
+
+fn structured_ref_with_identity(
+    path: &str,
+    local: bool,
+    def_id: Option<u32>,
+) -> rumoca_core::ComponentReference {
+    let mut component_ref = component_ref(path);
+    component_ref.local = local;
+    component_ref.def_id = def_id.map(rumoca_core::DefId);
+    component_ref
+}
+
+fn structured_var_ref(path: &str, local: bool, def_id: Option<u32>) -> Expression {
+    Expression::VarRef {
+        name: Reference::from_component_reference(structured_ref_with_identity(
+            path, local, def_id,
+        )),
+        subscripts: Vec::new(),
+        span: test_span(),
+    }
+}
+
+fn structured_substitution_fixture(
+    target: &str,
+    target_local: bool,
+    target_def_id: Option<u32>,
+) -> (dae::Dae, Substitution) {
+    let mut dae = dae::Dae::default();
+    let mut target_var = test_dae_variable(target);
+    target_var.component_ref = Some(structured_ref_with_identity(
+        target,
+        target_local,
+        target_def_id,
+    ));
+    dae.variables
+        .outputs
+        .insert(VarName::new(target), target_var);
+    (dae, test_substitution(target, var_ref("replacement")))
+}
+
+fn apply_dae_substitution(
+    dae: &dae::Dae,
+    expr: &Expression,
+    substitution: Substitution,
+) -> Expression {
+    structural_ok(apply_substitutions_to_expr_with_derivatives_and_dae(
+        expr,
+        &[substitution],
+        Some(dae),
+        |_| Ok(None),
+    ))
+}
+
+#[test]
+fn structured_substitution_accepts_matching_terminal_def_id() {
+    let target = "plant.sensor.u";
+    let (dae, substitution) = structured_substitution_fixture(target, false, Some(42));
+    let expr = structured_var_ref(target, false, Some(42));
+
+    let result = apply_dae_substitution(&dae, &expr, substitution);
+
+    assert!(
+        matches!(result, Expression::VarRef { ref name, .. } if name.as_str() == "replacement")
+    );
+}
+
+#[test]
+fn structured_substitution_rejects_mismatched_def_id_and_local_scope() {
+    let target = "plant.sensor.u";
+    let (dae, substitution) = structured_substitution_fixture(target, false, Some(42));
+    for expr in [
+        structured_var_ref(target, false, Some(43)),
+        structured_var_ref(target, true, Some(42)),
+    ] {
+        let result = apply_dae_substitution(&dae, &expr, substitution.clone());
+        assert_eq!(result, expr, "identity mismatch must fail closed");
+    }
+}
+
+#[test]
+fn structured_substitution_rejects_neighbor_partial_and_dynamic_references() {
+    let target = "stack.cell[1,1].cell.ocv_soc.u";
+    let (dae, substitution) = structured_substitution_fixture(target, false, Some(42));
+    let dynamic_index = Expression::Index {
+        base: Box::new(structured_var_ref("stack.cell", false, Some(7))),
+        subscripts: vec![rumoca_core::Subscript::colon(test_span())],
+        span: test_span(),
+    };
+    let expression_index = Expression::Index {
+        base: Box::new(structured_var_ref("stack.cell", false, Some(7))),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(var_ref("i")),
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+    let cases = [
+        structured_var_ref("stack.cell[1,2].cell.ocv_soc.u", false, Some(42)),
+        structured_var_ref("stack.cell[1,1].cell.ocv_soc.y", false, Some(42)),
+        structured_var_ref("stack.cell[1,1].cell.ocv_soc", false, Some(42)),
+        structured_var_ref("stack.cell[1,1]", false, Some(42)),
+        Expression::FieldAccess {
+            base: Box::new(dynamic_index),
+            field: "u".to_string(),
+            span: test_span(),
+        },
+        Expression::FieldAccess {
+            base: Box::new(expression_index),
+            field: "u".to_string(),
+            span: test_span(),
+        },
+    ];
+    for expr in cases {
+        let result = apply_dae_substitution(&dae, &expr, substitution.clone());
+        assert_eq!(
+            result, expr,
+            "non-exact structured reference must not match"
+        );
+    }
+}
+
+#[test]
+fn structured_substitution_requires_unique_dae_target_identity() {
+    let target = "plant.sensor.u";
+    let (mut dae, substitution) = structured_substitution_fixture(target, false, None);
+    let mut shadow = test_dae_variable("shadow");
+    shadow.component_ref = Some(structured_ref_with_identity(target, false, None));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("shadow"), shadow);
+    let expr = structured_var_ref(target, false, None);
+
+    let result = apply_dae_substitution(&dae, &expr, substitution);
+
+    assert_eq!(result, expr, "ambiguous structured target must fail closed");
+}
+
+#[test]
+fn structured_substitution_preserves_pre_edge_change_arguments() {
+    let target = "plant.sensor.u";
+    let (dae, substitution) = structured_substitution_fixture(target, false, Some(42));
+    for function in [
+        BuiltinFunction::Pre,
+        BuiltinFunction::Edge,
+        BuiltinFunction::Change,
+    ] {
+        let expr = Expression::BuiltinCall {
+            function,
+            args: vec![structured_var_ref(target, false, Some(42))],
+            span: test_span(),
+        };
+        let result = apply_dae_substitution(&dae, &expr, substitution.clone());
+        assert_eq!(
+            result, expr,
+            "event operator argument must remain untouched"
+        );
+    }
 }
 
 #[test]

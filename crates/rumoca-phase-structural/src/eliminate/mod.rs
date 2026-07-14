@@ -71,6 +71,7 @@ use substitution_application::{
 };
 use substitution_target::{
     expr_contains_derivative_substitution_target, expr_contains_substitution_target_in_scope,
+    expression_is_exact_structured_substitution_target, substitution_requires_structured_identity,
 };
 use tearing_elimination::tear_and_eliminate_loop_block;
 use unknown_index::{
@@ -4088,11 +4089,13 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
     type Error = StructuralError;
 
     fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error> {
-        let exact_name = self
-            .dae_context
-            .and_then(|dae| exact_reference_expr_name_in_dae(dae, expr))
-            .or_else(|| exact_reference_expr_name(expr));
-        if exact_name.as_ref() == Some(&self.substitution.var_name) {
+        let exact_target = match self.dae_context {
+            Some(dae) if self.requires_structured_identity() => {
+                expression_is_exact_structured_substitution_target(dae, expr, self.substitution)
+            }
+            _ => exact_reference_expr_name(expr).as_ref() == Some(&self.substitution.var_name),
+        };
+        if exact_target {
             return Ok(expr.span().map_or_else(
                 || self.replacement.clone(),
                 |span| replacement_with_owner_span(self.replacement, span),
@@ -4103,7 +4106,7 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
                 function: BuiltinFunction::Der,
                 args,
                 ..
-            } if self.der_call_matches_scalar_substitution(args) => self
+            } if self.der_call_matches_substitution(args) => self
                 .derivative_replacement
                 .cloned()
                 .map_or_else(|| self.walk_expression(expr), Ok),
@@ -4134,11 +4137,12 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
                 subscripts,
                 span,
             } => {
-                if let Expression::VarRef {
-                    name,
-                    subscripts: base_subscripts,
-                    ..
-                } = base.as_ref()
+                if !self.requires_structured_identity()
+                    && let Expression::VarRef {
+                        name,
+                        subscripts: base_subscripts,
+                        ..
+                    } = base.as_ref()
                     && self.indexed_var_ref_matches_substitution(name, base_subscripts, subscripts)
                 {
                     let mut combined_subscripts =
@@ -4159,6 +4163,9 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Result<Expression, Self::Error> {
+        if self.requires_structured_identity() {
+            return self.walk_var_ref_expression(name, subscripts, span);
+        }
         if let Some(indices) =
             embedded_alias_indices_for_substitution(name, subscripts, self.substitution)
         {
@@ -4205,6 +4212,11 @@ impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
 }
 
 impl SubstituteVarRewriter<'_> {
+    fn requires_structured_identity(&self) -> bool {
+        self.dae_context
+            .is_some_and(|dae| substitution_requires_structured_identity(dae, self.substitution))
+    }
+
     fn indexed_var_ref_matches_substitution(
         &self,
         name: &Reference,
@@ -4242,7 +4254,15 @@ fn replacement_with_owner_span(
 }
 
 impl SubstituteVarRewriter<'_> {
-    fn der_call_matches_scalar_substitution(&self, args: &[Expression]) -> bool {
+    fn der_call_matches_substitution(&self, args: &[Expression]) -> bool {
+        if self.requires_structured_identity() {
+            let [arg] = args else {
+                return false;
+            };
+            return self.dae_context.is_some_and(|dae| {
+                expression_is_exact_structured_substitution_target(dae, arg, self.substitution)
+            });
+        }
         der_call_matches_scalar_substitution(args, self.substitution)
     }
 }
