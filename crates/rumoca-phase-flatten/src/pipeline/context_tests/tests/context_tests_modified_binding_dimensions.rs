@@ -104,6 +104,48 @@ fn reconciled_modified_record_table_shape_beats_stale_default_binding_shape() {
 }
 
 #[test]
+fn cache_only_dimension_repair_is_not_reported_as_a_flat_model_change() {
+    let mut ctx = Context::new();
+    let tree = source_backed_tree();
+    let name = rumoca_core::VarName::new("flowModel.pathLengths_internal");
+    ctx.array_dimensions.insert(name.to_string(), vec![3]);
+
+    let mut flat = flat::Model::default();
+    flat.add_variable(
+        name.clone(),
+        flat::Variable {
+            name: name.clone(),
+            dims: vec![2],
+            binding: Some(Expression::Array {
+                elements: vec![int_lit(1), int_lit(1)],
+                is_matrix: false,
+                span: test_span(),
+            }),
+            binding_from_modification: true,
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    let mut overlay = InstanceOverlay::default();
+    overlay.components.insert(
+        InstanceId::new(1),
+        symbolic_instance(
+            InstanceId::new(1),
+            name.as_str(),
+            vec![ast::Subscript::Expression(component_ref_expr("n"))],
+        ),
+    );
+
+    let flat_changed = ctx
+        .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+        .expect("cache-only dimension repair");
+
+    assert!(!flat_changed);
+    assert_eq!(flat.variables.get(&name).unwrap().dims, vec![2]);
+    assert_eq!(ctx.array_dimensions.get(name.as_str()), Some(&vec![2]));
+}
+
+#[test]
 fn modified_binding_dimensions_replace_stale_declared_shape() {
     let mut ctx = Context::new();
     let tree = source_backed_tree();
