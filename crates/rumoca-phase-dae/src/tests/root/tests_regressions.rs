@@ -1749,11 +1749,19 @@ fn test_when_clause_guard_for_clock_condition_uses_clock_tick_directly() {
         }),
     );
 
+    let clock_span = crate::test_support::test_span();
     let clock_call = Expression::FunctionCall {
-        name: VarName::new("Clock").into(),
+        name: rumoca_core::Reference::with_component_reference(
+            "Clock",
+            rumoca_core::ComponentReference::from_flat_segments(
+                "Clock",
+                clock_span,
+                Some(rumoca_core::BuiltinTypeIdentity::Clock.def_id()),
+            ),
+        ),
         args: vec![],
         is_constructor: false,
-        span: crate::test_support::test_span(),
+        span: clock_span,
     };
     let previous_y2 = Expression::FunctionCall {
         name: VarName::new("previous").into(),
