@@ -502,13 +502,15 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
     protected
       discrete Real prev(start = 0.0);
     algorithm
-      if pre(k) == 1 then
-        prev := 0.0;
-      else
-        prev := table[pre(k) - 1];
-      end if;
-      y := u + prev;
-      k := if pre(k) >= 2 then 1 else pre(k) + 1;
+      when sample(0.02, 0.02) then
+        if pre(k) == 1 then
+          prev := 0.0;
+        else
+          prev := table[pre(k) - 1];
+        end if;
+        y := u + prev;
+        k := if pre(k) >= 2 then 1 else pre(k) + 1;
+      end when;
     end DiscreteController;
     "#;
 
@@ -523,13 +525,20 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
     )
     .expect("pure discrete session should build");
     session.set_input("u", 1.5).expect("set input u");
-    session.step(0.02).expect("first discrete tick");
-    assert_eq!(session.time(), 0.02);
+    session
+        .advance_to(0.01)
+        .expect("advance before first sample");
+    assert_eq!(session.get("y").expect("read y"), Some(0.0));
+    assert_eq!(session.get("k").expect("read k"), Some(1.0));
+
+    session.advance_to(0.02).expect("advance to first sample");
     assert_eq!(session.get("y").expect("read y"), Some(1.5));
+    assert_eq!(session.get("k").expect("read k"), Some(2.0));
 
     session.set_input("u", 2.0).expect("set input u");
-    session.step(0.02).expect("second discrete tick");
+    session.advance_to(0.04).expect("advance to second sample");
     assert_eq!(session.get("y").expect("read y"), Some(4.0));
+    assert_eq!(session.get("k").expect("read k"), Some(1.0));
 
     clear_source_root_cache().expect("clear source-root cache");
 }

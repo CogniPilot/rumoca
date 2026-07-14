@@ -15,9 +15,10 @@ use rumoca_solver::{
     RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimResult,
     SimSolverMode, SimTermination, SimulationBackend, SolveStopSchedule, StepUntilOutcome,
     TimeoutBudget, TimeoutExceeded, clear_scheduled_root_relation_memory,
-    commit_pre_params_after_event, convert_variable_meta, filter_scheduled_root_crossings,
-    process_runtime_event_boundary, root_crossings_with_relation_memory, root_value_crossed,
-    runtime_event_horizon, timeline,
+    clear_scheduled_root_relation_memory_at_time, commit_pre_params_after_event,
+    convert_variable_meta, filter_scheduled_root_crossings, process_runtime_event_boundary,
+    root_crossings_with_relation_memory, root_value_crossed, runtime_event_horizon,
+    scheduled_root_relation_overrides_at_time, timeline,
 };
 
 mod no_state;
@@ -1366,8 +1367,12 @@ impl Rk45Backend<'_> {
         if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
             return Ok(());
         }
-        let root_indices = self.scheduled_root_indices_at_time(event_time);
-        self.clear_scheduled_root_relation_memory(&root_indices)
+        clear_scheduled_root_relation_memory_at_time(
+            &self.model.model,
+            event_time,
+            &mut self.params,
+        )
+        .map_err(runtime_contract_violation)
     }
 
     fn clear_all_scheduled_root_relation_memory(&mut self) -> Result<(), SimError> {
@@ -1399,24 +1404,17 @@ impl Rk45Backend<'_> {
         if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
             return Ok(());
         }
-        let scheduled_indices = self.scheduled_root_indices_at_time(event_time);
-        if scheduled_indices.is_empty() {
+        let overrides = scheduled_root_relation_overrides_at_time(&self.model.model, event_time);
+        if overrides.is_empty() {
             return Ok(());
         }
-        for index in scheduled_indices {
+        for (index, post_relation_memory_value) in overrides {
             self.pending_root_crossings.push(RootCrossing {
                 index,
-                post_relation_memory_value: 1.0,
+                post_relation_memory_value,
             });
         }
         Ok(())
-    }
-
-    fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
-        timeline::scheduled_root_indices_at_time(
-            &self.model.model.problem.events.scheduled_root_conditions,
-            event_time,
-        )
     }
 }
 

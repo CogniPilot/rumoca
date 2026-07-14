@@ -8,9 +8,10 @@ use rumoca_solver::{
     EventActionOutcome, EventPreMode, NoStateEventStep, NoStateOrchestrationBackend,
     NoStateScheduledStop, RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventStop,
     RuntimeSolveError, SimOptions, SimTermination, SolveStopSchedule,
-    commit_pre_params_after_event, process_runtime_event_boundary, run_no_state_output_schedule,
-    runtime_event_horizon, runtime_root_event_application_time,
-    timeline::{event_left_limit_time, sample_time_match_with_tol},
+    clear_scheduled_root_relation_memory_at_time, commit_pre_params_after_event,
+    process_runtime_event_boundary, run_no_state_output_schedule, runtime_event_horizon,
+    runtime_root_event_application_time, scheduled_root_relation_overrides_at_time,
+    timeline::{event_left_limit_time, sample_time_match_with_tol, scheduled_root_index_is_known},
 };
 
 use crate::{SessionState, SimError};
@@ -224,7 +225,13 @@ impl NoStateOrchestrationBackend for Rk45NoStateOrchestration<'_> {
             &mut self.runtime.params,
             self.runtime.current_t,
             self.opts.atol.max(1.0e-10),
+        )?;
+        clear_scheduled_root_relation_memory_at_time(
+            self.model,
+            self.runtime.current_t,
+            &mut self.runtime.params,
         )
+        .map_err(SimError::SolveIr)
     }
 }
 
@@ -346,24 +353,37 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
     type Error = SimError;
 
     fn on_event_time(&mut self, event_t: f64, event: RuntimeEventStop) -> Result<(), Self::Error> {
+        let root_relation_overrides = if self.root_event
+            || event.observe_right_limit
+            || !matches!(event.pre_mode, EventPreMode::EventEntry)
+        {
+            Vec::new()
+        } else {
+            scheduled_root_relation_overrides_at_time(&self.runtime.model, event_t)
+        };
         if !self.root_event
             && matches!(
                 event.pre_mode,
                 EventPreMode::EventEntry | EventPreMode::Fixed
             )
         {
-            let left_t = event_left_limit_time(event_t);
-            refresh_observation_rows_and_relation_memory(
-                self.runtime,
-                self.y,
-                self.p,
-                left_t,
-                self.tol,
-            )?;
+            if root_relation_overrides.is_empty() {
+                let left_t = event_left_limit_time(event_t);
+                refresh_observation_rows_and_relation_memory(
+                    self.runtime,
+                    self.y,
+                    self.p,
+                    left_t,
+                    self.tol,
+                )?;
+            } else {
+                clear_scheduled_root_relation_memory_at_time(&self.runtime.model, event_t, self.p)
+                    .map_err(SimError::SolveIr)?;
+            }
         }
         self.event_pre_y = self.y.to_vec();
         self.event_pre_p = self.p.to_vec();
-        self.apply_event_updates(event_t)?;
+        self.apply_event_updates(event_t, &root_relation_overrides)?;
         refresh_observation_rows_and_relation_memory(
             self.runtime,
             self.y,
@@ -378,7 +398,7 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
         right_t: f64,
         _event: RuntimeEventStop,
     ) -> Result<(), Self::Error> {
-        self.apply_event_updates(right_t)?;
+        self.apply_event_updates(right_t, &[])?;
         refresh_observation_rows_and_relation_memory(
             self.runtime,
             self.y,
@@ -390,7 +410,11 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
 }
 
 impl NoStateEventBoundary<'_> {
-    fn apply_event_updates(&mut self, t: f64) -> Result<(), SimError> {
+    fn apply_event_updates(
+        &mut self,
+        t: f64,
+        root_relation_overrides: &[(usize, f64)],
+    ) -> Result<(), SimError> {
         let outcome = self.runtime.apply_projected_event_update(
             ProjectedEventUpdateInput {
                 y: self.y,
@@ -401,7 +425,7 @@ impl NoStateEventBoundary<'_> {
                 event_pre_p: &self.event_pre_p,
                 max_iters: NO_STATE_EVENT_UPDATE_MAX_ITERS,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides,
             },
             |y, p| refresh_algebraics_and_detect_changes(self.runtime, y, p, t, self.tol),
         )?;
@@ -551,9 +575,16 @@ fn first_root_crossing_time(
     eval_refreshed_roots(runtime, y, p, t_end, tol, &mut end)?;
 
     let mut crossing = None;
-    for (a, b) in start.iter().zip(end.iter()) {
+    for (root_index, (a, b)) in start.iter().zip(end.iter()).enumerate() {
+        if scheduled_root_index_is_known(
+            &runtime.model.problem.events.scheduled_root_conditions,
+            root_index,
+        ) {
+            continue;
+        }
         if root_surface_crossed_or_near(*a, *b, tol) {
-            let root = bisect_first_root(runtime, y, p, t_start, t_end, tol, root_count)?;
+            let root =
+                bisect_first_root(runtime, y, p, (t_start, t_end), tol, root_count, root_index)?;
             crossing = Some(crossing.map_or(root, |current: f64| current.min(root)));
         }
     }
@@ -576,10 +607,10 @@ fn bisect_first_root(
     runtime: &SolveRuntime,
     y: &[f64],
     p: &[f64],
-    mut lo: f64,
-    mut hi: f64,
+    (mut lo, mut hi): (f64, f64),
     tol: f64,
     root_count: usize,
+    root_index: usize,
 ) -> Result<f64, SimError> {
     let mut lo_roots = vec![0.0; root_count];
     eval_refreshed_roots(runtime, y, p, lo, tol, &mut lo_roots)?;
@@ -587,11 +618,9 @@ fn bisect_first_root(
         let mid = lo + 0.5 * (hi - lo);
         let mut mid_roots = vec![0.0; root_count];
         eval_refreshed_roots(runtime, y, p, mid, tol, &mut mid_roots)?;
-        if lo_roots
-            .iter()
-            .zip(mid_roots.iter())
-            .any(|(a, b)| a.signum() != b.signum() || root_surface_near_zero(*b, tol))
-        {
+        let lo_root = lo_roots.get(root_index).copied().unwrap_or(0.0);
+        let mid_root = mid_roots.get(root_index).copied().unwrap_or(0.0);
+        if lo_root.signum() != mid_root.signum() || root_surface_near_zero(mid_root, tol) {
             hi = mid;
         } else {
             lo = mid;

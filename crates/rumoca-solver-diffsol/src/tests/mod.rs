@@ -1173,8 +1173,7 @@ fn observation_refresh_resets_fixed_pre_event_history_rows() {
     );
 }
 
-#[test]
-fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_ticks() {
+fn no_state_clocked_previous_feedback_model() -> solve::SolveModel {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.parameter_count = 0;
     model.problem.solve_layout.compiled_parameter_len = 8;
@@ -1248,6 +1247,12 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
         "unitDelay.y".to_string(),
         "assignClock.u".to_string(),
     ];
+    model
+}
+
+#[test]
+fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_ticks() {
+    let model = no_state_clocked_previous_feedback_model();
 
     let result = simulate(
         &model,
@@ -1268,6 +1273,35 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
             vec![0.0, 1.0, 2.0, 2.0],
             vec![1.0, 2.0, 3.0, 3.0],
         ]
+    );
+}
+
+#[test]
+fn diffsol_no_state_session_rearms_periodic_sample_edges() {
+    let model = no_state_clocked_previous_feedback_model();
+    let mut session = crate::session::SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.05,
+            ..Default::default()
+        },
+    )
+    .expect("no-state periodic session should build");
+
+    session.advance_to(0.01).expect("advance before first tick");
+    assert_eq!(
+        session.get("assignClock.y").expect("read output"),
+        Some(1.0)
+    );
+    session.advance_to(0.02).expect("advance to first tick");
+    assert_eq!(
+        session.get("assignClock.y").expect("read output"),
+        Some(2.0)
+    );
+    session.advance_to(0.04).expect("advance to second tick");
+    assert_eq!(
+        session.get("assignClock.y").expect("read output"),
+        Some(3.0)
     );
 }
 

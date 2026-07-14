@@ -1,5 +1,7 @@
 use rumoca_ir_solve as solve;
 
+use crate::timeline::scheduled_root_indices_at_time;
+
 pub fn write_pre_params_from_sources(
     model: &solve::SolveModel,
     source_y: &[f64],
@@ -62,6 +64,26 @@ pub fn clear_scheduled_root_relation_memory(
         clear_pre_params_from_source_p(model, params, root_idx, index)?;
     }
     Ok(())
+}
+
+pub fn scheduled_root_relation_overrides_at_time(
+    model: &solve::SolveModel,
+    event_t: f64,
+) -> Vec<(usize, f64)> {
+    scheduled_root_indices_at_time(&model.problem.events.scheduled_root_conditions, event_t)
+        .into_iter()
+        .map(|root_index| (root_index, 1.0))
+        .collect()
+}
+
+pub fn clear_scheduled_root_relation_memory_at_time(
+    model: &solve::SolveModel,
+    event_t: f64,
+    params: &mut [f64],
+) -> Result<(), String> {
+    let root_indices =
+        scheduled_root_indices_at_time(&model.problem.events.scheduled_root_conditions, event_t);
+    clear_scheduled_root_relation_memory(model, &root_indices, params)
 }
 
 fn clear_pre_params_from_source_p(

@@ -22,7 +22,8 @@ pub use runtime::no_state::{
 };
 pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
 pub use runtime::pre_params::{
-    clear_scheduled_root_relation_memory, commit_pre_params_after_event, update_slot,
+    clear_scheduled_root_relation_memory, clear_scheduled_root_relation_memory_at_time,
+    commit_pre_params_after_event, scheduled_root_relation_overrides_at_time, update_slot,
     write_pre_params_from_sources,
 };
 pub use runtime::projection::{

@@ -30,8 +30,6 @@ pub use rumoca_solver::{
 
 mod build_timing;
 pub mod bulk;
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-mod discrete_stepper;
 pub mod row_eval_trace;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]

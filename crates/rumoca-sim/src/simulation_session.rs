@@ -17,7 +17,6 @@ pub struct SimulationSession {
 }
 
 enum SimulationSessionInner {
-    Discrete(Box<crate::discrete_stepper::SimStepper>),
     #[cfg(feature = "solver-diffsol")]
     Diffsol(Box<crate::diffsol::SimulationSession>),
     #[cfg(feature = "solver-rk45")]
@@ -45,7 +44,6 @@ impl SimulationSession {
 
     pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.set_input(name, value),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .set_input(name, value)
@@ -59,7 +57,6 @@ impl SimulationSession {
 
     pub fn reset(&mut self, t_start: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.reset(t_start),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .reset(t_start)
@@ -80,7 +77,6 @@ impl SimulationSession {
 
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.step(target_time - stepper.time()),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .advance_to(target_time)
@@ -94,7 +90,6 @@ impl SimulationSession {
 
     pub fn step(&mut self, dt: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.step(dt),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .step(dt)
@@ -108,7 +103,6 @@ impl SimulationSession {
 
     pub fn time(&self) -> f64 {
         match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.time(),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session.time(),
             #[cfg(feature = "solver-rk45")]
@@ -118,7 +112,6 @@ impl SimulationSession {
 
     pub fn get(&self, name: &str) -> Result<Option<f64>, SimulationDiagnosticError> {
         match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.get(name),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .get(name)
@@ -132,13 +125,6 @@ impl SimulationSession {
 
     pub fn state(&self) -> Result<SessionState, SimulationDiagnosticError> {
         match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => {
-                let state = stepper.state()?;
-                Ok(SessionState {
-                    time: state.time,
-                    values: state.values,
-                })
-            }
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => {
                 let state = session
@@ -164,7 +150,6 @@ impl SimulationSession {
 
     pub fn input_names(&self) -> &[String] {
         match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.input_names(),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session.input_names(),
             #[cfg(feature = "solver-rk45")]
@@ -174,7 +159,6 @@ impl SimulationSession {
 
     pub fn variable_names(&self) -> &[String] {
         match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.variable_names(),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session.variable_names(),
             #[cfg(feature = "solver-rk45")]
@@ -209,7 +193,6 @@ impl SimulationSessionApi for SimulationSession {
 
     fn values_for(&self, names: &[String]) -> Result<Option<IndexMap<String, f64>>, Self::Error> {
         match &self.inner {
-            SimulationSessionInner::Discrete(stepper) => stepper.values_for(names).map(Some),
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .values_for(names)
@@ -225,7 +208,6 @@ impl SimulationSessionApi for SimulationSession {
 
     fn max_schedule_advance_dt(&self) -> Option<f64> {
         match &self.inner {
-            SimulationSessionInner::Discrete(_) => None,
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session.max_schedule_advance_dt(),
             #[cfg(feature = "solver-rk45")]
@@ -243,23 +225,11 @@ fn lower_for_simulation_session(
     crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
 }
 
-fn discrete_session_from_solve_model(
-    solve_model: solve::SolveModel,
-) -> Result<SimulationSession, SimulationDiagnosticError> {
-    let stepper = crate::discrete_stepper::SimStepper::from_solve_model(solve_model)?;
-    Ok(SimulationSession {
-        inner: SimulationSessionInner::Discrete(Box::new(stepper)),
-    })
-}
-
 fn new_auto_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
     let solve_model = lower_for_simulation_session(dae_model, &opts)?;
-    if solve_model.state_scalar_count() == 0 {
-        return discrete_session_from_solve_model(solve_model);
-    }
     #[cfg(feature = "solver-diffsol")]
     {
         crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
@@ -312,9 +282,6 @@ fn new_rk_like_session(
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
     let solve_model = lower_for_simulation_session(dae_model, &opts)?;
-    if solve_model.state_scalar_count() == 0 {
-        return discrete_session_from_solve_model(solve_model);
-    }
     #[cfg(feature = "solver-rk45")]
     {
         crate::rk45::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
