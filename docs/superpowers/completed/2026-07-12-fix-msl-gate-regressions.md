@@ -61,9 +61,13 @@ The remaining full-gate regressions were closed at their owning mechanisms:
 - `e7d8de30` projects coupled algebraics from the accepted local branch;
 - `58be4144` refreshes direct and coupled algebraic observations, consumes root relations atomically, and performs branch-preserving consistency polish before publishing reconstructed connection flows;
 - `6c546777` preserves accepted derivative/root/observation seeds across BDF restarts, clamps scheduled left limits, retains the triggering root index, and defers deadline roots consistently in session mode;
-- `ebf3518a` closes the final review findings: converged Newton polish is trust-bounded to the accepted branch, and coincident relation memories update atomically before confirmed root overrides win.
+- `ebf3518a` closes the final review findings: converged Newton polish is trust-bounded to the accepted branch, and coincident relation memories update atomically before confirmed root overrides win;
+- `b173267c` splits runtime values and branch-projection regressions into owned modules so every affected Rust source remains below the SPEC_0021 hard limit;
+- `5bfcebc3` makes the no-causal-target projection path explicit instead of relying on a default empty vector.
 
-The unchanged `cargo xtask verify msl-parity` gate passed over all 566 MSL 4.1.0 root examples. The final snapshot records Parse `566`, Flat `565`, DAE `556`, Solve `406`, balanced `543`, simulation success `182`, compared traces `174`, no-severe traces `151`, and exact state-set matches `158`. The resolved promoted baseline was not changed; no timeout, selected target, trace exclusion, tolerance, or parity requirement was relaxed.
+The unchanged `cargo xtask verify msl-parity` gate passed at `b173267c` over all 566 MSL 4.1.0 root examples. The final snapshot records Parse `566`, Flat `565`, DAE `556`, Solve `407`, balanced `543`, initialization success `222`, simulation success `180`, compared traces `172`, high-agreement traces `124`, minor-deviation traces `27`, no-severe traces `149`, severe traces `23`, severe channels `162`, and exact state-set matches `156`. The resolved promoted baseline was not changed; no timeout, selected target, trace exclusion, tolerance, or parity requirement was relaxed.
+
+After the full gate, the explicit empty-projection refactor passed all `943` `rumoca-phase-solve` tests, the strict workspace lint gate, formatting, diff checks, DCO checks, and a high/forbidden-failing review scan of that final commit. The whole-stack review audit's high-severity matches were limited to existing test-fixture dummy spans/defaults plus two new `#[cfg(test)]` fixture spans; the only new production-code match was the implicit default removed by `5bfcebc3`.
 
 No branch push was performed because the user did not authorize one. This is handoff state, not an active problem.
 
