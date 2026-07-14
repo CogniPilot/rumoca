@@ -901,9 +901,7 @@ fn test_boundary_rejects_derivative_alias_backed_only_by_connection_definition()
     );
 }
 
-#[test]
-fn test_boundary_keeps_producer_for_derivative_dependent_aggregate_leaf() {
-    let mut dae = Dae::new();
+fn add_derivative_aggregate_variables(dae: &mut Dae) {
     dae.variables
         .states
         .insert(VarName::new("x"), test_dae_variable("x"));
@@ -944,6 +942,18 @@ fn test_boundary_keeps_producer_for_derivative_dependent_aggregate_leaf() {
         variable.causality = causality;
         dae.variables.outputs.insert(VarName::new(name), variable);
     }
+}
+
+fn indexed_product_input(index: usize) -> Expression {
+    let name = format!("product.u[{index}]");
+    Expression::VarRef {
+        name: Reference::with_component_reference(&name, component_ref(&name)),
+        subscripts: Vec::new(),
+        span: test_span(),
+    }
+}
+
+fn add_derivative_aggregate_equations(dae: &mut Dae) {
     dae.continuous.equations.push(residual(
         var_ref("product.y"),
         builtin(BuiltinFunction::Product, vec![var_ref("product.u")]),
@@ -973,26 +983,12 @@ fn test_boundary_keeps_producer_for_derivative_dependent_aggregate_leaf() {
     ));
     dae.continuous.equations.push(residual(
         var_ref("rms.u"),
-        Expression::VarRef {
-            name: Reference::with_component_reference(
-                "product.u[1]",
-                component_ref("product.u[1]"),
-            ),
-            subscripts: Vec::new(),
-            span: test_span(),
-        },
+        indexed_product_input(1),
         1,
         "connection equation: rms.u = product.u[1]",
     ));
     dae.continuous.equations.push(residual(
-        Expression::VarRef {
-            name: Reference::with_component_reference(
-                "product.u[2]",
-                component_ref("product.u[2]"),
-            ),
-            subscripts: Vec::new(),
-            span: test_span(),
-        },
+        indexed_product_input(2),
         var_ref("sensor.v"),
         1,
         "connection equation: product.u[2] = sensor.v",
@@ -1004,25 +1000,18 @@ fn test_boundary_keeps_producer_for_derivative_dependent_aggregate_leaf() {
         "connection equation: sensor.v = mean.u",
     ));
     dae.continuous.equations.push(residual(
-        Expression::VarRef {
-            name: Reference::with_component_reference(
-                "product.u[1]",
-                component_ref("product.u[1]"),
-            ),
-            subscripts: Vec::new(),
-            span: test_span(),
-        },
-        Expression::VarRef {
-            name: Reference::with_component_reference(
-                "product.u[2]",
-                component_ref("product.u[2]"),
-            ),
-            subscripts: Vec::new(),
-            span: test_span(),
-        },
+        indexed_product_input(1),
+        indexed_product_input(2),
         1,
         "connection equation: product.u[1] = product.u[2]",
     ));
+}
+
+#[test]
+fn test_boundary_keeps_producer_for_derivative_dependent_aggregate_leaf() {
+    let mut dae = Dae::new();
+    add_derivative_aggregate_variables(&mut dae);
+    add_derivative_aggregate_equations(&mut dae);
 
     eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
