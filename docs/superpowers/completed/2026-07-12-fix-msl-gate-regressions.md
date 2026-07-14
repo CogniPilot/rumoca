@@ -27,7 +27,19 @@
 - require full-run runtime/trace parity and close the selected-target bypass: `82fc87ae`, `438a3947`;
 - align selected-target fixtures and isolate full-gate defaults: `427b204e`, `9cd395d9`;
 - settle symbolic dimensions without redundant evaluation while preserving every dependency-driven retry: `77ad16a0`, `c30ffec5`, `8e2c6f56`, `e72e724b`, `cf1c0af6`.
+- ModelicaTest semantic gate at `9e8f2e09`: selected target `ModelicaTest.Blocks.MuxDemux` completed successfully.
 
-The symbolic-dimension implementation passed its fifth independent review with no findings. At clean commit `cf1c0af67d00108e59329b16def8fa8044bb1e1a`, 540 `rumoca-phase-flatten` library tests, strict crate clippy, formatting, and diff checks passed. The clean focused artifact `/tmp/rumoca-task15-dimension-cf1/` records 4/4 Flat success with no timeout or budget increase; the separate Stack/StackRC ToDae deficits remain in the active closeout plan.
+The symbolic-dimension implementation passed independent review with no findings. At clean commit `cf1c0af67d00108e59329b16def8fa8044bb1e1a`, 540 `rumoca-phase-flatten` library tests, strict crate clippy, formatting, and diff checks passed. The clean focused artifact `/tmp/rumoca-task15-dimension-cf1/` records 4/4 Flat success with no timeout or budget increase.
+
+## Stack-family structural repair
+
+The former Stack/StackRC deficit was closed at its producing mechanisms rather than compensated downstream:
+
+- Flat preserves multidimensional member bindings and indexed nested-component boundaries/provenance: `aec66b13`, `bd7b9541`, `22e16326`, `eec5fbdb`, `abed9d04`;
+- inherited references resolve through explicit record aliases and fail closed when instance ownership is not proven; the rejected path-prefix heuristic is not present: `5fb3a38e`, `ddff7f88`;
+- ToDae canonicalizes and validates expandable-record projection identity before admitting it: `1071d894`, `a31e3be4`, `3711b4c1`;
+- structural elimination preserves runtime references, retires invalid boundary targets, rewrites proven indexed substitutions, and rejects ambiguous or symbolic target identity: `c558d2a6`, `dc8fcb4f`, `d5bf4868`, `bdc53572`, `4b92974d`, `9e8f2e09`.
+
+The complete mechanism chain passed independent review. At clean semantic commit `9e8f2e09a31e4e8f8834f121db3825ec883318c3`, focused structural admission is balanced for all controls: `CCCV_Stack` `134/134`, `CCCV_StackRC` `176/176`, `CCCV_Cell` `19/19`, and `CCCV_CellRC` `20/20`.
 
 Detailed implementation scripts, stale worktree paths, obsolete pre-fix counts, and already completed checklists were removed. Git history and the cited clean artifacts are the authoritative audit trail.
