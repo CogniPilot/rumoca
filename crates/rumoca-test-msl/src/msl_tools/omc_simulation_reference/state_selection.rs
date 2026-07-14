@@ -46,6 +46,10 @@ pub(super) fn compare_model_state_selection(
     Ok(Some(compare_state_sets(&rumoca_states, &omc_states)))
 }
 
+pub(super) fn validate_rumoca_state_metadata(trace: &SimTrace) -> Result<()> {
+    rumoca_state_names(trace).map(|_| ())
+}
+
 pub(super) fn state_selection_summary(report: &TraceQuantification) -> StateSelectionSummary {
     let mut summary = StateSelectionSummary::default();
     for metric in report

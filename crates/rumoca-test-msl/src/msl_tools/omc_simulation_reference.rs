@@ -1478,12 +1478,6 @@ fn quantify_trace_differences(
                 .insert(model_name.clone(), "missing rumoca trace path".to_string());
             continue;
         };
-        let Some(omc_trace_path) = resolve_omc_trace_path(paths, model_name, omc_model) else {
-            report
-                .missing_trace
-                .insert(model_name.clone(), "missing omc trace path".to_string());
-            continue;
-        };
         let rumoca_trace = match load_trace_json(&rumoca_trace_path) {
             Ok(trace) => trace,
             Err(error) => {
@@ -1493,6 +1487,14 @@ fn quantify_trace_differences(
                 );
                 continue;
             }
+        };
+        state_selection::validate_rumoca_state_metadata(&rumoca_trace)
+            .with_context(|| format!("invalid state metadata contract for `{model_name}`"))?;
+        let Some(omc_trace_path) = resolve_omc_trace_path(paths, model_name, omc_model) else {
+            report
+                .missing_trace
+                .insert(model_name.clone(), "missing omc trace path".to_string());
+            continue;
         };
         let omc_trace = match load_trace_json(&omc_trace_path) {
             Ok(trace) => trace,

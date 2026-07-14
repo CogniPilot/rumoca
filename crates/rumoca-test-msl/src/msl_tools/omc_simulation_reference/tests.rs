@@ -577,6 +577,120 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
 }
 
 #[test]
+fn quantify_rejects_invalid_state_contract_before_no_common_variable_skip() {
+    let (temp, paths, model_name) = trace_quantification_fixture("NoCommonVariables");
+    write_pretty_json(
+        &paths.rumoca_trace_dir.join(format!("{model_name}.json")),
+        &invalid_state_contract_trace(&model_name, "x"),
+    )
+    .expect("write rumoca trace");
+    write_pretty_json(
+        &paths.omc_trace_dir.join(format!("{model_name}.json")),
+        &json!({
+            "model_name": model_name,
+            "times": [0.0],
+            "names": ["y"],
+            "data": [[0.0]]
+        }),
+    )
+    .expect("write omc trace");
+    let results = trace_candidate_results(&model_name);
+
+    let error = quantify_trace_differences(&paths, &results, &BTreeMap::new())
+        .expect_err("invalid producer metadata must fail before numeric comparison skips");
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid state metadata contract")
+    );
+    drop(temp);
+}
+
+#[test]
+fn quantify_rejects_invalid_state_contract_before_omc_load_skip() {
+    let (temp, paths, model_name) = trace_quantification_fixture("MalformedOmcTrace");
+    write_pretty_json(
+        &paths.rumoca_trace_dir.join(format!("{model_name}.json")),
+        &invalid_state_contract_trace(&model_name, "x"),
+    )
+    .expect("write rumoca trace");
+    std::fs::write(
+        paths.omc_trace_dir.join(format!("{model_name}.json")),
+        "not json",
+    )
+    .expect("write malformed omc trace");
+    let results = trace_candidate_results(&model_name);
+
+    let error = quantify_trace_differences(&paths, &results, &BTreeMap::new())
+        .expect_err("invalid producer metadata must fail before OMC trace loading skips");
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid state metadata contract")
+    );
+    drop(temp);
+}
+
+fn trace_quantification_fixture(name: &str) -> (tempfile::TempDir, MslPaths, String) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let results_dir = temp.path().join("results");
+    let omc_trace_dir = results_dir.join("sim_traces/omc");
+    let rumoca_trace_dir = results_dir.join("sim_traces/rumoca");
+    std::fs::create_dir_all(&omc_trace_dir).expect("omc trace dir");
+    std::fs::create_dir_all(&rumoca_trace_dir).expect("rumoca trace dir");
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir: results_dir.clone(),
+        flat_dir: results_dir.join("omc_flat"),
+        work_dir: results_dir.join("omc_work"),
+        sim_work_dir: results_dir.join("omc_sim_work"),
+        omc_trace_dir,
+        rumoca_trace_dir,
+    };
+    (temp, paths, format!("Modelica.Tests.{name}"))
+}
+
+fn invalid_state_contract_trace(model_name: &str, variable: &str) -> Value {
+    json!({
+        "model_name": model_name,
+        "n_states": 2,
+        "times": [0.0],
+        "names": [variable],
+        "data": [[0.0]],
+        "variable_meta": [{"name": variable, "role": "state"}]
+    })
+}
+
+fn trace_candidate_results(model_name: &str) -> BTreeMap<String, SimModelResult> {
+    BTreeMap::from([(
+        model_name.to_string(),
+        SimModelResult {
+            status: "success".to_string(),
+            error: None,
+            sim_system_seconds: None,
+            total_system_seconds: None,
+            omc_wall_seconds: None,
+            result_file: None,
+            trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
+            trace_error: None,
+            rumoca_status: Some("sim_ok".to_string()),
+            rumoca_ic_status: Some("ic_ok".to_string()),
+            rumoca_ic_error: None,
+            rumoca_ic_seconds: None,
+            rumoca_sim_seconds: None,
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
+            rumoca_sim_wall_seconds: None,
+            rumoca_trace_file: Some(format!("sim_traces/rumoca/{model_name}.json")),
+            rumoca_trace_error: None,
+        },
+    )])
+}
+
+#[test]
 fn quantify_trace_differences_includes_error_status_model_with_existing_traces() {
     let temp = tempfile::tempdir().expect("tempdir");
     let results_dir = temp.path().join("results");
