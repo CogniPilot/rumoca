@@ -542,3 +542,78 @@ fn field_access(base: Expression, field: &str) -> Expression {
         span: test_span(),
     }
 }
+
+#[test]
+fn boundary_fixpoint_cleanup_removes_only_unreferenced_substitution_targets() {
+    let mut dae = Dae::new();
+    for name in [
+        "component.T_heatPort",
+        "component.heatPort.T",
+        "referenced_non_target",
+        "preexisting_orphan",
+    ] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("referenced_non_target")),
+            rhs: Box::new(lit(1.0)),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "retained equation".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("component.heatPort.T")),
+            rhs: Box::new(lit(293.15)),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "similarly named replacement remains live".to_string(),
+        scalar_count: 1,
+    });
+    dae.events
+        .synthetic_root_conditions
+        .push(var_ref("component.T_heatPort"));
+    let substitutions = vec![
+        substitution_for_var(
+            &dae,
+            VarName::new("component.T_heatPort"),
+            var_ref("component.heatPort.T"),
+        )
+        .unwrap(),
+    ];
+
+    finalize_boundary_substitution_targets(&mut dae, &substitutions).unwrap();
+
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("component.T_heatPort")),
+        "a replacement with overlapping component path text is not an exact reference to the substitution target"
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("referenced_non_target"))
+    );
+    assert_eq!(
+        exact_reference_expr_name_in_dae(&dae, &dae.events.synthetic_root_conditions[0]),
+        Some(VarName::new("component.heatPort.T")),
+        "runtime roots must consume the same boundary substitution before its target is retired"
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("preexisting_orphan")),
+        "preexisting unconstrained unknowns must remain visible to singularity diagnostics"
+    );
+}

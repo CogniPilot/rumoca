@@ -375,11 +375,37 @@ pub fn resolve_boundary_equations_to_fixpoint(
     loop {
         let pass = resolve_boundary_equations(dae)?;
         if pass.n_eliminated == 0 {
+            finalize_boundary_substitution_targets(dae, &result.substitutions)?;
             return Ok(result);
         }
         result.n_eliminated += pass.n_eliminated;
         result.substitutions.extend(pass.substitutions);
     }
+}
+
+/// Retire only variables reconstructed by this elimination result after their
+/// final structural reference has disappeared. This deliberately does not scan
+/// for arbitrary orphan variables: pre-existing unconstrained unknowns must
+/// remain visible to singularity diagnostics.
+fn finalize_boundary_substitution_targets(
+    dae: &mut Dae,
+    substitutions: &[Substitution],
+) -> Result<(), StructuralError> {
+    apply_substitutions_to_dae_partitions(dae, substitutions)?;
+    for substitution in substitutions {
+        let name = &substitution.var_name;
+        let referenced_by_continuous_equation = dae
+            .continuous
+            .equations
+            .iter()
+            .any(|equation| expr_contains_var(&equation_analysis_expr(equation), name));
+        if referenced_by_continuous_equation || runtime_partition_or_event_refs_var(dae, name) {
+            continue;
+        }
+        dae.variables.algebraics.shift_remove(name);
+        dae.variables.outputs.shift_remove(name);
+    }
+    Ok(())
 }
 
 fn resolve_boundary_and_direct_demotions_to_fixpoint(
