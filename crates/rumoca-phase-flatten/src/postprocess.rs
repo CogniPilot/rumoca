@@ -575,6 +575,24 @@ impl KnownFlatVars {
         self.names.contains_key(name)
     }
 
+    fn exact_reference(&self, name: &str) -> Option<rumoca_core::Reference> {
+        self.names.get(name).map(|component_ref| {
+            component_ref.as_ref().map_or_else(
+                || rumoca_core::Reference::new(name.to_string()),
+                |component_ref| {
+                    rumoca_core::Reference::with_component_reference(name, component_ref.clone())
+                },
+            )
+        })
+    }
+
+    fn has_structural_provenance(&self, path: &str) -> bool {
+        self.names
+            .get(path)
+            .is_some_and(|component_ref| component_ref.is_some())
+            || self.record_base_reference(path).is_some()
+    }
+
     fn is_aggregate_projection_ref(&self, name: &str) -> bool {
         self.aggregate_projection_refs.contains(name)
     }
@@ -873,13 +891,11 @@ fn collapse_penultimate_field_to_known_var(
     let (prefix, leaf) = rendered_path_last_segment(path)?;
     let (base, _) = rendered_path_last_segment(prefix)?;
     let candidate = format!("{base}.{leaf}");
-    if rumoca_core::split_trailing_subscript_suffix(base).is_some() {
-        // Removing a field directly below an indexed component would cross a
-        // concrete instance boundary.  The only valid collapse in this shape
-        // is the array-of-record projection spelling (`states[1].phase.h` ->
-        // `states.h[1]`), where the index moves to the projected field.
-        return alternate_array_field_path(&candidate)
-            .and_then(|alternate| known_path_expression(&alternate, span, known_flat_vars));
+    if known_flat_vars.has_structural_provenance(prefix) {
+        // The removed segment owns known descendants with structured variable
+        // metadata, so it is a real component/record boundary rather than an
+        // over-expanded field alias.  Do not redirect its leaf to a sibling.
+        return None;
     }
     known_path_expression(&candidate, span, known_flat_vars)
 }
@@ -889,18 +905,18 @@ fn known_path_expression(
     span: rumoca_core::Span,
     known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
-    if known_flat_vars.contains(path) {
+    if let Some(reference) = known_flat_vars.exact_reference(path) {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(path.to_string()),
+            name: reference,
             subscripts: vec![],
             span,
         });
     }
     if let Some(alternate) = alternate_array_field_path(path)
-        && known_flat_vars.contains(&alternate)
+        && let Some(reference) = known_flat_vars.exact_reference(&alternate)
     {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(alternate),
+            name: reference,
             subscripts: vec![],
             span,
         });

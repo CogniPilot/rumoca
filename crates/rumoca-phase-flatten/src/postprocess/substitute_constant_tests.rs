@@ -1352,11 +1352,11 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
 }
 
 #[test]
-fn collapse_index_refs_preserves_nested_member_inside_indexed_component() {
+fn collapse_penultimate_preserves_proven_nested_indexed_component_boundary() {
     let mut model = flat::Model::new();
     for name in [
-        "stack.cell[1,1].limIntegrator.local_reset",
-        "stack.cell[1,1].cell.limIntegrator.local_reset",
+        "stack.cell[1,1].local_reset",
+        "stack.cell[1,1].cell.local_reset",
     ] {
         let var_name = rumoca_core::VarName::new(name);
         model.add_variable(
@@ -1373,44 +1373,95 @@ fn collapse_index_refs_preserves_nested_member_inside_indexed_component() {
         );
     }
 
-    let indexed_cell = rumoca_core::Expression::Index {
-        base: Box::new(var_ref("stack.cell")),
-        subscripts: vec![
-            rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
-            rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
-        ],
-        span: rumoca_core::Span::DUMMY,
-    };
-    let nested_cell = rumoca_core::Expression::FieldAccess {
-        base: Box::new(indexed_cell),
-        field: "cell".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    let nested_integrator = rumoca_core::Expression::FieldAccess {
-        base: Box::new(nested_cell),
-        field: "limIntegrator".to_string(),
-        span: rumoca_core::Span::DUMMY,
-    };
-    model.add_equation(flat::Equation::new(
-        rumoca_core::Expression::FieldAccess {
-            base: Box::new(nested_integrator),
-            field: "local_reset".to_string(),
-            span: rumoca_core::Span::DUMMY,
-        },
-        rumoca_core::Span::DUMMY,
-        flat::EquationOrigin::ComponentEquation {
-            component: "stack.cell[1,1].cell.limIntegrator".to_string(),
-        },
-    ));
+    let known = KnownFlatVars::build(&model);
+    assert!(
+        collapse_penultimate_field_to_known_var(
+            "stack.cell[1,1].cell.local_reset",
+            test_span(),
+            &known,
+        )
+        .is_none()
+    );
+}
 
-    collapse_index_refs_to_known_varrefs(&mut model);
+#[test]
+fn collapse_penultimate_prefers_direct_indexed_candidate_when_both_spellings_exist() {
+    let mut model = flat::Model::new();
+    for name in ["states[1].h", "states.h[1]"] {
+        let var_name = rumoca_core::VarName::new(name);
+        model.add_variable(
+            var_name.clone(),
+            flat::Variable {
+                name: var_name.clone(),
+                component_ref: rumoca_core::component_reference_from_flat_name(
+                    &var_name,
+                    test_span(),
+                ),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
 
-    assert!(matches!(
-        &model.equations[0].residual,
-        rumoca_core::Expression::VarRef { name, subscripts, .. }
-            if name.as_str() == "stack.cell[1,1].cell.limIntegrator.local_reset"
-                && subscripts.is_empty()
-    ));
+    let known = KnownFlatVars::build(&model);
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = collapse_penultimate_field_to_known_var("states[1].phase.h", test_span(), &known)
+        .expect("direct indexed candidate should win")
+    else {
+        panic!("expected collapsed VarRef");
+    };
+    assert_eq!(name.as_str(), "states[1].h");
+    assert!(name.has_structure());
+    assert!(subscripts.is_empty());
+}
+
+#[test]
+fn collapse_penultimate_supports_symbolic_and_range_indexed_direct_candidates() {
+    for (path, expected) in [
+        ("states[i].phase.h", "states[i].h"),
+        ("states[1:2].phase.h", "states[1:2].h"),
+    ] {
+        let mut model = flat::Model::new();
+        add_primitive_variable(&mut model, expected);
+        let known = KnownFlatVars::build(&model);
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = collapse_penultimate_field_to_known_var(path, test_span(), &known)
+            .expect("indexed direct candidate should collapse")
+        else {
+            panic!("expected collapsed VarRef");
+        };
+        assert_eq!(name.as_str(), expected);
+        assert!(subscripts.is_empty());
+    }
+}
+
+#[test]
+fn collapse_penultimate_uses_alternate_projection_and_preserves_reference_structure() {
+    let mut model = flat::Model::new();
+    let var_name = rumoca_core::VarName::new("states.h[1]");
+    model.add_variable(
+        var_name.clone(),
+        flat::Variable {
+            name: var_name.clone(),
+            component_ref: rumoca_core::component_reference_from_flat_name(&var_name, test_span()),
+            is_primitive: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    let known = KnownFlatVars::build(&model);
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = collapse_penultimate_field_to_known_var("states[1].phase.h", test_span(), &known)
+        .expect("alternate array-field projection should collapse")
+    else {
+        panic!("expected collapsed VarRef");
+    };
+    assert_eq!(name.as_str(), "states.h[1]");
+    assert!(name.has_structure());
+    assert!(subscripts.is_empty());
 }
 
 #[test]
