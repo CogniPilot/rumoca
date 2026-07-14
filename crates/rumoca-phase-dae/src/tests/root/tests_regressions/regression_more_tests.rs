@@ -85,19 +85,24 @@ fn test_expandable_aggregate_projection_preserves_bound_or_defined_aggregate() {
 }
 
 #[test]
-fn test_expandable_aggregate_projection_rejects_dummy_or_cross_file_declaration_identity() {
-    let mut dummy = expandable_projection_fixture(&[1, 2]);
-    for name in ["bus.cells[1].x", "bus.cells[2].x"] {
-        dummy
-            .variables
-            .get_mut(&VarName::new(name))
-            .unwrap()
-            .component_ref
-            .as_mut()
-            .unwrap()
-            .span = Span::DUMMY;
-    }
-    assert!(!expandable_aggregate_projection_names(&dummy).contains(&VarName::new("bus.cells.x")));
+fn test_expandable_aggregate_projection_rejects_distinct_declaration_identity() {
+    let mut same_file = expandable_projection_fixture(&[1, 2]);
+    same_file
+        .variables
+        .get_mut(&VarName::new("bus.cells[2].x"))
+        .unwrap()
+        .component_ref
+        .as_mut()
+        .unwrap()
+        .span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_dae_fixture.mo"),
+        3,
+        4,
+    );
+    assert!(
+        !expandable_aggregate_projection_names(&same_file).contains(&VarName::new("bus.cells.x")),
+        "identical rendered paths from distinct declarations in one source must not be grouped"
+    );
 
     let mut cross_file = expandable_projection_fixture(&[1, 2]);
     cross_file

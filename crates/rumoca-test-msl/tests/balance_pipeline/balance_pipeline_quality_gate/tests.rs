@@ -9,6 +9,20 @@ use tempfile::tempdir;
 
 mod cache_resume;
 
+const ISOLATED_QUALITY_GATE_CHILD_MARKER: &str = "target/msl/isolated-quality-gate-child.marker";
+
+fn is_isolated_quality_gate_child() -> bool {
+    Path::new(ISOLATED_QUALITY_GATE_CHILD_MARKER).is_file()
+}
+
+fn write_isolated_quality_gate_child_marker(workspace: &Path) {
+    let marker = workspace.join(ISOLATED_QUALITY_GATE_CHILD_MARKER);
+    fs::create_dir_all(marker.parent().expect("marker parent"))
+        .expect("create isolated child marker directory");
+    fs::write(marker, "isolated quality-gate child\n")
+        .expect("write isolated quality-gate child marker");
+}
+
 fn assert_distribution_parsed(input: Value, expected: MslDistributionStats) {
     let stats = parse_distribution_stats(&input).expect("expected distribution stats");
     assert_eq!(stats.sample_count, expected.sample_count);
@@ -98,7 +112,7 @@ fn panic_message(payload: &Box<dyn Any + Send>) -> String {
     "<non-string panic payload>".to_string()
 }
 
-fn run_in_isolated_default_parity_workspace(test_name: &str, child_marker: &str) {
+fn run_in_isolated_default_parity_workspace(test_name: &str) {
     let workspace = tempdir().expect("temporary workspace");
     fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n")
         .expect("write workspace manifest");
@@ -109,13 +123,13 @@ fn run_in_isolated_default_parity_workspace(test_name: &str, child_marker: &str)
         "[package]\nname = \"rumoca-test-msl\"\nversion = \"0.0.0\"\n",
     )
     .expect("write temporary crate manifest");
+    write_isolated_quality_gate_child_marker(workspace.path());
 
     let status = std::process::Command::new(std::env::current_exe().expect("current test binary"))
         .current_dir(workspace.path())
         .arg("--exact")
         .arg(test_name)
         .arg("--nocapture")
-        .env(child_marker, "1")
         .status()
         .expect("run isolated default-parity regression");
     assert!(status.success(), "isolated regression failed: {test_name}");
@@ -236,11 +250,9 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
 
 #[test]
 fn full_quality_gate_rejects_zero_simulation_attempts() {
-    const CHILD_MARKER: &str = "RUMOCA_TEST_ZERO_SIM_ATTEMPTS_CHILD";
-    if std::env::var_os(CHILD_MARKER).is_none() {
+    if !is_isolated_quality_gate_child() {
         run_in_isolated_default_parity_workspace(
             "balance_pipeline::balance_pipeline_quality_gate::tests::full_quality_gate_rejects_zero_simulation_attempts",
-            CHILD_MARKER,
         );
         return;
     }
@@ -305,8 +317,7 @@ fn full_quality_gate_rejects_missing_current_parity_input() {
 
 #[test]
 fn full_root_selected_target_switch_still_requires_current_parity() {
-    const CHILD_MARKER: &str = "RUMOCA_TEST_FULL_ROOT_SELECTED_TARGET_PARITY_CHILD";
-    if std::env::var_os(CHILD_MARKER).is_some() {
+    if is_isolated_quality_gate_child() {
         let mut summary = valid_summary_template();
         summary.sim_target_models = vec!["A".to_string()];
         summary.sim_attempted = 1;
@@ -344,13 +355,13 @@ fn full_root_selected_target_switch_still_requires_current_parity() {
         .expect("serialize parity config"),
     )
     .expect("write parity config");
+    write_isolated_quality_gate_child_marker(workspace.path());
 
     let status = std::process::Command::new(std::env::current_exe().expect("current test binary"))
         .current_dir(workspace.path())
         .arg("--exact")
         .arg("balance_pipeline::balance_pipeline_quality_gate::tests::full_root_selected_target_switch_still_requires_current_parity")
         .arg("--nocapture")
-        .env(CHILD_MARKER, "1")
         .status()
         .expect("run isolated full-root gate regression");
     assert!(
@@ -953,11 +964,9 @@ fn valid_msl_summary_rejects_resolve_errors() {
 
 #[test]
 fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
-    const CHILD_MARKER: &str = "RUMOCA_TEST_BASELINE_SIM_FLOOR_CHILD";
-    if std::env::var_os(CHILD_MARKER).is_none() {
+    if !is_isolated_quality_gate_child() {
         run_in_isolated_default_parity_workspace(
             "balance_pipeline::balance_pipeline_quality_gate::tests::valid_msl_summary_rejects_baseline_sim_run_below_hard_floor",
-            CHILD_MARKER,
         );
         return;
     }
