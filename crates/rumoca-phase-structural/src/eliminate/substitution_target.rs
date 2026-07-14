@@ -1,8 +1,9 @@
 use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, Reference};
 
 use super::{
-    Substitution, aggregate_subscript_ref_matches_var, der_call_matches_scalar_substitution,
-    embedded_alias_indices_for_substitution, var_ref_matches_unknown_for_substitution_in_scope,
+    Dae, Substitution, aggregate_subscript_ref_matches_var, der_call_matches_scalar_substitution,
+    embedded_alias_indices_for_substitution, exact_reference_expr_name_in_dae,
+    var_ref_matches_unknown_for_substitution_in_scope,
 };
 use crate::variable_scope::DaeVariableScope;
 
@@ -10,10 +11,12 @@ pub(super) fn expr_contains_substitution_target_in_scope(
     expr: &Expression,
     substitution: &Substitution,
     dae_scope: Option<&DaeVariableScope<'_>>,
+    dae_context: Option<&Dae>,
 ) -> bool {
     let mut checker = SubstitutionTargetChecker {
         substitution,
         dae_scope,
+        dae_context,
         found: false,
     };
     checker.visit_expression(expr);
@@ -23,14 +26,25 @@ pub(super) fn expr_contains_substitution_target_in_scope(
 struct SubstitutionTargetChecker<'a> {
     substitution: &'a Substitution,
     dae_scope: Option<&'a DaeVariableScope<'a>>,
+    dae_context: Option<&'a Dae>,
     found: bool,
 }
 
 impl ExpressionVisitor for SubstitutionTargetChecker<'_> {
     fn visit_expression(&mut self, expr: &Expression) {
-        if !self.found {
-            self.walk_expression(expr);
+        if self.found {
+            return;
         }
+        if self
+            .dae_context
+            .and_then(|dae| exact_reference_expr_name_in_dae(dae, expr))
+            .as_ref()
+            == Some(&self.substitution.var_name)
+        {
+            self.found = true;
+            return;
+        }
+        self.walk_expression(expr);
     }
 
     fn visit_var_ref(&mut self, name: &Reference, subscripts: &[rumoca_core::Subscript]) {

@@ -2746,7 +2746,7 @@ pub(super) fn apply_substitutions_for_symbolic_candidate(
     let dae_scope = DaeVariableScope::new(dae);
     let mut out = apply_record_field_aggregate_substitutions(expr, substitutions, Some(dae));
     for sub in substitutions {
-        if !expr_contains_substitution_target_in_scope(&out, sub, Some(&dae_scope)) {
+        if !expr_contains_substitution_target_in_scope(&out, sub, Some(&dae_scope), Some(dae)) {
             continue;
         }
         if !is_trivial_alias(&sub.expr) && !solution_is_cheap_for_symbolic_substitution(&sub.expr) {
@@ -2758,6 +2758,7 @@ pub(super) fn apply_substitutions_for_symbolic_candidate(
             replacement_dims: &sub.replacement_dims,
             derivative_replacement: None,
             dae_scope: Some(&dae_scope),
+            dae_context: Some(dae),
         }
         .rewrite_expression(&out)?;
         if !expression_is_within_symbolic_candidate_budget(&out) {
@@ -2945,7 +2946,12 @@ pub(crate) fn apply_substitutions_to_expr_with_derivatives_and_dae(
     let substitution_scope = dae_context.map(DaeVariableScope::new);
     let mut out = apply_record_field_aggregate_substitutions(expr, substitutions, dae_context);
     for sub in substitutions {
-        if expr_contains_substitution_target_in_scope(&out, sub, substitution_scope.as_ref()) {
+        if expr_contains_substitution_target_in_scope(
+            &out,
+            sub,
+            substitution_scope.as_ref(),
+            dae_context,
+        ) {
             let derivative_replacement = if expr_contains_derivative_substitution_target(&out, sub)
             {
                 derivative_replacement_for(sub)?
@@ -2958,6 +2964,7 @@ pub(crate) fn apply_substitutions_to_expr_with_derivatives_and_dae(
                 replacement_dims: &sub.replacement_dims,
                 derivative_replacement: derivative_replacement.as_ref(),
                 dae_scope: substitution_scope.as_ref(),
+                dae_context,
             }
             .rewrite_expression(&out)?;
         }
@@ -4074,13 +4081,18 @@ struct SubstituteVarRewriter<'a> {
     replacement_dims: &'a [i64],
     derivative_replacement: Option<&'a Expression>,
     dae_scope: Option<&'a DaeVariableScope<'a>>,
+    dae_context: Option<&'a Dae>,
 }
 
 impl FallibleExpressionRewriter for SubstituteVarRewriter<'_> {
     type Error = StructuralError;
 
     fn rewrite_expression(&mut self, expr: &Expression) -> Result<Expression, Self::Error> {
-        if exact_reference_expr_name(expr).as_ref() == Some(&self.substitution.var_name) {
+        let exact_name = self
+            .dae_context
+            .and_then(|dae| exact_reference_expr_name_in_dae(dae, expr))
+            .or_else(|| exact_reference_expr_name(expr));
+        if exact_name.as_ref() == Some(&self.substitution.var_name) {
             return Ok(expr.span().map_or_else(
                 || self.replacement.clone(),
                 |span| replacement_with_owner_span(self.replacement, span),

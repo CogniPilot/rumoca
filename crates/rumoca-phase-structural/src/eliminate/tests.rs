@@ -73,6 +73,7 @@ fn substitute_var(expr: &Expression, var: &VarName, replacement: &Expression) ->
             replacement_dims: &substitution.replacement_dims,
             derivative_replacement: None,
             dae_scope: None,
+            dae_context: None,
         }
         .rewrite_expression(expr),
     )
@@ -699,6 +700,49 @@ fn test_substitute_var_projects_embedded_array_alias_component() {
                     && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 2, .. }])
         ),
         "scalarized alias component should project replacement array"
+    );
+}
+
+#[test]
+fn substitution_with_dae_context_rewrites_indexed_component_field_reference() {
+    let mut dae = dae::Dae::default();
+    let target = "stack.cell[1,1].cell.ocv_soc.u";
+    dae.variables
+        .outputs
+        .insert(VarName::new(target), test_dae_variable(target));
+    let indexed_cell = Expression::Index {
+        base: Box::new(var_ref("stack.cell")),
+        subscripts: vec![
+            rumoca_core::Subscript::generated_index(1, test_span()),
+            rumoca_core::Subscript::generated_index(1, test_span()),
+        ],
+        span: test_span(),
+    };
+    let expr = Expression::FieldAccess {
+        base: Box::new(Expression::FieldAccess {
+            base: Box::new(Expression::FieldAccess {
+                base: Box::new(indexed_cell),
+                field: "cell".to_string(),
+                span: test_span(),
+            }),
+            field: "ocv_soc".to_string(),
+            span: test_span(),
+        }),
+        field: "u".to_string(),
+        span: test_span(),
+    };
+    let substitution = test_substitution(target, var_ref("replacement"));
+
+    let result = structural_ok(apply_substitutions_to_expr_with_derivatives_and_dae(
+        &expr,
+        &[substitution],
+        Some(&dae),
+        |_| Ok(None),
+    ));
+
+    assert!(
+        matches!(result, Expression::VarRef { ref name, .. } if name.as_str() == "replacement"),
+        "nested indexed component field reference should be rewritten as one scalar target: {result:?}"
     );
 }
 
