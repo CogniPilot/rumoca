@@ -1946,3 +1946,74 @@ fn test_scalarize_preserves_declared_matrix_vector_equations() {
         "declared matrix/vector equation should remain symbolic for structural scalarization"
     );
 }
+
+fn record_lane_variable(name: &str, declaration: u32) -> dae::Variable {
+    let mut variable = dae::Variable::new(rumoca_core::VarName::new(name), test_span());
+    let mut reference = component_ref(&[("bus", None), ("cells", Some(1)), ("x", None)]);
+    reference.def_id = Some(rumoca_core::DefId::new(declaration));
+    variable.component_ref = Some(reference);
+    variable
+}
+
+#[test]
+fn test_record_array_projection_alias_rejects_direct_name_collision() {
+    let mut dae = Dae::new();
+    let lane = record_lane_variable("bus.cells[1].x", 90_101);
+    dae.variables.algebraics.insert(lane.name.clone(), lane);
+
+    let mut direct = dae::Variable::new(rumoca_core::VarName::new("bus.cells.x[1]"), test_span());
+    let mut direct_ref = component_ref(&[("bus", None), ("cells", None), ("x", Some(1))]);
+    direct_ref.def_id = Some(rumoca_core::DefId::new(90_102));
+    direct.component_ref = Some(direct_ref);
+    dae.variables.algebraics.insert(direct.name.clone(), direct);
+
+    let error = build_record_array_projection_alias_map(&dae).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("collides with a directly declared variable")
+    );
+}
+
+#[test]
+fn test_record_array_projection_alias_rejects_duplicate_structured_path() {
+    let mut dae = Dae::new();
+    let first = record_lane_variable("first_lane", 90_111);
+    let second = record_lane_variable("second_lane", 90_112);
+    dae.variables.algebraics.insert(first.name.clone(), first);
+    dae.variables.algebraics.insert(second.name.clone(), second);
+
+    let error = build_record_array_projection_alias_map(&dae).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate record-array projection alias")
+    );
+}
+
+#[test]
+fn test_record_array_projection_alias_only_resolves_concrete_indices() {
+    let mut dae = Dae::new();
+    let lane = record_lane_variable("bus.cells[1].x", 90_121);
+    dae.variables.algebraics.insert(lane.name.clone(), lane);
+    let aliases = build_record_array_projection_alias_map(&dae).unwrap();
+
+    let mut concrete = component_ref(&[("bus", None), ("cells", None), ("x", Some(1))]);
+    concrete.def_id = None;
+    assert_eq!(
+        aliases.resolve(&concrete).unwrap().as_str(),
+        "bus.cells[1].x"
+    );
+
+    let mut colon = component_ref(&[("bus", None), ("cells", None), ("x", None)]);
+    colon.parts.last_mut().unwrap().subs =
+        vec![rumoca_core::Subscript::Colon { span: test_span() }];
+    assert!(aliases.resolve(&colon).is_none());
+
+    let mut expression = component_ref(&[("bus", None), ("cells", None), ("x", None)]);
+    expression.parts.last_mut().unwrap().subs = vec![rumoca_core::Subscript::Expr {
+        expr: Box::new(var_ref("i")),
+        span: test_span(),
+    }];
+    assert!(aliases.resolve(&expression).is_none());
+}

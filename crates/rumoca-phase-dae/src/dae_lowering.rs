@@ -1078,7 +1078,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     let known_names = build_known_var_name_set(dae);
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
     let array_dims = build_array_dims_map(dae);
-    let record_array_projection_aliases = build_record_array_projection_alias_map(dae);
+    let record_array_projection_aliases = build_record_array_projection_alias_map(dae)?;
     let record_array_fields = build_record_array_field_map(dae);
 
     canonicalize_embedded_subscript_equation_list(
@@ -1639,9 +1639,80 @@ fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
     dims_map
 }
 
-fn build_record_array_projection_alias_map(dae: &Dae) -> HashMap<String, rumoca_core::Reference> {
-    let mut aliases = HashMap::new();
-    for partition in [
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct StructuredProjectionPart {
+    ident: String,
+    indices: Vec<i64>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct StructuredProjectionPath {
+    local: bool,
+    parts: Vec<StructuredProjectionPart>,
+}
+
+impl StructuredProjectionPath {
+    fn from_component_ref(component_ref: &rumoca_core::ComponentReference) -> Option<Self> {
+        let parts = component_ref
+            .parts
+            .iter()
+            .map(|part| {
+                let indices = part
+                    .subs
+                    .iter()
+                    .map(|subscript| match subscript {
+                        rumoca_core::Subscript::Index { value, .. } => Some(*value),
+                        rumoca_core::Subscript::Colon { .. }
+                        | rumoca_core::Subscript::Expr { .. } => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(StructuredProjectionPart {
+                    ident: part.ident.clone(),
+                    indices,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            local: component_ref.local,
+            parts,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct StructuredProjectionIdentity {
+    path: StructuredProjectionPath,
+    declaration: rumoca_core::DefId,
+}
+
+#[derive(Debug, Default)]
+struct RecordArrayProjectionAliases {
+    aliases: HashMap<StructuredProjectionIdentity, rumoca_core::Reference>,
+    unique_identity_by_path: HashMap<StructuredProjectionPath, StructuredProjectionIdentity>,
+}
+
+impl RecordArrayProjectionAliases {
+    fn resolve(
+        &self,
+        component_ref: &rumoca_core::ComponentReference,
+    ) -> Option<rumoca_core::Reference> {
+        let path = StructuredProjectionPath::from_component_ref(component_ref)?;
+        if let Some(declaration) = component_ref.def_id {
+            let identity = StructuredProjectionIdentity {
+                path: path.clone(),
+                declaration,
+            };
+            if let Some(reference) = self.aliases.get(&identity) {
+                return Some(reference.clone());
+            }
+        }
+        let identity = self.unique_identity_by_path.get(&path)?;
+        self.aliases.get(identity).cloned()
+    }
+}
+
+fn dae_variable_partitions(dae: &Dae) -> [&IndexMap<rumoca_core::VarName, dae::Variable>; 8] {
+    [
         &dae.variables.states,
         &dae.variables.algebraics,
         &dae.variables.inputs,
@@ -1650,24 +1721,51 @@ fn build_record_array_projection_alias_map(dae: &Dae) -> HashMap<String, rumoca_
         &dae.variables.constants,
         &dae.variables.discrete_reals,
         &dae.variables.discrete_valued,
-    ] {
-        for (name, variable) in partition {
-            append_record_array_projection_aliases(&mut aliases, name, variable);
+    ]
+}
+
+fn build_record_array_projection_alias_map(
+    dae: &Dae,
+) -> Result<RecordArrayProjectionAliases, ToDaeError> {
+    let mut direct_paths = HashSet::new();
+    for partition in dae_variable_partitions(dae) {
+        for variable in partition.values() {
+            if let Some(path) = variable
+                .component_ref
+                .as_ref()
+                .and_then(StructuredProjectionPath::from_component_ref)
+            {
+                direct_paths.insert(path);
+            }
         }
     }
-    aliases
+
+    let mut aliases = RecordArrayProjectionAliases::default();
+    for partition in dae_variable_partitions(dae) {
+        for (name, variable) in partition {
+            append_record_array_projection_aliases(&mut aliases, &direct_paths, name, variable)?;
+        }
+    }
+    Ok(aliases)
 }
 
 fn append_record_array_projection_aliases(
-    aliases: &mut HashMap<String, rumoca_core::Reference>,
+    aliases: &mut RecordArrayProjectionAliases,
+    direct_paths: &HashSet<StructuredProjectionPath>,
     name: &rumoca_core::VarName,
     variable: &dae::Variable,
-) {
+) -> Result<(), ToDaeError> {
     let Some(component_ref) = variable.component_ref.as_ref() else {
-        return;
+        return Ok(());
+    };
+    let Some(declaration) = component_ref.def_id else {
+        return Ok(());
     };
     for index in 0..component_ref.parts.len().saturating_sub(1) {
         if component_ref.parts[index].subs.is_empty() {
+            continue;
+        }
+        if StructuredProjectionPath::from_component_ref(component_ref).is_none() {
             continue;
         }
         let mut projection = component_ref.clone();
@@ -1678,12 +1776,39 @@ fn append_record_array_projection_aliases(
             .expect("component reference with an indexed part has a leaf")
             .subs
             .extend(subscripts);
-        let projection_name =
-            rumoca_core::ComponentPath::from_component_reference(&projection).to_flat_string();
-        aliases.entry(projection_name).or_insert_with(|| {
-            rumoca_core::Reference::with_component_reference(name.as_str(), component_ref.clone())
-        });
+        let Some(path) = StructuredProjectionPath::from_component_ref(&projection) else {
+            continue;
+        };
+        if direct_paths.contains(&path) {
+            return Err(ToDaeError::runtime_metadata_violation_at(
+                format!(
+                    "record-array projection for `{name}` collides with a directly declared variable"
+                ),
+                variable.source_span,
+            ));
+        }
+        let identity = StructuredProjectionIdentity {
+            path: path.clone(),
+            declaration,
+        };
+        let reference =
+            rumoca_core::Reference::with_component_reference(name.as_str(), component_ref.clone());
+        if aliases
+            .aliases
+            .insert(identity.clone(), reference)
+            .is_some()
+            || aliases
+                .unique_identity_by_path
+                .insert(path, identity)
+                .is_some()
+        {
+            return Err(ToDaeError::runtime_metadata_violation_at(
+                format!("duplicate record-array projection alias for `{name}`"),
+                variable.source_span,
+            ));
+        }
     }
+    Ok(())
 }
 
 fn build_record_array_field_map(dae: &Dae) -> RecordArrayFieldMap {
@@ -1783,7 +1908,7 @@ fn single_positive_index_subscript(subscripts: &[rumoca_core::Subscript]) -> Opt
 fn canonicalize_embedded_subscript_equation_list(
     equations: &mut [dae::Equation],
     array_dims: &HashMap<String, Vec<i64>>,
-    record_array_projection_aliases: &HashMap<String, rumoca_core::Reference>,
+    record_array_projection_aliases: &RecordArrayProjectionAliases,
 ) -> Result<(), ToDaeError> {
     let mut canonicalizer = EmbeddedSubscriptCanonicalizer {
         array_dims,
@@ -1804,7 +1929,7 @@ fn canonicalize_embedded_subscript_equation_list(
 
 struct EmbeddedSubscriptCanonicalizer<'a> {
     array_dims: &'a HashMap<String, Vec<i64>>,
-    record_array_projection_aliases: &'a HashMap<String, rumoca_core::Reference>,
+    record_array_projection_aliases: &'a RecordArrayProjectionAliases,
     error: Option<ToDaeError>,
 }
 
@@ -1899,23 +2024,15 @@ impl EmbeddedSubscriptCanonicalizer<'_> {
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) -> Option<rumoca_core::Reference> {
-        if subscripts.is_empty() {
-            return self
-                .record_array_projection_aliases
-                .get(name.as_str())
-                .cloned();
-        }
         let mut projection = name.component_ref()?.clone();
-        projection
-            .parts
-            .last_mut()?
-            .subs
-            .extend_from_slice(subscripts);
-        let projection_name =
-            rumoca_core::ComponentPath::from_component_reference(&projection).to_flat_string();
-        self.record_array_projection_aliases
-            .get(&projection_name)
-            .cloned()
+        if !subscripts.is_empty() {
+            projection
+                .parts
+                .last_mut()?
+                .subs
+                .extend_from_slice(subscripts);
+        }
+        self.record_array_projection_aliases.resolve(&projection)
     }
 
     fn record_error(

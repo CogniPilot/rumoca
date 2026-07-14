@@ -1,5 +1,123 @@
 use super::*;
 
+fn expandable_projection_fixture(lanes: &[i64]) -> Model {
+    let span = crate::test_support::test_span();
+    let mut flat = Model::new();
+    let mut aggregate = crate::test_support::with_component_ref(flat::Variable {
+        name: VarName::new("bus.cells.x"),
+        dims: vec![2],
+        is_primitive: true,
+        from_expandable_connector: true,
+        ..flat::Variable::empty_with_span(span)
+    });
+    aggregate.component_ref.as_mut().unwrap().def_id = None;
+    flat.add_variable(aggregate.name.clone(), aggregate);
+
+    for index in lanes {
+        let name = VarName::new(format!("bus.cells[{index}].x"));
+        let mut lane = crate::test_support::with_component_ref(flat::Variable {
+            name: name.clone(),
+            is_primitive: true,
+            from_expandable_connector: true,
+            ..flat::Variable::empty_with_span(span)
+        });
+        lane.component_ref.as_mut().unwrap().def_id = Some(rumoca_core::DefId::new(
+            90_000 + u32::try_from(*index).unwrap(),
+        ));
+        flat.add_variable(name, lane);
+    }
+    flat
+}
+
+#[test]
+fn test_expandable_aggregate_projection_requires_complete_lane_domain() {
+    let complete = expandable_projection_fixture(&[1, 2]);
+    assert!(
+        expandable_aggregate_projection_names(&complete).contains(&VarName::new("bus.cells.x"))
+    );
+
+    let partial = expandable_projection_fixture(&[1]);
+    assert!(
+        !expandable_aggregate_projection_names(&partial).contains(&VarName::new("bus.cells.x")),
+        "a partial lane set cannot prove that the aggregate is only a projection"
+    );
+}
+
+#[test]
+fn test_expandable_aggregate_projection_preserves_bound_or_defined_aggregate() {
+    let span = crate::test_support::test_span();
+    let mut bound = expandable_projection_fixture(&[1, 2]);
+    bound
+        .variables
+        .get_mut(&VarName::new("bus.cells.x"))
+        .unwrap()
+        .binding = Some(Expression::Literal {
+        value: Literal::Real(1.0),
+        span,
+    });
+    assert!(!expandable_aggregate_projection_names(&bound).contains(&VarName::new("bus.cells.x")));
+
+    let mut defined = expandable_projection_fixture(&[1, 2]);
+    defined.add_equation(flat::Equation {
+        residual: Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(Expression::VarRef {
+                name: VarName::new("bus.cells.x").into(),
+                subscripts: vec![],
+                span,
+            }),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Real(0.0),
+                span,
+            }),
+            span,
+        },
+        span,
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: "owner".to_string(),
+        },
+        scalar_count: 2,
+    });
+    assert!(
+        !expandable_aggregate_projection_names(&defined).contains(&VarName::new("bus.cells.x")),
+        "a non-connection LHS is an independent aggregate definition"
+    );
+}
+
+#[test]
+fn test_expandable_aggregate_projection_rejects_dummy_or_cross_file_declaration_identity() {
+    let mut dummy = expandable_projection_fixture(&[1, 2]);
+    for name in ["bus.cells[1].x", "bus.cells[2].x"] {
+        dummy
+            .variables
+            .get_mut(&VarName::new(name))
+            .unwrap()
+            .component_ref
+            .as_mut()
+            .unwrap()
+            .span = Span::DUMMY;
+    }
+    assert!(!expandable_aggregate_projection_names(&dummy).contains(&VarName::new("bus.cells.x")));
+
+    let mut cross_file = expandable_projection_fixture(&[1, 2]);
+    cross_file
+        .variables
+        .get_mut(&VarName::new("bus.cells[2].x"))
+        .unwrap()
+        .component_ref
+        .as_mut()
+        .unwrap()
+        .span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("other_declaration.mo"),
+        1,
+        2,
+    );
+    assert!(
+        !expandable_aggregate_projection_names(&cross_file).contains(&VarName::new("bus.cells.x")),
+        "identical rendered paths from different source declarations must not be grouped"
+    );
+}
+
 // SPEC_0021 file-size exception: this root regression bucket temporarily
 // groups DAE lowering regressions that share root-level fixtures. split plan:
 // move member-call, scalar-count, and discrete-alias regressions into focused

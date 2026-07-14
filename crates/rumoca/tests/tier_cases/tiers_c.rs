@@ -965,7 +965,11 @@ end NestedBusTranscription;
 block BusSource
     StackBus bus;
 equation
-    bus.cellBus.x = fill(1.0, 2, 1);
+    for i in 1:2 loop
+        for j in 1:1 loop
+            bus.cellBus[i,j].x = 1.0;
+        end for;
+    end for;
 end BusSource;
 
 model NestedBusTranscriptionSystem
@@ -1000,6 +1004,15 @@ end NestedBusTranscriptionSystem;
                     && origin.contains("transcription.g[1,1].u")
             }),
             "input-side scalar lane connection must remain in f_x; origins={origins:?}"
+        );
+        assert!(
+            origins.iter().all(|origin| {
+                !(origin.contains("connection equation")
+                    && origin.contains("transcription.outBus.cellBus")
+                    && origin.contains("transcription.g[")
+                    && origin.contains(".y"))
+            }),
+            "nested output lanes already defined by gain equations must not add repeated connection constraints; origins={origins:?}"
         );
     }
 }

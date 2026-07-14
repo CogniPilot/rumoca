@@ -718,8 +718,129 @@ fn categorize_algebraic(
     }
 }
 
+#[derive(Debug)]
+struct ExpandableProjectionLane {
+    declaration_span: Span,
+    instance: rumoca_core::DefId,
+    indices: Vec<i64>,
+    field_dims: Vec<i64>,
+    projection: ComponentReference,
+}
+
+fn concrete_component_indices(subscripts: &[Subscript]) -> Option<Vec<i64>> {
+    if subscripts.is_empty() {
+        return None;
+    }
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => Some(*value),
+            Subscript::Colon { .. } | Subscript::Expr { .. } => None,
+        })
+        .collect()
+}
+
+fn same_component_projection(lhs: &ComponentReference, rhs: &ComponentReference) -> bool {
+    lhs.local == rhs.local
+        && lhs.parts.len() == rhs.parts.len()
+        && lhs.parts.iter().zip(&rhs.parts).all(|(lhs, rhs)| {
+            lhs.ident == rhs.ident
+                && lhs.subs.len() == rhs.subs.len()
+                && lhs.subs.iter().zip(&rhs.subs).all(|(lhs, rhs)| {
+                    matches!(
+                        (lhs, rhs),
+                        (
+                            Subscript::Index { value: lhs, .. },
+                            Subscript::Index { value: rhs, .. }
+                        ) if lhs == rhs
+                    )
+                })
+        })
+}
+
+fn aggregate_has_only_complete_projection_connections(
+    flat: &flat::Model,
+    name: &VarName,
+    expected_scalar_count: usize,
+) -> bool {
+    let mut seen = false;
+    for equation in &flat.equations {
+        if !collect_var_refs(&equation.residual).contains(name) {
+            continue;
+        }
+        seen = true;
+        if !equation.origin.is_connection() || equation.scalar_count != expected_scalar_count {
+            return false;
+        }
+    }
+    seen
+}
+
+fn is_complete_expandable_projection(
+    flat: &flat::Model,
+    name: &VarName,
+    lanes: &[ExpandableProjectionLane],
+    directly_defined: &HashSet<VarName>,
+) -> Option<()> {
+    let aggregate = flat.variables.get(name)?;
+    let aggregate_ref = aggregate.component_ref.as_ref()?;
+    let first = lanes.first()?;
+    let rank = first.indices.len();
+    let domain_dims = aggregate.dims.get(..rank)?;
+    let field_dims = aggregate.dims.get(rank..)?;
+
+    let aggregate_is_only_projection = aggregate.from_expandable_connector
+        && aggregate.is_primitive
+        && aggregate.binding.is_none()
+        && matches!(aggregate.causality, rumoca_core::Causality::Empty)
+        && !directly_defined.contains(name)
+        && !domain_dims.is_empty()
+        && domain_dims.iter().all(|dim| *dim > 0)
+        && field_dims == first.field_dims
+        && aggregate_ref.def_id.is_none()
+        && lanes.iter().all(|lane| {
+            lane.declaration_span == first.declaration_span
+                && lane.indices.len() == rank
+                && lane.field_dims == first.field_dims
+                && same_component_projection(&lane.projection, aggregate_ref)
+                && lane
+                    .indices
+                    .iter()
+                    .zip(domain_dims)
+                    .all(|(index, dim)| (1..=*dim).contains(index))
+        });
+    aggregate_is_only_projection.then_some(())?;
+
+    let scalar_width = |dims: &[i64]| {
+        dims.iter().try_fold(1_usize, |count, dim| {
+            usize::try_from(*dim)
+                .ok()
+                .and_then(|dim| count.checked_mul(dim))
+        })
+    };
+    let expected = scalar_width(domain_dims)?;
+    let expected_scalar_count = expected.checked_mul(scalar_width(field_dims)?)?;
+    if aggregate.connected
+        && !aggregate_has_only_complete_projection_connections(flat, name, expected_scalar_count)
+    {
+        return None;
+    }
+    let concrete_domain = lanes
+        .iter()
+        .map(|lane| lane.indices.clone())
+        .collect::<HashSet<_>>();
+    let concrete_instances = lanes
+        .iter()
+        .map(|lane| lane.instance)
+        .collect::<HashSet<_>>();
+    (concrete_domain.len() == expected
+        && concrete_instances.len() == expected
+        && lanes.len() == expected)
+        .then_some(())
+}
+
 fn expandable_aggregate_projection_names(flat: &flat::Model) -> HashSet<rumoca_core::VarName> {
-    let mut projections = HashSet::new();
+    let mut lanes: HashMap<rumoca_core::VarName, Vec<ExpandableProjectionLane>> = HashMap::new();
     for candidate in flat.variables.values() {
         if !candidate.from_expandable_connector || !candidate.is_primitive {
             continue;
@@ -727,25 +848,51 @@ fn expandable_aggregate_projection_names(flat: &flat::Model) -> HashSet<rumoca_c
         let Some(component_ref) = candidate.component_ref.as_ref() else {
             continue;
         };
+        if component_ref.span.is_dummy() {
+            continue;
+        }
+        let Some(instance) = component_ref.def_id else {
+            continue;
+        };
+        let mut candidate_projections = Vec::new();
         for (index, part) in component_ref.parts.iter().enumerate() {
-            if part.subs.is_empty() {
+            let Some(indices) = concrete_component_indices(&part.subs) else {
                 continue;
-            }
+            };
             let mut projection = component_ref.clone();
             projection.parts[index].subs.clear();
             let projection_name = projection.to_var_name();
             if flat
                 .variables
                 .get(&projection_name)
-                .is_some_and(|aggregate| {
-                    aggregate.from_expandable_connector && !aggregate.dims.is_empty()
-                })
+                .is_some_and(|aggregate| aggregate.from_expandable_connector)
             {
-                projections.insert(projection_name);
+                candidate_projections.push((projection_name, projection, indices));
             }
         }
+        // More than one indexed container would make the projection identity ambiguous.
+        let [(projection_name, projection, indices)] = candidate_projections.as_slice() else {
+            continue;
+        };
+        lanes
+            .entry(projection_name.clone())
+            .or_default()
+            .push(ExpandableProjectionLane {
+                declaration_span: component_ref.span,
+                instance,
+                indices: indices.clone(),
+                field_dims: candidate.dims.clone(),
+                projection: projection.clone(),
+            });
     }
-    projections
+
+    let (directly_defined, _) = collect_continuous_equation_lhs(flat);
+    lanes
+        .into_iter()
+        .filter_map(|(name, lanes)| {
+            is_complete_expandable_projection(flat, &name, &lanes, &directly_defined).map(|()| name)
+        })
+        .collect()
 }
 
 fn has_clocked_binding(var: &flat::Variable) -> bool {
