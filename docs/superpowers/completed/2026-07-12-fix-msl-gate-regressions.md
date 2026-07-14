@@ -60,7 +60,8 @@ The remaining full-gate regressions were closed at their owning mechanisms:
 - `63c1d7ee` assigns residual ownership from complete producer incidence and keeps coupled rows simultaneous;
 - `e7d8de30` projects coupled algebraics from the accepted local branch;
 - `58be4144` refreshes direct and coupled algebraic observations, consumes root relations atomically, and performs branch-preserving consistency polish before publishing reconstructed connection flows;
-- `6c546777` preserves accepted derivative/root/observation seeds across BDF restarts, clamps scheduled left limits, retains the triggering root index, and defers deadline roots consistently in session mode.
+- `6c546777` preserves accepted derivative/root/observation seeds across BDF restarts, clamps scheduled left limits, retains the triggering root index, and defers deadline roots consistently in session mode;
+- `ebf3518a` closes the final review findings: converged Newton polish is trust-bounded to the accepted branch, and coincident relation memories update atomically before confirmed root overrides win.
 
 The unchanged `cargo xtask verify msl-parity` gate passed over all 566 MSL 4.1.0 root examples. The final snapshot records Parse `566`, Flat `565`, DAE `556`, Solve `406`, balanced `543`, simulation success `182`, compared traces `174`, no-severe traces `151`, and exact state-set matches `158`. The resolved promoted baseline was not changed; no timeout, selected target, trace exclusion, tolerance, or parity requirement was relaxed.
 
