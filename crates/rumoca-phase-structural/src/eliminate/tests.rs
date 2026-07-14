@@ -827,6 +827,42 @@ fn structured_substitution_rejects_mismatched_def_id_and_local_scope() {
 }
 
 #[test]
+fn generated_scalar_substitution_accepts_only_the_exact_canonical_owner() {
+    let mut dae = dae::Dae::default();
+    let mut aggregate = component_var("product.u");
+    aggregate.dims = vec![2];
+    dae.variables
+        .outputs
+        .insert(VarName::new("product.u"), aggregate);
+    let substitution = Substitution {
+        var_name: VarName::new("product.u[2]"),
+        var_ref: None,
+        expr: var_ref("physical_source"),
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: vec!["product.u[2]".to_string()],
+    };
+    let exact = structured_var_ref("product.u[2]", false, None);
+    let result = apply_dae_substitution(&dae, &exact, substitution.clone());
+    assert!(
+        matches!(result, Expression::VarRef { ref name, .. } if name.as_str() == "physical_source"),
+        "the generated exact scalar owner must receive its physical producer"
+    );
+
+    for other in [
+        structured_var_ref("product.u[1]", false, None),
+        structured_var_ref("product.u[2]", true, None),
+        structured_var_ref("product.u[2]", false, Some(41)),
+    ] {
+        let result = apply_dae_substitution(&dae, &other, substitution.clone());
+        assert_eq!(
+            result, other,
+            "sibling index and mismatched local/definition owners must fail closed"
+        );
+    }
+}
+
+#[test]
 fn structured_substitution_rejects_neighbor_partial_and_dynamic_references() {
     let target = "stack.cell[1,1].cell.ocv_soc.u";
     let (dae, substitution) = structured_substitution_fixture(target, false, Some(42));

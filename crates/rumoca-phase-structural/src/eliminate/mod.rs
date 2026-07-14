@@ -71,7 +71,9 @@ use substitution_application::{
 };
 use substitution_target::{
     expr_contains_derivative_substitution_target, expr_contains_substitution_target_in_scope,
-    expression_is_exact_structured_substitution_target, substitution_requires_structured_identity,
+    expression_is_exact_structured_substitution_target,
+    generated_scalar_reference_matches_exact_substitution_name,
+    substitution_requires_structured_identity,
 };
 use tearing_elimination::tear_and_eliminate_loop_block;
 use unknown_index::{
@@ -1168,12 +1170,42 @@ fn state_derivative_elimination_is_valid(
     direct_assignment_solution: bool,
 ) -> bool {
     !ctx.has_state_derivative
-        || is_output
+        || (is_output && derivative_alias_has_other_equation(ctx, solution))
         || (direct_assignment_solution
             && ctx
                 .direct_definitions
-                .has_other_direct_definition(ctx.eq_idx, candidate)
+                .has_other_non_connection_direct_definition(ctx.dae, ctx.eq_idx, candidate)
             && is_derivative_alias_expr(solution))
+}
+
+fn derivative_alias_has_other_equation(
+    ctx: &EliminationChoiceContext<'_>,
+    solution: &Expression,
+) -> bool {
+    let Expression::BuiltinCall {
+        function: BuiltinFunction::Der,
+        args,
+        ..
+    } = solution
+    else {
+        return false;
+    };
+    let Some(state_name) = args
+        .first()
+        .and_then(|arg| exact_reference_expr_name_in_dae(ctx.dae, arg))
+    else {
+        return false;
+    };
+    let matcher = DerivativeNameMatcher::from_var_names([&state_name]);
+    ctx.dae
+        .continuous
+        .equations
+        .iter()
+        .enumerate()
+        .any(|(eq_idx, equation)| {
+            eq_idx != ctx.eq_idx
+                && expr_contains_der_of_any(&equation_analysis_expr(equation), &matcher)
+        })
 }
 
 fn is_connection_rhs_boundary_input(
@@ -4056,6 +4088,9 @@ fn indexed_component_ref_mismatch_for_substitution(
     substitution: &Substitution,
     dae_scope: Option<&DaeVariableScope<'_>>,
 ) -> bool {
+    if generated_scalar_reference_matches_exact_substitution_name(name, substitution) {
+        return false;
+    }
     if !reference_has_scalar_indices(name) || !substitution_has_scalar_indices(substitution) {
         return false;
     }

@@ -46,6 +46,23 @@ pub(super) fn substitution_requires_structured_identity(
             .is_some_and(|var| var.component_ref.is_some())
 }
 
+pub(super) fn generated_scalar_reference_matches_exact_substitution_name(
+    name: &Reference,
+    substitution: &Substitution,
+) -> bool {
+    if substitution.var_ref.is_some() || name.var_name().id() != substitution.var_name.id() {
+        return false;
+    }
+    let Some(actual) = name.component_ref() else {
+        return false;
+    };
+    if actual.local || actual.def_id.is_some() {
+        return false;
+    }
+    component_reference_from_flat_name(&substitution.var_name, actual.span)
+        .is_some_and(|canonical| component_reference_path_matches(actual, &canonical))
+}
+
 struct StructuredExpressionReference {
     component_ref: ComponentReference,
     terminal_identity_complete: bool,

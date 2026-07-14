@@ -855,6 +855,199 @@ fn test_boundary_eliminates_scalarized_element_with_boundary_known_derivative_us
 }
 
 #[test]
+fn test_boundary_rejects_derivative_alias_backed_only_by_connection_definition() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_dae_variable("x"));
+    for (name, causality) in [
+        ("mean.u", dae::VariableCausality::Input),
+        ("sensor.v", dae::VariableCausality::Output),
+    ] {
+        let mut variable = test_dae_variable(name);
+        variable.causality = causality;
+        dae.variables.outputs.insert(VarName::new(name), variable);
+    }
+    dae.continuous
+        .equations
+        .push(residual(der(var_ref("x")), var_ref("mean.u"), 1, "ode"));
+    dae.continuous.equations.push(residual(
+        var_ref("sensor.v"),
+        var_ref("mean.u"),
+        1,
+        "connection equation: sensor.v = mean.u",
+    ));
+
+    let direct_definitions = DirectDefinitionIndex::build(&dae);
+    let runtime_protected_unknowns = IndexSet::new();
+    let ctx = EliminationChoiceContext {
+        dae: &dae,
+        eq_idx: 0,
+        has_state_derivative: true,
+        runtime_protected_unknowns: &runtime_protected_unknowns,
+        direct_definitions: &direct_definitions,
+        allow_multi_live_trivial_alias: false,
+    };
+    let choice = choose_solvable_unknown_for_elimination(
+        &ctx,
+        &dae.continuous.equations[0].rhs,
+        &[VarName::new("mean.u")],
+    )
+    .expect("candidate analysis should succeed");
+
+    assert!(
+        choice.is_none(),
+        "a connection-only future definition is not a proven surviving producer"
+    );
+}
+
+#[test]
+fn test_boundary_keeps_producer_for_derivative_dependent_aggregate_leaf() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_dae_variable("x"));
+    dae.variables
+        .states
+        .insert(VarName::new("rms"), test_dae_variable("rms"));
+    for name in ["a", "b"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    dae.continuous.equations.push(residual(
+        binary(OpBinary::Mul, var_ref("a"), var_ref("b")),
+        lit(1.0),
+        1,
+        "coupled source constraint",
+    ));
+    dae.continuous.equations.push(residual(
+        binary(OpBinary::Add, var_ref("a"), var_ref("b")),
+        lit(2.0),
+        1,
+        "coupled source constraint",
+    ));
+    let mut inputs = component_var("product.u");
+    inputs.dims = vec![2];
+    inputs.causality = dae::VariableCausality::Input;
+    dae.variables
+        .outputs
+        .insert(VarName::new("product.u"), inputs);
+    for (name, causality) in [
+        ("product.y", dae::VariableCausality::Output),
+        ("sensor.v", dae::VariableCausality::Output),
+        ("mean.u", dae::VariableCausality::Input),
+        ("rms.u", dae::VariableCausality::Input),
+        ("rms.mean.u", dae::VariableCausality::Input),
+    ] {
+        let mut variable = component_var(name);
+        variable.causality = causality;
+        dae.variables.outputs.insert(VarName::new(name), variable);
+    }
+    dae.continuous.equations.push(residual(
+        var_ref("product.y"),
+        builtin(BuiltinFunction::Product, vec![var_ref("product.u")]),
+        1,
+        "aggregate product",
+    ));
+    dae.continuous.equations.push(residual(
+        der(var_ref("rms")),
+        var_ref("rms.mean.u"),
+        1,
+        "aggregate consumer ode",
+    ));
+    dae.continuous
+        .equations
+        .push(residual(der(var_ref("x")), var_ref("mean.u"), 1, "ode"));
+    dae.continuous.equations.push(residual(
+        var_ref("sensor.v"),
+        binary(OpBinary::Sub, var_ref("a"), var_ref("b")),
+        1,
+        "source definition",
+    ));
+    dae.continuous.equations.push(residual(
+        var_ref("product.y"),
+        var_ref("rms.mean.u"),
+        1,
+        "connection equation: product.y = rms.mean.u",
+    ));
+    dae.continuous.equations.push(residual(
+        var_ref("rms.u"),
+        Expression::VarRef {
+            name: Reference::with_component_reference(
+                "product.u[1]",
+                component_ref("product.u[1]"),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        1,
+        "connection equation: rms.u = product.u[1]",
+    ));
+    dae.continuous.equations.push(residual(
+        Expression::VarRef {
+            name: Reference::with_component_reference(
+                "product.u[2]",
+                component_ref("product.u[2]"),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        var_ref("sensor.v"),
+        1,
+        "connection equation: product.u[2] = sensor.v",
+    ));
+    dae.continuous.equations.push(residual(
+        var_ref("sensor.v"),
+        var_ref("mean.u"),
+        1,
+        "connection equation: sensor.v = mean.u",
+    ));
+    dae.continuous.equations.push(residual(
+        Expression::VarRef {
+            name: Reference::with_component_reference(
+                "product.u[1]",
+                component_ref("product.u[1]"),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        Expression::VarRef {
+            name: Reference::with_component_reference(
+                "product.u[2]",
+                component_ref("product.u[2]"),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        1,
+        "connection equation: product.u[1] = product.u[2]",
+    ));
+
+    eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    let state_names = dae.variables.states.keys().cloned().collect::<Vec<_>>();
+    let state_derivatives = DerivativeNameMatcher::from_var_names(state_names.iter());
+    let ode = dae
+        .continuous
+        .equations
+        .iter()
+        .find(|eq| {
+            expr_contains_der_of_any(&eq.rhs, &state_derivatives)
+                && expr_contains_var(&eq.rhs, &VarName::new("x"))
+        })
+        .expect("state derivative row must remain");
+    assert!(
+        expr_contains_var(&ode.rhs, &VarName::new("a"))
+            && !expr_contains_var(&ode.rhs, &VarName::new("mean.u"))
+            && !expr_contains_var(&ode.rhs, &VarName::new("sensor.v"))
+            && !expr_contains_var(&ode.rhs, &VarName::new("product.u[2]")),
+        "the derivative must resolve to the canonical physical source, got {:?}",
+        ode.rhs
+    );
+}
+
+#[test]
 fn test_boundary_eliminates_scalarized_element_with_static_index_expression_derivative_use() {
     let mut dae = Dae::new();
     dae.variables
