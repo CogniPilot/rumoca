@@ -234,10 +234,10 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define __rumoca_named_arg___verboseRead(x) (x)
 #define __rumoca_named_arg___verboseExtrapolation(x) (x)
 
-/* Enumeration literals have already been lowered to numeric Solve IR values,
-   and FMI implementation defaults are numeric literals. Emitting source-level
-   enum aliases here would pollute the C preprocessor namespace (for example,
-   Axis.x would otherwise collide with ModelInstance.x). */
+/* Enumeration literal references have already been lowered to numeric DAE
+   ordinals, and FMI implementation defaults are numeric literals. Emitting
+   source-level enum aliases here would pollute the C preprocessor namespace
+   (for example, Axis.y would otherwise collide with ModelInstance.y). */
 
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}

@@ -8,6 +8,41 @@ fn builtin_template(target: &str, template: &str) -> &'static str {
 }
 
 #[test]
+fn fmi_templates_do_not_emit_enum_aliases_into_the_c_preprocessor_namespace() {
+    let mut dae = dae::Dae::new();
+    dae.symbols
+        .enum_literal_ordinals
+        .insert("Pkg.Axis.x".to_string(), 1);
+    dae.symbols
+        .enum_literal_ordinals
+        .insert("Pkg.Axis.y".to_string(), 2);
+    let dae_json = dae_template_json(&dae).expect("DAE template context should serialize");
+
+    for (target, algebraic_field) in [
+        ("fmi2", "fmi2Real    y[N_ALGEBRAICS"),
+        ("fmi3", "fmi3Float64  y[N_ALGEBRAICS"),
+    ] {
+        let rendered = render_template_with_dae_json_and_name(
+            &dae_json,
+            builtin_template(target, "model.c.jinja"),
+            "M",
+        )
+        .expect("FMI model source should render");
+
+        assert!(
+            rendered.contains(algebraic_field),
+            "{target} should retain its algebraic runtime field:\n{rendered}"
+        );
+        assert!(
+            !rendered.lines().any(|line| line.starts_with("#define x ")
+                || line.starts_with("#define y ")
+                || line.starts_with("#define Axis(")),
+            "{target} must not emit source enum aliases that can rewrite runtime identifiers:\n{rendered}"
+        );
+    }
+}
+
+#[test]
 fn fmi_templates_snapshot_solve_pre_parameters_before_discrete_rows() {
     let dae = dae::Dae::new();
     let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
