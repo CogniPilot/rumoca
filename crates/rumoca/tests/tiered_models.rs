@@ -98,6 +98,7 @@ fn contains_pre_param_ref(expr: &rumoca_core::Expression) -> bool {
 /// Result of compiling a model with diagnostic information.
 #[derive(Debug)]
 struct CompileResult {
+    flat: rumoca_ir_flat::Model,
     dae: Dae,
     states: usize,
     algebraics: usize,
@@ -128,8 +129,10 @@ fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
         .compile_model(model_name)
         .map_err(|e| format!("Instantiate/Flatten/ToDae: {:?}", e))?;
 
+    let flat = result.flat;
     let dae = result.dae;
     Ok(CompileResult {
+        flat,
         states: dae.variables.states.len(),
         algebraics: dae.variables.algebraics.len(),
         parameters: dae.variables.parameters.len(),

@@ -927,6 +927,35 @@ end MiniBusTranscriptionArr;
         );
     }
 
+    fn assert_nested_projection_flat_identity(flat: &rumoca_ir_flat::Model) {
+        let lane_refs = [
+            "transcription.outBus.cellBus[1,1].x",
+            "transcription.outBus.cellBus[2,1].x",
+        ]
+        .map(|name| {
+            flat.variables[&rumoca_core::VarName::new(name)]
+                .component_ref
+                .as_ref()
+                .expect("real flattened lane must retain structured identity")
+        });
+        assert!(lane_refs.iter().all(|reference| reference.def_id.is_some()));
+        assert_ne!(
+            lane_refs[0].def_id, lane_refs[1].def_id,
+            "flatten assigns a distinct resolved identity to each scalar lane instance"
+        );
+        assert_eq!(
+            lane_refs[0].span, lane_refs[1].span,
+            "scalar lane instances must retain their common source declaration span"
+        );
+        assert!(!lane_refs[0].span.is_dummy());
+        let aggregate_ref = flat.variables
+            [&rumoca_core::VarName::new("transcription.outBus.cellBus.x")]
+            .component_ref
+            .as_ref()
+            .expect("synthetic aggregate projection must retain a structured path");
+        assert_eq!(aggregate_ref.def_id, None);
+    }
+
     /// Regression pattern from a stack bus containing an array of nested
     /// connectors. The aggregate field projection (`inBus.cellBus.x`) is only
     /// a view over the connected scalar lanes (`inBus.cellBus[1,1].x`, ...),
@@ -982,6 +1011,7 @@ end NestedBusTranscriptionSystem;
 
         let r = assert_compiles(source, "NestedBusTranscriptionSystem");
         assert_eq!(r.balance, 0);
+        assert_nested_projection_flat_identity(&r.flat);
         assert!(
             r.dae
                 .variables

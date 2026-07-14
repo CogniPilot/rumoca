@@ -1697,18 +1697,18 @@ impl RecordArrayProjectionAliases {
         component_ref: &rumoca_core::ComponentReference,
     ) -> Option<rumoca_core::Reference> {
         let path = StructuredProjectionPath::from_component_ref(component_ref)?;
-        if let Some(declaration) = component_ref.def_id {
-            let identity = StructuredProjectionIdentity {
-                path: path.clone(),
-                declaration,
-            };
-            if let Some(reference) = self.aliases.get(&identity) {
-                return Some(reference.clone());
-            }
-        }
-        let identity = self.unique_identity_by_path.get(&path)?;
-        self.aliases.get(identity).cloned()
+        let identity = match component_ref.def_id {
+            Some(declaration) => StructuredProjectionIdentity { path, declaration },
+            None => self.unique_identity_by_path.get(&path)?.clone(),
+        };
+        self.aliases.get(&identity).cloned()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DirectProjectionTarget {
+    identity: Option<StructuredProjectionIdentity>,
+    reference: rumoca_core::Reference,
 }
 
 fn dae_variable_partitions(dae: &Dae) -> [&IndexMap<rumoca_core::VarName, dae::Variable>; 8] {
@@ -1727,15 +1727,34 @@ fn dae_variable_partitions(dae: &Dae) -> [&IndexMap<rumoca_core::VarName, dae::V
 fn build_record_array_projection_alias_map(
     dae: &Dae,
 ) -> Result<RecordArrayProjectionAliases, ToDaeError> {
-    let mut direct_paths = HashSet::new();
+    let mut direct_paths = HashMap::new();
     for partition in dae_variable_partitions(dae) {
-        for variable in partition.values() {
-            if let Some(path) = variable
-                .component_ref
-                .as_ref()
-                .and_then(StructuredProjectionPath::from_component_ref)
+        for (name, variable) in partition {
+            let Some(component_ref) = variable.component_ref.as_ref() else {
+                continue;
+            };
+            let Some(path) = StructuredProjectionPath::from_component_ref(component_ref) else {
+                continue;
+            };
+            let target = DirectProjectionTarget {
+                identity: component_ref
+                    .def_id
+                    .map(|declaration| StructuredProjectionIdentity {
+                        path: path.clone(),
+                        declaration,
+                    }),
+                reference: rumoca_core::Reference::with_component_reference(
+                    name.as_str(),
+                    component_ref.clone(),
+                ),
+            };
+            if let Some(existing) = direct_paths.insert(path, target.clone())
+                && existing != target
             {
-                direct_paths.insert(path);
+                return Err(ToDaeError::runtime_metadata_violation_at(
+                    format!("conflicting directly declared projection target for `{name}`"),
+                    variable.source_span,
+                ));
             }
         }
     }
@@ -1751,7 +1770,7 @@ fn build_record_array_projection_alias_map(
 
 fn append_record_array_projection_aliases(
     aliases: &mut RecordArrayProjectionAliases,
-    direct_paths: &HashSet<StructuredProjectionPath>,
+    direct_paths: &HashMap<StructuredProjectionPath, DirectProjectionTarget>,
     name: &rumoca_core::VarName,
     variable: &dae::Variable,
 ) -> Result<(), ToDaeError> {
@@ -1779,7 +1798,16 @@ fn append_record_array_projection_aliases(
         let Some(path) = StructuredProjectionPath::from_component_ref(&projection) else {
             continue;
         };
-        if direct_paths.contains(&path) {
+        let identity = StructuredProjectionIdentity {
+            path: path.clone(),
+            declaration,
+        };
+        let reference =
+            rumoca_core::Reference::with_component_reference(name.as_str(), component_ref.clone());
+        if let Some(direct) = direct_paths.get(&path) {
+            if direct.identity.as_ref() == Some(&identity) && direct.reference == reference {
+                continue;
+            }
             return Err(ToDaeError::runtime_metadata_violation_at(
                 format!(
                     "record-array projection for `{name}` collides with a directly declared variable"
@@ -1787,26 +1815,25 @@ fn append_record_array_projection_aliases(
                 variable.source_span,
             ));
         }
-        let identity = StructuredProjectionIdentity {
-            path: path.clone(),
-            declaration,
-        };
-        let reference =
-            rumoca_core::Reference::with_component_reference(name.as_str(), component_ref.clone());
-        if aliases
-            .aliases
-            .insert(identity.clone(), reference)
-            .is_some()
-            || aliases
-                .unique_identity_by_path
-                .insert(path, identity)
-                .is_some()
+        if let Some(existing) = aliases.aliases.get(&identity) {
+            if existing == &reference {
+                continue;
+            }
+            return Err(ToDaeError::runtime_metadata_violation_at(
+                format!("conflicting record-array projection alias for `{name}`"),
+                variable.source_span,
+            ));
+        }
+        if let Some(existing_identity) = aliases.unique_identity_by_path.get(&path)
+            && existing_identity != &identity
         {
             return Err(ToDaeError::runtime_metadata_violation_at(
                 format!("duplicate record-array projection alias for `{name}`"),
                 variable.source_span,
             ));
         }
+        aliases.aliases.insert(identity.clone(), reference);
+        aliases.unique_identity_by_path.insert(path, identity);
     }
     Ok(())
 }
