@@ -345,3 +345,35 @@ fn current_quality_snapshot_serializes_wall_decisions_without_polluting_baseline
     assert!(promoted.get("wall_time_provenance").is_none());
     assert!(promoted.get("runtime_wall_decision").is_none());
 }
+
+#[test]
+fn missing_runtime_baseline_is_untrusted_in_status_and_snapshot() {
+    let summary = valid_summary_template();
+    let baseline = MslQualityBaseline {
+        runtime_context: Some(MslParityRuntimeContext {
+            workers_used: Some(2),
+            omc_threads: Some(1),
+        }),
+        runtime_ratio_stats: None,
+        ..baseline_quality_template()
+    };
+    let mut trusted = provenance(8, 0, 14, 14, 0, Some(0.2), Some(0.3));
+    trusted.workers_used = 2;
+    let parity = parity_with_provenance(runtime_ratio_stats(2.0, 1.5), trusted);
+
+    let content = wall_time_status_content(&baseline, Some(&parity));
+    assert_eq!(content.status, "ADVISORY");
+    assert!(!content.trusted);
+    assert_eq!(content.reasons, ["runtime baseline missing"]);
+    assert!(format_wall_time_status(&content).contains("runtime baseline missing"));
+
+    let snapshot =
+        current_msl_quality_snapshot_json(&summary, Some(&parity), Some(&baseline), false)
+            .expect("snapshot should serialize");
+    let decision = &snapshot["runtime_wall_decision"];
+    assert_eq!(decision["status"], "ADVISORY");
+    assert_eq!(decision["trusted"], false);
+    assert_eq!(decision["reasons"], json!(["runtime baseline missing"]));
+    assert!(decision["baseline_median"].is_null());
+    assert!(decision["floor"].is_null());
+}

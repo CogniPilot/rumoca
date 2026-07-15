@@ -136,7 +136,17 @@ pub(super) fn wall_time_status_content(
         .runtime_ratio_stats
         .as_ref()
         .map(|stats| stats.wall_ratio_both_success.median);
-    let floor = baseline_median.map(|median| median * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE));
+    let Some(baseline_median) = baseline_median else {
+        return WallTimeStatusContent {
+            status: "ADVISORY",
+            trusted: false,
+            reasons: vec!["runtime baseline missing".to_string()],
+            observed_median: observed,
+            baseline_median: None,
+            floor: None,
+        };
+    };
+    let floor = Some(baseline_median * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE));
     let trust = wall_time_trust_decision(baseline, parity_input);
     let status = match (trust.trusted, observed, floor) {
         (true, Some(observed), Some(floor)) if observed + SIM_RATE_GATE_EPSILON < floor => "FAIL",
@@ -148,7 +158,7 @@ pub(super) fn wall_time_status_content(
         trusted: trust.trusted,
         reasons: trust.reasons,
         observed_median: observed,
-        baseline_median,
+        baseline_median: Some(baseline_median),
         floor,
     }
 }

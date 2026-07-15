@@ -439,11 +439,10 @@ fn merge_wall_time_provenance(omc_payloads: &[Value]) -> Option<Value> {
         .iter()
         .map(|payload| payload.pointer("/runtime_comparison/wall_time_provenance"))
         .collect::<Option<Vec<_>>>()?;
-    let sum = |key: &str| {
-        provenances
-            .iter()
-            .filter_map(|value| json_usize(value, &[key]))
-            .sum::<usize>()
+    let checked_sum = |key: &str| {
+        provenances.iter().try_fold(0_usize, |total, value| {
+            total.checked_add(json_usize(value, &[key])?)
+        })
     };
     let same = |key: &str| {
         let values = provenances
@@ -465,12 +464,12 @@ fn merge_wall_time_provenance(omc_payloads: &[Value]) -> Option<Value> {
             .filter(|value| value.is_finite())
     };
     let mut merged = json!({
-        "omc_fresh_sample_count": sum("omc_fresh_sample_count"),
-        "omc_cached_sample_count": sum("omc_cached_sample_count"),
-        "affinity_requested_worker_count": sum("affinity_requested_worker_count"),
-        "affinity_applied_worker_count": sum("affinity_applied_worker_count"),
-        "affinity_failed_worker_count": sum("affinity_failed_worker_count"),
-        "rumoca_workers_used": sum("rumoca_workers_used"),
+        "omc_fresh_sample_count": checked_sum("omc_fresh_sample_count")?,
+        "omc_cached_sample_count": checked_sum("omc_cached_sample_count")?,
+        "affinity_requested_worker_count": checked_sum("affinity_requested_worker_count")?,
+        "affinity_applied_worker_count": checked_sum("affinity_applied_worker_count")?,
+        "affinity_failed_worker_count": checked_sum("affinity_failed_worker_count")?,
+        "rumoca_workers_used": checked_sum("rumoca_workers_used")?,
         "normalized_load_before": max_finite("normalized_load_before"),
         "normalized_load_after": max_finite("normalized_load_after"),
     });
@@ -1507,4 +1506,26 @@ fn merge_shard_provenance_omits_untrustworthy_fields() {
         .unwrap()
         .remove("wall_time_provenance");
     assert!(merge_wall_time_provenance(&[first]).is_none());
+}
+
+#[test]
+fn merge_shard_provenance_rejects_missing_cached_sample_count() {
+    let first = shard_omc_reference_fixture("A");
+    let mut second = shard_omc_reference_fixture("B");
+    second["runtime_comparison"]["wall_time_provenance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("omc_cached_sample_count");
+    assert!(merge_wall_time_provenance(&[first, second]).is_none());
+}
+
+#[test]
+fn merge_shard_provenance_rejects_missing_affinity_failed_count() {
+    let first = shard_omc_reference_fixture("A");
+    let mut second = shard_omc_reference_fixture("B");
+    second["runtime_comparison"]["wall_time_provenance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("affinity_failed_worker_count");
+    assert!(merge_wall_time_provenance(&[first, second]).is_none());
 }
