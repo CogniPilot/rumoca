@@ -24,6 +24,9 @@ struct SchedulerStatsInner {
     models_started: AtomicUsize,
     active_workers: AtomicUsize,
     max_active_workers: AtomicUsize,
+    affinity_requested_workers: AtomicUsize,
+    affinity_applied_workers: AtomicUsize,
+    affinity_failed_workers: AtomicUsize,
     memory_token_wait_nanos: std::sync::atomic::AtomicU64,
     active_model_wall_nanos: std::sync::atomic::AtomicU64,
 }
@@ -33,7 +36,6 @@ pub(super) struct SchedulerTimingInputs {
     pub(super) requested_worker_threads: usize,
     pub(super) effective_worker_threads: usize,
     pub(super) worker_count: usize,
-    pub(super) pinned_worker_count: usize,
     pub(super) compile_memory_token_capacity_mb: Option<usize>,
     pub(super) compile_memory_model_cost_mb: Option<usize>,
     pub(super) elapsed_seconds: f64,
@@ -44,6 +46,36 @@ struct ActiveModelGuard<'a> {
     started: Instant,
 }
 
+pub(super) struct AffinityCounts {
+    pub(super) requested: usize,
+    pub(super) applied: usize,
+    pub(super) failed: usize,
+}
+
+pub(super) fn affinity_counts(results: impl IntoIterator<Item = Option<bool>>) -> AffinityCounts {
+    results.into_iter().fold(
+        AffinityCounts {
+            requested: 0,
+            applied: 0,
+            failed: 0,
+        },
+        |mut counts, result| {
+            match result {
+                Some(true) => {
+                    counts.requested += 1;
+                    counts.applied += 1;
+                }
+                Some(false) => {
+                    counts.requested += 1;
+                    counts.failed += 1;
+                }
+                None => {}
+            }
+            counts
+        },
+    )
+}
+
 impl SchedulerStatsCollector {
     pub(super) fn new() -> Self {
         Self {
@@ -51,6 +83,9 @@ impl SchedulerStatsCollector {
                 models_started: AtomicUsize::new(0),
                 active_workers: AtomicUsize::new(0),
                 max_active_workers: AtomicUsize::new(0),
+                affinity_requested_workers: AtomicUsize::new(0),
+                affinity_applied_workers: AtomicUsize::new(0),
+                affinity_failed_workers: AtomicUsize::new(0),
                 memory_token_wait_nanos: std::sync::atomic::AtomicU64::new(0),
                 active_model_wall_nanos: std::sync::atomic::AtomicU64::new(0),
             }),
@@ -68,6 +103,19 @@ impl SchedulerStatsCollector {
         );
     }
 
+    pub(super) fn record_worker_affinity(&self, applied: Option<bool>) {
+        let counts = affinity_counts([applied]);
+        self.inner
+            .affinity_requested_workers
+            .fetch_add(counts.requested, Ordering::Relaxed);
+        self.inner
+            .affinity_applied_workers
+            .fetch_add(counts.applied, Ordering::Relaxed);
+        self.inner
+            .affinity_failed_workers
+            .fetch_add(counts.failed, Ordering::Relaxed);
+    }
+
     fn enter_active_model(&self) -> ActiveModelGuard<'_> {
         let active = self.inner.active_workers.fetch_add(1, Ordering::Relaxed) + 1;
         update_atomic_max(&self.inner.max_active_workers, active);
@@ -81,12 +129,23 @@ impl SchedulerStatsCollector {
         let worker_slot_wall_seconds = inputs.elapsed_seconds * inputs.worker_count as f64;
         let active_model_wall_seconds =
             nanos_to_seconds(self.inner.active_model_wall_nanos.load(Ordering::Relaxed));
+        let affinity_applied_worker_count =
+            self.inner.affinity_applied_workers.load(Ordering::Relaxed);
         MslSchedulerTimings {
             selected_model_count: inputs.selected_model_count,
             requested_worker_threads: inputs.requested_worker_threads,
             effective_worker_threads: inputs.effective_worker_threads,
             worker_count: inputs.worker_count,
-            pinned_worker_count: inputs.pinned_worker_count,
+            affinity_requested_worker_count: self
+                .inner
+                .affinity_requested_workers
+                .load(Ordering::Relaxed),
+            affinity_applied_worker_count,
+            affinity_failed_worker_count: self
+                .inner
+                .affinity_failed_workers
+                .load(Ordering::Relaxed),
+            pinned_worker_count: affinity_applied_worker_count,
             cpu_token_capacity: 0,
             compile_memory_token_capacity_mb: inputs.compile_memory_token_capacity_mb,
             compile_memory_model_cost_mb: inputs.compile_memory_model_cost_mb,
@@ -165,7 +224,12 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
                 startup_timeout_secs,
                 queue.cpu_core_id,
             ) {
-                Ok(spawned) => worker = Some(spawned),
+                Ok(spawned) => {
+                    queue
+                        .scheduler_stats
+                        .record_worker_affinity(spawned.cpu_affinity_applied());
+                    worker = Some(spawned);
+                }
                 Err(error) => {
                     let entry = model_worker_failure_result(
                         name,
@@ -183,6 +247,7 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
             .is_some_and(|names| names.contains(name));
         let (entry, _keep_worker) = run_compile_model_in_process_worker(
             &mut worker,
+            &queue.scheduler_stats,
             InProcessWorkerRequest {
                 source_root_path: queue.source_root_path,
                 cpu_core_id: queue.cpu_core_id,

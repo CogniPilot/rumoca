@@ -915,6 +915,7 @@ struct InProcessWorkerRequest<'a> {
 
 fn run_compile_model_in_process_worker(
     worker: &mut Option<ModelWorkerDaemon>,
+    scheduler_stats: &SchedulerStatsCollector,
     plan: InProcessWorkerRequest<'_>,
 ) -> (MslModelResult, bool) {
     let phase_timeout_secs = plan.budget_secs;
@@ -929,7 +930,10 @@ fn run_compile_model_in_process_worker(
             plan.startup_timeout_secs,
             plan.cpu_core_id,
         ) {
-            Ok(spawned) => *worker = Some(spawned),
+            Ok(spawned) => {
+                scheduler_stats.record_worker_affinity(spawned.cpu_affinity_applied());
+                *worker = Some(spawned);
+            }
             Err(error) => {
                 return (
                     model_worker_failure_result(
@@ -1234,15 +1238,11 @@ where
             requested_worker_count.min(available_core_count)
         };
         let core_plan = cpu_core_plan(worker_count);
-        let pinned_workers = core_plan.iter().filter(|core| core.is_some()).count();
         let scheduler_stats = SchedulerStatsCollector::new();
         if worker_count < requested_worker_count {
             println!(
                 "  Model worker count capped at {worker_count}/{requested_worker_count} available logical CPU cores"
             );
-        }
-        if pinned_workers > 0 {
-            println!("  Model workers pinned to {pinned_workers}/{worker_count} logical CPU cores");
         }
         let startup_barrier = std::sync::Arc::new(std::sync::Barrier::new(worker_count));
         for cpu_core_id in core_plan.iter().copied().take(worker_count) {
@@ -1279,7 +1279,6 @@ where
             requested_worker_threads: compile_threads,
             effective_worker_threads: effective_compile_threads,
             worker_count,
-            pinned_worker_count: pinned_workers,
             compile_memory_token_capacity_mb: memory_tokens
                 .as_ref()
                 .map(|tokens| tokens.capacity()),

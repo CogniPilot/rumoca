@@ -562,6 +562,12 @@ struct MslSchedulerTimings {
     #[serde(default)]
     worker_count: usize,
     #[serde(default)]
+    affinity_requested_worker_count: usize,
+    #[serde(default)]
+    affinity_applied_worker_count: usize,
+    #[serde(default)]
+    affinity_failed_worker_count: usize,
+    #[serde(default)]
     pinned_worker_count: usize,
     #[serde(default)]
     cpu_token_capacity: usize,

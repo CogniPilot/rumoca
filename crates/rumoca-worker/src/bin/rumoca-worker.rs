@@ -1418,10 +1418,14 @@ fn write_control_message(message: &ModelWorkerControlMessage) -> Result<(), Stri
         .map_err(|error| format!("failed to flush model worker control message: {error}"))
 }
 
-fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
+fn run_worker_daemon(
+    source_root_path: &Path,
+    cpu_affinity_applied: Option<bool>,
+) -> Result<(), String> {
     let mut session = load_source_root(source_root_path)?;
     write_control_message(&ModelWorkerControlMessage::Ready {
         protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+        cpu_affinity_applied,
     })?;
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|error| format!("failed to read model worker command: {error}"))?;
@@ -1451,14 +1455,14 @@ fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
 }
 
 fn run_worker_entry(args: Args) -> Result<(), String> {
-    if let Some(cpu_core_id) = args.cpu_core_id
-        && let Err(error) = pin_current_thread_to_cpu_core(cpu_core_id)
-    {
-        eprintln!("warning: {error}; continuing without CPU pinning");
-    }
+    let cpu_affinity_applied = args.cpu_core_id.map(|cpu_core_id| {
+        pin_current_thread_to_cpu_core(cpu_core_id)
+            .inspect_err(|error| eprintln!("warning: {error}; continuing without CPU pinning"))
+            .is_ok()
+    });
     match (args.request_json.as_ref(), args.source_root_path.as_ref()) {
         (Some(_), None) => run_worker(args),
-        (None, Some(source_root_path)) => run_worker_daemon(source_root_path),
+        (None, Some(source_root_path)) => run_worker_daemon(source_root_path, cpu_affinity_applied),
         (Some(_), Some(_)) => Err("use either --request-json or --source-root-path".to_string()),
         (None, None) => Err("missing --request-json or --source-root-path".to_string()),
     }

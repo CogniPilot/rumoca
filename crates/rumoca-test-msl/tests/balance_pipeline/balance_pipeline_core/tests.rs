@@ -53,6 +53,14 @@ fn empty_compilation_result() -> CompilationResult {
 }
 
 #[test]
+fn affinity_counts_distinguish_requested_success_and_failure() {
+    let counts = affinity_counts([Some(true), Some(false), None]);
+    assert_eq!(counts.requested, 2);
+    assert_eq!(counts.applied, 1);
+    assert_eq!(counts.failed, 1);
+}
+
+#[test]
 fn compile_chunk_progress_loop_exits_promptly_after_flag_clears() {
     let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);

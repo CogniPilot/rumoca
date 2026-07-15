@@ -55,6 +55,7 @@ pub enum ModelWorkerCommand {
 pub enum ModelWorkerControlMessage {
     Ready {
         protocol_version: u32,
+        cpu_affinity_applied: Option<bool>,
     },
     Result {
         response: Box<ModelWorkerResponse>,
@@ -206,6 +207,7 @@ pub struct ModelWorkerDaemon {
     child: Child,
     stdin: ChildStdin,
     messages: mpsc::Receiver<Result<ModelWorkerControlMessage, String>>,
+    cpu_affinity_applied: Option<bool>,
 }
 
 impl ModelWorkerDaemon {
@@ -243,6 +245,7 @@ impl ModelWorkerDaemon {
             child,
             stdin,
             messages,
+            cpu_affinity_applied: None,
         };
         match worker.wait_for_ready(timeout_secs) {
             Ok(()) => Ok(worker),
@@ -255,6 +258,10 @@ impl ModelWorkerDaemon {
 
     pub fn process_id(&self) -> u32 {
         self.child.id()
+    }
+
+    pub fn cpu_affinity_applied(&self) -> Option<bool> {
+        self.cpu_affinity_applied
     }
 
     pub fn run_request(
@@ -345,12 +352,16 @@ impl ModelWorkerDaemon {
         let start = Instant::now();
         loop {
             match self.messages.try_recv() {
-                Ok(Ok(ModelWorkerControlMessage::Ready { protocol_version }))
-                    if protocol_version == MODEL_WORKER_PROTOCOL_VERSION =>
-                {
+                Ok(Ok(ModelWorkerControlMessage::Ready {
+                    protocol_version,
+                    cpu_affinity_applied,
+                })) if protocol_version == MODEL_WORKER_PROTOCOL_VERSION => {
+                    self.cpu_affinity_applied = cpu_affinity_applied;
                     return Ok(());
                 }
-                Ok(Ok(ModelWorkerControlMessage::Ready { protocol_version })) => {
+                Ok(Ok(ModelWorkerControlMessage::Ready {
+                    protocol_version, ..
+                })) => {
                     return Err(format!(
                         "model worker ready protocol {}, expected {}",
                         protocol_version, MODEL_WORKER_PROTOCOL_VERSION
@@ -827,6 +838,36 @@ fn write_json_file<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_message_preserves_affinity_result() {
+        let ready = ModelWorkerControlMessage::Ready {
+            protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+            cpu_affinity_applied: Some(false),
+        };
+        let encoded = serde_json::to_string(&ready).unwrap();
+        let decoded: ModelWorkerControlMessage = serde_json::from_str(&encoded).unwrap();
+        assert!(matches!(
+            decoded,
+            ModelWorkerControlMessage::Ready {
+                cpu_affinity_applied: Some(false),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ready_message_allows_unrequested_affinity() {
+        let ready = ModelWorkerControlMessage::Ready {
+            protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+            cpu_affinity_applied: None,
+        };
+        assert!(
+            serde_json::to_string(&ready)
+                .unwrap()
+                .contains("cpu_affinity_applied")
+        );
+    }
 
     #[test]
     fn cpu_core_plan_has_one_entry_per_worker() {
