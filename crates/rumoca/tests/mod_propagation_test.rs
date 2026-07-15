@@ -86,6 +86,115 @@ fn assert_bool_binding(overlay: &ast::InstanceOverlay, comp_name: &str, expected
     }
 }
 
+#[test]
+fn test_array_component_modifier_reference_selects_scalar_element() {
+    let source = r#"
+        model Cell
+            parameter Real x;
+        end Cell;
+
+        model Group
+            parameter Real values[2];
+            Cell cells[2](x = values);
+        end Group;
+
+        model Top
+            Group group(values = {1.0, 2.0});
+        end Top;
+    "#;
+
+    let (_tree, overlay) = instantiate_test_model(source, "Top");
+
+    for (name, expected) in [("group.cells[1].x", "1.0"), ("group.cells[2].x", "2.0")] {
+        let component =
+            find_component(&overlay, name).unwrap_or_else(|| panic!("{name} should exist"));
+        let ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } = component
+            .binding
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} should have a binding"))
+        else {
+            panic!("{name} should bind to one scalar array element");
+        };
+        assert_eq!(token.text.as_ref(), expected);
+    }
+}
+
+#[test]
+fn test_array_component_modifier_reference_selects_element_row() {
+    let source = r#"
+        model Tower
+            parameter Real v_flow_rate[:];
+        end Tower;
+
+        model TowerGroup
+            parameter Integer n = 2;
+            parameter Real v_flow_rate[n, 3];
+            Tower ct[n](v_flow_rate = v_flow_rate);
+        end TowerGroup;
+
+        model Top
+            TowerGroup group(v_flow_rate = {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}});
+        end Top;
+    "#;
+
+    let (_tree, overlay) = instantiate_test_model(source, "Top");
+
+    for (name, expected) in [
+        ("group.ct[1].v_flow_rate", ["1.0", "2.0", "3.0"]),
+        ("group.ct[2].v_flow_rate", ["4.0", "5.0", "6.0"]),
+    ] {
+        let component =
+            find_component(&overlay, name).unwrap_or_else(|| panic!("{name} should exist"));
+        assert!(
+            component.binding_from_modification,
+            "{name} binding should come from the array component modifier"
+        );
+        let ast::Expression::Array { elements, .. } = component
+            .binding
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} should have a binding"))
+        else {
+            panic!("{name} should bind to one array row");
+        };
+        let actual = elements
+            .iter()
+            .map(|element| match element {
+                ast::Expression::Terminal {
+                    terminal_type: ast::TerminalType::UnsignedReal,
+                    token,
+                    ..
+                } => token.text.as_ref(),
+                other => panic!("{name} row should contain real literals, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    let first = find_component(&overlay, "group.ct[1].v_flow_rate")
+        .expect("first tower v_flow_rate should exist");
+    let ast::Expression::ComponentReference(source) = first
+        .binding_source
+        .as_ref()
+        .expect("first tower should retain its symbolic modifier source")
+    else {
+        panic!("first tower modifier source should remain a component reference");
+    };
+    let [part] = source.parts.as_slice() else {
+        panic!("first tower modifier source should be a single-part reference");
+    };
+    assert_eq!(part.ident.text.as_ref(), "v_flow_rate");
+    let Some([ast::Subscript::Expression(ast::Expression::Terminal { token, .. })]) =
+        part.subs.as_deref()
+    else {
+        panic!("first tower modifier source should retain its element index");
+    };
+    assert_eq!(token.text.as_ref(), "1");
+}
+
 /// Helper: Assert that a component has the expected dimensions.
 fn assert_dims(overlay: &ast::InstanceOverlay, comp_name: &str, expected_dims: &[i64]) {
     let data =

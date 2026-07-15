@@ -680,6 +680,11 @@ fn resolve_single_part_ref_expr(
     let name = comp_ref.parts[0].ident.text.as_ref();
     let qn = ast::QualifiedName::from_ident(name);
 
+    if let Some(subscripts) = comp_ref.parts[0].subs.as_ref() {
+        let mod_value = mod_env.get(&qn)?;
+        return select_array_value(&mod_value.value, subscripts);
+    }
+
     if let Some(mod_value) = mod_env.get(&qn)
         && mod_value.value != *expr
     {
@@ -687,6 +692,28 @@ fn resolve_single_part_ref_expr(
     }
 
     None
+}
+
+fn select_array_value(
+    mut expr: &ast::Expression,
+    subscripts: &[ast::Subscript],
+) -> Option<ast::Expression> {
+    subscripts.first()?;
+    for subscript in subscripts {
+        let ast::Subscript::Expression(ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token,
+            ..
+        }) = subscript
+        else {
+            return None;
+        };
+        let ast::Expression::Array { elements, .. } = expr else {
+            return None;
+        };
+        expr = elements.get(token.text.parse::<usize>().ok()?.checked_sub(1)?)?;
+    }
+    Some(expr.clone())
 }
 
 /// Resolve a multi-part component reference by following sibling modifications.
@@ -890,6 +917,27 @@ mod tests {
             .keys()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn indexed_modifier_resolution_rejects_unsupported_selections() {
+        let array = ast::Expression::Array {
+            elements: vec![make_int_expr(1)],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let subscript = |expr| ast::Subscript::Expression(expr);
+        for invalid in [
+            make_int_expr(0),
+            make_int_expr(2),
+            make_comp_ref_expr(&["i"]),
+        ] {
+            assert_eq!(select_array_value(&array, &[subscript(invalid)]), None);
+        }
+        assert_eq!(
+            select_array_value(&make_int_expr(1), &[subscript(make_int_expr(1))]),
+            None
+        );
     }
 
     fn make_name(name: &str) -> ast::Name {
