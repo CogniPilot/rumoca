@@ -236,7 +236,7 @@ const utcTimestamp = () => {
 };
 
 const packTarball = async ({ cwd, packageDir, tarballDestDir, dev }) => {
-  const raw = runCapture("npm", ["pack", "--json", packageDir], { cwd });
+  const raw = runCapture("npm", ["pack", "--json", path.resolve(cwd, packageDir)], { cwd });
   const parsed = JSON.parse(raw);
   const filename = parsed?.[0]?.filename;
   if (!filename) {
