@@ -202,7 +202,7 @@ pub(super) fn print_runtime_ratio_status(
 
         let wall_floor = baseline_runtime.wall_ratio_both_success.median
             * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
-        let trust = wall_time_trust_decision(parity_input);
+        let trust = wall_time_trust_decision(baseline, parity_input);
         let wall_status = if !trust.trusted {
             "ADVISORY"
         } else if current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON

@@ -1651,7 +1651,7 @@ pub(super) fn push_runtime_ratio_regression_reasons(
 
     let allowed_wall_median = baseline_runtime.wall_ratio_both_success.median
         * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
-    if wall_time_trust_decision(parity_input).trusted
+    if wall_time_trust_decision(baseline, parity_input).trusted
         && current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON
             < allowed_wall_median
     {

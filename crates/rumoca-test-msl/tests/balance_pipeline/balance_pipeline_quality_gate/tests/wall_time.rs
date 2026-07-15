@@ -41,15 +41,28 @@ fn parity_with_provenance(
     }
 }
 
+fn baseline_with_runtime(
+    system_median: f64,
+    wall_median: f64,
+    workers_used: usize,
+    omc_threads: usize,
+) -> MslQualityBaseline {
+    MslQualityBaseline {
+        runtime_context: Some(MslParityRuntimeContext {
+            workers_used: Some(workers_used),
+            omc_threads: Some(omc_threads),
+        }),
+        runtime_ratio_stats: Some(runtime_ratio_stats(system_median, wall_median)),
+        ..baseline_quality_template()
+    }
+}
+
 #[test]
 fn cached_omc_wall_time_regression_is_advisory_but_system_regression_blocks() {
-    let baseline = MslQualityBaseline {
-        runtime_ratio_stats: Some(runtime_ratio_stats(2.0, 1.5)),
-        ..baseline_quality_template()
-    };
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let parity = parity_with_provenance(
         runtime_ratio_stats(1.0, 0.5),
-        provenance(0, 10, 2, 2, 0, Some(0.2), Some(0.3)),
+        provenance(0, 8, 2, 2, 0, Some(0.2), Some(0.3)),
     );
     let mut reasons = Vec::new();
     push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
@@ -64,7 +77,7 @@ fn cached_omc_wall_time_regression_is_advisory_but_system_regression_blocks() {
             .any(|reason| reason.contains("runtime wall speedup median"))
     );
     assert!(
-        wall_time_trust_decision(Some(&parity))
+        wall_time_trust_decision(&baseline, Some(&parity))
             .reasons
             .iter()
             .any(|reason| reason.contains("cached"))
@@ -73,13 +86,10 @@ fn cached_omc_wall_time_regression_is_advisory_but_system_regression_blocks() {
 
 #[test]
 fn trusted_wall_time_regression_remains_blocking() {
-    let baseline = MslQualityBaseline {
-        runtime_ratio_stats: Some(runtime_ratio_stats(2.0, 1.5)),
-        ..baseline_quality_template()
-    };
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let parity = parity_with_provenance(
         runtime_ratio_stats(2.0, 0.5),
-        provenance(10, 0, 2, 2, 0, Some(0.5), Some(0.6)),
+        provenance(8, 0, 2, 2, 0, Some(0.5), Some(0.6)),
     );
     let mut reasons = Vec::new();
     push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
@@ -92,11 +102,12 @@ fn trusted_wall_time_regression_remains_blocking() {
 
 #[test]
 fn affinity_failure_makes_wall_time_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let parity = parity_with_provenance(
         runtime_ratio_stats(2.0, 1.5),
-        provenance(10, 0, 2, 1, 1, Some(0.5), Some(0.6)),
+        provenance(8, 0, 2, 1, 1, Some(0.5), Some(0.6)),
     );
-    let decision = wall_time_trust_decision(Some(&parity));
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
     assert!(!decision.trusted);
     assert!(
         decision
@@ -108,11 +119,12 @@ fn affinity_failure_makes_wall_time_advisory() {
 
 #[test]
 fn excessive_host_load_makes_wall_time_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let parity = parity_with_provenance(
         runtime_ratio_stats(2.0, 1.5),
-        provenance(10, 0, 2, 2, 0, Some(1.51), Some(0.6)),
+        provenance(8, 0, 2, 2, 0, Some(1.51), Some(0.6)),
     );
-    let decision = wall_time_trust_decision(Some(&parity));
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
     assert!(!decision.trusted);
     assert!(
         decision
@@ -124,11 +136,12 @@ fn excessive_host_load_makes_wall_time_advisory() {
 
 #[test]
 fn missing_host_load_makes_wall_time_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let parity = parity_with_provenance(
         runtime_ratio_stats(2.0, 1.5),
-        provenance(10, 0, 2, 2, 0, None, Some(0.6)),
+        provenance(8, 0, 2, 2, 0, None, Some(0.6)),
     );
-    let decision = wall_time_trust_decision(Some(&parity));
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
     assert!(!decision.trusted);
     assert!(
         decision
@@ -140,6 +153,7 @@ fn missing_host_load_makes_wall_time_advisory() {
 
 #[test]
 fn missing_provenance_makes_wall_time_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let parity = MslParityGateInput {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
@@ -153,7 +167,7 @@ fn missing_provenance_makes_wall_time_advisory() {
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
     };
-    let decision = wall_time_trust_decision(Some(&parity));
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
     assert!(!decision.trusted);
     assert!(
         decision
@@ -165,6 +179,7 @@ fn missing_provenance_makes_wall_time_advisory() {
 
 #[test]
 fn malformed_provenance_makes_wall_time_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("omc_simulation_reference.json");
     let mut payload = valid_simulation_parity_payload();
@@ -178,7 +193,7 @@ fn malformed_provenance_makes_wall_time_advisory() {
     )
     .expect("write payload");
     let parity = load_msl_parity_gate_input(&path).expect("load parity payload");
-    let decision = wall_time_trust_decision(Some(&parity));
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
     assert!(!decision.trusted);
     assert!(
         decision
@@ -190,20 +205,76 @@ fn malformed_provenance_makes_wall_time_advisory() {
 
 #[test]
 fn mismatched_runtime_context_makes_wall_time_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
     let mut parity = parity_with_provenance(
         runtime_ratio_stats(2.0, 1.5),
-        provenance(10, 0, 2, 2, 0, Some(0.5), Some(0.6)),
+        provenance(8, 0, 2, 2, 0, Some(0.5), Some(0.6)),
     );
     parity.runtime_context = Some(MslParityRuntimeContext {
         workers_used: Some(4),
         omc_threads: Some(2),
     });
-    let decision = wall_time_trust_decision(Some(&parity));
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
     assert!(!decision.trusted);
     assert!(
         decision
             .reasons
             .iter()
             .any(|reason| reason.contains("runtime context"))
+    );
+}
+
+#[test]
+fn self_consistent_wall_time_context_mismatching_baseline_is_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
+    let mut wall_provenance = provenance(8, 0, 4, 4, 0, Some(0.5), Some(0.6));
+    wall_provenance.omc_threads = 2;
+    let parity = parity_with_provenance(runtime_ratio_stats(2.0, 1.5), wall_provenance);
+
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
+    assert!(!decision.trusted);
+    assert!(
+        decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("baseline runtime context"))
+    );
+}
+
+#[test]
+fn wall_time_fresh_count_not_covering_compared_samples_is_advisory() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
+    let mut runtime = runtime_ratio_stats(2.0, 1.5);
+    runtime.wall_ratio_both_success.sample_count = 10;
+    let parity = parity_with_provenance(runtime, provenance(1, 0, 2, 2, 0, Some(0.5), Some(0.6)));
+
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
+    assert!(!decision.trusted);
+    assert!(
+        decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("sample count mismatch"))
+    );
+}
+
+#[test]
+fn missing_baseline_wall_time_runtime_context_is_advisory() {
+    let baseline = MslQualityBaseline {
+        runtime_ratio_stats: Some(runtime_ratio_stats(2.0, 1.5)),
+        ..baseline_quality_template()
+    };
+    let parity = parity_with_provenance(
+        runtime_ratio_stats(2.0, 1.5),
+        provenance(8, 0, 2, 2, 0, Some(0.5), Some(0.6)),
+    );
+
+    let decision = wall_time_trust_decision(&baseline, Some(&parity));
+    assert!(!decision.trusted);
+    assert!(
+        decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("baseline runtime context missing"))
     );
 }

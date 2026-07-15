@@ -63,11 +63,14 @@ floor only when its measurement provenance is trustworthy. The
 - the worker count and OMC thread count paired with `timing` runtime context.
 
 A wall-time comparison is trustworthy only when it contains fresh samples and
-no cached samples, affinity was requested and applied successfully for every
-worker, both normalized load samples are present and at most `1.5`, and the
-provenance worker/thread policy matches the runtime context. Missing or
-malformed provenance makes wall-time advisory; it does not make missing or
-malformed parity, runtime-ratio, or trace data acceptable.
+no cached samples, the fresh plus cached counts exactly cover the compared wall
+samples, affinity was requested and applied successfully for every worker, and
+both normalized load samples are present and at most `1.5`. The current runtime
+context and provenance worker/thread policy must also both exactly match the
+promoted baseline runtime context; a baseline without a complete runtime
+context has no policy comparator and is advisory. Missing or malformed
+provenance makes wall-time advisory; it does not make missing or malformed
+parity, runtime-ratio, or trace data acceptable.
 
 The console reports `MSL wall speed gate: PASS` when trusted wall-time is above
 the floor, `FAIL` when trusted wall-time regresses past it, and `ADVISORY` when
