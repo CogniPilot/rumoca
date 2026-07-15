@@ -593,6 +593,8 @@ struct MslSchedulerTimings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct MslPhaseTimings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_load_before: Option<rumoca_test_msl::runtime_measurement::HostLoadSnapshot>,
     parse_seconds: f64,
     session_build_seconds: f64,
     frontend_compile_seconds: f64,

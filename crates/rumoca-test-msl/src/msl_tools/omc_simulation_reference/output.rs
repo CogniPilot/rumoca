@@ -392,7 +392,65 @@ fn build_timing_payload(
     })
 }
 
-fn build_runtime_comparison_payload(metrics: &RunMetrics) -> Value {
+fn load_wall_time_provenance(
+    args: &Args,
+    paths: &MslPaths,
+    context: &FinalizeContext,
+    state: &SimRunState,
+) -> crate::runtime_measurement::WallTimeMeasurementProvenance {
+    let rumoca_payload = std::fs::read_to_string(path_for_rumoca_results(paths))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let scheduler = rumoca_payload
+        .as_ref()
+        .and_then(|payload| payload.pointer("/timings/scheduler"));
+    let load_before = rumoca_payload
+        .as_ref()
+        .and_then(|payload| payload.pointer("/timings/host_load_before"))
+        .and_then(|value| {
+            serde_json::from_value::<crate::runtime_measurement::HostLoadSnapshot>(value.clone())
+                .ok()
+        });
+    let comparable_models = state.all_results.iter().filter(|(_, result)| {
+        result.status == "success"
+            && result.rumoca_status.as_deref() == Some("sim_ok")
+            && runtime_pair(result.rumoca_sim_wall_seconds, result.omc_wall_seconds).is_some()
+    });
+    let (omc_cached_sample_count, omc_fresh_sample_count) =
+        comparable_models.fold((0, 0), |(cached, fresh), (name, _)| {
+            if state.cached_omc_models.contains(name) {
+                (cached + 1, fresh)
+            } else {
+                (cached, fresh + 1)
+            }
+        });
+    let scheduler_count = |field: &str| {
+        scheduler
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0)
+    };
+    crate::runtime_measurement::WallTimeMeasurementProvenance {
+        omc_fresh_sample_count,
+        omc_cached_sample_count,
+        affinity_requested_worker_count: scheduler_count("affinity_requested_worker_count"),
+        affinity_applied_worker_count: scheduler_count("affinity_applied_worker_count"),
+        affinity_failed_worker_count: scheduler_count("affinity_failed_worker_count"),
+        normalized_load_before: load_before.map(|snapshot| snapshot.normalized()),
+        normalized_load_after: state.host_load_after.map(|snapshot| snapshot.normalized()),
+        workers_used: context.workers,
+        omc_threads: args.omc_threads,
+    }
+}
+
+fn build_runtime_comparison_payload(
+    args: &Args,
+    paths: &MslPaths,
+    context: &FinalizeContext,
+    metrics: &RunMetrics,
+    state: &SimRunState,
+) -> Value {
     let runtime_ratio_stats = json!({
         "system_ratio_all_positive": metrics.system_ratio_all_positive,
         "system_ratio_both_success": metrics.system_ratio_both_success,
@@ -400,6 +458,7 @@ fn build_runtime_comparison_payload(metrics: &RunMetrics) -> Value {
         "wall_ratio_both_success": metrics.wall_ratio_both_success,
     });
     let diagnostics = build_runtime_comparison_diagnostics(metrics);
+    let wall_time_provenance = load_wall_time_provenance(args, paths, context, state);
     json!({
         "ratio_definition": "omc_over_rumoca_higher_is_better (simulation/wall runtime; this is the SIM-time comparison, distinct from the compile-speed `speedup` in msl_speed_comparison.json)",
         "ratio_metric_system": "omc_timeSimulation_over_rumoca_sim_seconds",
@@ -414,6 +473,7 @@ fn build_runtime_comparison_payload(metrics: &RunMetrics) -> Value {
         "total_rumoca_sim_wall_seconds": round3(metrics.total_rumoca_sim_wall_seconds),
         "ratio_stats": runtime_ratio_stats,
         "diagnostics": diagnostics,
+        "wall_time_provenance": wall_time_provenance,
     })
 }
 
@@ -530,7 +590,7 @@ pub(super) fn build_sim_output_payload(
     });
     let mut timing = build_timing_payload(args, context, metrics, state);
     timing["selection_seconds"] = json!(round3(selection.selection_seconds));
-    let runtime_comparison = build_runtime_comparison_payload(metrics);
+    let runtime_comparison = build_runtime_comparison_payload(args, paths, context, metrics, state);
     let trace_comparison = build_trace_comparison_payload(paths, trace_summary);
     let pipeline_progress = build_pipeline_progress_payload(context, metrics, trace_summary, state);
     let omc_assertion_failures = build_omc_assertion_failure_payload(state);

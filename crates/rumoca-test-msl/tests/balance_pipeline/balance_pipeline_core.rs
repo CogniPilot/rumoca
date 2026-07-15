@@ -1334,7 +1334,10 @@ fn prepare_compiled_source_root(
 
 pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     let core_start = Instant::now();
-    let mut timings = MslPhaseTimings::default();
+    let mut timings = MslPhaseTimings {
+        host_load_before: rumoca_test_msl::runtime_measurement::sample_host_load(),
+        ..MslPhaseTimings::default()
+    };
     let frontend_compile_start = Instant::now();
     reset_compile_phase_timing_stats();
     reset_flatten_phase_timing_stats();

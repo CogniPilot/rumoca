@@ -5,6 +5,7 @@ use super::common::{
     has_fatal_omc_error, load_target_models, msl_load_lines, round3, summarize_batch_timings,
     summarize_omc_error, unix_timestamp_seconds, write_pretty_json,
 };
+use crate::runtime_measurement::{HostLoadSnapshot, sample_host_load};
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use rumoca_sim::sim_trace_compare::{
@@ -126,6 +127,8 @@ struct SimModelResult {
 #[derive(Debug, Clone)]
 struct SimRunState {
     all_results: BTreeMap<String, SimModelResult>,
+    cached_omc_models: BTreeSet<String>,
+    host_load_after: Option<HostLoadSnapshot>,
     // One per-model timing record. The shared `BatchTimingDetail` type is reused
     // (the compile reference genuinely batches); here each entry is one model.
     batch_timings: Vec<BatchTimingDetail>,
@@ -356,7 +359,7 @@ pub fn run(args: Args) -> Result<()> {
     );
     let mut state = prepare_run_state(&omc_model_names);
     if cache_valid {
-        merge_cached_results_for_resume(&omc_ref_json, &omc_model_names, &mut state.all_results)?;
+        merge_cached_results_for_resume(&omc_ref_json, &omc_model_names, &mut state)?;
     }
     let checkpoint = CheckpointContext {
         args: &args,
@@ -375,6 +378,7 @@ pub fn run(args: Args) -> Result<()> {
         started_at: overall_start,
     };
     run_session_pending(&args, workers, &paths, &mut state, cache_valid, &checkpoint)?;
+    state.host_load_after = sample_host_load();
     ensure_omc_trace_artifacts(&paths, &mut state.all_results);
     attach_rumoca_runtime(&rumoca_runtimes, &mut state.all_results);
     ensure_target_placeholders(&model_names, &rumoca_runtimes, &mut state.all_results);
@@ -667,6 +671,8 @@ fn cached_reference_cache_key(omc_ref_json: &Path) -> Option<String> {
 fn prepare_run_state(model_names: &[String]) -> SimRunState {
     SimRunState {
         all_results: BTreeMap::new(),
+        cached_omc_models: BTreeSet::new(),
+        host_load_after: None,
         batch_timings: Vec::new(),
         pending_models: model_names.to_vec(),
     }
@@ -750,6 +756,9 @@ fn run_session_pending(
     } else {
         BTreeSet::new()
     };
+    state
+        .cached_omc_models
+        .retain(|model| reuse_skip.contains(model));
     let models: Vec<String> = std::mem::take(&mut state.pending_models)
         .into_iter()
         .filter(|model| !reuse_skip.contains(model))
@@ -1365,7 +1374,7 @@ fn parse_csv_row(row: &str) -> Vec<String> {
 fn merge_cached_results_for_resume(
     cached_reference_path: &Path,
     target_models: &[String],
-    all_results: &mut BTreeMap<String, SimModelResult>,
+    state: &mut SimRunState,
 ) -> Result<()> {
     if !cached_reference_path.is_file() {
         return Ok(());
@@ -1394,12 +1403,13 @@ fn merge_cached_results_for_resume(
         let Ok(cached_result) = serde_json::from_value::<SimModelResult>(cached.clone()) else {
             continue;
         };
-        match all_results.get_mut(model_name) {
+        match state.all_results.get_mut(model_name) {
             Some(current) => hydrate_omc_fields_from_cached(current, &cached_result),
             None => {
-                all_results.insert(model_name.clone(), cached_result);
+                state.all_results.insert(model_name.clone(), cached_result);
             }
         }
+        state.cached_omc_models.insert(model_name.clone());
     }
     Ok(())
 }

@@ -114,8 +114,8 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
     )
     .expect("write payload");
 
-    let mut all_results = BTreeMap::new();
-    all_results.insert(
+    let mut state = prepare_run_state(&[model_name.to_string()]);
+    state.all_results.insert(
         model_name.to_string(),
         SimModelResult {
             status: "success".to_string(),
@@ -139,9 +139,12 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
         },
     );
 
-    merge_cached_results_for_resume(&path, &[model_name.to_string()], &mut all_results)
+    merge_cached_results_for_resume(&path, &[model_name.to_string()], &mut state)
         .expect("merge cached results");
-    let hydrated = all_results.get(model_name).expect("missing hydrated model");
+    let hydrated = state
+        .all_results
+        .get(model_name)
+        .expect("missing hydrated model");
     assert_eq!(hydrated.sim_system_seconds, Some(0.25));
     assert_eq!(hydrated.total_system_seconds, Some(0.5));
     assert_eq!(hydrated.omc_wall_seconds, Some(0.75));
@@ -153,6 +156,7 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
         hydrated.trace_file.as_deref(),
         Some("sim_traces/omc/Modelica.Blocks.Examples.PID_Controller.json")
     );
+    assert!(state.cached_omc_models.contains(model_name));
 }
 
 #[test]
@@ -418,6 +422,127 @@ fn compute_runtime_ratio_stats_reports_distribution() {
     assert!((filtered.max_ratio - 2.0).abs() < 1.0e-12);
 }
 
+fn successful_runtime_pair() -> SimModelResult {
+    SimModelResult {
+        status: "success".to_string(),
+        error: None,
+        sim_system_seconds: Some(0.25),
+        total_system_seconds: Some(0.5),
+        omc_wall_seconds: Some(0.75),
+        result_file: None,
+        trace_file: None,
+        trace_error: None,
+        rumoca_status: Some("sim_ok".to_string()),
+        rumoca_ic_status: Some("ic_ok".to_string()),
+        rumoca_ic_error: None,
+        rumoca_ic_seconds: Some(0.1),
+        rumoca_sim_seconds: Some(0.4),
+        rumoca_sim_build_seconds: Some(0.1),
+        rumoca_sim_run_seconds: Some(0.3),
+        rumoca_sim_wall_seconds: Some(0.5),
+        rumoca_trace_file: None,
+        rumoca_trace_error: None,
+    }
+}
+
+#[test]
+fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let results_dir = temp.path().join("results");
+    std::fs::create_dir_all(&results_dir).expect("results dir");
+    write_pretty_json(
+        &results_dir.join("msl_results.json"),
+        &json!({
+            "timings": {
+                "host_load_before": {"one_minute": 2.0, "logical_cpus": 4},
+                "scheduler": {
+                    "affinity_requested_worker_count": 3,
+                    "affinity_applied_worker_count": 2,
+                    "affinity_failed_worker_count": 1
+                }
+            }
+        }),
+    )
+    .expect("write rumoca results");
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir: results_dir.clone(),
+        flat_dir: results_dir.join("omc_flat"),
+        work_dir: results_dir.join("omc_work"),
+        sim_work_dir: results_dir.join("omc_sim_work"),
+        omc_trace_dir: results_dir.join("sim_traces/omc"),
+        rumoca_trace_dir: results_dir.join("sim_traces/rumoca"),
+    };
+    let args = Args {
+        dry_run: false,
+        batch_size: 1,
+        force: false,
+        workers: 3,
+        omc_threads: 1,
+        batch_timeout_seconds: 30,
+        stop_time: 1.0,
+        use_experiment_stop_time: false,
+        max_models: 0,
+        model_regex: None,
+        balance_results_file: None,
+        results_dir: None,
+        target_models_file: None,
+        trace_exclusions_file: None,
+        rumoca_sim_ok_only: false,
+    };
+    let selection = ModelSelection {
+        names: vec!["cached".to_string(), "fresh".to_string()],
+        source_file: temp.path().join("targets.json"),
+        rule: "test".to_string(),
+        selection_seconds: 0.0,
+    };
+    let context = FinalizeContext {
+        omc_version: "test".to_string(),
+        git_commit: "test".to_string(),
+        workers: 3,
+        total: 2,
+        n_batches: 2,
+        effective_batch_size: 1,
+        elapsed_seconds: 1.0,
+        cache_key: "test-key".to_string(),
+    };
+    let state = SimRunState {
+        all_results: BTreeMap::from([
+            ("cached".to_string(), successful_runtime_pair()),
+            ("fresh".to_string(), successful_runtime_pair()),
+        ]),
+        cached_omc_models: BTreeSet::from(["cached".to_string()]),
+        host_load_after: Some(crate::runtime_measurement::HostLoadSnapshot {
+            one_minute: 3.0,
+            logical_cpus: 4,
+        }),
+        batch_timings: Vec::new(),
+        pending_models: Vec::new(),
+    };
+    let metrics = compute_run_metrics(context.total, &state);
+    let trace_summary = compute_trace_output_summary(&TraceQuantification::default());
+    let payload = output::build_sim_output_payload(
+        &args,
+        &paths,
+        &selection,
+        &context,
+        &metrics,
+        &trace_summary,
+        &state,
+    );
+    let provenance = &payload["runtime_comparison"]["wall_time_provenance"];
+    assert_eq!(provenance["omc_cached_sample_count"], 1);
+    assert_eq!(provenance["omc_fresh_sample_count"], 1);
+    assert_eq!(provenance["affinity_requested_worker_count"], 3);
+    assert_eq!(provenance["affinity_applied_worker_count"], 2);
+    assert_eq!(provenance["affinity_failed_worker_count"], 1);
+    assert_eq!(provenance["normalized_load_before"], 0.5);
+    assert_eq!(provenance["normalized_load_after"], 0.75);
+    assert_eq!(provenance["workers_used"], 3);
+    assert_eq!(provenance["omc_threads"], 1);
+}
+
 #[test]
 fn output_payload_keeps_empty_parity_diagnostics_when_omc_has_no_successes() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -489,11 +614,8 @@ fn output_payload_keeps_empty_parity_diagnostics_when_omc_has_no_successes() {
             rumoca_trace_error: None,
         },
     );
-    let state = SimRunState {
-        all_results,
-        batch_timings: Vec::new(),
-        pending_models: Vec::new(),
-    };
+    let mut state = prepare_run_state(&[]);
+    state.all_results = all_results;
     let metrics = compute_run_metrics(context.total, &state);
     let trace_summary = compute_trace_output_summary(&TraceQuantification::default());
     let payload = output::build_sim_output_payload(
