@@ -452,16 +452,26 @@ fn host_load(one_minute: f64, logical_cpus: usize) -> crate::runtime_measurement
     }
 }
 
+fn scheduler_provenance() -> Value {
+    json!({
+        "worker_count": 14,
+        "affinity_requested_worker_count": 14,
+        "affinity_applied_worker_count": 14,
+        "affinity_failed_worker_count": 0
+    })
+}
+
 fn assert_complete_wall_time_provenance(payload: &Value) {
     let provenance = &payload["runtime_comparison"]["wall_time_provenance"];
     assert_eq!(provenance["omc_cached_sample_count"], 1);
     assert_eq!(provenance["omc_fresh_sample_count"], 1);
-    assert_eq!(provenance["affinity_requested_worker_count"], 3);
-    assert_eq!(provenance["affinity_applied_worker_count"], 2);
-    assert_eq!(provenance["affinity_failed_worker_count"], 1);
+    assert_eq!(provenance["affinity_requested_worker_count"], 14);
+    assert_eq!(provenance["affinity_applied_worker_count"], 14);
+    assert_eq!(provenance["affinity_failed_worker_count"], 0);
     assert_eq!(provenance["normalized_load_before"], 0.5);
     assert_eq!(provenance["normalized_load_after"], 0.75);
-    assert_eq!(provenance["workers_used"], 3);
+    assert_eq!(provenance["rumoca_workers_used"], 14);
+    assert_eq!(provenance["workers_used"], 2);
     assert_eq!(provenance["omc_threads"], 1);
 }
 
@@ -486,11 +496,7 @@ fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
         &json!({
             "timings": {
                 "host_load_before": {"one_minute": 2.0, "logical_cpus": 4},
-                "scheduler": {
-                    "affinity_requested_worker_count": 3,
-                    "affinity_applied_worker_count": 2,
-                    "affinity_failed_worker_count": 1
-                }
+                "scheduler": scheduler_provenance()
             }
         }),
     )
@@ -509,7 +515,7 @@ fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
         dry_run: false,
         batch_size: 1,
         force: false,
-        workers: 3,
+        workers: 2,
         omc_threads: 1,
         batch_timeout_seconds: 30,
         stop_time: 1.0,
@@ -531,7 +537,7 @@ fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
     let context = FinalizeContext {
         omc_version: "test".to_string(),
         git_commit: "test".to_string(),
-        workers: 3,
+        workers: 2,
         total: 2,
         n_batches: 2,
         effective_batch_size: 1,

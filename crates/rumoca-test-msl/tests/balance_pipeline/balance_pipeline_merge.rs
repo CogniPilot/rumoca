@@ -408,8 +408,8 @@ fn sum_rumoca_runtime_seconds(models: &Map<String, Value>) -> f64 {
         .sum()
 }
 
-fn build_runtime_comparison(models: &Map<String, Value>) -> Value {
-    json!({
+fn build_runtime_comparison(models: &Map<String, Value>, omc_payloads: &[Value]) -> Value {
+    let mut comparison = json!({
         "ratio_definition": "omc_over_rumoca_higher_is_better (simulation/wall runtime; this is the SIM-time comparison, distinct from the compile-speed `speedup` in msl_speed_comparison.json)",
         "ratio_metric_system": "omc_timeSimulation_over_rumoca_sim_seconds",
         "ratio_metric_wall": "omc_external_wall_over_rumoca_external_wall",
@@ -427,7 +427,60 @@ fn build_runtime_comparison(models: &Map<String, Value>) -> Value {
             "wall_ratio_all_positive": runtime_ratio_bucket(models, true, false),
             "wall_ratio_both_success": runtime_ratio_bucket(models, true, true),
         },
-    })
+    });
+    if let Some(provenance) = merge_wall_time_provenance(omc_payloads) {
+        comparison["wall_time_provenance"] = provenance;
+    }
+    comparison
+}
+
+fn merge_wall_time_provenance(omc_payloads: &[Value]) -> Option<Value> {
+    let provenances = omc_payloads
+        .iter()
+        .map(|payload| payload.pointer("/runtime_comparison/wall_time_provenance"))
+        .collect::<Option<Vec<_>>>()?;
+    let sum = |key: &str| {
+        provenances
+            .iter()
+            .filter_map(|value| json_usize(value, &[key]))
+            .sum::<usize>()
+    };
+    let same = |key: &str| {
+        let values = provenances
+            .iter()
+            .map(|value| json_usize(value, &[key]))
+            .collect::<Option<Vec<_>>>()?;
+        values
+            .first()
+            .copied()
+            .filter(|first| values.iter().all(|value| value == first))
+    };
+    let max_finite = |key: &str| {
+        provenances
+            .iter()
+            .try_fold(f64::NEG_INFINITY, |maximum, value| {
+                let current = json_f64(value, &[key])?;
+                current.is_finite().then_some(maximum.max(current))
+            })
+            .filter(|value| value.is_finite())
+    };
+    let mut merged = json!({
+        "omc_fresh_sample_count": sum("omc_fresh_sample_count"),
+        "omc_cached_sample_count": sum("omc_cached_sample_count"),
+        "affinity_requested_worker_count": sum("affinity_requested_worker_count"),
+        "affinity_applied_worker_count": sum("affinity_applied_worker_count"),
+        "affinity_failed_worker_count": sum("affinity_failed_worker_count"),
+        "rumoca_workers_used": sum("rumoca_workers_used"),
+        "normalized_load_before": max_finite("normalized_load_before"),
+        "normalized_load_after": max_finite("normalized_load_after"),
+    });
+    if let Some(value) = same("workers_used") {
+        merged["workers_used"] = json!(value);
+    }
+    if let Some(value) = same("omc_threads") {
+        merged["omc_threads"] = json!(value);
+    }
+    Some(merged)
 }
 
 fn merge_initial_condition_summary(trace_values: &[&Value]) -> Result<Value, String> {
@@ -980,11 +1033,7 @@ fn merge_timing_payload(omc_payloads: &[Value]) -> Value {
             .sum::<usize>();
         root.insert(key.to_string(), json!(values));
     }
-    let workers = omc_payloads
-        .iter()
-        .filter_map(|payload| json_usize(payload, &["timing", "workers_used"]))
-        .sum::<usize>();
-    if workers > 0 {
+    if let Some(workers) = optional_same_usize(omc_payloads, &["timing", "workers_used"]) {
         root.insert("workers_used".to_string(), json!(workers));
     }
     if let Some(omc_threads) = optional_same_usize(omc_payloads, &["timing", "omc_threads"]) {
@@ -1060,7 +1109,7 @@ fn merge_omc_reference_payloads(
     root.insert("timing".to_string(), merge_timing_payload(omc_payloads));
     root.insert(
         "runtime_comparison".to_string(),
-        build_runtime_comparison(&omc_models),
+        build_runtime_comparison(&omc_models, omc_payloads),
     );
     root.insert("trace_comparison".to_string(), trace_summary.clone());
     root.insert(
@@ -1302,7 +1351,20 @@ fn shard_omc_reference_fixture(model: &str) -> Value {
         "omc_version": "OpenModelica 1.26.1",
         "total_models": 1,
         "timing": shard_timing_fixture(),
-        "runtime_comparison": { "ratio_stats": {
+        "runtime_comparison": {
+          "wall_time_provenance": {
+            "omc_fresh_sample_count": 1,
+            "omc_cached_sample_count": 0,
+            "affinity_requested_worker_count": 7,
+            "affinity_applied_worker_count": 7,
+            "affinity_failed_worker_count": 0,
+            "rumoca_workers_used": 7,
+            "normalized_load_before": 0.2,
+            "normalized_load_after": 0.3,
+            "workers_used": 3,
+            "omc_threads": 1
+          },
+          "ratio_stats": {
             "system_ratio_both_success": shard_ratio_stats_fixture(),
             "wall_ratio_both_success": shard_ratio_stats_fixture()
         }},
@@ -1368,10 +1430,12 @@ fn write_shard_fixture(dir: &Path, shard: usize, model: &str) {
         &shard_dir.join("msl_results.json"),
         &serde_json::to_value(shard_summary(model)).expect("serialize summary"),
     );
-    write_json_fixture(
-        &shard_dir.join(SHARD_OMC_REFERENCE_FILE),
-        &shard_omc_reference_fixture(model),
-    );
+    let mut omc = shard_omc_reference_fixture(model);
+    if shard == 2 {
+        omc["runtime_comparison"]["wall_time_provenance"]["normalized_load_before"] = json!(0.4);
+        omc["runtime_comparison"]["wall_time_provenance"]["normalized_load_after"] = json!(0.5);
+    }
+    write_json_fixture(&shard_dir.join(SHARD_OMC_REFERENCE_FILE), &omc);
     write_json_fixture(
         &shard_dir.join(SHARD_TRACE_COMPARISON_FILE),
         &shard_trace_comparison_fixture(model),
@@ -1413,8 +1477,34 @@ fn merge_shard_parity_artifacts_writes_full_omc_and_trace_inputs() {
         Some(2)
     );
     assert_eq!(json_usize(&trace, &["models_compared"]), Some(2));
+    let provenance = &omc["runtime_comparison"]["wall_time_provenance"];
+    assert_eq!(provenance["omc_fresh_sample_count"], 2);
+    assert_eq!(provenance["rumoca_workers_used"], 14);
+    assert_eq!(provenance["affinity_requested_worker_count"], 14);
+    assert_eq!(provenance["workers_used"], 3);
+    assert_eq!(provenance["normalized_load_before"], 0.4);
+    assert_eq!(provenance["normalized_load_after"], 0.5);
     assert_eq!(
         trace.get("models").and_then(Value::as_object).map(Map::len),
         Some(2)
     );
+}
+
+#[test]
+fn merge_shard_provenance_omits_untrustworthy_fields() {
+    let mut first = shard_omc_reference_fixture("A");
+    let mut second = shard_omc_reference_fixture("B");
+    second["runtime_comparison"]["wall_time_provenance"]["workers_used"] = json!(4);
+    second["runtime_comparison"]["wall_time_provenance"]["omc_threads"] = json!(2);
+    second["runtime_comparison"]["wall_time_provenance"]["normalized_load_before"] = Value::Null;
+    let merged = merge_wall_time_provenance(&[first.clone(), second]).expect("aggregate exists");
+    assert!(merged.get("workers_used").is_none());
+    assert!(merged.get("omc_threads").is_none());
+    assert!(merged["normalized_load_before"].is_null());
+
+    first["runtime_comparison"]
+        .as_object_mut()
+        .unwrap()
+        .remove("wall_time_provenance");
+    assert!(merge_wall_time_provenance(&[first]).is_none());
 }

@@ -381,7 +381,7 @@ fn focused_or_partial_runs_do_not_require_full_parity() {
 #[test]
 fn current_quality_snapshot_marks_only_partial_runs() {
     let summary = valid_summary_template();
-    let full = current_msl_quality_snapshot_json(&summary, None, false)
+    let full = current_msl_quality_snapshot_json(&summary, None, None, false)
         .expect("full snapshot should serialize");
     assert_eq!(
         full.get("quality_gate_version").and_then(Value::as_u64),
@@ -396,7 +396,7 @@ fn current_quality_snapshot_marks_only_partial_runs() {
         "full baseline snapshots should omit the partial marker"
     );
 
-    let partial = current_msl_quality_snapshot_json(&summary, None, true)
+    let partial = current_msl_quality_snapshot_json(&summary, None, None, true)
         .expect("partial snapshot should serialize");
     assert_eq!(
         partial.get("run_scope").and_then(Value::as_str),
@@ -419,7 +419,7 @@ fn current_quality_snapshot_records_parity_omc_version() {
         omc_assertion_failure_examples: Vec::new(),
     };
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
+    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), None, false)
         .expect("snapshot should serialize");
     assert_eq!(
         snapshot.get("omc_version").and_then(Value::as_str),
@@ -444,7 +444,7 @@ fn current_quality_snapshot_records_runtime_ratio_stats() {
         omc_assertion_failure_examples: Vec::new(),
     };
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
+    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), None, false)
         .expect("snapshot should serialize");
     assert_eq!(
         snapshot
@@ -548,7 +548,7 @@ fn current_quality_snapshot_includes_pipeline_progression() {
         vec!["Modelica.NotAStandaloneRoot".to_string()],
     );
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, None, false)
+    let snapshot = current_msl_quality_snapshot_json(&summary, None, None, false)
         .expect("snapshot should serialize");
     let pipeline = snapshot
         .get("pipeline_progress")
@@ -634,7 +634,7 @@ fn current_quality_snapshot_includes_mls_contract_category_coverage() {
     );
     summary.model_results = vec![array_result, connector_result];
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, None, false)
+    let snapshot = current_msl_quality_snapshot_json(&summary, None, None, false)
         .expect("snapshot should serialize");
     let coverage = snapshot
         .get("mls_contract_coverage")

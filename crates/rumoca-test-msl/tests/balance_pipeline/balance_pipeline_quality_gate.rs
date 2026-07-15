@@ -1189,6 +1189,7 @@ pub(super) fn current_msl_quality_baseline(
 fn current_msl_quality_snapshot_json(
     summary: &MslSummary,
     parity_input: Option<&MslParityGateInput>,
+    promoted_baseline: Option<&MslQualityBaseline>,
     partial: bool,
 ) -> io::Result<serde_json::Value> {
     let baseline = current_msl_quality_baseline(summary, parity_input);
@@ -1253,6 +1254,31 @@ fn current_msl_quality_snapshot_json(
             ))
         })?,
     );
+    root.insert(
+        "wall_time_provenance".to_string(),
+        parity_input
+            .and_then(|parity| parity.wall_time_provenance.as_ref())
+            .map_or(serde_json::Value::Null, |provenance| {
+                serde_json::json!(provenance)
+            }),
+    );
+    let wall_decision = promoted_baseline.map_or_else(
+        || WallTimeStatusContent {
+            status: "ADVISORY",
+            trusted: false,
+            reasons: vec!["runtime baseline missing".to_string()],
+            observed_median: parity_input
+                .and_then(|parity| parity.runtime_ratio_stats.as_ref())
+                .map(|stats| stats.wall_ratio_both_success.median),
+            baseline_median: None,
+            floor: None,
+        },
+        |baseline| wall_time_status_content(baseline, parity_input),
+    );
+    root.insert(
+        "runtime_wall_decision".to_string(),
+        serde_json::json!(wall_decision),
+    );
     if partial {
         root.insert("partial".to_string(), serde_json::Value::Bool(true));
     }
@@ -1274,9 +1300,11 @@ pub(super) fn write_current_msl_quality_snapshot(summary: &MslSummary) -> io::Re
     }
     let parity_input =
         load_current_msl_parity_gate_input_optional(summary.sim_target_models.len())?;
+    let promoted_baseline = load_msl_quality_baseline(&msl_quality_baseline_path()).ok();
     let snapshot = current_msl_quality_snapshot_json(
         summary,
         parity_input.as_ref(),
+        promoted_baseline.as_ref(),
         should_skip_msl_quality_gate(),
     )?;
     let baseline_path = msl_quality_current_path();

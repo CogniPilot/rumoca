@@ -58,13 +58,15 @@ floor only when its measurement provenance is trustworthy. The
 `runtime_comparison.wall_time_provenance` object records:
 
 - fresh and cached OMC sample counts;
-- requested, successfully applied, and failed CPU-affinity worker counts;
+- requested, successfully applied, and failed CPU-affinity worker counts, plus
+  the independently observed Rumoca scheduler worker count;
 - normalized one-minute host load sampled before and after parity work; and
 - the worker count and OMC thread count paired with `timing` runtime context.
 
 A wall-time comparison is trustworthy only when it contains fresh samples and
 no cached samples, the fresh plus cached counts exactly cover the compared wall
-samples, affinity was requested and applied successfully for every worker, and
+samples, affinity was requested and applied successfully for every Rumoca
+scheduler worker, and
 both normalized load samples are present and at most `1.5`. The current runtime
 context and provenance worker/thread policy must also both exactly match the
 promoted baseline runtime context; a baseline without a complete runtime
@@ -72,13 +74,24 @@ context has no policy comparator and is advisory. Missing or malformed
 provenance makes wall-time advisory; it does not make missing or malformed
 parity, runtime-ratio, or trace data acceptable.
 
+The official shard fan-in sums sample, Rumoca-worker, and affinity counts. It
+retains OMC worker/thread values only when every shard reports the same value,
+and retains each normalized load value only when every shard reports a finite
+sample, using the maximum across shards. Missing or mismatched shard provenance
+therefore remains advisory rather than being reconstructed as trusted.
+
 The console reports `MSL wall speed gate: PASS` when trusted wall-time is above
 the floor, `FAIL` when trusted wall-time regresses past it, and `ADVISORY` when
 the measurement is not trusted. Advisory output still shows the observed
 median, baseline, 35% floor, and every provenance reason. Correctness and
 system-time failures remain blocking regardless of wall-time status.
 
-`msl_quality_current.json` also records release review metadata:
+`msl_quality_current.json` records `wall_time_provenance` and a
+`runtime_wall_decision` object containing `status`, `trusted`, `reasons`, and,
+when a runtime baseline exists, the observed median, baseline median, and 35%
+floor. These audit fields belong only to the current snapshot and are not part
+of the promoted baseline comparison schema. It also records release review
+metadata:
 
 - `omc_version` records the OpenModelica build used for OMC trace parity; the
   quality gate compares the upstream release version and tolerates distro

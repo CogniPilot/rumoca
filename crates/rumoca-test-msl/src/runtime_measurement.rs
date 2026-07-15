@@ -24,6 +24,7 @@ pub struct WallTimeMeasurementProvenance {
     pub affinity_failed_worker_count: usize,
     pub normalized_load_before: Option<f64>,
     pub normalized_load_after: Option<f64>,
+    pub rumoca_workers_used: usize,
     pub workers_used: usize,
     pub omc_threads: usize,
 }

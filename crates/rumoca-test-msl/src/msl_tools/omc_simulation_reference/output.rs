@@ -439,6 +439,7 @@ fn load_wall_time_provenance(
         affinity_failed_worker_count: scheduler_count("affinity_failed_worker_count"),
         normalized_load_before: load_before.map(|snapshot| snapshot.normalized()),
         normalized_load_after: state.host_load_after.map(|snapshot| snapshot.normalized()),
+        rumoca_workers_used: scheduler_count("worker_count"),
         workers_used: context.workers,
         omc_threads: args.omc_threads,
     }

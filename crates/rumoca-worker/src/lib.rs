@@ -55,6 +55,7 @@ pub enum ModelWorkerCommand {
 pub enum ModelWorkerControlMessage {
     Ready {
         protocol_version: u32,
+        #[serde(default)]
         cpu_affinity_applied: Option<bool>,
     },
     Result {
@@ -867,6 +868,20 @@ mod tests {
                 .unwrap()
                 .contains("cpu_affinity_applied")
         );
+    }
+
+    #[test]
+    fn ready_message_deserializes_old_payload_without_affinity() {
+        let decoded: ModelWorkerControlMessage =
+            serde_json::from_str(r#"{"event":"ready","protocol_version":1}"#)
+                .expect("old ready payload should deserialize");
+        assert!(matches!(
+            decoded,
+            ModelWorkerControlMessage::Ready {
+                cpu_affinity_applied: None,
+                ..
+            }
+        ));
     }
 
     #[test]

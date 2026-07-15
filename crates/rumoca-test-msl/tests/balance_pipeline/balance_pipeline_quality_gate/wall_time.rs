@@ -9,6 +9,7 @@ pub(super) struct MslWallTimeProvenance {
     pub(super) affinity_failed_worker_count: usize,
     pub(super) normalized_load_before: Option<f64>,
     pub(super) normalized_load_after: Option<f64>,
+    pub(super) rumoca_workers_used: usize,
     pub(super) workers_used: usize,
     pub(super) omc_threads: usize,
 }
@@ -95,10 +96,10 @@ fn advisory(reason: &str) -> WallTimeTrustDecision {
 }
 
 fn push_affinity_reasons(reasons: &mut Vec<String>, provenance: &MslWallTimeProvenance) {
-    if provenance.affinity_requested_worker_count != provenance.workers_used {
+    if provenance.affinity_requested_worker_count != provenance.rumoca_workers_used {
         reasons.push(format!(
-            "affinity coverage mismatch: requested={} workers_used={}",
-            provenance.affinity_requested_worker_count, provenance.workers_used
+            "affinity coverage mismatch: requested={} rumoca_workers_used={}",
+            provenance.affinity_requested_worker_count, provenance.rumoca_workers_used
         ));
     }
     if provenance.affinity_requested_worker_count == 0
@@ -111,6 +112,67 @@ fn push_affinity_reasons(reasons: &mut Vec<String>, provenance: &MslWallTimeProv
             provenance.affinity_applied_worker_count,
             provenance.affinity_failed_worker_count
         ));
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(super) struct WallTimeStatusContent {
+    pub(super) status: &'static str,
+    pub(super) trusted: bool,
+    pub(super) reasons: Vec<String>,
+    pub(super) observed_median: Option<f64>,
+    pub(super) baseline_median: Option<f64>,
+    pub(super) floor: Option<f64>,
+}
+
+pub(super) fn wall_time_status_content(
+    baseline: &MslQualityBaseline,
+    parity_input: Option<&MslParityGateInput>,
+) -> WallTimeStatusContent {
+    let observed = parity_input
+        .and_then(|parity| parity.runtime_ratio_stats.as_ref())
+        .map(|stats| stats.wall_ratio_both_success.median);
+    let baseline_median = baseline
+        .runtime_ratio_stats
+        .as_ref()
+        .map(|stats| stats.wall_ratio_both_success.median);
+    let floor = baseline_median.map(|median| median * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE));
+    let trust = wall_time_trust_decision(baseline, parity_input);
+    let status = match (trust.trusted, observed, floor) {
+        (true, Some(observed), Some(floor)) if observed + SIM_RATE_GATE_EPSILON < floor => "FAIL",
+        (true, Some(_), Some(_)) => "PASS",
+        _ => "ADVISORY",
+    };
+    WallTimeStatusContent {
+        status,
+        trusted: trust.trusted,
+        reasons: trust.reasons,
+        observed_median: observed,
+        baseline_median,
+        floor,
+    }
+}
+
+pub(super) fn format_wall_time_status(content: &WallTimeStatusContent) -> String {
+    let reason_text = if content.reasons.is_empty() {
+        "trusted provenance".to_string()
+    } else {
+        content.reasons.join("; ")
+    };
+    match (
+        content.observed_median,
+        content.baseline_median,
+        content.floor,
+    ) {
+        (Some(observed), Some(baseline), Some(floor)) => format!(
+            "MSL wall speed gate: {} median={observed:.3e}, baseline={baseline:.3e}, floor={floor:.3e} (tolerance={:.1}%); provenance: {reason_text}.",
+            content.status,
+            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0,
+        ),
+        _ => format!(
+            "MSL wall speed gate: {}; provenance: {reason_text}.",
+            content.status
+        ),
     }
 }
 

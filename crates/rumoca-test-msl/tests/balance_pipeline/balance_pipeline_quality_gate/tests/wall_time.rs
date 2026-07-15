@@ -17,9 +17,48 @@ fn provenance(
         affinity_failed_worker_count: affinity_failed,
         normalized_load_before: load_before,
         normalized_load_after: load_after,
+        rumoca_workers_used: affinity_requested,
         workers_used: affinity_requested,
         omc_threads: 1,
     }
+}
+
+#[test]
+fn rumoca_and_omc_worker_topologies_are_independent() {
+    let baseline = baseline_with_runtime(2.0, 1.5, 2, 1);
+    let mut wall = provenance(8, 0, 14, 14, 0, Some(0.2), Some(0.3));
+    wall.rumoca_workers_used = 14;
+    wall.workers_used = 2;
+    let parity = parity_with_provenance(runtime_ratio_stats(2.0, 1.5), wall);
+    assert!(wall_time_trust_decision(&baseline, Some(&parity)).trusted);
+}
+
+#[test]
+fn wall_status_content_covers_pass_fail_and_advisory() {
+    let baseline = baseline_with_runtime(2.0, 2.0, 2, 1);
+    let trusted = provenance(8, 0, 2, 2, 0, Some(0.2), Some(0.3));
+    let pass = wall_time_status_content(
+        &baseline,
+        Some(&parity_with_provenance(
+            runtime_ratio_stats(2.0, 1.5),
+            trusted.clone(),
+        )),
+    );
+    assert_eq!(pass.status, "PASS");
+    assert!(format_wall_time_status(&pass).contains("MSL wall speed gate: PASS"));
+    let fail = wall_time_status_content(
+        &baseline,
+        Some(&parity_with_provenance(
+            runtime_ratio_stats(2.0, 1.0),
+            trusted,
+        )),
+    );
+    assert_eq!(fail.status, "FAIL");
+    assert!(format_wall_time_status(&fail).contains("MSL wall speed gate: FAIL"));
+    let advisory = wall_time_status_content(&baseline, None);
+    assert_eq!(advisory.status, "ADVISORY");
+    assert!(!advisory.trusted);
+    assert!(format_wall_time_status(&advisory).contains("missing parity input"));
 }
 
 fn parity_with_provenance(
@@ -277,4 +316,32 @@ fn missing_baseline_wall_time_runtime_context_is_advisory() {
             .iter()
             .any(|reason| reason.contains("baseline runtime context missing"))
     );
+}
+
+#[test]
+fn current_quality_snapshot_serializes_wall_decisions_without_polluting_baseline() {
+    let summary = valid_summary_template();
+    let baseline = baseline_with_runtime(2.0, 2.0, 2, 1);
+    let mut trusted = provenance(8, 0, 14, 14, 0, Some(0.2), Some(0.3));
+    trusted.workers_used = 2;
+    for (median, provenance_value, expected) in [
+        (1.5, Some(trusted.clone()), "PASS"),
+        (1.0, Some(trusted.clone()), "FAIL"),
+        (1.0, None, "ADVISORY"),
+    ] {
+        let mut parity = parity_with_provenance(runtime_ratio_stats(2.0, median), trusted.clone());
+        parity.wall_time_provenance = provenance_value;
+        let snapshot =
+            current_msl_quality_snapshot_json(&summary, Some(&parity), Some(&baseline), false)
+                .expect("snapshot should serialize");
+        let decision = &snapshot["runtime_wall_decision"];
+        assert_eq!(decision["status"], expected);
+        assert_eq!(decision["observed_median"], median);
+        assert_eq!(decision["baseline_median"], 2.0);
+        assert_eq!(decision["floor"], 1.3);
+        assert!(snapshot.get("wall_time_provenance").is_some());
+    }
+    let promoted = serde_json::to_value(&baseline).expect("serialize promoted baseline");
+    assert!(promoted.get("wall_time_provenance").is_none());
+    assert!(promoted.get("runtime_wall_decision").is_none());
 }
