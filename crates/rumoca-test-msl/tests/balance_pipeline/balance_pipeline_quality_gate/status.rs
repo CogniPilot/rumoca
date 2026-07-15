@@ -180,14 +180,49 @@ pub(super) fn print_runtime_ratio_status(
         .and_then(|context| context.omc_threads);
 
     if let Some(baseline_runtime) = baseline.runtime_ratio_stats.as_ref() {
+        let system_floor = baseline_runtime.system_ratio_both_success.median
+            * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
+        let system_status = if current_runtime.system_ratio_both_success.median
+            + SIM_RATE_GATE_EPSILON
+            < system_floor
+        {
+            "FAIL"
+        } else {
+            "PASS"
+        };
         println!(
-            "MSL speed gate: PASS system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
+            "MSL system speed gate: {system_status} median={:.3e}, baseline={:.3e}, floor={:.3e} (tolerance={:.1}%), workers={}, omc_threads={}.",
             current_runtime.system_ratio_both_success.median,
             baseline_runtime.system_ratio_both_success.median,
-            current_runtime.wall_ratio_both_success.median,
-            baseline_runtime.wall_ratio_both_success.median,
+            system_floor,
+            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0,
             fmt_opt_usize(current_workers),
             fmt_opt_usize(current_omc_threads)
+        );
+
+        let wall_floor = baseline_runtime.wall_ratio_both_success.median
+            * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
+        let trust = wall_time_trust_decision(parity_input);
+        let wall_status = if !trust.trusted {
+            "ADVISORY"
+        } else if current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON
+            < wall_floor
+        {
+            "FAIL"
+        } else {
+            "PASS"
+        };
+        let reason_text = if trust.reasons.is_empty() {
+            "trusted provenance".to_string()
+        } else {
+            trust.reasons.join("; ")
+        };
+        println!(
+            "MSL wall speed gate: {wall_status} median={:.3e}, baseline={:.3e}, floor={:.3e} (tolerance={:.1}%); provenance: {reason_text}.",
+            current_runtime.wall_ratio_both_success.median,
+            baseline_runtime.wall_ratio_both_success.median,
+            wall_floor,
+            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0,
         );
         return;
     }

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use tempfile::tempdir;
 
 mod cache_resume;
+mod wall_time;
 
 const ISOLATED_QUALITY_GATE_CHILD_MARKER: &str = "target/msl/isolated-quality-gate-child.marker";
 
@@ -412,6 +413,7 @@ fn current_quality_snapshot_records_parity_omc_version() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -436,6 +438,7 @@ fn current_quality_snapshot_records_runtime_ratio_stats() {
             omc_threads: Some(1),
         }),
         runtime_ratio_stats: Some(runtime_ratio_stats(5.0, 4.0)),
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -472,6 +475,7 @@ fn quality_context_reports_omc_version_mismatch_for_pinned_baseline() {
         omc_version: Some("OpenModelica 1.27.0".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -496,6 +500,7 @@ fn quality_context_accepts_omc_package_rebuild_suffix_drift() {
         omc_version: Some("OpenModelica 1.26.7~2-ge74480f".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1116,37 +1121,6 @@ fn trace_accuracy_deviation_migrated_to_near() -> MslTraceAccuracyStatsBaseline 
 }
 
 #[test]
-fn runtime_ratio_regression_reason_triggers_on_large_drop() {
-    let baseline = MslQualityBaseline {
-        runtime_ratio_stats: Some(runtime_ratio_stats(2.0, 1.5)),
-        ..baseline_quality_template()
-    };
-    let parity = MslParityGateInput {
-        total_models: Some(10),
-        omc_version: Some("OpenModelica 1.26.1".to_string()),
-        runtime_context: None,
-        runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 0.5)),
-        trace_accuracy_stats: None,
-        omc_assertion_failure_models: 0,
-        omc_assertion_failure_examples: Vec::new(),
-    };
-
-    let mut reasons = Vec::new();
-    push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
-    assert_eq!(reasons.len(), 2);
-    assert!(
-        reasons
-            .iter()
-            .any(|reason| reason.contains("runtime system speedup median"))
-    );
-    assert!(
-        reasons
-            .iter()
-            .any(|reason| reason.contains("runtime wall speedup median"))
-    );
-}
-
-#[test]
 fn msl_quality_regression_reasons_include_runtime_ratio_drop() {
     let mut baseline = baseline_quality_template();
     baseline.trace_accuracy_stats = Some(trace_accuracy_baseline());
@@ -1156,6 +1130,7 @@ fn msl_quality_regression_reasons_include_runtime_ratio_drop() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 1.5)),
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(trace_accuracy_baseline()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1182,6 +1157,7 @@ fn runtime_ratio_gate_allows_observed_ci_runner_delta() {
         omc_version: Some("OpenModelica 1.26.8".to_string()),
         runtime_context: None,
         runtime_ratio_stats: Some(runtime_ratio_stats(0.887_313_1, 0.887_313_1)),
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1206,6 +1182,7 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(trace_accuracy_regressed()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1238,6 +1215,7 @@ fn trace_channel_share_tolerances_allow_small_runner_drift() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(trace_accuracy_small_channel_drift()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1270,6 +1248,7 @@ fn trace_near_to_high_promotion_does_not_trigger_regression() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(trace_accuracy_near_promoted_to_high()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1296,6 +1275,7 @@ fn trace_deviation_to_near_migration_does_not_trigger_regression() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(trace_accuracy_deviation_migrated_to_near()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1320,6 +1300,7 @@ fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(trace_accuracy_acceptable_band_regressed()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1367,6 +1348,7 @@ fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: Some(current_trace),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1697,6 +1679,7 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1711,6 +1694,7 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        wall_time_provenance: None,
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),

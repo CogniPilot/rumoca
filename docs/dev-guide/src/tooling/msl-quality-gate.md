@@ -52,6 +52,29 @@ reference with no comparable runtime/trace metrics fails the run with an
 actionable error; compile and simulation counts alone are not a passing full
 quality gate.
 
+Runtime system-time speedup uses the committed baseline median and is always a
+blocking gate when it regresses by more than 35%. Wall-time uses the same 35%
+floor only when its measurement provenance is trustworthy. The
+`runtime_comparison.wall_time_provenance` object records:
+
+- fresh and cached OMC sample counts;
+- requested, successfully applied, and failed CPU-affinity worker counts;
+- normalized one-minute host load sampled before and after parity work; and
+- the worker count and OMC thread count paired with `timing` runtime context.
+
+A wall-time comparison is trustworthy only when it contains fresh samples and
+no cached samples, affinity was requested and applied successfully for every
+worker, both normalized load samples are present and at most `1.5`, and the
+provenance worker/thread policy matches the runtime context. Missing or
+malformed provenance makes wall-time advisory; it does not make missing or
+malformed parity, runtime-ratio, or trace data acceptable.
+
+The console reports `MSL wall speed gate: PASS` when trusted wall-time is above
+the floor, `FAIL` when trusted wall-time regresses past it, and `ADVISORY` when
+the measurement is not trusted. Advisory output still shows the observed
+median, baseline, 35% floor, and every provenance reason. Correctness and
+system-time failures remain blocking regardless of wall-time status.
+
 `msl_quality_current.json` also records release review metadata:
 
 - `omc_version` records the OpenModelica build used for OMC trace parity; the

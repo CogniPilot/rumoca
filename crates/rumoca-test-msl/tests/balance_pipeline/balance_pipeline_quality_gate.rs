@@ -5,8 +5,10 @@ mod cache;
 mod status;
 #[cfg(test)]
 mod tests;
+mod wall_time;
 use cache::*;
 use status::*;
+use wall_time::*;
 
 // =============================================================================
 // MSL quality gate (compile/balance strict + simulation tolerant gate)
@@ -38,6 +40,8 @@ pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR: usize = 100;
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
 pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.35;
+/// Maximum normalized one-minute host load for a blocking wall-time comparison.
+pub(super) const WALL_TIME_NORMALIZED_LOAD_MAX: f64 = 1.5;
 /// OMC per-model timeout budget for simulation reference generation. OMC's
 /// `simulate()` generates C code and invokes gcc per model, which on shared CI
 /// runners far exceeds rumoca's warm per-model budget; giving OMC the same tiny
@@ -248,6 +252,7 @@ pub(super) struct MslParityGateInput {
     omc_version: Option<String>,
     runtime_context: Option<MslParityRuntimeContext>,
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
+    wall_time_provenance: Option<MslWallTimeProvenance>,
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
     omc_assertion_failure_models: usize,
     omc_assertion_failure_examples: Vec<String>,
@@ -449,6 +454,15 @@ fn parse_runtime_ratio_stats(payload: &serde_json::Value) -> Option<MslRuntimeRa
     })
 }
 
+fn parse_wall_time_provenance(payload: &serde_json::Value) -> Option<MslWallTimeProvenance> {
+    serde_json::from_value(
+        payload
+            .pointer("/runtime_comparison/wall_time_provenance")?
+            .clone(),
+    )
+    .ok()
+}
+
 fn parse_trace_bounded_normalized_l1(
     trace: &serde_json::Value,
     models_compared: usize,
@@ -621,6 +635,7 @@ pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGat
         omc_version: parse_omc_version(&payload),
         runtime_context: parse_runtime_context(&payload),
         runtime_ratio_stats: parse_runtime_ratio_stats(&payload),
+        wall_time_provenance: parse_wall_time_provenance(&payload),
         trace_accuracy_stats: parse_trace_accuracy_stats(&payload),
         omc_assertion_failure_models: parse_omc_assertion_failure_models(&payload),
         omc_assertion_failure_examples: parse_omc_assertion_failure_examples(&payload),
@@ -1636,7 +1651,9 @@ pub(super) fn push_runtime_ratio_regression_reasons(
 
     let allowed_wall_median = baseline_runtime.wall_ratio_both_success.median
         * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
-    if current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON < allowed_wall_median
+    if wall_time_trust_decision(parity_input).trusted
+        && current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON
+            < allowed_wall_median
     {
         reasons.push(format!(
             "runtime wall speedup median regressed: current={:.6e} < floor={:.6e} (baseline={:.6e}, tolerance={:.1}%)",
