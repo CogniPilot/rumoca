@@ -746,19 +746,12 @@ fn run_session_pending(
     // When the cache is valid (OMC + MSL unchanged, no --force) the cached OMC
     // reference has already been merged into `all_results`, so skip any model
     // that already has a real cached result instead of re-running OMC.
-    let reuse_skip: BTreeSet<String> = if reuse_cached {
-        state
-            .all_results
-            .iter()
-            .filter(|(model_name, result)| cached_omc_result_is_reusable(paths, model_name, result))
-            .map(|(name, _)| name.clone())
-            .collect()
+    let reuse_skip = if reuse_cached {
+        retain_reusable_cached_models(paths, state)
     } else {
+        state.cached_omc_models.clear();
         BTreeSet::new()
     };
-    state
-        .cached_omc_models
-        .retain(|model| reuse_skip.contains(model));
     let models: Vec<String> = std::mem::take(&mut state.pending_models)
         .into_iter()
         .filter(|model| !reuse_skip.contains(model))
@@ -834,6 +827,19 @@ fn run_session_pending(
         let _ = handle.join();
     }
     result
+}
+
+fn retain_reusable_cached_models(paths: &MslPaths, state: &mut SimRunState) -> BTreeSet<String> {
+    let reusable = state
+        .all_results
+        .iter()
+        .filter(|(model_name, result)| cached_omc_result_is_reusable(paths, model_name, result))
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+    state
+        .cached_omc_models
+        .retain(|model| reusable.contains(model));
+    reusable
 }
 
 fn collect_session_outcomes(

@@ -445,6 +445,37 @@ fn successful_runtime_pair() -> SimModelResult {
     }
 }
 
+fn host_load(one_minute: f64, logical_cpus: usize) -> crate::runtime_measurement::HostLoadSnapshot {
+    crate::runtime_measurement::HostLoadSnapshot {
+        one_minute,
+        logical_cpus,
+    }
+}
+
+fn assert_complete_wall_time_provenance(payload: &Value) {
+    let provenance = &payload["runtime_comparison"]["wall_time_provenance"];
+    assert_eq!(provenance["omc_cached_sample_count"], 1);
+    assert_eq!(provenance["omc_fresh_sample_count"], 1);
+    assert_eq!(provenance["affinity_requested_worker_count"], 3);
+    assert_eq!(provenance["affinity_applied_worker_count"], 2);
+    assert_eq!(provenance["affinity_failed_worker_count"], 1);
+    assert_eq!(provenance["normalized_load_before"], 0.5);
+    assert_eq!(provenance["normalized_load_after"], 0.75);
+    assert_eq!(provenance["workers_used"], 3);
+    assert_eq!(provenance["omc_threads"], 1);
+}
+
+fn assert_missing_wall_time_provenance_defaults(payload: &Value) {
+    let provenance = &payload["runtime_comparison"]["wall_time_provenance"];
+    assert_eq!(provenance["omc_cached_sample_count"], 0);
+    assert_eq!(provenance["omc_fresh_sample_count"], 0);
+    assert_eq!(provenance["affinity_requested_worker_count"], 0);
+    assert_eq!(provenance["affinity_applied_worker_count"], 0);
+    assert_eq!(provenance["affinity_failed_worker_count"], 0);
+    assert!(provenance["normalized_load_before"].is_null());
+    assert!(provenance["normalized_load_after"].is_null());
+}
+
 #[test]
 fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -507,19 +538,35 @@ fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
         elapsed_seconds: 1.0,
         cache_key: "test-key".to_string(),
     };
-    let state = SimRunState {
-        all_results: BTreeMap::from([
-            ("cached".to_string(), successful_runtime_pair()),
-            ("fresh".to_string(), successful_runtime_pair()),
-        ]),
-        cached_omc_models: BTreeSet::from(["cached".to_string()]),
-        host_load_after: Some(crate::runtime_measurement::HostLoadSnapshot {
-            one_minute: 3.0,
-            logical_cpus: 4,
+    std::fs::create_dir_all(&paths.sim_work_dir).expect("sim work dir");
+    std::fs::write(paths.sim_work_dir.join("cached_res.csv"), "time,y\n0,1\n")
+        .expect("cached result file");
+    let mut reusable_cached = successful_runtime_pair();
+    reusable_cached.result_file = Some("cached_res.csv".to_string());
+    let cached_reference = results_dir.join("cached_reference.json");
+    write_pretty_json(
+        &cached_reference,
+        &json!({
+            "models": {
+                "cached": reusable_cached,
+                "fresh": successful_runtime_pair()
+            }
         }),
-        batch_timings: Vec::new(),
-        pending_models: Vec::new(),
-    };
+    )
+    .expect("write cached reference");
+    let model_names = ["cached".to_string(), "fresh".to_string()];
+    let mut state = prepare_run_state(&model_names);
+    merge_cached_results_for_resume(&cached_reference, &model_names, &mut state)
+        .expect("merge cached results");
+    assert_eq!(state.cached_omc_models, BTreeSet::from(model_names.clone()));
+    let reusable = retain_reusable_cached_models(&paths, &mut state);
+    assert_eq!(reusable, BTreeSet::from(["cached".to_string()]));
+    assert_eq!(state.cached_omc_models, reusable);
+
+    state
+        .all_results
+        .insert("fresh".to_string(), successful_runtime_pair());
+    state.host_load_after = Some(host_load(3.0, 4));
     let metrics = compute_run_metrics(context.total, &state);
     let trace_summary = compute_trace_output_summary(&TraceQuantification::default());
     let payload = output::build_sim_output_payload(
@@ -531,16 +578,7 @@ fn output_payload_records_fresh_cached_affinity_and_load_provenance() {
         &trace_summary,
         &state,
     );
-    let provenance = &payload["runtime_comparison"]["wall_time_provenance"];
-    assert_eq!(provenance["omc_cached_sample_count"], 1);
-    assert_eq!(provenance["omc_fresh_sample_count"], 1);
-    assert_eq!(provenance["affinity_requested_worker_count"], 3);
-    assert_eq!(provenance["affinity_applied_worker_count"], 2);
-    assert_eq!(provenance["affinity_failed_worker_count"], 1);
-    assert_eq!(provenance["normalized_load_before"], 0.5);
-    assert_eq!(provenance["normalized_load_after"], 0.75);
-    assert_eq!(provenance["workers_used"], 3);
-    assert_eq!(provenance["omc_threads"], 1);
+    assert_complete_wall_time_provenance(&payload);
 }
 
 #[test]
@@ -643,6 +681,7 @@ fn output_payload_keeps_empty_parity_diagnostics_when_omc_has_no_successes() {
         payload["runtime_comparison"]["diagnostics"]["runtime_ratio_available"],
         false
     );
+    assert_missing_wall_time_provenance_defaults(&payload);
 }
 
 #[test]
