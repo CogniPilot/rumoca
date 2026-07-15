@@ -161,13 +161,14 @@ git commit -s -m "fix(msl): report actual worker affinity"
 ### Task 2: Capture Wall-Time Measurement Provenance
 
 **Files:**
-- Create: `crates/rumoca-test-msl/tests/balance_pipeline/runtime_measurement.rs`
+- Create: `crates/rumoca-test-msl/src/runtime_measurement.rs`
+- Modify: `crates/rumoca-test-msl/src/lib.rs`
 - Modify: `crates/rumoca-test-msl/tests/balance_pipeline/mod.rs`
 - Modify: `crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_core.rs`
 - Modify: `crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_summary.rs`
 - Modify: `crates/rumoca-test-msl/src/msl_tools/omc_simulation_reference.rs`
 - Modify: `crates/rumoca-test-msl/src/msl_tools/omc_simulation_reference/output.rs`
-- Test: `crates/rumoca-test-msl/tests/balance_pipeline/runtime_measurement.rs`
+- Test: `crates/rumoca-test-msl/src/runtime_measurement.rs`
 - Test: `crates/rumoca-test-msl/src/msl_tools/omc_simulation_reference/tests.rs`
 
 **Interfaces:**
@@ -209,8 +210,7 @@ Run:
 
 ```bash
 CARGO_TARGET_DIR=/Users/hechuan/workspace/climamind/rumoca/target \
-  cargo test -p rumoca-test-msl --features msl-full-test --test msl_tests \
-  runtime_measurement -- --nocapture
+  cargo test -p rumoca-test-msl runtime_measurement -- --nocapture
 ```
 
 Expected: FAIL because the module and parser do not exist.
@@ -219,9 +219,11 @@ Expected: FAIL because the module and parser do not exist.
 
 Implement `parse_load_text` without `unsafe`. On Linux read `/proc/loadavg`;
 on macOS execute `sysctl -n vm.loadavg`; on other platforms return `None`.
-Use `std::thread::available_parallelism()` for the denominator. Sample at the
-beginning and end of `run_msl_test` and serialize both snapshots in
-`MslPhaseTimings` with `#[serde(default)]` compatibility.
+Use `std::thread::available_parallelism()` for the denominator. Record the
+before snapshot at the beginning of `run_msl_test` and serialize it in
+`MslPhaseTimings` with `#[serde(default)]` compatibility. Record the after
+snapshot in `omc_simulation_reference` after its fresh/resume session work, so
+the trust interval spans both Rumoca and OMC measurement phases.
 
 - [ ] **Step 4: Write failing OMC cache-provenance tests**
 
@@ -264,7 +266,8 @@ the provenance counts exactly match their fixtures.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/rumoca-test-msl/tests/balance_pipeline/runtime_measurement.rs \
+git add crates/rumoca-test-msl/src/runtime_measurement.rs \
+  crates/rumoca-test-msl/src/lib.rs \
   crates/rumoca-test-msl/tests/balance_pipeline/mod.rs \
   crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_core.rs \
   crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_summary.rs \
