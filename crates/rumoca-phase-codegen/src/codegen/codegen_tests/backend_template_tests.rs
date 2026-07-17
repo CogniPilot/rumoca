@@ -935,7 +935,7 @@ fn test_fmi3_exports_complete_standard_symbol_surface() {
 }
 
 #[test]
-fn test_fmi3_model_description_only_advertises_cosim_for_eventless_models() {
+fn test_fmi3_model_description_advertises_internal_root_event_cosimulation() {
     let template = builtin_template("fmi3", "modelDescription.xml.jinja");
     let eventless = dae::Dae::new();
     let eventless_xml = render_template_with_name(&eventless, template, "Eventless").unwrap();
@@ -961,12 +961,20 @@ fn test_fmi3_model_description_only_advertises_cosim_for_eventless_models() {
         },
     );
     let discrete_xml = render_template_with_name(&discrete, template, "Discrete").unwrap();
-    assert!(!discrete_xml.contains("<CoSimulation"), "{discrete_xml}");
-    assert!(discrete_xml.contains("<ModelExchange"), "{discrete_xml}");
+    assert!(discrete_xml.contains("<CoSimulation"), "{discrete_xml}");
     let discrete_c = render_template_with_name(&discrete, c_template, "Discrete").unwrap();
     assert!(
-        discrete_c.contains("#define RUMOCA_COSIM_SUPPORTED 0"),
+        discrete_c.contains("#define RUMOCA_COSIM_SUPPORTED 1"),
         "{discrete_c}"
+    );
+
+    discrete.events.scheduled_time_events.push(0.1);
+    let scheduled_xml = render_template_with_name(&discrete, template, "Scheduled").unwrap();
+    assert!(!scheduled_xml.contains("<CoSimulation"), "{scheduled_xml}");
+    let scheduled_c = render_template_with_name(&discrete, c_template, "Scheduled").unwrap();
+    assert!(
+        scheduled_c.contains("#define RUMOCA_COSIM_SUPPORTED 0"),
+        "{scheduled_c}"
     );
 }
 

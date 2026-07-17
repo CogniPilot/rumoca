@@ -49,7 +49,7 @@
 {%- set n_clocks = n_periodic_clocks + n_triggered_clocks -%}
 {%- set vr_clk   = vr_m + nvar_m -%}
 {%- set vr_time  = vr_clk + n_clocks -%}
-{%- set cosim_supported = dae.relation | default([]) | length == 0 and dae.synthetic_root_conditions | default([]) | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 and dae.z | length == 0 and dae.m | length == 0 -%}
+{%- set cosim_supported = dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 -%}
 {%- set units = namespace(names=["s"]) -%}
 {%- for vars in [dae.x, dae.y, dae.u, dae.w, dae.p, dae.z, dae.m] -%}
 {%- for name, var in vars | items -%}

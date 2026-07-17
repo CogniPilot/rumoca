@@ -32,7 +32,7 @@
 {% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
 {% set solve_dynamic_time_rows = solve.events.dynamic_time_event_rhs.programs if solve is defined and solve.events is defined and solve.events.dynamic_time_event_rhs is defined and solve.events.dynamic_time_event_rhs.programs is defined else [] %}
 {% set solve_event_actions = solve.events.actions if solve is defined and solve.events is defined and solve.events.actions is defined else [] %}
-{% set cosim_supported = solve_root_rows | length == 0 and solve_dynamic_time_rows | length == 0 and solve_event_actions | length == 0 and dae.relation | default([]) | length == 0 and dae.synthetic_root_conditions | default([]) | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 and dae.z | length == 0 and dae.m | length == 0 %}
+{% set cosim_supported = solve_dynamic_time_rows | length == 0 and solve_event_actions | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 %}
 {% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}
 {% set solve_discrete_rows = solve.discrete.rhs.programs if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined and solve.discrete.rhs.programs is defined else [] %}
 {% set solve_discrete_targets = solve.discrete.update_targets if solve is defined and solve.discrete is defined and solve.discrete.update_targets is defined else [] %}
@@ -506,7 +506,7 @@ static double event_right_limit_time(double event_time) {
 }
 
 static int event_indicator_crossed(double previous, double current) {
-    return (previous < 0.0 && current >= 0.0) || (previous > 0.0 && current <= 0.0);
+    return (previous <= 0.0 && current > 0.0) || (previous >= 0.0 && current < 0.0);
 }
 
 static double root_relation_memory_value(double previous, double current) {
@@ -2270,6 +2270,187 @@ FMI3_Export fmi3Status fmi3GetAdjointDerivative(
 
 static fmi3Status rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]);
 
+#define RUMOCA_EVENT_BISECTION_ITERS 32
+#define RUMOCA_EVENT_ITERATION_LIMIT 16
+
+static int any_event_indicator_crossed(
+    const fmi3Float64 before[], const fmi3Float64 after[])
+{
+#if N_EVENT_INDICATORS > 0
+    for (int i = 0; i < N_EVENT_INDICATORS; i++) {
+        if (event_indicator_crossed(before[i], after[i])) return 1;
+    }
+#else
+    (void)before; (void)after;
+#endif
+    return 0;
+}
+
+static fmi3Status rk4_trial_state(
+    ModelInstance* m, double t, const fmi3Float64 x[], double h, fmi3Float64 result[])
+{
+#if N_STATES > 0
+    fmi3Float64 stage[N_STATES];
+    fmi3Float64 k1[N_STATES];
+    fmi3Float64 k2[N_STATES];
+    fmi3Float64 k3[N_STATES];
+    fmi3Float64 k4[N_STATES];
+
+    if (rk45_eval(m, t, x, k1) != fmi3OK) return fmi3Error;
+    for (int i = 0; i < N_STATES; i++) stage[i] = x[i] + 0.5 * h * k1[i];
+    if (rk45_eval(m, t + 0.5 * h, stage, k2) != fmi3OK) return fmi3Error;
+    for (int i = 0; i < N_STATES; i++) stage[i] = x[i] + 0.5 * h * k2[i];
+    if (rk45_eval(m, t + 0.5 * h, stage, k3) != fmi3OK) return fmi3Error;
+    for (int i = 0; i < N_STATES; i++) stage[i] = x[i] + h * k3[i];
+    if (rk45_eval(m, t + h, stage, k4) != fmi3OK) return fmi3Error;
+    for (int i = 0; i < N_STATES; i++) {
+        result[i] = x[i] + h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+    }
+    return fmi3OK;
+#else
+    (void)m; (void)t; (void)x; (void)h; (void)result;
+    return fmi3OK;
+#endif
+}
+
+static fmi3Status evaluate_event_indicators_at(
+    ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 indicators[])
+{
+#if N_STATES > 0
+    memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
+#else
+    (void)x;
+#endif
+    m->time = t;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
+    compute_event_indicators(m);
+#if N_EVENT_INDICATORS > 0
+    memcpy(indicators, m->event_indicators, sizeof(m->event_indicators));
+#else
+    (void)indicators;
+#endif
+    return fmi3OK;
+}
+
+static fmi3Status locate_internal_root(
+    ModelInstance* m,
+    double t_start,
+    const fmi3Float64 x_start[],
+    const fmi3Float64 roots_start[],
+    double t_stop,
+    const fmi3Float64 x_stop[],
+    double* root_time,
+    fmi3Float64 root_state[],
+    fmi3Float64 roots_after[])
+{
+#if N_STATES > 0 && N_EVENT_INDICATORS > 0
+    double low = t_start;
+    double high = t_stop;
+    fmi3Float64 high_state[N_STATES];
+    fmi3Float64 midpoint_state[N_STATES];
+    fmi3Float64 midpoint_roots[N_EVENT_INDICATORS];
+    memcpy(high_state, x_stop, sizeof(high_state));
+
+    for (int iteration = 0; iteration < RUMOCA_EVENT_BISECTION_ITERS; iteration++) {
+        const double midpoint = low + 0.5 * (high - low);
+        if (rk4_trial_state(m, t_start, x_start, midpoint - t_start, midpoint_state) != fmi3OK ||
+            evaluate_event_indicators_at(m, midpoint, midpoint_state, midpoint_roots) != fmi3OK) {
+            return fmi3Error;
+        }
+        if (any_event_indicator_crossed(roots_start, midpoint_roots)) {
+            high = midpoint;
+            memcpy(high_state, midpoint_state, sizeof(high_state));
+        } else {
+            low = midpoint;
+        }
+    }
+
+    *root_time = high;
+    memcpy(root_state, high_state, sizeof(high_state));
+    return evaluate_event_indicators_at(m, high, high_state, roots_after);
+#else
+    (void)m; (void)t_start; (void)x_start; (void)roots_start;
+    (void)t_stop; (void)x_stop; (void)root_time; (void)root_state; (void)roots_after;
+    return fmi3Error;
+#endif
+}
+
+static void apply_internal_root_relation_memory(
+    ModelInstance* m, const fmi3Float64 before[], const fmi3Float64 after[])
+{
+{% for target in solve_root_relation_memory_targets %}
+    if (event_indicator_crossed(before[{{ loop.index0 }}], after[{{ loop.index0 }}])) {
+        {{ render_optional_solve_slot_assign_c(target, "root_relation_memory_value(before[" ~ loop.index0 ~ "], after[" ~ loop.index0 ~ "])", solve_slot_assign_c_cfg) }}
+    }
+{% endfor %}
+{% if solve_root_relation_memory_targets | length == 0 %}
+    (void)m; (void)before; (void)after;
+{% endif %}
+}
+
+static fmi3Status iterate_internal_discrete_update(ModelInstance* m) {
+#if N_DISCRETE_REAL > 0 || N_DISCRETE_VAL > 0
+    fmi3Float64 old_z[N_DISCRETE_REAL > 0 ? N_DISCRETE_REAL : 1];
+    fmi3Float64 old_m[N_DISCRETE_VAL > 0 ? N_DISCRETE_VAL : 1];
+    for (int iteration = 0; iteration < RUMOCA_EVENT_ITERATION_LIMIT; iteration++) {
+        memcpy(old_z, m->z, sizeof(m->z));
+        memcpy(old_m, m->m, sizeof(m->m));
+        compute_event_discrete_updates(m);
+        if (memcmp(old_z, m->z, sizeof(m->z)) == 0 &&
+            memcmp(old_m, m->m, sizeof(m->m)) == 0) {
+            return fmi3OK;
+        }
+    }
+    return fmi3Error;
+#else
+    compute_event_discrete_updates(m);
+    return fmi3OK;
+#endif
+}
+
+static fmi3Status process_internal_root(
+    ModelInstance* m,
+    double t_start,
+    const fmi3Float64 x_start[],
+    const fmi3Float64 roots_start[],
+    double t_stop,
+    const fmi3Float64 x_stop[])
+{
+#if N_STATES > 0 && N_EVENT_INDICATORS > 0
+    double root_time = t_stop;
+    fmi3Float64 root_state[N_STATES];
+    fmi3Float64 roots_after[N_EVENT_INDICATORS];
+    if (locate_internal_root(
+            m, t_start, x_start, roots_start, t_stop, x_stop,
+            &root_time, root_state, roots_after) != fmi3OK) {
+        return fmi3Error;
+    }
+
+    memcpy(m->x, root_state, sizeof(root_state));
+    m->time = root_time;
+    memcpy(m->pre_z, m->z, sizeof(m->z));
+    memcpy(m->pre_m, m->m, sizeof(m->m));
+    snapshot_pre_parameters(m);
+    apply_internal_root_relation_memory(m, roots_start, roots_after);
+    m->root_event_pending = 1;
+    if (iterate_internal_discrete_update(m) != fmi3OK) return fmi3Error;
+    m->root_event_pending = 0;
+
+    m->time = fmin(event_right_limit_time(root_time), t_stop);
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
+    compute_event_indicators(m);
+    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
+    return fmi3OK;
+#else
+    (void)m; (void)t_start; (void)x_start; (void)roots_start; (void)t_stop; (void)x_stop;
+    return fmi3Error;
+#endif
+}
+
 static fmi3Status restore_integration_point(ModelInstance* m, const fmi3Float64 x[], double t) {
 #if N_STATES > 0
     memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
@@ -2292,11 +2473,9 @@ static fmi3Status rk4_integrate(ModelInstance* m, double t_start, double t_stop)
     if (!(RUMOCA_FMI3_COSIM_RK4_MAX_STEP > 0.0)) return fmi3Error;
 
     fmi3Float64 x0[N_STATES];
-    fmi3Float64 x_stage[N_STATES];
-    fmi3Float64 k1[N_STATES];
-    fmi3Float64 k2[N_STATES];
-    fmi3Float64 k3[N_STATES];
-    fmi3Float64 k4[N_STATES];
+    fmi3Float64 x_next[N_STATES];
+    fmi3Float64 roots_before[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
+    fmi3Float64 roots_after[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
     double t = t_start;
     double last_step_start = t_start;
     while (t < t_stop) {
@@ -2304,18 +2483,25 @@ static fmi3Status rk4_integrate(ModelInstance* m, double t_start, double t_stop)
         const double t_next = t + h;
         last_step_start = t;
         memcpy(x0, m->x, N_STATES * sizeof(fmi3Float64));
-
-        if (rk45_eval(m, t, x0, k1) != fmi3OK) return restore_integration_point(m, x0, t);
-        for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + 0.5 * h * k1[i];
-        if (rk45_eval(m, t + 0.5 * h, x_stage, k2) != fmi3OK) return restore_integration_point(m, x0, t);
-        for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + 0.5 * h * k2[i];
-        if (rk45_eval(m, t + 0.5 * h, x_stage, k3) != fmi3OK) return restore_integration_point(m, x0, t);
-        for (int i = 0; i < N_STATES; i++) x_stage[i] = x0[i] + h * k3[i];
-        if (rk45_eval(m, t_next, x_stage, k4) != fmi3OK) return restore_integration_point(m, x0, t);
-
-        for (int i = 0; i < N_STATES; i++) {
-            m->x[i] = x0[i] + h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+#if N_EVENT_INDICATORS > 0
+        memcpy(roots_before, m->event_indicators_prev, sizeof(m->event_indicators_prev));
+#endif
+        if (rk4_trial_state(m, t, x0, h, x_next) != fmi3OK ||
+            evaluate_event_indicators_at(m, t_next, x_next, roots_after) != fmi3OK) {
+            return restore_integration_point(m, x0, t);
         }
+
+#if N_EVENT_INDICATORS > 0
+        if (any_event_indicator_crossed(roots_before, roots_after)) {
+            if (process_internal_root(m, t, x0, roots_before, t_next, x_next) != fmi3OK) {
+                return restore_integration_point(m, x0, t);
+            }
+            t = m->time;
+            continue;
+        }
+        memcpy(m->event_indicators_prev, roots_after, sizeof(m->event_indicators_prev));
+#endif
+        memcpy(m->x, x_next, sizeof(x_next));
         t = t_next;
     }
     m->time = t_stop;
@@ -2368,6 +2554,8 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
     fmi3Float64 k5[N_STATES];
     fmi3Float64 k6[N_STATES];
     fmi3Float64 k7[N_STATES];
+    fmi3Float64 roots_before[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
+    fmi3Float64 roots_after[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
 
     memcpy(x0, m->x, N_STATES * sizeof(fmi3Float64));
 
@@ -2460,6 +2648,22 @@ static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop
         }
 
         if (err_norm <= 1.0 || h <= RK45_MIN_STEP) {
+#if N_EVENT_INDICATORS > 0
+            memcpy(roots_before, m->event_indicators_prev, sizeof(m->event_indicators_prev));
+            if (evaluate_event_indicators_at(m, t + h, x5, roots_after) != fmi3OK) {
+                return restore_integration_point(m, x0, t);
+            }
+            if (any_event_indicator_crossed(roots_before, roots_after)) {
+                if (process_internal_root(m, t, x0, roots_before, t + h, x5) != fmi3OK) {
+                    return restore_integration_point(m, x0, t);
+                }
+                memcpy(x0, m->x, N_STATES * sizeof(fmi3Float64));
+                t = m->time;
+                h = fmin(h, t_stop - t);
+                continue;
+            }
+            memcpy(m->event_indicators_prev, roots_after, sizeof(m->event_indicators_prev));
+#endif
             memcpy(x0, x5, N_STATES * sizeof(fmi3Float64));
             t += h;
 

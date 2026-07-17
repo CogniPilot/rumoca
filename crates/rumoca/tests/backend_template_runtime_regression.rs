@@ -437,6 +437,32 @@ equation
 end CosimDecay;
 "#;
 
+const CONTACT_LANDING_SOURCE: &str = r#"
+model ContactLanding
+  Real height(start=0.12, fixed=true);
+  Real verticalSpeed(start=0.0, fixed=true);
+equation
+  der(height) = verticalSpeed;
+  der(verticalSpeed) = if height < 0.1 then
+      1000.0 * (0.1 - height) - 50.0 * verticalSpeed - 9.80665
+    else
+      -9.80665;
+end ContactLanding;
+"#;
+
+const CONTACT_AT_INITIAL_ROOT_SOURCE: &str = r#"
+model ContactAtInitialRoot
+  Real height(start=0.1, fixed=true);
+  Real verticalSpeed(start=-0.25, fixed=true);
+equation
+  der(height) = verticalSpeed;
+  der(verticalSpeed) = if height < 0.1 then
+      1000.0 * (0.1 - height) - 50.0 * verticalSpeed - 9.80665
+    else
+      -9.80665;
+end ContactAtInitialRoot;
+"#;
+
 const EVENT_REINIT_SOURCE: &str = r#"
 model EventReinit
   Real x(start=0);
@@ -1451,6 +1477,89 @@ int main(void) {
 
     let csv = compile_and_run_c(&[("model.c", &model_c), ("driver.c", driver_c)], &[]);
     assert!(csv.contains("x_final="), "expected x_final output:\n{csv}");
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn fmi3_cosimulation_preserves_landing_contact_events() {
+    let compiled = compile_model(CONTACT_LANDING_SOURCE, "ContactLanding");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ContactLanding");
+    let driver = r#"
+int main(void) {
+    fmi3Instance instance = fmi3InstantiateCoSimulation(
+        "landing", MODEL_INSTANTIATION_TOKEN, NULL, 0, 0, 0, 0,
+        NULL, 0, NULL, NULL, NULL);
+    if (!instance) return 10;
+    if (fmi3EnterInitializationMode(instance, 1, 1.0e-7, 0.0, 1, 2.0) != fmi3OK) return 11;
+    if (fmi3ExitInitializationMode(instance) != fmi3OK) return 12;
+
+    const fmi3ValueReference heightVr = 0;
+    fmi3Float64 height = 0.0;
+    fmi3Float64 minimumHeight = 1.0;
+    fmi3Float64 time = 0.0;
+    for (int step = 0; step < 400; step++) {
+        fmi3Boolean eventNeeded = 0;
+        fmi3Boolean terminate = 0;
+        fmi3Boolean earlyReturn = 0;
+        fmi3Float64 lastSuccessfulTime = time;
+        if (fmi3DoStep(instance, time, 0.005, 1, &eventNeeded, &terminate,
+                       &earlyReturn, &lastSuccessfulTime) != fmi3OK) return 13;
+        if (eventNeeded || terminate || earlyReturn) return 14;
+        time = lastSuccessfulTime;
+        if (fmi3GetFloat64(instance, &heightVr, 1, &height, 1) != fmi3OK) return 15;
+        if (height < minimumHeight) minimumHeight = height;
+    }
+
+    fmi3FreeInstance(instance);
+    if (!(height > 0.085 && height < 0.1)) return 16;
+    if (!(minimumHeight > 0.075)) return 17;
+    return 0;
+}
+"#;
+    let source = format!("{model_c}\n{driver}");
+    compile_and_run_c(&[("contact_landing.c", &source)], &[]);
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn fmi3_cosimulation_detects_departure_from_an_initial_root() {
+    let compiled = compile_model(CONTACT_AT_INITIAL_ROOT_SOURCE, "ContactAtInitialRoot");
+    let model_c =
+        render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ContactAtInitialRoot");
+    let driver = r#"
+int main(void) {
+    fmi3Instance instance = fmi3InstantiateCoSimulation(
+        "initial-root", MODEL_INSTANTIATION_TOKEN, NULL, 0, 0, 0, 0,
+        NULL, 0, NULL, NULL, NULL);
+    if (!instance) return 10;
+    if (fmi3EnterInitializationMode(instance, 1, 1.0e-7, 0.0, 1, 1.0) != fmi3OK) return 11;
+    if (fmi3ExitInitializationMode(instance) != fmi3OK) return 12;
+
+    const fmi3ValueReference heightVr = 0;
+    fmi3Float64 height = 0.0;
+    fmi3Float64 minimumHeight = 1.0;
+    fmi3Float64 time = 0.0;
+    for (int step = 0; step < 200; step++) {
+        fmi3Boolean eventNeeded = 0;
+        fmi3Boolean terminate = 0;
+        fmi3Boolean earlyReturn = 0;
+        fmi3Float64 lastSuccessfulTime = time;
+        if (fmi3DoStep(instance, time, 0.005, 1, &eventNeeded, &terminate,
+                       &earlyReturn, &lastSuccessfulTime) != fmi3OK) return 13;
+        if (eventNeeded || terminate || earlyReturn) return 14;
+        time = lastSuccessfulTime;
+        if (fmi3GetFloat64(instance, &heightVr, 1, &height, 1) != fmi3OK) return 15;
+        if (height < minimumHeight) minimumHeight = height;
+    }
+
+    fmi3FreeInstance(instance);
+    if (!(height > 0.085 && height < 0.1)) return 16;
+    if (!(minimumHeight > 0.075)) return 17;
+    return 0;
+}
+"#;
+    let source = format!("{model_c}\n{driver}");
+    compile_and_run_c(&[("contact_at_initial_root.c", &source)], &[]);
 }
 
 // ============================================================================
