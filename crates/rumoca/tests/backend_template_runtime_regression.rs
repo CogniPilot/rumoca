@@ -474,6 +474,17 @@ equation
 end EventReinit;
 "#;
 
+const ROOT_EVENT_REINIT_SOURCE: &str = r#"
+model RootEventReinit
+  Real x(start=0);
+equation
+  der(x) = 1;
+  when x > 0.5 then
+    reinit(x, -1);
+  end when;
+end RootEventReinit;
+"#;
+
 const PARAM_DECAY_SOURCE: &str = r#"
 model ParamDecay
   parameter Real k = 3;
@@ -871,8 +882,8 @@ fn fmi3_oscillator() {
 #[test]
 #[cfg(feature = "template-runtime-tests")]
 fn fmi3_event_reinit_runtime() {
-    let compiled = compile_model(EVENT_REINIT_SOURCE, "EventReinit");
-    let csv = fmi3_trace_from_compiled(&compiled, "EventReinit", 1.0);
+    let compiled = compile_model(ROOT_EVENT_REINIT_SOURCE, "RootEventReinit");
+    let csv = fmi3_trace_from_compiled(&compiled, "RootEventReinit", 1.0);
     assert_event_reinit_trace(&csv, "FMI3");
 }
 
