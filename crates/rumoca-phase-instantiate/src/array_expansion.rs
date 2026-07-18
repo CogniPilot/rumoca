@@ -418,7 +418,7 @@ fn distribute_component_ref_mods_for_element(
         }
 
         if let Some(indexed) =
-            index_nested_modification_expr_for_element(tree, parent_components, expr, indices)?
+            index_nested_modification_for_element(tree, parent_components, expr, indices)?
         {
             scalar_comp.modifications.insert(name.clone(), indexed);
             continue;
@@ -432,70 +432,42 @@ fn distribute_component_ref_mods_for_element(
     Ok(())
 }
 
-fn index_nested_modification_expr_for_element(
+fn index_nested_modification_for_element(
     tree: &ast::ClassTree,
     parent_components: &IndexMap<String, ast::Component>,
     expr: &ast::Expression,
     indices: &[i64],
 ) -> InstantiateResult<Option<ast::Expression>> {
-    match expr {
+    let mut indexed = expr.clone();
+    match &mut indexed {
         ast::Expression::ClassModification {
-            target,
             modifications,
             each_flags,
-            final_flags,
-            redeclare_flags,
-            span,
-        } => Ok(Some(ast::Expression::ClassModification {
-            target: target.clone(),
-            modifications: index_nested_modification_list_for_element(
-                tree,
-                parent_components,
-                modifications,
-                each_flags,
-                indices,
-            )?,
-            each_flags: each_flags.clone(),
-            final_flags: final_flags.clone(),
-            redeclare_flags: redeclare_flags.clone(),
-            span: *span,
-        })),
-        ast::Expression::Modification {
-            target,
-            value,
-            span,
-        } => Ok(Some(ast::Expression::Modification {
-            target: target.clone(),
-            value: Arc::new(index_binding_for_element(
-                tree,
-                parent_components,
-                value,
-                indices,
-            )?),
-            span: *span,
-        })),
-        _ => Ok(None),
-    }
-}
-
-fn index_nested_modification_list_for_element(
-    tree: &ast::ClassTree,
-    parent_components: &IndexMap<String, ast::Component>,
-    modifications: &[ast::Expression],
-    each_flags: &[bool],
-    indices: &[i64],
-) -> InstantiateResult<Vec<ast::Expression>> {
-    modifications
-        .iter()
-        .enumerate()
-        .map(|(idx, nested)| {
-            if each_flags.get(idx).copied().unwrap_or(false) {
-                return Ok(nested.clone());
+            ..
+        } => {
+            for (position, nested) in modifications.iter_mut().enumerate() {
+                if !each_flags.get(position).copied().unwrap_or(false)
+                    && let Some(value) = index_nested_modification_for_element(
+                        tree,
+                        parent_components,
+                        nested,
+                        indices,
+                    )?
+                {
+                    *nested = value;
+                }
             }
-            index_nested_modification_expr_for_element(tree, parent_components, nested, indices)
-                .map(|indexed| indexed.unwrap_or_else(|| nested.clone()))
-        })
-        .collect()
+        }
+        ast::Expression::Modification { value, .. } => {
+            if let Some(indexed_value) =
+                index_array_expression_for_element(tree, parent_components, value, indices)?
+            {
+                *value = Arc::new(indexed_value);
+            }
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(indexed))
 }
 
 /// Resolve a modification expression to its value, handling component references.
