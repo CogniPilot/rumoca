@@ -20,10 +20,12 @@ to Modelica inputs, so they do not recompile or reset the run. This makes it
 possible to search for the landing-failure boundary. The editor's **Settings**
 panel remains available for mission constants stored in TOML `[parameters]`.
 
-Press `R` at any time, including after the run reports **Finished**, to restore
-the vehicle and restart at `t = 0`. The upper-right badge shows mission phase,
-wind and gust speed, and deck roll/pitch. `T` switches between realtime and fast
-pacing, `F` toggles fullscreen, and `Q` stops the run.
+Press `R` at any time to restore the vehicle and restart at `t = 0`. The live
+run has no preset end time; it continues after touchdown so the landed state
+and deck motion remain observable until you stop or reset it. The upper-right
+badge shows mission phase, wind and gust speed, and deck roll/pitch. `T`
+switches between realtime and fast pacing, `F` toggles fullscreen, and `Q`
+stops the run.
 
 For a native run:
 

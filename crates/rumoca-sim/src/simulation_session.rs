@@ -88,6 +88,16 @@ impl SimulationSession {
         }
     }
 
+    /// Ensure the finite solver horizon includes `target_time`.
+    pub fn ensure_end_time(&mut self, target_time: f64) {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session.ensure_end_time(target_time),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session.ensure_end_time(target_time),
+        }
+    }
+
     pub fn step(&mut self, dt: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]
@@ -177,6 +187,10 @@ impl SimulationSessionApi for SimulationSession {
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {
         Self::set_input(self, name, value)
+    }
+
+    fn ensure_end_time(&mut self, target_time: f64) {
+        Self::ensure_end_time(self, target_time);
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {

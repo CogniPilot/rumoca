@@ -5,6 +5,9 @@ The scenario still owns the model, solver, and output/viewer panels; `[sim]`
 chooses the clock policy, `[input]` maps devices into local state, and
 `[signals.model_inputs]` routes that state into Modelica `input` variables.
 External browser scenes are just one presentation surface for that same run.
+Interactive runs are operator-terminated: they continue until you press `Q`,
+use the viewer's **Stop** control, or interrupt the native process.
+`[sim].t_end` is a batch/results-panel horizon and does not stop a live run.
 
 ## Running the Examples
 
@@ -90,7 +93,6 @@ name = "QuadrotorAcro"
 
 [sim]
 dt = 0.01
-t_end = 10.0
 mode = "realtime"
 solver = "rk-like"
 

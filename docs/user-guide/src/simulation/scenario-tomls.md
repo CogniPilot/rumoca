@@ -78,7 +78,7 @@ every scenario; scenario `source_roots` are for paths specific to this run.
 ```toml
 [sim]
 dt = 0.01          # simulation timestep [s]
-t_end = 10.0       # simulation stop time
+t_end = 10.0       # batch/results-panel output horizon
 atol = 1e-6        # optional absolute solver tolerance
 rtol = 1e-6        # optional relative solver tolerance
 solver = "auto"    # auto | bdf | esdirk34 | trbdf2 | rk-like
@@ -96,6 +96,12 @@ mode = "realtime"  # optional pacing, see below
 
 The default is `lockstep` when external coupling is configured and
 `realtime` standalone.
+
+`t_end` terminates batch/results-panel simulations. Scheduled and browser-live
+simulations ignore it as a stop condition and extend the solver horizon while
+they run; stop those runs explicitly with their configured quit signal, the
+viewer stop control, or an interrupt. Interactive-only scenarios can omit
+`t_end`.
 
 ### `[[plot.views]]`
 

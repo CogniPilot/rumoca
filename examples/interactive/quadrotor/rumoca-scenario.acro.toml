@@ -204,7 +204,6 @@ from = "model:quat[1]"
 dt = 0.01
 mode = "realtime"
 solver = "rk-like"
-t_end = 10
 
 [transport.http]
 asset_dir = "../../assets"

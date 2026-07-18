@@ -769,6 +769,70 @@ fn rk45_session_advance_to_clamps_to_sim_options_end_time() {
 }
 
 #[test]
+fn rk45_incremental_session_can_extend_past_initial_end_time() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+    model.parameters = vec![0.0];
+    let mut session = SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.05,
+            solver_mode: SimSolverMode::RkLike,
+            dt: Some(0.01),
+            ..Default::default()
+        },
+    )
+    .expect("session should build");
+
+    session.set_input("u", 4.0).expect("input should exist");
+    session.ensure_end_time(0.1);
+    session
+        .advance_to(0.1)
+        .expect("extended session should advance");
+
+    assert!((session.time() - 0.1).abs() <= 1.0e-12);
+}
+
+#[test]
+fn rk45_session_extension_schedules_events_beyond_initial_end_time() {
+    let mut model = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+        period_seconds: 0.05,
+        phase_seconds: 0.05,
+    }];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.discrete.rhs = const_scalar_program_block(3.0);
+    model.parameters = vec![0.0];
+    model.visible_names = vec!["x".to_string(), "m".to_string()];
+    let mut session = SimulationSession::new(
+        &model,
+        SimOptions {
+            t_end: 0.04,
+            solver_mode: SimSolverMode::RkLike,
+            dt: Some(0.01),
+            ..Default::default()
+        },
+    )
+    .expect("session should build");
+
+    session.ensure_end_time(0.1);
+    session
+        .advance_to(0.1)
+        .expect("extended session should process periodic events");
+
+    assert_eq!(session.get("m").expect("read m"), Some(3.0));
+}
+
+#[test]
 fn rk45_session_runs_no_state_discrete_controller() {
     let model = no_state_input_accumulator_model();
     let mut session = SimulationSession::new(
@@ -798,6 +862,11 @@ fn rk45_session_runs_no_state_discrete_controller() {
         .step(1.0)
         .expect("further steps at t_end should be stable");
     assert_eq!(session.get("y").expect("read y"), Some(5.5));
+
+    session.ensure_end_time(0.07);
+    session.step(0.02).expect("extended controller should tick");
+    assert!((session.time() - 0.07).abs() <= 1.0e-12);
+    assert_eq!(session.get("y").expect("read y"), Some(7.5));
 }
 
 #[test]

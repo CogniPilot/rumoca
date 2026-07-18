@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -6,6 +7,29 @@ import {
   createViewerSignalReader,
   takeRuntimeControlSignal,
 } from "../runtime/rumoca_interactive.js";
+
+test("interactive sessions are user-terminated instead of stopping at t_end", async () => {
+  const runtime = await readFile(
+    new URL("../runtime/rumoca_interactive.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(runtime, /WasmSimulationSession\.withInteractiveOptions\(/);
+  assert.doesNotMatch(runtime, /simConfig\.t_end/);
+  assert.doesNotMatch(runtime, /session\.end_time\(\)/);
+  assert.doesNotMatch(runtime, /updateRunState\('Finished'/);
+});
+
+test("scenario UI distinguishes batch horizon from live duration", async () => {
+  const scenarioUi = await readFile(
+    new URL("../viz/visualization_shared.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(scenarioUi, /label: 'Batch end time'/);
+  assert.match(scenarioUi, /Live runs continue until explicitly stopped/);
+  assert.match(scenarioUi, /'external_web' \? 'Until stopped'/);
+});
 
 function keyEvent(key) {
   return {

@@ -6,6 +6,7 @@ pub(crate) trait SimulationSessionApi {
 
     fn reset(&mut self, t_start: f64) -> Result<(), Self::Error>;
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error>;
+    fn ensure_end_time(&mut self, target_time: f64);
     fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error>;
     fn time(&self) -> f64;
     fn get(&self, name: &str) -> Result<Option<f64>, Self::Error>;

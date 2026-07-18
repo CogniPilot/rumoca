@@ -152,16 +152,19 @@ separate concerns:
 
 - `[sim].mode` controls pacing only: `as_fast_as_possible`, `realtime`, or
   `lockstep`.
-- `[sim].solver`, `[sim].dt`, `[sim].t_end`, `[sim].atol`, and `[sim].rtol`
-  configure the single simulation integration session used by both batch and
-  interactive runs.
+- `[sim].solver`, `[sim].dt`, `[sim].atol`, and `[sim].rtol` configure the
+  simulation integration session used by both batch and interactive runs.
+- `[sim].t_end` is the finite output horizon for batch/results-panel runs.
+  Scheduled and browser-interactive runs MUST NOT treat it as a terminal
+  condition; they extend their finite solver horizon on demand and continue
+  until the operator explicitly quits or the run fails.
 - `[input]`, `[locals]`, `[derived]`, and `[signals.model_inputs]` enable
   live keyboard, gamepad, browser, or external input routing for the same
   regular `simulate` task. Input-enabled simulation is not a separate task or
   viewer mode.
 - `[viewer].mode` controls the launch surface. `results_panel` runs the normal
   batch simulation and renders configured `[[plot.views]]` in the editor
-  results panel. `external_web` starts the scheduled scheduled simulation and opens the
+  results panel. `external_web` starts the scheduled simulation and opens the
   HTTP/WebSocket viewer for scenarios with keyboard/gamepad/input routing.
 - `[viewer].prefer_external` is an editor presentation hint: false/omitted
   prefers embedded VS Code panels; true opens the system browser.

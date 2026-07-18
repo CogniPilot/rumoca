@@ -44,7 +44,6 @@ name = "MyClosedLoopVehicle"
 # ── Simulation ────────────────────────────────────────────────────────────
 [sim]
 dt = 0.01          # simulation timestep in seconds
-t_end = 10.0       # simulation stop time
 atol = 1e-6        # optional absolute solver tolerance
 rtol = 1e-6        # optional relative solver tolerance
 solver = "auto"    # auto | bdf | rk-like
@@ -57,6 +56,8 @@ mode = "realtime"  # Optional schedule pacing:
 steps_per_packet = 1
                    # Lockstep only: advance this many dt steps after each packet.
                    # Use e.g. 4 for a 25 Hz controller with a 100 Hz plant dt.
+                   # Live/scheduled runs continue until explicitly stopped.
+                   # t_end is only needed for batch/results-panel output.
 
 # Optional multirate lockstep scheduler. When present, this supersedes
 # steps_per_packet: the scheduled loop streams [send] at send_rate_hz and waits for one

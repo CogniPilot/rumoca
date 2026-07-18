@@ -31,7 +31,8 @@ cargo run -p rumoca --release -- \
 
 Open [http://localhost:8080](http://localhost:8080). Press `Space` to launch,
 `R` to restart, `T` to toggle realtime/fast pacing, `F` for fullscreen, and `Q`
-to stop. A finished run remains visible and `R` starts it again from `t = 0`.
+to stop. The run continues after touchdown so the landed state remains live;
+`R` starts it again from `t = 0`.
 
 The same scenario is embedded in the user guide's default WASM widget. Its
 Settings panel discovers the scalar Modelica parameters and writes overrides

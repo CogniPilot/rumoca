@@ -114,6 +114,10 @@ impl SimulationSession {
         self.inner.advance_to(target_time)
     }
 
+    pub fn ensure_end_time(&mut self, target_time: f64) {
+        self.inner.ensure_end_time(target_time);
+    }
+
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
         self.inner.step(dt)
     }
@@ -157,6 +161,10 @@ impl SimulationSessionApi for SimulationSession {
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {
         Self::set_input(self, name, value)
+    }
+
+    fn ensure_end_time(&mut self, target_time: f64) {
+        Self::ensure_end_time(self, target_time);
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {

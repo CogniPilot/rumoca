@@ -48,10 +48,11 @@ model at a chosen point: `rumoca sim Model.mo --inspect eval --at
 `terminate(...)`; the message is recorded in the report. `assert` failures
 likewise carry their message and source location.
 
-**My run used t_end = 1.0 even though the model has
+**My batch run used t_end = 1.0 even though the model has
 `experiment(StopTime=...)`** — Native *direct* CLI runs take the end time
-from `--t-end` (default 1.0); scenario runs use `[sim] t_end`. The browser
-examples and playground do honor the annotation.
+from `--t-end` (default 1.0); batch scenario runs use `[sim] t_end`. Browser
+and scheduled interactive runs are user-terminated and intentionally do not
+stop at either value.
 
 ## Results
 

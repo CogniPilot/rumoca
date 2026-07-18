@@ -146,6 +146,17 @@ impl SimulationSession {
         }
     }
 
+    /// Ensure the finite integration horizon includes `target_time`.
+    ///
+    /// Batch callers keep the original `SimOptions::t_end`; live callers may
+    /// extend the horizon as they advance without rebuilding model state.
+    pub fn ensure_end_time(&mut self, target_time: f64) {
+        match &mut self.inner {
+            SimulationSessionInner::NoState(session) => session.ensure_end_time(target_time),
+            SimulationSessionInner::State(session) => session.ensure_end_time(target_time),
+        }
+    }
+
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
         match &mut self.inner {
             SimulationSessionInner::NoState(session) => session.step(dt),
@@ -248,6 +259,16 @@ impl StateSession {
             return Ok(());
         }
         advance_backend_to(&mut self.backend, target_time)
+    }
+
+    fn ensure_end_time(&mut self, target_time: f64) {
+        if !target_time.is_finite() || target_time <= self.backend.t_end {
+            return;
+        }
+        let t_end = target_time + (target_time - self.backend.time).max(1.0);
+        self.backend.t_end = t_end;
+        self.backend.stop_schedule =
+            SolveStopSchedule::new(&self.runtime.model.problem, self.backend.time, t_end);
     }
 
     fn step(&mut self, dt: f64) -> Result<(), SimError> {

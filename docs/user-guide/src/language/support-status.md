@@ -42,7 +42,8 @@ regressions (documented in the
   MSL gate tracks exactly which MSL models compile, simulate, and match
   reference results.
 - **Direct CLI runs ignore `experiment` stop time** — pass `--t-end` or use
-  a scenario file (`[sim] t_end`). Browser/live runs do honor it.
+  a batch scenario file (`[sim] t_end`). Browser/live runs are
+  operator-terminated and do not stop at that horizon.
 
 ## Checking a Specific Model
 

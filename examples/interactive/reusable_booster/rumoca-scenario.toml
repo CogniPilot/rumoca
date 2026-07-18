@@ -27,7 +27,6 @@ wave_period = 8.5
 
 [sim]
 dt = 0.05
-t_end = 75.0
 mode = "realtime"
 solver = "rk-like"
 atol = 1e-6

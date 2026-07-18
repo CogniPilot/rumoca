@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{SimPacingMode, SimulationSessionApi, stop_time_reached_with_tol};
+use crate::{SimPacingMode, SimulationSessionApi};
 use anyhow::{Context, Result};
 use rumoca_codec::{PackCodec, UnpackCodec};
 use rumoca_input::{
@@ -429,7 +429,6 @@ struct FrameCtx<'a> {
     external_interface: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
     debug: bool,
     dt: f64,
-    t_end: f64,
     mode: SimPacingMode,
     steps_per_packet: usize,
     lockstep_schedule: Option<LockstepSchedule>,
@@ -630,7 +629,6 @@ where
         external_interface: &external_interface,
         debug,
         dt: cfg.sim.dt,
-        t_end: cfg.sim.t_end,
         mode,
         steps_per_packet,
         lockstep_schedule,
@@ -780,11 +778,6 @@ impl FrameCtx<'_> {
             eprintln!("\n[sim] quit requested");
             return Ok(FrameControl::Break);
         }
-        if self.final_time_reached(session) {
-            eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
-            return Ok(FrameControl::Break);
-        }
-
         if matches!(self.mode, SimPacingMode::Lockstep)
             && let Some(schedule) = self.lockstep_schedule
         {
@@ -818,9 +811,7 @@ impl FrameCtx<'_> {
         } else {
             1
         };
-        let planned_dt = self
-            .remaining_dt(session)
-            .min(self.dt * steps_this_frame as f64);
+        let planned_dt = self.dt * steps_this_frame as f64;
         let poll_dt = if matches!(self.mode, SimPacingMode::Lockstep | SimPacingMode::Realtime) {
             planned_dt
         } else {
@@ -835,10 +826,7 @@ impl FrameCtx<'_> {
         self.apply_model_inputs(state, session, engine, input_runtime)?;
         let mut advances_done = 0_u64;
         for _ in 0..steps_this_frame {
-            if self.final_time_reached(session) {
-                break;
-            }
-            let target = (session.time() + self.dt).min(self.t_end);
+            let target = session.time() + self.dt;
             advance_session_to(session, target)?;
             advances_done += 1;
         }
@@ -857,10 +845,6 @@ impl FrameCtx<'_> {
             }
         }
         state.frame_num += advances_done;
-        if self.final_time_reached(session) {
-            eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
-            return Ok(FrameControl::Break);
-        }
         Ok(FrameControl::Continue)
     }
 
@@ -886,7 +870,7 @@ impl FrameCtx<'_> {
             state.next_lockstep_send_time = now + schedule.send_dt;
         }
 
-        let control_time = state.next_lockstep_control_time.min(self.t_end);
+        let control_time = state.next_lockstep_control_time;
         let poll_dt = (control_time - now).max(0.0);
         input_runtime.poll_with_keyboard_events(engine, poll_dt, viewer_input.keys);
         if let FrameControl::Break = self.handle_signals(engine, session)? {
@@ -913,15 +897,6 @@ impl FrameCtx<'_> {
         let remaining_dt = control_time - session.time();
         if remaining_dt > EPS {
             advance_session_with_max_dt(session, remaining_dt, schedule.max_advance_dt)?;
-            if self.final_time_reached(session) {
-                self.emit_payloads(state, session, engine, input_runtime)?;
-                self.emit_status(state, session);
-                eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
-                return Ok(FrameControl::Break);
-            }
-        } else if self.final_time_reached(session) {
-            eprintln!("\n[sim] reached t_end={:.6}", self.t_end);
-            return Ok(FrameControl::Break);
         }
 
         let transport_packet = self.wait_for_command(state, session, engine)?;
@@ -929,14 +904,6 @@ impl FrameCtx<'_> {
             state.next_lockstep_control_time += schedule.receive_dt;
         }
         Ok(FrameControl::Continue)
-    }
-
-    fn final_time_reached(&self, session: &impl SimulationSessionApi) -> bool {
-        stop_time_reached_with_tol(session.time(), self.t_end)
-    }
-
-    fn remaining_dt(&self, session: &impl SimulationSessionApi) -> f64 {
-        (self.t_end - session.time()).max(0.0)
     }
 
     /// Apply configured local/runtime signal routes into model inputs before advancing.
@@ -1383,6 +1350,7 @@ fn advance_session_with_max_dt(
         } else {
             session.time() + sub_dt
         };
+        session.ensure_end_time(sub_target);
         if let Err(e) = session.advance_to(sub_target) {
             eprintln!(
                 "\r[sim] advance {}/{n_steps} failed (sub_dt={sub_dt:.4}): {e}",
@@ -1404,6 +1372,54 @@ fn advance_session_with_max_dt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct HorizonSession {
+        time: f64,
+        end_time: f64,
+    }
+
+    impl SimulationSessionApi for HorizonSession {
+        type Error = std::convert::Infallible;
+
+        fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
+            self.time = t_start;
+            Ok(())
+        }
+
+        fn set_input(&mut self, _name: &str, _value: f64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn ensure_end_time(&mut self, target_time: f64) {
+            self.end_time = self.end_time.max(target_time);
+        }
+
+        fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
+            self.time = target_time.min(self.end_time);
+            Ok(())
+        }
+
+        fn time(&self) -> f64 {
+            self.time
+        }
+
+        fn get(&self, _name: &str) -> Result<Option<f64>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn scheduled_advance_extends_past_initial_end_time() {
+        let mut session = HorizonSession {
+            time: 0.0,
+            end_time: 0.05,
+        };
+
+        advance_session_to(&mut session, 0.1).expect("live session should advance");
+
+        assert!((session.time - 0.1).abs() <= f64::EPSILON);
+        assert!(session.end_time >= 0.1);
+    }
 
     fn browser_key(code: &str, key: &str) -> ViewerKeyCommand {
         ViewerKeyCommand {

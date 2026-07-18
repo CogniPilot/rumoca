@@ -97,6 +97,16 @@ impl NoStateSession {
         Ok(())
     }
 
+    pub(crate) fn ensure_end_time(&mut self, target_time: f64) {
+        if !target_time.is_finite() || target_time <= self.opts.t_end {
+            return;
+        }
+        let t_end = target_time + (target_time - self.runtime.current_t).max(1.0);
+        self.opts.t_end = t_end;
+        self.runtime.stop_schedule =
+            SolveStopSchedule::new(&self.model.problem, self.runtime.current_t, t_end);
+    }
+
     pub(crate) fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt <= 0.0 {
             return Ok(());

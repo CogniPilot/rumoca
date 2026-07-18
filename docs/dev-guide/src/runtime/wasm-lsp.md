@@ -34,8 +34,9 @@ completion and diagnostics behave identically everywhere.
   whose keys are tunable parameter names and whose values are finite numbers.
 - `model_parameter_metadata(source, model_name)` → tunable parameter metadata used
   by the shared scenario GUI before writing `[parameters]` overrides.
-- `WasmSimulationSession` — interactive simulation with `set_input`,
-  `advance_to`, and `get`.
+- `WasmSimulationSession` — user-terminated interactive simulation with
+  `withInteractiveOptions`, `set_input`, `advance_to`, and `get`; the session
+  extends its finite solver horizon as it runs.
 - `lsp_diagnostics` / `lsp_completion` / `lsp_hover` /
   `lsp_semantic_tokens` … — thin wrappers over `rumoca-tool-lsp` used by
   the playground workers and the books' editors.

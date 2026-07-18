@@ -957,10 +957,9 @@ async function createInteractiveSession(options, onStatus) {
   }
   onStatus('compiling session');
   const simConfig = config?.sim || {};
-  return wasm.WasmSimulationSession.withOptions(
+  return wasm.WasmSimulationSession.withInteractiveOptions(
     source,
     modelName,
-    finiteNumber(simConfig.t_end, 0),
     finiteNumber(simConfig.dt, 0),
     trimMaybeString(simConfig.solver),
     finiteNumber(simConfig.atol, 0),
@@ -1047,12 +1046,6 @@ class InteractiveSimulationController {
   statusLine() {
     const inputMode = this.input.runtimeFields(this.frameNum, this.session.time()).input_mode;
     return `live t=${this.session.time().toFixed(2)} s · ${pacingModeLabel(this.pacingMode)} · ${speedRatioLabel(this.speedRatio)} · ${inputMode}`;
-  }
-
-  simulationFinished() {
-    const end = this.session.end_time();
-    const tolerance = 1e-12 * (1 + Math.abs(end));
-    return this.session.time() >= end - tolerance;
   }
 
   recordSpeed(simAdvanced, wallDt) {
@@ -1152,18 +1145,9 @@ class InteractiveSimulationController {
     if (typeof this.session.step === 'function') {
       this.session.step(this.simDt);
     } else {
-      this.session.advance_to(Math.min(this.session.time() + this.simDt, this.session.end_time()));
+      this.session.advance_to(this.session.time() + this.simDt);
     }
     this.frameNum += 1;
-    if (this.simulationFinished()) {
-      this.stopAnimation();
-      this.refreshViewerSignals();
-      this.renderFrame();
-      this.ui.updatePacing();
-      this.ui.updateRunState('Finished', 'finished');
-      this.onStatus('finished');
-      return false;
-    }
     return true;
   }
 

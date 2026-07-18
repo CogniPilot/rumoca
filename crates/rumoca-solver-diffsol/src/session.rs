@@ -7,9 +7,10 @@ use indexmap::IndexMap;
 use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    SimOptions, event_solver_step_cap, runtime_root_event_application_time, time_match_with_tol,
+    SimOptions, SolveStopSchedule, event_solver_step_cap, runtime_root_event_application_time,
+    time_match_with_tol,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -43,6 +44,7 @@ struct BdfSession {
     time_fn: Box<dyn Fn() -> f64>,
     y_fn: Box<dyn Fn() -> Vec<f64>>,
     event_reset_fn: Box<dyn FnMut(f64) -> Result<(), SimError>>,
+    event_horizon: Rc<Cell<f64>>,
     reset_fn: ResetFn,
     refresh_input_fn: Box<dyn FnMut() -> Result<(), SimError>>,
     project_fn: Box<dyn FnMut() -> Result<(), SimError>>,
@@ -103,6 +105,22 @@ impl SimulationSession {
         match &mut self.inner {
             SimulationSessionInner::Bdf(session) => session.advance_to(target_time),
             SimulationSessionInner::RuntimeOnly(session) => session.advance_to(target_time),
+        }
+    }
+
+    /// Ensure the finite integration horizon includes `target_time`.
+    ///
+    /// Batch callers keep the original `SimOptions::t_end`; live callers may
+    /// extend the horizon as they advance without rebuilding model state.
+    pub fn ensure_end_time(&mut self, target_time: f64) {
+        if !target_time.is_finite() || target_time <= self.t_end {
+            return;
+        }
+        let t_end = target_time + (target_time - self.time()).max(1.0);
+        self.t_end = t_end;
+        match &mut self.inner {
+            SimulationSessionInner::Bdf(session) => session.set_end_time(t_end),
+            SimulationSessionInner::RuntimeOnly(session) => session.set_end_time(t_end),
         }
     }
 
@@ -217,6 +235,15 @@ impl RuntimeOnlyDriver {
             apply_no_state_deadline_tick(&self.model, &mut self.runtime, target_time, tol)?;
         }
         Ok(())
+    }
+
+    fn set_end_time(&mut self, t_end: f64) {
+        if !t_end.is_finite() || t_end <= self.opts.t_end {
+            return;
+        }
+        self.opts.t_end = t_end;
+        self.runtime.stop_schedule =
+            SolveStopSchedule::new(&self.model.problem, self.runtime.current_t, t_end);
     }
 
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
@@ -359,8 +386,12 @@ impl BdfSession {
         let event_reset_solver = Rc::clone(&solver);
         let event_reset_model = model.clone();
         let event_reset_opts = opts.clone();
+        let event_horizon = Rc::new(Cell::new(opts.t_end));
+        let event_reset_horizon = Rc::clone(&event_horizon);
         let event_reset_params = runtime_params.clone();
         let event_reset_fn = Box::new(move |t_start: f64| {
+            let mut event_reset_opts = event_reset_opts.clone();
+            event_reset_opts.t_end = event_reset_horizon.get();
             let initial_y = {
                 let solver = event_reset_solver.borrow();
                 solver.state().y.as_slice().to_vec()
@@ -437,6 +468,7 @@ impl BdfSession {
             time_fn,
             y_fn,
             event_reset_fn,
+            event_horizon,
             reset_fn,
             refresh_input_fn,
             project_fn,
@@ -496,6 +528,12 @@ impl BdfSession {
         Err(SimError::SolverError(format!(
             "event processing did not settle before t={target_time}"
         )))
+    }
+
+    fn set_end_time(&mut self, t_end: f64) {
+        if t_end.is_finite() && t_end > self.event_horizon.get() {
+            self.event_horizon.set(t_end);
+        }
     }
 
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
@@ -979,6 +1017,35 @@ mod tests {
     }
 
     #[test]
+    fn incremental_session_can_extend_past_initial_end_time() {
+        let model = single_input_integrator();
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                t_end: 0.05,
+                rtol: 1.0e-8,
+                atol: 1.0e-10,
+                dt: Some(1.0e-3),
+                ..Default::default()
+            },
+        )
+        .expect("session should build");
+
+        session.set_input("u", 1.0).expect("input should exist");
+        session.ensure_end_time(0.1);
+        session
+            .advance_to(0.1)
+            .expect("extended session should advance");
+
+        assert!((session.time() - 0.1).abs() <= 1.0e-12);
+        let x = session
+            .get("x")
+            .expect("session read should succeed")
+            .expect("x should be visible");
+        assert!((x - 0.1).abs() <= 1.0e-4, "x={x}");
+    }
+
+    #[test]
     fn bdf_session_reset_restores_cached_initial_state() {
         let model = single_input_integrator();
         let mut session = SimulationSession::new(
@@ -1111,6 +1178,67 @@ mod tests {
 
         assert!((session.time() - 2.5).abs() <= 1.0e-12);
         assert_eq!(session.get("m").unwrap(), Some(7.0));
+    }
+
+    #[test]
+    fn zero_state_session_can_extend_past_initial_end_time() {
+        let mut model = solve::SolveModel::default();
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.parameters = vec![7.0];
+        model.visible_names = vec!["m".to_string()];
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                t_end: 0.05,
+                ..Default::default()
+            },
+        )
+        .expect("zero-state session should build");
+
+        session.ensure_end_time(0.1);
+        session
+            .advance_to(0.1)
+            .expect("extended zero-state session should advance");
+
+        assert!((session.time() - 0.1).abs() <= 1.0e-12);
+        assert_eq!(session.get("m").unwrap(), Some(7.0));
+    }
+
+    #[test]
+    fn zero_state_extension_schedules_events_beyond_initial_end_time() {
+        let mut model = solve::SolveModel::default();
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+            period_seconds: 0.05,
+            phase_seconds: 0.05,
+        }];
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 3.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        );
+        model.parameters = vec![0.0];
+        model.visible_names = vec!["m".to_string()];
+        let mut session = SimulationSession::new(
+            &model,
+            SimOptions {
+                t_end: 0.04,
+                ..Default::default()
+            },
+        )
+        .expect("zero-state session should build");
+
+        session.ensure_end_time(0.1);
+        session
+            .advance_to(0.1)
+            .expect("extended session should process periodic events");
+
+        assert_eq!(session.get("m").expect("read m"), Some(3.0));
     }
 
     fn single_input_integrator() -> solve::SolveModel {

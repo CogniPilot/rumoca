@@ -1559,11 +1559,12 @@ ctx.onFrame = (api) => {
             },
             {
                 section: 'sim',
-                label: 'End time',
+                label: 'Batch end time',
                 path: ['sim', 't_end'],
-                kind: 'number',
-                value: scenarioFieldValue(config, ['sim', 't_end'], 10),
-                hint: 'Simulation stop time. Must be positive.',
+                kind: 'optionalNumber',
+                optional: true,
+                value: scenarioFieldValue(config, ['sim', 't_end']),
+                hint: 'Finite batch/results-panel horizon. Live runs continue until explicitly stopped.',
             },
             {
                 section: 'sim',
@@ -1719,10 +1720,11 @@ ctx.onFrame = (api) => {
     function scenarioRunSummary(config, task, model, path) {
         const modelConfig = config && typeof config.model === 'object' ? config.model : {};
         const simConfig = config && typeof config.sim === 'object' ? config.sim : {};
+        const viewerConfig = config && typeof config.viewer === 'object' ? config.viewer : {};
         const modelFile = trimMaybeString(modelConfig.file);
         const modelName = trimMaybeString(modelConfig.name) || trimMaybeString(model);
         const endTime = simConfig.t_end === undefined || simConfig.t_end === null || simConfig.t_end === ''
-            ? '10'
+            ? '1'
             : String(simConfig.t_end);
         return {
             modelFile,
@@ -1731,6 +1733,7 @@ ctx.onFrame = (api) => {
             task: task === 'codegen' ? 'Code generation' : 'Simulation',
             solver: trimMaybeString(simConfig.solver) || 'auto',
             tEnd: endTime,
+            duration: trimMaybeString(viewerConfig.mode) === 'external_web' ? 'Until stopped' : `${endTime} s`,
         };
     }
 
@@ -2133,8 +2136,7 @@ ctx.onFrame = (api) => {
         if (section === 'sim') {
             const solver = scenarioOptionLabel(SCENARIO_SOLVER_OPTIONS, scenarioFieldByPath(fields, ['sim', 'solver'])?.value || 'auto');
             const pacing = scenarioOptionLabel(SCENARIO_SIM_MODE_OPTIONS, scenarioFieldByPath(fields, ['sim', 'mode'])?.value || '');
-            const endTime = scenarioFieldByPath(fields, ['sim', 't_end'])?.value;
-            return `${solver} · ${pacing} · end ${endTime || 10}`;
+            return `${solver} · ${pacing}`;
         }
         if (section === 'parameters') {
             return '';
@@ -2501,8 +2503,8 @@ ctx.onFrame = (api) => {
         <span class="run-overview-value" id="summarySolver">${escapeHtml(runSummary.solver)}</span>
       </div>
       <div class="run-overview-item">
-        <span class="run-overview-label">End time</span>
-        <span class="run-overview-value" id="summaryEndTime">${escapeHtml(runSummary.tEnd)} s</span>
+        <span class="run-overview-label">Duration</span>
+        <span class="run-overview-value" id="summaryEndTime">${escapeHtml(runSummary.duration)}</span>
       </div>
       <div class="run-overview-item">
         <span class="run-overview-label">Status</span>
@@ -2605,8 +2607,9 @@ ctx.onFrame = (api) => {
       setText('summaryModel', fieldValueForPath('model.file', runSummary.modelFile || 'No model file'));
       setText('summaryClass', fieldValueForPath('model.name', runSummary.modelName || 'No class'));
       setText('summarySolver', task === 'codegen' ? 'n/a' : fieldValueForPath('sim.solver', runSummary.solver || 'auto'));
-      const end = fieldValueForPath('sim.t_end', runSummary.tEnd || '10');
-      setText('summaryEndTime', task === 'codegen' ? 'n/a' : (end ? end + ' s' : 'n/a'));
+      const end = fieldValueForPath('sim.t_end', runSummary.tEnd || '1');
+      const live = fieldValueForPath('viewer.mode', '') === 'external_web';
+      setText('summaryEndTime', task === 'codegen' ? 'n/a' : live ? 'Until stopped' : (end ? end + ' s' : 'n/a'));
     }
 
     function escapeText(value) {
@@ -3369,7 +3372,7 @@ ctx.onFrame = (api) => {
           refreshParameterMetadata().catch(() => {});
         });
       }
-      if (Array.isArray(field.path) && (field.path.join('.') === 'sim.solver' || field.path.join('.') === 'sim.t_end')) {
+      if (Array.isArray(field.path) && ['sim.solver', 'sim.t_end', 'viewer.mode'].includes(field.path.join('.'))) {
         document.querySelector('[data-field="' + field.index + '"]')?.addEventListener('change', updateRunOverview);
       }
     }

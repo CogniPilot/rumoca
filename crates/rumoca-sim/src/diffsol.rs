@@ -168,6 +168,10 @@ impl SimulationSession {
         self.inner.advance_to(target_time)
     }
 
+    pub(crate) fn ensure_end_time(&mut self, target_time: f64) {
+        self.inner.ensure_end_time(target_time);
+    }
+
     pub(crate) fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt <= 0.0 {
             return Ok(());
@@ -224,6 +228,10 @@ impl SimulationSessionApi for SimulationSession {
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {
         Self::set_input(self, name, value)
+    }
+
+    fn ensure_end_time(&mut self, target_time: f64) {
+        Self::ensure_end_time(self, target_time);
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
