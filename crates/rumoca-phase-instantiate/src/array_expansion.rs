@@ -280,12 +280,57 @@ fn distribute_component_ref_mods_for_element(
             continue;
         }
 
+        if let Some(indexed) =
+            index_nested_modification_for_element(tree, parent_components, expr, indices)?
+        {
+            scalar_comp.modifications.insert(name.clone(), indexed);
+            continue;
+        }
+
         let indexed = index_binding_for_element(tree, parent_components, expr, indices)?;
         if !matches!(indexed, ast::Expression::ArrayIndex { .. }) {
             scalar_comp.modifications.insert(name.clone(), indexed);
         }
     }
     Ok(())
+}
+
+fn index_nested_modification_for_element(
+    tree: &ast::ClassTree,
+    parent_components: &IndexMap<String, ast::Component>,
+    expr: &ast::Expression,
+    indices: &[i64],
+) -> InstantiateResult<Option<ast::Expression>> {
+    let mut indexed = expr.clone();
+    match &mut indexed {
+        ast::Expression::ClassModification {
+            modifications,
+            each_flags,
+            ..
+        } => {
+            for (position, nested) in modifications.iter_mut().enumerate() {
+                if !each_flags.get(position).copied().unwrap_or(false)
+                    && let Some(value) = index_nested_modification_for_element(
+                        tree,
+                        parent_components,
+                        nested,
+                        indices,
+                    )?
+                {
+                    *nested = value;
+                }
+            }
+        }
+        ast::Expression::Modification { value, .. } => {
+            if let Some(indexed_value) =
+                index_array_expression_for_element(tree, parent_components, value, indices)?
+            {
+                *value = Arc::new(indexed_value);
+            }
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(indexed))
 }
 
 /// Resolve a modification expression to its value, handling component references.
