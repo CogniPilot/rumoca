@@ -648,18 +648,13 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
         };
         let touches_family =
             sorted_rows_touch_range(touched_sorted, family.first_equation_index, block_end);
-        let compact_corner_touch = if family.regular.is_some() && !family.interiors_materialized {
-            match unmaterialized_family_corner_is_touched(family, touched_sorted) {
-                Some(touched) => Some(touched),
-                None => return false,
-            }
-        } else {
-            None
-        };
         if !touches_family {
             return true;
         }
-        compact_corner_touch == Some(false)
+        if family.regular.is_some() && !family.interiors_materialized {
+            return unmaterialized_family_corner_is_touched(family, touched_sorted) == Some(false);
+        }
+        false
     });
 }
 

@@ -17,11 +17,35 @@ equation
 end Arr;
 "#;
 
+const SINGLETON_DIM_SOURCE: &str = r#"
+model SingletonDimArr
+  parameter Real a = 1;
+  parameter Real arr[1,3] = [a, 2*a, 3*a];
+  Real x[1,3](each start = 0);
+equation
+  for i in 1:1 loop
+    for j in 1:3 loop
+      der(x[i,j]) = arr[i,j];
+    end for;
+  end for;
+end SingletonDimArr;
+"#;
+
 fn compile_arr() -> rumoca::CompilationResult {
     Compiler::new()
         .model("Arr")
         .compile_str(SOURCE, "array_dependent_parameter.mo")
         .expect("Arr should compile")
+}
+
+fn compile_singleton_dim_arr() -> rumoca::CompilationResult {
+    Compiler::new()
+        .model("SingletonDimArr")
+        .compile_str(
+            SINGLETON_DIM_SOURCE,
+            "array_dependent_parameter_singleton_dim.mo",
+        )
+        .expect("SingletonDimArr should compile")
 }
 
 fn p_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
@@ -122,8 +146,16 @@ fn array_dependent_parameters_preserve_dae_slots_and_derivative_lanes() {
 }
 
 fn final_values(dae: &rumoca_ir_dae::Dae, opts: SimOptions) -> [f64; 3] {
+    final_values_for_names(dae, opts, ["x[1]", "x[2]", "x[3]"])
+}
+
+fn final_values_for_names(
+    dae: &rumoca_ir_dae::Dae,
+    opts: SimOptions,
+    names: [&str; 3],
+) -> [f64; 3] {
     let sim = simulate_dae_with_diagnostics(dae, &opts).expect("Arr should simulate");
-    ["x[1]", "x[2]", "x[3]"].map(|name| {
+    names.map(|name| {
         let index = sim
             .names
             .iter()
@@ -163,6 +195,60 @@ fn array_dependent_parameter_trajectories_follow_base_and_override() {
         },
     );
     for (actual, expected) in overridden.into_iter().zip([5.0, 10.0, 15.0]) {
+        assert!((actual - expected).abs() < 1.0e-8, "{actual} != {expected}");
+    }
+}
+
+#[test]
+fn singleton_dimension_array_parameters_reach_solve_and_bdf() {
+    let compiled = compile_singleton_dim_arr();
+    let base = lower_for_simulation_with_overrides(&compiled.dae, &SimOptions::default())
+        .expect("base singleton-dimension solve model");
+    assert_eq!(
+        ["a", "arr[1,1]", "arr[1,2]", "arr[1,3]"].map(|name| base.parameters[p_index(&base, name)]),
+        [1.0, 1.0, 2.0, 3.0]
+    );
+    let scalar_rows =
+        rumoca_eval_solve::to_scalar_program_block(&base.problem.continuous.derivative_rhs)
+            .expect("singleton-dimension derivative tensor should scalarize");
+    for (lane, program) in scalar_rows.programs.iter().enumerate() {
+        let expected = p_index(&base, &format!("arr[1,{}]", lane + 1));
+        let loaded = program
+            .iter()
+            .filter_map(|op| match op {
+                LinearOp::LoadP { index, .. } => Some(*index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(loaded, vec![expected], "singleton-dimension lane {lane}");
+    }
+
+    let base_final = final_values_for_names(
+        &compiled.dae,
+        SimOptions {
+            t_end: 0.5,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::Bdf,
+            ..SimOptions::default()
+        },
+        ["x[1,1]", "x[1,2]", "x[1,3]"],
+    );
+    for (actual, expected) in base_final.into_iter().zip([0.5, 1.0, 1.5]) {
+        assert!((actual - expected).abs() < 1.0e-8, "{actual} != {expected}");
+    }
+
+    let overridden_final = final_values_for_names(
+        &compiled.dae,
+        SimOptions {
+            t_end: 0.5,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::Bdf,
+            param_overrides: vec![("a".to_string(), 10.0)],
+            ..SimOptions::default()
+        },
+        ["x[1,1]", "x[1,2]", "x[1,3]"],
+    );
+    for (actual, expected) in overridden_final.into_iter().zip([5.0, 10.0, 15.0]) {
         assert!((actual - expected).abs() < 1.0e-8, "{actual} != {expected}");
     }
 }

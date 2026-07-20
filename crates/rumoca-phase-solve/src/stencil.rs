@@ -837,7 +837,8 @@ fn max_structured_affine_domain(
     // A `regular` family is affine over its whole domain by construction (flatten
     // only classifies it regular when every cell shares one affine body), so the
     // entire candidate range is the stencil -- no need to search shrinking prefixes,
-    // and validation reads only the corner rows (base + one neighbor per binder).
+    // and validation reads only the corner rows (base + one neighbor per
+    // non-singleton binder).
     // Leaving the interior rows unread is the contract that lets flatten stop
     // materializing them. A non-regular family keeps the full prefix search below.
     if family.regular.is_some() {
@@ -902,8 +903,8 @@ fn max_structured_affine_domain(
 /// Preserve a `regular` family's entire candidate range as one stencil domain,
 /// validated from corner rows only (body shape, strides, output map). Returns
 /// `None` to fall back to the prefix search when the corner model does not apply
-/// (e.g. an extent-1 binder, or a corner that fails to validate) -- the same
-/// conservative fallback the per-part corner helpers use.
+/// (e.g. a corner fails to validate) -- the same conservative fallback the
+/// per-part corner helpers use.
 fn regular_family_full_domain(
     rows: &[StructuredProgram],
     row_indices: &[usize],
@@ -961,10 +962,10 @@ fn regular_family_full_domain(
 }
 
 /// Like [`structured_dae_body_shapes_match`] but reads only the family's corner
-/// rows (base + one neighbor per binder). For a regular family every cell shares
-/// one body, so the corners are representative -- this avoids reading the interior
-/// rows' DAE bodies. Falls back to the full check when corners cannot be located
-/// (e.g. an extent-1 binder).
+/// rows (base + one neighbor per non-singleton binder). For a regular family every
+/// cell shares one body, so the corners are representative -- this avoids reading
+/// the interior rows' DAE bodies. Falls back to the full check when corners cannot
+/// be located. Singleton binders need no neighbor because their stride is zero.
 fn corner_dae_body_shapes_match(
     rows: &[StructuredProgram],
     row_indices: &[usize],
@@ -978,8 +979,8 @@ fn corner_dae_body_shapes_match(
         return Ok(false);
     }
     let Some(corner_positions) = corner_index_positions(&index_tuples, domain) else {
-        // No corners (e.g. an extent-1 binder): the full check reads every row's
-        // body, which is only valid when the interior bodies are real.
+        // The full check reads every row's body, which is only valid when the
+        // interior bodies are real.
         return if interiors_materialized {
             structured_dae_body_shapes_match(rows, row_indices, dae_equations)
         } else {
@@ -1124,11 +1125,11 @@ fn affine_strides_from_representative_proofs(
 
 /// Load/const strides for a regular family, corner-first (P1). The strides depend
 /// only on the access pattern, so the family's corner rows (base + one neighbor
-/// per dimension) yield the same result as diffing every row -- this is the
+/// per non-singleton dimension) yield the same result as diffing every row -- this is the
 /// production path, so the interior rows are not read when the corner model
 /// applies. Falls back to the full-row derivation when the corners cannot be
-/// isolated (e.g. an extent-1 dimension leaves a binder with no neighbor), keeping
-/// behavior identical for families the corner model does not cover. In debug
+/// isolated, keeping behavior identical for families the corner model does not
+/// cover. In debug
 /// builds, when both succeed, asserts they agree -- the equivalence that lets
 /// flatten (P3) stop materializing the interior rows.
 fn affine_strides_for_family(
@@ -1149,8 +1150,7 @@ fn affine_strides_for_family(
     // The corner path is row-blind (it reads only the corners), so if it builds a
     // stencil, diffing every row must build the same one -- otherwise a misclassified
     // family could slip a wrong stencil past it where the full scan would have declined
-    // to scalar. The reverse (corners decline, full succeeds) is the intended extent-1
-    // fallback and is left to the `match` below.
+    // to scalar. The reverse remains a conservative full-row fallback.
     if cfg!(debug_assertions)
         && let Some(corner) = &corner
     {
@@ -1202,13 +1202,13 @@ fn output_map_for_family(
 }
 
 /// Affine strides computed from only the family's CORNER rows: the base
-/// iteration plus one neighbor per domain dimension. For a regular family (affine
+/// iteration plus one neighbor per non-singleton domain dimension. For a regular family (affine
 /// accesses are guaranteed by construction) these O(ndim) rows determine the same
 /// strides the full-row inference produces -- this is the basis for building the
 /// stencil node without materializing every iteration. Handles `LoadP`
 /// (derived-parameter `c`) loads identically to `LoadY`, via the same per-tuple
-/// index fit. Returns `None` (caller falls back to the full-row path) when the
-/// corners cannot be located (e.g. an extent-1 dimension) or a proof is missing.
+/// index fit. Singleton dimensions contribute zero stride without a neighbor.
+/// Returns `None` (caller falls back) when a required corner or proof is missing.
 fn affine_strides_from_corner_rows(
     rows: &[StructuredProgram],
     row_indices: &[usize],
@@ -1243,11 +1243,11 @@ fn affine_strides_from_corner_rows(
     proof_strides_for_base_ops(base_row.ops.as_slice(), base_proof, operand_deltas, span)
 }
 
-/// The family's corner rows (base iteration + one neighbor per domain dimension)
-/// paired with their index tuples, in `[base, +dim0, +dim1, ...]` order. This is
-/// the shared selection both corner-row builders (strides and output map) consume.
-/// `None` when the rows don't cover the full domain or a corner is absent (e.g. an
-/// extent-1 dimension) -- callers then fall back to the full-row path.
+/// The family's corner rows (base iteration + one neighbor per non-singleton domain
+/// dimension) paired with their index tuples, in `[base, +dim0, +dim1, ...]` order.
+/// This is the shared selection both corner-row builders (strides and output map)
+/// consume. `None` when the rows don't cover the full domain or a required corner
+/// is absent; callers then fall back to the full-row path.
 fn corner_rows_and_tuples<'a>(
     rows: &'a [StructuredProgram],
     row_indices: &[usize],
@@ -1278,8 +1278,8 @@ fn corner_rows_and_tuples<'a>(
 /// Positions (into the family's row order) of the base iteration and one neighbor
 /// per domain dimension: position 0 is the first tuple (domain lower bounds), and
 /// for each dimension the tuple equal to base with that dimension advanced one
-/// step. `None` when a dimension's neighbor is absent (an extent-1 dimension,
-/// which cannot pin that dimension's stride -- the full-row path handles those).
+/// step. Extent-1 dimensions are omitted because their stride is necessarily zero.
+/// `None` means the domain is empty/invalid or a required neighbor is absent.
 fn corner_index_positions(
     index_tuples: &[Vec<i64>],
     domain: &rumoca_core::StructuredIndexDomain,
@@ -1287,8 +1287,12 @@ fn corner_index_positions(
     let base = index_tuples.first()?;
     let mut positions = vec![0usize];
     for (dimension, binder) in domain.binders.iter().enumerate() {
+        if binder.value_count().ok()? == 1 {
+            continue;
+        }
         let mut neighbor = base.clone();
-        *neighbor.get_mut(dimension)? += binder.step;
+        let value = neighbor.get_mut(dimension)?;
+        *value = value.checked_add(binder.step)?;
         let position = index_tuples.iter().position(|tuple| tuple == &neighbor)?;
         positions.push(position);
     }
@@ -1296,7 +1300,7 @@ fn corner_index_positions(
 }
 
 /// The tensor output map computed from only the family's corner rows (base + one
-/// neighbor per dimension), mirroring `output_map_for_rows` on that subset. For a
+/// neighbor per non-singleton dimension), mirroring `output_map_for_rows` on that subset. For a
 /// regular family the output index is affine in the binders, so the corners pin
 /// it exactly. `None` (caller falls back) when the corners cannot be located.
 fn output_map_from_corner_rows(

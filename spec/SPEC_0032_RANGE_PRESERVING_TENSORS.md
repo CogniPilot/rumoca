@@ -48,6 +48,12 @@ per-binder neighbor rows carry the reconstruction proof. Structural rewrites of
 an interior placeholder do not invalidate that proof; rewrites of a corner row
 must discard the family metadata unless a new proof is produced.
 
+An extent-1 binder has no distinct neighbor row: the base row is sufficient and
+that binder contributes zero stride to every affine access and output map. Corner
+selection skips such binders while retaining base/neighbor proof for all other
+dimensions. An all-singleton non-empty domain therefore uses only its base row;
+an empty domain produces zero rows and no corner proof.
+
 ### 3. DAE Canonical Form
 
 | Rule | Owner/Where | Brief Justification |
