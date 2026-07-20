@@ -55,10 +55,6 @@ fn array_dependent_parameters_preserve_dae_slots_and_derivative_lanes() {
     let arr_binding = arr.start.as_ref().expect("DAE arr binding");
     let mut binding_refs = Vec::new();
     arr_binding.collect_var_refs(&mut binding_refs);
-    assert!(
-        binding_refs.iter().all(|name| name == &VarName::new("a")),
-        "DAE arr binding must resolve every dependency to a, got {binding_refs:?}"
-    );
     assert_eq!(binding_refs, vec![VarName::new("a")]);
 
     let artifact_opts = SimOptions {
@@ -125,9 +121,8 @@ fn array_dependent_parameters_preserve_dae_slots_and_derivative_lanes() {
     }
 }
 
-fn final_values(opts: SimOptions) -> [f64; 3] {
-    let compiled = compile_arr();
-    let sim = simulate_dae_with_diagnostics(&compiled.dae, &opts).expect("Arr should simulate");
+fn final_values(dae: &rumoca_ir_dae::Dae, opts: SimOptions) -> [f64; 3] {
+    let sim = simulate_dae_with_diagnostics(dae, &opts).expect("Arr should simulate");
     ["x[1]", "x[2]", "x[3]"].map(|name| {
         let index = sim
             .names
@@ -143,23 +138,30 @@ fn final_values(opts: SimOptions) -> [f64; 3] {
 
 #[test]
 fn array_dependent_parameter_trajectories_follow_base_and_override() {
-    let base = final_values(SimOptions {
-        t_end: 0.5,
-        dt: Some(0.01),
-        solver_mode: SimSolverMode::Bdf,
-        ..SimOptions::default()
-    });
+    let compiled = compile_arr();
+    let base = final_values(
+        &compiled.dae,
+        SimOptions {
+            t_end: 0.5,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::Bdf,
+            ..SimOptions::default()
+        },
+    );
     for (actual, expected) in base.into_iter().zip([0.5, 1.0, 1.5]) {
         assert!((actual - expected).abs() < 1.0e-8, "{actual} != {expected}");
     }
 
-    let overridden = final_values(SimOptions {
-        t_end: 0.5,
-        dt: Some(0.01),
-        solver_mode: SimSolverMode::Bdf,
-        param_overrides: vec![("a".to_string(), 10.0)],
-        ..SimOptions::default()
-    });
+    let overridden = final_values(
+        &compiled.dae,
+        SimOptions {
+            t_end: 0.5,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::Bdf,
+            param_overrides: vec![("a".to_string(), 10.0)],
+            ..SimOptions::default()
+        },
+    );
     for (actual, expected) in overridden.into_iter().zip([5.0, 10.0, 15.0]) {
         assert!((actual - expected).abs() < 1.0e-8, "{actual} != {expected}");
     }
