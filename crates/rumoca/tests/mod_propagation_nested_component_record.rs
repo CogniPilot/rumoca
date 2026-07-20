@@ -105,3 +105,68 @@ fn test_nested_component_record_modifier_resolves_sibling_alias_scope() {
 
     rumoca_phase_dae::to_dae(&compiled.flat).expect("Top should lower to DAE");
 }
+
+#[test]
+fn test_nested_modifier_on_array_component_selects_element_row() {
+    let source = r#"
+        record Curve
+            parameter Real eta[:];
+        end Curve;
+
+        record Performance
+            parameter Curve motorEfficiency(eta={1.0});
+        end Performance;
+
+        model Pump
+            parameter Performance per;
+            Real y = per.motorEfficiency.eta[1];
+        end Pump;
+
+        model Top
+            parameter Real motorEta[2, 2] = {{0.87, 0.88}, {0.77, 0.78}};
+            Pump pumps[2](per(motorEfficiency(eta=motorEta)));
+            Pump shared[2](per(motorEfficiency(each eta={5, 6})));
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("nested modifier should select one row for each array element");
+
+    for index in 1..=2 {
+        let name = format!("pumps[{index}].per.motorEfficiency.eta");
+        let eta = compiled
+            .flat
+            .variables
+            .get(&rumoca_core::VarName::new(&name))
+            .unwrap_or_else(|| panic!("{name} should be present"));
+        assert_eq!(eta.dims, vec![2]);
+        match eta.binding.as_ref().expect("binding should be preserved") {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => {
+                assert_eq!(name.as_str(), "motorEta");
+                assert!(
+                    matches!(
+                        subscripts.as_slice(),
+                        [rumoca_core::Subscript::Index { value, .. }] if *value == index
+                    ),
+                    "expected row {index}, got {subscripts:?}"
+                );
+            }
+            other => panic!("expected selected source row, got {other:?}"),
+        }
+
+        let shared = format!("shared[{index}].per.motorEfficiency.eta");
+        let binding = compiled.flat.variables[&rumoca_core::VarName::new(&shared)]
+            .binding
+            .as_ref()
+            .expect("each binding should be preserved");
+        let rumoca_core::Expression::Array { elements, .. } = binding else {
+            panic!("each modifier should keep the full array, got {binding:?}");
+        };
+        assert!(flat_expr_is_numeric_value(&elements[0], 5));
+        assert!(flat_expr_is_numeric_value(&elements[1], 6));
+    }
+}
