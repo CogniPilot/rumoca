@@ -631,13 +631,15 @@ fn shift_structured_families_after_equation_removal(dae: &mut Dae, removed_sorte
     });
 }
 
-/// Drop structured families whose row bodies were symbolically rewritten.
+/// Drop structured families whose proof-carrying row bodies were symbolically rewritten.
 ///
 /// Substitutions can change a family row's LHS/RHS without changing row count.
 /// The old compact family metadata was proven for the pre-substitution body, so
 /// keeping it would let downstream Solve-IR rebuild a tensor node from stale row
-/// provenance. Regenerating a family proof belongs in a dedicated pass; the safe
-/// structural-elimination behavior is to scalarize rewritten families.
+/// provenance. An unmaterialized regular family's interior rows are different:
+/// they are explicitly non-semantic placeholders, and only its base/neighbor
+/// corner rows carry the reconstruction proof. Rewriting an interior placeholder
+/// therefore must not discard the authoritative family metadata.
 fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[usize]) {
     if touched_sorted.is_empty() {
         return;
@@ -645,10 +647,71 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
     dae.continuous.structured_equations.retain(|family| {
         let total: usize = family.equation_counts.iter().sum();
         let block_end = family.first_equation_index + total;
-        !touched_sorted
+        let touches_family = touched_sorted
             .iter()
-            .any(|&idx| idx >= family.first_equation_index && idx < block_end)
+            .any(|&idx| idx >= family.first_equation_index && idx < block_end);
+        if !touches_family {
+            return true;
+        }
+        family.regular.is_some()
+            && !family.interiors_materialized
+            && !unmaterialized_family_corner_is_touched(family, touched_sorted)
     });
+}
+
+fn unmaterialized_family_corner_is_touched(
+    family: &dae::StructuredEquationFamily,
+    touched_sorted: &[usize],
+) -> bool {
+    let Ok(index_tuples) = family.domain.index_tuples() else {
+        return true;
+    };
+    if index_tuples.len() != family.equation_counts.len() {
+        return true;
+    }
+    let Some(base) = index_tuples.first() else {
+        return true;
+    };
+    if base.len() != family.domain.binders.len()
+        || index_tuples
+            .iter()
+            .any(|tuple| tuple.len() != family.domain.binders.len())
+    {
+        return true;
+    }
+
+    let mut row_start = family.first_equation_index;
+    for (tuple, &row_count) in index_tuples.iter().zip(&family.equation_counts) {
+        let Some(row_end) = row_start.checked_add(row_count) else {
+            return true;
+        };
+        let iteration_is_touched = touched_sorted
+            .iter()
+            .any(|&row| row >= row_start && row < row_end);
+        if iteration_is_touched && regular_family_tuple_is_corner(base, tuple, family) {
+            return true;
+        }
+        row_start = row_end;
+    }
+    false
+}
+
+fn regular_family_tuple_is_corner(
+    base: &[i64],
+    tuple: &[i64],
+    family: &dae::StructuredEquationFamily,
+) -> bool {
+    let mut advanced_dimension = false;
+    for ((&base_value, &value), binder) in base.iter().zip(tuple).zip(&family.domain.binders) {
+        if value == base_value {
+            continue;
+        }
+        if advanced_dimension || base_value.checked_add(binder.step) != Some(value) {
+            return false;
+        }
+        advanced_dimension = true;
+    }
+    true
 }
 
 fn finish_boundary_elimination(

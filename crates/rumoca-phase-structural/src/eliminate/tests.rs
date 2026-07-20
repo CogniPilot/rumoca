@@ -2608,6 +2608,46 @@ fn drop_structured_families_touching_equations_drops_rewritten_family() {
     );
 }
 
+#[test]
+fn drop_structured_families_preserves_rewritten_unmaterialized_interior_placeholder() {
+    let family = || dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 3,
+                step: 1,
+            }],
+        },
+        first_equation_index: 10,
+        equation_counts: vec![1, 1, 1],
+        span: test_span(),
+        origin: "unmaterialized regular family".to_string(),
+        regular: Some(rumoca_core::RegularForFamily {
+            binders: vec!["i".to_string()],
+            accesses: vec![],
+        }),
+        template: None,
+        interiors_materialized: false,
+    };
+
+    let mut dae = Dae::new();
+    dae.continuous.structured_equations = vec![family()];
+    drop_structured_families_touching_equations(&mut dae, &[12]);
+    assert_eq!(
+        dae.continuous.structured_equations.len(),
+        1,
+        "an interior placeholder carries no semantic family proof to invalidate"
+    );
+
+    drop_structured_families_touching_equations(&mut dae, &[11]);
+    assert!(
+        dae.continuous.structured_equations.is_empty(),
+        "rewriting a materialized corner must invalidate the family proof"
+    );
+}
+
 /// Residual rows have no `lhs`, so substitution used to rewrite the RHS and
 /// return before recording the touched row. Structured metadata for that row
 /// must still be dropped because its compact body proof is now stale.
