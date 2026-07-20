@@ -7,7 +7,7 @@ if [[ ! "$expected_package_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)~1-g[0-9a-f]+-[0
   echo "Invalid OpenModelica package pin: $expected_package_version" >&2
   exit 1
 fi
-expected_version="${BASH_REMATCH[1]}"
+expected_version="${expected_package_version%-*}"
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   SUDO=()
 else
@@ -16,7 +16,7 @@ fi
 
 installed_version() {
   local version_output="$1"
-  [[ "$version_output" =~ ^OpenModelica\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]] || return 1
+  [[ "$version_output" =~ ^OpenModelica\ (.+)$ ]] || return 1
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 

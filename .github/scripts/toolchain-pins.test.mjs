@@ -60,21 +60,27 @@ test('the installer accepts the release output implied by the exact package pin'
   assert.equal(read('toolchains/openmodelica-version').trim(), '1.27.0~1-gd7e2907-1');
   const result = spawnSync(
     'scripts/ci/install-openmodelica.sh',
-    ['--check-output', 'OpenModelica 1.27.0'],
+    ['--check-output', 'OpenModelica 1.27.0~1-gd7e2907'],
     { encoding: 'utf8' },
   );
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'OpenModelica 1.27.0\n');
+  assert.equal(result.stdout, 'OpenModelica 1.27.0~1-gd7e2907\n');
 });
 
-test('the installer rejects pre-release or build drift', () => {
-  const result = spawnSync(
-    'scripts/ci/install-openmodelica.sh',
-    ['--check-output', 'OpenModelica 1.27.0~dev.beta.1-4-ge5d8071'],
-    { encoding: 'utf8' },
-  );
+test('the installer rejects runtime identities other than the exact pin-derived release', () => {
+  for (const output of [
+    'OpenModelica 1.27.0',
+    'OpenModelica 1.27.0~1-g0000000',
+    'OpenModelica 1.27.0~dev.beta.1-4-ge5d8071',
+  ]) {
+    const result = spawnSync(
+      'scripts/ci/install-openmodelica.sh',
+      ['--check-output', output],
+      { encoding: 'utf8' },
+    );
 
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /OpenModelica version mismatch/);
+    assert.notEqual(result.status, 0, output);
+    assert.match(result.stderr, /OpenModelica version mismatch/, output);
+  }
 });
