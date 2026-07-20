@@ -1,4 +1,4 @@
-use rumoca_core::VarName;
+use rumoca_core::{Expression, VarName};
 use rumoca_ir_dae::{Dae, expr_contains_var};
 
 use super::collect_exact_reference_expr_names_in_dae;
@@ -31,6 +31,17 @@ pub(super) fn drop_unreferenced_continuous_unknowns(dae: &mut Dae) {
 fn collect_continuous_exact_references(dae: &Dae) -> Vec<VarName> {
     let mut refs = Vec::new();
     for equation in &dae.continuous.equations {
+        if let Some(lhs) = &equation.lhs {
+            collect_exact_reference_expr_names_in_dae(
+                dae,
+                &Expression::VarRef {
+                    name: lhs.clone(),
+                    subscripts: Vec::new(),
+                    span: equation.span,
+                },
+                &mut refs,
+            );
+        }
         collect_exact_reference_expr_names_in_dae(dae, &equation.rhs, &mut refs);
     }
     refs.sort();
