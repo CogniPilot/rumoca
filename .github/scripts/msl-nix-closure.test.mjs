@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 
 const repoFile = (path) => new URL(`../../${path}`, import.meta.url);
 const helper = fileURLToPath(repoFile('.github/scripts/msl-nix-closure.sh'));
@@ -27,6 +27,16 @@ const requiredBinaries = [
 ];
 const commit = '0123456789abcdef0123456789abcdef01234567';
 const system = 'x86_64-linux';
+const fixtureRoots = new Set();
+
+const cleanupFixtures = () => {
+  for (const root of fixtureRoots) {
+    rmSync(root, { force: true, recursive: true });
+  }
+  fixtureRoots.clear();
+};
+
+afterEach(cleanupFixtures);
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -39,6 +49,7 @@ const workflowJob = (workflow, job) => {
 
 const fixture = ({ exportFails = false, importFails = false } = {}) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'rumoca-msl-closure-')));
+  fixtureRoots.add(root);
   const artifactDir = join(root, 'artifact');
   const outPath = join(root, 'nix-store', 'msl-output');
   const outLink = join(root, 'result-msl-artifacts');
@@ -310,4 +321,16 @@ test('restore imports, verifies, and recreates the exact output link', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(fx.nixLog, 'utf8').includes('--import'), true);
   assert.equal(realpathSync(fx.outLink), fx.outPath);
+});
+
+test('fixture lifecycle cleanup removes every registered temporary root', () => {
+  const first = fixture();
+  const second = fixture();
+  assert.equal(existsSync(first.root), true);
+  assert.equal(existsSync(second.root), true);
+
+  cleanupFixtures();
+
+  assert.equal(existsSync(first.root), false);
+  assert.equal(existsSync(second.root), false);
 });
