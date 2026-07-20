@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -36,17 +37,19 @@ const workflowJob = (workflow, job) => {
   return workflow.slice(start, next === -1 ? undefined : start + 1 + next);
 };
 
-const fixture = ({ importFails = false } = {}) => {
+const fixture = ({ exportFails = false, importFails = false } = {}) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'rumoca-msl-closure-')));
   const artifactDir = join(root, 'artifact');
   const outPath = join(root, 'nix-store', 'msl-output');
   const outLink = join(root, 'result-msl-artifacts');
   const fakeBin = join(root, 'fake-bin');
   const nixLog = join(root, 'nix-store.log');
+  const tempDir = join(root, 'tmp');
   mkdirSync(artifactDir, { recursive: true });
   mkdirSync(join(outPath, 'bin'), { recursive: true });
   mkdirSync(join(root, 'nix-store', 'dependency'));
   mkdirSync(fakeBin);
+  mkdirSync(tempDir);
   for (const binary of requiredBinaries) {
     writeFileSync(join(outPath, 'bin', binary), `${binary}\n`);
     chmodSync(join(outPath, 'bin', binary), 0o755);
@@ -59,7 +62,7 @@ case "\${1-}" in
     printf '%s\\n' "${join(root, 'nix-store', 'dependency')}" "${outPath}"
     ;;
   --export)
-    printf 'complete-closure-archive'
+    ${exportFails ? "printf 'partial-archive'; exit 24" : "printf 'complete-closure-archive'"}
     ;;
   --import)
     cat >/dev/null
@@ -77,11 +80,12 @@ esac
   chmodSync(join(fakeBin, 'nix-store'), 0o755);
   return {
     artifactDir,
-    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, TMPDIR: tempDir },
     nixLog,
     outLink,
     outPath,
     root,
+    tempDir,
   };
 };
 
@@ -116,11 +120,18 @@ const restore = (fx, expectedCommit = commit, expectedSystem = system) =>
     { encoding: 'utf8', env: fx.env },
   );
 
-test('workflow transports one MSL Nix closure artifact without Cachix', () => {
+test('CI architecture is permanently independent of Cachix', () => {
   const workflow = readFileSync(repoFile('.github/workflows/ci.yml'), 'utf8');
-  const artifactName =
-    'msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}';
+  const flake = readFileSync(repoFile('flake.nix'), 'utf8');
   assert.doesNotMatch(workflow, /cachix\/cachix-action/i);
+  assert.doesNotMatch(workflow, /CACHIX_AUTH_TOKEN/);
+  assert.doesNotMatch(workflow, /rumoca\.cachix\.org/i);
+  assert.doesNotMatch(flake, /Cachix/i);
+});
+
+test('workflow transports one rerun-stable MSL Nix closure artifact', () => {
+  const workflow = readFileSync(repoFile('.github/workflows/ci.yml'), 'utf8');
+  const artifactName = 'msl-nix-closure-${{ github.run_id }}-${{ github.sha }}';
   assert.match(workflow, /GitHub Actions artifact[^\n]*complete Nix closure/i);
 
   const producer = workflowJob(workflow, 'nix-build-msl');
@@ -133,6 +144,7 @@ test('workflow transports one MSL Nix closure artifact without Cachix', () => {
   assert.match(producer, /uses: actions\/upload-artifact@v6/);
   assert.match(producer, /path: target\/msl-nix-closure/);
   assert.match(producer, /if-no-files-found: error/);
+  assert.match(producer, /overwrite: true/);
   assert.match(producer, /retention-days: [1-3]/);
 
   for (const job of ['msl-shards', 'msl-merge', 'modelicatest-gate']) {
@@ -146,6 +158,30 @@ test('workflow transports one MSL Nix closure artifact without Cachix', () => {
     const useIndex = body.indexOf('result-msl-artifacts/bin/');
     assert.ok(restoreIndex !== -1 && restoreIndex < useIndex, `${job} must restore before use`);
   }
+
+  const artifactNames = workflow
+    .split('\n')
+    .filter((line) => line.trimStart().startsWith('name: msl-nix-closure-'));
+  assert.deepEqual(
+    artifactNames.map((line) => line.trim()),
+    Array(4).fill(`name: ${artifactName}`),
+    'producer overwrite and partial consumer reruns must share one stable artifact name',
+  );
+});
+
+test('manifest line count is derived from fixed fields and required binaries', () => {
+  const source = readFileSync(helper, 'utf8');
+  assert.doesNotMatch(source, /wc -l[^\n]*-eq\s+9/);
+  assert.match(
+    source,
+    /expected_manifest_lines=\$\(\(\$\{#manifest_fields\[@\]\} \+ \$\{#required_binaries\[@\]\}\)\)/,
+  );
+});
+
+test('helper cleanup is process-scoped instead of relying on RETURN traps', () => {
+  const source = readFileSync(helper, 'utf8');
+  assert.doesNotMatch(source, /trap[^\n]*RETURN/);
+  assert.match(source, /trap\s+cleanup\s+EXIT/);
 });
 
 test('pack exports the complete Nix requisites closure and records provenance', () => {
@@ -217,6 +253,28 @@ test('restore fails closed when Nix import fails', () => {
   const result = restore(fx);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Nix closure import failed/i);
+});
+
+test('pack failure removes all temporary closure files', () => {
+  const fx = fixture({ exportFails: true });
+  const result = spawnSync(
+    'bash',
+    [helper, 'pack', fx.outPath, fx.artifactDir, commit, system],
+    { encoding: 'utf8', env: fx.env },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /failed to export Nix requisites closure/i);
+  assert.deepEqual(readdirSync(fx.artifactDir), []);
+});
+
+test('restore failure removes its mktemp file', () => {
+  const fx = fixture();
+  writeArtifact(fx);
+  rmSync(join(fx.root, 'nix-store', 'dependency'), { recursive: true });
+  const result = restore(fx);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /imported Nix requisite is missing/i);
+  assert.deepEqual(readdirSync(fx.tempDir), []);
 });
 
 test('restore rejects a missing required binary', () => {

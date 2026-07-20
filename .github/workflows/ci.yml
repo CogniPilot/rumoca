@@ -785,9 +785,10 @@ jobs:
       - name: Upload complete MSL Nix closure
         uses: actions/upload-artifact@v6
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
           path: target/msl-nix-closure
           if-no-files-found: error
+          overwrite: true
           retention-days: 2
 
   # ============================================================================
@@ -957,7 +958,7 @@ jobs:
       - name: Download complete MSL Nix closure
         uses: actions/download-artifact@v8
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
           path: target/msl-nix-closure
 
       - name: Restore and verify prebuilt MSL closure
@@ -1037,7 +1038,7 @@ jobs:
       - name: Download complete MSL Nix closure
         uses: actions/download-artifact@v8
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
           path: target/msl-nix-closure
 
       - name: Restore and verify prebuilt MSL closure
@@ -1388,7 +1389,7 @@ jobs:
       - name: Download complete MSL Nix closure
         uses: actions/download-artifact@v8
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
           path: target/msl-nix-closure
 
       - name: Restore and verify prebuilt MSL closure

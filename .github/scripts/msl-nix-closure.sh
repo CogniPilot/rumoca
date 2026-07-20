@@ -3,12 +3,21 @@ set -euo pipefail
 
 readonly archive_name=closure.nar
 readonly manifest_name=manifest
+readonly -a manifest_fields=(version commit system out_path archive_sha256)
 readonly -a required_binaries=(
   msl_tests
   rumoca-worker
   rumoca-sim-worker
   rumoca-msl-tools
 )
+declare -a cleanup_paths=()
+
+cleanup() {
+  if ((${#cleanup_paths[@]})); then
+    rm -f -- "${cleanup_paths[@]}"
+  fi
+}
+trap cleanup EXIT
 
 die() {
   echo "msl-nix-closure: $*" >&2
@@ -72,7 +81,7 @@ pack() {
   paths_file="$artifact_dir/closure-paths.tmp"
   archive_tmp="$archive.tmp"
   rm -f "$archive" "$manifest" "$paths_file" "$archive_tmp"
-  trap 'rm -f "$paths_file" "$archive_tmp"' RETURN
+  cleanup_paths=("$paths_file" "$archive_tmp" "$archive" "$manifest")
 
   nix-store --query --requisites "$out_path" > "$paths_file" ||
     die "failed to query Nix requisites"
@@ -100,7 +109,7 @@ pack() {
     done
   } > "$manifest"
   rm -f "$paths_file"
-  trap - RETURN
+  cleanup_paths=()
 }
 
 restore() {
@@ -112,6 +121,7 @@ restore() {
   local archive="$artifact_dir/$archive_name"
   local manifest="$artifact_dir/$manifest_name"
   local version commit system out_path expected_sha actual_sha paths_file path
+  local expected_manifest_lines
   local -a closure_paths
 
   require_inputs "$expected_commit" "$expected_system"
@@ -119,7 +129,9 @@ restore() {
   command -v sha256sum >/dev/null || die "sha256sum is required"
   [[ -f $manifest ]] || die "missing manifest: $manifest"
   [[ -f $archive ]] || die "missing closure archive: $archive"
-  [[ $(wc -l < "$manifest") -eq 9 ]] || die "invalid manifest structure"
+  expected_manifest_lines=$((${#manifest_fields[@]} + ${#required_binaries[@]}))
+  [[ $(wc -l < "$manifest") -eq $expected_manifest_lines ]] ||
+    die "invalid manifest structure"
 
   version=$(manifest_value "$manifest" version)
   commit=$(manifest_value "$manifest" commit)
@@ -138,7 +150,7 @@ restore() {
   nix-store --import < "$archive" || die "Nix closure import failed"
   [[ -e $out_path ]] || die "imported Nix output is missing: $out_path"
   paths_file=$(mktemp)
-  trap 'rm -f "$paths_file"' RETURN
+  cleanup_paths=("$paths_file")
   nix-store --query --requisites "$out_path" > "$paths_file" ||
     die "failed to query imported Nix requisites"
   mapfile -t closure_paths < "$paths_file"
@@ -154,7 +166,7 @@ restore() {
   rm -f "$out_link"
   ln -s "$out_path" "$out_link"
   rm -f "$paths_file"
-  trap - RETURN
+  cleanup_paths=()
 }
 
 case ${1-} in
