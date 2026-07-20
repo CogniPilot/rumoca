@@ -86,7 +86,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Verify repository toolchain pins
-        run: node --test .github/scripts/toolchain-pins.test.mjs
+        run: |
+          node --test .github/scripts/toolchain-pins.test.mjs
+          node --test .github/scripts/msl-nix-closure.test.mjs
 
       # Architectural invariant, checked without compiling anything: `xtask` must
       # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
@@ -164,12 +166,9 @@ jobs:
           path: target/crate-dag/workspace-crate-dag.dot
           if-no-files-found: error
 
-  # Reproducible build + clippy + fmt via the root crane+fenix flake, backed by
-  # the Cachix binary cache (rumoca.cachix.org). First run is cold and pushes
-  # the built closure; subsequent runs (and local `cachix use rumoca`) restore
-  # the prebuilt dependency closure + rumoca binary in seconds. Replaces the
-  # deprecated magic-nix-cache, which rate-limited the GitHub Actions cache API
-  # on a closure this size (roadmap M4 slice 2).
+  # Reproducible build via the root crane+fenix flake. This independent check
+  # uses the normal Nix substituters or a cold build; only the heavy MSL bundle
+  # has a workflow-owned build-once/share-many transport below.
   nix-checks:
     name: Nix flake checks (Linux)
     runs-on: ubuntu-24.04
@@ -184,19 +183,12 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
-          # Public cache: pulls need no auth; the token lets CI push new paths.
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
       - name: Nix build the flake package check
         # Build ONLY the reproducible package check. Format and clippy are owned
         # by the standalone Format/Lint jobs, and the heavy release MSL artifact
         # bundle is built once by the dedicated `nix-build-msl` producer and
-        # consumed via Cachix; building any of that here too would duplicate
-        # release+LTO work.
+        # consumed via a GitHub Actions artifact; building any of that here too
+        # would duplicate release+LTO work.
         #
         # We deliberately do NOT run `nix flake check`: it eval-builds every output
         # (re-building those packages), and its `--no-build` eval trips over the
@@ -432,11 +424,6 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
-
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
 
       - name: Rust cache (template-runtime)
         uses: Swatinem/rust-cache@v2
@@ -768,12 +755,10 @@ jobs:
         run: |
           ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
-  # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane and push to
-  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead
-  # of each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
-  # per-crate cache can avoid — only build-once does. On an unchanged dep closure
-  # the crane `cargoArtifacts` layer is a Cachix hit; only the workspace crates
-  # rebuild here, once, for all consumers.
+  # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane. Export a
+  # GitHub Actions artifact containing the complete Nix closure so shard, merge,
+  # and ModelicaTest consumers restore exactly this commit/system output without
+  # credentials or recompilation. LTO is a link-time cost only build-once avoids.
   nix-build-msl:
     name: Build MSL artifacts (Nix, once)
     runs-on: ubuntu-24.04
@@ -788,18 +773,22 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
-          # Public cache: consumer pulls need no auth; the token lets this
-          # producer push the freshly built closure. Absent on fork PRs, in which
-          # case consumers Cachix-miss and fall back to compiling — still correct.
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build + cache MSL artifacts
+      - name: Build MSL artifacts once
+        shell: bash
         run: |
-          nix build --print-build-logs .#msl-artifacts
+          set -euo pipefail
+          nix build --print-build-logs .#msl-artifacts --out-link result-msl-artifacts
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          .github/scripts/msl-nix-closure.sh pack \
+            result-msl-artifacts target/msl-nix-closure "$GITHUB_SHA" "$system"
+
+      - name: Upload complete MSL Nix closure
+        uses: actions/upload-artifact@v6
+        with:
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: target/msl-nix-closure
+          if-no-files-found: error
+          retention-days: 2
 
   # ============================================================================
   # MSL parity gate, sharded. The ~54min root-example parity run (575 models +
@@ -807,10 +796,10 @@ jobs:
   # (so the timeout tail spreads evenly); the msl-merge job then runs the
   # baseline ratchet ONCE on the merged results. ModelicaTest is its own job.
   #
-  # Each consumer restores the prebuilt MSL artifact bundle from Cachix (needs:
-  # nix-build-msl) and runs it via `--prebuilt-test-binary` /
-  # `--prebuilt-sim-worker`, so no workspace compile/LTO happens here — only the
-  # light `cargo xtask` wrapper builds.
+  # Each consumer downloads and validates the producer's complete Nix closure
+  # GitHub Actions artifact (needs: nix-build-msl) and runs it via
+  # `--prebuilt-test-binary` / `--prebuilt-sim-worker`, so no workspace
+  # compile/LTO happens here — only the light `cargo xtask` wrapper builds.
   # ============================================================================
   msl-shards:
     name: MSL Quality Gate (shard ${{ matrix.shard }}/4)
@@ -965,14 +954,19 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download complete MSL Nix closure
+        uses: actions/download-artifact@v8
         with:
-          name: rumoca
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: target/msl-nix-closure
 
-      - name: Restore prebuilt MSL binaries (Cachix)
+      - name: Restore and verify prebuilt MSL closure
+        shell: bash
         run: |
-          nix build .#msl-artifacts --out-link result-msl-artifacts
+          set -euo pipefail
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          .github/scripts/msl-nix-closure.sh restore \
+            target/msl-nix-closure result-msl-artifacts "$GITHUB_SHA" "$system"
 
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
@@ -1040,14 +1034,19 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download complete MSL Nix closure
+        uses: actions/download-artifact@v8
         with:
-          name: rumoca
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: target/msl-nix-closure
 
-      - name: Restore prebuilt MSL binaries (Cachix)
+      - name: Restore and verify prebuilt MSL closure
+        shell: bash
         run: |
-          nix build .#msl-artifacts --out-link result-msl-artifacts
+          set -euo pipefail
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          .github/scripts/msl-nix-closure.sh restore \
+            target/msl-nix-closure result-msl-artifacts "$GITHUB_SHA" "$system"
 
       - name: Merge shards + run quality gate
         run: |
@@ -1386,14 +1385,19 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download complete MSL Nix closure
+        uses: actions/download-artifact@v8
         with:
-          name: rumoca
+          name: msl-nix-closure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: target/msl-nix-closure
 
-      - name: Restore prebuilt MSL binaries (Cachix)
+      - name: Restore and verify prebuilt MSL closure
+        shell: bash
         run: |
-          nix build .#msl-artifacts --out-link result-msl-artifacts
+          set -euo pipefail
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          .github/scripts/msl-nix-closure.sh restore \
+            target/msl-nix-closure result-msl-artifacts "$GITHUB_SHA" "$system"
 
       - name: Run ModelicaTest semantic gate
         shell: bash
@@ -1522,11 +1526,6 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
-
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
 
       - name: Rust cache (wasm)
         uses: Swatinem/rust-cache@v2
@@ -1858,12 +1857,6 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
-        if: runner.os != 'Windows'
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
-
       - uses: actions/setup-python@v6
         if: runner.os == 'Windows'
         with:
@@ -1958,11 +1951,6 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
-
-      - name: Cachix (rumoca binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: rumoca
 
       - name: Build sdist
         run: |
