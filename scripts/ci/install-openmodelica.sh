@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 expected_package_version="$(tr -d '[:space:]' < "$repo_root/toolchains/openmodelica-version")"
-if [[ ! "$expected_package_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-[0-9]+$ ]]; then
+if [[ ! "$expected_package_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)~1-g[0-9a-f]+-[0-9]+$ ]]; then
   echo "Invalid OpenModelica package pin: $expected_package_version" >&2
   exit 1
 fi

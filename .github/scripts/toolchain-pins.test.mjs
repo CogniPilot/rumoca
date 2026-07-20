@@ -14,8 +14,8 @@ const workflowJob = (workflow, job) => {
 
 test('OpenModelica uses one exact repository pin', () => {
   const version = read('toolchains/openmodelica-version').trim();
-  assert.match(version, /^\d+\.\d+\.\d+-\d+$/);
-  assert.equal(version, '1.27.0-1');
+  assert.match(version, /^\d+\.\d+\.\d+~1-g[0-9a-f]+-\d+$/);
+  assert.equal(version, '1.27.0~1-gd7e2907-1');
 });
 
 test('local package tooling defaults to the same Node major as CI', () => {
@@ -57,7 +57,7 @@ test('the installer validates the installed version against the pin', () => {
 });
 
 test('the installer accepts the release output implied by the exact package pin', () => {
-  assert.equal(read('toolchains/openmodelica-version').trim(), '1.27.0-1');
+  assert.equal(read('toolchains/openmodelica-version').trim(), '1.27.0~1-gd7e2907-1');
   const result = spawnSync(
     'scripts/ci/install-openmodelica.sh',
     ['--check-output', 'OpenModelica 1.27.0'],
