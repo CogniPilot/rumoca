@@ -614,19 +614,17 @@ fn shift_structured_families_after_equation_removal(dae: &mut Dae, removed_sorte
         return;
     }
     dae.continuous.structured_equations.retain_mut(|family| {
-        let total: usize = family.equation_counts.iter().sum();
-        let block_end = family.first_equation_index + total;
-        let removed_inside_block = removed_sorted
-            .iter()
-            .any(|&idx| idx >= family.first_equation_index && idx < block_end);
-        if removed_inside_block {
+        let Some(block_end) = structured_family_block_end(family) else {
+            return false;
+        };
+        if sorted_rows_touch_range(removed_sorted, family.first_equation_index, block_end) {
             return false;
         }
-        let shift = removed_sorted
-            .iter()
-            .filter(|&&idx| idx < family.first_equation_index)
-            .count();
-        family.first_equation_index -= shift;
+        let shift = removed_sorted.partition_point(|idx| *idx < family.first_equation_index);
+        let Some(shifted_start) = family.first_equation_index.checked_sub(shift) else {
+            return false;
+        };
+        family.first_equation_index = shifted_start;
         true
     });
 }
@@ -645,13 +643,7 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
         return;
     }
     dae.continuous.structured_equations.retain(|family| {
-        let Some(block_end) = family
-            .equation_counts
-            .iter()
-            .try_fold(family.first_equation_index, |end, count| {
-                end.checked_add(*count)
-            })
-        else {
+        let Some(block_end) = structured_family_block_end(family) else {
             return false;
         };
         let touches_family =
@@ -669,6 +661,15 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
         }
         compact_corner_touch == Some(false)
     });
+}
+
+fn structured_family_block_end(family: &dae::StructuredEquationFamily) -> Option<usize> {
+    family
+        .equation_counts
+        .iter()
+        .try_fold(family.first_equation_index, |end, count| {
+            end.checked_add(*count)
+        })
 }
 
 fn unmaterialized_family_corner_is_touched(

@@ -2573,6 +2573,33 @@ fn shift_structured_families_drops_family_with_removed_interior_row() {
     );
 }
 
+#[test]
+fn shift_structured_families_drops_overflowing_row_ranges() {
+    for (name, first_equation_index, equation_counts) in [
+        ("row-count sum overflow", 0, vec![usize::MAX, 1]),
+        ("first-index overflow", usize::MAX, vec![1]),
+    ] {
+        let mut dae = Dae::new();
+        dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain { binders: vec![] },
+            first_equation_index,
+            equation_counts,
+            span: test_span(),
+            origin: name.to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
+        }];
+
+        shift_structured_families_after_equation_removal(&mut dae, &[0]);
+
+        assert!(
+            dae.continuous.structured_equations.is_empty(),
+            "malformed family must be dropped: {name}"
+        );
+    }
+}
+
 /// A substitution can rewrite a structured family's row bodies while leaving the
 /// row count unchanged. The original family proof no longer applies, so the
 /// family must be dropped and lowered as scalar rows.
@@ -2610,7 +2637,10 @@ fn drop_structured_families_touching_equations_drops_rewritten_family() {
 
 #[test]
 fn drop_structured_families_handles_compact_corners_and_malformed_ranges() {
-    for case in compact_family_cases() {
+    for case in compact_family_cases()
+        .into_iter()
+        .chain(malformed_family_cases())
+    {
         assert_compact_family_retention(case);
     }
 }
@@ -2626,6 +2656,14 @@ type CompactFamilyCase = (
 
 fn compact_family_cases() -> Vec<CompactFamilyCase> {
     vec![
+        (
+            "1d positive non-unit base corner",
+            vec![compact_family_binder(0, 1, 7, 2)],
+            10,
+            vec![1; 4],
+            vec![10],
+            false,
+        ),
         (
             "1d positive non-unit corner",
             vec![compact_family_binder(0, 1, 7, 2)],
@@ -2691,6 +2729,11 @@ fn compact_family_cases() -> Vec<CompactFamilyCase> {
             vec![104],
             false,
         ),
+    ]
+}
+
+fn malformed_family_cases() -> Vec<CompactFamilyCase> {
+    vec![
         (
             "empty domain",
             vec![compact_family_binder(0, 1, 0, 1)],
@@ -2743,6 +2786,10 @@ fn compact_family_binder(
 
 fn assert_compact_family_retention(case: CompactFamilyCase) {
     let (name, binders, first_equation_index, equation_counts, touched, retained) = case;
+    let regular_binders = binders
+        .iter()
+        .map(|binder| binder.display_name.clone())
+        .collect();
     let mut dae = Dae::new();
     dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain { binders },
@@ -2751,7 +2798,7 @@ fn assert_compact_family_retention(case: CompactFamilyCase) {
         span: test_span(),
         origin: name.to_string(),
         regular: Some(rumoca_core::RegularForFamily {
-            binders: vec![],
+            binders: regular_binders,
             accesses: vec![],
         }),
         template: None,
