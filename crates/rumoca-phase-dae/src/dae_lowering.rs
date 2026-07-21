@@ -3999,8 +3999,8 @@ impl Projector<'_> {
         let rhs_dims = self.dims(rhs, *span)?;
         let has_array = lhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
             || rhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
-            || has_array_slice_syntax(self, lhs)
-            || has_array_slice_syntax(self, rhs);
+            || has_array_slice_syntax(lhs)
+            || has_array_slice_syntax(rhs);
         if target_dims.is_empty() && !has_array && (lhs_dims.is_none() || rhs_dims.is_none()) {
             return Ok(None);
         }
@@ -4134,7 +4134,7 @@ fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
     }
 }
 
-fn has_array_slice_syntax(projector: &Projector<'_>, expr: &Expr) -> bool {
+fn has_array_slice_syntax(expr: &Expr) -> bool {
     match expr {
         Expr::VarRef { .. } | Expr::Index { .. } => {
             matrix_var_slice(expr).is_some_and(|(_, subscripts)| {
@@ -4144,21 +4144,14 @@ fn has_array_slice_syntax(projector: &Projector<'_>, expr: &Expr) -> bool {
                     )
             })
         }
-        Expr::Unary { rhs, .. } => has_array_slice_syntax(projector, rhs),
-        Expr::BuiltinCall { function, args, .. } if builtin_propagates_array_evidence(function) =>
+        Expr::Unary { rhs, .. } => has_array_slice_syntax(rhs),
+        Expr::BuiltinCall { function, args, .. }
+            if !builtin_is_scalar_boundary(function, args.len()) =>
         {
-            args.iter().any(|arg| has_array_slice_syntax(projector, arg))
+            args.iter().any(has_array_slice_syntax)
         }
-        Expr::Binary { op, lhs, rhs, .. }
-            if matches!(op, OpBinary::Add | OpBinary::Sub | OpBinary::MulElem) =>
-        {
-            has_array_slice_syntax(projector, lhs) || has_array_slice_syntax(projector, rhs)
-        }
-        Expr::Binary { op: OpBinary::Mul, lhs, rhs, span } => {
-            let lhs_array = has_array_slice_syntax(projector, lhs);
-            let rhs_array = has_array_slice_syntax(projector, rhs);
-            let scalar = |expr| matches!(projector.dims(expr, *span), Ok(Some(dims)) if dims.is_empty());
-            (lhs_array && rhs_array) || (lhs_array && scalar(rhs)) || (rhs_array && scalar(lhs))
+        Expr::Binary { lhs, rhs, .. } => {
+            has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs)
         }
         Expr::If {
             branches,
@@ -4168,19 +4161,16 @@ fn has_array_slice_syntax(projector: &Projector<'_>, expr: &Expr) -> bool {
             .iter()
             .map(|(_, value)| value)
             .chain([else_branch.as_ref()])
-            .any(|value| has_array_slice_syntax(projector, value)),
+            .any(has_array_slice_syntax),
         _ => false,
     }
 }
 
-fn builtin_propagates_array_evidence(function: &Builtin) -> bool {
-    use Builtin::*;
-    [
-        Der, Abs, Sign, Sqrt, Div, Mod, Rem, Floor, Ceil, Min, Max, Sin, Cos, Tan, Asin, Acos,
-        Atan, Atan2, Sinh, Cosh, Tanh, Exp, Log, Log10, Integer, NoEvent, Smooth, Homotopy,
-        Transpose,
-    ]
-    .contains(function)
+fn builtin_is_scalar_boundary(function: &Builtin, arity: usize) -> bool {
+    matches!(
+        function,
+        Builtin::Sum | Builtin::Product | Builtin::Scalar | Builtin::Ndims | Builtin::Size
+    ) || arity == 1 && matches!(function, Builtin::Min | Builtin::Max)
 }
 
 fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {

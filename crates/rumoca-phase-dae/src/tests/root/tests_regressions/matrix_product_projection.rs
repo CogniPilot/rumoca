@@ -1166,6 +1166,8 @@ fn test_todae_preserves_dynamic_row_slice_reductions_in_scalar_products() {
     for reduction in [
         rumoca_core::BuiltinFunction::Sum,
         rumoca_core::BuiltinFunction::Product,
+        rumoca_core::BuiltinFunction::Min,
+        rumoca_core::BuiltinFunction::Max,
     ] {
         let mut flat = Model::new();
         declare_array(&mut flat, "A", &[2, 3]);
@@ -1191,6 +1193,54 @@ fn test_todae_preserves_dynamic_row_slice_reductions_in_scalar_products() {
         )
         .expect("scalar reductions must stay outside matrix-product projection");
     }
+}
+
+#[test]
+fn test_todae_rejects_dynamic_row_slices_hidden_by_division_or_unknown_factor() {
+    for op in [rumoca_core::OpBinary::Div, rumoca_core::OpBinary::DivElem] {
+        let mut flat = Model::new();
+        declare_array(&mut flat, "A", &[2, 3]);
+        declare_array(&mut flat, "B", &[2, 3]);
+        declare_array(&mut flat, "i", &[]);
+        declare_array(&mut flat, "j", &[]);
+        declare_array(&mut flat, "z", &[]);
+        add_equation(
+            &mut flat,
+            make_structured_var_ref("z"),
+            multiply(
+                binary(
+                    op.clone(),
+                    expression_row_slice("A", make_structured_var_ref("i")),
+                    real(2.0),
+                ),
+                binary(
+                    op,
+                    expression_row_slice("B", make_structured_var_ref("j")),
+                    real(3.0),
+                ),
+            ),
+            1,
+        );
+        assert_projection_error(&flat, "unknown operand shape");
+    }
+
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[2, 3]);
+    declare_array(&mut flat, "i", &[]);
+    declare_array(&mut flat, "z", &[]);
+    add_equation(
+        &mut flat,
+        make_structured_var_ref("z"),
+        multiply(
+            multiply(
+                make_structured_var_ref("unknown"),
+                expression_row_slice("A", make_structured_var_ref("i")),
+            ),
+            real(2.0),
+        ),
+        1,
+    );
+    assert_projection_error(&flat, "unknown operand shape");
 }
 
 #[test]
