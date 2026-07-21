@@ -181,18 +181,22 @@ fn expression_row_slice(name: &str, selector: Expression) -> Expression {
     }
 }
 
+fn declare_dae_array(dae: &mut rumoca_ir_dae::Dae, name: &str, dims: &[i64]) {
+    let mut variable =
+        rumoca_ir_dae::Variable::new(VarName::new(name), crate::test_support::test_span());
+    variable.dims = dims.to_vec();
+    dae.variables
+        .algebraics
+        .insert(VarName::new(name), variable);
+}
+
 fn dae_scaling_with_missing_base(variants: &[&str]) -> rumoca_ir_dae::Dae {
     let mut dae = rumoca_ir_dae::Dae::new();
     for (name, dims) in [("x", vec![2]), ("y", vec![2])]
         .into_iter()
         .chain(variants.iter().map(|name| (*name, vec![])))
     {
-        let mut variable =
-            rumoca_ir_dae::Variable::new(VarName::new(name), crate::test_support::test_span());
-        variable.dims = dims;
-        dae.variables
-            .algebraics
-            .insert(VarName::new(name), variable);
+        declare_dae_array(&mut dae, name, &dims);
     }
     dae.continuous
         .equations
@@ -257,6 +261,120 @@ fn test_todae_preserves_ordinary_scalar_product_operands() {
                 ..
             }
         ));
+    }
+}
+
+#[test]
+fn test_todae_preserves_derivative_vector_scalar_scaling() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "x", &[2]);
+    add_equation(
+        &mut flat,
+        builtin(rumoca_core::BuiltinFunction::Der, vec![colon_vector("x")]),
+        multiply(real(2.0), colon_vector("x")),
+        2,
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("derivative vector scaling must retain lane scalarization");
+
+    assert_eq!(dae.continuous.equations.len(), 2);
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let Expression::Binary { lhs, .. } = &equation.rhs else {
+            panic!("expected residual");
+        };
+        let Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            ..
+        } = lhs.as_ref()
+        else {
+            panic!("expected derivative lhs, got {lhs:?}");
+        };
+        let index = i64::try_from(lane + 1).expect("two lanes fit i64");
+        assert_eq!(literal_subscripts(&args[0]), Some(("x", vec![index])));
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } = residual_rhs(equation)
+        else {
+            panic!("expected scalar scaling rhs");
+        };
+        assert!(matches!(
+            lhs.as_ref(),
+            Expression::Literal {
+                value: Literal::Real(2.0),
+                ..
+            }
+        ));
+        assert_eq!(literal_subscripts(rhs), Some(("x", vec![index])));
+    }
+}
+
+#[test]
+fn test_todae_projects_matrix_product_for_derivative_vector_target() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "A", &[3, 3]);
+    declare_dae_array(&mut dae, "x", &[3]);
+    declare_dae_array(&mut dae, "y", &[3]);
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                builtin(rumoca_core::BuiltinFunction::Der, vec![colon_vector("y")]),
+                multiply(
+                    builtin(
+                        rumoca_core::BuiltinFunction::Transpose,
+                        vec![make_structured_var_ref("A")],
+                    ),
+                    colon_vector("x"),
+                ),
+            ),
+            crate::test_support::test_span(),
+            "derivative matrix product",
+            3,
+        ));
+
+    scalarize_phantom_vector_equations(&mut dae)
+        .expect("derivative target shape must support matrix-product projection");
+
+    assert_eq!(dae.continuous.equations.len(), 3);
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let output_index = i64::try_from(lane + 1).expect("three lanes fit i64");
+        let Expression::Binary { lhs, rhs, .. } = &equation.rhs else {
+            panic!("expected scalar residual");
+        };
+        let Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            ..
+        } = lhs.as_ref()
+        else {
+            panic!("expected derivative lhs, got {lhs:?}");
+        };
+        assert_eq!(
+            literal_subscripts(&args[0]),
+            Some(("y", vec![output_index]))
+        );
+        let mut terms = Vec::new();
+        assert!(
+            flatten_dot_terms(rhs, &mut terms),
+            "expected complete dot: {rhs:?}"
+        );
+        assert_eq!(
+            terms,
+            (1_i64..=3)
+                .map(|row| (("A", vec![row, output_index]), ("x", vec![row])))
+                .collect::<Vec<_>>()
+        );
     }
 }
 

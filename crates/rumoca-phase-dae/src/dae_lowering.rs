@@ -2421,19 +2421,23 @@ fn scalarize_expr_with_context(
                 && matches!(rhs.as_ref(), Expr::Binary { op, .. } if matches!(op, OpBinary::Mul | OpBinary::MulElem))
             {
                 let projector = Projector(ctx.var_dims, ctx.functions);
-                let dims = projector
-                    .dims(lhs, *span)?
-                    .ok_or_else(|| projection_error("unknown target shape", *span))?;
-                if let Some(rhs) = projector.project(rhs, ctx.k, &dims)? {
-                    return Ok(Expr::Binary {
-                        op: op.clone(),
-                        lhs: Box::new(project_scalarized_rhs_expr_at(
+                if let Some(dims) = projector.dims(lhs, *span)?
+                    && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
+                {
+                    let lhs = if dims.len() < 2 {
+                        scalarize_expr_with_context(lhs, ctx)?
+                    } else {
+                        project_scalarized_rhs_expr_at(
                             lhs,
                             ctx.k,
                             ctx.array_dims,
                             ctx.record_array_fields,
                             ctx.functions,
-                        )?),
+                        )?
+                    };
+                    return Ok(Expr::Binary {
+                        op: op.clone(),
+                        lhs: Box::new(lhs),
                         rhs: Box::new(rhs),
                         span: *span,
                     });
@@ -3969,11 +3973,7 @@ fn lower_colon_slice_dot_operand(
     lower_colon_slice_dot_products(expr, array_dims)
 }
 
-fn dot_product_expr(
-    lhs_values: &[rumoca_core::Expression],
-    rhs_values: &[rumoca_core::Expression],
-    span: rumoca_core::Span,
-) -> Option<rumoca_core::Expression> {
+fn dot_product_expr(lhs_values: &[Expr], rhs_values: &[Expr], span: Span) -> Option<Expr> {
     lhs_values
         .iter()
         .cloned()
@@ -4001,21 +4001,20 @@ impl Projector<'_> {
             };
         }
         match expr {
-            Expr::BuiltinCall {
-                function: Builtin::Transpose,
-                args,
-                ..
-            } => {
+            Expr::BuiltinCall { function, args, .. }
+                if matches!(function, Builtin::Transpose | Builtin::Der) =>
+            {
                 let [arg] = args.as_slice() else {
                     return Err(projection_error("unknown operand shape", span));
                 };
-                let Some(dims) = self.dims(arg, span)? else {
-                    return Ok(None);
-                };
-                let [rows, columns] = dims.as_slice() else {
-                    return Err(projection_error("unsupported rank", span));
-                };
-                Ok(Some(vec![*columns, *rows]))
+                match (function, self.dims(arg, span)?) {
+                    (_, None) => Ok(None),
+                    (Builtin::Der, Some(dims)) => Ok(Some(dims)),
+                    (Builtin::Transpose, Some(dims)) if dims.len() == 2 => {
+                        Ok(Some(vec![dims[1], dims[0]]))
+                    }
+                    _ => Err(projection_error("unsupported rank", span)),
+                }
             }
             Expr::FunctionCall { name, .. } => Ok(self
                 .1
