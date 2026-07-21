@@ -907,6 +907,35 @@ fn test_scalarizer_rejects_unknown_target_for_proven_array_product() {
 }
 
 #[test]
+fn test_scalarizer_rejects_unknown_target_for_compound_rhs_with_matrix_product() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "position", &[2]);
+    declare_dae_array(&mut dae, "A", &[2, 2]);
+    declare_dae_array(&mut dae, "x", &[2]);
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                make_structured_var_ref("missing_target"),
+                binary(
+                    rumoca_core::OpBinary::Add,
+                    colon_vector("position"),
+                    multiply(colon_array("A", 2), colon_vector("x")),
+                ),
+            ),
+            crate::test_support::test_span(),
+            "unknown compound matrix-product target",
+            2,
+        ));
+
+    let error = scalarize_phantom_vector_equations(&mut dae)
+        .expect_err("compound matrix-product RHS must reject an unknown target shape");
+    assert!(error.to_string().contains("unknown target shape"));
+    assert_eq!(error.source_span(), Some(crate::test_support::test_span()));
+}
+
+#[test]
 fn test_todae_projects_transposed_matrix_vector_rows_as_three_term_dots() {
     let mut flat = Model::new();
     declare_array(&mut flat, "A", &[3, 3]);
@@ -1554,6 +1583,101 @@ fn test_todae_preserves_scalar_scaled_sum_of_vector_slices() {
             ..
         }
     ));
+}
+
+#[test]
+fn test_scalarizer_preserves_unknown_sum_with_scalar_only_descendant_product() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "gain", &[]);
+    declare_dae_array(&mut dae, "u", &[2]);
+    declare_dae_array(&mut dae, "y", &[2]);
+    let dynamic_range = Expression::Range {
+        start: Box::new(make_structured_var_ref("i")),
+        step: None,
+        end: Box::new(make_structured_var_ref("j")),
+        span: crate::test_support::test_span(),
+    };
+    let dynamic_slice = Expression::VarRef {
+        name: VarName::new("u").into(),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(dynamic_range),
+            span: crate::test_support::test_span(),
+        }],
+        span: crate::test_support::test_span(),
+    };
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                colon_vector("y"),
+                multiply(
+                    real(2.0),
+                    binary(
+                        rumoca_core::OpBinary::Add,
+                        multiply(
+                            make_structured_var_ref("gain"),
+                            make_structured_var_ref("unknown_scalar"),
+                        ),
+                        dynamic_slice,
+                    ),
+                ),
+            ),
+            crate::test_support::test_span(),
+            "scalar-only descendant product",
+            2,
+        ));
+
+    scalarize_phantom_vector_equations(&mut dae)
+        .expect("a scalar-only descendant multiplication is not a matrix-product candidate");
+    assert_eq!(dae.continuous.equations.len(), 2);
+}
+
+#[test]
+fn test_scalarizer_rejects_scalar_scaled_unknown_sum_containing_matrix_product() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "A", &[2, 2]);
+    declare_dae_array(&mut dae, "x", &[2]);
+    declare_dae_array(&mut dae, "u", &[2]);
+    declare_dae_array(&mut dae, "y", &[2]);
+    let dynamic_range = Expression::Range {
+        start: Box::new(make_structured_var_ref("i")),
+        step: None,
+        end: Box::new(make_structured_var_ref("j")),
+        span: crate::test_support::test_span(),
+    };
+    let dynamic_slice = Expression::VarRef {
+        name: VarName::new("u").into(),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(dynamic_range),
+            span: crate::test_support::test_span(),
+        }],
+        span: crate::test_support::test_span(),
+    };
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                colon_vector("y"),
+                multiply(
+                    real(2.0),
+                    binary(
+                        rumoca_core::OpBinary::Add,
+                        multiply(colon_array("A", 2), colon_vector("x")),
+                        dynamic_slice,
+                    ),
+                ),
+            ),
+            crate::test_support::test_span(),
+            "scalar-scaled unknown sum containing matrix product",
+            2,
+        ));
+
+    let error = scalarize_phantom_vector_equations(&mut dae)
+        .expect_err("unknown sum containing a matrix product must fail closed");
+    assert!(error.to_string().contains("unknown operand shape"));
+    assert_eq!(error.source_span(), Some(crate::test_support::test_span()));
 }
 
 #[test]

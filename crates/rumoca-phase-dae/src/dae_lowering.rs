@@ -2467,26 +2467,21 @@ fn scalarize_binary_expr_at(
 ) -> Result<Expr, ToDaeError> {
     if matches!(op, OpBinary::Sub) {
         let projector = Projector(ctx.var_dims, ctx.functions);
-        let dims = projector.dims(lhs, span)?;
-        if dims.is_none()
-            && matches!(
-                rhs,
-                Expr::Binary {
-                    op: OpBinary::Mul | OpBinary::MulElem,
-                    ..
-                }
-            )
-            && matches!(projector.dims(rhs, span)?, Some(dims) if !dims.is_empty())
-        {
-            return Err(projection_error("unknown target shape", span));
-        }
-        if let Some(dims) = dims
-            && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
-        {
-            let indices = lane_indices_for_dims(ctx.k, &dims)
-                .ok_or_else(|| projection_error("result shape mismatch", span))?;
-            let lhs = projector.element(lhs, &indices, span)?;
-            return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
+        if projector.has_descendant_matrix_product_candidate(rhs)? {
+            let dims = projector.dims(lhs, span)?;
+            if dims.is_none()
+                && matches!(projector.dims(rhs, span)?, Some(dims) if !dims.is_empty())
+            {
+                return Err(projection_error("unknown target shape", span));
+            }
+            if let Some(dims) = dims
+                && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
+            {
+                let indices = lane_indices_for_dims(ctx.k, &dims)
+                    .ok_or_else(|| projection_error("result shape mismatch", span))?;
+                let lhs = projector.element(lhs, &indices, span)?;
+                return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
+            }
         }
     }
     Ok(vectorized_binary_expr(
@@ -4038,7 +4033,7 @@ impl Projector<'_> {
         }
         let lhs_dims = self.dims(lhs, *span)?;
         let rhs_dims = self.dims(rhs, *span)?;
-        if scalar_times_unknown_non_product(lhs, &lhs_dims, rhs, &rhs_dims) {
+        if scalar_times_unknown_non_product(self, lhs, &lhs_dims, rhs, &rhs_dims)? {
             return Ok(None);
         }
         let has_array = lhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
@@ -4219,6 +4214,56 @@ impl Projector<'_> {
             .ok_or_else(|| projection_error("result shape mismatch", span))?;
         self.element(value, &[], span)
     }
+
+    fn has_descendant_matrix_product_candidate(&self, expr: &Expr) -> Result<bool, ToDaeError> {
+        match expr {
+            Expr::Binary {
+                op: OpBinary::Mul | OpBinary::MulElem,
+                lhs,
+                rhs,
+                span,
+            } => {
+                if has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs) {
+                    return Ok(true);
+                }
+                let operand_dims = [lhs.as_ref(), rhs.as_ref()]
+                    .into_iter()
+                    .filter(|operand| !matches!(operand, Expr::Binary { .. }))
+                    .map(|operand| self.dims(operand, *span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if operand_dims.iter().flatten().any(|dims| !dims.is_empty()) {
+                    return Ok(true);
+                }
+                Ok(self.has_descendant_matrix_product_candidate(lhs)?
+                    || self.has_descendant_matrix_product_candidate(rhs)?)
+            }
+            Expr::Binary { lhs, rhs, .. } => Ok(self
+                .has_descendant_matrix_product_candidate(lhs)?
+                || self.has_descendant_matrix_product_candidate(rhs)?),
+            Expr::Unary { rhs, .. } => self.has_descendant_matrix_product_candidate(rhs),
+            Expr::BuiltinCall { function, args, .. }
+                if !builtin_is_scalar_boundary(function, args.len()) =>
+            {
+                args.iter()
+                    .map(|arg| self.has_descendant_matrix_product_candidate(arg))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|candidates| candidates.into_iter().any(std::convert::identity))
+            }
+            Expr::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let branch_candidates = branches
+                    .iter()
+                    .map(|(_, value)| self.has_descendant_matrix_product_candidate(value))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(branch_candidates.into_iter().any(std::convert::identity)
+                    || self.has_descendant_matrix_product_candidate(else_branch)?)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
     match expr {
@@ -4287,23 +4332,19 @@ fn literal_fill_dims(args: &[Expr], span: Span) -> Result<Option<Vec<i64>>, ToDa
     Ok(Some(dims))
 }
 fn scalar_times_unknown_non_product(
+    projector: &Projector<'_>,
     lhs: &Expr,
     lhs_dims: &Option<Vec<i64>>,
     rhs: &Expr,
     rhs_dims: &Option<Vec<i64>>,
-) -> bool {
-    let unknown_non_product = |expr: &Expr, dims: &Option<Vec<i64>>| {
-        dims.is_none()
-            && !matches!(
-                expr,
-                Expr::Binary {
-                    op: OpBinary::Mul | OpBinary::MulElem,
-                    ..
-                }
-            )
-    };
-    lhs_dims.as_ref().is_some_and(Vec::is_empty) && unknown_non_product(rhs, rhs_dims)
-        || rhs_dims.as_ref().is_some_and(Vec::is_empty) && unknown_non_product(lhs, lhs_dims)
+) -> Result<bool, ToDaeError> {
+    let lhs_unknown_non_product =
+        lhs_dims.is_none() && !projector.has_descendant_matrix_product_candidate(lhs)?;
+    let rhs_unknown_non_product =
+        rhs_dims.is_none() && !projector.has_descendant_matrix_product_candidate(rhs)?;
+    let result = lhs_dims.as_ref().is_some_and(Vec::is_empty) && rhs_unknown_non_product
+        || rhs_dims.as_ref().is_some_and(Vec::is_empty) && lhs_unknown_non_product;
+    Ok(result)
 }
 fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
     if matches!(op, OpBinary::MulElem) {
