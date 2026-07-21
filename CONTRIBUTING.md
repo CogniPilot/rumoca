@@ -49,11 +49,13 @@ rustc --version
 cargo --version
 ```
 
-MSL parity uses the exact OpenModelica Debian package recorded in
-`toolchains/openmodelica-version`. CI installs that package by exact equality,
-and local installations and CI must report the exact `major.minor.patch`
-release implied by the package pin before a full MSL result is comparable. The
-CI installer rejects older, silently upgraded, pre-release, and build outputs.
+MSL parity uses the exact OpenModelica Debian build recorded in
+`toolchains/openmodelica-version`. CI downloads the four official package files
+listed in `toolchains/openmodelica-packages.txt`, verifies their committed
+SHA-256 digests and Debian metadata before installation, and then requires each
+installed package version and the full `omc --version` build identity to match
+the pin. Older, silently upgraded, pre-release, and different build outputs are
+rejected.
 
 Rust-only workflows do not require Node/npm:
 
