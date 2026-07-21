@@ -72,6 +72,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 if base_dims.is_empty() {
                     return Ok(None);
                 }
+                if !self.index_expr_selectors_are_scalar(subscripts, scope, depth, span)? {
+                    return Ok(None);
+                }
                 self.subscripted_dims(&base_dims, subscripts, scope, span)
             }
             rumoca_core::Expression::Array {
@@ -188,6 +191,30 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn index_expr_selectors_are_scalar(
+        &self,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<bool, LowerError> {
+        for subscript in subscripts {
+            let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+                continue;
+            };
+            if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
+                continue;
+            }
+            let Some(dims) = self.expr_dims_with_owner(expr, scope, depth + 1, span)? else {
+                return Ok(false);
+            };
+            if !dims.is_empty() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn builtin_call_dims(

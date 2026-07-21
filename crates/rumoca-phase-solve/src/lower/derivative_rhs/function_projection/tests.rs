@@ -743,6 +743,8 @@ fn projection_dims_preserve_matrix_slice_with_dynamic_scalar_index() -> Result<(
     let mut scope = FunctionProjectionScope::default();
     scope.dims.insert("vertices".to_string(), vec![2, 3]);
     scope.dims.insert("other".to_string(), vec![3, 3]);
+    scope.dims.insert("next_vertex".to_string(), vec![3]);
+    scope.dims.insert("vertex".to_string(), vec![]);
 
     let span = test_span();
     let dynamic_index = rumoca_core::Expression::Index {
@@ -758,6 +760,10 @@ fn projection_dims_preserve_matrix_slice_with_dynamic_scalar_index() -> Result<(
         subscripts: vec![rumoca_core::Subscript::colon(span), second],
         span,
     };
+    assert_eq!(
+        analysis.expr_dims(&dynamic_index, &scope, 0, span)?,
+        Some(vec![])
+    );
     let dynamic_slice = slice(
         "vertices",
         rumoca_core::Subscript::Expr {
@@ -793,6 +799,15 @@ fn projection_dims_preserve_matrix_slice_with_dynamic_scalar_index() -> Result<(
         span,
     );
     assert_eq!(analysis.expr_dims(&mismatched, &scope, 0, span)?, None);
+
+    let array_selector = slice(
+        "vertices",
+        rumoca_core::Subscript::Expr {
+            expr: Box::new(local_var("next_vertex")),
+            span,
+        },
+    );
+    assert_eq!(analysis.expr_dims(&array_selector, &scope, 0, span)?, None);
     Ok(())
 }
 
