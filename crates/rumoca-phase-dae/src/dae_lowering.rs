@@ -35,7 +35,9 @@ struct RecordArgDecomposition {
 mod record_field_inference;
 use record_field_inference::{FieldUseMap, infer_record_fields_by_function};
 mod colon_slice_dot;
-use colon_slice_dot::{DotOperand, classify_dot_operand, is_colon_slice};
+use colon_slice_dot::{
+    DotOperand, classify_dot_operand, is_colon_slice, lower_colon_slice_dot_products,
+};
 
 #[derive(Default)]
 struct ArrayParamMap {
@@ -3766,73 +3768,6 @@ fn project_scalarized_rhs_expr_at(
         functions,
     }
     .project(expr)
-}
-
-fn lower_colon_slice_dot_products(
-    expr: &rumoca_core::Expression,
-    array_dims: &HashMap<String, Vec<i64>>,
-) -> Result<rumoca_core::Expression, ToDaeError> {
-    match expr {
-        rumoca_core::Expression::Index {
-            base,
-            subscripts,
-            span,
-        } => Ok(rumoca_core::Expression::Index {
-            base: Box::new(lower_colon_slice_dot_products(base, array_dims)?),
-            subscripts: subscripts.clone(),
-            span: *span,
-        }),
-        rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
-            lower_colon_slice_binary_expr(op, lhs, rhs, *span, array_dims)
-        }
-        rumoca_core::Expression::Unary { op, rhs, span } => Ok(rumoca_core::Expression::Unary {
-            op: op.clone(),
-            rhs: Box::new(lower_colon_slice_dot_products(rhs, array_dims)?),
-            span: *span,
-        }),
-        rumoca_core::Expression::BuiltinCall {
-            function,
-            args,
-            span,
-        } => Ok(rumoca_core::Expression::BuiltinCall {
-            function: *function,
-            args: args
-                .iter()
-                .map(|arg| lower_colon_slice_dot_products(arg, array_dims))
-                .collect::<Result<Vec<_>, _>>()?,
-            span: *span,
-        }),
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            span,
-        } => Ok(rumoca_core::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(condition, value)| {
-                    Ok((
-                        lower_colon_slice_dot_products(condition, array_dims)?,
-                        lower_colon_slice_dot_products(value, array_dims)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, ToDaeError>>()?,
-            else_branch: Box::new(lower_colon_slice_dot_products(else_branch, array_dims)?),
-            span: *span,
-        }),
-        rumoca_core::Expression::Array {
-            elements,
-            is_matrix,
-            span,
-        } => Ok(rumoca_core::Expression::Array {
-            elements: elements
-                .iter()
-                .map(|element| lower_colon_slice_dot_products(element, array_dims))
-                .collect::<Result<Vec<_>, _>>()?,
-            is_matrix: *is_matrix,
-            span: *span,
-        }),
-        _ => Ok(expr.clone()),
-    }
 }
 
 fn try_project_colon_slice_var_ref(

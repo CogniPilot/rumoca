@@ -178,6 +178,116 @@ fn colon_slice_dot_product_requires_two_proven_equal_rank_one_vectors() {
 }
 
 #[test]
+fn colon_slice_product_with_builtin_call_remains_unprojected() {
+    let span = test_span();
+    let array_dims = HashMap::from([
+        ("rotation".to_string(), vec![3, 3]),
+        ("gain".to_string(), vec![]),
+    ]);
+    let product = mul(
+        rotation_column_slice(),
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Abs,
+            args: vec![var_ref("gain")],
+            span,
+        },
+    );
+
+    let lowered = lower_colon_slice_dot_products(&product, &array_dims)
+        .expect("builtin-call shape should remain representable");
+    assert!(matches!(lowered, rumoca_core::Expression::Binary { .. }));
+}
+
+#[test]
+fn scalar_composites_keep_colon_slice_scaling_elementwise_in_both_orders() {
+    let span = test_span();
+    let array_dims = HashMap::from([
+        ("rotation".to_string(), vec![3, 3]),
+        ("gain".to_string(), vec![]),
+    ]);
+    let scalar_if = rumoca_core::Expression::If {
+        branches: vec![(
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(true),
+                span,
+            },
+            var_ref("gain"),
+        )],
+        else_branch: Box::new(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var_ref("gain")),
+            rhs: Box::new(int_lit(1)),
+            span,
+        }),
+        span,
+    };
+    let scalars = vec![
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Box::new(var_ref("gain")),
+            span,
+        },
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var_ref("gain")),
+            rhs: Box::new(int_lit(1)),
+            span,
+        },
+        scalar_if,
+    ];
+
+    for scalar in scalars {
+        for product in [
+            mul(rotation_column_slice(), scalar.clone()),
+            mul(scalar, rotation_column_slice()),
+        ] {
+            let lowered = lower_colon_slice_dot_products(&product, &array_dims)
+                .expect("proven scalar composite must preserve vector scaling");
+            assert!(matches!(
+                lowered,
+                rumoca_core::Expression::Array { ref elements, .. } if elements.len() == 3
+            ));
+        }
+    }
+}
+
+#[test]
+fn user_function_argument_rewrites_nested_colon_slice_dot_product() {
+    let mut dae = Dae::new();
+    let span = test_span();
+    for (name, dims) in [("rotation", vec![3, 3]), ("deck_normal_w", vec![3])] {
+        let mut variable = dae::Variable::new(rumoca_core::VarName::new(name), span);
+        variable.dims = dims;
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), variable);
+    }
+    dae.continuous.equations.push(dae::Equation::residual(
+        function_call(
+            "Pkg.consume",
+            vec![mul(rotation_column_slice(), var_ref("deck_normal_w"))],
+        ),
+        span,
+        "result = Pkg.consume(rotation[:, 3] * deck_normal_w)",
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).expect("scalarize function argument");
+
+    let rumoca_core::Expression::FunctionCall { args, .. } = &dae.continuous.equations[0].rhs
+    else {
+        panic!("expected user function call");
+    };
+    assert!(matches!(
+        args.as_slice(),
+        [rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            ..
+        }]
+    ));
+    assert_eq!(all_var_names(&args[0]), booster_dot_names());
+}
+
+#[test]
 fn booster_nested_min_max_colon_slice_vector_product_is_scalar() {
     let mut dae = Dae::new();
     let span = test_span();

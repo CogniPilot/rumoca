@@ -51,8 +51,10 @@ lhs/rhs or output expression.
 | No parallel scalarized owner | DAE IR | Avoids drift |
 
 DAE lowers colon-slice multiplication to a scalar dot product only when both
-operands are proven rank-one vectors of equal width; unresolved or higher-rank
-shapes remain unprojected rather than acquiring broadcast semantics.
+operands are proven rank-one vectors of equal width. Proven scalar operands,
+including scalar compound expressions, retain elementwise vector scaling;
+unresolved function/builtin calls, unknown widths, and higher-rank shapes remain
+unprojected rather than acquiring broadcast semantics.
 
 A source family such as `der(u[i, j]) = w[i, j]` is represented as residuals
 over canonical derivative slots/state metadata. The structured node owns the
