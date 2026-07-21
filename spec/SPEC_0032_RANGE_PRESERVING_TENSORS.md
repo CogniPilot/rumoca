@@ -44,7 +44,7 @@ lhs/rhs or output expression.
 Function projection derives slice shape from selector kind: `:` preserves the
 axis, a confirmed scalar selector removes it without evaluating its value, and
 compatible binary array operands retain that shape. Unknown or array-valued
-selectors fail closed.
+selectors and ranges with unknown compile-time length fail closed.
 
 ### 3. DAE Canonical Form
 
