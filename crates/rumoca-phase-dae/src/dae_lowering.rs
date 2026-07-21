@@ -3939,7 +3939,6 @@ fn lower_colon_slice_dot_operand(
     }
     lower_colon_slice_dot_products(expr, array_dims)
 }
-
 fn dot_product_expr(lhs_values: &[Expr], rhs_values: &[Expr], span: Span) -> Option<Expr> {
     lhs_values
         .iter()
@@ -3948,12 +3947,10 @@ fn dot_product_expr(lhs_values: &[Expr], rhs_values: &[Expr], span: Span) -> Opt
         .map(|(lhs, rhs)| vectorized_binary_expr(OpBinary::Mul, lhs, rhs, span))
         .reduce(|lhs, rhs| vectorized_binary_expr(OpBinary::Add, lhs, rhs, span))
 }
-
 struct Projector<'a>(
     &'a HashMap<String, Vec<i64>>,
     &'a IndexMap<VarName, Function>,
 );
-
 impl Projector<'_> {
     fn dims(&self, expr: &Expr, span: Span) -> Result<Option<Vec<i64>>, ToDaeError> {
         if let Some((name, subscripts)) = matrix_var_slice(expr) {
@@ -3982,8 +3979,7 @@ impl Projector<'_> {
                 }
             }
             Expr::BuiltinCall { function, .. } => Ok(builtin_fixed_vector_output_width(*function)
-                .and_then(|width| i64::try_from(width).ok())
-                .map(|width| vec![width])),
+                .and_then(|width| i64::try_from(width).ok().map(|width| vec![width]))),
             Expr::FunctionCall { name, .. } => Ok(self
                 .1
                 .get(name.var_name())
@@ -4009,7 +4005,6 @@ impl Projector<'_> {
             _ => Ok(None),
         }
     }
-
     fn project(
         &self,
         expr: &Expr,
@@ -4020,13 +4015,11 @@ impl Projector<'_> {
             return Ok(None);
         };
         if matches!(op, OpBinary::Add | OpBinary::Sub) {
-            if self.dims(expr, *span)?.as_deref() != Some(target_dims)
+            if target_dims.is_empty()
+                || self.dims(expr, *span)?.as_deref() != Some(target_dims)
                 || matches!(lhs.as_ref(), Expr::FunctionCall { .. })
                 || matches!(rhs.as_ref(), Expr::FunctionCall { .. })
             {
-                return Ok(None);
-            }
-            if target_dims.is_empty() {
                 return Ok(None);
             }
             let indices = lane_indices_for_dims(k, target_dims)
@@ -4101,7 +4094,6 @@ impl Projector<'_> {
             .map(Some)
             .ok_or_else(|| projection_error("unsupported inner dimension", *span))
     }
-
     fn element(&self, expr: &Expr, indices: &[i64], span: Span) -> Result<Expr, ToDaeError> {
         if let Some((name, subscripts)) = matrix_var_slice(expr) {
             let expr_span = expr.span().unwrap_or(span);
@@ -4176,7 +4168,6 @@ impl Projector<'_> {
         }
     }
 }
-
 fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
     match expr {
         Expr::VarRef {
@@ -4190,7 +4181,6 @@ fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
         _ => None,
     }
 }
-
 fn has_array_slice_syntax(expr: &Expr) -> bool {
     match expr {
         Expr::VarRef { .. } | Expr::Index { .. } => {
@@ -4222,14 +4212,12 @@ fn has_array_slice_syntax(expr: &Expr) -> bool {
         _ => false,
     }
 }
-
 fn builtin_is_scalar_boundary(function: &Builtin, arity: usize) -> bool {
     matches!(
         function,
         Builtin::Sum | Builtin::Product | Builtin::Scalar | Builtin::Ndims | Builtin::Size
     ) || arity == 1 && matches!(function, Builtin::Min | Builtin::Max)
 }
-
 fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
     if matches!(op, OpBinary::MulElem) {
         return (lhs == rhs)
@@ -4248,12 +4236,10 @@ fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec
         _ => unreachable!(),
     }
 }
-
 fn proven_projected_dims(dims: &[i64], subscripts: &[Subscript]) -> Option<Vec<i64>> {
     (subscripts.len() <= dims.len()).then_some(())?;
     projected_dims_for_subscripts(dims, subscripts)
 }
-
 fn linear_lane_for_indices(indices: &[i64], dims: &[i64]) -> Option<usize> {
     (indices.len() == dims.len()).then_some(())?;
     indices
@@ -4265,11 +4251,9 @@ fn linear_lane_for_indices(indices: &[i64], dims: &[i64]) -> Option<usize> {
             (index < dim).then_some(lane.checked_mul(dim)?.checked_add(index)?)
         })
 }
-
 fn projection_error(why: &str, span: Span) -> ToDaeError {
     ToDaeError::runtime_contract_violation_at(format!("DAE matrix-product projection: {why}"), span)
 }
-
 fn project_slice_subscripts_for_lane(
     dims: &[i64],
     subscripts: &[rumoca_core::Subscript],
@@ -4315,7 +4299,6 @@ fn project_slice_subscripts_for_lane(
     }
     Ok(Some(projected))
 }
-
 fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
     let mut remaining = k;
     let mut indices = Vec::with_capacity(dims.len());
@@ -4330,14 +4313,12 @@ fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
     indices.reverse();
     (remaining == 0).then_some(indices)
 }
-
 struct RhsProjectionCtx<'a> {
     k: usize,
     array_dims: &'a HashMap<String, Vec<i64>>,
     record_array_fields: &'a RecordArrayFieldMap,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 }
-
 impl RhsProjectionCtx<'_> {
     fn project(
         &self,
