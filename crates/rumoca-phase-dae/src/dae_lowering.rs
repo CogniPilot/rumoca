@@ -12,7 +12,7 @@ use crate::ToDaeError;
 use crate::scalar_size::compute_var_size;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
-    BuiltinFunction as Builtin, Expression as Expr, ExpressionRewriter, ExpressionVisitor, Literal,
+    BuiltinFunction as Builtin, Expression as Expr, ExpressionRewriter, ExpressionVisitor,
     OpBinary, Reference, Span, StatementRewriter, Subscript,
 };
 use rumoca_ir_dae as dae;
@@ -2423,20 +2423,18 @@ fn scalarize_expr_with_context(
                 && matches!(rhs.as_ref(), Expr::Binary { op, .. } if matches!(op, OpBinary::Mul | OpBinary::MulElem))
             {
                 let projector = Projector(ctx.var_dims, ctx.functions);
-                if let Some(dims) = projector.dims(lhs, *span)?
+                let dims = projector.dims(lhs, *span)?;
+                if dims.is_none()
+                    && matches!(projector.dims(rhs, *span)?, Some(dims) if !dims.is_empty())
+                {
+                    return Err(projection_error("unknown target shape", *span));
+                }
+                if let Some(dims) = dims
                     && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
                 {
-                    let lhs = if dims.len() < 2 {
-                        scalarize_expr_with_context(lhs, ctx)?
-                    } else {
-                        project_scalarized_rhs_expr_at(
-                            lhs,
-                            ctx.k,
-                            ctx.array_dims,
-                            ctx.record_array_fields,
-                            ctx.functions,
-                        )?
-                    };
+                    let indices = lane_indices_for_dims(ctx.k, &dims)
+                        .ok_or_else(|| projection_error("result shape mismatch", *span))?;
+                    let lhs = projector.element(lhs, &indices, *span)?;
                     return Ok(Expr::Binary {
                         op: op.clone(),
                         lhs: Box::new(lhs),
@@ -3965,8 +3963,10 @@ impl Projector<'_> {
                 };
                 if matches!(op, OpBinary::Mul | OpBinary::MulElem) {
                     product_dims(op, &lhs_dims, &rhs_dims, span).map(Some)
-                } else if lhs_dims.is_empty() && rhs_dims.is_empty() {
-                    Ok(Some(Vec::new()))
+                } else if (lhs_dims.is_empty() && rhs_dims.is_empty())
+                    || (matches!(op, OpBinary::Add | OpBinary::Sub) && lhs_dims == rhs_dims)
+                {
+                    Ok(Some(lhs_dims))
                 } else {
                     Err(projection_error("unknown operand shape", span))
                 }
@@ -4073,11 +4073,28 @@ impl Projector<'_> {
         }
         match expr {
             Expr::BuiltinCall {
+                function: Builtin::Der,
+                args,
+                span,
+            } if args.len() == 1 => Ok(Expr::BuiltinCall {
+                function: Builtin::Der,
+                args: vec![self.element(&args[0], indices, *span)?],
+                span: *span,
+            }),
+            Expr::BuiltinCall {
                 function: Builtin::Transpose,
                 args,
                 span,
             } if indices.len() == 2 && args.len() == 1 => {
                 self.element(&args[0], &[indices[1], indices[0]], *span)
+            }
+            Expr::Binary { op, lhs, rhs, span } if matches!(op, OpBinary::Add | OpBinary::Sub) => {
+                Ok(vectorized_binary_expr(
+                    op.clone(),
+                    self.element(lhs, indices, *span)?,
+                    self.element(rhs, indices, *span)?,
+                    *span,
+                ))
             }
             Expr::Binary { .. } => {
                 let dims = self
@@ -4116,22 +4133,17 @@ fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
     }
 }
 
-fn product_dims(
-    op: &OpBinary,
-    lhs: &[i64],
-    rhs: &[i64],
-    span: Span,
-) -> Result<Vec<i64>, ToDaeError> {
+fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
     if matches!(op, OpBinary::MulElem) {
         return (lhs == rhs)
             .then(|| lhs.to_vec())
-            .ok_or_else(|| projection_error("elementwise shape mismatch", span));
+            .ok_or_else(|| projection_error("elementwise shape mismatch", at));
     }
     match (lhs.len(), rhs.len()) {
         (0, _) => Ok(rhs.to_vec()),
         (_, 0) => Ok(lhs.to_vec()),
-        (l, r) if l > 2 || r > 2 => Err(projection_error("unsupported rank", span)),
-        _ if lhs.last() != rhs.first() => Err(projection_error("inner dimension mismatch", span)),
+        (l, r) if l > 2 || r > 2 => Err(projection_error("unsupported rank", at)),
+        _ if lhs.last() != rhs.first() => Err(projection_error("inner dimension mismatch", at)),
         (1, 1) => Ok(Vec::new()),
         (2, 1) => Ok(vec![lhs[0]]),
         (1, 2) => Ok(vec![rhs[1]]),
@@ -4141,19 +4153,8 @@ fn product_dims(
 }
 
 fn proven_projected_dims(dims: &[i64], subscripts: &[Subscript]) -> Option<Vec<i64>> {
-    (subscripts.len() <= dims.len()
-        && subscripts.iter().all(|subscript| match subscript {
-            Subscript::Colon { .. } | Subscript::Index { .. } => true,
-            Subscript::Expr { expr, .. } => matches!(
-                expr.as_ref(),
-                Expr::Literal {
-                    value: Literal::Integer(_),
-                    ..
-                }
-            ),
-        }))
-    .then(|| projected_dims_for_subscripts(dims, subscripts))
-    .flatten()
+    (subscripts.len() <= dims.len()).then_some(())?;
+    projected_dims_for_subscripts(dims, subscripts)
 }
 
 fn linear_lane_for_indices(indices: &[i64], dims: &[i64]) -> Option<usize> {
