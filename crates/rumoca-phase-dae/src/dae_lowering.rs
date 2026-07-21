@@ -1062,19 +1062,8 @@ impl ExpressionVisitor for VarRefListCollector {
 // Vector equation scalarization
 // =============================================================================
 
-/// Scalarize vector equations that reference "phantom" base names.
-///
-/// In Modelica, connector arrays like `plug_p.pin[3]` produce scalarized
-/// variables (`sineVoltage.plug_p.pin[1].v`, `…pin[2].v`, `…pin[3].v`)
-/// but some component-level equations reference the unsubscripted base name
-/// (`sineVoltage.plug_p.pin.v`) as a vector.  These phantom base names do
-/// not appear in any DAE variable map, so backends that render equations
-/// directly (CasADi, SymPy, JAX) produce undefined identifiers.
-///
-/// This pass detects equations with `scalar_count > 1` whose expressions
-/// contain such phantom VarRefs, and expands each into `scalar_count`
-/// scalar equations — one per element — with every phantom VarRef replaced
-/// by its indexed variant and every declared-array VarRef subscripted.
+/// Expand vector equations that reference phantom unsubscripted connector-array bases.
+/// Each lane indexes the phantom reference and matching declared-array arguments.
 pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeError> {
     let known_names = build_known_var_name_set(dae);
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
@@ -2358,8 +2347,6 @@ fn subscript_has_colon_slice(subscript: &rumoca_core::Subscript) -> bool {
     }
 }
 
-/// Scalarize phantom references and their declared-array arguments at lane `k`.
-/// Ordinary arrays stay aggregate, preserving MLS §10.6 matrix semantics.
 fn scalarize_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
@@ -3617,8 +3604,6 @@ fn array_from_binary_elements(
     }
 }
 
-/// Expand scalarizable equations and return each input row's post-expansion
-/// `(new_start, new_len)` span for structured-family remapping.
 fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
@@ -4014,8 +3999,8 @@ impl Projector<'_> {
         let rhs_dims = self.dims(rhs, *span)?;
         let has_array = lhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
             || rhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
-            || has_array_slice_syntax(lhs)
-            || has_array_slice_syntax(rhs);
+            || has_array_slice_syntax(self, lhs)
+            || has_array_slice_syntax(self, rhs);
         if target_dims.is_empty() && !has_array && (lhs_dims.is_none() || rhs_dims.is_none()) {
             return Ok(None);
         }
@@ -4149,7 +4134,7 @@ fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
     }
 }
 
-fn has_array_slice_syntax(expr: &Expr) -> bool {
+fn has_array_slice_syntax(projector: &Projector<'_>, expr: &Expr) -> bool {
     match expr {
         Expr::VarRef { .. } | Expr::Index { .. } => {
             matrix_var_slice(expr).is_some_and(|(_, subscripts)| {
@@ -4159,14 +4144,21 @@ fn has_array_slice_syntax(expr: &Expr) -> bool {
                     )
             })
         }
-        Expr::Unary { rhs, .. } => has_array_slice_syntax(rhs),
-        Expr::BuiltinCall { function, args, .. }
-            if matches!(function, Builtin::Transpose | Builtin::Der) =>
+        Expr::Unary { rhs, .. } => has_array_slice_syntax(projector, rhs),
+        Expr::BuiltinCall { function, args, .. } if builtin_propagates_array_evidence(function) =>
         {
-            args.iter().any(has_array_slice_syntax)
+            args.iter().any(|arg| has_array_slice_syntax(projector, arg))
         }
-        Expr::Binary { lhs, rhs, .. } => {
-            has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs)
+        Expr::Binary { op, lhs, rhs, .. }
+            if matches!(op, OpBinary::Add | OpBinary::Sub | OpBinary::MulElem) =>
+        {
+            has_array_slice_syntax(projector, lhs) || has_array_slice_syntax(projector, rhs)
+        }
+        Expr::Binary { op: OpBinary::Mul, lhs, rhs, span } => {
+            let lhs_array = has_array_slice_syntax(projector, lhs);
+            let rhs_array = has_array_slice_syntax(projector, rhs);
+            let scalar = |expr| matches!(projector.dims(expr, *span), Ok(Some(dims)) if dims.is_empty());
+            (lhs_array && rhs_array) || (lhs_array && scalar(rhs)) || (rhs_array && scalar(lhs))
         }
         Expr::If {
             branches,
@@ -4176,9 +4168,19 @@ fn has_array_slice_syntax(expr: &Expr) -> bool {
             .iter()
             .map(|(_, value)| value)
             .chain([else_branch.as_ref()])
-            .any(has_array_slice_syntax),
+            .any(|value| has_array_slice_syntax(projector, value)),
         _ => false,
     }
+}
+
+fn builtin_propagates_array_evidence(function: &Builtin) -> bool {
+    use Builtin::*;
+    [
+        Der, Abs, Sign, Sqrt, Div, Mod, Rem, Floor, Ceil, Min, Max, Sin, Cos, Tan, Asin, Acos,
+        Atan, Atan2, Sinh, Cosh, Tanh, Exp, Log, Log10, Integer, NoEvent, Smooth, Homotopy,
+        Transpose,
+    ]
+    .contains(function)
 }
 
 fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
