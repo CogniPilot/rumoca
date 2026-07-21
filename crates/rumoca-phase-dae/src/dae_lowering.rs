@@ -4193,9 +4193,7 @@ fn has_array_slice_syntax(expr: &Expr) -> bool {
         {
             args.iter().any(has_array_slice_syntax)
         }
-        Expr::Binary { op, lhs, rhs, .. }
-            if matches!(op, OpBinary::Add | OpBinary::Sub | OpBinary::MulElem) =>
-        {
+        Expr::Binary { lhs, rhs, .. } => {
             has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs)
         }
         Expr::If {
