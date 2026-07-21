@@ -56,6 +56,10 @@ ranges with unknown compile-time length.
 | No parallel scalarized owner | DAE IR | Avoids drift |
 | Orphan pruning counts exact scalar references on both equation sides | Structural phases | An explicit scalar lhs is a live owner use; an aggregate base alias alone does not keep unrelated scalar leaves |
 
+DAE lowers colon-slice multiplication to a scalar dot product only when both
+operands are proven rank-one vectors of equal width; unresolved or higher-rank
+shapes remain unprojected rather than acquiring broadcast semantics.
+
 A source family such as `der(u[i, j]) = w[i, j]` is represented as residuals
 over canonical derivative slots/state metadata. The structured node owns the
 compact index domain and maps each tuple to the corresponding derivative/output
