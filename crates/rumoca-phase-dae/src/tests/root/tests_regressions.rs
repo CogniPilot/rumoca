@@ -2,6 +2,7 @@ use super::*;
 
 mod assertion_actions_tests;
 mod clocked_tuple_tests;
+mod matrix_product_projection;
 mod parameter_binding_tests;
 mod regression_more_tests;
 mod when_inactive_tests;

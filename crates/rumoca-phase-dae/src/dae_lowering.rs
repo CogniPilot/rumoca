@@ -11,7 +11,10 @@
 use crate::ToDaeError;
 use crate::scalar_size::compute_var_size;
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
+use rumoca_core::{
+    BuiltinFunction as Builtin, Expression as Expr, ExpressionRewriter, ExpressionVisitor, Literal,
+    OpBinary, Reference, Span, StatementRewriter, Subscript,
+};
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::DaeExpressionRewriter;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2426,6 +2429,29 @@ fn scalarize_expr_with_context(
         )
         .and_then(|projected| projected.map_or_else(|| Ok(expr.clone()), Ok)),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+            if matches!(op, OpBinary::Sub)
+                && matches!(rhs.as_ref(), Expr::Binary { op, .. } if matches!(op, OpBinary::Mul | OpBinary::MulElem))
+            {
+                let projector = DaeLaneProjector {
+                    array_dims: ctx.array_dims,
+                    functions: ctx.functions,
+                };
+                let dims = projector.dims(lhs, *span)?;
+                if let Some(rhs) = projector.project(rhs, ctx.k, &dims)? {
+                    return Ok(Expr::Binary {
+                        op: op.clone(),
+                        lhs: Box::new(project_scalarized_rhs_expr_at(
+                            lhs,
+                            ctx.k,
+                            ctx.array_dims,
+                            ctx.record_array_fields,
+                            ctx.functions,
+                        )?),
+                        rhs: Box::new(rhs),
+                        span: *span,
+                    });
+                }
+            }
             Ok(rumoca_core::Expression::Binary {
                 op: op.clone(),
                 lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
@@ -3719,6 +3745,30 @@ fn project_scalarized_residual_rhs(
         let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
+    let target_dims = array_dims.get(name.as_str()).map_or(&[][..], Vec::as_slice);
+    if target_dims.is_empty() && !name.has_structure() {
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
+        return Ok(dae::Equation { rhs, ..eq });
+    }
+    let projector = DaeLaneProjector {
+        array_dims,
+        functions,
+    };
+    if target_dims.is_empty() {
+        let scalar_rhs = match projector.project(rhs, 0, target_dims)? {
+            Some(projected) => projected,
+            None => lower_colon_slice_dot_products(rhs, array_dims)?,
+        };
+        return Ok(dae::Equation {
+            rhs: Expr::Binary {
+                op: OpBinary::Sub,
+                lhs: lhs.clone(),
+                rhs: Box::new(scalar_rhs),
+                span: *span,
+            },
+            ..eq
+        });
+    }
     let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims) else {
         let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
@@ -3726,8 +3776,10 @@ fn project_scalarized_residual_rhs(
     let _ = phantom_map;
     let scalar_lhs =
         project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?;
-    let scalar_rhs =
-        project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?;
+    let scalar_rhs = match projector.project(rhs, k, target_dims)? {
+        Some(projected) => projected,
+        None => project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?,
+    };
     let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, array_dims)?;
     let scalar_rhs = lower_colon_slice_dot_products(&scalar_rhs, array_dims)?;
     Ok(dae::Equation {
@@ -3939,26 +3991,14 @@ fn dot_product_if_matching_vectors(
     rhs: &rumoca_core::Expression,
     span: rumoca_core::Span,
 ) -> Option<rumoca_core::Expression> {
-    if !matches!(op, rumoca_core::OpBinary::Mul) {
-        return None;
+    match (op, lhs, rhs) {
+        (OpBinary::Mul, Expr::Array { elements: lhs, .. }, Expr::Array { elements: rhs, .. })
+            if lhs.len() == rhs.len() =>
+        {
+            dot_product_expr(lhs, rhs, span)
+        }
+        _ => None,
     }
-    let (
-        rumoca_core::Expression::Array {
-            elements: lhs_values,
-            ..
-        },
-        rumoca_core::Expression::Array {
-            elements: rhs_values,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return None;
-    };
-    if lhs_values.len() != rhs_values.len() {
-        return None;
-    }
-    dot_product_expr(lhs_values, rhs_values, span)
 }
 
 fn dot_product_expr(
@@ -3966,24 +4006,267 @@ fn dot_product_expr(
     rhs_values: &[rumoca_core::Expression],
     span: rumoca_core::Span,
 ) -> Option<rumoca_core::Expression> {
-    let mut terms = lhs_values
+    lhs_values
         .iter()
         .cloned()
         .zip(rhs_values.iter().cloned())
-        .map(|(lhs, rhs)| rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span,
-        });
-    let first = terms.next()?;
-    Some(
-        terms.fold(first, |acc, term| rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(acc),
-            rhs: Box::new(term),
-            span,
-        }),
+        .map(|(lhs, rhs)| vectorized_binary_expr(OpBinary::Mul, lhs, rhs, span))
+        .reduce(|lhs, rhs| vectorized_binary_expr(OpBinary::Add, lhs, rhs, span))
+}
+
+struct DaeLaneProjector<'a> {
+    array_dims: &'a HashMap<String, Vec<i64>>,
+    functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+}
+
+impl DaeLaneProjector<'_> {
+    fn dims(&self, expr: &Expr, span: Span) -> Result<Vec<i64>, ToDaeError> {
+        if let Some((name, subscripts)) = matrix_var_slice(expr) {
+            return match self.array_dims.get(name.as_str()) {
+                Some(dims) => proven_projected_dims(dims, subscripts)
+                    .ok_or_else(|| product_projection_error("unknown operand shape", span)),
+                None if subscripts.is_empty() && name.has_structure() => Ok(Vec::new()),
+                None => Err(product_projection_error("unknown operand shape", span)),
+            };
+        }
+        match expr {
+            Expr::BuiltinCall {
+                function: Builtin::Transpose,
+                args,
+                ..
+            } => {
+                let [arg] = args.as_slice() else {
+                    return Err(product_projection_error("unknown operand shape", span));
+                };
+                let dims = self.dims(arg, span)?;
+                let [rows, columns] = dims.as_slice() else {
+                    return Err(product_projection_error("unsupported rank", span));
+                };
+                Ok(vec![*columns, *rows])
+            }
+            Expr::FunctionCall { name, .. } => self
+                .functions
+                .get(name.var_name())
+                .and_then(|function| function.outputs.first())
+                .map(|output| output.dims.clone())
+                .ok_or_else(|| product_projection_error("unknown operand shape", span)),
+            Expr::Literal { .. } => Ok(Vec::new()),
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let lhs_dims = self.dims(lhs, span)?;
+                let rhs_dims = self.dims(rhs, span)?;
+                match op {
+                    OpBinary::Mul => multiplication_result_dims(&lhs_dims, &rhs_dims, span),
+                    OpBinary::MulElem if lhs_dims == rhs_dims => Ok(lhs_dims),
+                    OpBinary::MulElem => {
+                        Err(product_projection_error("elementwise shape mismatch", span))
+                    }
+                    _ if lhs_dims.is_empty() && rhs_dims.is_empty() => Ok(Vec::new()),
+                    _ => Err(product_projection_error("unknown operand shape", span)),
+                }
+            }
+            _ => Err(product_projection_error("unknown operand shape", span)),
+        }
+    }
+
+    fn project(
+        &self,
+        expr: &Expr,
+        k: usize,
+        target_dims: &[i64],
+    ) -> Result<Option<Expr>, ToDaeError> {
+        let Expr::Binary { op, lhs, rhs, span } = expr else {
+            return Ok(None);
+        };
+        if !matches!(op, OpBinary::Mul | OpBinary::MulElem) {
+            return Ok(None);
+        }
+        let lhs_dims = self.dims(lhs, *span)?;
+        let rhs_dims = self.dims(rhs, *span)?;
+        let result_dims = match op {
+            OpBinary::Mul => multiplication_result_dims(&lhs_dims, &rhs_dims, *span)?,
+            OpBinary::MulElem if lhs_dims == rhs_dims => lhs_dims.clone(),
+            OpBinary::MulElem => {
+                return Err(product_projection_error(
+                    "elementwise shape mismatch",
+                    *span,
+                ));
+            }
+            _ => unreachable!(),
+        };
+        if target_dims.is_empty() && !result_dims.is_empty() {
+            return Err(product_projection_error(
+                "non-scalar result in scalar context",
+                *span,
+            ));
+        }
+        if result_dims != target_dims {
+            return Err(product_projection_error("result shape mismatch", *span));
+        }
+        if result_dims.is_empty() && lhs_dims.is_empty() && rhs_dims.is_empty() {
+            return Ok(None);
+        }
+        let indices = lane_indices_for_dims(k, target_dims)
+            .ok_or_else(|| product_projection_error("result shape mismatch", *span))?;
+        if matches!(op, OpBinary::MulElem) {
+            return Ok(Some(vectorized_binary_expr(
+                op.clone(),
+                self.element_at(lhs, &indices, *span)?,
+                self.element_at(rhs, &indices, *span)?,
+                *span,
+            )));
+        }
+        if lhs_dims.is_empty() || rhs_dims.is_empty() {
+            let (lhs, rhs) = if lhs_dims.is_empty() {
+                (lhs.as_ref().clone(), self.element_at(rhs, &indices, *span)?)
+            } else {
+                (self.element_at(lhs, &indices, *span)?, rhs.as_ref().clone())
+            };
+            return Ok(Some(vectorized_binary_expr(op.clone(), lhs, rhs, *span)));
+        }
+        let inner = *lhs_dims
+            .last()
+            .filter(|inner| **inner > 0)
+            .ok_or_else(|| product_projection_error("unsupported inner dimension", *span))?;
+        let mut lhs_values = Vec::new();
+        let mut rhs_values = Vec::new();
+        let row = (lhs_dims.len() == 2).then(|| indices[0]);
+        let column = (rhs_dims.len() == 2).then(|| *indices.last().unwrap());
+        for inner_index in 1..=inner {
+            let lhs_indices = row.into_iter().chain([inner_index]).collect::<Vec<_>>();
+            let rhs_indices = [inner_index].into_iter().chain(column).collect::<Vec<_>>();
+            lhs_values.push(self.element_at(lhs, &lhs_indices, *span)?);
+            rhs_values.push(self.element_at(rhs, &rhs_indices, *span)?);
+        }
+        dot_product_expr(&lhs_values, &rhs_values, *span)
+            .map(Some)
+            .ok_or_else(|| product_projection_error("unsupported inner dimension", *span))
+    }
+
+    fn element_at(&self, expr: &Expr, indices: &[i64], span: Span) -> Result<Expr, ToDaeError> {
+        if let Some((name, subscripts)) = matrix_var_slice(expr) {
+            let expr_span = expr.span().unwrap_or(span);
+            let base_dims = self
+                .array_dims
+                .get(name.as_str())
+                .ok_or_else(|| product_projection_error("unknown operand shape", span))?;
+            let lane = proven_projected_dims(base_dims, subscripts)
+                .and_then(|dims| linear_lane_for_indices(indices, &dims))
+                .ok_or_else(|| product_projection_error("result shape mismatch", span))?;
+            let projected =
+                project_slice_subscripts_for_lane(base_dims, subscripts, lane, expr_span)?
+                    .ok_or_else(|| product_projection_error("unknown operand shape", span))?;
+            return Ok(Expr::VarRef {
+                name: name.clone(),
+                subscripts: projected,
+                span: expr_span,
+            });
+        }
+        match expr {
+            Expr::BuiltinCall {
+                function: Builtin::Transpose,
+                args,
+                span,
+            } if indices.len() == 2 && args.len() == 1 => {
+                return self.element_at(&args[0], &[indices[1], indices[0]], *span);
+            }
+            Expr::Binary { .. } => {
+                let dims = self.dims(expr, span)?;
+                let lane = linear_lane_for_indices(indices, &dims)
+                    .ok_or_else(|| product_projection_error("result shape mismatch", span))?;
+                return self.project(expr, lane, &dims)?.ok_or_else(|| {
+                    product_projection_error("array operand cannot be projected", span)
+                });
+            }
+            Expr::FunctionCall { span, .. } => {
+                return Err(product_projection_error(
+                    "array-valued function output cannot be projected",
+                    *span,
+                ));
+            }
+            _ => Err(product_projection_error("unknown operand shape", span)),
+        }
+    }
+}
+
+fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
+    match expr {
+        Expr::VarRef {
+            name, subscripts, ..
+        } => Some((name, subscripts)),
+        Expr::Index {
+            base, subscripts, ..
+        } => match base.as_ref() {
+            Expr::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } if base_subscripts.is_empty() => Some((name, subscripts)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn multiplication_result_dims(
+    lhs: &[i64],
+    rhs: &[i64],
+    span: Span,
+) -> Result<Vec<i64>, ToDaeError> {
+    if lhs.is_empty() {
+        return Ok(rhs.to_vec());
+    }
+    if rhs.is_empty() {
+        return Ok(lhs.to_vec());
+    }
+    if lhs.len() > 2 || rhs.len() > 2 {
+        return Err(product_projection_error("unsupported rank", span));
+    }
+    if lhs.last() != rhs.first() {
+        return Err(product_projection_error("inner dimension mismatch", span));
+    }
+    Ok(match (lhs.len(), rhs.len()) {
+        (1, 1) => Vec::new(),
+        (2, 1) => vec![lhs[0]],
+        (1, 2) => vec![rhs[1]],
+        (2, 2) => vec![lhs[0], rhs[1]],
+        _ => unreachable!(),
+    })
+}
+
+fn proven_projected_dims(dims: &[i64], subscripts: &[Subscript]) -> Option<Vec<i64>> {
+    (subscripts.len() <= dims.len()
+        && subscripts.iter().all(|subscript| match subscript {
+            Subscript::Colon { .. } | Subscript::Index { .. } => true,
+            Subscript::Expr { expr, .. } => matches!(
+                expr.as_ref(),
+                Expr::Literal {
+                    value: Literal::Integer(_),
+                    ..
+                }
+            ),
+        }))
+    .then(|| projected_dims_for_subscripts(dims, subscripts))
+    .flatten()
+}
+
+fn linear_lane_for_indices(indices: &[i64], dims: &[i64]) -> Option<usize> {
+    if indices.len() != dims.len() {
+        return None;
+    }
+    indices
+        .iter()
+        .zip(dims)
+        .try_fold(0usize, |lane, (index, dim)| {
+            let dim = usize::try_from(*dim).ok()?;
+            let index = usize::try_from(index.checked_sub(1)?).ok()?;
+            (index < dim).then_some(lane.checked_mul(dim)?.checked_add(index)?)
+        })
+}
+
+fn product_projection_error(detail: &str, span: Span) -> ToDaeError {
+    ToDaeError::runtime_contract_violation_at(
+        format!("DAE matrix-product projection: {detail}"),
+        span,
     )
 }
 
@@ -3993,29 +4276,9 @@ fn project_slice_subscripts_for_lane(
     k: usize,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<rumoca_core::Subscript>>, ToDaeError> {
-    let mut selected_dims = Vec::new();
-    let mut dim_idx = 0usize;
-    for subscript in subscripts {
-        if dim_idx >= dims.len() {
-            break;
-        }
-        match subscript {
-            rumoca_core::Subscript::Index { .. } => {
-                dim_idx += 1;
-            }
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                if subscript_expr_selects_vector(expr).unwrap_or(true) {
-                    return Ok(None);
-                }
-                dim_idx += 1;
-            }
-            rumoca_core::Subscript::Colon { .. } => {
-                selected_dims.push(dims[dim_idx]);
-                dim_idx += 1;
-            }
-        }
-    }
-    selected_dims.extend_from_slice(&dims[dim_idx..]);
+    let Some(selected_dims) = projected_dims_for_subscripts(dims, subscripts) else {
+        return Ok(None);
+    };
     if selected_dims.is_empty() {
         return Ok(None);
     }
@@ -4023,7 +4286,7 @@ fn project_slice_subscripts_for_lane(
         return Ok(None);
     };
     let mut lane_iter = lane_indices.into_iter();
-    let mut projected = Vec::with_capacity(subscripts.len() + dims.len().saturating_sub(dim_idx));
+    let mut projected = Vec::with_capacity(dims.len());
     for subscript in subscripts {
         match subscript {
             rumoca_core::Subscript::Colon { .. } => {
@@ -4036,16 +4299,12 @@ fn project_slice_subscripts_for_lane(
                     "DAE scalarized colon slice projection",
                 )?);
             }
-            rumoca_core::Subscript::Index { .. } => projected.push(subscript.clone()),
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                if subscript_expr_selects_vector(expr).unwrap_or(true) {
-                    return Ok(None);
-                }
+            rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Expr { .. } => {
                 projected.push(subscript.clone());
             }
         }
     }
-    for _ in dim_idx..dims.len() {
+    for _ in subscripts.len()..dims.len() {
         let Some(index) = lane_iter.next() else {
             return Ok(None);
         };
@@ -4061,26 +4320,15 @@ fn project_slice_subscripts_for_lane(
 fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
     let mut remaining = k;
     let mut indices = Vec::with_capacity(dims.len());
-    for (idx, dim) in dims.iter().enumerate() {
+    for dim in dims.iter().rev() {
         let dim = usize::try_from(*dim).ok()?;
         if dim == 0 {
             return None;
         }
-        let stride =
-            dims.get(idx + 1..)
-                .unwrap_or_default()
-                .iter()
-                .try_fold(1usize, |acc, next_dim| {
-                    let next_dim = usize::try_from(*next_dim).ok()?;
-                    acc.checked_mul(next_dim)
-                })?;
-        let zero_based = remaining / stride;
-        if zero_based >= dim {
-            return None;
-        }
-        remaining %= stride;
-        indices.push(i64::try_from(zero_based.checked_add(1)?).ok()?);
+        indices.push(i64::try_from(remaining % dim + 1).ok()?);
+        remaining /= dim;
     }
+    indices.reverse();
     (remaining == 0).then_some(indices)
 }
 
