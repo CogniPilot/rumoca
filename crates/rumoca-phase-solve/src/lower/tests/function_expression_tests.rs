@@ -729,6 +729,111 @@ fn lower_expression_evaluates_captured_partial_function_in_dynamic_while() {
 }
 
 #[test]
+fn unprojectable_array_output_declines_scalar_lane_fallback_and_uses_array_runtime() {
+    let span = lower_test_span();
+    let mut projection_declined = rumoca_core::Function::new("Pkg.projectionDeclinedArray", span);
+    projection_declined
+        .outputs
+        .push(function_param_with_dims("y", &[2]));
+    projection_declined
+        .locals
+        .push(rumoca_core::FunctionParam::new(
+            "scratch",
+            "Pkg.Record",
+            span,
+        ));
+    projection_declined
+        .body
+        .push(rumoca_core::Statement::Assignment {
+            comp: component_ref("y"),
+            value: var("scratch.values"),
+            span,
+        });
+
+    let mut function = rumoca_core::Function::new("Pkg.runtimeArray", span);
+    function.inputs.push(function_param("u"));
+    function.outputs.push(function_param_with_dims("y", &[2]));
+    function
+        .locals
+        .push(function_param_with_dims("scratch", &[2]));
+    function.body = vec![
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("scratch"),
+            value: rumoca_core::Expression::Array {
+                elements: vec![var("u"), add(var("u"), real_lit(1.0))],
+                is_matrix: false,
+                span,
+            },
+            span,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("y"),
+            value: var("scratch"),
+            span,
+        },
+    ];
+
+    let projection_call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_var_name(projection_declined.name.clone()),
+        args: Vec::new(),
+        is_constructor: false,
+        span,
+    };
+    let runtime_call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_var_name(function.name.clone()),
+        args: vec![source_var("u")],
+        is_constructor: false,
+        span,
+    };
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("target"),
+        array_var("target", &[2]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(projection_declined.name.clone(), projection_declined);
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let projected = crate::lower::derivative_rhs::project_array_like_scalars_with_owner(
+        &projection_call,
+        &dae_model,
+        &IndexMap::new(),
+        span,
+    )
+    .expect("unprojectable array output should decline without an error");
+    assert!(
+        projected.is_none(),
+        "a whole array call must not be duplicated as scalar lanes: {projected:?}"
+    );
+
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: sub(source_var("target"), runtime_call),
+        span,
+        origin: "unprojectable array function residual".to_string(),
+        scalar_count: 2,
+    });
+    let layout = build_var_layout(&dae_model).expect("array residual layout should build");
+    let rows = lower_residual(&dae_model, &layout)
+        .expect("unprojectable array output should use array runtime lowering");
+
+    assert_eq!(rows.len(), 2);
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "u", 2.0);
+    let values = eval_programs_all_outputs(&rows, &[0.0, 0.0], &p, 0.0);
+    assert_eq!(values, vec![-2.0, -3.0]);
+}
+
+#[test]
 fn lower_expression_binds_constructor_actual_to_flattened_record_inputs_with_defaults() {
     let mut function = rumoca_core::Function::new("Pkg.drop", lower_test_span());
     function
