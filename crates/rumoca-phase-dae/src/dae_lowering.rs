@@ -3766,8 +3766,13 @@ fn project_scalarized_residual_rhs(
     } else {
         project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?
     };
-    let scalar_rhs = match projector.project(rhs, k, target_dims)? {
+    let projection_dims: &[i64] = match projector.dims(rhs, *span)? {
+        Some(dims) if dims.is_empty() => &[],
+        _ => target_dims,
+    };
+    let scalar_rhs = match projector.project(rhs, k, projection_dims)? {
         Some(projected) => projected,
+        None if target_dims.is_empty() => rhs.as_ref().clone(),
         None => project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?,
     };
     let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, var_dims)?;
@@ -3964,9 +3969,7 @@ impl Projector<'_> {
                 Some(dims) if dims.iter().any(|dim| *dim < 0) => {
                     Err(projection_error("negative dimension", span))
                 }
-                Some(dims) => proven_projected_dims(dims, subscripts)
-                    .map(Some)
-                    .ok_or_else(|| projection_error("unknown operand shape", span)),
+                Some(dims) => Ok(proven_projected_dims(dims, subscripts)),
                 None => Ok(None),
             };
         }
@@ -3989,8 +3992,8 @@ impl Projector<'_> {
             Expr::FunctionCall { name, .. } => Ok(self
                 .1
                 .get(name.var_name())
-                .and_then(|function| function.outputs.first())
-                .map(|output| output.dims.clone())),
+                .and_then(|f| f.outputs.first())
+                .map(|v| v.dims.clone())),
             Expr::Literal { .. } => Ok(Some(Vec::new())),
             Expr::Binary { op, lhs, rhs, .. } => {
                 let (Some(lhs_dims), Some(rhs_dims)) =
@@ -4206,11 +4209,8 @@ fn linear_lane_for_indices(indices: &[i64], dims: &[i64]) -> Option<usize> {
         })
 }
 
-fn projection_error(detail: &str, span: Span) -> ToDaeError {
-    ToDaeError::runtime_contract_violation_at(
-        format!("DAE matrix-product projection: {detail}"),
-        span,
-    )
+fn projection_error(why: &str, span: Span) -> ToDaeError {
+    ToDaeError::runtime_contract_violation_at(format!("DAE matrix-product projection: {why}"), span)
 }
 
 fn project_slice_subscripts_for_lane(
@@ -4219,12 +4219,11 @@ fn project_slice_subscripts_for_lane(
     k: usize,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<rumoca_core::Subscript>>, ToDaeError> {
-    let Some(selected_dims) = projected_dims_for_subscripts(dims, subscripts) else {
+    let Some(selected_dims) =
+        projected_dims_for_subscripts(dims, subscripts).filter(|dims| !dims.is_empty())
+    else {
         return Ok(None);
     };
-    if selected_dims.is_empty() {
-        return Ok(None);
-    }
     let Some(lane_indices) = lane_indices_for_dims(k, &selected_dims) else {
         return Ok(None);
     };
