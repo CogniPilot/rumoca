@@ -260,6 +260,31 @@ fn compact_initialization_range_span_survives_json_and_bincode() {
     );
 }
 
+#[test]
+fn invalid_initialization_range_reports_span_after_json_and_bincode() {
+    let range = InitializationTargetRange {
+        start: 2,
+        end: 2,
+        span: Some(fixture_span()),
+    };
+    let json = serde_json::to_string(&range).expect("serialize invalid range JSON");
+    let from_json: InitializationTargetRange =
+        serde_json::from_str(&json).expect("deserialize invalid range JSON");
+    let bytes = bincode::serialize(&range).expect("serialize invalid range bincode");
+    let from_bincode: InitializationTargetRange =
+        bincode::deserialize(&bytes).expect("deserialize invalid range bincode");
+
+    for decoded in [from_json, from_bincode] {
+        let initialization = InitializationSolveSystem {
+            required_target_ranges: vec![decoded],
+            ..Default::default()
+        };
+        let error = validate_initialization_direct_families(&initialization, 2, 0)
+            .expect_err("empty invalid range must fail closed");
+        assert_eq!(error.source_span(), Some(fixture_span()));
+    }
+}
+
 fn fixture_span() -> Span {
     Span::from_offsets(
         SourceId::from_source_name("ir_solve_tests_source_44.mo"),

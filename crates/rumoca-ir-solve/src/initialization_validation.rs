@@ -203,7 +203,7 @@ fn normalized_ranges(
     let mut normalized: Vec<InitializationTargetRange> = Vec::with_capacity(ranges.len());
     for range in ranges {
         if range.start >= range.end || range.end > upper_bound {
-            return Err(initialization_range_error(error));
+            return Err(initialization_range_error_at(error, range.span));
         }
         if let Some(last) = normalized.last_mut() {
             if range.start < last.end {
