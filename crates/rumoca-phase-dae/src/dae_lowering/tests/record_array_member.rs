@@ -23,7 +23,8 @@ fn test_scalarize_record_array_member_index_projects_record_field() {
             .map(|entry| entry.field_dims.as_slice()),
         Some(&[2][..])
     );
-    let array_dims = build_array_dims_map(&dae);
+    let mut array_dims = build_dae_var_dims_map(&dae);
+    array_dims.retain(|_, dims| !dims.is_empty());
     let subscript_cases = [
         rumoca_core::Subscript::Index {
             value: 3,
