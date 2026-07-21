@@ -27,6 +27,52 @@ fn booster_dot_names() -> Vec<String> {
         .collect()
 }
 
+fn scalar_if(condition: rumoca_core::Expression) -> rumoca_core::Expression {
+    let span = test_span();
+    rumoca_core::Expression::If {
+        branches: vec![(condition, var_ref("gain"))],
+        else_branch: Box::new(rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var_ref("gain")),
+            rhs: Box::new(int_lit(1)),
+            span,
+        }),
+        span,
+    }
+}
+
+fn function_call_count(expr: &rumoca_core::Expression) -> usize {
+    struct Counter(usize);
+
+    impl rumoca_core::ExpressionVisitor for Counter {
+        fn visit_function_call(
+            &mut self,
+            name: &rumoca_core::Reference,
+            args: &[rumoca_core::Expression],
+            is_constructor: bool,
+        ) {
+            self.0 += 1;
+            self.walk_function_call(name, args, is_constructor);
+        }
+    }
+
+    let mut counter = Counter(0);
+    rumoca_core::ExpressionVisitor::visit_expression(&mut counter, expr);
+    counter.0
+}
+
+fn assert_unknown_if_condition_remains_unprojected(product: rumoca_core::Expression) {
+    let array_dims = HashMap::from([
+        ("rotation".to_string(), vec![3, 3]),
+        ("gain".to_string(), vec![]),
+    ]);
+    let lowered = lower_colon_slice_dot_products(&product, &array_dims)
+        .expect("unknown condition shape should remain representable");
+
+    assert!(matches!(lowered, rumoca_core::Expression::Binary { .. }));
+    assert_eq!(function_call_count(&lowered), 1);
+}
+
 #[test]
 fn colon_slice_times_plain_vector_lowers_to_scalar_dot_product() {
     let array_dims = HashMap::from([
@@ -205,22 +251,6 @@ fn scalar_composites_keep_colon_slice_scaling_elementwise_in_both_orders() {
         ("rotation".to_string(), vec![3, 3]),
         ("gain".to_string(), vec![]),
     ]);
-    let scalar_if = rumoca_core::Expression::If {
-        branches: vec![(
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Boolean(true),
-                span,
-            },
-            var_ref("gain"),
-        )],
-        else_branch: Box::new(rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(var_ref("gain")),
-            rhs: Box::new(int_lit(1)),
-            span,
-        }),
-        span,
-    };
     let scalars = vec![
         rumoca_core::Expression::Unary {
             op: rumoca_core::OpUnary::Minus,
@@ -233,7 +263,11 @@ fn scalar_composites_keep_colon_slice_scaling_elementwise_in_both_orders() {
             rhs: Box::new(int_lit(1)),
             span,
         },
-        scalar_if,
+        scalar_if(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Boolean(true),
+            span,
+        }),
+        scalar_if(var_ref("gain")),
     ];
 
     for scalar in scalars {
@@ -249,6 +283,18 @@ fn scalar_composites_keep_colon_slice_scaling_elementwise_in_both_orders() {
             ));
         }
     }
+}
+
+#[test]
+fn slice_left_of_if_with_unknown_condition_remains_single_call() {
+    let scalar = scalar_if(function_call("unknownCondition", vec![]));
+    assert_unknown_if_condition_remains_unprojected(mul(rotation_column_slice(), scalar));
+}
+
+#[test]
+fn slice_right_of_if_with_unknown_condition_remains_single_call() {
+    let scalar = scalar_if(function_call("unknownCondition", vec![]));
+    assert_unknown_if_condition_remains_unprojected(mul(scalar, rotation_column_slice()));
 }
 
 #[test]
