@@ -534,6 +534,59 @@ fn test_todae_projects_matrix_product_for_derivative_vector_target() {
 }
 
 #[test]
+fn test_todae_projects_matrix_product_nested_in_vector_addition() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "position", &[3]);
+    declare_dae_array(&mut dae, "rotation", &[3, 3]);
+    declare_dae_array(&mut dae, "offset", &[3]);
+    declare_dae_array(&mut dae, "target", &[3]);
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                colon_vector("target"),
+                binary(
+                    rumoca_core::OpBinary::Add,
+                    colon_vector("position"),
+                    multiply(make_structured_var_ref("rotation"), colon_vector("offset")),
+                ),
+            ),
+            crate::test_support::test_span(),
+            "compound matrix product",
+            3,
+        ));
+
+    scalarize_phantom_vector_equations(&mut dae)
+        .expect("shape-preserving addition must project its nested matrix product");
+
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let index = i64::try_from(lane + 1).expect("three lanes fit i64");
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } = residual_rhs(equation)
+        else {
+            panic!("expected scalar addition");
+        };
+        assert_eq!(literal_subscripts(lhs), Some(("position", vec![index])));
+        let mut terms = Vec::new();
+        assert!(
+            flatten_dot_terms(rhs, &mut terms),
+            "expected complete dot: {rhs:?}"
+        );
+        assert_eq!(
+            terms,
+            (1_i64..=3)
+                .map(|inner| { (("rotation", vec![index, inner]), ("offset", vec![inner]),) })
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn test_todae_projects_matrix_product_for_derivative_matrix_target() {
     let mut dae = rumoca_ir_dae::Dae::new();
     declare_dae_array(&mut dae, "A", &[2, 3]);
