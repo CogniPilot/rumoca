@@ -3953,6 +3953,9 @@ impl Projector<'_> {
                     _ => Err(projection_error("unsupported rank", span)),
                 }
             }
+            Expr::BuiltinCall { function, .. } => Ok(builtin_fixed_vector_output_width(*function)
+                .and_then(|width| i64::try_from(width).ok())
+                .map(|width| vec![width])),
             Expr::FunctionCall { name, .. } => Ok(self
                 .1
                 .get(name.var_name())
@@ -3989,8 +3992,11 @@ impl Projector<'_> {
             return Ok(None);
         };
         if matches!(op, OpBinary::Add | OpBinary::Sub) {
-            if self.dims(expr, *span)?.as_deref() != Some(target_dims) {
-                return Err(projection_error("result shape mismatch", *span));
+            if self.dims(expr, *span)?.as_deref() != Some(target_dims)
+                || matches!(lhs.as_ref(), Expr::FunctionCall { .. })
+                || matches!(rhs.as_ref(), Expr::FunctionCall { .. })
+            {
+                return Ok(None);
             }
             if target_dims.is_empty() {
                 return Ok(None);
@@ -4103,6 +4109,19 @@ impl Projector<'_> {
                 span,
             } if indices.len() == 2 && args.len() == 1 => {
                 self.element(&args[0], &[indices[1], indices[0]], *span)
+            }
+            Expr::BuiltinCall { function, span, .. }
+                if builtin_fixed_vector_output_width(*function).is_some() && indices.len() == 1 =>
+            {
+                Ok(Expr::Index {
+                    base: Box::new(expr.clone()),
+                    subscripts: vec![generated_index_subscript(
+                        indices[0],
+                        *span,
+                        "DAE matrix-product builtin projection",
+                    )?],
+                    span: *span,
+                })
             }
             Expr::Binary { op, lhs, rhs, span } if matches!(op, OpBinary::Add | OpBinary::Sub) => {
                 Ok(vectorized_binary_expr(
