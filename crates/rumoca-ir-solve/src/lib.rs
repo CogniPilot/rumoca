@@ -20,7 +20,10 @@ use rumoca_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use initialization_validation::validate_initialization_direct_families;
+pub use initialization_validation::InitializationTargetRange;
+use initialization_validation::{
+    initialization_stored_row_count, validate_initialization_direct_families,
+};
 
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
@@ -1273,7 +1276,15 @@ impl SolveProblem {
         self.initialization
             .update_rhs
             .validate_shape_contract("initialization.update_rhs")?;
-        validate_initialization_direct_families(&self.initialization, self.layout.y_scalars())?;
+        let initialization_rows = initialization_stored_row_count(
+            &self.initialization.residual,
+            "initialization.residual rows",
+        )?;
+        validate_initialization_direct_families(
+            &self.initialization,
+            self.layout.y_scalars(),
+            initialization_rows,
+        )?;
         validate_count(
             "initialization.update_targets",
             self.initialization.update_rhs.len(),
@@ -1287,7 +1298,7 @@ impl SolveProblem {
         validate_projection_plan(
             "initialization.projection_plan",
             &self.initialization.projection_plan,
-            self.initialization.residual.len()?,
+            initialization_rows,
             self.solve_layout.solver_scalar_count(),
         )?;
         self.discrete
@@ -1701,12 +1712,6 @@ pub struct InitializationSolveSystem {
     pub update_rhs: ScalarProgramBlock,
     #[serde(default)]
     pub update_targets: Vec<ScalarSlot>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct InitializationTargetRange {
-    pub start: usize,
-    pub end: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -64,7 +64,7 @@ fn compact_initialization_validation_rejects_noncontiguous_target_strides() {
         ..Default::default()
     };
 
-    let error = validate_initialization_direct_families(&initialization, 6)
+    let error = validate_initialization_direct_families(&initialization, 6, 3)
         .expect_err("sparse compact target maps must fail closed");
     assert!(error.to_string().contains("non-contiguous"));
 }
@@ -82,11 +82,15 @@ fn compact_initialization_validation_rejects_negative_target_strides() {
     let initialization = InitializationSolveSystem {
         residual: ComputeBlock { nodes: vec![node] },
         direct_families: vec![family],
-        required_target_ranges: vec![InitializationTargetRange { start: 0, end: 3 }],
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
         ..Default::default()
     };
 
-    let error = validate_initialization_direct_families(&initialization, 3)
+    let error = validate_initialization_direct_families(&initialization, 3, 3)
         .expect_err("descending target maps must fail closed");
     assert!(error.to_string().contains("non-contiguous"));
 }
@@ -107,9 +111,80 @@ fn compact_initialization_validation_rejects_overlapping_affine_ranges() {
         ..Default::default()
     };
 
-    let error = validate_initialization_direct_families(&initialization, 6)
+    let error = validate_initialization_direct_families(&initialization, 6, 6)
         .expect_err("overlapping compact target ranges must fail closed");
     assert!(error.to_string().contains("overlapping"));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_direct_fixed_overlap() {
+    let mut initialization = complete_compact_initialization();
+    initialization.fixed_target_ranges = vec![InitializationTargetRange {
+        start: 1,
+        end: 2,
+        span: Some(fixture_span()),
+    }];
+
+    let error = validate_initialization_direct_families(&initialization, 3, 3)
+        .expect_err("direct and fixed-start target ownership must not overlap");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(error.source_span(), Some(fixture_span()));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_fixed_fixed_overlap() {
+    let initialization = InitializationSolveSystem {
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
+        fixed_target_ranges: vec![
+            InitializationTargetRange {
+                start: 0,
+                end: 2,
+                span: None,
+            },
+            InitializationTargetRange {
+                start: 1,
+                end: 3,
+                span: Some(fixture_span()),
+            },
+        ],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization, 3, 0)
+        .expect_err("fixed-start target ownership must not overlap");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(error.source_span(), Some(fixture_span()));
+}
+
+#[test]
+fn compact_initialization_validation_merges_adjacent_fixed_ranges() {
+    let initialization = InitializationSolveSystem {
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
+        fixed_target_ranges: vec![
+            InitializationTargetRange {
+                start: 0,
+                end: 1,
+                span: Some(fixture_span()),
+            },
+            InitializationTargetRange {
+                start: 1,
+                end: 3,
+                span: Some(fixture_span()),
+            },
+        ],
+        ..Default::default()
+    };
+
+    validate_initialization_direct_families(&initialization, 3, 0)
+        .expect("adjacent target ranges are one exact partition");
 }
 
 fn complete_compact_initialization() -> InitializationSolveSystem {
@@ -124,7 +199,11 @@ fn complete_compact_initialization() -> InitializationSolveSystem {
     InitializationSolveSystem {
         residual: ComputeBlock { nodes: vec![node] },
         direct_families: vec![family],
-        required_target_ranges: vec![InitializationTargetRange { start: 0, end: 3 }],
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
         ..Default::default()
     }
 }
@@ -133,7 +212,7 @@ fn complete_compact_initialization() -> InitializationSolveSystem {
 fn compact_initialization_validation_rejects_partial_required_union() {
     let mut initialization = complete_compact_initialization();
     initialization.required_target_ranges[0].end = 4;
-    let error = validate_initialization_direct_families(&initialization, 4)
+    let error = validate_initialization_direct_families(&initialization, 4, 3)
         .expect_err("hand-built partial target union must fail closed");
     assert!(error.to_string().contains("incomplete"));
 }
@@ -150,6 +229,35 @@ fn compact_initialization_json_rejects_partial_required_union() {
     let error = serde_json::from_value::<SolveProblem>(value)
         .expect_err("JSON with a partial target union must fail closed");
     assert!(error.to_string().contains("incomplete"));
+}
+
+#[test]
+fn compact_initialization_range_span_survives_json_and_bincode() {
+    let mut initialization = complete_compact_initialization();
+    initialization.required_target_ranges[0].span = Some(fixture_span());
+    let problem = SolveProblem {
+        layout: make_layout(&[("x", vec![3])], &[]),
+        initialization,
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&problem).expect("serialize compact Solve artifact");
+    let from_json: SolveProblem =
+        serde_json::from_str(&json).expect("deserialize compact Solve JSON");
+    assert_eq!(
+        from_json.initialization.required_target_ranges[0].span,
+        Some(fixture_span())
+    );
+    let bytes = bincode::serialize(&problem).expect("serialize compact Solve bincode");
+    let from_bincode: SolveProblem =
+        bincode::deserialize(&bytes).expect("deserialize compact Solve bincode");
+    assert_eq!(
+        from_bincode.initialization.required_target_ranges[0].span,
+        Some(fixture_span())
+    );
+    assert_eq!(
+        from_bincode.initialization.direct_families[0].span,
+        fixture_span()
+    );
 }
 
 fn fixture_span() -> Span {

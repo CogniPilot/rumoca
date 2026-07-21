@@ -191,13 +191,12 @@ Canonical terminology:
 Public APIs use `ScalarProgram`/`ScalarProgramBlock`; `RowBlock`/`ScalarRows`
 must not return.
 
-GPU initialization is complete-or-error: compact direct plus fixed-start ranges
-cover solver Y; unsupported semantics never fall back.
+GPU initialization requires exact, nonoverlapping, source-spanned Y coverage;
+adjacency may merge, and unsupported semantics never fall back.
 
-`ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
-structured-family domains plus affine operand proofs. It carries the compact
-iteration domain and strides; Solve lowering must not recover stencils by
-scanning unstructured scalar rows after structured-family metadata is discarded.
+`ComputeNode::AffineStencil` is source-proven from preserved DAE family domains
+and affine operand proofs; Solve lowering must not recover stencils from
+unstructured scalar rows.
 
 The root `schema_version` field is mandatory on serialized Solve payloads.
 Deserializers reject unsupported versions and the Solve wire format does not

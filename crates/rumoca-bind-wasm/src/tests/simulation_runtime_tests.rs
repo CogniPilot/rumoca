@@ -314,6 +314,40 @@ fn test_prepare_gpu_simulation_settles_wave_initial_equations() {
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_lowers_and_settles_descending_initial_binder() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+    let source = r#"
+    model DescendingGpuInitial
+      Real x[3];
+    initial equation
+      for i in 3:-1:1 loop
+        x[i] = i;
+      end for;
+    equation
+      for i in 3:-1:1 loop
+        der(x[i]) = 0.0;
+      end for;
+    end DescendingGpuInitial;
+    "#;
+
+    let json = prepare_gpu_simulation(source, "DescendingGpuInitial")
+        .expect("descending source binder should lower and settle natively");
+    let payload: serde_json::Value = serde_json::from_str(&json).expect("valid GPU payload");
+    let names = payload["state_names"].as_array().expect("state names");
+    let y0 = payload["y0"].as_array().expect("settled y0");
+    for (name, expected) in [("x[1]", 1.0), ("x[2]", 2.0), ("x[3]", 3.0)] {
+        let index = names
+            .iter()
+            .position(|candidate| candidate.as_str() == Some(name))
+            .expect("state must be present");
+        assert_eq!(y0[index].as_f64(), Some(expected));
+    }
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 fn assert_n50_compact_initialization(compact: &rumoca_ir_solve::SolveModel) {
     let initialization = &compact.problem.initialization;
     assert_eq!(compact.problem.layout.y_scalars(), 2 * 50 * 50);

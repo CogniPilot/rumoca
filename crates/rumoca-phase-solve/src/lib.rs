@@ -65,8 +65,8 @@ use continuous_row_targets::{
     continuous_equation_scalar_name, scalarized_record_target_names, target_expr_scalar_name,
 };
 use continuous_row_targets::{
-    dedupe_continuous_y_targets, lower_continuous_row_targets,
-    lower_continuous_row_targets_for_equation,
+    dedupe_continuous_y_targets, lower_contiguous_y_target_range_for_equation,
+    lower_continuous_row_targets, lower_continuous_row_targets_for_equation,
 };
 use discrete_pre_modes::discrete_pre_mode_for_equation;
 #[cfg(test)]

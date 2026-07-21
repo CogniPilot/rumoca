@@ -186,6 +186,132 @@ fn gpu_preparation_rejects_partial_fixed_start_target_coverage() {
 }
 
 #[test]
+fn gpu_preparation_rejects_overlapping_fixed_start_targets_at_conflicting_span() {
+    let first_span = solve_numbered_span(301, 10, 20);
+    let conflicting_span = solve_numbered_span(301, 30, 40);
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
+        first_span,
+        "derivative",
+    ));
+    for span in [first_span, conflicting_span] {
+        dae_model
+            .initialization
+            .equations
+            .push(dae::Equation::residual(
+                binary(rumoca_core::OpBinary::Sub, var("x"), int_expr(7)),
+                span,
+                "fixed start initialization for x",
+            ));
+        dae_model
+            .initialization
+            .equation_provenance
+            .push(dae::InitializationEquationProvenance::FixedStart);
+    }
+
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        1,
+        Some(first_span),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("overlapping fixed-start ownership must fail closed");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(error.source_span(), Some(conflicting_span));
+}
+
+#[test]
+fn gpu_preparation_emits_one_compact_fixed_range_for_array_target() {
+    let span = solve_numbered_span(302, 10, 20);
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), array_var("x", &[128]));
+    let mut derivative = dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
+        span,
+        "array derivative",
+    );
+    derivative.scalar_count = 128;
+    dae_model.continuous.equations.push(derivative);
+    let mut fixed = dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, var("x"), int_expr(7)),
+        span,
+        "fixed array start",
+    );
+    fixed.scalar_count = 128;
+    dae_model.initialization.equations.push(fixed);
+    dae_model
+        .initialization
+        .equation_provenance
+        .push(dae::InitializationEquationProvenance::FixedStart);
+
+    let gpu = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        128,
+        Some(span),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect("fixed array target should lower as one affine range");
+    assert_eq!(gpu.initialization.fixed_target_ranges.len(), 1);
+    assert_eq!(gpu.initialization.fixed_target_ranges[0].start, 0);
+    assert_eq!(gpu.initialization.fixed_target_ranges[0].end, 128);
+}
+
+#[test]
+fn gpu_phase_range_validation_rejects_direct_fixed_overlap_at_later_span() {
+    let first_span = solve_numbered_span(303, 10, 20);
+    let conflicting_span = solve_numbered_span(303, 30, 40);
+    let error = crate::gpu_initialization::normalize_gpu_target_ranges(
+        vec![
+            solve::InitializationTargetRange {
+                start: 0,
+                end: 2,
+                span: Some(first_span),
+            },
+            solve::InitializationTargetRange {
+                start: 1,
+                end: 3,
+                span: Some(conflicting_span),
+            },
+        ],
+        3,
+    )
+    .expect_err("phase validation must reject direct/fixed ownership overlap");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(error.source_span(), Some(conflicting_span));
+}
+
+#[test]
+fn gpu_phase_range_validation_merges_adjacency_only() {
+    let span = solve_numbered_span(304, 10, 20);
+    let normalized = crate::gpu_initialization::normalize_gpu_target_ranges(
+        vec![
+            solve::InitializationTargetRange {
+                start: 0,
+                end: 1,
+                span: Some(span),
+            },
+            solve::InitializationTargetRange {
+                start: 1,
+                end: 3,
+                span: Some(span),
+            },
+        ],
+        3,
+    )
+    .expect("adjacent phase ranges should merge");
+    assert_eq!(normalized.len(), 1);
+    assert_eq!((normalized[0].start, normalized[0].end), (0, 3));
+}
+
+#[test]
 fn gpu_initial_projection_rejects_degenerate_structured_binder() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {

@@ -158,6 +158,7 @@ fn require_complete_gpu_initial_target_coverage(
         direct_ranges.push(solve::InitializationTargetRange {
             start: direct.targets.start,
             end,
+            span: Some(direct.span),
         });
     }
     let mut fixed_ranges = Vec::new();
@@ -170,27 +171,12 @@ fn require_complete_gpu_initial_target_coverage(
         if *provenance != dae::InitializationEquationProvenance::FixedStart {
             continue;
         }
-        let targets = lower_continuous_row_targets_for_equation(
-            dae_model,
-            equation,
-            layout,
-            equation.scalar_count.max(1),
-        )?;
-        for target in targets {
-            let Some(solve::ScalarSlot::Y { index, .. }) = target else {
-                return Err(LowerError::contract_violation(
-                    "GPU fixed-start initialization requires a Y target",
-                    equation.span,
-                ));
-            };
-            let Some(end) = index.checked_add(1) else {
-                return Err(LowerError::contract_violation(
-                    "GPU fixed-start target range overflow",
-                    equation.span,
-                ));
-            };
-            fixed_ranges.push(solve::InitializationTargetRange { start: index, end });
-        }
+        let target = lower_contiguous_y_target_range_for_equation(dae_model, equation, layout)?;
+        fixed_ranges.push(solve::InitializationTargetRange {
+            start: target.start,
+            end: target.end,
+            span: Some(equation.span),
+        });
     }
     let fixed_ranges = normalize_gpu_target_ranges(fixed_ranges, layout.y_scalars())?;
     direct_ranges.extend(fixed_ranges.iter().copied());
@@ -201,17 +187,23 @@ fn require_complete_gpu_initial_target_coverage(
         vec![solve::InitializationTargetRange {
             start: 0,
             end: layout.y_scalars(),
+            span: actual.first().and_then(|range| range.span),
         }]
     };
-    if actual != required {
-        return Err(LowerError::Unsupported {
-            reason: "GPU initial projection requires the union of user equations and fixed starts to cover every solver Y slot".to_string(),
-        });
+    if !same_gpu_target_coverage(&actual, &required) {
+        let span = actual
+            .first()
+            .and_then(|range| range.span)
+            .or_else(|| required.first().and_then(|range| range.span));
+        return Err(gpu_target_range_error(
+            "GPU initial projection requires the union of user equations and fixed starts to cover every solver Y slot",
+            span,
+        ));
     }
     Ok((required, fixed_ranges))
 }
 
-fn normalize_gpu_target_ranges(
+pub(super) fn normalize_gpu_target_ranges(
     mut ranges: Vec<solve::InitializationTargetRange>,
     upper_bound: usize,
 ) -> Result<Vec<solve::InitializationTargetRange>, LowerError> {
@@ -219,20 +211,46 @@ fn normalize_gpu_target_ranges(
     let mut normalized: Vec<solve::InitializationTargetRange> = Vec::with_capacity(ranges.len());
     for range in ranges {
         if range.start >= range.end || range.end > upper_bound {
-            return Err(LowerError::Unsupported {
-                reason: "GPU initial target range is empty or outside the solver Y vector"
-                    .to_string(),
-            });
+            return Err(gpu_target_range_error(
+                "GPU initial target range is empty or outside the solver Y vector",
+                range.span,
+            ));
         }
-        if let Some(last) = normalized.last_mut()
-            && range.start <= last.end
-        {
-            last.end = last.end.max(range.end);
-        } else {
-            normalized.push(range);
+        if let Some(last) = normalized.last_mut() {
+            if range.start < last.end {
+                return Err(gpu_target_range_error(
+                    "GPU initial target ranges overlap",
+                    range.span.or(last.span),
+                ));
+            }
+            if range.start == last.end {
+                last.end = range.end;
+                continue;
+            }
         }
+        normalized.push(range);
     }
     Ok(normalized)
+}
+
+fn gpu_target_range_error(reason: &'static str, span: Option<rumoca_core::Span>) -> LowerError {
+    span.map_or_else(
+        || LowerError::Unsupported {
+            reason: reason.to_string(),
+        },
+        |span| LowerError::contract_violation(reason, span),
+    )
+}
+
+fn same_gpu_target_coverage(
+    left: &[solve::InitializationTargetRange],
+    right: &[solve::InitializationTargetRange],
+) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.start == right.start && left.end == right.end)
 }
 
 fn lower_gpu_direct_family(
@@ -243,9 +261,14 @@ fn lower_gpu_direct_family(
     body_count: usize,
     residual_start: usize,
 ) -> Result<GpuLoweredDirectFamily, LowerError> {
+    let canonical_domain = canonical_gpu_initial_domain(&family.domain, family.span)?;
+    let base_cell = gpu_canonical_base_cell_index(&family.domain, family.span)?;
     let base_index = family
         .first_equation_index
-        .checked_add(position)
+        .checked_add(base_cell.checked_mul(body_count).ok_or_else(|| {
+            LowerError::contract_violation("GPU initial base equation index overflow", family.span)
+        })?)
+        .and_then(|value| value.checked_add(position))
         .ok_or_else(|| {
             LowerError::contract_violation("GPU initial base equation index overflow", family.span)
         })?;
@@ -283,8 +306,8 @@ fn lower_gpu_direct_family(
     )?;
     Ok(GpuLoweredDirectFamily {
         residual: solve::ComputeNode::Map {
-            domain: family.domain.clone(),
-            output_map: solve::TensorOutputMap::dense_contiguous(residual_start, &family.domain)
+            domain: canonical_domain.clone(),
+            output_map: solve::TensorOutputMap::dense_contiguous(residual_start, &canonical_domain)
                 .map_err(|error| {
                     LowerError::contract_violation(format!("{error:?}"), family.span)
                 })?,
@@ -438,23 +461,66 @@ pub(super) fn gpu_corner_cell_index(
     dimension: usize,
     span: rumoca_core::Span,
 ) -> Result<usize, LowerError> {
-    let binder = domain.binders.get(dimension).ok_or_else(|| {
+    let selected = domain.binders.get(dimension).ok_or_else(|| {
         LowerError::contract_violation("GPU initial corner dimension is missing", span)
     })?;
-    if gpu_binder_value_count(binder, span)? < 2 {
+    if gpu_binder_value_count(selected, span)? < 2 {
         return Err(LowerError::Unsupported {
             reason: "GPU initial projection requires a non-degenerate structured binder"
                 .to_string(),
         });
     }
-    domain.binders[dimension + 1..]
+    domain
+        .binders
         .iter()
-        .try_fold(1usize, |stride, later| {
-            let count = gpu_binder_value_count(later, span)?;
-            stride.checked_mul(count).ok_or_else(|| {
-                LowerError::contract_violation("GPU initial corner stride overflow", span)
-            })
+        .enumerate()
+        .try_fold(0usize, |ordinal, (index, binder)| {
+            let count = gpu_binder_value_count(binder, span)?;
+            let coordinate = match (binder.step < 0, index == dimension) {
+                (false, false) => 0,
+                (false, true) => 1,
+                (true, false) => count - 1,
+                (true, true) => count - 2,
+            };
+            ordinal
+                .checked_mul(count)
+                .and_then(|value| value.checked_add(coordinate))
+                .ok_or_else(|| {
+                    LowerError::contract_violation("GPU initial corner stride overflow", span)
+                })
         })
+}
+
+fn gpu_canonical_base_cell_index(
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    domain.binders.iter().try_fold(0usize, |ordinal, binder| {
+        let count = gpu_binder_value_count(binder, span)?;
+        let coordinate = if binder.step < 0 { count - 1 } else { 0 };
+        ordinal
+            .checked_mul(count)
+            .and_then(|value| value.checked_add(coordinate))
+            .ok_or_else(|| {
+                LowerError::contract_violation("GPU initial base cell index overflow", span)
+            })
+    })
+}
+
+fn canonical_gpu_initial_domain(
+    domain: &rumoca_core::StructuredIndexDomain,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::StructuredIndexDomain, LowerError> {
+    let mut canonical = domain.clone();
+    for binder in &mut canonical.binders {
+        if binder.step < 0 {
+            std::mem::swap(&mut binder.lower, &mut binder.upper);
+            binder.step = binder.step.checked_neg().ok_or_else(|| {
+                LowerError::contract_violation("GPU initial binder step overflows", span)
+            })?;
+        }
+    }
+    Ok(canonical)
 }
 
 fn gpu_binder_value_count(

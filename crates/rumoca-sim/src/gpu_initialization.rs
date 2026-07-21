@@ -65,6 +65,7 @@ pub fn settle_gpu_initial_conditions(
     let p0 = model.parameters.clone();
     ensure_finite(&y0, "initial y", None)?;
     ensure_finite(&p0, "initial p", None)?;
+    validate_assignment_shape(initialization, model.initial_y.len())?;
     if initialization.residual.is_empty() {
         return Ok(GpuInitializationResult {
             y0,
@@ -72,7 +73,6 @@ pub fn settle_gpu_initial_conditions(
             metrics: GpuInitializationMetrics::default(),
         });
     }
-    validate_assignment_shape(initialization, model.initial_y.len())?;
     let mut worst = (0usize, 0.0f64, None);
     let mut native_metrics = rumoca_eval_solve::MapEvaluationMetrics::default();
     for family in &initialization.direct_families {
@@ -130,6 +130,20 @@ fn validate_assignment_shape(
     initialization: &solve::InitializationSolveSystem,
     y_len: usize,
 ) -> Result<(), GpuInitializationError> {
+    let required = normalize_target_ranges(&initialization.required_target_ranges, y_len)?;
+    let fixed = normalize_target_ranges(&initialization.fixed_target_ranges, y_len)?;
+    let expected = if y_len == 0 {
+        Vec::new()
+    } else {
+        vec![solve::InitializationTargetRange {
+            start: 0,
+            end: y_len,
+            span: required.first().and_then(|range| range.span),
+        }]
+    };
+    if initialization.residual.is_empty() {
+        return validate_empty_assignment_shape(initialization, &required, &fixed, &expected);
+    }
     if initialization.direct_families.is_empty() {
         return Err(GpuInitializationError::Unsupported {
             feature: "non-direct or incomplete initial residual system",
@@ -145,15 +159,74 @@ fn validate_assignment_shape(
             span: None,
         });
     }
-    if initialization.direct_families.len() != initialization.residual.nodes.len() {
+    let mut actual_ranges = fixed;
+    actual_ranges.extend(validate_direct_node_ownership(initialization)?);
+    let actual = normalize_target_ranges(&actual_ranges, y_len)?;
+    if !same_target_coverage(&required, &expected) || !same_target_coverage(&actual, &required) {
         return Err(GpuInitializationError::Malformed {
-            message: "direct initial families must own every residual Map".to_string(),
+            message: "incomplete direct plus fixed-start target union".to_string(),
             row: 0,
-            span: None,
+            span: actual
+                .first()
+                .and_then(|range| range.span)
+                .or_else(|| required.first().and_then(|range| range.span)),
         });
     }
-    let mut actual_ranges = initialization.fixed_target_ranges.clone();
+    Ok(())
+}
+
+fn validate_empty_assignment_shape(
+    initialization: &solve::InitializationSolveSystem,
+    required: &[solve::InitializationTargetRange],
+    fixed: &[solve::InitializationTargetRange],
+    expected: &[solve::InitializationTargetRange],
+) -> Result<(), GpuInitializationError> {
+    if !initialization.direct_families.is_empty() || !initialization.row_targets.is_empty() {
+        return Err(GpuInitializationError::Malformed {
+            message: "empty initial residual cannot own assignment rows".to_string(),
+            row: 0,
+            span: initialization
+                .direct_families
+                .first()
+                .map(|family| family.span),
+        });
+    }
+    if required.is_empty() && fixed.is_empty() {
+        return Ok(());
+    }
+    if !same_target_coverage(required, expected) || !same_target_coverage(fixed, required) {
+        return Err(GpuInitializationError::Malformed {
+            message: "incomplete fixed-start target union".to_string(),
+            row: 0,
+            span: fixed
+                .first()
+                .and_then(|range| range.span)
+                .or_else(|| required.first().and_then(|range| range.span)),
+        });
+    }
+    Ok(())
+}
+
+fn validate_direct_node_ownership(
+    initialization: &solve::InitializationSolveSystem,
+) -> Result<Vec<solve::InitializationTargetRange>, GpuInitializationError> {
+    let mut ranges = Vec::with_capacity(initialization.direct_families.len());
+    let mut node_owners = vec![None; initialization.residual.nodes.len()];
     for family in &initialization.direct_families {
+        let Some(owner) = node_owners.get_mut(family.node_index) else {
+            return Err(GpuInitializationError::Malformed {
+                message: "direct initial family references a missing residual node".to_string(),
+                row: family.node_index,
+                span: Some(family.span),
+            });
+        };
+        if owner.replace(family.span).is_some() {
+            return Err(GpuInitializationError::Malformed {
+                message: "duplicate direct ownership of one residual node".to_string(),
+                row: family.node_index,
+                span: Some(family.span),
+            });
+        }
         if !matches!(family.residual_sign, -1 | 1) {
             return Err(GpuInitializationError::Malformed {
                 message: "direct initial family must have a unit residual sign".to_string(),
@@ -197,29 +270,31 @@ fn validate_assignment_shape(
                 span: Some(family.span),
             }
         })?;
-        actual_ranges.push(solve::InitializationTargetRange {
+        ranges.push(solve::InitializationTargetRange {
             start: family.targets.start,
             end,
+            span: Some(family.span),
         });
     }
-    let required = normalize_target_ranges(&initialization.required_target_ranges, y_len)?;
-    let expected = if y_len == 0 {
-        Vec::new()
-    } else {
-        vec![solve::InitializationTargetRange {
-            start: 0,
-            end: y_len,
-        }]
-    };
-    let actual = normalize_target_ranges(&actual_ranges, y_len)?;
-    if required != expected || actual != required {
+    if let Some(node_index) = node_owners.iter().position(Option::is_none) {
+        let span = initialization
+            .residual
+            .nodes
+            .get(node_index)
+            .and_then(|node| match node {
+                solve::ComputeNode::Map { span, .. }
+                | solve::ComputeNode::AffineStencil { span, .. }
+                | solve::ComputeNode::MatMul { span, .. }
+                | solve::ComputeNode::LinSolve { span, .. } => Some(*span),
+                solve::ComputeNode::ScalarPrograms(block) => block.first_source_span(),
+            });
         return Err(GpuInitializationError::Malformed {
-            message: "incomplete direct plus fixed-start target union".to_string(),
-            row: 0,
-            span: None,
+            message: "direct initial families must own every residual node".to_string(),
+            row: node_index,
+            span,
         });
     }
-    Ok(())
+    Ok(ranges)
 }
 
 fn normalize_target_ranges(
@@ -237,15 +312,33 @@ fn normalize_target_ranges(
                 span: None,
             });
         }
-        if let Some(last) = normalized.last_mut()
-            && range.start <= last.end
-        {
-            last.end = last.end.max(range.end);
-        } else {
-            normalized.push(range);
+        if let Some(last) = normalized.last_mut() {
+            if range.start < last.end {
+                return Err(GpuInitializationError::Malformed {
+                    message: "initial target ranges overlap".to_string(),
+                    row: 0,
+                    span: range.span.or(last.span),
+                });
+            }
+            if range.start == last.end {
+                last.end = range.end;
+                continue;
+            }
         }
+        normalized.push(range);
     }
     Ok(normalized)
+}
+
+fn same_target_coverage(
+    left: &[solve::InitializationTargetRange],
+    right: &[solve::InitializationTargetRange],
+) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.start == right.start && left.end == right.end)
 }
 
 struct DirectFamilyExecution<'a> {
@@ -489,7 +582,11 @@ mod tests {
                 residual_sign: 1,
                 span,
             }],
-            required_target_ranges: vec![solve::InitializationTargetRange { start: 0, end: 2 }],
+            required_target_ranges: vec![solve::InitializationTargetRange {
+                start: 0,
+                end: 2,
+                span: Some(span),
+            }],
             ..Default::default()
         };
         solve::SolveModel {
@@ -519,6 +616,128 @@ mod tests {
         let error = settle_gpu_initial_conditions(&model, 0.0)
             .expect_err("settlement must reject a partial hand-built artifact");
         assert!(error.to_string().contains("incomplete"));
+    }
+
+    #[test]
+    fn settlement_rejects_partial_fixed_only_metadata_before_empty_residual_return() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("fixed_only_partial.mo"),
+            20,
+            30,
+        );
+        let mut model = solve::SolveModel {
+            initial_y: vec![1.0, 2.0],
+            ..Default::default()
+        };
+        model.problem.initialization.required_target_ranges =
+            vec![solve::InitializationTargetRange {
+                start: 0,
+                end: 2,
+                span: Some(span),
+            }];
+        model.problem.initialization.fixed_target_ranges = vec![solve::InitializationTargetRange {
+            start: 0,
+            end: 1,
+            span: Some(span),
+        }];
+
+        let error = settle_gpu_initial_conditions(&model, 0.0)
+            .expect_err("partial fixed-only metadata must be validated before early return");
+        assert!(error.to_string().contains("incomplete"));
+        assert!(matches!(
+            error,
+            GpuInitializationError::Malformed { span: Some(actual), .. } if actual == span
+        ));
+    }
+
+    #[test]
+    fn settlement_rejects_duplicate_direct_node_ownership() {
+        let mut model = direct_model();
+        let node = model.problem.initialization.residual.nodes[0].clone();
+        model.problem.initialization.residual.nodes.push(node);
+        let mut duplicate = model.problem.initialization.direct_families[0].clone();
+        duplicate.targets.start = 2;
+        model.problem.initialization.direct_families.push(duplicate);
+        model.problem.initialization.required_target_ranges[0].end = 4;
+        model.initial_y.resize(4, 0.0);
+
+        let error = settle_gpu_initial_conditions(&model, 0.0)
+            .expect_err("every residual node must have one unique direct owner");
+        assert!(error.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn settlement_rejects_unowned_residual_node() {
+        let mut model = direct_model();
+        model
+            .problem
+            .initialization
+            .residual
+            .nodes
+            .push(model.problem.initialization.residual.nodes[0].clone());
+
+        let error = settle_gpu_initial_conditions(&model, 0.0)
+            .expect_err("every residual node must have a direct owner");
+        assert!(error.to_string().contains("own every residual node"));
+    }
+
+    #[test]
+    fn settlement_rejects_direct_fixed_overlap_at_fixed_span() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("direct_fixed_overlap.mo"),
+            40,
+            50,
+        );
+        let mut model = direct_model();
+        model.problem.initialization.fixed_target_ranges = vec![solve::InitializationTargetRange {
+            start: 1,
+            end: 2,
+            span: Some(span),
+        }];
+
+        let error = settle_gpu_initial_conditions(&model, 0.0)
+            .expect_err("simulation must reject direct/fixed ownership overlap");
+        assert!(error.to_string().contains("overlap"));
+        assert!(matches!(
+            error,
+            GpuInitializationError::Malformed { span: Some(actual), .. } if actual == span
+        ));
+    }
+
+    #[test]
+    fn settlement_accepts_adjacent_complete_fixed_only_ranges() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("adjacent_fixed.mo"),
+            10,
+            20,
+        );
+        let mut model = solve::SolveModel {
+            initial_y: vec![-0.0, 2.0],
+            ..Default::default()
+        };
+        model.problem.initialization.required_target_ranges =
+            vec![solve::InitializationTargetRange {
+                start: 0,
+                end: 2,
+                span: Some(span),
+            }];
+        model.problem.initialization.fixed_target_ranges = vec![
+            solve::InitializationTargetRange {
+                start: 0,
+                end: 1,
+                span: Some(span),
+            },
+            solve::InitializationTargetRange {
+                start: 1,
+                end: 2,
+                span: Some(span),
+            },
+        ];
+
+        let settled = settle_gpu_initial_conditions(&model, 0.0)
+            .expect("adjacent fixed ranges form exact complete coverage");
+        assert_eq!(settled.y0[0].to_bits(), (-0.0f64).to_bits());
+        assert_eq!(settled.y0[1], 2.0);
     }
 
     #[test]
