@@ -265,6 +265,49 @@ fn test_todae_preserves_ordinary_scalar_product_operands() {
 }
 
 #[test]
+fn test_todae_preserves_scalar_product_for_selected_array_element_target() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "x", &[]);
+    declare_array(&mut flat, "y", &[2]);
+    let lhs = Expression::VarRef {
+        name: VarName::new("y").into(),
+        subscripts: vec![rumoca_core::Subscript::Index {
+            value: 1,
+            span: crate::test_support::test_span(),
+        }],
+        span: crate::test_support::test_span(),
+    };
+    add_equation(
+        &mut flat,
+        lhs,
+        multiply(
+            builtin(
+                rumoca_core::BuiltinFunction::Sin,
+                vec![make_structured_var_ref("x")],
+            ),
+            make_structured_var_ref("x"),
+        ),
+        1,
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("a selected array element is a scalar projection target");
+    let Expression::Binary { lhs, rhs, .. } = residual_rhs(&dae.continuous.equations[0]) else {
+        panic!("expected scalar multiplication");
+    };
+    let Expression::BuiltinCall { args, .. } = lhs.as_ref() else {
+        panic!("expected scalar sin operand");
+    };
+    assert_eq!(literal_subscripts(&args[0]), Some(("x", vec![])));
+    assert_eq!(literal_subscripts(rhs), Some(("x", vec![])));
+}
+
+#[test]
 fn test_todae_preserves_derivative_vector_scalar_scaling() {
     let mut flat = Model::new();
     declare_array(&mut flat, "x", &[2]);
@@ -984,6 +1027,26 @@ fn test_todae_rejects_dynamic_range_and_unknown_product_operands() {
         );
         assert_projection_error(&flat, "unknown operand shape");
     }
+}
+
+#[test]
+fn test_todae_rejects_scalar_dot_with_two_dynamic_row_slices() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[2, 3]);
+    declare_array(&mut flat, "B", &[2, 3]);
+    declare_array(&mut flat, "i", &[]);
+    declare_array(&mut flat, "j", &[]);
+    declare_array(&mut flat, "z", &[]);
+    add_equation(
+        &mut flat,
+        make_structured_var_ref("z"),
+        multiply(
+            expression_row_slice("A", make_structured_var_ref("i")),
+            expression_row_slice("B", make_structured_var_ref("j")),
+        ),
+        1,
+    );
+    assert_projection_error(&flat, "unknown operand shape");
 }
 
 #[test]
