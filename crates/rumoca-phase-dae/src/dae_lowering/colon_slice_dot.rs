@@ -64,8 +64,12 @@ pub(super) fn classify_dot_operand(
             else_branch,
             ..
         } => {
-            for (_, value) in branches {
-                if !matches!(classify_dot_operand(value, array_dims)?, DotOperand::Scalar) {
+            for (condition, value) in branches {
+                if !matches!(
+                    classify_dot_operand(condition, array_dims)?,
+                    DotOperand::Scalar
+                ) || !matches!(classify_dot_operand(value, array_dims)?, DotOperand::Scalar)
+                {
                     return Ok(DotOperand::Unsafe);
                 }
             }
