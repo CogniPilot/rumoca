@@ -41,6 +41,9 @@ binder varying fastest, respecting explicit step direction. For each index
 tuple, body equations emit in source/body order. Scalar views must preserve
 parent structured/tensor id, index tuple, scalar row id, and instantiated
 lhs/rhs or output expression.
+Function projection derives slice shape from selector kind: `:` preserves the
+axis, a scalar selector removes it without evaluating its value, and compatible
+binary array operands retain that shape.
 
 ### 3. DAE Canonical Form
 
