@@ -1,0 +1,5 @@
+# source_commit d7e2907f419d8061ce0a461ac9709dcb84fa70a1
+omc 1.27.0~1-gd7e2907-1 amd64 omc_1.27.0~1-gd7e2907-1_amd64.deb a4511acb19f7377275347f9fc27af92c307db0903e7f46e44085410a060d86ab https://build.openmodelica.org/apt/pool/contrib-noble/omc_1.27.0~1-gd7e2907-1_amd64.deb
+omc-common 1.27.0~1-gd7e2907-1 all omc-common_1.27.0~1-gd7e2907-1_all.deb 9781f4efa44274ecff4538227ef8054b10d3b9abe6cf3d36bb9b23237c0b1119 https://build.openmodelica.org/apt/pool/contrib-noble/omc-common_1.27.0~1-gd7e2907-1_all.deb
+libomc 1.27.0~1-gd7e2907-1 amd64 libomc_1.27.0~1-gd7e2907-1_amd64.deb 90b650ecf9da174cd477115a8f61d54f8bf22b6c87ba1707cb5482d933ae3f5f https://build.openmodelica.org/apt/pool/contrib-noble/libomc_1.27.0~1-gd7e2907-1_amd64.deb
+libomcsimulation 1.27.0~1-gd7e2907-1 amd64 libomcsimulation_1.27.0~1-gd7e2907-1_amd64.deb bdc2c5c307aacf516017f8b64fc4878e6a75d7b0587366d2b93ec8ae3590632d https://build.openmodelica.org/apt/pool/contrib-noble/libomcsimulation_1.27.0~1-gd7e2907-1_amd64.deb
