@@ -43,8 +43,9 @@ parent structured/tensor id, index tuple, scalar row id, and instantiated
 lhs/rhs or output expression.
 Function projection derives slice shape from selector kind: `:` preserves the
 axis, a confirmed scalar selector removes it without evaluating its value, and
-compatible binary array operands retain that shape. Unknown or array-valued
-selectors and ranges with unknown compile-time length fail closed.
+compatible elementwise binary array operands retain that shape. Function-
+projection shape inference declines unknown or array-valued selectors and
+ranges with unknown compile-time length.
 
 ### 3. DAE Canonical Form
 
