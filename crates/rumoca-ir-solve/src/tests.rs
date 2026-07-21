@@ -17,6 +17,79 @@ fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
     }
 }
 
+fn direct_initialization_family(
+    node_index: usize,
+    target_start: usize,
+    target_strides: Vec<AffineStencilIndexStrideTerm>,
+) -> (ComputeNode, InitializationDirectFamily) {
+    let domain = test_tensor_domain(3);
+    let node = ComputeNode::Map {
+        output_map: TensorOutputMap::dense_contiguous(node_index * 3, &domain)
+            .expect("dense residual map"),
+        domain,
+        base_ops: vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: TensorNodeMetadata::default(),
+        span: fixture_span(),
+    };
+    let family = InitializationDirectFamily {
+        node_index,
+        targets: TensorOutputMap {
+            start: target_start,
+            strides: target_strides,
+        },
+        residual_sign: 1,
+        span: fixture_span(),
+    };
+    (node, family)
+}
+
+#[test]
+fn compact_initialization_validation_rejects_noncontiguous_target_strides() {
+    let (node, family) = direct_initialization_family(
+        0,
+        0,
+        vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 2,
+        }],
+    );
+    let initialization = InitializationSolveSystem {
+        residual: ComputeBlock { nodes: vec![node] },
+        direct_families: vec![family],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization)
+        .expect_err("sparse compact target maps must fail closed");
+    assert!(error.to_string().contains("non-contiguous"));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_overlapping_affine_ranges() {
+    let dense = vec![AffineStencilIndexStrideTerm {
+        dimension: 0,
+        stride: 1,
+    }];
+    let (first_node, first_family) = direct_initialization_family(0, 0, dense.clone());
+    let (second_node, second_family) = direct_initialization_family(1, 2, dense);
+    let initialization = InitializationSolveSystem {
+        residual: ComputeBlock {
+            nodes: vec![first_node, second_node],
+        },
+        direct_families: vec![first_family, second_family],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization)
+        .expect_err("overlapping compact target ranges must fail closed");
+    assert!(error.to_string().contains("overlapping"));
+}
+
 fn fixture_span() -> Span {
     Span::from_offsets(
         SourceId::from_source_name("ir_solve_tests_source_44.mo"),

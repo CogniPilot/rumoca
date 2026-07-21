@@ -314,6 +314,65 @@ fn test_prepare_gpu_simulation_settles_wave_initial_equations() {
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+fn assert_n50_compact_initialization(compact: &rumoca_ir_solve::SolveModel) {
+    let initialization = &compact.problem.initialization;
+    let node_counts = initialization.residual.compute_node_counts();
+    assert!(initialization.row_targets.is_empty());
+    assert_eq!(initialization.direct_families.len(), 2);
+    assert_eq!(node_counts.map, 2);
+    assert_eq!(node_counts.scalar_programs, 0);
+    assert_eq!(
+        initialization.residual.nodes.len(),
+        initialization.direct_families.len()
+    );
+    assert_eq!(initialization.residual.len(), Ok(2 * 50 * 50));
+    for family in &initialization.direct_families {
+        let rumoca_ir_solve::ComputeNode::Map { domain, .. } =
+            &initialization.residual.nodes[family.node_index]
+        else {
+            panic!("direct initialization family must reference a Map")
+        };
+        assert_eq!(
+            family
+                .targets
+                .output_indices(domain)
+                .map(|indices| indices.len()),
+            Ok(50 * 50)
+        );
+    }
+
+    let settled = rumoca_sim::settle_gpu_initial_conditions(compact, 0.0)
+        .expect("N=50 compact initialization should settle through native Map execution");
+    assert_eq!(settled.metrics.residual_evaluations, 2);
+    assert_eq!(settled.metrics.passes, 1);
+    let max_map_scratch = initialization
+        .residual
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            rumoca_ir_solve::ComputeNode::Map {
+                domain, base_ops, ..
+            } => Some(
+                domain
+                    .binders
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(base_ops.len().max(1)),
+            ),
+            _ => None,
+        })
+        .max()
+        .expect("compact GPU initialization has Map nodes");
+    assert!(
+        settled.metrics.temporary_values
+            <= initialization
+                .direct_families
+                .len()
+                .saturating_add(max_map_scratch)
+    );
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_prepare_gpu_simulation_settles_wave_initial_equations_n50_in_linear_budget() {
     let _guard = session_test_guard();
@@ -352,59 +411,7 @@ fn test_prepare_gpu_simulation_settles_wave_initial_equations_n50_in_linear_budg
             .map_err(|error| JsValue::from_str(&format!("GPU lowering failed: {error}")))
     })
     .expect("N=50 should lower through compact GPU initialization");
-    let initialization = &compact.problem.initialization;
-    let node_counts = initialization.residual.compute_node_counts();
-    assert!(
-        initialization.row_targets.is_empty(),
-        "GPU compact initialization must not materialize row targets"
-    );
-    assert_eq!(
-        initialization.direct_families.len(),
-        2,
-        "Wave has exactly u and w source families"
-    );
-    assert_eq!(
-        node_counts.map, 2,
-        "GPU compact initialization must preserve one Map per source family"
-    );
-    assert_eq!(
-        node_counts.scalar_programs, 0,
-        "GPU compact initialization must not build per-scalar structured programs"
-    );
-    assert_eq!(
-        initialization.residual.nodes.len(),
-        initialization.direct_families.len()
-    );
-    let settled = rumoca_sim::settle_gpu_initial_conditions(&compact, 0.0)
-        .expect("N=50 compact initialization should settle through native Map execution");
-    assert_eq!(settled.metrics.residual_evaluations, 2);
-    assert_eq!(settled.metrics.passes, 1);
-    let max_map_scratch = initialization
-        .residual
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            rumoca_ir_solve::ComputeNode::Map {
-                domain, base_ops, ..
-            } => Some(
-                domain
-                    .binders
-                    .len()
-                    .saturating_mul(2)
-                    .saturating_add(base_ops.len().max(1)),
-            ),
-            _ => None,
-        })
-        .max()
-        .expect("compact GPU initialization has Map nodes");
-    assert!(
-        settled.metrics.temporary_values
-            <= initialization
-                .direct_families
-                .len()
-                .saturating_add(max_map_scratch),
-        "native Map execution must retain only direct-family bookkeeping and bounded Map scratch"
-    );
+    assert_n50_compact_initialization(&compact);
 
     let mut samples = Vec::new();
     for _ in 0..3 {

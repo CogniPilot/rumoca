@@ -209,3 +209,50 @@ fn gpu_initial_projection_rejects_degenerate_structured_binder() {
             .contains("non-degenerate structured binder")
     );
 }
+
+#[test]
+fn gpu_initial_projection_handles_negative_binder_steps() {
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 3,
+            upper: 1,
+            step: -1,
+        }],
+    };
+
+    assert_eq!(gpu_corner_cell_index(&domain, 0, solve_test_span()), Ok(1));
+}
+
+#[test]
+fn gpu_initial_uniformity_checks_destinations_nonloads_and_load_p() {
+    let span = solve_test_span();
+    let base = vec![
+        solve::LinearOp::LoadP { dst: 0, index: 4 },
+        solve::LinearOp::Const { dst: 1, value: 2.0 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ];
+    let mut corner = base.clone();
+    corner[0] = solve::LinearOp::LoadP { dst: 0, index: 7 };
+    let mut loads = Vec::new();
+    let mut constants = Vec::new();
+    append_gpu_corner_strides(&base, &corner, 0, &mut loads, &mut constants, span)
+        .expect("LoadP may vary affinely");
+    assert_eq!(loads[0].terms[0].stride, 3);
+
+    corner[2] = solve::LinearOp::Binary {
+        dst: 3,
+        op: solve::BinaryOp::Add,
+        lhs: 0,
+        rhs: 1,
+    };
+    append_gpu_corner_strides(&base, &corner, 0, &mut Vec::new(), &mut Vec::new(), span)
+        .expect_err("destination register drift must fail closed");
+}

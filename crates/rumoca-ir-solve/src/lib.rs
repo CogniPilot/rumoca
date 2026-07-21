@@ -4,12 +4,12 @@
 //! structural/lowering phases. It must stay free of DAE evaluation and phase
 //! logic.
 //!
-//! SPEC_0021 file-size exception: Solve IR still defines scalar rows, tensor
-//! nodes, validation, and visitor contracts in one facade. split plan: move
-//! tensor contracts, validation errors, and visitors into focused modules.
+//! The facade defines the wire types while focused modules own layout, linear
+//! operations, direct-initialization validation, and visitor contracts.
 
 #[cfg(test)]
 mod compute_block_tests;
+mod initialization_validation;
 mod layout;
 mod linear_op;
 pub mod visitor;
@@ -19,6 +19,8 @@ use rumoca_core::{
     ExternalTableData, SourceId, Span, StructuredIndexDomain, StructuredIndexDomainError,
 };
 use serde::{Deserialize, Serialize};
+
+use initialization_validation::validate_initialization_direct_families;
 
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
@@ -1359,91 +1361,6 @@ fn validate_indices(
         });
     }
     Ok(())
-}
-
-fn validate_initialization_direct_families(
-    initialization: &InitializationSolveSystem,
-) -> Result<(), SolveProblemShapeContractError> {
-    if initialization.direct_families.is_empty() {
-        return validate_count(
-            "initialization.row_targets",
-            initialization.residual.len()?,
-            initialization.row_targets.len(),
-        );
-    }
-    validate_count(
-        "initialization.row_targets.compact",
-        0,
-        initialization.row_targets.len(),
-    )?;
-    validate_count(
-        "initialization.direct_families",
-        initialization.residual.nodes.len(),
-        initialization.direct_families.len(),
-    )?;
-    let mut covered_nodes = std::collections::BTreeSet::new();
-    let mut covered_targets = std::collections::BTreeSet::new();
-    for family in &initialization.direct_families {
-        if !covered_nodes.insert(family.node_index) {
-            return Err(SolveProblemShapeContractError::ZeroTensorDimension {
-                context: "initialization.direct_families".to_string(),
-                node_index: family.node_index,
-                dimension: "duplicate direct-family node index",
-                span: family.span,
-            });
-        }
-        let target_indices = validate_initialization_direct_family(initialization, family)?;
-        for target_index in target_indices {
-            if !covered_targets.insert(target_index) {
-                return Err(SolveProblemShapeContractError::ZeroTensorDimension {
-                    context: "initialization.direct_families".to_string(),
-                    node_index: family.node_index,
-                    dimension: "overlapping direct-family target map",
-                    span: family.span,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_initialization_direct_family(
-    initialization: &InitializationSolveSystem,
-    family: &InitializationDirectFamily,
-) -> Result<Vec<usize>, SolveProblemShapeContractError> {
-    let Some(node) = initialization.residual.nodes.get(family.node_index) else {
-        return Err(SolveProblemShapeContractError::ZeroTensorDimension {
-            context: "initialization.direct_families".to_string(),
-            node_index: family.node_index,
-            dimension: "direct-family node index outside residual block",
-            span: family.span,
-        });
-    };
-    let ComputeNode::Map { domain, span, .. } = node else {
-        return Err(SolveProblemShapeContractError::ZeroTensorDimension {
-            context: "initialization.direct_families".to_string(),
-            node_index: family.node_index,
-            dimension: "non-Map direct family",
-            span: family.span,
-        });
-    };
-    validate_tensor_output_map(
-        "initialization.direct_families.targets",
-        family.node_index,
-        "Map",
-        domain,
-        &family.targets,
-        *span,
-    )?;
-    family.targets.output_indices(domain).map_err(|error| {
-        tensor_output_map_error(
-            "initialization.direct_families.targets",
-            family.node_index,
-            "Map",
-            error,
-            *span,
-        )
-    })
 }
 
 fn validate_scheduled_root_conditions(
