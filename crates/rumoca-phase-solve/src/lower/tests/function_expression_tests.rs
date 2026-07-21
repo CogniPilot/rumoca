@@ -732,60 +732,54 @@ fn lower_expression_evaluates_captured_partial_function_in_dynamic_while() {
 fn unprojectable_array_output_declines_scalar_lane_fallback_and_uses_array_runtime() {
     let span = lower_test_span();
     let mut projection_declined = rumoca_core::Function::new("Pkg.projectionDeclinedArray", span);
+    projection_declined.inputs.push(function_param("u"));
     projection_declined
         .outputs
         .push(function_param_with_dims("y", &[2]));
     projection_declined
         .locals
-        .push(rumoca_core::FunctionParam::new(
-            "scratch",
-            "Pkg.Record",
-            span,
-        ));
-    projection_declined
-        .body
-        .push(rumoca_core::Statement::Assignment {
-            comp: component_ref("y"),
-            value: var("scratch.values"),
-            span,
-        });
-
-    let mut function = rumoca_core::Function::new("Pkg.runtimeArray", span);
-    function.inputs.push(function_param("u"));
-    function.outputs.push(function_param_with_dims("y", &[2]));
-    function
-        .locals
-        .push(function_param_with_dims("scratch", &[2]));
-    function.body = vec![
+        .push(record_param("scratch", "Pkg.Record"));
+    projection_declined.body = vec![
         rumoca_core::Statement::Assignment {
             comp: component_ref("scratch"),
-            value: rumoca_core::Expression::Array {
-                elements: vec![var("u"), add(var("u"), real_lit(1.0))],
-                is_matrix: false,
+            value: rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::from_component_reference(
+                    test_component_ref_from_name("Pkg.Record"),
+                ),
+                args: vec![
+                    named_arg("a", var("u")),
+                    named_arg("b", add(var("u"), real_lit(1.0))),
+                ],
+                is_constructor: true,
                 span,
             },
             span,
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref("y"),
-            value: var("scratch"),
+            value: rumoca_core::Expression::Array {
+                elements: vec![var("scratch.a"), var("scratch.b")],
+                is_matrix: false,
+                span,
+            },
             span,
         },
     ];
 
     let projection_call = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::from_var_name(projection_declined.name.clone()),
-        args: Vec::new(),
-        is_constructor: false,
-        span,
-    };
-    let runtime_call = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::from_var_name(function.name.clone()),
         args: vec![source_var("u")],
         is_constructor: false,
         span,
     };
     let mut dae_model = dae::Dae::default();
+    let mut record_constructor = rumoca_core::Function::new("Pkg.Record", span);
+    record_constructor.is_constructor = true;
+    record_constructor.inputs.push(function_param("a"));
+    record_constructor.inputs.push(function_param("b"));
+    record_constructor
+        .outputs
+        .push(record_param("record", "Pkg.Record"));
     dae_model
         .variables
         .parameters
@@ -797,11 +791,11 @@ fn unprojectable_array_output_declines_scalar_lane_fallback_and_uses_array_runti
     dae_model
         .symbols
         .functions
-        .insert(projection_declined.name.clone(), projection_declined);
+        .insert(record_constructor.name.clone(), record_constructor);
     dae_model
         .symbols
         .functions
-        .insert(function.name.clone(), function);
+        .insert(projection_declined.name.clone(), projection_declined);
 
     let projected = crate::lower::derivative_rhs::project_array_like_scalars_with_owner(
         &projection_call,
@@ -817,7 +811,7 @@ fn unprojectable_array_output_declines_scalar_lane_fallback_and_uses_array_runti
 
     dae_model.continuous.equations.push(dae::Equation {
         lhs: None,
-        rhs: sub(source_var("target"), runtime_call),
+        rhs: sub(source_var("target"), projection_call),
         span,
         origin: "unprojectable array function residual".to_string(),
         scalar_count: 2,
