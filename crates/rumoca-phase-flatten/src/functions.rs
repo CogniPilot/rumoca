@@ -10,11 +10,6 @@
 //! - Output parameters (values returned)
 //! - An algorithm section (the function body)
 //!
-//! SPEC_0021 file-size exception: function collection still coordinates AST
-//! function conversion, constructor signatures, lexical aliases, and call
-//! canonicalization. split plan: move lexical alias discovery and collected-call
-//! canonicalization into focused modules with imports at the top.
-
 use indexmap::IndexSet;
 #[cfg(test)]
 use rumoca_core::Span;
@@ -30,6 +25,7 @@ mod constant_overrides;
 mod constructor_signature;
 mod function_metadata;
 mod function_output_validation;
+mod function_param_alias;
 #[cfg(test)]
 mod tests;
 pub(crate) use call_args::validate_flat_function_call_args;
@@ -40,6 +36,7 @@ pub(crate) use function_metadata::{
     lower_record_function_params, specialize_static_function_params,
 };
 use function_output_validation::validate_function_outputs_assigned;
+use function_param_alias::function_param_type_alias_dims;
 
 use crate::algorithms;
 use crate::ast_lower;
@@ -242,6 +239,39 @@ fn is_callable_class_type(class_type: &rumoca_core::ClassType) -> bool {
     )
 }
 
+pub(crate) fn record_type_fields(
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def: &ast::ClassDef,
+    qualified_name: &str,
+    tree: &ast::ClassTree,
+) -> Result<Vec<flat::RecordField>, FlattenError> {
+    let constructor = convert_constructor_signature(
+        class_index,
+        class_def,
+        qualified_name,
+        &tree.source_map,
+        &tree.def_map,
+    )?;
+    constructor
+        .inputs
+        .into_iter()
+        .map(|field| {
+            let def_id = field.def_id.ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    format!("{qualified_name}.{}", field.name),
+                    "record field identity",
+                    field.span,
+                )
+            })?;
+            Ok(flat::RecordField {
+                name: field.name,
+                def_id,
+                dims: field.dims,
+            })
+        })
+        .collect()
+}
+
 fn class_by_name_or_def_id<'a>(
     class_index: &ast::ClassDefIndex<'a>,
     name: &str,
@@ -250,49 +280,6 @@ fn class_by_name_or_def_id<'a>(
     def_id
         .and_then(|def_id| class_index.get(def_id))
         .or_else(|| class_index.get_by_qualified_name(name))
-}
-
-fn function_param_type_alias_dims(
-    class_index: &ast::ClassDefIndex<'_>,
-    component: &ast::Component,
-    source_map: &rumoca_core::SourceMap,
-) -> Result<Vec<i64>, FlattenError> {
-    const MAX_DEPTH: usize = 16;
-    let type_name = component.type_name.to_string();
-    let mut current = class_by_name_or_def_id(class_index, &type_name, component.type_name.def_id);
-    let mut dims = Vec::new();
-    let mut visited_defs = HashSet::new();
-    let mut visited_names = HashSet::new();
-
-    for _ in 0..MAX_DEPTH {
-        let Some(class_def) = current else {
-            break;
-        };
-        if let Some(def_id) = class_def.def_id {
-            if !visited_defs.insert(def_id) {
-                break;
-            }
-        } else if !visited_names.insert(class_def.name.text.to_string()) {
-            break;
-        }
-
-        dims.extend(subscripts_to_param_dims(
-            &class_def.array_subscripts,
-            class_def.name.text.as_ref(),
-            source_map,
-        )?);
-
-        let Some(base) = class_def.extends.first() else {
-            break;
-        };
-        let base_name = base.base_name.to_string();
-        if rumoca_core::is_builtin_type(&base_name) {
-            break;
-        }
-        current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
-    }
-
-    Ok(dims)
 }
 
 /// Collect all user function calls from a flat::Model.

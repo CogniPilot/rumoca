@@ -54,11 +54,7 @@ pub fn fmi3_native_projection_available(
         .ok_or_else(|| crate::CodegenError::template("FMI3 projection range overflow"))?;
     let mut projected_y = BTreeSet::new();
     for block in blocks {
-        let ([row_index], [y_index], []) = (
-            block.rows.as_slice(),
-            block.y_indices.as_slice(),
-            block.causal_steps.as_slice(),
-        ) else {
+        let ([row_index], [y_index]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
             return Ok(false);
         };
         if !(projection_start..projection_end).contains(y_index) || !projected_y.insert(*y_index) {
@@ -145,8 +141,7 @@ fn scalar_projection_rows(
     for block in blocks {
         let block_rows = required_sequence_field(block, "rows")?;
         let y_indices = required_sequence_field(block, "y_indices")?;
-        let causal_steps = required_sequence_field(block, "causal_steps")?;
-        if block_rows.len() != 1 || y_indices.len() != 1 || !causal_steps.is_empty() {
+        if block_rows.len() != 1 || y_indices.len() != 1 {
             return scalar_projection_schedule_miss();
         }
         let row_index = block_rows[0]

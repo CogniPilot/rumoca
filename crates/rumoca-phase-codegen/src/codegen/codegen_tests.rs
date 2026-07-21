@@ -900,7 +900,10 @@ fn test_fmi3_event_indicators_render_from_solver_ir() {
                         {"Binary": {"dst": 2, "op": "Sub", "lhs": 0, "rhs": 1}},
                         {"StoreOutput": {"src": 2}}
                     ]]
-                }
+                },
+                "root_relation_memory_targets": [null],
+                "root_zero_domains": ["Previous"],
+                "scheduled_root_conditions": []
             }
         }),
     );
@@ -1009,18 +1012,9 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
-            causal_steps: Vec::new(),
         }],
     };
     assert!(fmi3_native_projection_available(&problem).unwrap());
-    let mut unsupported_problem = problem.clone();
-    unsupported_problem
-        .continuous
-        .algebraic_projection_plan
-        .blocks[0]
-        .causal_steps
-        .push(solve::AlgebraicProjectionStep { row: 1, y_index: 1 });
-    assert!(!fmi3_native_projection_available(&unsupported_problem).unwrap());
     let mut incomplete_problem = problem.clone();
     incomplete_problem.solve_layout.algebraic_scalar_count = 2;
     assert!(!fmi3_native_projection_available(&incomplete_problem).unwrap());
@@ -1059,15 +1053,6 @@ fn assert_fmi3_projection_fallbacks(dae_json: &serde_json::Value) {
     )
     .unwrap();
     assert!(!rendered.contains("const int y_index = 1;"), "{rendered}");
-
-    let mut causal = dae_json.clone();
-    *causal
-        .pointer_mut("/solve/continuous/algebraic_projection_plan/blocks/0/causal_steps")
-        .unwrap() = serde_json::json!([{"row": 1, "y_index": 1}]);
-    assert_fmi3_projection_uses_dae_fallback(
-        &causal,
-        "unsupported causal projection must use the DAE fallback",
-    );
 
     let mut multi_row = dae_json.clone();
     *multi_row
@@ -1158,7 +1143,10 @@ fn test_fmi3_derivatives_do_not_treat_implicit_solver_residuals_as_xdot() {
             "events": {
                 "root_conditions": {
                     "programs": []
-                }
+                },
+                "root_relation_memory_targets": [],
+                "root_zero_domains": [],
+                "scheduled_root_conditions": []
             }
         }),
     );

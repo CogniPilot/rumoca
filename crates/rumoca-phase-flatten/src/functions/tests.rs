@@ -1248,6 +1248,70 @@ fn test_constructor_signature_preserves_local_default_references() {
 }
 
 #[test]
+fn record_type_fields_preserve_short_operator_record_base_fields() {
+    let complex_def = rumoca_core::DefId::new(101);
+    let re_def = rumoca_core::DefId::new(102);
+    let im_def = rumoca_core::DefId::new(103);
+    let flux_def = rumoca_core::DefId::new(104);
+    let mut complex = class("Complex", rumoca_core::ClassType::Record, complex_def);
+    complex.operator_record = true;
+    complex.location = test_location(0, 8);
+    for (name, def_id, location) in [
+        ("re", re_def, test_location(11, 27)),
+        ("im", im_def, test_location(30, 37)),
+    ] {
+        complex.components.insert(
+            name.to_string(),
+            ast::Component {
+                name: name.to_string(),
+                def_id: Some(def_id),
+                type_name: ast::Name::from_string("Real"),
+                location,
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+    }
+    let mut flux = class(
+        "ComplexMagneticFlux",
+        rumoca_core::ClassType::Record,
+        flux_def,
+    );
+    flux.operator_record = true;
+    flux.location = test_location(0, 8);
+    flux.extends.push(ast::Extend {
+        base_name: ast::Name::from_string("Complex"),
+        base_def_id: Some(complex_def),
+        ..Default::default()
+    });
+
+    let mut tree = ast::ClassTree {
+        source_map: test_source_map(),
+        ..Default::default()
+    };
+    tree.definitions
+        .classes
+        .insert("Complex".to_string(), complex);
+    tree.definitions
+        .classes
+        .insert("ComplexMagneticFlux".to_string(), flux);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let flux = class_index
+        .get(flux_def)
+        .expect("derived operator record class");
+
+    let fields = record_type_fields(&class_index, flux, "ComplexMagneticFlux", &tree)
+        .expect("resolved record field metadata");
+
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.def_id))
+            .collect::<Vec<_>>(),
+        vec![("re", re_def), ("im", im_def)]
+    );
+}
+
+#[test]
 fn test_function_local_normalization_rewrites_self_qualified_default() {
     let mut function = rumoca_core::Function::new("Pkg.C", Span::DUMMY);
     function.add_input(rumoca_core::FunctionParam::new(

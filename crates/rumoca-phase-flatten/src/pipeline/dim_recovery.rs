@@ -168,10 +168,13 @@ pub(crate) fn infer_expr_dims(
             var_dims,
             function_output_dims,
         ),
+        Expression::FieldAccess { base, field, .. } => {
+            crate::postprocess::field_access_flat_path(base, field)
+                .and_then(|name| var_dims.get(&name).cloned())
+        }
         Expression::Tuple { .. }
         | Expression::Range { .. }
         | Expression::Index { .. }
-        | Expression::FieldAccess { .. }
         | Expression::Empty { .. } => None,
     }
 }
@@ -368,6 +371,76 @@ pub(crate) fn complete_child_dims_from_hints(
     }
 }
 
+fn repeat_element_bindings_over_parent_dims(
+    flat: &mut Model,
+    parent_dims: &ParentDims,
+    function_output_dims: &DimMap,
+    overlay: &InstanceOverlay,
+) {
+    let var_dims: DimMap = flat
+        .variables
+        .iter()
+        .map(|(name, var)| (name.as_str().to_string(), var.dims.clone()))
+        .collect();
+    for var in flat.variables.values_mut() {
+        let Some((_, parent)) = matching_parent(var.name.as_str(), parent_dims) else {
+            continue;
+        };
+        let Some(binding) = var.binding.clone() else {
+            continue;
+        };
+        if var.binding_from_modification
+            && !var.component_ref.as_ref().is_some_and(|reference| {
+                overlay.each_modifier_bindings.contains(
+                    &rumoca_core::ComponentPath::from_component_reference(reference),
+                )
+            })
+        {
+            continue;
+        }
+        let Some(binding_dims) = infer_expr_dims(&binding, &var_dims, function_output_dims)
+            .or_else(|| infer_array_dimensions(&binding))
+        else {
+            continue;
+        };
+        if var.dims != join_parent_child_dims(parent, &binding_dims) {
+            continue;
+        }
+        let span = binding
+            .span()
+            .filter(|span| !span.is_dummy())
+            .unwrap_or(var.source_span);
+        let indices = parent
+            .iter()
+            .enumerate()
+            .map(|(dimension, size)| rumoca_core::ComprehensionIndex {
+                name: format!("$parentIndex{}", dimension + 1),
+                range: Expression::Range {
+                    start: Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(1),
+                        span,
+                    }),
+                    step: Some(Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(1),
+                        span,
+                    })),
+                    end: Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(*size),
+                        span,
+                    }),
+                    span,
+                },
+            })
+            .collect();
+        var.binding = Some(Expression::ArrayComprehension {
+            expr: Box::new(binding),
+            indices,
+            filter: None,
+            span,
+        });
+    }
+}
+
 pub(crate) fn propagate_unexpanded_record_array_dims(flat: &mut Model, overlay: &InstanceOverlay) {
     let mut parent_dims = collect_parent_dims(flat, overlay);
     if parent_dims.is_empty() {
@@ -381,4 +454,5 @@ pub(crate) fn propagate_unexpanded_record_array_dims(flat: &mut Model, overlay: 
     prepend_missing_parent_dims(flat, &parent_dims);
     let child_dim_hints = build_child_dim_hints(flat, &parent_dims);
     complete_child_dims_from_hints(flat, &parent_dims, &child_dim_hints);
+    repeat_element_bindings_over_parent_dims(flat, &parent_dims, &function_output_dims, overlay);
 }

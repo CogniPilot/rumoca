@@ -5,6 +5,10 @@ Mirrors SPEC_0025. Section names here must match SPEC_0025 §"PR Template
 Alignment". Update both files together if you change either one.
 -->
 
+## Branch Naming
+
+- Descriptive branch name without an `agent/` prefix:
+
 ## Summary
 
 - What user-facing behavior changes?

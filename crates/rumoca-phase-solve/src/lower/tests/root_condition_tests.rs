@@ -1,5 +1,36 @@
 use super::*;
-use crate::lower::lower_scheduled_root_conditions;
+use crate::lower::{lower_root_zero_domains, lower_scheduled_root_conditions};
+
+#[test]
+fn lower_root_zero_domains_preserve_relational_equality_semantics() {
+    let mut dae_model = dae::Dae::default();
+    for op in [
+        rumoca_core::OpBinary::Lt,
+        rumoca_core::OpBinary::Le,
+        rumoca_core::OpBinary::Gt,
+        rumoca_core::OpBinary::Ge,
+    ] {
+        dae_model
+            .conditions
+            .relations
+            .push(binary(op, var("x"), real_lit(0.0)));
+    }
+    dae_model
+        .events
+        .synthetic_root_conditions
+        .push(var("residual"));
+
+    assert_eq!(
+        lower_root_zero_domains(&dae_model).expect("root zero domains should lower"),
+        vec![
+            rumoca_ir_solve::RootZeroDomain::Positive,
+            rumoca_ir_solve::RootZeroDomain::NonPositive,
+            rumoca_ir_solve::RootZeroDomain::Positive,
+            rumoca_ir_solve::RootZeroDomain::NonPositive,
+            rumoca_ir_solve::RootZeroDomain::Previous,
+        ]
+    );
+}
 
 #[test]
 fn lower_discrete_rhs_skips_untargeted_condition_rows() {

@@ -5,6 +5,33 @@ use rumoca_ir_dae::{self as dae, Dae};
 use super::{StructuralError, structural_contract_violation};
 use crate::projection_maps::{checked_projection_subscript, output_scalar_count};
 
+pub(super) type ConstructorInputMap =
+    HashMap<rumoca_core::FunctionInstanceId, Vec<rumoca_core::FunctionParam>>;
+
+pub(super) fn build_constructor_input_map(
+    dae: &Dae,
+) -> Result<ConstructorInputMap, StructuralError> {
+    dae.symbols
+        .functions
+        .values()
+        .filter(|function| function.is_constructor)
+        .map(|function| {
+            function
+                .instance_id
+                .map(|instance_id| (instance_id, function.inputs.clone()))
+                .ok_or_else(|| {
+                    structural_contract_violation(
+                        format!(
+                            "constructor `{}` lacks flattened instance identity",
+                            function.name
+                        ),
+                        function.span,
+                    )
+                })
+        })
+        .collect()
+}
+
 pub(super) fn expression_contains_dynamic_function_output(
     expr: &rumoca_core::Expression,
     dynamic_outputs: &HashMap<rumoca_core::FunctionInstanceId, String>,

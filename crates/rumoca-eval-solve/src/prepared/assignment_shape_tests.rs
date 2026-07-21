@@ -75,3 +75,26 @@ fn target_assignment_shape_rejects_expr_eval_len_overflow() {
 
     assert!(matches!(err, EvalSolveError::InvalidRow { .. }));
 }
+
+#[test]
+fn direct_assignment_shape_rejects_target_dependent_expression() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 7 },
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+
+    assert_eq!(target_assignment_shape(&row).unwrap(), None);
+}

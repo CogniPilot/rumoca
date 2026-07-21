@@ -337,7 +337,10 @@ fn push_unknowns_for_variable(
     kind: UnknownKind,
 ) {
     let size = var.size();
-    if size <= 1 {
+    if size == 0 {
+        return;
+    }
+    if size == 1 {
         push_unknown(
             map,
             names,
@@ -405,43 +408,8 @@ fn collect_equation_unknowns(
 
     collect_equation_lhs_unknown(eq.lhs.as_ref(), variable_resolver, &mut result);
     collect_expression_unknowns(&eq.rhs, variable_resolver, &mut result);
-    if !result.is_empty()
-        && let Some(target) = direct_residual_definition_target(&eq.rhs)
-        && equation_contains_derivative(&eq.rhs)
-    {
-        for idx in variable_resolver.resolve_var_ref_all(target.0, target.1) {
-            result.remove(&idx);
-        }
-    }
 
     result
-}
-
-fn direct_residual_definition_target(
-    expr: &rumoca_core::Expression,
-) -> Option<(&rumoca_core::Reference, &[rumoca_core::Subscript])> {
-    let rumoca_core::Expression::Binary {
-        op, lhs, rhs: _, ..
-    } = expr
-    else {
-        return None;
-    };
-    if !matches!(op, rumoca_core::OpBinary::Sub) {
-        return None;
-    }
-    let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = lhs.as_ref()
-    else {
-        return None;
-    };
-    Some((name, subscripts))
-}
-
-fn equation_contains_derivative(expr: &rumoca_core::Expression) -> bool {
-    let mut checker = DerivativeCallChecker { found: false };
-    checker.visit_expression(expr);
-    checker.found
 }
 
 /// Collects the operand of every `der(...)` call in an expression, keeping the
@@ -465,32 +433,6 @@ impl ExpressionVisitor for DerOperandCollector {
             }) = args.first()
         {
             self.operands.push((name.clone(), subscripts.clone()));
-        }
-        for arg in args {
-            self.visit_expression(arg);
-        }
-    }
-}
-
-struct DerivativeCallChecker {
-    found: bool,
-}
-
-impl ExpressionVisitor for DerivativeCallChecker {
-    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
-        if !self.found {
-            self.walk_expression(expr);
-        }
-    }
-
-    fn visit_builtin_call(
-        &mut self,
-        function: &rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-    ) {
-        if *function == rumoca_core::BuiltinFunction::Der {
-            self.found = true;
-            return;
         }
         for arg in args {
             self.visit_expression(arg);
@@ -737,8 +679,7 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
     }
 
     fn visit_field_access(&mut self, base: &rumoca_core::Expression, field: &str) {
-        if let Some((name, subscripts)) = indexed_field_access_var_ref_key(base, field) {
-            let reference = rumoca_core::Reference::new(&name);
+        if let Some((reference, subscripts)) = dae::indexed_field_var_ref(base, field) {
             for idx in self.resolver.resolve_var_ref_all(&reference, &subscripts) {
                 self.cols.insert(idx);
             }
@@ -761,34 +702,6 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
         for arg in args {
             self.visit_expression(arg);
         }
-    }
-}
-
-fn indexed_field_access_var_ref_key(
-    base: &rumoca_core::Expression,
-    field: &str,
-) -> Option<(String, Vec<rumoca_core::Subscript>)> {
-    match base {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => Some((format!("{}.{}", name.as_str(), field), subscripts.clone())),
-        rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } => {
-            let rumoca_core::Expression::VarRef {
-                name,
-                subscripts: base_subscripts,
-                ..
-            } = base.as_ref()
-            else {
-                return None;
-            };
-            let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
-            combined.extend_from_slice(base_subscripts);
-            combined.extend_from_slice(subscripts);
-            Some((format!("{}.{}", name.as_str(), field), combined))
-        }
-        _ => None,
     }
 }
 
@@ -916,6 +829,73 @@ mod tests {
             origin: String::new(),
             scalar_count: 1,
         }
+    }
+
+    #[test]
+    fn incidence_keeps_direct_algebraic_target_in_derivative_residual() {
+        let mut dae = dae::Dae::new();
+        dae.variables.states.insert(
+            rumoca_core::VarName::new("x"),
+            dae::Variable::new(rumoca_core::VarName::new("x"), test_span()),
+        );
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("v"),
+            dae::Variable::new(rumoca_core::VarName::new("v"), test_span()),
+        );
+        dae.continuous.equations.push(eq(sub(
+            var("v"),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Der,
+                args: vec![var("x")],
+                span: test_span(),
+            },
+        )));
+
+        let incidence = build_incidence(&dae);
+        let derivative = incidence
+            .unknown_names
+            .iter()
+            .position(|unknown| *unknown == UnknownId::DerState(rumoca_core::VarName::new("x")))
+            .expect("der(x) unknown");
+        let voltage = incidence
+            .unknown_names
+            .iter()
+            .position(|unknown| *unknown == UnknownId::Variable(rumoca_core::VarName::new("v")))
+            .expect("v unknown");
+
+        assert_eq!(incidence.eq_unknowns.len(), 1);
+        assert!(incidence.eq_unknowns[0].contains(&derivative));
+        assert!(incidence.eq_unknowns[0].contains(&voltage));
+    }
+
+    #[test]
+    fn incidence_omits_zero_length_array_unknowns() {
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("x"),
+            dae::Variable::new(rumoca_core::VarName::new("x"), test_span()),
+        );
+        let mut empty = dae::Variable::new(rumoca_core::VarName::new("empty"), test_span());
+        empty.dims = vec![0];
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("empty"), empty);
+        dae.continuous.equations.push(eq(sub(
+            var("x"),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sum,
+                args: vec![var("empty")],
+                span: test_span(),
+            },
+        )));
+
+        let incidence = build_incidence(&dae);
+
+        assert_eq!(
+            incidence.unknown_names,
+            [UnknownId::Variable(rumoca_core::VarName::new("x"))]
+        );
+        assert_eq!(incidence.eq_unknowns, [HashSet::from([0])]);
     }
 
     #[test]

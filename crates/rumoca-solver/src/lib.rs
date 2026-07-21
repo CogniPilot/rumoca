@@ -26,10 +26,10 @@ pub use runtime::pre_params::{
     write_pre_params_from_sources,
 };
 pub use runtime::projection::{
-    AlgebraicProjectionModel, implicit_residual_is_zero,
-    implicit_residual_is_zero_through_interval, project_algebraics,
-    project_algebraics_and_detect_changes, project_initial_algebraics, project_initial_variables,
-    project_initial_variables_with_plan,
+    AlgebraicProjectionArgs, AlgebraicProjectionModel, ImplicitProjectionModel,
+    implicit_residual_is_zero, implicit_residual_is_zero_through_interval,
+    project_algebraic_seed_with_plan, project_algebraics, project_algebraics_and_detect_changes,
+    project_algebraics_with_plan, project_initial_variables_with_plan,
 };
 pub use runtime::report::{
     RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot, trace_runtime_done,

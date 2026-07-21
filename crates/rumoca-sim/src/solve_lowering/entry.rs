@@ -166,7 +166,7 @@ fn trace_solve_model(solve_model: &solve::SolveModel) {
         {
             tracing::debug!(
                 target: "rumoca_phase_structural",
-                "[sim-trace] projection block {block_idx}: rows={:?} y_indices={:?} ({}) causal_steps={}",
+                "[sim-trace] projection block {block_idx}: rows={:?} y_indices={:?} ({})",
                 block.rows,
                 block.y_indices,
                 block
@@ -174,8 +174,7 @@ fn trace_solve_model(solve_model: &solve::SolveModel) {
                     .iter()
                     .map(|idx| names_by_y.get(idx).copied().unwrap_or("?"))
                     .collect::<Vec<_>>()
-                    .join(", "),
-                block.causal_steps.len()
+                    .join(", ")
             );
         }
     }

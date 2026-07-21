@@ -50,6 +50,7 @@ pub(super) fn lower_visible_observations(
             Err(err) if should_skip_unbound_observation(layout, &err) => {}
             Err(err) if should_skip_unsupported_observation(&err) => {}
             Err(err) => {
+                let err = err.with_context(format!("lower visible observation `{}`", visible.name));
                 return Err(
                     crate::lower_problem_context(err, "lower visible observation rows").into(),
                 );

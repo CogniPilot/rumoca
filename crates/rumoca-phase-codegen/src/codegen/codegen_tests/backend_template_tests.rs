@@ -1040,6 +1040,9 @@ fn fmi3_decay_fixture() -> serde_json::Value {
             },
             "events": {
                 "root_conditions": {"programs": []},
+                "root_relation_memory_targets": [],
+                "root_zero_domains": [],
+                "scheduled_root_conditions": [],
                 "dynamic_time_event_rhs": {"programs": []},
                 "actions": []
             }

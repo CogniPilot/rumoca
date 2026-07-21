@@ -748,6 +748,57 @@ fn eval_row_linsolve_missing_matrix_register_is_error_not_panic_or_zero() {
 }
 
 #[test]
+fn eval_row_linsolve_singular_matrix_is_error_not_zero() {
+    let row = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const { dst: 1, value: 2.0 },
+        LinearOp::Const { dst: 2, value: 2.0 },
+        LinearOp::Const { dst: 3, value: 4.0 },
+        LinearOp::Const { dst: 4, value: 3.0 },
+        LinearOp::Const { dst: 5, value: 6.0 },
+        LinearOp::LinearSolveComponent {
+            dst: 6,
+            matrix_start: 0,
+            rhs_start: 4,
+            n: 2,
+            component: 0,
+        },
+        LinearOp::StoreOutput { src: 6 },
+    ];
+
+    let err = eval_row(&row, &[], &[], 0.0, None)
+        .expect_err("a singular linear system must not produce a zero solution");
+
+    assert_eq!(
+        err,
+        EvalSolveError::LinearSolve {
+            size: 2,
+            component: Some(0),
+            reason: "singular matrix",
+            span: None,
+        }
+    );
+}
+
+#[test]
+fn batched_linsolve_rejects_short_output_instead_of_truncating() {
+    let regs = [1.0, 0.0, 0.0, 1.0, 2.0, 3.0];
+    let mut out = [0.0];
+
+    let err = crate::linear_solve::solve_all_unchecked(&regs, 0, 4, 2, &mut out)
+        .expect_err("a short output buffer must not truncate a linear solution");
+
+    assert_eq!(
+        err,
+        EvalSolveError::OutputTooSmall {
+            required: 2,
+            len: 1,
+            span: None,
+        }
+    );
+}
+
+#[test]
 fn eval_scalar_program_block_short_output_is_error_not_truncation() {
     let block = ScalarProgramBlock::with_source_span(
         vec![
@@ -1010,6 +1061,109 @@ fn prepared_scalar_block_attaches_row_span_to_invalid_row() {
         err.to_string().contains("y input requirement overflow"),
         "error should explain input requirement overflow: {err}"
     );
+}
+
+#[test]
+fn prepared_scalar_block_indexes_sparse_single_output_rows() {
+    let span = fixture_span();
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 3.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        vec![span; 3],
+        vec![4, 1, 7, 3],
+    )
+    .expect("sparse-output fixture should satisfy the block contract");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("fixture should prepare");
+
+    assert_eq!(prepared.row_output_count(0), Some(2));
+    assert_eq!(prepared.row_output_count(1), Some(1));
+    assert_eq!(prepared.row_output_index(0, 1), Some(1));
+    assert_eq!(prepared.row_output_index(0, 2), None);
+    assert_eq!(prepared.single_output_row_for_output_index(4), None);
+    assert_eq!(prepared.single_output_row_for_output_index(7), Some(1));
+    assert_eq!(prepared.single_output_row_for_output_index(3), Some(2));
+}
+
+#[test]
+fn prepared_scalar_block_rejects_ambiguous_single_output_owners() {
+    let span = fixture_span();
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::StoreOutput { src: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 3.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        vec![span; 3],
+        vec![2, 2, 3, 2],
+    )
+    .expect("duplicate-output fixture should satisfy metadata lengths");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("fixture should prepare");
+
+    assert_eq!(prepared.single_output_row_for_output_index(2), None);
+    assert_eq!(prepared.single_output_row_for_output_index(3), None);
+}
+
+#[test]
+fn prepared_scalar_block_rejects_logical_output_count_overflow() {
+    let span = fixture_span();
+    let block = ScalarProgramBlock {
+        programs: vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        program_spans: vec![span],
+        output_indices: vec![usize::MAX],
+    };
+
+    let error = match PreparedScalarProgramBlock::new(block) {
+        Ok(_) => panic!("logical output count overflow should fail preparation"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("logical output count"));
+    assert_eq!(error.source_span(), Some(span));
+}
+
+#[test]
+fn prepared_scalar_block_rejects_unallocatable_sparse_output_index() {
+    let span = fixture_span();
+    let block = ScalarProgramBlock {
+        programs: vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        program_spans: vec![span],
+        output_indices: vec![usize::MAX / 2],
+    };
+
+    let error = match PreparedScalarProgramBlock::new(block) {
+        Ok(_) => panic!("unallocatable sparse output metadata should fail preparation"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("host memory limits"));
+    assert_eq!(error.source_span(), Some(span));
 }
 
 #[test]

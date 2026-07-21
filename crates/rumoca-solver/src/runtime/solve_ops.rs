@@ -19,6 +19,16 @@ pub enum RuntimeSolveError {
     #[error("unsupported solve-IR runtime model: {reason}")]
     UnsupportedModel { reason: String },
 
+    #[error(
+        "algebraic refresh row {row} cannot be solved for '{target}': the residual does not depend on it{}",
+        span_suffix(*.span)
+    )]
+    RefreshTargetUnassignable {
+        row: usize,
+        target: String,
+        span: Option<rumoca_core::Span>,
+    },
+
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
 
@@ -54,7 +64,9 @@ impl RuntimeSolveError {
 
     pub fn source_span(&self) -> Option<rumoca_core::Span> {
         match self {
-            Self::SolveIr { span, .. } | Self::NonFiniteValue { span, .. } => *span,
+            Self::SolveIr { span, .. }
+            | Self::RefreshTargetUnassignable { span, .. }
+            | Self::NonFiniteValue { span, .. } => *span,
             _ => None,
         }
     }

@@ -233,9 +233,75 @@ fn simulation_direct_lowering_falls_back_for_state_selection() {
         lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
             .expect("constrained state model should fall back to structural lowering");
 
-    assert_eq!(model.state_scalar_count(), 1);
+    assert_eq!(model.state_scalar_count(), 2);
     assert!(stages.contains(&"ir_solve_direct"));
     assert!(stages.contains(&"ir_solve_structural_dae"));
+}
+
+#[test]
+fn simulation_state_selection_prefers_physical_coordinates_for_conservation_states() {
+    let mut dae = preferred_conservation_state_dae();
+    dae.variables
+        .states
+        .get_mut(&VarName::new("mass"))
+        .expect("mass fixture state exists")
+        .fixed = Some(true);
+    dae.variables
+        .algebraics
+        .get_mut(&VarName::new("level"))
+        .expect("level fixture algebraic exists")
+        .fixed = Some(false);
+    dae.initialization.equations.push(dae::Equation {
+        origin: "fixed start initialization for mass".to_string(),
+        ..eq(sub(var("mass"), real(1.0)))
+    });
+    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("preferred physical coordinates should structurally lower");
+
+    assert_eq!(lowered.dae.variables.states.len(), 2);
+    for name in ["level", "temperature"] {
+        assert!(
+            lowered
+                .dae
+                .variables
+                .states
+                .contains_key(&VarName::new(name)),
+            "preferred physical coordinate `{name}` should be selected as a state"
+        );
+    }
+    for name in ["mass", "energy"] {
+        assert!(
+            !lowered
+                .dae
+                .variables
+                .states
+                .contains_key(&VarName::new(name)),
+            "conserved quantity `{name}` should not remain an independent state"
+        );
+    }
+    assert_eq!(
+        lowered
+            .dae
+            .variables
+            .algebraics
+            .get(&VarName::new("mass"))
+            .and_then(|variable| variable.fixed),
+        Some(true)
+    );
+    assert_eq!(
+        lowered
+            .dae
+            .variables
+            .states
+            .get(&VarName::new("level"))
+            .and_then(|variable| variable.fixed),
+        Some(false)
+    );
+    assert_eq!(lowered.dae.initialization.equations.len(), 1);
+    assert_eq!(
+        lowered.dae.initialization.equations[0].origin,
+        "fixed start initialization for mass"
+    );
 }
 
 #[test]
@@ -259,6 +325,43 @@ fn simulation_structural_lowering_demotes_vector_state_with_only_alias_rows() {
             .algebraics
             .contains_key(&VarName::new("imc.is"))
     );
+}
+
+#[test]
+fn simulation_structural_lowering_keeps_metadata_equations_compact() {
+    let mut dae = dae::Dae::new();
+    dae.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(VarName::new("x"), fixture_span()),
+    );
+    let mut values = dae::Variable::new(VarName::new("values"), fixture_span());
+    values.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("values"), values);
+    dae.continuous.equations.push(dae::Equation {
+        origin: "binding equation for values".to_string(),
+        ..eq_with_scalar_count(sub(var("values"), array(vec![real(1.0), real(2.0)])), 2)
+    });
+    dae.continuous
+        .equations
+        .push(eq(sub(der(var("x")), time())));
+
+    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("compact metadata must not participate in solve scalarization");
+
+    let binding = lowered
+        .metadata_dae
+        .continuous
+        .equations
+        .iter()
+        .find(|equation| equation.origin == "binding equation for values")
+        .expect("metadata retains the source binding");
+    assert_eq!(binding.scalar_count, 2);
+    assert!(matches!(
+        &binding.rhs,
+        Expression::Binary { rhs, .. } if matches!(rhs.as_ref(), Expression::Array { elements, .. } if elements.len() == 2)
+    ));
 }
 
 #[test]
@@ -324,12 +427,11 @@ fn simulation_metadata_reports_constrained_state_as_unselected() {
         .find(|meta| meta.name == "x3")
         .expect("x3 should remain visible");
 
-    assert_eq!(model.state_scalar_count(), 1);
+    assert_eq!(model.state_scalar_count(), 2);
     assert!(!x1_meta.is_state);
     assert_eq!(x1_meta.role, "algebraic");
     assert!(x2_meta.is_state);
-    assert!(!x3_meta.is_state);
-    assert_eq!(x3_meta.role, "algebraic");
+    assert!(x3_meta.is_state);
 }
 
 #[test]
@@ -602,7 +704,7 @@ fn constrained_state_dae() -> dae::Dae {
     model
         .continuous
         .equations
-        .push(eq(sub(der(var("x1")), time())));
+        .push(eq(sub(der(var("x1")), sub(neg(time()), time()))));
     model
         .continuous
         .equations
@@ -611,6 +713,51 @@ fn constrained_state_dae() -> dae::Dae {
         .continuous
         .equations
         .push(eq(sub(der(var("x3")), time())));
+    model
+}
+
+fn preferred_conservation_state_dae() -> dae::Dae {
+    let mut model = dae::Dae::new();
+    for name in ["mass", "energy"] {
+        model.variables.states.insert(
+            VarName::new(name),
+            dae::Variable::new(VarName::new(name), fixture_span()),
+        );
+    }
+    for name in ["level", "temperature"] {
+        model.variables.algebraics.insert(
+            VarName::new(name),
+            dae::Variable {
+                state_select: rumoca_core::StateSelect::Prefer,
+                ..dae::Variable::new(VarName::new(name), fixture_span())
+            },
+        );
+    }
+
+    model.continuous.equations.push(eq(sub(
+        var("mass"),
+        Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(mul(real(2.0), var("level"))),
+            rhs: Box::new(real(1.0)),
+            span: fixture_span(),
+        },
+    )));
+    model.continuous.equations.push(eq(sub(
+        var("energy"),
+        mul(
+            var("mass"),
+            mul(real(3.0), sub(var("temperature"), real(273.15))),
+        ),
+    )));
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("mass")), real(1.0))));
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("energy")), real(2.0))));
     model
 }
 

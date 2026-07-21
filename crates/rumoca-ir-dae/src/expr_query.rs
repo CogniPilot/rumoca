@@ -303,6 +303,36 @@ pub fn expr_refers_to_var(expr: &Expression, var_name: &VarName) -> bool {
     expr_base == var_base
 }
 
+/// Normalize a field selected from a component or indexed component into the
+/// equivalent structured variable reference and its selection subscripts.
+pub fn indexed_field_var_ref(
+    base: &Expression,
+    field: &str,
+) -> Option<(Reference, Vec<Subscript>)> {
+    match base {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => Some((name.with_appended_field(field), subscripts.clone())),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+            combined.extend_from_slice(base_subscripts);
+            combined.extend_from_slice(subscripts);
+            Some((name.with_appended_field(field), combined))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DerivativeNameMatcher {
     exact_names: IndexSet<VarNameId>,

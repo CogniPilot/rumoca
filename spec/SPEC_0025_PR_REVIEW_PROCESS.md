@@ -24,6 +24,7 @@ one-to-one.
 
 | SPEC_0025 §       | PR template section       |
 |-------------------|---------------------------|
+| §0 Branch Naming  | "Branch Naming"           |
 | §1 Summary        | "Summary"                 |
 | §2 Spec/MLS       | "Spec / MLS Alignment"    |
 | §3 Risk/Design    | "Risk and Design Notes"   |
@@ -32,6 +33,12 @@ one-to-one.
 | §6 Reviewer Gate  | "Reviewer Checklist"      |
 
 ## Mandatory Rules
+
+### 0. Branch Naming
+
+| Rule | Why |
+|---|---|
+| Use a descriptive branch name without an `agent/` prefix | Branch names describe the work, not the tool that performed it |
 
 ### 1. Summary
 
@@ -140,6 +147,7 @@ Rust developer workflow MUST remain Cargo-native.
 | Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
 | Run the pinned `modelica_models` aggregate-compile and corpus-owned assertion-smoke gate for compiler/simulator semantic changes | A fixed external assertion corpus catches cross-library compatibility regressions without weakening MLS or MSL gates |
 | Compare against the resolved MSL quality baseline (`cargo xtask verify msl-parity` downloads the promoted `msl-quality-baseline/msl_quality_baseline.json` release asset and falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` offline) | Baseline is the regression bar |
+| An explicitly reviewed checked-in full baseline MAY declare an exact `from_omc_version` -> `to_omc_version` migration and fixed target count; only a declaration matching both baseline contexts takes precedence over the older promoted release until the next successful main run promotes that context | Metrics from different reference compilers are not directly comparable, while undeclared, reversed, malformed, or target-set-changing migrations fail and the normal gate still verifies the selected context against current artifacts |
 | Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, simulation) MUST NOT materially decrease on the fixed root-example baseline denominator; full-library runs may tolerate one-model host jitter | Early-stage pass-rate increases are always improvements, later stages are compared against their own cumulative counts, and CI/OMC host variance must not block equivalent runs |
 | Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
 | Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |

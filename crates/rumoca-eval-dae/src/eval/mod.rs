@@ -107,7 +107,7 @@ use array_eval::{
     eval_columns_arg, eval_cross_values, eval_index_array_values, eval_linspace_values,
     eval_matrix_index, eval_matrix_literal_rows, eval_outer_product_values, eval_skew_values,
     eval_symmetric_values, eval_transpose_values, reshape_flat_matrix, try_eval_cat_values,
-    try_infer_runtime_expr_dims,
+    try_infer_runtime_expr_dims, try_runtime_array_literal_dims,
 };
 pub use array_eval::{eval_array_values, eval_matrix_values, eval_shaped_array_values};
 

@@ -850,28 +850,18 @@ fn lower_expression_rejects_unlowered_advanced_string_scanner_runtime_specials()
 }
 
 #[test]
-fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() {
+fn lower_expression_prefers_resolved_string_function_body_over_intrinsic_name() {
     let mut functions = IndexMap::new();
     let mut find_last = test_function("Modelica.Utilities.Strings.findLast", test_span());
-    find_last.inputs.push(function_param("string"));
-    find_last.inputs.push(function_param("searchString"));
-    find_last.inputs.push(function_param("startIndex"));
-    find_last.inputs.push(function_param("caseSensitive"));
+    find_last.inputs.push(function_param("u"));
     find_last.outputs.push(function_param("index"));
-    find_last.body.push(rumoca_core::Statement::While {
-        block: rumoca_core::StatementBlock {
-            cond: rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Boolean(true),
-                span: test_span(),
-            },
-            stmts: vec![rumoca_core::Statement::Assignment {
-                comp: component_ref("index"),
-                value: rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Real(1.0),
-                    span: test_span(),
-                },
-                span: test_span(),
-            }],
+    find_last.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("index"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(var("u")),
+            rhs: Box::new(var("u")),
+            span: test_span(),
         },
         span: test_span(),
     });
@@ -882,30 +872,14 @@ fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() 
 
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Strings.findLast").into(),
-        args: vec![
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::String("file.csv".to_string()),
-                span: test_span(),
-            },
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::String(".csv".to_string()),
-                span: test_span(),
-            },
-            named_arg(
-                "caseSensitive",
-                rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Boolean(false),
-                    span: test_span(),
-                },
-            ),
-        ],
+        args: vec![real_lit(3.0)],
         is_constructor: false,
         span: test_span(),
     };
     let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
-        .expect("findLast should lower through runtime special override");
+        .expect("resolved function body should take precedence over its intrinsic-like name");
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert_eq!(read_reg(&regs, lowered.result), 5.0);
+    assert_eq!(read_reg(&regs, lowered.result), 9.0);
 }
 
 #[test]

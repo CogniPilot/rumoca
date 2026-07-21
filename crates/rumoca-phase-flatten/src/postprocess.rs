@@ -730,7 +730,10 @@ fn collapse_field_access_to_known_var(
     }
 }
 
-fn field_access_flat_path(base: &rumoca_core::Expression, field: &str) -> Option<String> {
+pub(crate) fn field_access_flat_path(
+    base: &rumoca_core::Expression,
+    field: &str,
+) -> Option<String> {
     Some(format!("{}.{}", expr_flat_path(base)?, field))
 }
 

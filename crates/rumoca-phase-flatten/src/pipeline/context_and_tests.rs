@@ -1,3 +1,6 @@
+use super::context_import_shadowing::{
+    imports_without_shadowed_aliases, qualify_expression_with_effective_imports,
+};
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
 
@@ -1622,6 +1625,7 @@ use super::function_overrides_and_dims::*;
 pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) flat: &'a mut Model,
     pub(crate) instance_data: &'a rumoca_ir_ast::InstanceData,
+    pub(crate) canonical_type_id: rumoca_core::TypeId,
     pub(crate) component_override_map: &'a ComponentOverrideMap,
     pub(crate) tree: &'a rumoca_ir_ast::ClassTree,
     pub(crate) class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
@@ -1640,9 +1644,28 @@ pub(crate) fn process_component_instance(
         return Ok(());
     }
 
-    // Skip non-primitive types (class types like connectors, models, records)
-    // These are containers, not scalar variables
+    // Record fields are Flat variables; retain only their container's resolved
+    // identity so downstream record equations can expand without name recovery.
     if !request.instance_data.is_primitive {
+        if let Some(record) = variables::create_record_instance(
+            request.instance_data,
+            request.tree,
+            request.class_index,
+            request.canonical_type_id,
+        )? {
+            if !request.flat.record_types.contains_key(&record.type_def_id) {
+                let record_type = variables::create_record_type(
+                    record.type_def_id,
+                    request.tree,
+                    request.class_index,
+                )?;
+                request
+                    .flat
+                    .record_types
+                    .insert(record.type_def_id, record_type);
+            }
+            request.flat.record_instances.insert(var_name, record);
+        }
         return Ok(());
     }
 
@@ -1656,6 +1679,7 @@ pub(crate) fn process_component_instance(
     )?;
     let mut flat_var = variables::create_flat_variable(
         request.instance_data,
+        request.canonical_type_id,
         request.tree,
         request.class_index,
         &import_context,
@@ -1815,184 +1839,6 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     )
 }
 
-fn qualify_expression_with_effective_imports(
-    expr: &ast::Expression,
-    prefix: &QualifiedName,
-    imports: &qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
-    opts: qualify::QualifyOptions,
-    instance_name: Option<&str>,
-    locals: Option<&std::collections::HashSet<String>>,
-) -> Result<rumoca_core::Expression, FlattenError> {
-    let qualified = locals.map_or_else(
-        || qualify::qualify_expression_with_imports(expr, prefix, opts, imports),
-        |locals| {
-            qualify::qualify_expression_with_imports_and_locals(expr, prefix, opts, locals, imports)
-        },
-    );
-    crate::ast_lower::expression_from_ast_with_context(
-        &qualified,
-        crate::ast_lower::LoweringContext {
-            def_map,
-            instance_name,
-        },
-    )
+pub(super) fn resolved_path_has_import_alias(resolved_path: &str, alias: &str) -> bool {
+    rumoca_core::top_level_last_segment(resolved_path) == alias
 }
-
-fn imports_without_shadowed_aliases(
-    expr: &ast::Expression,
-    imports: &qualify::ImportMap,
-    def_map: &crate::ResolveDefMap,
-) -> qualify::ImportMap {
-    let mut shadowed = std::collections::HashSet::new();
-    collect_shadowed_import_aliases(expr, imports, def_map, &mut shadowed);
-    if shadowed.is_empty() {
-        return imports.clone();
-    }
-
-    imports
-        .iter()
-        .filter(|(alias, _)| !shadowed.contains(alias.as_str()))
-        .map(|(alias, target)| (alias.clone(), target.clone()))
-        .collect()
-}
-
-fn collect_shadowed_import_aliases(
-    expr: &ast::Expression,
-    imports: &qualify::ImportMap,
-    def_map: &crate::ResolveDefMap,
-    shadowed: &mut std::collections::HashSet<String>,
-) {
-    match expr {
-        ast::Expression::ComponentReference(cr) => {
-            collect_component_shadowed_import_alias(cr, imports, def_map, shadowed);
-        }
-        ast::Expression::Binary { lhs, rhs, .. } => {
-            collect_shadowed_import_aliases(lhs, imports, def_map, shadowed);
-            collect_shadowed_import_aliases(rhs, imports, def_map, shadowed);
-        }
-        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs, .. } => {
-            collect_shadowed_import_aliases(rhs, imports, def_map, shadowed);
-        }
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            collect_component_shadowed_import_alias(comp, imports, def_map, shadowed);
-            for arg in args {
-                collect_shadowed_import_aliases(arg, imports, def_map, shadowed);
-            }
-        }
-        ast::Expression::ClassModification {
-            target,
-            modifications,
-            ..
-        } => {
-            collect_component_shadowed_import_alias(target, imports, def_map, shadowed);
-            for modification in modifications {
-                collect_shadowed_import_aliases(modification, imports, def_map, shadowed);
-            }
-        }
-        ast::Expression::NamedArgument { value, .. } => {
-            collect_shadowed_import_aliases(value, imports, def_map, shadowed);
-        }
-        ast::Expression::Modification { target, value, .. } => {
-            collect_component_shadowed_import_alias(target, imports, def_map, shadowed);
-            collect_shadowed_import_aliases(value, imports, def_map, shadowed);
-        }
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (condition, value) in branches {
-                collect_shadowed_import_aliases(condition, imports, def_map, shadowed);
-                collect_shadowed_import_aliases(value, imports, def_map, shadowed);
-            }
-            collect_shadowed_import_aliases(else_branch, imports, def_map, shadowed);
-        }
-        ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
-            for element in elements {
-                collect_shadowed_import_aliases(element, imports, def_map, shadowed);
-            }
-        }
-        ast::Expression::Range {
-            start, step, end, ..
-        } => {
-            collect_shadowed_import_aliases(start, imports, def_map, shadowed);
-            if let Some(step) = step {
-                collect_shadowed_import_aliases(step, imports, def_map, shadowed);
-            }
-            collect_shadowed_import_aliases(end, imports, def_map, shadowed);
-        }
-        ast::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => {
-            collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
-            for index in indices {
-                collect_shadowed_import_aliases(&index.range, imports, def_map, shadowed);
-            }
-            if let Some(filter) = filter {
-                collect_shadowed_import_aliases(filter, imports, def_map, shadowed);
-            }
-        }
-        ast::Expression::ArrayIndex {
-            base, subscripts, ..
-        } => {
-            collect_shadowed_import_aliases(base, imports, def_map, shadowed);
-            for subscript in subscripts {
-                collect_subscript_shadowed_import_aliases(subscript, imports, def_map, shadowed);
-            }
-        }
-        ast::Expression::FieldAccess { base, .. } => {
-            collect_shadowed_import_aliases(base, imports, def_map, shadowed);
-        }
-        ast::Expression::Terminal { .. } | ast::Expression::Empty { .. } => {}
-    }
-}
-
-fn collect_component_shadowed_import_alias(
-    cr: &ast::ComponentReference,
-    imports: &qualify::ImportMap,
-    def_map: &crate::ResolveDefMap,
-    shadowed: &mut std::collections::HashSet<String>,
-) {
-    for part in &cr.parts {
-        if let Some(subscripts) = &part.subs {
-            for subscript in subscripts {
-                collect_subscript_shadowed_import_aliases(subscript, imports, def_map, shadowed);
-            }
-        }
-    }
-
-    let Some(first) = cr.parts.first() else {
-        return;
-    };
-    let alias = first.ident.text.as_ref();
-    let Some(imported_path) = imports.get(alias) else {
-        return;
-    };
-    let Some(resolved_path) = cr.def_id.and_then(|def_id| def_map.get(&def_id)) else {
-        return;
-    };
-    if rumoca_core::top_level_last_segment(resolved_path) != alias {
-        return;
-    }
-    if resolved_path != imported_path {
-        shadowed.insert(alias.to_string());
-    }
-}
-
-fn collect_subscript_shadowed_import_aliases(
-    subscript: &ast::Subscript,
-    imports: &qualify::ImportMap,
-    def_map: &crate::ResolveDefMap,
-    shadowed: &mut std::collections::HashSet<String>,
-) {
-    if let ast::Subscript::Expression(expr) = subscript {
-        collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
-    }
-}
-
-#[cfg(test)]
-mod import_shadow_tests;

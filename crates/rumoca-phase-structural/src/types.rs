@@ -88,6 +88,14 @@ pub enum StructuralError {
     /// An IC plan referenced an unknown that cannot be mapped to the solver vector.
     #[error("invalid IC plan: unresolved unknown `{name}`")]
     InvalidIcPlanUnknown { name: String },
+    /// A source equation has a compiler-known nonzero residual and therefore
+    /// cannot hold for any value of the continuous unknowns.
+    #[error("inconsistent equation `{origin}`: constant residual is {residual}")]
+    InconsistentEquation {
+        residual: f64,
+        origin: String,
+        span: rumoca_core::Span,
+    },
     /// DAE IR metadata required by structural analysis is missing or inconsistent.
     #[error("invalid structural IR contract: {reason}")]
     ContractViolation {
@@ -113,8 +121,10 @@ impl StructuralError {
                 .iter()
                 .find_map(|span| span.and_then(|span| (!span.is_dummy()).then_some(span))),
             Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
+            Self::InconsistentEquation { span, .. } if !span.is_dummy() => Some(*span),
             Self::EmptySystem
             | Self::InvalidIcPlanUnknown { .. }
+            | Self::InconsistentEquation { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => None,
         }

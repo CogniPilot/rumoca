@@ -480,3 +480,41 @@ fn test_runtime_special_function_precedence_over_user_body() {
 
     assert_eq!(eval_expr_value::<f64>(&expr, &env), 1.0);
 }
+
+#[test]
+fn test_resolved_modelica_body_precedes_string_intrinsic_short_name() {
+    let mut env = VarEnv::<f64>::new();
+    let mut function = rumoca_core::Function::new("Pkg.vectorNorm", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut function, 42);
+    function.add_input(
+        rumoca_core::FunctionParam::new("v", "Real", rumoca_core::Span::DUMMY)
+            .with_dims(vec![0])
+            .with_shape_expr(vec![rumoca_core::Subscript::Colon {
+                span: rumoca_core::Span::DUMMY,
+            }]),
+    );
+    function.add_output(rumoca_core::FunctionParam::new(
+        "result",
+        "Real",
+        rumoca_core::Span::DUMMY,
+    ));
+    function.body = vec![rumoca_core::Statement::Assignment {
+        comp: comp_ref("result"),
+        value: builtin(
+            rumoca_core::BuiltinFunction::Sqrt,
+            vec![binop(rumoca_core::OpBinary::Mul, var("v"), var("v"))],
+        ),
+        span: rumoca_core::Span::DUMMY,
+    }];
+    env.functions = Arc::new(IndexMap::from([("Pkg.vectorNorm".to_string(), function)]));
+
+    let call = resolved_fn_call(
+        "length",
+        "length",
+        42,
+        vec![arr(vec![lit(3.0), lit(4.0)], false)],
+    );
+
+    assert_eq!(eval_expr::<f64>(&call, &env), Ok(5.0));
+    assert_eq!(eval_array_values::<f64>(&call, &env), Ok(vec![5.0]));
+}

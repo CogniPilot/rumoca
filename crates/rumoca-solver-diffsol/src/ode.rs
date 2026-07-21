@@ -10,9 +10,14 @@ use rumoca_eval_solve::{
     SolveRuntime,
 };
 use rumoca_ir_solve as solve;
-use rumoca_solver::{AlgebraicProjectionModel, PreparedMassMatrix, RuntimeSolveError, SimOptions};
+use rumoca_solver::{
+    AlgebraicProjectionModel, ImplicitProjectionModel, PreparedMassMatrix, RuntimeSolveError,
+    SimOptions,
+};
 
-use crate::{EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError, Vector};
+use crate::{
+    AlgebraicWarmStart, EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError, Vector,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct BdfEvalCounters {
@@ -63,8 +68,56 @@ pub(crate) struct BdfEvalCounterSnapshot {
     pub(crate) root_nanos: u64,
 }
 
-pub(crate) fn new_bdf_eval_counters() -> Option<Arc<BdfEvalCounters>> {
+pub(crate) struct StateOdeProblemInput {
+    pub(crate) runtime_params: RuntimeParameters,
+    pub(crate) algebraic_warm_start: AlgebraicWarmStart,
+    pub(crate) t_start: f64,
+    pub(crate) initial_state: Vec<f64>,
+    pub(crate) eval_counters: Option<Arc<BdfEvalCounters>>,
+    pub(crate) rhs_runtime: Arc<SolveRuntime>,
+}
+
+impl StateOdeProblemInput {
+    pub(crate) fn new(
+        runtime_params: RuntimeParameters,
+        algebraic_warm_start: AlgebraicWarmStart,
+        t_start: f64,
+        initial_state: Vec<f64>,
+        eval_counters: Option<Arc<BdfEvalCounters>>,
+        rhs_runtime: Arc<SolveRuntime>,
+    ) -> Self {
+        Self {
+            runtime_params,
+            algebraic_warm_start,
+            t_start,
+            initial_state,
+            eval_counters,
+            rhs_runtime,
+        }
+    }
+}
+
+fn new_bdf_eval_counters() -> Option<Arc<BdfEvalCounters>> {
     trace_bdf_eval_counts().then(|| Arc::new(BdfEvalCounters::default()))
+}
+
+pub(crate) fn state_ode_problem_input(
+    runtime_params: &RuntimeParameters,
+    algebraic_warm_start: &AlgebraicWarmStart,
+    t_start: f64,
+    initial_state: &[f64],
+    rhs_runtime: &Arc<SolveRuntime>,
+) -> (StateOdeProblemInput, Option<Arc<BdfEvalCounters>>) {
+    let eval_counters = new_bdf_eval_counters();
+    let input = StateOdeProblemInput::new(
+        runtime_params.clone(),
+        algebraic_warm_start.clone(),
+        t_start,
+        initial_state.to_vec(),
+        eval_counters.clone(),
+        rhs_runtime.clone(),
+    );
+    (input, eval_counters)
 }
 
 pub(crate) fn trace_bdf_eval_counter_snapshot(
@@ -109,6 +162,7 @@ pub(crate) struct OdeModel {
     implicit_rhs: PreparedComputeBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
     initial_residual: PreparedComputeBlock,
+    initial_residual_jacobian_v: PreparedComputeBlock,
     initial_scalar_residual: PreparedScalarProgramBlock,
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
@@ -134,6 +188,10 @@ impl OdeModel {
             initial_residual: PreparedComputeBlock::new_with_label(
                 &model.problem.initialization.residual,
                 "ode_initial_residual",
+            )?,
+            initial_residual_jacobian_v: PreparedComputeBlock::new_with_label(
+                &model.artifacts.initialization.residual_jacobian_v,
+                "ode_initial_residual_jacobian_v",
             )?,
             initial_scalar_residual: PreparedScalarProgramBlock::new(
                 solve_eval::to_scalar_program_block(&model.problem.initialization.residual)?,
@@ -172,6 +230,19 @@ impl OdeModel {
 
     pub(crate) fn initial_residual_len(&self) -> usize {
         self.initial_residual.len()
+    }
+
+    pub(crate) fn eval_initial_jacobian_v(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), SimError> {
+        self.initial_residual_jacobian_v
+            .eval_with_context(y, p, t, self.row_eval_context(Some(v)), out)
+            .map_err(|err| SimError::SolveIr(err.to_string()))
     }
 
     pub(crate) fn eval_residual(
@@ -234,7 +305,7 @@ impl OdeModel {
     }
 }
 
-impl AlgebraicProjectionModel for OdeModel {
+impl ImplicitProjectionModel for OdeModel {
     fn eval_residual(
         &self,
         y: &[f64],
@@ -243,17 +314,6 @@ impl AlgebraicProjectionModel for OdeModel {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         OdeModel::eval_residual(self, y, p, t, out)
-            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
-    }
-
-    fn eval_initial_residual(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        OdeModel::eval_initial_residual(self, y, p, t, out)
             .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
@@ -269,6 +329,25 @@ impl AlgebraicProjectionModel for OdeModel {
             .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
+    fn eval_implicit_residual_row(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(program_idx) = self
+            .implicit_scalar_rhs
+            .single_output_row_for_output_index(row_idx)
+        else {
+            return Ok(None);
+        };
+        self.implicit_scalar_rhs
+            .eval_row_unchecked_with_context(program_idx, y, p, t, self.row_eval_context(None))
+            .map(Some)
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
+    }
+
     fn eval_implicit_target_value(
         &self,
         row_idx: usize,
@@ -277,15 +356,58 @@ impl AlgebraicProjectionModel for OdeModel {
         p: &[f64],
         t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(program_idx) = self
+            .implicit_scalar_rhs
+            .single_output_row_for_output_index(row_idx)
+        else {
+            return Ok(None);
+        };
         self.implicit_scalar_rhs
             .eval_target_assignment_row_unchecked_with_context(
-                row_idx,
+                program_idx,
                 target_y_index,
                 y,
                 p,
                 t,
                 self.row_eval_context(None),
             )
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
+    }
+
+    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+        self.implicit_targets.get(row_idx).copied().flatten()
+    }
+
+    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+        &self.algebraic_projection_plan
+    }
+
+    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
+        OdeModel::target_name_for_row(self, row_idx)
+    }
+}
+
+impl AlgebraicProjectionModel for OdeModel {
+    fn eval_initial_residual(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        OdeModel::eval_initial_residual(self, y, p, t, out)
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
+    }
+
+    fn eval_initial_jacobian_v(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        OdeModel::eval_initial_jacobian_v(self, y, p, t, v, out)
             .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
@@ -345,24 +467,8 @@ impl AlgebraicProjectionModel for OdeModel {
         OdeModel::initial_residual_len(self)
     }
 
-    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
-        self.implicit_targets.get(row_idx).copied().flatten()
-    }
-
     fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
         self.initial_targets.get(row_idx).copied().flatten()
-    }
-
-    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
-        &self.algebraic_projection_plan
-    }
-
-    fn has_explicit_initial_targets(&self) -> bool {
-        self.initial_targets.iter().any(Option::is_some)
-    }
-
-    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
-        OdeModel::target_name_for_row(self, row_idx)
     }
 }
 
@@ -427,11 +533,7 @@ pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
 pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     model: &solve::SolveModel,
     opts: &SimOptions,
-    runtime_params: RuntimeParameters,
-    t_start: f64,
-    initial_state: Vec<f64>,
-    eval_counters: Option<Arc<BdfEvalCounters>>,
-    rhs_runtime: Arc<SolveRuntime>,
+    input: StateOdeProblemInput,
 ) -> Result<
     OdeSolverProblem<
         impl OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
@@ -442,21 +544,33 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     let state_count = model.state_scalar_count();
     let params = model.parameters.clone();
     let atol = vec![opts.atol; state_count.max(1)];
-    let jac_runtime = rhs_runtime.clone();
-    let root_runtime = rhs_runtime.clone();
-    let rhs_counters = eval_counters.clone();
-    let jac_counters = eval_counters.clone();
-    let root_counters = eval_counters;
-    let rhs_params = Some(runtime_params.clone());
-    let jac_params = Some(runtime_params.clone());
-    let root_params = Some(runtime_params);
+    let jac_runtime = input.rhs_runtime.clone();
+    let root_runtime = input.rhs_runtime.clone();
+    let rhs_counters = input.eval_counters.clone();
+    let jac_counters = input.eval_counters.clone();
+    let root_counters = input.eval_counters;
+    let rhs_params = Some(input.runtime_params.clone());
+    let jac_params = Some(input.runtime_params.clone());
+    let root_params = Some(input.runtime_params);
+    let rhs_warm_start = input.algebraic_warm_start.clone();
+    let jac_warm_start = input.algebraic_warm_start;
     let tol = opts.atol.max(1.0e-10);
 
     let rhs_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         let start = rhs_counters.as_ref().map(|_| Instant::now());
         with_runtime_params(&rhs_params, p.as_slice(), |params| {
-            if rhs_runtime
-                .eval_state_derivatives_into(t, y.as_slice(), params, tol, 256, out.as_mut_slice())
+            let mut solver_y = rhs_warm_start.speculative();
+            if input
+                .rhs_runtime
+                .eval_state_derivatives_with_guess_into(
+                    t,
+                    y.as_slice(),
+                    params,
+                    &mut solver_y,
+                    tol,
+                    256,
+                    out.as_mut_slice(),
+                )
                 .is_err()
             {
                 fill_eval_error(out.as_mut_slice());
@@ -469,18 +583,17 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     let jac_fn = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
         let start = jac_counters.as_ref().map(|_| Instant::now());
         with_runtime_params(&jac_params, p.as_slice(), |params| {
+            let mut solver_y = jac_warm_start.speculative();
             if jac_runtime
-                .eval_state_jacobian_v_ad_into(
+                .eval_state_jacobian_v_ad_with_guess_into(
                     solve_eval::AlgebraicLinearization {
                         t,
                         params,
-                        settle: solve_eval::AlgebraicSettle {
-                            tol,
-                            max_iters: 256,
-                        },
+                        settle: bdf_algebraic_settle(tol),
                     },
                     y.as_slice(),
                     v.as_slice(),
+                    &mut solver_y,
                     out.as_mut_slice(),
                 )
                 .is_err()
@@ -515,7 +628,7 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     };
 
     OdeBuilder::<Matrix>::new()
-        .t0(t_start)
+        .t0(input.t_start)
         .h0(opts.dt.unwrap_or(1.0e-3).abs().max(1.0e-9))
         .rtol(opts.rtol)
         .atol(atol)
@@ -523,13 +636,20 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         .rhs_implicit(rhs_fn, jac_fn)
         .init(
             move |_p: &Vector, _t: Scalar, y: &mut Vector| {
-                y.as_mut_slice().copy_from_slice(&initial_state);
+                y.as_mut_slice().copy_from_slice(&input.initial_state);
             },
             state_count.max(1),
         )
         .root(root_fn, model.problem.events.root_conditions.len().max(1))
         .build()
         .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
+}
+
+fn bdf_algebraic_settle(tol: f64) -> solve_eval::AlgebraicSettle {
+    solve_eval::AlgebraicSettle {
+        tol,
+        max_iters: 256,
+    }
 }
 
 fn build_ode_problem_with_initial(

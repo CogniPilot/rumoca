@@ -5,6 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    openmodelica.url = "git+https://github.com/jgoppert/OpenModelica?submodules=1&rev=a96aa1a682c463b0fd2d285b486c09a8b7fe496d";
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -17,6 +18,7 @@
       nixpkgs,
       flake-utils,
       crane,
+      openmodelica,
       fenix,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -43,6 +45,7 @@
           ps.sympy
           ps.virtualenv
         ]);
+        openModelicaCli = openmodelica.packages.${system}.default;
 
         # Native libs the workspace links against. libudev (systemd) for the
         # gamepad/input crates; clang/libclang for any bindgen-using dep.
@@ -210,6 +213,9 @@
           rumoca-python = rumocaPython;
           rumoca-python-env = rumocaPythonEnv;
           msl-artifacts = msl-artifacts;
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          openmodelica-cli = openModelicaCli;
         };
 
         checks = {
@@ -222,6 +228,9 @@
             }
           );
           fmt = craneLib.cargoFmt { src = ./.; };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          openmodelica-cli = openModelicaCli;
         };
 
         devShells.default = craneLib.devShell {
@@ -229,6 +238,9 @@
           packages =
             pkgs.lib.optionals pkgs.stdenv.isLinux [
               ciJulia
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              openModelicaCli
             ]
             ++ [
               ciPython
@@ -239,11 +251,14 @@
               pkgs.wasm-pack
             ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-            pkgs.gfortran.cc.lib
-            pkgs.stdenv.cc.cc.lib
-            pkgs.zlib
-          ];
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            [
+              pkgs.gfortran.cc.lib
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+          );
         };
         devShells.ci-template-core = templateRuntimeShell [ ];
         devShells.ci-template-python = templateRuntimeShell [ ciPython ];

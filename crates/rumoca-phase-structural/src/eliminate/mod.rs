@@ -15,6 +15,7 @@ use std::collections::HashSet;
 
 use indexmap::{IndexMap, IndexSet};
 
+use crate::static_eval::{eval_static_number, structural_scalar_bindings};
 use rumoca_core::{
     ExpressionRewriter, FallibleExpressionRewriter, maybe_elapsed_seconds, maybe_start_timer_if,
 };
@@ -38,7 +39,7 @@ mod tearing_elimination;
 mod unknown_index;
 
 use aggregate_alias::{
-    aggregate_alias_for_elimination, aggregate_variable_fully_resolved,
+    aggregate_definition_for_elimination, aggregate_variable_fully_resolved,
     is_scalarized_element_of_aggregate,
 };
 use boundary_scan::{BoundaryScanCtx, BoundaryScanState, scan_boundary_equations};
@@ -50,24 +51,24 @@ use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_co
 use profiling::{eliminate_profile_enabled, log_eliminate_profile};
 use runtime_known::singular_rows_are_runtime_known_assignments;
 use runtime_protection::{
-    assignment_target_name, expr_references_any_discrete_name,
-    expr_references_any_runtime_discrete_target, is_runtime_protected_unknown,
-    runtime_defined_discrete_target_names, runtime_partition_or_event_refs_var,
-    runtime_protected_unknown_names, should_preserve_runtime_known_assignment,
+    expr_references_any_discrete_name, expr_references_any_runtime_discrete_target,
+    is_runtime_protected_unknown, runtime_defined_discrete_target_names,
+    runtime_partition_or_event_refs_var, runtime_protected_unknown_names,
+    should_preserve_runtime_known_assignment,
 };
 use scalar_shape::expression_is_scalar_after_subscripts;
 pub use solve_for_unknown::try_solve_for_unknown;
 use substitution_application::{
     apply_substitutions_in_order, apply_substitutions_to_dae_partitions,
-    apply_substitutions_to_remaining_once, equation_analysis_expr,
+    apply_substitutions_to_remaining_once, equation_analysis_expr, simplify_arithmetic_identities,
 };
 use substitution_target::{
     expr_contains_derivative_substitution_target, expr_contains_substitution_target,
 };
 use tearing_elimination::tear_and_eliminate_loop_block;
 use unknown_index::{
-    BoundaryUnknownIndex, checked_count_live_unknowns, find_live_scalar_unknowns,
-    has_any_live_unknown,
+    BoundaryUnknownIndex, checked_count_live_unknowns, expression_references_boundary_unknown,
+    find_live_scalar_unknowns, has_any_live_unknown,
 };
 
 use crate::variable_scope::{DaeVariableScope, DaeVariableShape, scalar_count_from_dims};
@@ -179,13 +180,21 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         sort_input.continuous.equations.len(),
     );
     let p_drop = maybe_start_timer_if(profile);
-    drop_unreferenced_continuous_unknowns(&mut sort_input);
+    drop_unreferenced_continuous_unknowns(&mut sort_input)?;
     log_eliminate_profile(
         profile,
         "drop_unreferenced_unknowns",
         p_drop,
         sort_input.continuous.equations.len(),
     );
+    let uses_scalar_view = sort_input
+        .continuous
+        .equations
+        .iter()
+        .any(|equation| equation.scalar_count != 1);
+    if uses_scalar_view {
+        crate::scalarize::scalarize_equations(&mut sort_input)?;
+    }
     let p_sort = maybe_start_timer_if(profile);
     let blocks = match sort_dae(&sort_input) {
         Ok(sorted) => Some(sorted.blocks.clone()),
@@ -203,7 +212,7 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         p_sort,
         blocks.as_ref().map_or(0, Vec::len),
     );
-    if let Some(blocks) = blocks {
+    if let Some(blocks) = blocks.filter(|_| !uses_scalar_view) {
         let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
         let t_blt = maybe_start_timer_if(trace);
         let p_blt = maybe_start_timer_if(profile);
@@ -639,10 +648,21 @@ fn try_eliminate_zero_unknown_equation(
         ctx.runtime_defined_discrete_targets,
         ctx.substitutions,
     )?;
-    if assignment_target_name(eq_rhs).is_some_and(|target| dae_var(ctx.dae, &target).is_some())
-        && ctx.substitutions.len() == n_subs_before
-    {
-        return Ok(());
+    if ctx.substitutions.len() == n_subs_before {
+        let bindings = structural_scalar_bindings(ctx.dae);
+        let simplified = simplify_arithmetic_identities(eq_rhs.clone());
+        match eval_static_number(&simplified, &bindings) {
+            Some(value) if value.is_finite() && value == 0.0 => {}
+            Some(value) if value.is_finite() => {
+                let equation = &ctx.dae.continuous.equations[eq_idx];
+                return Err(StructuralError::InconsistentEquation {
+                    residual: value,
+                    origin: equation.origin.clone(),
+                    span: equation.span,
+                });
+            }
+            Some(_) | None => return Ok(()),
+        }
     }
     ctx.eliminated_eq_indices.push(eq_idx);
     ctx.eliminated_eq_flags[eq_idx] = true;
@@ -1211,6 +1231,7 @@ fn can_use_scalar_equation_for_elimination(
         eq.origin.starts_with("connection equation:"),
         std::slice::from_ref(var_name),
         runtime_defined_discrete_targets,
+        false,
     )
 }
 
@@ -1564,6 +1585,24 @@ struct RecordFieldAggregateRewriter {
     complex_groups: IndexMap<String, ComplexFieldSubstitutionGroup>,
 }
 
+impl RecordFieldAggregateRewriter {
+    fn aggregate_replacement(
+        &self,
+        name: &Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Option<Expression> {
+        let group = self.aggregate_alias_groups.get(name.var_name())?;
+        if subscripts.is_empty() {
+            group.to_replacement_expr(span)
+        } else if subscripts_are_static_scalar_indices(subscripts) {
+            None
+        } else {
+            group.to_indexed_replacement_expr(subscripts, span)
+        }
+    }
+}
+
 impl ExpressionRewriter for RecordFieldAggregateRewriter {
     fn rewrite_var_ref_expression(
         &mut self,
@@ -1571,29 +1610,34 @@ impl ExpressionRewriter for RecordFieldAggregateRewriter {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Expression {
-        if !subscripts.is_empty()
-            && !subscripts_are_static_scalar_indices(subscripts)
-            && let Some(replacement) = self
-                .aggregate_alias_groups
-                .get(name.var_name())
-                .and_then(|group| group.to_indexed_replacement_expr(subscripts, span))
-        {
+        if let Some(replacement) = self.aggregate_replacement(name, subscripts, span) {
             return replacement;
         }
         if !subscripts.is_empty() {
             return self.walk_var_ref_expression(name, subscripts, span);
         }
-        if let Some(replacement) = self
-            .aggregate_alias_groups
-            .get(name.var_name())
-            .and_then(|group| group.to_replacement_expr(span))
-        {
-            return replacement;
-        }
         self.complex_groups
             .get(name.as_str())
             .and_then(|group| group.to_constructor_expr(span))
             .unwrap_or_else(|| self.walk_var_ref_expression(name, subscripts, span))
+    }
+
+    fn walk_field_access_expression(
+        &mut self,
+        base: &Expression,
+        field: &str,
+        span: rumoca_core::Span,
+    ) -> Expression {
+        if let Some((name, subscripts)) = rumoca_ir_dae::indexed_field_var_ref(base, field)
+            && let Some(replacement) = self.aggregate_replacement(&name, &subscripts, span)
+        {
+            return replacement;
+        }
+        Expression::FieldAccess {
+            base: Box::new(self.rewrite_expression(base)),
+            field: field.to_owned(),
+            span,
+        }
     }
 }
 

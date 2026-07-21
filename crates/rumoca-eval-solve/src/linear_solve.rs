@@ -21,7 +21,10 @@ pub(super) fn solve_component_op(
     {
         solve_component(regs, initialized, matrix_start, rhs_start, n, component)
     } else {
-        Ok(0.0)
+        Err(EvalSolveError::InvalidLinearOp {
+            helper: "linear solve component",
+            op: op.kind_name(),
+        })
     }
 }
 
@@ -33,12 +36,10 @@ pub(super) fn solve_component(
     n: usize,
     component: usize,
 ) -> Result<f64, EvalSolveError> {
-    if n == 0 || component >= n {
-        return Ok(0.0);
-    }
+    validate_component(n, component)?;
     let mut matrix = build_augmented_matrix(regs, initialized, matrix_start, rhs_start, n)?;
     if gaussian_eliminate(&mut matrix).is_none() {
-        return Ok(0.0);
+        return Err(linear_solve_error(n, Some(component), "singular matrix"));
     }
     Ok(matrix.solution_component(component))
 }
@@ -50,12 +51,10 @@ pub(super) fn solve_component_unchecked(
     n: usize,
     component: usize,
 ) -> Result<f64, EvalSolveError> {
-    if n == 0 || component >= n {
-        return Ok(0.0);
-    }
+    validate_component(n, component)?;
     let mut matrix = build_augmented_matrix_unchecked(regs, matrix_start, rhs_start, n)?;
     if gaussian_eliminate(&mut matrix).is_none() {
-        return Ok(0.0);
+        return Err(linear_solve_error(n, Some(component), "singular matrix"));
     }
     Ok(matrix.solution_component(component))
 }
@@ -67,9 +66,15 @@ pub(crate) fn solve_all_unchecked(
     n: usize,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
-    let len = n.min(out.len());
-    if len == 0 {
+    if n == 0 {
         return Ok(());
+    }
+    if out.len() < n {
+        return Err(EvalSolveError::OutputTooSmall {
+            required: n,
+            len: out.len(),
+            span: None,
+        });
     }
     let start = matrix_start as usize;
     let matrix_len = checked_product(n, n, "linear solve matrix")?;
@@ -87,17 +92,16 @@ pub(crate) fn solve_all_unchecked(
     let nonzeros = matrix_nonzeros(matrix_values, 1.0e-14);
     match select_linear_solve_kernel(n, diagonal, nonzeros).map_err(tensor_policy_error)? {
         LinearSolveKernel::Diagonal => {
-            solve_diagonal_unchecked(regs, matrix_start, rhs_start, n, out);
+            solve_diagonal_unchecked(regs, matrix_start, rhs_start, n, out)?;
         }
         LinearSolveKernel::SmallDense
         | LinearSolveKernel::Dense
         | LinearSolveKernel::SparseCandidate => {
             let mut matrix = build_augmented_matrix_unchecked(regs, matrix_start, rhs_start, n)?;
             if gaussian_eliminate(&mut matrix).is_none() {
-                out[..len].fill(0.0);
-                return Ok(());
+                return Err(linear_solve_error(n, None, "singular matrix"));
             }
-            for (component, dst) in out.iter_mut().take(len).enumerate() {
+            for (component, dst) in out.iter_mut().take(n).enumerate() {
                 *dst = matrix.solution_component(component);
             }
         }
@@ -118,14 +122,41 @@ fn solve_diagonal_unchecked(
     rhs_start: u32,
     n: usize,
     out: &mut [f64],
-) {
+) -> Result<(), EvalSolveError> {
     for (component, dst) in out.iter_mut().take(n).enumerate() {
         let coeff = regs[matrix_start as usize + component * n + component];
         if coeff.abs() <= 1.0e-14 {
-            *dst = 0.0;
-        } else {
-            *dst = regs[rhs_start as usize + component] / coeff;
+            return Err(linear_solve_error(n, Some(component), "singular diagonal"));
         }
+        *dst = regs[rhs_start as usize + component] / coeff;
+    }
+    Ok(())
+}
+
+fn validate_component(n: usize, component: usize) -> Result<(), EvalSolveError> {
+    if n == 0 {
+        return Err(linear_solve_error(n, Some(component), "empty system"));
+    }
+    if component >= n {
+        return Err(linear_solve_error(
+            n,
+            Some(component),
+            "component is outside the solution vector",
+        ));
+    }
+    Ok(())
+}
+
+fn linear_solve_error(
+    size: usize,
+    component: Option<usize>,
+    reason: &'static str,
+) -> EvalSolveError {
+    EvalSolveError::LinearSolve {
+        size,
+        component,
+        reason,
+        span: None,
     }
 }
 

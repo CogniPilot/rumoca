@@ -773,6 +773,11 @@ pub(crate) fn process_component_instances_for_flatten(
         process_component_instance(ComponentInstanceProcess {
             flat,
             instance_data,
+            canonical_type_id: overlay
+                .type_roots
+                .get(&instance_data.type_id)
+                .copied()
+                .unwrap_or(instance_data.type_id),
             component_override_map,
             tree,
             class_index,

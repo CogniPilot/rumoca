@@ -164,7 +164,7 @@ jobs:
           if-no-files-found: error
 
   # Reproducible build + clippy + fmt via the root crane+fenix flake, backed by
-  # the Cachix binary cache (rumoca.cachix.org). First run is cold and pushes
+  # the Cachix binary cache (cognipilot.cachix.org). First run is cold and pushes
   # the built closure; subsequent runs (and local `cachix use rumoca`) restore
   # the prebuilt dependency closure + rumoca binary in seconds. Replaces the
   # deprecated magic-nix-cache, which rate-limited the GitHub Actions cache API
@@ -183,10 +183,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
           # Public cache: pulls need no auth; the token lets CI push new paths.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
@@ -432,10 +432,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
 
       - name: Rust cache (template-runtime)
         uses: Swatinem/rust-cache@v2
@@ -789,10 +789,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
           # Public cache: consumer pulls need no auth; the token lets this
           # producer push the freshly built closure. Absent on fork PRs, in which
           # case consumers Cachix-miss and fall back to compiling — still correct.
@@ -871,23 +871,6 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
-      - name: Install OpenModelica
-        shell: bash
-        run: |
-          set -euo pipefail
-          omc_channel="stable"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang cmake curl gnupg \
-            libexpat1-dev liblapack-dev lsb-release unzip zip
-          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
-            | sudo tee /etc/apt/sources.list.d/openmodelica.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends omc
-          omc --version
-
       - name: Clean stale MSL results
         shell: bash
         run: rm -rf target/msl/results
@@ -897,10 +880,18 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
+
+      - name: Restore flake-pinned OpenModelica CLI (Cachix)
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build .#openmodelica-cli --out-link result-openmodelica
+          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
+          result-openmodelica/bin/omc --version
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
@@ -972,10 +963,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
@@ -1300,23 +1291,6 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
-      - name: Install OpenModelica
-        shell: bash
-        run: |
-          set -euo pipefail
-          omc_channel="stable"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang cmake curl gnupg \
-            libexpat1-dev liblapack-dev lsb-release unzip zip
-          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
-            | sudo tee /etc/apt/sources.list.d/openmodelica.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends omc
-          omc --version
-
       - name: Prepare ModelicaTest sources
         shell: bash
         run: |
@@ -1331,10 +1305,18 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
+
+      - name: Restore flake-pinned OpenModelica CLI (Cachix)
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build .#openmodelica-cli --out-link result-openmodelica
+          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
+          result-openmodelica/bin/omc --version
 
       - name: Restore prebuilt MSL binaries (Cachix)
         run: |
@@ -1401,10 +1383,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
 
       - name: Restore prebuilt compatibility runner (Cachix)
         run: |
@@ -1529,10 +1511,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
 
       - name: Rust cache (wasm)
         uses: Swatinem/rust-cache@v2
@@ -1868,11 +1850,11 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         if: runner.os != 'Windows'
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
 
       - uses: actions/setup-python@v6
         if: runner.os == 'Windows'
@@ -1969,10 +1951,10 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (rumoca binary cache)
+      - name: Cachix (CogniPilot binary cache)
         uses: cachix/cachix-action@v17
         with:
-          name: rumoca
+          name: cognipilot
 
       - name: Build sdist
         run: |

@@ -11,13 +11,21 @@ pub(crate) fn maximum_matching(
     n_eq: usize,
     n_var: usize,
     eq_vars: &[HashSet<usize>],
+    preferred_vars: &[Option<usize>],
 ) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
     let mut match_eq: Vec<Option<usize>> = vec![None; n_eq];
     let mut match_var: Vec<Option<usize>> = vec![None; n_var];
 
     for eq in 0..n_eq {
         let mut visited = vec![false; n_var];
-        augment(eq, &mut match_eq, &mut match_var, eq_vars, &mut visited);
+        augment(
+            eq,
+            &mut match_eq,
+            &mut match_var,
+            eq_vars,
+            preferred_vars,
+            &mut visited,
+        );
     }
 
     (match_eq, match_var)
@@ -29,6 +37,7 @@ fn augment(
     match_eq: &mut [Option<usize>],
     match_var: &mut [Option<usize>],
     eq_vars: &[HashSet<usize>],
+    preferred_vars: &[Option<usize>],
     visited: &mut [bool],
 ) -> bool {
     // Deterministic traversal is critical for reproducible BLT/matching.
@@ -36,12 +45,29 @@ fn augment(
     // structural choices between runs.
     let mut vars: Vec<usize> = eq_vars[eq].iter().copied().collect();
     vars.sort_unstable();
+    if let Some(preferred) = preferred_vars
+        .get(eq)
+        .copied()
+        .flatten()
+        .filter(|var| eq_vars[eq].contains(var))
+        && let Ok(position) = vars.binary_search(&preferred)
+    {
+        vars.remove(position);
+        vars.insert(0, preferred);
+    }
     for var in vars {
         if !visited[var] {
             visited[var] = true;
             let can_augment = match match_var[var] {
                 None => true,
-                Some(matched_eq) => augment(matched_eq, match_eq, match_var, eq_vars, visited),
+                Some(matched_eq) => augment(
+                    matched_eq,
+                    match_eq,
+                    match_var,
+                    eq_vars,
+                    preferred_vars,
+                    visited,
+                ),
             };
             if can_augment {
                 match_eq[eq] = Some(var);
@@ -64,7 +90,7 @@ mod tests {
             HashSet::from([1, 2]),
             HashSet::from([0, 2]),
         ];
-        let (match_eq, _match_var) = maximum_matching(3, 3, &eq_vars);
+        let (match_eq, _match_var) = maximum_matching(3, 3, &eq_vars, &[]);
         let size = match_eq.iter().filter(|m| m.is_some()).count();
         assert_eq!(size, 3, "should find perfect matching");
     }
@@ -76,7 +102,7 @@ mod tests {
             HashSet::from([0]),
             HashSet::from([1, 2]),
         ];
-        let (match_eq, _match_var) = maximum_matching(3, 3, &eq_vars);
+        let (match_eq, _match_var) = maximum_matching(3, 3, &eq_vars, &[]);
         let size = match_eq.iter().filter(|m| m.is_some()).count();
         assert_eq!(size, 2, "imperfect matching: two equations compete for v0");
     }
@@ -84,8 +110,23 @@ mod tests {
     #[test]
     fn test_maximum_matching_is_deterministic_under_ties() {
         let eq_vars = vec![HashSet::from([0, 1]), HashSet::from([0, 1])];
-        let (match_eq, match_var) = maximum_matching(2, 2, &eq_vars);
+        let (match_eq, match_var) = maximum_matching(2, 2, &eq_vars, &[]);
         assert_eq!(match_eq, vec![Some(1), Some(0)]);
         assert_eq!(match_var, vec![Some(1), Some(0)]);
+    }
+
+    #[test]
+    fn test_maximum_matching_visits_preferred_edges_first() {
+        let eq_vars = vec![HashSet::from([0, 1]), HashSet::from([0, 1])];
+        let (match_eq, match_var) = maximum_matching(2, 2, &eq_vars, &[Some(0), Some(1)]);
+        assert_eq!(match_eq, vec![Some(0), Some(1)]);
+        assert_eq!(match_var, vec![Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn test_maximum_matching_keeps_cardinality_when_preferences_conflict() {
+        let eq_vars = vec![HashSet::from([0, 1]), HashSet::from([0])];
+        let (match_eq, _match_var) = maximum_matching(2, 2, &eq_vars, &[Some(0), Some(0)]);
+        assert_eq!(match_eq, vec![Some(1), Some(0)]);
     }
 }

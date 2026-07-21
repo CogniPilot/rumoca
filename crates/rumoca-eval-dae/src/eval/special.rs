@@ -1456,15 +1456,16 @@ pub(super) fn eval_function_call<T: SimFloat>(
         return Ok(result);
     }
 
+    let is_string_special = rumoca_core::modelica_string_intrinsic_short_name(short_name).is_some();
     if is_runtime_special_function_name(name.var_name())
+        && !is_string_special
         && let Some(result) = eval_special_function_call(name.var_name(), args, env)?
     {
         return Ok(result);
     }
 
-    // Runtime special functions must bypass structured user-function bodies so
-    // standard library helpers like BooleanVectors.firstTrueIndex keep their
-    // declared runtime semantics on the simulation path.
+    // An exact executable Modelica body owns its declared function semantics.
+    // External and bodyless declarations continue to host intrinsic handling.
     if let Some(result) = eval_user_function_call(name, args, env)? {
         return Ok(result);
     }

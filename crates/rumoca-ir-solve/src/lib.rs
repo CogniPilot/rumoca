@@ -33,7 +33,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 16;
+pub const SOLVE_SCHEMA_VERSION: u16 = 17;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1304,6 +1304,16 @@ impl SolveProblem {
         self.events
             .root_conditions
             .validate_shape_contract("events.root_conditions")?;
+        validate_count(
+            "events.root_relation_memory_targets",
+            self.events.root_conditions.len(),
+            self.events.root_relation_memory_targets.len(),
+        )?;
+        validate_count(
+            "events.root_zero_domains",
+            self.events.root_conditions.len(),
+            self.events.root_zero_domains.len(),
+        )?;
         validate_scheduled_root_conditions(
             "events.scheduled_root_conditions",
             &self.events.scheduled_root_conditions,
@@ -1395,10 +1405,6 @@ fn validate_projection_plan(
     for block in &plan.blocks {
         validate_indices(context, &block.rows, row_upper_bound)?;
         validate_indices(context, &block.y_indices, y_upper_bound)?;
-        for step in &block.causal_steps {
-            validate_indices(context, &[step.row], row_upper_bound)?;
-            validate_indices(context, &[step.y_index], y_upper_bound)?;
-        }
     }
     Ok(())
 }
@@ -1625,19 +1631,12 @@ impl AlgebraicProjectionPlan {
 pub struct AlgebraicProjectionBlock {
     pub rows: Vec<usize>,
     pub y_indices: Vec<usize>,
-    #[serde(default)]
-    pub causal_steps: Vec<AlgebraicProjectionStep>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct AlgebraicProjectionStep {
-    pub row: usize,
-    pub y_index: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SolveArtifacts {
     pub continuous: ContinuousSolveArtifacts,
+    pub initialization: InitializationSolveArtifacts,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1655,6 +1654,11 @@ pub struct ContinuousSolveArtifacts {
     #[serde(default)]
     pub implicit_jacobian_v_scalar: ScalarProgramBlock,
     pub full_jacobian_v: ScalarProgramBlock,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct InitializationSolveArtifacts {
+    pub residual_jacobian_v: ComputeBlock,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1684,12 +1688,21 @@ pub struct DiscreteSolveSystem {
 pub struct SolveEventPartition {
     pub root_conditions: ScalarProgramBlock,
     pub root_relation_memory_targets: Vec<Option<ScalarSlot>>,
+    pub root_zero_domains: Vec<RootZeroDomain>,
     pub scheduled_root_conditions: Vec<ScheduledRootCondition>,
     pub scheduled_time_events: Vec<f64>,
     pub dynamic_time_event_names: Vec<String>,
     pub dynamic_time_event_rhs: ScalarProgramBlock,
     pub action_conditions: ScalarProgramBlock,
     pub actions: Vec<SolveEventAction>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RootZeroDomain {
+    Positive,
+    NonPositive,
+    #[default]
+    Previous,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

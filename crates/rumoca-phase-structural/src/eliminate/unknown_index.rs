@@ -281,6 +281,16 @@ fn refs_contain_unknown(
     Ok(false)
 }
 
+pub(super) fn expression_references_boundary_unknown(
+    expr: &Expression,
+    unknown: &VarName,
+    dae: &Dae,
+) -> Result<bool, StructuralError> {
+    let mut refs = Vec::new();
+    collect_var_ref_nodes(expr, &mut refs);
+    refs_contain_unknown(&refs, unknown, dae)
+}
+
 fn unknown_scalar_size(dae: &Dae, unknown: &VarName) -> Result<usize, StructuralError> {
     DaeVariableScope::new(dae).size(unknown)
 }

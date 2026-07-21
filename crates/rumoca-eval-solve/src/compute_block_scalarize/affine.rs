@@ -132,13 +132,13 @@ fn validate_affine_stride_metadata(
     for stride in load_strides {
         validate_stride_terms(domain, &stride.terms, kind, span)?;
         match base_ops.get(stride.op_position) {
-            Some(LinearOp::LoadY { .. } | LinearOp::LoadP { .. }) => {}
+            Some(LinearOp::LoadY { .. } | LinearOp::LoadP { .. } | LinearOp::LoadSeed { .. }) => {}
             Some(op) => {
                 return Err(affine_stride_error(
                     kind,
                     stride.op_position,
                     base_ops.len(),
-                    "LoadY or LoadP",
+                    "LoadY, LoadP, or LoadSeed",
                     Some(linear_op_name(op)),
                     span,
                 ));
@@ -148,7 +148,7 @@ fn validate_affine_stride_metadata(
                     kind,
                     stride.op_position,
                     base_ops.len(),
-                    "LoadY or LoadP",
+                    "LoadY, LoadP, or LoadSeed",
                     None,
                     span,
                 ));
@@ -233,7 +233,9 @@ fn apply_affine_load_stride(
 ) -> Result<(), ScalarizeError> {
     let op_count = ops.len();
     match ops.get_mut(stride.op_position) {
-        Some(LinearOp::LoadY { index, .. }) | Some(LinearOp::LoadP { index, .. }) => {
+        Some(LinearOp::LoadY { index, .. })
+        | Some(LinearOp::LoadP { index, .. })
+        | Some(LinearOp::LoadSeed { index, .. }) => {
             *index = apply_index_terms(
                 *index,
                 &stride.terms,
@@ -249,7 +251,7 @@ fn apply_affine_load_stride(
             kind,
             stride.op_position,
             op_count,
-            "LoadY or LoadP",
+            "LoadY, LoadP, or LoadSeed",
             Some(linear_op_name(op)),
             span,
         )),
@@ -257,7 +259,7 @@ fn apply_affine_load_stride(
             kind,
             stride.op_position,
             op_count,
-            "LoadY or LoadP",
+            "LoadY, LoadP, or LoadSeed",
             None,
             span,
         )),

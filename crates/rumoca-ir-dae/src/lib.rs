@@ -39,8 +39,8 @@ pub use event_threshold::{is_event_constant_threshold, is_event_constant_time_th
 pub use expr_query::{
     DerivativeNameMatcher, complex_base_alias_match, embedded_subscripts_all_one,
     expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,
-    parse_embedded_subscripts, split_complex_field_suffix, subscripts_all_one,
-    subscripts_match_indices, var_ref_matches_unknown,
+    indexed_field_var_ref, parse_embedded_subscripts, split_complex_field_suffix,
+    subscripts_all_one, subscripts_match_indices, var_ref_matches_unknown,
 };
 pub use types::{
     StructuredEquationFamily, StructuredEquationSlot, component_base_name,

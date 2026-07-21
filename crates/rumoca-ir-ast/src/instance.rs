@@ -870,6 +870,11 @@ pub struct InstanceOverlay {
     /// Contains structured instance component paths whose conditions evaluated to false.
     /// These components and their sub-components should be excluded from flattening.
     pub disabled_components: IndexSet<ComponentPath>,
+    /// Component bindings introduced by an `each` modifier (MLS §7.2.5).
+    ///
+    /// This remains structured instantiation metadata so flattening can preserve
+    /// element-wise modifier semantics when an array component stays compact.
+    pub each_modifier_bindings: IndexSet<ComponentPath>,
     /// Array parent dimensions for expanded array components.
     /// When an array component like `plug_p.pin[3]` is expanded to indexed instances
     /// (`plug_p.pin[1]`, `plug_p.pin[2]`, `plug_p.pin[3]`), this map stores the parent

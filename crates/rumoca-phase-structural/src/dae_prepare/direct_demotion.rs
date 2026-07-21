@@ -10,17 +10,17 @@ fn log_direct_demotion_scan_summary(
         return;
     }
     crate::structural_trace!(
-        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_self_der={} skip_der_in_defining_expr={} skip_unsliced_vector_ref={} skip_extra_state_refs={} skip_no_der={} skip_non_state_der={}",
+        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_der_in_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
         state_count,
         counters.n_candidates,
         substitutions.len(),
         counters.n_skip_flow_sum_origin,
         counters.n_skip_unsafe_non_state_alias,
         counters.n_skip_when_assigned,
+        counters.n_skip_always_state,
         counters.n_skip_self_der,
         counters.n_skip_der_in_defining_expr,
         counters.n_skip_unsliced_vector_ref,
-        counters.n_skip_extra_state_refs,
         counters.n_skip_no_der_expr,
         counters.n_skip_non_state_der
     );
@@ -198,9 +198,7 @@ fn apply_direct_demotion_plans(
 }
 
 pub(super) fn apply_direct_demotion_plan(dae: &mut Dae, plan: &DirectStateDemotionPlan) -> usize {
-    for eq in &mut dae.continuous.equations {
-        eq.rhs = substitute_der_of_state(&eq.rhs, &plan.state_name, &plan.der_expr);
-    }
+    rewrite_state_derivative_everywhere(dae, &plan.state_name, &plan.der_expr);
     if let Some(var) = dae.variables.states.shift_remove(&plan.state_name) {
         dae.variables
             .algebraics
@@ -241,6 +239,11 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_when_assigned += 1;
         return None;
     }
+    let state = round.dae.variables.states.get(&state_name)?;
+    if state.state_select == rumoca_core::StateSelect::Always {
+        counters.n_skip_always_state += 1;
+        return None;
+    }
     if expr_contains_der_of(&defining_expr, &state_name) {
         counters.n_skip_self_der += 1;
         return None;
@@ -265,32 +268,10 @@ fn direct_demotion_plan_for_equation(
         counters.n_skip_unsafe_non_state_alias += 1;
         return None;
     }
-    if round
-        .dae
-        .variables
-        .states
-        .get(&state_name)
-        .is_some_and(|state| state.size() > 1)
-        || expr_contains_unsliced_vector_ref(&defining_expr, round.dae)
-    {
+    if state.size() > 1 || expr_contains_unsliced_vector_ref(&defining_expr, round.dae) {
         // MLS §10.1: array state shape is semantic IR. This path substitutes
         // whole `der(state)` calls, so unsliced compound states stay intact.
         counters.n_skip_unsliced_vector_ref += 1;
-        return None;
-    }
-    let state_non_der_ref_rows = round
-        .dae
-        .continuous
-        .equations
-        .iter()
-        .filter(|row| {
-            expr_contains_var(&row.rhs, &state_name) && !expr_contains_der_of(&row.rhs, &state_name)
-        })
-        .count();
-    if state_non_der_ref_rows > 1
-        && !expr_refs_only_parameters_constants_or_time(round.dae, &defining_expr)
-    {
-        counters.n_skip_extra_state_refs += 1;
         return None;
     }
     let der_expr = choose_derivative_replacement(
@@ -391,10 +372,10 @@ fn collect_direct_demotion_plans(
 /// state is demoted. States assigned in `when` clauses are preserved, since
 /// they participate in event/reinit updates and must remain in the state vector.
 pub fn demote_direct_assigned_states(dae: &mut Dae) -> Result<usize, StructuralError> {
-    let max_rounds = dae.variables.states.len().clamp(1, 8);
     let mut total_demoted = 0usize;
+    let mut round_index = 0usize;
 
-    for round_index in 0..max_rounds {
+    loop {
         let trace = sim_trace_enabled();
         let label = format!("direct_demotion.round[{round_index}].collect_plans");
         let timer = structural_timing_start(&label);
@@ -414,6 +395,7 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> Result<usize, StructuralE
             break;
         }
         total_demoted += demoted_this_round;
+        round_index += 1;
     }
 
     Ok(total_demoted)

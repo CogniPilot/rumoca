@@ -37,6 +37,32 @@ impl SolveRuntime {
         self.eval_derivative_jacobian_v_with_seed(lin, state, seed, self.state_count, out)
     }
 
+    pub fn eval_state_jacobian_v_ad_with_guess_into(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        state: &[f64],
+        seed: &[f64],
+        solver_y_guess: &mut [f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.update_solver_y_guess_from_state(solver_y_guess, state)?;
+        let mut scratch = self.derivative_scratch.borrow_mut();
+        let StateDerivativeScratch {
+            seed_buf,
+            unit_seed,
+            ..
+        } = &mut *scratch;
+        self.eval_derivative_jacobian_v_at_solver_y(
+            lin,
+            solver_y_guess,
+            seed,
+            self.state_count,
+            seed_buf,
+            unit_seed,
+            out,
+        )
+    }
+
     /// Like [`Self::eval_state_jacobian_v_ad_into`], but the input `seed` spans
     /// the full `[solver-y | parameter]` space and is copied in its entirety, so
     /// parameter tangents are honored. Seeding a unit vector in a parameter slot
@@ -426,16 +452,38 @@ impl SolveRuntime {
         seed_copy_len: usize,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let AlgebraicLinearization { t, params, settle } = lin;
-        validate_derivative_output_len(out, self.state_count)?;
         let mut scratch = self.derivative_scratch.borrow_mut();
         let StateDerivativeScratch {
             solver_y,
             seed_buf,
             unit_seed,
         } = &mut *scratch;
-        // (1) Linearization point: project the algebraics from the state.
         self.populate_solver_y_from_state(solver_y, state)?;
+        self.eval_derivative_jacobian_v_at_solver_y(
+            lin,
+            solver_y,
+            seed,
+            seed_copy_len,
+            seed_buf,
+            unit_seed,
+            out,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_derivative_jacobian_v_at_solver_y(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        solver_y: &mut [f64],
+        seed: &[f64],
+        seed_copy_len: usize,
+        seed_buf: &mut Vec<f64>,
+        unit_seed: &mut Vec<f64>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let AlgebraicLinearization { t, params, settle } = lin;
+        validate_derivative_output_len(out, self.state_count)?;
+        // (1) Linearization point: project the algebraics from the caller's seed.
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
         // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),
         // so the seed vector spans `[solver-y | parameter]` space. We copy the
@@ -495,303 +543,23 @@ impl SolveRuntime {
         seed: &mut [f64],
         unit_seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let AlgebraicLinearization { t, params, .. } = lin;
-        if plan.rows.is_empty() {
-            return Ok(());
-        }
-        if !plan.iterative {
-            // Causal single pass: each target is solved after its dependencies.
-            for row in &plan.rows {
-                self.seed_refresh_row(t, solver_y, params, seed, unit_seed, row)?;
-            }
-            return Ok(());
-        }
-        // Algebraic loop: the linearized seed equations form
-        //     J_alg,alg * seed_alg = -J_alg,nonalg * seed_nonalg
-        // at the already-settled value point. Solve that system directly instead
-        // of using a fixed-point sweep: value refresh convergence does not imply
-        // the seed fixed point contracts, while the direct linear solve is the
-        // implicit-function theorem applied to the whole coupled block.
-        self.seed_refresh_coupled_plan(plan, t, solver_y, params, seed, unit_seed)
-    }
-
-    fn seed_refresh_coupled_plan(
-        &self,
-        plan: &RefreshPlan,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        seed: &mut [f64],
-        unit_seed: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        let saved_targets = self.zero_seed_refresh_targets(plan, seed)?;
-        let result = self.seed_refresh_coupled_solution(plan, t, solver_y, params, seed, unit_seed);
-        match result {
-            Ok(solution) => {
-                if let Err(error) = self.write_seed_refresh_solution(plan, &solution, seed) {
-                    restore_seed_refresh_targets(plan, seed, &saved_targets);
-                    return Err(error);
-                }
-                Ok(())
-            }
-            Err(error) => {
-                restore_seed_refresh_targets(plan, seed, &saved_targets);
-                Err(error)
-            }
-        }
-    }
-
-    fn zero_seed_refresh_targets(
-        &self,
-        plan: &RefreshPlan,
-        seed: &mut [f64],
-    ) -> Result<Vec<f64>, RuntimeSolveError> {
-        let mut saved = Vec::new();
-        reserve_runtime_vec_capacity(&mut saved, plan.rows.len(), "seed target snapshot")?;
-        for row in &plan.rows {
-            saved.push(seed[row.target_index]);
-            seed[row.target_index] = 0.0;
-        }
-        Ok(saved)
-    }
-
-    fn seed_refresh_coupled_solution(
-        &self,
-        plan: &RefreshPlan,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        seed: &[f64],
-        unit_seed: &mut [f64],
-    ) -> Result<crate::linear_solve::AugmentedMatrix, RuntimeSolveError> {
-        let n = plan.rows.len();
-        let mut augmented =
-            crate::linear_solve::AugmentedMatrix::zeroed(n).map_err(RuntimeSolveError::from)?;
-        unit_seed.fill(0.0);
-        for (row_pos, row) in plan.rows.iter().enumerate() {
-            let off_diagonal =
-                self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, seed)?;
-            self.validate_seed_jacobian_value(t, row, off_diagonal, "right-hand side")?;
-            for (col_pos, target_row) in plan.rows.iter().enumerate() {
-                let target = target_row.target_index;
-                unit_seed[target] = 1.0;
-                let coefficient =
-                    self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, unit_seed);
-                unit_seed[target] = 0.0;
-                let coefficient = coefficient?;
-                self.validate_seed_jacobian_value(t, row, coefficient, "matrix coefficient")?;
-                augmented.set(row_pos, col_pos, coefficient);
-            }
-            augmented.set(row_pos, n, -off_diagonal);
-        }
-        if crate::linear_solve::gaussian_eliminate(&mut augmented).is_none() {
-            return Err(self.seed_refresh_singular_error(t, plan));
-        }
-        Ok(augmented)
-    }
-
-    fn write_seed_refresh_solution(
-        &self,
-        plan: &RefreshPlan,
-        solution: &crate::linear_solve::AugmentedMatrix,
-        seed: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        let n = plan.rows.len();
-        for (row_pos, row) in plan.rows.iter().enumerate() {
-            let value = solution.get(row_pos, n);
-            if !value.is_finite() {
-                return Err(RuntimeSolveError::solve_ir(format!(
-                    "algebraic forward-sensitivity refresh solved non-finite seed for {}",
-                    self.solver_name(row.target_index)
-                )));
-            }
-            seed[row.target_index] = value;
-        }
-        Ok(())
-    }
-
-    fn validate_seed_jacobian_value(
-        &self,
-        t: f64,
-        row: &AlgebraicRefreshRow,
-        value: f64,
-        role: &'static str,
-    ) -> Result<(), RuntimeSolveError> {
-        if value.is_finite() {
-            return Ok(());
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "algebraic forward-sensitivity refresh produced non-finite {role} from row {} for {} at t={t}",
-            row.row_idx,
-            self.solver_name(row.target_index)
-        )))
-    }
-
-    /// Solve one residual row `g(y)=0` (which defines algebraic slot `target`) for
-    /// its seed via the implicit-function theorem:
-    /// `seed[target] = -(∂g/∂others · seed) / (∂g/∂target)`, both directional
-    /// derivatives read from the per-row implicit JVP.
-    fn seed_refresh_row(
-        &self,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        seed: &mut [f64],
-        unit_seed: &mut [f64],
-        row: &AlgebraicRefreshRow,
-    ) -> Result<(), RuntimeSolveError> {
-        let target = row.target_index;
-        // Off-diagonal term: JVP of the row with the target's own seed held at 0.
-        let saved = seed[target];
-        seed[target] = 0.0;
-        let off_diagonal = self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, seed);
-        seed[target] = saved;
-        let off_diagonal = off_diagonal?;
-        self.validate_seed_jacobian_value(t, row, off_diagonal, "right-hand side")?;
-        if self.refresh_row_subtracted_target_index(row) == Some(target) {
-            seed[target] = off_diagonal;
-            return Ok(());
-        }
-        if let Some(diagonal) = self.assignment_row_diagonal(row, solver_y, params, t)? {
-            self.write_seed_refresh_from_diagonal(t, row, seed, off_diagonal, diagonal)?;
-            return Ok(());
-        }
-        // Diagonal term ∂g/∂target via a unit seed isolated to the target slot.
-        unit_seed[target] = 1.0;
-        let diagonal = self.eval_refresh_residual_jacobian_row(row, solver_y, params, t, unit_seed);
-        unit_seed[target] = 0.0;
-        let diagonal = diagonal?;
-        self.validate_seed_jacobian_value(t, row, diagonal, "diagonal coefficient")?;
-        self.write_seed_refresh_from_diagonal(t, row, seed, off_diagonal, diagonal)
-    }
-
-    fn assignment_row_diagonal(
-        &self,
-        row: &AlgebraicRefreshRow,
-        solver_y: &[f64],
-        params: &[f64],
-        t: f64,
-    ) -> Result<Option<f64>, RuntimeSolveError> {
-        self.implicit_scalar_rhs
-            .target_assignment_diagonal_unchecked_with_context(
-                row.row_idx,
-                row.target_index,
-                solver_y,
-                params,
-                t,
-                self.row_eval_context(),
-            )
-            .map_err(Into::into)
-    }
-
-    fn write_seed_refresh_from_diagonal(
-        &self,
-        t: f64,
-        row: &AlgebraicRefreshRow,
-        seed: &mut [f64],
-        off_diagonal: f64,
-        diagonal: f64,
-    ) -> Result<(), RuntimeSolveError> {
-        self.validate_seed_jacobian_value(t, row, diagonal, "diagonal coefficient")?;
-        if diagonal.abs() <= SEED_DIAGONAL_EPS {
-            return Err(self.seed_refresh_row_singular_error(t, row, diagonal));
-        }
-        seed[row.target_index] = -off_diagonal / diagonal;
-        Ok(())
-    }
-
-    /// Directional derivative of the same residual that value refresh solves.
-    /// Shapeless target-value rows are residualized as `raw - target`, so their
-    /// JVP must subtract the target seed just like [`Self::refresh_row_residual`]
-    /// subtracts the target value.
-    fn eval_refresh_residual_jacobian_row(
-        &self,
-        row: &AlgebraicRefreshRow,
-        solver_y: &[f64],
-        params: &[f64],
-        t: f64,
-        seed: &[f64],
-    ) -> Result<f64, RuntimeSolveError> {
-        let raw = self.eval_implicit_jacobian_row(row, solver_y, params, t, seed)?;
-        let Some(target) = self.refresh_row_subtracted_target_index(row) else {
-            return Ok(raw);
+        let projection_model = RefreshProjectionModel {
+            runtime: self,
+            plan: &plan.simultaneous_plan,
+            jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
         };
-        let Some(target_seed) = seed.get(target).copied() else {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "algebraic forward-sensitivity seed length {} does not include residual target {}",
-                seed.len(),
-                self.solver_name(target)
-            )));
-        };
-        Ok(raw - target_seed)
-    }
-
-    /// Directional derivative `∂g_row/∂y · seed` of implicit residual row
-    /// `row_idx`, evaluated at `solver_y` with the given seed.
-    fn eval_implicit_jacobian_row(
-        &self,
-        row: &AlgebraicRefreshRow,
-        solver_y: &[f64],
-        params: &[f64],
-        t: f64,
-        seed: &[f64],
-    ) -> Result<f64, RuntimeSolveError> {
-        self.implicit_jacobian_v
-            .eval_row_output_unchecked_with_context(
-                row.row_idx,
-                row.output_offset,
-                solver_y,
-                params,
-                t,
-                RowEvalContext {
-                    seed: Some(seed),
-                    ..self.row_eval_context()
-                },
-            )
-            .map_err(|err| {
-                RuntimeSolveError::solve_ir(format!(
-                    "implicit Jacobian seed row {} output {} failed: {err}",
-                    row.row_idx, row.output_offset
-                ))
-            })
-    }
-
-    fn seed_refresh_singular_error(&self, t: f64, plan: &RefreshPlan) -> RuntimeSolveError {
-        RuntimeSolveError::solve_ir(format!(
-            "algebraic forward-sensitivity linear solve is singular at t={t}; targets={}",
-            self.seed_refresh_target_names(plan)
-        ))
-    }
-
-    fn seed_refresh_row_singular_error(
-        &self,
-        t: f64,
-        row: &AlgebraicRefreshRow,
-        diagonal: f64,
-    ) -> RuntimeSolveError {
-        RuntimeSolveError::solve_ir(format!(
-            "algebraic forward-sensitivity row {} is singular for {} at t={t}; diagonal={diagonal:.6e}",
-            row.row_idx,
-            self.solver_name(row.target_index)
-        ))
-    }
-
-    fn seed_refresh_target_names(&self, plan: &RefreshPlan) -> String {
-        let mut names = plan
-            .rows
-            .iter()
-            .take(8)
-            .map(|row| self.solver_name(row.target_index).to_string())
-            .collect::<Vec<_>>();
-        if plan.rows.len() > names.len() {
-            names.push(format!("... +{}", plan.rows.len() - names.len()));
-        }
-        names.join(", ")
-    }
-}
-
-fn restore_seed_refresh_targets(plan: &RefreshPlan, seed: &mut [f64], saved: &[f64]) {
-    for (row, value) in plan.rows.iter().zip(saved) {
-        seed[row.target_index] = *value;
+        project_algebraic_seed_with_plan(
+            &projection_model,
+            &plan.simultaneous_plan,
+            solver_y,
+            rumoca_solver::AlgebraicProjectionArgs {
+                parameters: lin.params,
+                time: lin.t,
+                state_count: self.state_count,
+                tolerance: lin.settle.tol,
+            },
+            seed,
+            unit_seed,
+        )
     }
 }

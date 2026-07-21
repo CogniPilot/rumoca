@@ -1,13 +1,15 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_dae::expr_contains_var;
 
 use super::{
-    Dae, Equation, Expression, Literal, OpBinary, OpUnary, Span, Subscript, VarName, add_expr,
+    Dae, DefiningExprIndex, Equation, Expression, Literal, OpBinary, OpUnary, Span, Subscript,
+    VarName, add_expr, choose_exact_alias_state_representative,
+    collect_non_derivative_defining_expr_index, collect_non_state_continuous_unknown_names,
     direct_demotion_round_context, expression_contains_any_der_call,
-    extract_state_direct_assignment_equation, state_has_standalone_der_equation, state_select_rank,
-    sub_expr,
+    extract_state_direct_assignment_equation, state_select_rank, sub_expr,
+    try_extract_derivative_alias,
 };
 
 const LINEAR_EPSILON: f64 = 1.0e-12;
@@ -15,12 +17,12 @@ const LINEAR_EPSILON: f64 = 1.0e-12;
 #[derive(Debug, Clone)]
 struct LinearRow {
     span: Span,
-    terms: IndexMap<String, f64>,
+    terms: IndexMap<VarName, f64>,
     /// Parameters whose compile-time values were baked into the coefficients.
     /// When a demotion derived from this row is applied, these must be pinned
     /// as structural (no longer runtime-tunable) or a tuned value would
     /// silently disagree with the baked coefficient.
-    structural_params: BTreeSet<String>,
+    structural_params: BTreeSet<VarName>,
 }
 
 impl LinearRow {
@@ -32,7 +34,7 @@ impl LinearRow {
         }
     }
 
-    fn add_term(&mut self, name: String, coeff: f64) {
+    fn add_term(&mut self, name: VarName, coeff: f64) {
         let next = self.terms.get(&name).copied().unwrap_or(0.0) + coeff;
         if next.abs() <= LINEAR_EPSILON {
             self.terms.shift_remove(&name);
@@ -63,29 +65,27 @@ impl LinearRow {
         self.terms.retain(|_, coeff| coeff.abs() > LINEAR_EPSILON);
     }
 
-    fn coefficient(&self, name: &str) -> f64 {
+    fn coefficient(&self, name: &VarName) -> f64 {
         self.terms.get(name).copied().unwrap_or(0.0)
     }
 
     fn contains_continuous_non_state(
         &self,
-        state_name_set: &HashSet<String>,
-        non_state_unknown_names: &HashSet<String>,
+        state_components: &IndexMap<VarName, VarName>,
+        non_state_unknown_names: &HashSet<VarName>,
     ) -> bool {
         self.terms.keys().any(|name| {
-            !state_name_set.contains(name.as_str())
-                && non_state_unknown_names.contains(name.as_str())
+            !state_components.contains_key(name) && non_state_unknown_names.contains(name)
         })
     }
 
     fn state_terms<'a>(
         &'a self,
-        state_name_set: &'a HashSet<String>,
-    ) -> impl Iterator<Item = &'a str> + 'a {
+        state_components: &'a IndexMap<VarName, VarName>,
+    ) -> impl Iterator<Item = &'a VarName> + 'a {
         self.terms
             .keys()
-            .map(String::as_str)
-            .filter(|name| state_name_set.contains(*name))
+            .filter(|name| state_components.contains_key(*name))
     }
 }
 
@@ -115,67 +115,144 @@ fn direct_dummy_state_candidate(
     if expr_contains_var(&defining_expr, &state_name) {
         return None;
     }
-    let references_other_state = state_names
-        .iter()
-        .any(|other| other != &state_name && expr_contains_var(&defining_expr, other))
-        || defining_expr_references_non_alias_output(dae, &defining_expr, &state_name);
-    references_other_state.then_some(state_name)
+    Some(state_name)
 }
 
-/// True if `defining_expr` references a model output variable that is not just a
-/// direct alias of `state_name`. A state defined by `S = E` where `E` depends on
-/// a computed output is over-determined: outputs are causally computed by their
-/// own block equations, so a differentiated input bound to one can be a dummy
-/// derivative to deselect. Plain visualization aliases (`output = state`) must
-/// not trigger demotion, or the state loses its ODE row.
-fn defining_expr_references_non_alias_output(
-    dae: &Dae,
-    defining_expr: &Expression,
-    state_name: &VarName,
-) -> bool {
-    let mut refs: Vec<VarName> = Vec::new();
-    defining_expr.collect_var_refs(&mut refs);
-    refs.iter().any(|name| {
-        dae.variables.outputs.contains_key(name)
-            && !output_is_direct_alias_of_state(dae, name, state_name)
-    })
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StateDependency {
+    None,
+    OtherState,
+    Cycle,
 }
 
-fn output_is_direct_alias_of_state(dae: &Dae, output_name: &VarName, state_name: &VarName) -> bool {
-    super::find_defining_expr_candidates(dae, output_name)
-        .into_iter()
-        .any(|expr| expression_is_plain_var_ref(&expr, state_name))
+impl StateDependency {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::OtherState, _) | (_, Self::OtherState) => Self::OtherState,
+            (Self::Cycle, _) | (_, Self::Cycle) => Self::Cycle,
+            (Self::None, Self::None) => Self::None,
+        }
+    }
 }
 
-fn expression_is_plain_var_ref(expr: &Expression, expected: &VarName) -> bool {
-    matches!(
-        expr,
-        Expression::VarRef { name, subscripts, .. }
-            if subscripts.is_empty() && name.var_name() == expected
-    )
+struct StateDependencyClosure {
+    definitions: DefiningExprIndex,
+    states: HashSet<VarName>,
+    non_states: HashSet<String>,
 }
 
-/// True when the constrained-dummy defining expression for `state_name`
-/// references another state, i.e. the defining constraint genuinely couples
-/// differential states (a high-index DAE such as `w1 = ratio * w2`).
-fn defining_expr_couples_other_state(
-    defining_expr: &Expression,
-    state_name: &VarName,
-    state_names: &[VarName],
-) -> bool {
-    state_names
-        .iter()
-        .any(|other| other != state_name && expr_contains_var(defining_expr, other))
-}
+impl StateDependencyClosure {
+    fn new(dae: &Dae) -> Self {
+        Self {
+            definitions: collect_non_derivative_defining_expr_index(dae),
+            states: dae.variables.states.keys().cloned().collect(),
+            non_states: collect_non_state_continuous_unknown_names(dae),
+        }
+    }
 
-fn candidate_is_self_integrating_non_state_alias(
-    dae: &Dae,
-    state_name: &VarName,
-    definition: &ConstrainedDummyDefinition,
-    state_names: &[VarName],
-) -> bool {
-    state_has_standalone_der_equation(dae, state_name, state_names).unwrap_or(false)
-        && !defining_expr_couples_other_state(&definition.defining_expr, state_name, state_names)
+    fn classify(
+        &self,
+        expr: &Expression,
+        candidate: &VarName,
+        excluded_equation: usize,
+    ) -> StateDependency {
+        self.classify_expr(
+            expr,
+            candidate,
+            excluded_equation,
+            &mut HashSet::new(),
+            &mut HashMap::new(),
+        )
+    }
+
+    fn classify_expr(
+        &self,
+        expr: &Expression,
+        candidate: &VarName,
+        excluded_equation: usize,
+        active: &mut HashSet<VarName>,
+        complete: &mut HashMap<VarName, StateDependency>,
+    ) -> StateDependency {
+        let mut refs = Vec::new();
+        expr.collect_var_refs(&mut refs);
+        refs.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+        refs.dedup();
+
+        let mut result = StateDependency::None;
+        for name in refs {
+            result = result.merge(self.classify_reference(
+                &name,
+                candidate,
+                excluded_equation,
+                active,
+                complete,
+            ));
+            if result == StateDependency::OtherState {
+                return result;
+            }
+        }
+        result
+    }
+
+    fn classify_reference(
+        &self,
+        name: &VarName,
+        candidate: &VarName,
+        excluded_equation: usize,
+        active: &mut HashSet<VarName>,
+        complete: &mut HashMap<VarName, StateDependency>,
+    ) -> StateDependency {
+        if self.states.contains(name) {
+            return if name == candidate {
+                StateDependency::None
+            } else {
+                StateDependency::OtherState
+            };
+        }
+        self.classify_non_state(name, candidate, excluded_equation, active, complete)
+    }
+
+    fn classify_non_state(
+        &self,
+        name: &VarName,
+        candidate: &VarName,
+        excluded_equation: usize,
+        active: &mut HashSet<VarName>,
+        complete: &mut HashMap<VarName, StateDependency>,
+    ) -> StateDependency {
+        if !self.non_states.contains(name.as_str()) {
+            return StateDependency::None;
+        }
+        if let Some(result) = complete.get(name) {
+            return *result;
+        }
+        if !active.insert(name.clone()) {
+            return StateDependency::Cycle;
+        }
+
+        let mut result = StateDependency::None;
+        for definition in self
+            .definitions
+            .get(name.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|definition| definition.equation_index != excluded_equation)
+        {
+            result = result.merge(self.classify_expr(
+                &definition.expr,
+                candidate,
+                excluded_equation,
+                active,
+                complete,
+            ));
+            if result == StateDependency::OtherState {
+                break;
+            }
+        }
+        active.remove(name);
+        complete.insert(name.clone(), result);
+        result
+    }
 }
 
 fn numeric_constant(expr: &Expression) -> Option<f64> {
@@ -211,7 +288,7 @@ fn numeric_constant(expr: &Expression) -> Option<f64> {
     }
 }
 
-fn scalar_var_name(dae: &Dae, name: &VarName, subscripts: &[Subscript]) -> Option<String> {
+fn scalar_var_name(dae: &Dae, name: &VarName, subscripts: &[Subscript]) -> Option<VarName> {
     if !subscripts.is_empty()
         && dae
             .variables
@@ -219,26 +296,14 @@ fn scalar_var_name(dae: &Dae, name: &VarName, subscripts: &[Subscript]) -> Optio
             .get(name)
             .is_some_and(|state| state.size() == 1)
     {
-        return Some(name.as_str().to_string());
+        let state = &dae.variables.states[name];
+        return Some(rumoca_ir_dae::scalar_name_for_flat_index(
+            name,
+            &state.dims,
+            0,
+        ));
     }
-    let mut out = name.as_str().to_string();
-    for subscript in subscripts {
-        let index = match subscript {
-            Subscript::Index { value: index, .. } => *index,
-            Subscript::Expr { expr, .. } => match expr.as_ref() {
-                Expression::Literal {
-                    value: Literal::Integer(index),
-                    ..
-                } => *index,
-                _ => return None,
-            },
-            Subscript::Colon { .. } => return None,
-        };
-        out.push('[');
-        out.push_str(&index.to_string());
-        out.push(']');
-    }
-    Some(out)
+    crate::scalarize::scalarization_var_ref_name(name, subscripts).map(VarName::new)
 }
 
 fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
@@ -261,49 +326,35 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
             Some(row)
         }
         Expression::Unary { .. } => None,
-        Expression::Binary { op, lhs, rhs, .. } => match op {
-            OpBinary::Add | OpBinary::AddElem => {
-                let mut row = linear_terms(dae, lhs)?;
-                row.add_scaled(&linear_terms(dae, rhs)?, 1.0);
-                Some(row)
-            }
-            OpBinary::Sub | OpBinary::SubElem => {
-                let mut row = linear_terms(dae, lhs)?;
-                row.add_scaled(&linear_terms(dae, rhs)?, -1.0);
-                Some(row)
-            }
-            OpBinary::Mul | OpBinary::MulElem => {
-                let mut used = BTreeSet::new();
-                if let Some(scale) = structural_numeric_constant(dae, lhs, &mut used, 0) {
-                    let mut row = linear_terms(dae, rhs)?;
-                    row.scale(scale);
-                    row.structural_params.extend(used);
-                    Some(row)
-                } else if let Some(scale) = {
-                    used.clear();
-                    structural_numeric_constant(dae, rhs, &mut used, 0)
-                } {
-                    let mut row = linear_terms(dae, lhs)?;
-                    row.scale(scale);
-                    row.structural_params.extend(used);
-                    Some(row)
-                } else {
-                    None
+        Expression::Binary { op, lhs, rhs, .. } => linear_binary_terms(dae, op, lhs, rhs),
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones,
+            ..
+        } => Some(LinearRow::new(expression_row_span(expr))),
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            ..
+        } => {
+            let mut structural_params = BTreeSet::new();
+            structural_numeric_constant(dae, args.first()?, &mut structural_params)?;
+            let mut row = LinearRow::new(expression_row_span(expr));
+            row.structural_params = structural_params;
+            Some(row)
+        }
+        Expression::Index { base, .. }
+            if matches!(
+                base.as_ref(),
+                Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Zeros
+                        | rumoca_core::BuiltinFunction::Ones
+                        | rumoca_core::BuiltinFunction::Fill,
+                    ..
                 }
-            }
-            OpBinary::Div | OpBinary::DivElem => {
-                let mut used = BTreeSet::new();
-                let scale = structural_numeric_constant(dae, rhs, &mut used, 0)?;
-                if scale.abs() <= LINEAR_EPSILON {
-                    return None;
-                }
-                let mut row = linear_terms(dae, lhs)?;
-                row.scale(1.0 / scale);
-                row.structural_params.extend(used);
-                Some(row)
-            }
-            _ => None,
-        },
+            ) =>
+        {
+            linear_terms(dae, base)
+        }
         Expression::BuiltinCall { .. }
         | Expression::FunctionCall { .. }
         | Expression::If { .. }
@@ -317,6 +368,54 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
     }
 }
 
+fn linear_binary_terms(
+    dae: &Dae,
+    op: &OpBinary,
+    lhs: &Expression,
+    rhs: &Expression,
+) -> Option<LinearRow> {
+    match op {
+        OpBinary::Add | OpBinary::AddElem => {
+            let mut row = linear_terms(dae, lhs)?;
+            row.add_scaled(&linear_terms(dae, rhs)?, 1.0);
+            Some(row)
+        }
+        OpBinary::Sub | OpBinary::SubElem => {
+            let mut row = linear_terms(dae, lhs)?;
+            row.add_scaled(&linear_terms(dae, rhs)?, -1.0);
+            Some(row)
+        }
+        OpBinary::Mul | OpBinary::MulElem => {
+            let mut used = BTreeSet::new();
+            let (mut row, scale) =
+                if let Some(scale) = structural_numeric_constant(dae, lhs, &mut used) {
+                    (linear_terms(dae, rhs)?, scale)
+                } else {
+                    used.clear();
+                    (
+                        linear_terms(dae, lhs)?,
+                        structural_numeric_constant(dae, rhs, &mut used)?,
+                    )
+                };
+            row.scale(scale);
+            row.structural_params.extend(used);
+            Some(row)
+        }
+        OpBinary::Div | OpBinary::DivElem => {
+            let mut used = BTreeSet::new();
+            let scale = structural_numeric_constant(dae, rhs, &mut used)?;
+            if scale.abs() <= LINEAR_EPSILON {
+                return None;
+            }
+            let mut row = linear_terms(dae, lhs)?;
+            row.scale(1.0 / scale);
+            row.structural_params.extend(used);
+            Some(row)
+        }
+        _ => None,
+    }
+}
+
 /// Resolve a numeric coefficient that may go through fixed parameter or
 /// constant values: literals and literal arithmetic resolve as in
 /// [`numeric_constant`]; an unsubscripted reference to a parameter/constant
@@ -326,17 +425,25 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
 fn structural_numeric_constant(
     dae: &Dae,
     expr: &Expression,
-    used_params: &mut BTreeSet<String>,
-    depth: usize,
+    used_params: &mut BTreeSet<VarName>,
 ) -> Option<f64> {
-    if depth > 8 {
-        return None;
-    }
+    structural_numeric_constant_inner(dae, expr, used_params, &mut HashSet::new())
+}
+
+fn structural_numeric_constant_inner(
+    dae: &Dae,
+    expr: &Expression,
+    used_params: &mut BTreeSet<VarName>,
+    visiting: &mut HashSet<VarName>,
+) -> Option<f64> {
     match expr {
         Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => {
             let var_name = name.var_name();
+            if !visiting.insert(var_name.clone()) {
+                return None;
+            }
             let is_parameter = dae.variables.parameters.contains_key(var_name);
             let var = dae
                 .variables
@@ -344,14 +451,15 @@ fn structural_numeric_constant(
                 .get(var_name)
                 .or_else(|| dae.variables.constants.get(var_name))?;
             let start = var.start.as_ref()?;
-            let value = structural_numeric_constant(dae, start, used_params, depth + 1)?;
+            let value = structural_numeric_constant_inner(dae, start, used_params, visiting)?;
+            visiting.remove(var_name);
             if is_parameter {
-                used_params.insert(var_name.as_str().to_string());
+                used_params.insert(var_name.clone());
             }
             Some(value)
         }
         Expression::Unary { op, rhs, .. } => {
-            let value = structural_numeric_constant(dae, rhs, used_params, depth + 1)?;
+            let value = structural_numeric_constant_inner(dae, rhs, used_params, visiting)?;
             match op {
                 OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(value),
                 OpUnary::Minus | OpUnary::DotMinus => Some(-value),
@@ -359,8 +467,8 @@ fn structural_numeric_constant(
             }
         }
         Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = structural_numeric_constant(dae, lhs, used_params, depth + 1)?;
-            let rhs = structural_numeric_constant(dae, rhs, used_params, depth + 1)?;
+            let lhs = structural_numeric_constant_inner(dae, lhs, used_params, visiting)?;
+            let rhs = structural_numeric_constant_inner(dae, rhs, used_params, visiting)?;
             match op {
                 OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
                 OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
@@ -373,19 +481,39 @@ fn structural_numeric_constant(
     }
 }
 
-fn equation_linear_row(dae: &Dae, eq: &Equation) -> Option<LinearRow> {
-    if expression_contains_any_der_call(&eq.rhs) {
-        return None;
+fn equation_residual_expression(eq: &Equation) -> Expression {
+    let Some(lhs) = &eq.lhs else {
+        return eq.rhs.clone();
+    };
+    let lhs_expr = Expression::VarRef {
+        name: lhs.clone(),
+        subscripts: Vec::new(),
+        span: eq.span,
+    };
+    sub_expr(lhs_expr, eq.rhs.clone(), eq.span)
+}
+
+fn scalar_linear_rows(dae: &Dae) -> Result<Vec<LinearRow>, crate::StructuralError> {
+    let scalarization = crate::scalarize::build_expression_scalarization_context(dae)?;
+    let mut rows = Vec::new();
+    for equation in &dae.continuous.equations {
+        let residual = equation_residual_expression(equation);
+        if expression_contains_any_der_call(&residual) {
+            continue;
+        }
+        for scalar in crate::scalarize::scalarize_expression_rows(
+            &residual,
+            equation.scalar_count,
+            &scalarization,
+        )? {
+            if let Some(row) = linear_terms(dae, &scalar)
+                && !row.terms.is_empty()
+            {
+                rows.push(row);
+            }
+        }
     }
-    if let Some(lhs) = &eq.lhs {
-        let lhs_expr = Expression::VarRef {
-            name: lhs.clone(),
-            subscripts: Vec::new(),
-            span: eq.span,
-        };
-        return linear_terms(dae, &sub_expr(lhs_expr, eq.rhs.clone(), eq.span));
-    }
-    linear_terms(dae, &eq.rhs)
+    Ok(rows)
 }
 
 fn expression_row_span(expr: &Expression) -> Span {
@@ -416,39 +544,68 @@ fn expression_row_span(expr: &Expression) -> Span {
 fn candidate_from_state_constraint(
     dae: &Dae,
     row: &LinearRow,
-    state_names: &[VarName],
-    state_name_set: &HashSet<String>,
+    state_components: &IndexMap<VarName, VarName>,
     when_assigned_states: &HashSet<String>,
-) -> Option<VarName> {
+) -> Option<(VarName, VarName)> {
+    let state_term_count = row.state_terms(state_components).count();
     let mut candidates = row
-        .state_terms(state_name_set)
-        .filter(|name| !when_assigned_states.contains(*name))
-        .filter_map(|name| {
-            let state_name = VarName::new(name.to_string());
+        .state_terms(state_components)
+        .filter_map(|component_name| {
+            let state_name = state_components.get(component_name)?;
+            if when_assigned_states.contains(state_name.as_str()) {
+                return None;
+            }
             dae.variables
                 .states
-                .get(&state_name)
+                .get(state_name)
                 .filter(|state| state.state_select != rumoca_core::StateSelect::Always)
-                .map(|state| (state_name, state.state_select))
+                .map(|state| {
+                    (
+                        component_name.clone(),
+                        state_name.clone(),
+                        state.state_select,
+                    )
+                })
         })
         .collect::<Vec<_>>();
-    if candidates.len() < 2 {
+    if candidates.is_empty() || (state_term_count > 1 && candidates.len() < 2) {
         return None;
     }
 
-    candidates.sort_by(|(a_name, a_select), (b_name, b_select)| {
-        state_select_rank(*a_select)
-            .cmp(&state_select_rank(*b_select))
-            .then_with(|| a_name.as_str().cmp(b_name.as_str()))
-    });
-    let candidate = candidates.into_iter().next()?.0;
-    state_names.contains(&candidate).then_some(candidate)
+    candidates.sort_by(
+        |(a_component, a_name, a_select), (b_component, b_name, b_select)| {
+            state_select_rank(*a_select)
+                .cmp(&state_select_rank(*b_select))
+                .then_with(|| a_name.as_str().cmp(b_name.as_str()))
+                .then_with(|| a_component.as_str().cmp(b_component.as_str()))
+        },
+    );
+    let (component_name, state_name, _) = candidates.into_iter().next()?;
+    Some((component_name, state_name))
 }
 
-fn var_expr(name: &str, span: Span) -> Expression {
+fn var_expr(name: &VarName, span: Span) -> Expression {
+    let (reference, subscripts) = rumoca_core::component_reference_from_flat_name(name, span)
+        .map(|mut component_ref| {
+            let subscripts = component_ref
+                .parts
+                .last_mut()
+                .map(|part| std::mem::take(&mut part.subs))
+                .unwrap_or_default();
+            (
+                rumoca_core::Reference::from_component_reference(component_ref),
+                subscripts,
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                rumoca_core::Reference::from_var_name(name.clone()),
+                Vec::new(),
+            )
+        });
     Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
-        subscripts: Vec::new(),
+        name: reference,
+        subscripts,
         span,
     }
 }
@@ -486,7 +643,7 @@ fn div_expr(lhs: Expression, rhs: Expression, span: Span) -> Expression {
     }
 }
 
-fn linear_term_expr(name: &str, coeff: f64, span: Span) -> Expression {
+fn linear_term_expr(name: &VarName, coeff: f64, span: Span) -> Expression {
     let term = var_expr(name, span);
     if (coeff - 1.0).abs() <= LINEAR_EPSILON {
         term
@@ -496,7 +653,7 @@ fn linear_term_expr(name: &str, coeff: f64, span: Span) -> Expression {
 }
 
 fn sum_linear_terms<'a>(
-    terms: impl Iterator<Item = (&'a String, &'a f64)>,
+    terms: impl Iterator<Item = (&'a VarName, &'a f64)>,
     span: Span,
 ) -> Expression {
     terms
@@ -506,14 +663,12 @@ fn sum_linear_terms<'a>(
 }
 
 fn solve_linear_row_for_state(row: &LinearRow, state_name: &VarName) -> Option<Expression> {
-    let coeff = row.coefficient(state_name.as_str());
+    let coeff = row.coefficient(state_name);
     if coeff.abs() <= LINEAR_EPSILON {
         return None;
     }
     let remainder = sum_linear_terms(
-        row.terms
-            .iter()
-            .filter(|(name, _)| name.as_str() != state_name.as_str()),
+        row.terms.iter().filter(|(name, _)| *name != state_name),
         row.span,
     );
     let numerator = neg_expr(remainder, row.span);
@@ -524,38 +679,15 @@ fn solve_linear_row_for_state(row: &LinearRow, state_name: &VarName) -> Option<E
     }
 }
 
-fn canonical_singleton_state_term(dae: &Dae, name: &str) -> Option<String> {
-    let scalar = rumoca_core::parse_scalar_name(name)?;
-    let state = dae.variables.states.get(&VarName::new(scalar.base))?;
-    (state.size() == 1).then(|| scalar.base.to_string())
-}
-
-fn canonicalize_singleton_state_terms(dae: &Dae, row: &LinearRow) -> LinearRow {
-    let mut canonical = LinearRow::new(row.span);
-    for (name, coeff) in &row.terms {
-        let term_name = canonical_singleton_state_term(dae, name).unwrap_or_else(|| name.clone());
-        canonical.add_term(term_name, *coeff);
-    }
-    canonical.structural_params = row.structural_params.clone();
-    canonical
-}
-
 fn linear_constraint_dummy_state_definitions(
     dae: &Dae,
-    state_names: &[VarName],
-    state_name_set: &HashSet<String>,
     when_assigned_states: &HashSet<String>,
-) -> Vec<(VarName, ConstrainedDummyDefinition)> {
+) -> Result<Vec<(VarName, ConstrainedDummyDefinition)>, crate::StructuralError> {
+    let state_components = scalar_component_bases(&dae.variables.states);
     let non_state_unknown_names = continuous_non_state_unknown_names(dae);
-    let mut rows = dae
-        .continuous
-        .equations
-        .iter()
-        .filter_map(|eq| equation_linear_row(dae, eq))
-        .map(|row| canonicalize_singleton_state_terms(dae, &row))
-        .filter(|row| !row.terms.is_empty())
-        .collect::<Vec<_>>();
-    let non_state_names = sorted_non_state_names(&rows, state_name_set, &non_state_unknown_names);
+    let mut rows = scalar_linear_rows(dae)?;
+    let non_state_names =
+        sorted_non_state_names(&rows, &state_components, &non_state_unknown_names);
 
     for pivot_name in non_state_names {
         let Some(pivot_idx) = rows
@@ -576,48 +708,79 @@ fn linear_constraint_dummy_state_definitions(
         }
     }
 
-    rows.iter()
-        .filter(|row| !row.contains_continuous_non_state(state_name_set, &non_state_unknown_names))
-        .filter_map(|row| {
-            let candidate = candidate_from_state_constraint(
-                dae,
-                row,
-                state_names,
-                state_name_set,
-                when_assigned_states,
-            )?;
-            let expr = solve_linear_row_for_state(row, &candidate)?;
-            Some((
-                candidate,
-                ConstrainedDummyDefinition {
-                    defining_expr: expr,
-                    structural_params: row.structural_params.iter().cloned().collect(),
-                },
-            ))
-        })
+    let mut definitions = IndexMap::<VarName, ConstrainedDummyDefinition>::new();
+    for row in rows.iter().filter(|row| {
+        !row.contains_continuous_non_state(&state_components, &non_state_unknown_names)
+    }) {
+        let Some((component_name, state_name)) =
+            candidate_from_state_constraint(dae, row, &state_components, when_assigned_states)
+        else {
+            continue;
+        };
+        let Some(expr) = solve_linear_row_for_state(row, &component_name) else {
+            continue;
+        };
+        let definition = definitions.entry(state_name).or_default();
+        definition
+            .component_defining_exprs
+            .entry(component_name)
+            .or_insert(expr);
+        definition
+            .structural_params
+            .extend(row.structural_params.iter().cloned());
+    }
+
+    definitions.retain(|state_name, definition| {
+        let Some(state) = dae.variables.states.get(state_name) else {
+            return false;
+        };
+        let expected = scalar_names_for_variable(state_name, state);
+        expected.len() == definition.component_defining_exprs.len()
+            && expected
+                .iter()
+                .all(|name| definition.component_defining_exprs.contains_key(name))
+    });
+    Ok(definitions.into_iter().collect())
+}
+
+fn scalar_names_for_variable(name: &VarName, var: &rumoca_ir_dae::Variable) -> Vec<VarName> {
+    if var.dims.is_empty() {
+        return vec![name.clone()];
+    }
+    (0..var.size())
+        .map(|flat_index| rumoca_ir_dae::scalar_name_for_flat_index(name, &var.dims, flat_index))
         .collect()
 }
 
-fn continuous_non_state_unknown_names(dae: &Dae) -> HashSet<String> {
-    dae.variables
-        .algebraics
-        .keys()
-        .chain(dae.variables.outputs.keys())
-        .map(|name| name.as_str().to_string())
+fn scalar_component_bases(
+    variables: &IndexMap<VarName, rumoca_ir_dae::Variable>,
+) -> IndexMap<VarName, VarName> {
+    let mut components = IndexMap::new();
+    for (name, var) in variables {
+        for component_name in scalar_names_for_variable(name, var) {
+            components.insert(component_name, name.clone());
+        }
+    }
+    components
+}
+
+fn continuous_non_state_unknown_names(dae: &Dae) -> HashSet<VarName> {
+    scalar_component_bases(&dae.variables.algebraics)
+        .into_keys()
+        .chain(scalar_component_bases(&dae.variables.outputs).into_keys())
         .collect()
 }
 
 fn sorted_non_state_names(
     rows: &[LinearRow],
-    state_name_set: &HashSet<String>,
-    non_state_unknown_names: &HashSet<String>,
-) -> Vec<String> {
+    state_components: &IndexMap<VarName, VarName>,
+    non_state_unknown_names: &HashSet<VarName>,
+) -> Vec<VarName> {
     let mut names = rows
         .iter()
         .flat_map(|row| row.terms.keys())
         .filter(|name| {
-            !state_name_set.contains(name.as_str())
-                && non_state_unknown_names.contains(name.as_str())
+            !state_components.contains_key(*name) && non_state_unknown_names.contains(*name)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -632,67 +795,185 @@ fn sorted_non_state_names(
 /// constraints that become visible through linear connector/current aliases.
 /// The result is ordered by state selection and name, and is used both for
 /// simulation metadata and constrained dummy-derivative reduction.
-pub fn constrained_dummy_state_names(dae: &Dae) -> IndexSet<String> {
-    constrained_dummy_state_defining_exprs(dae)
-        .keys()
-        .cloned()
-        .collect()
+pub fn constrained_dummy_state_names(
+    dae: &Dae,
+) -> Result<IndexSet<String>, crate::StructuralError> {
+    let mut names = IndexSet::new();
+    for (state_name, definition) in constrained_dummy_state_defining_exprs(dae)? {
+        if super::constrained_dummy_derivative_plan_for_definition(dae, &state_name, &definition)?
+            .is_some()
+        {
+            names.insert(state_name.as_str().to_string());
+        }
+    }
+    Ok(names)
 }
 
 /// One constrained dummy-state definition: the expression that defines the
 /// candidate state, plus the parameters whose compile-time values were baked
 /// into it by the linear constraint reduction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConstrainedDummyDefinition {
-    pub defining_expr: Expression,
-    pub structural_params: Vec<String>,
+    pub component_defining_exprs: IndexMap<VarName, Expression>,
+    pub aggregate_defining_expr: Option<Expression>,
+    pub structural_params: BTreeSet<VarName>,
+}
+
+fn direct_dummy_definition(
+    dae: &Dae,
+    state_name: VarName,
+    defining_expr: Expression,
+    scalarization: &crate::scalarize::ExpressionScalarizationContext,
+) -> Result<Option<ConstrainedDummyDefinition>, crate::StructuralError> {
+    let Some(state) = dae.variables.states.get(&state_name) else {
+        return Ok(None);
+    };
+    let component_defining_exprs = if state.dims.is_empty() {
+        IndexMap::from_iter([(state_name, defining_expr.clone())])
+    } else {
+        if super::row_shape::expression_dims_for_row_count(dae, &defining_expr)?
+            != Some(state.dims.clone())
+        {
+            return Ok(None);
+        }
+        let rows = crate::scalarize::scalarize_expression_rows(
+            &defining_expr,
+            state.size(),
+            scalarization,
+        )?;
+        if rows.len() != state.size() {
+            return Ok(None);
+        }
+        rows.into_iter()
+            .enumerate()
+            .map(|(flat_index, expr)| {
+                (
+                    rumoca_ir_dae::scalar_name_for_flat_index(&state_name, &state.dims, flat_index),
+                    expr,
+                )
+            })
+            .collect()
+    };
+    Ok(Some(ConstrainedDummyDefinition {
+        component_defining_exprs,
+        aggregate_defining_expr: Some(defining_expr),
+        structural_params: BTreeSet::new(),
+    }))
+}
+
+fn duplicate_state_derivative_alias_definitions(
+    dae: &Dae,
+    scalarization: &crate::scalarize::ExpressionScalarizationContext,
+) -> Result<Vec<(VarName, ConstrainedDummyDefinition)>, crate::StructuralError> {
+    let mut aliases_by_derivative = IndexMap::<VarName, IndexMap<VarName, Span>>::new();
+    for derivative_state in dae.variables.states.keys() {
+        for equation in &dae.continuous.equations {
+            let Some(alias) = try_extract_derivative_alias(equation, derivative_state) else {
+                continue;
+            };
+            if alias == *derivative_state || !dae.variables.states.contains_key(&alias) {
+                continue;
+            }
+            aliases_by_derivative
+                .entry(derivative_state.clone())
+                .or_default()
+                .entry(alias)
+                .or_insert(equation.span);
+        }
+    }
+
+    let mut definitions = Vec::new();
+    for aliases in aliases_by_derivative.values() {
+        if aliases.len() < 2 {
+            continue;
+        }
+        let alias_names = aliases.keys().cloned().collect::<Vec<_>>();
+        let Some(canonical) = choose_exact_alias_state_representative(dae, &alias_names) else {
+            continue;
+        };
+        for (alias, span) in aliases {
+            if alias == canonical
+                || dae
+                    .variables
+                    .states
+                    .get(alias)
+                    .is_some_and(|state| state.state_select == rumoca_core::StateSelect::Always)
+            {
+                continue;
+            }
+            let Some(definition) = direct_dummy_definition(
+                dae,
+                alias.clone(),
+                var_expr(canonical, *span),
+                scalarization,
+            )?
+            else {
+                continue;
+            };
+            definitions.push((alias.clone(), definition));
+        }
+    }
+    Ok(definitions)
 }
 
 pub fn constrained_dummy_state_defining_exprs(
     dae: &Dae,
-) -> IndexMap<String, ConstrainedDummyDefinition> {
+) -> Result<IndexMap<VarName, ConstrainedDummyDefinition>, crate::StructuralError> {
     let Some((state_names, state_name_set, when_assigned_states)) =
         direct_demotion_round_context(dae)
     else {
-        return IndexMap::new();
+        return Ok(IndexMap::new());
     };
 
-    let mut definitions = dae
-        .continuous
-        .equations
-        .iter()
-        .filter_map(|eq| {
-            let candidate = direct_dummy_state_candidate(
+    let scalarization = crate::scalarize::build_expression_scalarization_context(dae)?;
+    let state_dependency = StateDependencyClosure::new(dae);
+    let mut definitions = Vec::new();
+    for (equation_index, equation) in dae.continuous.equations.iter().enumerate() {
+        let Some(candidate) = direct_dummy_state_candidate(
+            dae,
+            equation,
+            &state_names,
+            &state_name_set,
+            &when_assigned_states,
+        ) else {
+            continue;
+        };
+        let Some((state_name, defining_expr)) =
+            extract_state_direct_assignment_equation(equation, &state_names, &state_name_set)
+        else {
+            continue;
+        };
+        if state_name != candidate {
+            continue;
+        }
+        let reaches_other_state =
+            state_dependency.classify(&defining_expr, &candidate, equation_index)
+                == StateDependency::OtherState;
+        let Some(definition) =
+            direct_dummy_definition(dae, candidate.clone(), defining_expr, &scalarization)?
+        else {
+            continue;
+        };
+        let has_closed_derivative = !reaches_other_state
+            && super::constrained_dummy_derivative_plan_for_definition(
                 dae,
-                eq,
-                &state_names,
-                &state_name_set,
-                &when_assigned_states,
-            )?;
-            let (state_name, defining_expr) =
-                extract_state_direct_assignment_equation(eq, &state_names, &state_name_set)?;
-            (state_name == candidate).then_some((
-                candidate,
-                ConstrainedDummyDefinition {
-                    defining_expr,
-                    structural_params: Vec::new(),
-                },
-            ))
-        })
-        .collect::<Vec<_>>();
+                &candidate,
+                &definition,
+            )?
+            .is_some();
+        if !reaches_other_state && !has_closed_derivative {
+            continue;
+        }
+        definitions.push((candidate, definition));
+    }
     definitions.extend(linear_constraint_dummy_state_definitions(
         dae,
-        &state_names,
-        &state_name_set,
         &when_assigned_states,
-    ));
-    // A state with its own assignable `der(state) = ...` row genuinely
-    // integrates unless the defining constraint couples it to another state.
-    // Filter that case here, at constrained-dummy classification time, so
-    // metadata (`constrained_dummy_state_names`) and actual demotion agree.
-    definitions.retain(|(state_name, definition)| {
-        !candidate_is_self_integrating_non_state_alias(dae, state_name, definition, &state_names)
-    });
+    )?);
+    definitions.extend(duplicate_state_derivative_alias_definitions(
+        dae,
+        &scalarization,
+    )?);
 
     definitions.sort_by(|(a, _), (b, _)| {
         let a_var = &dae.variables.states[a];
@@ -703,7 +984,7 @@ pub fn constrained_dummy_state_defining_exprs(
     });
     let mut result = IndexMap::new();
     for (name, expr) in definitions {
-        result.entry(name.as_str().to_string()).or_insert(expr);
+        result.entry(name).or_insert(expr);
     }
-    result
+    Ok(result)
 }

@@ -330,6 +330,9 @@ fn try_eval_builtin_array_like_values<T: SimFloat>(
                 kind: "symmetric shape",
             })
         }
+        rumoca_core::BuiltinFunction::Smooth if args.len() == 2 => {
+            eval_array_like_values(&args[1], env)
+        }
         rumoca_core::BuiltinFunction::Vector if args.len() == 1 => {
             eval_array_like_values(&args[0], env)
         }
@@ -804,7 +807,9 @@ fn try_eval_function_call_array_values<T: SimFloat>(
     }
     let size = function_param_size(output)?;
     if size <= 1 {
-        if let Some(values) = eval_vectorized_scalar_function_call(name, args, source_span, env)? {
+        if let Some(values) =
+            eval_vectorized_scalar_function_call(name, function, args, source_span, env)?
+        {
             return Ok(values);
         }
         return Ok(vec![eval_expr(
@@ -839,10 +844,14 @@ fn try_eval_function_call_array_values<T: SimFloat>(
 
 fn eval_vectorized_scalar_function_call<T: SimFloat>(
     name: &rumoca_core::Reference,
+    function: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     source_span: rumoca_core::Span,
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<T>>, EvalError> {
+    if !call_has_foreach_argument(function, args, env)? {
+        return Ok(None);
+    }
     let arg_values = args
         .iter()
         .map(|arg| eval_array_like_values(arg, env))
@@ -881,6 +890,31 @@ fn eval_vectorized_scalar_function_call<T: SimFloat>(
             })
             .collect::<Result<Vec<_>, EvalError>>()?,
     ))
+}
+
+fn call_has_foreach_argument<T: SimFloat>(
+    function: &rumoca_core::Function,
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    let (named_args, positional_args) = split_named_and_positional_call_args(args);
+    let mut positional_idx = 0usize;
+    for input in &function.inputs {
+        let actual = named_args.get(input.name.as_str()).copied().or_else(|| {
+            let actual = positional_args.get(positional_idx).copied();
+            positional_idx += usize::from(actual.is_some());
+            actual
+        });
+        let Some(actual) = actual else {
+            continue;
+        };
+        let actual_rank = try_infer_runtime_expr_dims(actual, env)?.len();
+        let formal_rank = input.dims.len().max(input.shape_expr.len());
+        if actual_rank > formal_rank {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn vectorized_arg_value<T: SimFloat>(values: &[T], idx: usize) -> T {
@@ -1271,7 +1305,7 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
         return if *is_matrix {
             try_runtime_matrix_literal_dims(elements, env)
         } else {
-            Ok(runtime_vector_dims(elements.len()))
+            try_runtime_array_literal_dims(elements, env)
         };
     }
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {
@@ -1537,6 +1571,40 @@ fn try_runtime_matrix_literal_dims<T: SimFloat>(
         Ok(Vec::new())
     } else {
         Ok(vec![rows, cols])
+    }
+}
+
+pub(super) fn try_runtime_array_literal_dims<T: SimFloat>(
+    elements: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    let Some(first) = elements.first() else {
+        return Ok(vec![0]);
+    };
+    let child_dims = array_literal_element_dims(first, env)?;
+    for element in &elements[1..] {
+        let actual = array_literal_element_dims(element, env)?;
+        if actual != child_dims {
+            return Err(EvalError::InvalidShape {
+                context: "array literal",
+                reason: format!("expected element dimensions {child_dims:?}, got {actual:?}"),
+            });
+        }
+    }
+    let mut dims = Vec::with_capacity(child_dims.len() + 1);
+    dims.push(elements.len());
+    dims.extend(child_dims);
+    Ok(dims)
+}
+
+fn array_literal_element_dims<T: SimFloat>(
+    element: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    if matches!(element, rumoca_core::Expression::Literal { .. }) {
+        Ok(Vec::new())
+    } else {
+        try_infer_runtime_expr_dims(element, env)
     }
 }
 

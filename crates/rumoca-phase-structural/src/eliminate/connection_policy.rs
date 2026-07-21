@@ -11,6 +11,7 @@ pub(super) fn should_skip_connection_equation(
     is_connection_eq: bool,
     live: &[VarName],
     runtime_defined_discrete_targets: &HashSet<String>,
+    has_aggregate_alias: bool,
 ) -> bool {
     if !is_connection_eq {
         return false;
@@ -21,6 +22,9 @@ pub(super) fn should_skip_connection_equation(
     ) || super::expr_references_any_discrete_name(dae, eq_rhs);
     if touches_runtime_discrete_path {
         return true;
+    }
+    if has_aggregate_alias {
+        return false;
     }
     if !connection_alias_refs_are_continuous_scalar_algebraics(
         dae,

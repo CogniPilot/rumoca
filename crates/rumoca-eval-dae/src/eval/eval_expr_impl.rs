@@ -201,7 +201,9 @@ fn validate_function_call_expr<T: SimFloat>(
     if is_constructor || name.as_str() == "Complex" {
         return validate_expr_slice_checked(args, env);
     }
-    if is_runtime_special_function_name(name.var_name()) {
+    let is_string_special =
+        rumoca_core::modelica_string_intrinsic_short_name(name.last_segment()).is_some();
+    if is_runtime_special_function_name(name.var_name()) && !is_string_special {
         // Runtime special functions own aggregate argument semantics such as
         // table matrices and clock constructors.
         return Ok(());
@@ -209,13 +211,20 @@ fn validate_function_call_expr<T: SimFloat>(
     if validate_function_closure_call(name, args, env)? {
         return Ok(());
     }
-    if let Some(function) = env.functions.get(name.as_str()) {
+    if let Some(function) = env.functions.get(name.as_str())
+        && (!is_string_special || (function.external.is_none() && !function.body.is_empty()))
+    {
         return validate_user_function_call_args(name.as_str(), function, args, env);
     }
     if let Some((resolved_name, _selection)) = resolve_user_function_reference_target(name, env)
         && let Some(function) = env.functions.get(resolved_name.as_str())
+        && function.external.is_none()
+        && !function.body.is_empty()
     {
         return validate_user_function_call_args(resolved_name.as_str(), function, args, env);
+    }
+    if is_string_special {
+        return Ok(());
     }
     if let Some(function) = builtin_function_from_call_name(name.var_name()) {
         return validate_builtin_call(function, args, env);

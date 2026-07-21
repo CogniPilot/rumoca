@@ -114,6 +114,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 implicit_jacobian_v_scalar: zero_rb.clone(),
                 full_jacobian_v: zero_rb.clone(),
             },
+            ..Default::default()
         },
         initial_y: vec![1.0],
         parameters: Vec::new(),

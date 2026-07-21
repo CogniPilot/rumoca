@@ -5,8 +5,9 @@
 
 use crate::{
     ComputeBlock, ComputeNode, ContinuousSolveArtifacts, ContinuousSolveSystem,
-    DiscreteSolveSystem, InitializationSolveSystem, LinearOp, ScalarProgramBlock, SolveArtifacts,
-    SolveClockPartition, SolveEventPartition, SolveModel, SolveProblem,
+    DiscreteSolveSystem, InitializationSolveArtifacts, InitializationSolveSystem, LinearOp,
+    ScalarProgramBlock, SolveArtifacts, SolveClockPartition, SolveEventPartition, SolveModel,
+    SolveProblem,
 };
 use rumoca_core::Span;
 
@@ -40,6 +41,7 @@ pub enum VisitScope<'a> {
     EventPartition(&'a SolveEventPartition),
     ClockPartition(&'a SolveClockPartition),
     ContinuousArtifacts(&'a ContinuousSolveArtifacts),
+    InitializationArtifacts(&'a InitializationSolveArtifacts),
     ComputeBlock(&'a ComputeBlock),
     ComputeNode {
         index: usize,
@@ -155,6 +157,17 @@ pub trait SolveVisitor {
         exit_result
     }
 
+    fn visit_initialization_artifacts(
+        &mut self,
+        artifacts: &InitializationSolveArtifacts,
+    ) -> Result<(), Self::Error> {
+        self.enter_scope(VisitScope::InitializationArtifacts(artifacts))?;
+        let result = walk_initialization_artifacts(self, artifacts);
+        let exit_result = self.exit_scope(VisitScope::InitializationArtifacts(artifacts));
+        result?;
+        exit_result
+    }
+
     fn visit_compute_block(&mut self, block: &ComputeBlock) -> Result<(), Self::Error> {
         self.enter_scope(VisitScope::ComputeBlock(block))?;
         let result = walk_compute_block(self, block);
@@ -253,7 +266,8 @@ pub fn walk_solve_artifacts<V: SolveVisitor + ?Sized>(
     visitor: &mut V,
     artifacts: &SolveArtifacts,
 ) -> Result<(), V::Error> {
-    visitor.visit_continuous_artifacts(&artifacts.continuous)
+    visitor.visit_continuous_artifacts(&artifacts.continuous)?;
+    visitor.visit_initialization_artifacts(&artifacts.initialization)
 }
 
 pub fn walk_continuous_system<V: SolveVisitor + ?Sized>(
@@ -302,6 +316,13 @@ pub fn walk_continuous_artifacts<V: SolveVisitor + ?Sized>(
 ) -> Result<(), V::Error> {
     visitor.visit_compute_block(&artifacts.implicit_jacobian_v)?;
     visitor.visit_scalar_program_block(&artifacts.full_jacobian_v)
+}
+
+pub fn walk_initialization_artifacts<V: SolveVisitor + ?Sized>(
+    visitor: &mut V,
+    artifacts: &InitializationSolveArtifacts,
+) -> Result<(), V::Error> {
+    visitor.visit_compute_block(&artifacts.residual_jacobian_v)
 }
 
 pub fn walk_compute_block<V: SolveVisitor + ?Sized>(

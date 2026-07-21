@@ -1228,6 +1228,28 @@ fn test_eval_array_values_vector_arithmetic_preserves_shape() {
 }
 
 #[test]
+fn test_eval_array_values_smooth_preserves_expression_shape() {
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Smooth,
+        args: vec![
+            lit(0.0),
+            rumoca_core::Expression::Array {
+                elements: vec![lit(1.0), lit(2.0), lit(3.0)],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_shaped_array_values::<f64>(&expr, &VarEnv::new(), 3)
+            .expect("smooth must preserve its expression value and shape"),
+        vec![1.0, 2.0, 3.0]
+    );
+}
+
+#[test]
 fn test_eval_array_values_unary_vector_arithmetic_preserves_shape() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([("axis".to_string(), vec![3])]));

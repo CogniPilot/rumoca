@@ -59,6 +59,62 @@ equation
 end FmiArrayStartExpressions;
 "#;
 
+const FMI_FUNCTION_START_EXPRESSIONS_MODEL: &str = "FmiFunctionStartExpressions";
+const FMI_FUNCTION_START_EXPRESSIONS_SOURCE: &str = r#"
+function parameterizedStart
+  input Real base;
+  input Real scale;
+  output Real values[2];
+algorithm
+  values := {base, 2.0 * scale};
+end parameterizedStart;
+
+model FmiFunctionStartExpressions
+  parameter Real base = 3.0;
+  parameter Real scale = 2.0;
+  Real x[2](start = parameterizedStart(scale = scale, base = base), fixed = true);
+equation
+  der(x) = -x;
+end FmiFunctionStartExpressions;
+"#;
+
+const FMI_SHAPED_FUNCTION_START_MODEL: &str = "FmiShapedFunctionStart";
+const FMI_SHAPED_FUNCTION_START_SOURCE: &str = r#"
+function matrixLast
+  input Real values[2, 2];
+  output Real value;
+algorithm
+  value := values[2, 2];
+end matrixLast;
+
+function singletonMatrix
+  input Real values[1, 1];
+  output Real value;
+algorithm
+  value := values[1, 1];
+end singletonMatrix;
+
+function tensorLast
+  input Real values[2, 1, 2];
+  output Real value;
+algorithm
+  value := values[2, 1, 2];
+end tensorLast;
+
+model FmiShapedFunctionStart
+  parameter Real matrixValues[2, 2] = {{1.0, 2.0}, {3.0, 4.0}};
+  parameter Real singletonValues[1, 1] = {{5.0}};
+  parameter Real tensorValues[2, 1, 2] = {{{6.0, 7.0}}, {{8.0, 9.0}}};
+  Real matrixState(start = matrixLast(matrixValues), fixed = true);
+  Real singletonState(start = singletonMatrix(singletonValues), fixed = true);
+  Real tensorState(start = tensorLast(tensorValues), fixed = true);
+equation
+  der(matrixState) = -matrixState;
+  der(singletonState) = -singletonState;
+  der(tensorState) = -tensorState;
+end FmiShapedFunctionStart;
+"#;
+
 /// Fixed-sample discrete fixture for targets that reject continuous states:
 /// a parameter, a `pre()` state, an output, and one `when sample(...)` clock.
 const DISCRETE_SMOKE_MODEL: &str = "DiscreteSmoke";
@@ -334,6 +390,32 @@ fn fmi3_target_model_description_serializes_array_start_aliases_issue_289() {
     assert_variable_fragment_contains(&xml, "x", r#"start="1.0 2.0""#);
     assert_variable_fragment_contains(&xml, "y", r#"start="2.0""#);
     assert_no_modelica_start_expression("FMI3 array", &xml);
+}
+
+#[test]
+fn fmi3_target_folds_parameterized_function_array_start() {
+    let xml = render_fmi_model_description_xml_for(
+        "fmi3",
+        FMI_FUNCTION_START_EXPRESSIONS_MODEL,
+        FMI_FUNCTION_START_EXPRESSIONS_SOURCE,
+    );
+
+    assert_variable_fragment_contains(&xml, "x", r#"start="3.0 4.0""#);
+    assert_no_modelica_start_expression("FMI3 function array", &xml);
+}
+
+#[test]
+fn fmi3_target_preserves_function_argument_rank_while_folding_starts() {
+    let xml = render_fmi_model_description_xml_for(
+        "fmi3",
+        FMI_SHAPED_FUNCTION_START_MODEL,
+        FMI_SHAPED_FUNCTION_START_SOURCE,
+    );
+
+    assert_variable_fragment_contains(&xml, "matrixState", r#"start="4.0""#);
+    assert_variable_fragment_contains(&xml, "singletonState", r#"start="5.0""#);
+    assert_variable_fragment_contains(&xml, "tensorState", r#"start="9.0""#);
+    assert_no_modelica_start_expression("FMI3 shaped function", &xml);
 }
 
 #[test]

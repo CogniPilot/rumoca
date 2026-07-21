@@ -41,6 +41,9 @@ impl From<RuntimeSolveError> for SimError {
                 Self::SolveIr(message)
             }
             RuntimeSolveError::UnsupportedModel { reason } => Self::SolveIr(reason),
+            unassignable @ RuntimeSolveError::RefreshTargetUnassignable { .. } => {
+                Self::SolveIr(unassignable.to_string())
+            }
             RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
                 "non-finite derivative evaluation for state '{state_name}'"
             )),

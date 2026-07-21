@@ -377,6 +377,12 @@ pub fn lower_root_relation_memory_targets(
     root_conditions::lower_root_relation_memory_targets(dae_model, layout)
 }
 
+pub fn lower_root_zero_domains(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_ir_solve::RootZeroDomain>, LowerError> {
+    root_conditions::lower_root_zero_domains(dae_model)
+}
+
 pub fn lower_scheduled_root_conditions(
     dae_model: &dae::Dae,
 ) -> Result<Vec<rumoca_ir_solve::ScheduledRootCondition>, LowerError> {

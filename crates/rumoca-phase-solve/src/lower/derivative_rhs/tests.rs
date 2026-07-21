@@ -94,6 +94,79 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn derivative_rhs_function_param(name: &str) -> rumoca_core::FunctionParam {
+    rumoca_core::FunctionParam {
+        def_id: None,
+        type_def_id: None,
+        name: name.to_string(),
+        span: derivative_rhs_test_span(),
+        type_name: "Real".to_string(),
+        type_class: None,
+        dims: Vec::new(),
+        shape_expr: Vec::new(),
+        default: None,
+        min: None,
+        max: None,
+        description: None,
+    }
+}
+
+#[test]
+fn derivative_linear_parts_projects_scalar_function_call() {
+    let span = derivative_rhs_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+
+    let mut scale = rumoca_core::Function::new("Test.scale", span);
+    scale.inputs.push(derivative_rhs_function_param("u"));
+    scale.outputs.push(derivative_rhs_function_param("y"));
+    scale.body.push(rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference::from_flat_segments("y", span, None),
+        value: rumoca_core::Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(real(2.0)),
+            rhs: Box::new(var_ref("u")),
+            span,
+        },
+        span,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(scale.name.clone(), scale);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Test.scale"),
+        args: vec![rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: vec![var_ref("x")],
+            span,
+        }],
+        is_constructor: false,
+        span,
+    };
+    let state_names = HashSet::from(["x".to_string()]);
+    let structural_bindings = IndexMap::new();
+    let ctx = DerivativeLinearCtx {
+        state_names: &state_names,
+        dae_model: &dae_model,
+        structural_bindings: &structural_bindings,
+    };
+
+    let (coefficients, remainder) = derivative_linear_parts(&expr, &ctx, span)
+        .expect("function derivative projection should succeed")
+        .expect("function call should contain a state derivative");
+
+    assert_eq!(
+        coefficients.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["x"]
+    );
+    assert!(remainder.is_none());
+}
+
 fn structured_indexed_var_ref(base: &str, field: &str, index: i64) -> rumoca_core::Expression {
     let span = derivative_rhs_test_span();
     rumoca_core::Expression::VarRef {

@@ -118,6 +118,7 @@ impl<'a> LowerBuilder<'a> {
                 | rumoca_core::Expression::Index { .. }
                 | rumoca_core::Expression::FieldAccess { .. }
                 | rumoca_core::Expression::Binary { .. }
+                | rumoca_core::Expression::Unary { .. }
                 | rumoca_core::Expression::BuiltinCall { .. }
         ) {
             return Ok(None);

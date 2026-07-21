@@ -129,7 +129,7 @@ fn apply_substitutions_in_order_with_derivatives(
 ///
 /// Only handles identities that are mathematically exact across all numeric
 /// types — division-by-zero and `0^0` are intentionally not folded.
-fn simplify_arithmetic_identities(expr: Expression) -> Expression {
+pub(super) fn simplify_arithmetic_identities(expr: Expression) -> Expression {
     match expr {
         Expression::Binary { op, lhs, rhs, span } => {
             let lhs = simplify_arithmetic_identities(*lhs);
@@ -144,6 +144,9 @@ fn simplify_arithmetic_identities(expr: Expression) -> Expression {
                     }
                 }
                 OpBinary::Sub => {
+                    if lhs == rhs && identity_operand_is_total(&lhs) {
+                        return zero_literal(span);
+                    }
                     if is_numeric_zero(&rhs) {
                         return lhs;
                     }
@@ -198,6 +201,21 @@ fn simplify_arithmetic_identities(expr: Expression) -> Expression {
             }
         }
         _ => expr,
+    }
+}
+
+fn identity_operand_is_total(expr: &Expression) -> bool {
+    match expr {
+        Expression::Literal { .. } | Expression::VarRef { .. } => true,
+        Expression::Unary { op, rhs, .. } => {
+            matches!(op, OpUnary::Plus | OpUnary::Minus) && identity_operand_is_total(rhs)
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            matches!(op, OpBinary::Add | OpBinary::Sub)
+                && identity_operand_is_total(lhs)
+                && identity_operand_is_total(rhs)
+        }
+        _ => false,
     }
 }
 

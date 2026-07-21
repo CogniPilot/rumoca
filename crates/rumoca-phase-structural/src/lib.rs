@@ -12,6 +12,7 @@ mod blt;
 pub mod dae_prepare;
 mod diagnostics;
 pub mod eliminate;
+mod function_arguments;
 pub mod ic_plan;
 pub mod incidence;
 mod matching;
@@ -19,6 +20,7 @@ pub mod projection_maps;
 pub mod report;
 pub mod runtime_defined;
 pub mod scalarize;
+mod static_eval;
 mod tarjan;
 pub mod tearing;
 mod types;
@@ -75,7 +77,7 @@ pub fn build_blt_from_incidence(incidence: &Incidence) -> Result<Vec<BltBlock>, 
     }
 
     let (match_eq, match_var) =
-        matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns);
+        matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
 
     if matching_size < incidence.n_eq || matching_size < incidence.n_var {
@@ -93,6 +95,7 @@ pub fn build_blt_from_incidence(incidence: &Incidence) -> Result<Vec<BltBlock>, 
 #[derive(Debug)]
 pub struct RegularSubsystem {
     pub incidence: Incidence,
+    pub blocks: Vec<BltBlock>,
     pub dropped_equations: Vec<EquationRef>,
     pub dropped_unknowns: Vec<UnknownId>,
 }
@@ -106,9 +109,14 @@ pub struct RegularSubsystem {
 /// subsystem without relying on string sentinels or unmatched `???` BLT blocks.
 pub fn maximum_regular_subsystem(
     incidence: &Incidence,
+    preferred_unknowns: &[Option<usize>],
 ) -> Result<RegularSubsystem, StructuralError> {
-    let (match_eq, match_var) =
-        matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns);
+    let (match_eq, match_var) = matching::maximum_matching(
+        incidence.n_eq,
+        incidence.n_var,
+        &incidence.eq_unknowns,
+        preferred_unknowns,
+    );
     let matched_equations = match_eq
         .iter()
         .enumerate()
@@ -167,11 +175,35 @@ pub fn maximum_regular_subsystem(
         .filter_map(|(idx, unknown)| (!matched_var_set.contains(&idx)).then_some(unknown.clone()))
         .collect::<Vec<_>>();
 
+    let regular_incidence = Incidence::new(eq_unknowns, equation_refs, unknown_names);
+    let regular_match_eq = matched_equations
+        .iter()
+        .map(|old_eq_idx| match_eq[*old_eq_idx].and_then(|old_var_idx| old_to_new_var[old_var_idx]))
+        .collect::<Vec<_>>();
+    let regular_match_var = matching_inverse(&regular_match_eq, regular_incidence.n_var);
+    let adjacency = incidence::build_dependency_graph(
+        &regular_incidence.eq_unknowns,
+        &regular_match_var,
+        regular_incidence.n_eq,
+    );
+    let blocks = blt::build_blt_blocks(&regular_incidence, &regular_match_eq, &adjacency);
+
     Ok(RegularSubsystem {
-        incidence: Incidence::new(eq_unknowns, equation_refs, unknown_names),
+        incidence: regular_incidence,
+        blocks,
         dropped_equations,
         dropped_unknowns,
     })
+}
+
+fn matching_inverse(match_eq: &[Option<usize>], n_var: usize) -> Vec<Option<usize>> {
+    let mut match_var = vec![None; n_var];
+    for (eq_idx, var_idx) in match_eq.iter().copied().enumerate() {
+        if let Some(var_idx) = var_idx {
+            match_var[var_idx] = Some(eq_idx);
+        }
+    }
+    match_var
 }
 
 fn singular_from_matching(
@@ -214,7 +246,8 @@ pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae<'_>, StructuralError> {
         return Err(StructuralError::EmptySystem);
     }
 
-    let (match_eq, match_var) = matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns);
+    let (match_eq, match_var) =
+        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
 
     if matching_size < inc.n_eq || matching_size < inc.n_var {
@@ -262,7 +295,8 @@ pub fn build_structural_report(dae: &dae::Dae) -> Result<StructuralReport, Struc
         return Err(StructuralError::EmptySystem);
     }
 
-    let (match_eq, match_var) = matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns);
+    let (match_eq, match_var) =
+        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
     if matching_size < inc.n_eq || matching_size < inc.n_var {
         return Err(singular_from_matching(&inc, &match_eq, &match_var));
@@ -398,7 +432,8 @@ pub fn analyze_structure(dae: &dae::Dae) -> StructuralDiagnostics {
         return result;
     }
 
-    let (match_eq, match_var) = matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns);
+    let (match_eq, match_var) =
+        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
     result.matching_size = matching_size;
 

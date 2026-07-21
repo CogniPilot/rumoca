@@ -1,5 +1,5 @@
 {
-  "schema_version": 16,
+  "schema_version": 17,
   "layout": {
     "bindings": {
       "x": {
@@ -166,8 +166,7 @@
           ],
           "y_indices": [
             1
-          ],
-          "causal_steps": []
+          ]
         }
       ]
     },
@@ -432,7 +431,12 @@
         0
       ]
     },
-    "root_relation_memory_targets": [],
+    "root_relation_memory_targets": [
+      null
+    ],
+    "root_zero_domains": [
+      "Previous"
+    ],
     "scheduled_root_conditions": [],
     "scheduled_time_events": [
       0.1
