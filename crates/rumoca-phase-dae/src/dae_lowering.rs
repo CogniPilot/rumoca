@@ -2465,21 +2465,23 @@ fn scalarize_binary_expr_at(
     span: Span,
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<Expr, ToDaeError> {
-    if matches!(op, OpBinary::Sub)
-        && matches!(rhs, Expr::Binary { op, .. } if matches!(op, OpBinary::Add | OpBinary::Sub | OpBinary::Mul | OpBinary::MulElem))
-    {
+    if matches!(op, OpBinary::Sub) {
         let projector = Projector(ctx.var_dims, ctx.functions);
-        let dims = projector.dims(lhs, span)?;
-        if dims.is_none() && matches!(projector.dims(rhs, span)?, Some(dims) if !dims.is_empty()) {
-            return Err(projection_error("unknown target shape", span));
-        }
-        if let Some(dims) = dims
-            && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
-        {
-            let indices = lane_indices_for_dims(ctx.k, &dims)
-                .ok_or_else(|| projection_error("result shape mismatch", span))?;
-            let lhs = projector.element(lhs, &indices, span)?;
-            return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
+        if has_matrix_product_projection_evidence(rhs, &projector, span) {
+            let dims = projector.dims(lhs, span)?;
+            if dims.is_none()
+                && matches!(projector.dims(rhs, span)?, Some(dims) if !dims.is_empty())
+            {
+                return Err(projection_error("unknown target shape", span));
+            }
+            if let Some(dims) = dims
+                && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
+            {
+                let indices = lane_indices_for_dims(ctx.k, &dims)
+                    .ok_or_else(|| projection_error("result shape mismatch", span))?;
+                let lhs = projector.element(lhs, &indices, span)?;
+                return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
+            }
         }
     }
     Ok(vectorized_binary_expr(
@@ -2488,6 +2490,93 @@ fn scalarize_binary_expr_at(
         scalarize_expr_with_context(rhs, ctx)?,
         span,
     ))
+}
+
+fn has_matrix_product_projection_evidence(
+    expr: &Expr,
+    projector: &Projector<'_>,
+    owner_span: Span,
+) -> bool {
+    matrix_product_projection_evidence(expr, projector, owner_span, true)
+}
+
+fn matrix_product_projection_evidence(
+    expr: &Expr,
+    projector: &Projector<'_>,
+    owner_span: Span,
+    require_result_shape: bool,
+) -> bool {
+    let span = expr.span().unwrap_or(owner_span);
+    if direct_matrix_product_evidence(expr, projector, span) {
+        return true;
+    }
+    if let Expr::Binary { op, lhs, rhs, .. } = expr
+        && matches!(op, OpBinary::Mul | OpBinary::MulElem)
+    {
+        let lhs_is_scalar = matches!(projector.dims(lhs, span), Ok(Some(dims)) if dims.is_empty());
+        let rhs_is_scalar = matches!(projector.dims(rhs, span), Ok(Some(dims)) if dims.is_empty());
+        if lhs_is_scalar && matrix_product_projection_evidence(rhs, projector, span, true)
+            || rhs_is_scalar && matrix_product_projection_evidence(lhs, projector, span, true)
+        {
+            return true;
+        }
+    }
+    if require_result_shape && !matches!(projector.dims(expr, span), Ok(Some(_))) {
+        return false;
+    }
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => {
+            matrix_product_projection_evidence(lhs, projector, span, false)
+                || matrix_product_projection_evidence(rhs, projector, span, false)
+        }
+        Expr::Unary { rhs, .. } => matrix_product_projection_evidence(rhs, projector, span, false),
+        Expr::BuiltinCall { function, args, .. }
+            if !builtin_is_scalar_boundary(function, args.len()) =>
+        {
+            args.iter()
+                .any(|arg| matrix_product_projection_evidence(arg, projector, span, false))
+        }
+        Expr::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(_, value)| matrix_product_projection_evidence(value, projector, span, false))
+                || matrix_product_projection_evidence(else_branch, projector, span, false)
+        }
+        _ => false,
+    }
+}
+
+fn direct_matrix_product_evidence(
+    expr: &Expr,
+    projector: &Projector<'_>,
+    owner_span: Span,
+) -> bool {
+    let Expr::Binary { op, lhs, rhs, span } = expr else {
+        return false;
+    };
+    if !matches!(op, OpBinary::Mul | OpBinary::MulElem) {
+        return false;
+    }
+    let lhs_is_array = has_array_operand_evidence(lhs, projector, owner_span);
+    let rhs_is_array = has_array_operand_evidence(rhs, projector, owner_span);
+    lhs_is_array && (rhs_is_array || is_unknown_atomic_operand(rhs, projector, *span))
+        || rhs_is_array && is_unknown_atomic_operand(lhs, projector, *span)
+}
+
+fn has_array_operand_evidence(expr: &Expr, projector: &Projector<'_>, owner_span: Span) -> bool {
+    has_array_slice_syntax(expr)
+        || matches!(projector.dims(expr, expr.span().unwrap_or(owner_span)), Ok(Some(dims)) if !dims.is_empty())
+}
+
+fn is_unknown_atomic_operand(expr: &Expr, projector: &Projector<'_>, span: Span) -> bool {
+    matches!(
+        expr,
+        Expr::VarRef { .. } | Expr::Index { .. } | Expr::FunctionCall { .. }
+    ) && matches!(projector.dims(expr, span), Ok(None) | Err(_))
 }
 fn scalarize_builtin_vector_output_at(
     function: rumoca_core::BuiltinFunction,
@@ -3709,7 +3798,13 @@ fn project_scalarized_residual_rhs(
     } else {
         project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?
     };
-    let scalar_rhs = match Projector(var_dims, functions).project(rhs, k, &target_dims)? {
+    let projector = Projector(var_dims, functions);
+    let projected = if has_matrix_product_projection_evidence(rhs, &projector, *span) {
+        projector.project(rhs, k, &target_dims)?
+    } else {
+        None
+    };
+    let scalar_rhs = match projected {
         Some(projected) => projected,
         None if target_dims.is_empty()
             && !matches!(rhs.as_ref(), Expr::ArrayComprehension { .. })

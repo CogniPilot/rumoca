@@ -1457,6 +1457,105 @@ fn test_todae_preserves_dynamic_row_slice_reductions_in_scalar_products() {
 }
 
 #[test]
+fn test_todae_preserves_scalar_scaled_sum_of_vector_slices() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "diameters", &[1]);
+    declare_array(&mut flat, "dimensions", &[2]);
+    let range_slice = |start, end| Expression::VarRef {
+        name: VarName::new("dimensions").into(),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(Expression::Range {
+                start: Box::new(Expression::Literal {
+                    value: Literal::Integer(start),
+                    span: crate::test_support::test_span(),
+                }),
+                step: None,
+                end: Box::new(Expression::Literal {
+                    value: Literal::Integer(end),
+                    span: crate::test_support::test_span(),
+                }),
+                span: crate::test_support::test_span(),
+            }),
+            span: crate::test_support::test_span(),
+        }],
+        span: crate::test_support::test_span(),
+    };
+    add_equation(
+        &mut flat,
+        make_structured_var_ref("diameters"),
+        multiply(
+            real(0.5),
+            binary(
+                rumoca_core::OpBinary::Add,
+                range_slice(1, 1),
+                range_slice(2, 2),
+            ),
+        ),
+        1,
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("scalar scaling of a vector sum is not matrix-product projection");
+
+    assert_eq!(dae.continuous.equations.len(), 1);
+    let Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        rhs,
+        ..
+    } = residual_rhs(&dae.continuous.equations[0])
+    else {
+        panic!("expected preserved scalar scaling");
+    };
+    assert!(matches!(
+        rhs.as_ref(),
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_todae_preserves_vector_scaling_with_nested_unproven_dot_shape() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "velocity", &[2]);
+    declare_array(&mut flat, "work", &[2]);
+    let fill = || {
+        builtin(
+            rumoca_core::BuiltinFunction::Fill,
+            vec![
+                real(0.5),
+                Expression::Literal {
+                    value: Literal::Integer(2),
+                    span: crate::test_support::test_span(),
+                },
+            ],
+        )
+    };
+    add_equation(
+        &mut flat,
+        colon_vector("work"),
+        multiply(fill(), multiply(colon_vector("velocity"), fill())),
+        2,
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("an unproven nested dot shape must stay on ordinary array scalarization");
+
+    assert_eq!(dae.continuous.equations.len(), 2);
+}
+
+#[test]
 fn test_todae_rejects_dynamic_row_slices_hidden_by_division_or_unknown_factor() {
     for op in [rumoca_core::OpBinary::Div, rumoca_core::OpBinary::DivElem] {
         let mut flat = Model::new();
