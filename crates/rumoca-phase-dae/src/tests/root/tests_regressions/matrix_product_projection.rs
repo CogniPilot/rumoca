@@ -138,6 +138,48 @@ fn flatten_dot_terms<'a>(expr: &'a Expression, terms: &mut Vec<ProductTerm<'a>>)
     }
 }
 
+fn flatten_builtin_dot_terms(expr: &Expression, terms: &mut Vec<(Vec<i64>, i64)>) -> bool {
+    match expr {
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } => flatten_builtin_dot_terms(lhs, terms) && flatten_builtin_dot_terms(rhs, terms),
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let Some(("rotation", lhs_indices)) = literal_subscripts(lhs) else {
+                return false;
+            };
+            let Expression::Index {
+                base, subscripts, ..
+            } = rhs.as_ref()
+            else {
+                return false;
+            };
+            if !matches!(
+                base.as_ref(),
+                Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Cross,
+                    ..
+                }
+            ) {
+                return false;
+            }
+            let [rumoca_core::Subscript::Index { value, .. }] = subscripts.as_slice() else {
+                return false;
+            };
+            terms.push((lhs_indices, *value));
+            true
+        }
+        _ => false,
+    }
+}
+
 fn residual_rhs(equation: &rumoca_ir_dae::Equation) -> &Expression {
     let Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
@@ -581,6 +623,65 @@ fn test_todae_projects_matrix_product_nested_in_vector_addition() {
             terms,
             (1_i64..=3)
                 .map(|inner| { (("rotation", vec![index, inner]), ("offset", vec![inner]),) })
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn test_todae_projects_fixed_vector_builtin_inside_matrix_product() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    for (name, dims) in [
+        ("velocity", &[3][..]),
+        ("rotation", &[3, 3][..]),
+        ("omega", &[3][..]),
+        ("offset", &[3][..]),
+        ("target", &[3][..]),
+    ] {
+        declare_dae_array(&mut dae, name, dims);
+    }
+    let cross = builtin(
+        rumoca_core::BuiltinFunction::Cross,
+        vec![colon_vector("omega"), colon_vector("offset")],
+    );
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                colon_vector("target"),
+                binary(
+                    rumoca_core::OpBinary::Add,
+                    colon_vector("velocity"),
+                    multiply(make_structured_var_ref("rotation"), cross),
+                ),
+            ),
+            crate::test_support::test_span(),
+            "builtin matrix product",
+            3,
+        ));
+
+    scalarize_phantom_vector_equations(&mut dae)
+        .expect("fixed-vector builtins have sufficient shape evidence for matrix projection");
+
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let row = i64::try_from(lane + 1).expect("three lanes fit i64");
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } = residual_rhs(equation)
+        else {
+            panic!("expected scalar addition");
+        };
+        assert_eq!(literal_subscripts(lhs), Some(("velocity", vec![row])));
+        let mut terms = Vec::new();
+        assert!(flatten_builtin_dot_terms(rhs, &mut terms));
+        assert_eq!(
+            terms,
+            (1_i64..=3)
+                .map(|inner| (vec![row, inner], inner))
                 .collect::<Vec<_>>()
         );
     }
