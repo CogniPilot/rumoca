@@ -515,7 +515,7 @@ pub struct DaeInitializationPartition {
     #[serde(rename = "initial_structured_equations")]
     pub structured_equations: Vec<StructuredEquationFamily>,
     /// Typed provenance for generated initialization rows. This remains an
-    /// in-memory phase contract so legacy DAE JSON stays schema-compatible.
+    /// serialized phase contract with one entry per initialization equation.
     #[serde(rename = "initial_equation_provenance")]
     pub equation_provenance: Vec<InitializationEquationProvenance>,
 }
