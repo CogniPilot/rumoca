@@ -13,7 +13,7 @@ use crate::scalar_size::compute_var_size;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     BuiltinFunction as Builtin, Expression as Expr, ExpressionRewriter, ExpressionVisitor,
-    OpBinary, Reference, Span, StatementRewriter, Subscript,
+    Function, OpBinary, Reference, Span, StatementRewriter, Subscript, VarName,
 };
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::DaeExpressionRewriter;
@@ -3700,7 +3700,6 @@ fn scalarize_equation_list(
         } else {
             new_equations.push(project_scalarized_residual_rhs(
                 eq,
-                phantom_map,
                 array_dims,
                 var_dims,
                 record_array_fields,
@@ -3715,7 +3714,6 @@ fn scalarize_equation_list(
 
 fn project_scalarized_residual_rhs(
     eq: dae::Equation,
-    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
     var_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
@@ -3741,13 +3739,12 @@ fn project_scalarized_residual_rhs(
         let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
-    let Some(target_dims) = var_dims.get(name.as_str()).map(Vec::as_slice) else {
+    let Some(target_dims) = Projector(var_dims, functions).dims(lhs, *span)? else {
         let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
-    let projector = Projector(var_dims, functions);
     let k = if target_dims.is_empty() {
-        0
+        scalarized_lhs_zero_based_index(subscripts).unwrap_or(0)
     } else {
         let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims)
         else {
@@ -3756,19 +3753,19 @@ fn project_scalarized_residual_rhs(
         };
         k
     };
-    let _ = phantom_map;
     let scalar_lhs = if target_dims.is_empty() {
         lhs.as_ref().clone()
     } else {
         project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?
     };
-    let projection_dims: &[i64] = match projector.dims(rhs, *span)? {
-        Some(dims) if dims.is_empty() => &[],
-        _ => target_dims,
-    };
-    let scalar_rhs = match projector.project(rhs, k, projection_dims)? {
+    let scalar_rhs = match Projector(var_dims, functions).project(rhs, k, &target_dims)? {
         Some(projected) => projected,
-        None if target_dims.is_empty() => rhs.as_ref().clone(),
+        None if target_dims.is_empty()
+            && !matches!(rhs.as_ref(), Expr::ArrayComprehension { .. })
+            && !expr_has_vectorized_scalar_function_call(rhs, array_dims, functions) =>
+        {
+            rhs.as_ref().clone()
+        }
         None => project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?,
     };
     let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, array_dims)?;
@@ -3987,7 +3984,7 @@ fn dot_product_expr(lhs_values: &[Expr], rhs_values: &[Expr], span: Span) -> Opt
 
 struct Projector<'a>(
     &'a HashMap<String, Vec<i64>>,
-    &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    &'a IndexMap<VarName, Function>,
 );
 
 impl Projector<'_> {
@@ -4060,9 +4057,10 @@ impl Projector<'_> {
         }
         let lhs_dims = self.dims(lhs, *span)?;
         let rhs_dims = self.dims(rhs, *span)?;
-        let has_array = [&lhs_dims, &rhs_dims]
-            .into_iter()
-            .any(|dims| dims.as_ref().is_some_and(|dims| !dims.is_empty()));
+        let has_array = lhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
+            || rhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
+            || has_array_slice_syntax(lhs)
+            || has_array_slice_syntax(rhs);
         if target_dims.is_empty() && !has_array && (lhs_dims.is_none() || rhs_dims.is_none()) {
             return Ok(None);
         }
@@ -4189,16 +4187,20 @@ fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
         } => Some((name, subscripts)),
         Expr::Index {
             base, subscripts, ..
-        } => match base.as_ref() {
-            Expr::VarRef {
-                name,
-                subscripts: base_subscripts,
-                ..
-            } if base_subscripts.is_empty() => Some((name, subscripts)),
-            _ => None,
-        },
+        } => matrix_var_slice(base)
+            .filter(|(_, base_subscripts)| base_subscripts.is_empty())
+            .map(|(name, _)| (name, subscripts.as_slice())),
         _ => None,
     }
+}
+
+fn has_array_slice_syntax(expr: &Expr) -> bool {
+    matrix_var_slice(expr).is_some_and(|(_, subscripts)| {
+        subscripts_have_colon(subscripts)
+            || subscripts.iter().any(
+                |subscript| matches!(subscript, Subscript::Expr { expr, .. } if subscript_expr_selects_vector(expr) == Some(true)),
+            )
+    })
 }
 
 fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
