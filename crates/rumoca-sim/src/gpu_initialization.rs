@@ -73,6 +73,12 @@ pub fn settle_gpu_initial_conditions(
             metrics: GpuInitializationMetrics::default(),
         });
     }
+    let runtime_state = rumoca_eval_solve::SimulationRuntimeState::new();
+    let eval_context = rumoca_eval_solve::RowEvalContext {
+        external_tables: Some(model.external_tables.as_slice()),
+        runtime_state: Some(&runtime_state),
+        ..Default::default()
+    };
     let mut worst = (0usize, 0.0f64, None);
     let mut native_metrics = rumoca_eval_solve::MapEvaluationMetrics::default();
     for family in &initialization.direct_families {
@@ -83,6 +89,7 @@ pub fn settle_gpu_initial_conditions(
                 y: &mut y0,
                 p: &p0,
                 t: t_start,
+                context: eval_context,
                 apply: true,
                 worst: &mut worst,
                 metrics: &mut native_metrics,
@@ -99,6 +106,7 @@ pub fn settle_gpu_initial_conditions(
                 y: &mut y0,
                 p: &p0,
                 t: t_start,
+                context: eval_context,
                 apply: false,
                 worst: &mut worst,
                 metrics: &mut native_metrics,
@@ -234,8 +242,9 @@ fn validate_direct_node_ownership(
                 span: Some(family.span),
             });
         }
-        let Some(solve::ComputeNode::Map { domain, .. }) =
-            initialization.residual.nodes.get(family.node_index)
+        let Some(solve::ComputeNode::Map {
+            domain, base_ops, ..
+        }) = initialization.residual.nodes.get(family.node_index)
         else {
             return Err(GpuInitializationError::Unsupported {
                 feature: "non-Map direct initial family",
@@ -243,6 +252,13 @@ fn validate_direct_node_ownership(
                 span: Some(family.span),
             });
         };
+        if has_random_or_impure_ops(base_ops) {
+            return Err(GpuInitializationError::Unsupported {
+                feature: "random or impure direct initial operations",
+                row: 0,
+                span: Some(family.span),
+            });
+        }
         let dense = solve::TensorOutputMap::dense_contiguous(family.targets.start, domain)
             .map_err(|error| GpuInitializationError::Malformed {
                 message: format!("invalid direct target map: {error:?}"),
@@ -346,6 +362,7 @@ struct DirectFamilyExecution<'a> {
     y: &'a mut [f64],
     p: &'a [f64],
     t: f64,
+    context: rumoca_eval_solve::RowEvalContext<'a>,
     apply: bool,
     worst: &'a mut (usize, f64, Option<rumoca_core::Span>),
     metrics: &'a mut rumoca_eval_solve::MapEvaluationMetrics,
@@ -372,7 +389,7 @@ fn execute_direct_family(
         execution.y,
         execution.p,
         execution.t,
-        rumoca_eval_solve::RowEvalContext::default(),
+        execution.context,
         |ordinal, value, y| {
             let row = direct_map_index(&family.targets, ordinal, family.span).map_err(|error| {
                 rumoca_eval_solve::EvalSolveError::InvalidRow {
@@ -413,6 +430,20 @@ fn execute_direct_family(
         .temporary_values
         .max(evaluation.temporary_values);
     Ok(())
+}
+
+fn has_random_or_impure_ops(ops: &[solve::LinearOp]) -> bool {
+    ops.iter().any(|op| {
+        matches!(
+            op,
+            solve::LinearOp::RandomInitialState { .. }
+                | solve::LinearOp::RandomResult { .. }
+                | solve::LinearOp::RandomState { .. }
+                | solve::LinearOp::ImpureRandomInit { .. }
+                | solve::LinearOp::ImpureRandom { .. }
+                | solve::LinearOp::ImpureRandomInteger { .. }
+        )
+    })
 }
 
 fn direct_map_index(
@@ -607,6 +638,76 @@ mod tests {
         assert_eq!(result.metrics.residual_evaluations, 2);
         assert_eq!(result.metrics.passes, 1);
         assert!(result.metrics.temporary_values <= result.y0.len() * 3);
+    }
+
+    #[test]
+    fn direct_initial_assignment_uses_model_external_tables_for_apply_and_verify() {
+        let mut model = direct_model();
+        let table_id = 515_151_u64;
+        model.external_tables = solve::ExternalTables::new(vec![rumoca_core::ExternalTableData {
+            id: table_id,
+            data: vec![vec![1.0, 10.0], vec![3.0, 30.0]],
+            columns: vec![2],
+            smoothness: 3,
+            extrapolation: 1,
+        }]);
+        let solve::ComputeNode::Map {
+            base_ops,
+            const_strides,
+            ..
+        } = &mut model.problem.initialization.residual.nodes[0]
+        else {
+            unreachable!()
+        };
+        *base_ops = vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: table_id as f64,
+            },
+            LinearOp::Const { dst: 2, value: 1.0 },
+            LinearOp::Const { dst: 3, value: 2.0 },
+            LinearOp::TableLookup {
+                dst: 4,
+                table_id: 1,
+                column: 2,
+                input: 3,
+            },
+            LinearOp::Binary {
+                dst: 5,
+                op: BinaryOp::Sub,
+                lhs: 0,
+                rhs: 4,
+            },
+            LinearOp::StoreOutput { src: 5 },
+        ];
+        const_strides.clear();
+
+        let settled = settle_gpu_initial_conditions(&model, 0.0)
+            .expect("table-backed direct initialization should settle and verify");
+        assert_eq!(settled.y0, vec![10.0, 10.0]);
+    }
+
+    #[test]
+    fn settlement_admission_rejects_random_direct_initial_operations_with_span() {
+        let mut model = direct_model();
+        let solve::ComputeNode::Map { base_ops, .. } =
+            &mut model.problem.initialization.residual.nodes[0]
+        else {
+            unreachable!()
+        };
+        base_ops.insert(0, LinearOp::ImpureRandomInit { dst: 6, seed: 1 });
+
+        let error = settle_gpu_initial_conditions(&model, 0.0)
+            .expect_err("random initialization cannot be replayed for residual verification");
+        assert!(matches!(
+            error,
+            GpuInitializationError::Unsupported {
+                feature: "random or impure direct initial operations",
+                span: Some(actual),
+                ..
+            } if actual == span()
+        ));
     }
 
     #[test]

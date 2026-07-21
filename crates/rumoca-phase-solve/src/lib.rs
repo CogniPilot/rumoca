@@ -73,7 +73,9 @@ use discrete_pre_modes::discrete_pre_mode_for_equation;
 pub(crate) use discrete_pre_modes::expression_contains_event_entry_pre_operator;
 use gpu_initialization::lower_gpu_initialization_system;
 #[cfg(test)]
-use gpu_initialization::{append_gpu_corner_strides, gpu_corner_cell_index};
+use gpu_initialization::{
+    append_gpu_corner_strides, gpu_corner_cell_index, reject_nondeterministic_gpu_initial_ops,
+};
 #[cfg(test)]
 use implicit_rhs::zero_rhs_row;
 use implicit_rhs::{

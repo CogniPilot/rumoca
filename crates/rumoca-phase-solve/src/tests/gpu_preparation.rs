@@ -1,5 +1,83 @@
 use super::*;
 
+fn gpu_indexed_var(name: &str, index: i64, span: rumoca_core::Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: source_ref(name),
+        subscripts: vec![rumoca_core::Subscript::generated_index(index, span)],
+        span,
+    }
+}
+
+fn gpu_initial_family_fixture(values: &[i64], spans: &[rumoca_core::Span]) -> dae::Dae {
+    assert_eq!(values.len(), spans.len());
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("x"),
+        array_var("x", &[values.len() as i64]),
+    );
+    for (ordinal, (&value, &span)) in values.iter().zip(spans).enumerate() {
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                der(gpu_indexed_var("x", ordinal as i64 + 1, span)),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(0),
+                    span,
+                },
+            ),
+            span,
+            "derivative row",
+        ));
+        dae_model
+            .initialization
+            .equations
+            .push(dae::Equation::residual(
+                binary(
+                    rumoca_core::OpBinary::Sub,
+                    gpu_indexed_var("x", ordinal as i64 + 1, span),
+                    rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(value),
+                        span,
+                    },
+                ),
+                span,
+                "structured initial row",
+            ));
+        dae_model
+            .initialization
+            .equation_provenance
+            .push(dae::InitializationEquationProvenance::User);
+    }
+    let template = dae_model.initialization.equations[0].rhs.clone();
+    dae_model
+        .initialization
+        .structured_equations
+        .push(dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: values.len() as i64,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equation_counts: vec![1; values.len()],
+            span: spans[0],
+            origin: "structured initial fixture".to_string(),
+            regular: Some(rumoca_core::RegularForFamily {
+                binders: vec!["i".to_string()],
+                accesses: Vec::new(),
+            }),
+            template: Some(rumoca_core::ComprehensionTemplate {
+                body: vec![template],
+            }),
+            interiors_materialized: true,
+        });
+    dae_model
+}
+
 #[test]
 fn gpu_preparation_inlines_input_driven_algebraic_in_derivative_rhs() {
     let span = solve_test_span();
@@ -106,7 +184,11 @@ fn gpu_preparation_rejects_nonstructured_initial_assignment_shape() {
         SolveProblemLoweringProfile::GpuPreparation,
     )
     .expect_err("GPU preparation must fail closed instead of scalarizing initialization rows");
-    assert!(matches!(gpu, crate::lower::LowerError::Unsupported { .. }));
+    assert!(matches!(
+        &gpu,
+        crate::lower::LowerError::UnsupportedAt { .. }
+    ));
+    assert_eq!(gpu.source_span(), Some(span));
 }
 
 #[test]
@@ -327,7 +409,7 @@ fn gpu_initial_projection_rejects_degenerate_structured_binder() {
         .expect_err("direct GPU initial projection must fail closed for one-cell binders");
     assert!(matches!(
         error,
-        crate::lower::LowerError::Unsupported { .. }
+        crate::lower::LowerError::UnsupportedAt { .. }
     ));
     assert!(
         error
@@ -383,4 +465,164 @@ fn gpu_initial_uniformity_checks_destinations_nonloads_and_load_p() {
     };
     append_gpu_corner_strides(&base, &corner, 0, &mut Vec::new(), &mut Vec::new(), span)
         .expect_err("destination register drift must fail closed");
+}
+
+#[test]
+fn gpu_initial_projection_rejects_nonaffine_three_cell_constants_at_first_bad_row() {
+    let spans = [
+        solve_numbered_span(305, 10, 20),
+        solve_numbered_span(305, 30, 40),
+        solve_numbered_span(305, 50, 60),
+    ];
+    let dae_model = gpu_initial_family_fixture(&[1, 4, 9], &spans);
+
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        3,
+        Some(spans[0]),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("non-affine constants must not be synthesized as 1, 4, 7");
+
+    assert!(error.to_string().contains("affine"), "{error}");
+    assert_eq!(error.source_span(), Some(spans[2]));
+}
+
+#[test]
+fn gpu_initial_metadata_failures_preserve_family_and_equation_spans() {
+    let spans = [
+        solve_numbered_span(306, 10, 20),
+        solve_numbered_span(306, 30, 40),
+        solve_numbered_span(306, 50, 60),
+    ];
+    for missing_regular in [true, false] {
+        let mut dae_model = gpu_initial_family_fixture(&[1, 2, 3], &spans);
+        let family = &mut dae_model.initialization.structured_equations[0];
+        if missing_regular {
+            family.regular = None;
+        } else {
+            family.template = None;
+        }
+        let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+            &dae_model,
+            3,
+            Some(spans[0]),
+            SolveProblemLoweringProfile::GpuPreparation,
+        )
+        .expect_err("missing structured metadata must fail closed");
+        assert_eq!(error.source_span(), Some(spans[0]));
+    }
+
+    let mut dae_model = gpu_initial_family_fixture(&[1, 2, 3], &spans);
+    dae_model.initialization.equation_provenance.pop();
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        3,
+        Some(spans[0]),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("missing equation provenance must fail closed");
+    assert_eq!(error.source_span(), Some(spans[2]));
+}
+
+#[test]
+fn gpu_initial_coverage_failure_points_to_first_uncovered_user_equation() {
+    let spans = [
+        solve_numbered_span(307, 10, 20),
+        solve_numbered_span(307, 30, 40),
+        solve_numbered_span(307, 50, 60),
+    ];
+    let uncovered_span = solve_numbered_span(307, 70, 80);
+    let mut dae_model = gpu_initial_family_fixture(&[1, 2, 3], &spans);
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                gpu_indexed_var("x", 3, uncovered_span),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(4),
+                    span: uncovered_span,
+                },
+            ),
+            uncovered_span,
+            "uncovered initial row",
+        ));
+    dae_model
+        .initialization
+        .equation_provenance
+        .push(dae::InitializationEquationProvenance::User);
+
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        3,
+        Some(spans[0]),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("mixed structured and scalar initial rows must fail closed");
+    assert_eq!(error.source_span(), Some(uncovered_span));
+}
+
+#[test]
+fn gpu_initial_direct_and_body_shape_failures_preserve_user_spans() {
+    let spans = [
+        solve_numbered_span(308, 10, 20),
+        solve_numbered_span(308, 30, 40),
+        solve_numbered_span(308, 50, 60),
+    ];
+    let mut nondirect = gpu_initial_family_fixture(&[1, 2, 3], &spans);
+    nondirect.initialization.equations[0].rhs = binary(
+        rumoca_core::OpBinary::Add,
+        gpu_indexed_var("x", 1, spans[0]),
+        int_expr(1),
+    );
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &nondirect,
+        3,
+        Some(spans[0]),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("non-direct base row must fail closed");
+    assert_eq!(error.source_span(), Some(spans[0]));
+
+    let mut mismatched = gpu_initial_family_fixture(&[1, 2, 3], &spans);
+    mismatched.initialization.equations[2].rhs = binary(
+        rumoca_core::OpBinary::Sub,
+        gpu_indexed_var("x", 3, spans[2]),
+        binary(rumoca_core::OpBinary::Add, int_expr(4), int_expr(5)),
+    );
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &mismatched,
+        3,
+        Some(spans[0]),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("body-shape mismatch must fail closed");
+    assert_eq!(error.source_span(), Some(spans[2]));
+
+    let mut corner = vec![solve::LinearOp::Const { dst: 0, value: 1.0 }];
+    corner.push(solve::LinearOp::StoreOutput { src: 0 });
+    let error = append_gpu_corner_strides(
+        &[solve::LinearOp::Const { dst: 0, value: 1.0 }],
+        &corner,
+        0,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        spans[1],
+    )
+    .expect_err("operation-shape mismatch must fail closed");
+    assert_eq!(error.source_span(), Some(spans[1]));
+}
+
+#[test]
+fn gpu_initial_lowering_rejects_random_operations_with_source_span() {
+    let span = solve_numbered_span(309, 10, 20);
+    let error = reject_nondeterministic_gpu_initial_ops(
+        &[solve::LinearOp::ImpureRandomInit { dst: 1, seed: 0 }],
+        span,
+    )
+    .expect_err("GPU initialization lowering must reject non-replayable operations");
+    assert!(error.to_string().contains("random or impure"));
+    assert_eq!(error.source_span(), Some(span));
 }

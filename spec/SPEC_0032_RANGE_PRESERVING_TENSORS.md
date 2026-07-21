@@ -84,6 +84,12 @@ layout base and shape without scalar row-target materialization. Descending
 source binders are normalized to an ascending execution domain by selecting the
 corresponding source base and corners; target maps therefore remain canonical
 positive-stride maps without changing source-index semantics.
+Corner-derived load, constant, and target strides are admissible only after
+Solve lowering proves the reconstructed program against every materialized
+family cell. A family whose interiors are unavailable, whose values are not
+affine, or whose initializer contains random/impure operations fails closed at
+the first source row that breaks the proof; executing a self-consistent but
+unproven affine reconstruction is forbidden.
 
 ### 5. Ownership Boundaries
 

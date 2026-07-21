@@ -192,7 +192,8 @@ Public APIs use `ScalarProgram`/`ScalarProgramBlock`; `RowBlock`/`ScalarRows`
 must not return.
 
 GPU initialization requires exact, nonoverlapping, source-spanned Y coverage;
-adjacency may merge, and unsupported semantics never fall back.
+adjacency may merge, unsupported semantics never fall back, and settlement
+shares one runtime/table context.
 
 `ComputeNode::AffineStencil` is source-proven from preserved DAE family domains
 and affine operand proofs; Solve lowering must not recover stencils from

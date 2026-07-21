@@ -16,28 +16,28 @@ pub(super) fn lower_gpu_initialization_system(
     let mut residual_start = 0usize;
     for family in &dae_model.initialization.structured_equations {
         let Some(_regular) = family.regular.as_ref() else {
-            return Err(LowerError::Unsupported {
-                reason: "GPU initial projection requires a regular structured initial family"
-                    .to_string(),
-            });
+            return Err(gpu_initial_unsupported(
+                "GPU initial projection requires a regular structured initial family",
+                family.span,
+            ));
         };
         let Some(template) = family.template.as_ref() else {
-            return Err(LowerError::Unsupported {
-                reason: "GPU initial projection requires a structured initial template".to_string(),
-            });
+            return Err(gpu_initial_unsupported(
+                "GPU initial projection requires a structured initial template",
+                family.span,
+            ));
         };
         let Some(body_count) = family.common_iteration_equation_count() else {
-            return Err(LowerError::Unsupported {
-                reason:
-                    "GPU initial projection requires a nonempty uniform structured initial family"
-                        .to_string(),
-            });
+            return Err(gpu_initial_unsupported(
+                "GPU initial projection requires a nonempty uniform structured initial family",
+                family.span,
+            ));
         };
         if body_count == 0 || template.body.len() != body_count {
-            return Err(LowerError::Unsupported {
-                reason: "GPU initial projection requires one uniform template body per family cell"
-                    .to_string(),
-            });
+            return Err(gpu_initial_unsupported(
+                "GPU initial projection requires one uniform template body per family cell",
+                family.span,
+            ));
         }
         let cells = family
             .domain
@@ -75,7 +75,10 @@ pub(super) fn lower_gpu_initialization_system(
     }
     let required_user_initial_rows = required_user_initial_rows(dae_model)?;
     if expected != required_user_initial_rows {
-        return Err(LowerError::Unsupported { reason: "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported".to_string() });
+        return Err(gpu_initial_unsupported_optional(
+            "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported",
+            first_uncovered_user_initial_span(dae_model),
+        ));
     }
     let (required_target_ranges, fixed_target_ranges) =
         require_complete_gpu_initial_target_coverage(dae_model, layout, &families)?;
@@ -92,10 +95,16 @@ fn required_user_initial_rows(dae_model: &dae::Dae) -> Result<usize, LowerError>
     if dae_model.initialization.equation_provenance.len()
         != dae_model.initialization.equations.len()
     {
-        return Err(LowerError::Unsupported {
-            reason: "GPU initial projection requires typed provenance for every initial equation"
-                .to_string(),
-        });
+        let span = dae_model
+            .initialization
+            .equations
+            .get(dae_model.initialization.equation_provenance.len())
+            .or_else(|| dae_model.initialization.equations.first())
+            .map(|equation| equation.span);
+        return Err(gpu_initial_unsupported_optional(
+            "GPU initial projection requires typed provenance for every initial equation",
+            span,
+        ));
     }
     dae_model
         .initialization
@@ -114,6 +123,58 @@ fn required_user_initial_rows(dae_model: &dae::Dae) -> Result<usize, LowerError>
                     )
                 })
         })
+}
+
+fn first_uncovered_user_initial_span(dae_model: &dae::Dae) -> Option<rumoca_core::Span> {
+    let mut covered = vec![false; dae_model.initialization.equations.len()];
+    for family in &dae_model.initialization.structured_equations {
+        let equation_len = family.equation_counts.iter().copied().sum::<usize>();
+        let end = family
+            .first_equation_index
+            .saturating_add(equation_len)
+            .min(covered.len());
+        covered[family.first_equation_index.min(end)..end].fill(true);
+    }
+    dae_model
+        .initialization
+        .equations
+        .iter()
+        .zip(&dae_model.initialization.equation_provenance)
+        .enumerate()
+        .find(|(index, (_, provenance))| {
+            **provenance != dae::InitializationEquationProvenance::FixedStart && !covered[*index]
+        })
+        .or_else(|| {
+            dae_model
+                .initialization
+                .equations
+                .iter()
+                .zip(&dae_model.initialization.equation_provenance)
+                .enumerate()
+                .find(|(_, (_, provenance))| {
+                    **provenance != dae::InitializationEquationProvenance::FixedStart
+                })
+        })
+        .map(|(_, (equation, _))| equation.span)
+}
+
+fn gpu_initial_unsupported(reason: impl Into<String>, span: rumoca_core::Span) -> LowerError {
+    LowerError::UnsupportedAt {
+        reason: reason.into(),
+        contexts: Vec::new(),
+        span,
+    }
+}
+
+fn gpu_initial_unsupported_optional(
+    reason: impl Into<String>,
+    span: Option<rumoca_core::Span>,
+) -> LowerError {
+    let reason = reason.into();
+    match span {
+        Some(span) => gpu_initial_unsupported(reason, span),
+        None => LowerError::Unsupported { reason },
+    }
 }
 
 fn require_complete_gpu_initial_target_coverage(
@@ -286,11 +347,12 @@ fn lower_gpu_direct_family(
         base_equation,
     )?;
     let base_target = direct_initial_target(dae_model, layout, base_equation, family.span)?;
+    reject_nondeterministic_gpu_initial_ops(&base_ops, base_equation.span)?;
     let sign = direct_initial_assignment_sign(&base_ops, base_target).ok_or_else(|| {
-        LowerError::Unsupported {
-            reason: "GPU initial projection requires a direct target-minus-rhs structured row"
-                .to_string(),
-        }
+        gpu_initial_unsupported(
+            "GPU initial projection requires a direct target-minus-rhs structured row",
+            base_equation.span,
+        )
     })?;
     let strides = lower_gpu_direct_family_strides(
         dae_model,
@@ -303,6 +365,19 @@ fn lower_gpu_direct_family(
             ops: &base_ops,
             target: base_target,
         },
+    )?;
+    prove_gpu_direct_family_affine(
+        dae_model,
+        layout,
+        family,
+        position,
+        body_count,
+        GpuDirectFamilyBase {
+            equation: base_equation,
+            ops: &base_ops,
+            target: base_target,
+        },
+        &strides,
     )?;
     Ok(GpuLoweredDirectFamily {
         residual: solve::ComputeNode::Map {
@@ -345,6 +420,14 @@ struct GpuDirectFamilyBase<'a> {
     target: usize,
 }
 
+struct GpuDirectFamilyProof<'a> {
+    dae_model: &'a dae::Dae,
+    layout: &'a solve::VarLayout,
+    family: &'a dae::StructuredEquationFamily,
+    base: GpuDirectFamilyBase<'a>,
+    strides: &'a GpuDirectFamilyStrides,
+}
+
 fn lower_gpu_direct_family_strides(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
@@ -375,11 +458,10 @@ fn lower_gpu_direct_family_strides(
             corner_equation,
         )?;
         if !stencil::dae_equation_body_shapes_match(base.equation, corner_equation)? {
-            return Err(LowerError::Unsupported {
-                reason:
-                    "GPU initial projection requires identical conservative equation body shapes"
-                        .to_string(),
-            });
+            return Err(gpu_initial_unsupported(
+                "GPU initial projection requires identical conservative equation body shapes",
+                corner_equation.span,
+            ));
         }
         let corner_target = direct_initial_target(dae_model, layout, corner_equation, family.span)?;
         target_strides.push(solve::AffineStencilIndexStrideTerm {
@@ -400,6 +482,281 @@ fn lower_gpu_direct_family_strides(
         constants: const_strides,
         targets: target_strides,
     })
+}
+
+fn prove_gpu_direct_family_affine(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    family: &dae::StructuredEquationFamily,
+    position: usize,
+    body_count: usize,
+    base: GpuDirectFamilyBase<'_>,
+    strides: &GpuDirectFamilyStrides,
+) -> Result<(), LowerError> {
+    let proof = GpuDirectFamilyProof {
+        dae_model,
+        layout,
+        family,
+        base,
+        strides,
+    };
+    if !family.interiors_materialized {
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection cannot prove affine direct-family values without materialized interiors",
+            family.span,
+        ));
+    }
+    let tuples = family
+        .domain
+        .index_tuples()
+        .map_err(|error| LowerError::contract_violation(error.to_string(), family.span))?;
+    let mut equations = Vec::with_capacity(tuples.len());
+    for cell in 0..tuples.len() {
+        let equation_index = family
+            .first_equation_index
+            .checked_add(cell.checked_mul(body_count).ok_or_else(|| {
+                LowerError::contract_violation("GPU initial proof row index overflow", family.span)
+            })?)
+            .and_then(|index| index.checked_add(position))
+            .ok_or_else(|| {
+                LowerError::contract_violation("GPU initial proof row index overflow", family.span)
+            })?;
+        let equation = dae_model
+            .initialization
+            .equations
+            .get(equation_index)
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    "GPU initial affine proof equation is missing",
+                    family.span,
+                )
+            })?;
+        equations.push((
+            dae_model.continuous.equations.len() + equation_index,
+            equation,
+        ));
+    }
+    let rows = lower::lower_initial_residual_cells(
+        dae_model,
+        layout,
+        equations
+            .iter()
+            .map(|(index, equation)| (*index, *equation)),
+    )?;
+    if rows.len() != equations.len() {
+        return Err(LowerError::contract_violation(
+            "GPU initial affine proof must lower one residual row per family cell",
+            family.span,
+        ));
+    }
+    for (((_, equation), ops), tuple) in equations.iter().zip(&rows).zip(&tuples) {
+        prove_gpu_direct_family_cell(&proof, tuple, equation, ops)?;
+    }
+    Ok(())
+}
+
+fn prove_gpu_direct_family_cell(
+    proof: &GpuDirectFamilyProof<'_>,
+    tuple: &[i64],
+    equation: &dae::Equation,
+    ops: &[solve::LinearOp],
+) -> Result<(), LowerError> {
+    if !stencil::dae_equation_body_shapes_match(proof.base.equation, equation)? {
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection requires identical conservative equation body shapes",
+            equation.span,
+        ));
+    }
+    let ordinals = gpu_canonical_ordinals(&proof.family.domain, tuple, equation.span)?;
+    reject_nondeterministic_gpu_initial_ops(ops, equation.span)?;
+    prove_gpu_affine_ops(proof.base.ops, ops, &ordinals, proof.strides, equation.span)?;
+    let target = direct_initial_target(proof.dae_model, proof.layout, equation, equation.span)?;
+    let expected = affine_gpu_target(
+        proof.base.target,
+        &ordinals,
+        &proof.strides.targets,
+        equation.span,
+    )?;
+    if target != expected {
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection target is not affine across the complete family domain",
+            equation.span,
+        ));
+    }
+    Ok(())
+}
+
+fn gpu_canonical_ordinals(
+    domain: &rumoca_core::StructuredIndexDomain,
+    tuple: &[i64],
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    domain
+        .binders
+        .iter()
+        .zip(tuple)
+        .map(|(binder, value)| {
+            let lower = binder.lower.min(binder.upper);
+            let distance = value.checked_sub(lower).ok_or_else(|| {
+                LowerError::contract_violation("GPU initial proof tuple is out of bounds", span)
+            })?;
+            let step = i64::try_from(binder.step.unsigned_abs()).map_err(|_| {
+                LowerError::contract_violation("GPU initial proof step exceeds host range", span)
+            })?;
+            usize::try_from(distance / step).map_err(|_| {
+                LowerError::contract_violation("GPU initial proof ordinal exceeds host range", span)
+            })
+        })
+        .collect()
+}
+
+fn prove_gpu_affine_ops(
+    base: &[solve::LinearOp],
+    actual: &[solve::LinearOp],
+    ordinals: &[usize],
+    strides: &GpuDirectFamilyStrides,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    if base.len() != actual.len() {
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection operation shape is not uniform across the complete family domain",
+            span,
+        ));
+    }
+    for (position, (base_op, actual_op)) in base.iter().zip(actual).enumerate() {
+        if !gpu_affine_op_matches(position, base_op, actual_op, ordinals, strides, span)? {
+            return Err(gpu_initial_unsupported(
+                "GPU initial projection operation values are not affine across the complete family domain",
+                span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn gpu_affine_op_matches(
+    position: usize,
+    base: &solve::LinearOp,
+    actual: &solve::LinearOp,
+    ordinals: &[usize],
+    strides: &GpuDirectFamilyStrides,
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
+    match (base, actual) {
+        (
+            solve::LinearOp::LoadY {
+                dst: base_dst,
+                index: base,
+            },
+            solve::LinearOp::LoadY {
+                dst: actual_dst,
+                index: actual,
+            },
+        )
+        | (
+            solve::LinearOp::LoadP {
+                dst: base_dst,
+                index: base,
+            },
+            solve::LinearOp::LoadP {
+                dst: actual_dst,
+                index: actual,
+            },
+        ) => Ok(base_dst == actual_dst
+            && affine_gpu_index(*base, position, ordinals, &strides.loads, span)? == *actual),
+        (
+            solve::LinearOp::Const {
+                dst: base_dst,
+                value: base,
+            },
+            solve::LinearOp::Const {
+                dst: actual_dst,
+                value: actual,
+            },
+        ) => Ok(base_dst == actual_dst
+            && affine_gpu_constant(*base, position, ordinals, &strides.constants, span)?.to_bits()
+                == actual.to_bits()),
+        _ => Ok(base == actual),
+    }
+}
+
+fn affine_gpu_index(
+    base: usize,
+    position: usize,
+    ordinals: &[usize],
+    strides: &[solve::AffineStencilLoadStride],
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let offset = strides
+        .iter()
+        .filter(|stride| stride.op_position == position)
+        .flat_map(|stride| &stride.terms)
+        .try_fold(0isize, |total, term| {
+            let ordinal = isize::try_from(ordinals[term.dimension]).ok()?;
+            total.checked_add(term.stride.checked_mul(ordinal)?)
+        })
+        .ok_or_else(|| {
+            LowerError::contract_violation("GPU initial affine index overflows", span)
+        })?;
+    base.checked_add_signed(offset)
+        .ok_or_else(|| LowerError::contract_violation("GPU initial affine index overflows", span))
+}
+
+fn affine_gpu_constant(
+    base: f64,
+    position: usize,
+    ordinals: &[usize],
+    strides: &[solve::AffineStencilConstStride],
+    span: rumoca_core::Span,
+) -> Result<f64, LowerError> {
+    let value = strides
+        .iter()
+        .filter(|stride| stride.op_position == position)
+        .flat_map(|stride| &stride.terms)
+        .fold(base, |value, term| {
+            value + term.stride * ordinals[term.dimension] as f64
+        });
+    value.is_finite().then_some(value).ok_or_else(|| {
+        LowerError::contract_violation("GPU initial affine constant is not finite", span)
+    })
+}
+
+fn affine_gpu_target(
+    base: usize,
+    ordinals: &[usize],
+    strides: &[solve::AffineStencilIndexStrideTerm],
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let offset = strides.iter().try_fold(0isize, |total, term| {
+        let ordinal = isize::try_from(ordinals[term.dimension]).ok()?;
+        total.checked_add(term.stride.checked_mul(ordinal)?)
+    });
+    offset
+        .and_then(|offset| base.checked_add_signed(offset))
+        .ok_or_else(|| LowerError::contract_violation("GPU initial affine target overflows", span))
+}
+
+pub(super) fn reject_nondeterministic_gpu_initial_ops(
+    ops: &[solve::LinearOp],
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    if ops.iter().any(|op| {
+        matches!(
+            op,
+            solve::LinearOp::RandomInitialState { .. }
+                | solve::LinearOp::RandomResult { .. }
+                | solve::LinearOp::RandomState { .. }
+                | solve::LinearOp::ImpureRandomInit { .. }
+                | solve::LinearOp::ImpureRandom { .. }
+                | solve::LinearOp::ImpureRandomInteger { .. }
+        )
+    }) {
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection rejects random or impure operations because apply and verification must be deterministic",
+            span,
+        ));
+    }
+    Ok(())
 }
 
 fn gpu_direct_family_corner_index(
@@ -465,10 +822,10 @@ pub(super) fn gpu_corner_cell_index(
         LowerError::contract_violation("GPU initial corner dimension is missing", span)
     })?;
     if gpu_binder_value_count(selected, span)? < 2 {
-        return Err(LowerError::Unsupported {
-            reason: "GPU initial projection requires a non-degenerate structured binder"
-                .to_string(),
-        });
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection requires a non-degenerate structured binder",
+            span,
+        ));
     }
     domain
         .binders
@@ -560,10 +917,10 @@ pub(super) fn append_gpu_corner_strides(
     span: rumoca_core::Span,
 ) -> Result<(), LowerError> {
     if base.len() != corner.len() {
-        return Err(LowerError::Unsupported {
-            reason: "GPU initial projection requires identical direct-family operation shapes"
-                .to_string(),
-        });
+        return Err(gpu_initial_unsupported(
+            "GPU initial projection requires identical direct-family operation shapes",
+            span,
+        ));
     }
     for (op_position, (base_op, corner_op)) in base.iter().zip(corner).enumerate() {
         match (base_op, corner_op) {
@@ -643,16 +1000,17 @@ pub(super) fn append_gpu_corner_strides(
                 | solve::LinearOp::Const { .. },
                 _,
             ) => {
-                return Err(LowerError::Unsupported {
-                    reason: "GPU initial projection requires uniform direct-family access kinds"
-                        .to_string(),
-                });
+                return Err(gpu_initial_unsupported(
+                    "GPU initial projection requires uniform direct-family access kinds",
+                    span,
+                ));
             }
             _ if base_op == corner_op => {}
             _ => {
-                return Err(LowerError::Unsupported {
-                    reason: "GPU initial projection requires every non-affine operation and destination register to match exactly".to_string(),
-                });
+                return Err(gpu_initial_unsupported(
+                    "GPU initial projection requires every non-affine operation and destination register to match exactly",
+                    span,
+                ));
             }
         }
     }
