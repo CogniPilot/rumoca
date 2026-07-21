@@ -41,10 +41,19 @@ fn scalar_if(condition: rumoca_core::Expression) -> rumoca_core::Expression {
     }
 }
 
-fn function_call_count(expr: &rumoca_core::Expression) -> usize {
+fn call_count(expr: &rumoca_core::Expression) -> usize {
     struct Counter(usize);
 
     impl rumoca_core::ExpressionVisitor for Counter {
+        fn visit_builtin_call(
+            &mut self,
+            function: &rumoca_core::BuiltinFunction,
+            args: &[rumoca_core::Expression],
+        ) {
+            self.0 += 1;
+            self.walk_builtin_call(function, args);
+        }
+
         fn visit_function_call(
             &mut self,
             name: &rumoca_core::Reference,
@@ -70,7 +79,7 @@ fn assert_unknown_if_condition_remains_unprojected(product: rumoca_core::Express
         .expect("unknown condition shape should remain representable");
 
     assert!(matches!(lowered, rumoca_core::Expression::Binary { .. }));
-    assert_eq!(function_call_count(&lowered), 1);
+    assert_eq!(call_count(&lowered), 1);
 }
 
 #[test]
@@ -295,6 +304,23 @@ fn slice_left_of_if_with_unknown_condition_remains_single_call() {
 fn slice_right_of_if_with_unknown_condition_remains_single_call() {
     let scalar = scalar_if(function_call("unknownCondition", vec![]));
     assert_unknown_if_condition_remains_unprojected(mul(scalar, rotation_column_slice()));
+}
+
+#[test]
+fn slice_if_with_builtin_condition_remains_single_call_in_both_orders() {
+    let span = test_span();
+    let scalar = scalar_if(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Abs,
+        args: vec![var_ref("gain")],
+        span,
+    });
+
+    for product in [
+        mul(rotation_column_slice(), scalar.clone()),
+        mul(scalar, rotation_column_slice()),
+    ] {
+        assert_unknown_if_condition_remains_unprojected(product);
+    }
 }
 
 #[test]
