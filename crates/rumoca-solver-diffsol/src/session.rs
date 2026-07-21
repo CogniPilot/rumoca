@@ -1193,6 +1193,7 @@ mod tests {
                 initialization: solve::InitializationSolveSystem {
                     residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                     row_targets: Vec::new(),
+                    direct_families: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),
                     update_rhs: solve::ScalarProgramBlock::default(),
@@ -1281,6 +1282,7 @@ mod tests {
                         zero_row(),
                     ])),
                     row_targets: Vec::new(),
+                    direct_families: Vec::new(),
                     projection_indices: Vec::new(),
                     projection_plan: solve::AlgebraicProjectionPlan::default(),
                     update_rhs: solve::ScalarProgramBlock::default(),

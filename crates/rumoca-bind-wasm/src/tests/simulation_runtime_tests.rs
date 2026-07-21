@@ -1,5 +1,7 @@
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 use super::*;
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+use crate::simulation_api::build_simulation_options;
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
@@ -294,7 +296,158 @@ fn test_prepare_gpu_simulation_settles_wave_initial_equations() {
         center > 0.9,
         "GPU preparation must apply Wave2D-style initial equations; u[3,3]={center}"
     );
+    assert!(
+        y0.iter()
+            .all(|value| value.as_f64().is_some_and(f64::is_finite)),
+        "GPU preparation must emit finite settled values"
+    );
+    assert!(
+        names
+            .iter()
+            .zip(y0)
+            .filter(|(name, _)| name.as_str().is_some_and(|name| name.starts_with("w[")))
+            .all(|(_, value)| value.as_f64() == Some(0.0)),
+        "GPU preparation must preserve w initial family at zero"
+    );
 
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_settles_wave_initial_equations_n50_in_linear_budget() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+    let source = r#"
+    model GpuWaveInitialN50
+      parameter Integer N = 50;
+      parameter Real L = 1.0;
+      parameter Real dx = L / (N - 1);
+      Real u[N, N];
+      Real w[N, N];
+    initial equation
+      for i in 1:N loop
+        for j in 1:N loop
+          u[i, j] = exp(-200.0 * (((i - 1) * dx - 0.5 * L) ^ 2
+                                + ((j - 1) * dx - 0.5 * L) ^ 2));
+          w[i, j] = 0.0;
+        end for;
+      end for;
+    equation
+      for i in 1:N loop
+        for j in 1:N loop
+          der(u[i, j]) = w[i, j];
+          der(w[i, j]) = 0.0;
+        end for;
+      end for;
+    end GpuWaveInitialN50;
+    "#;
+
+    let compact = with_singleton_session(|session| {
+        session.update_document("input.mo", source);
+        let requested_model = qualify_input_model_name(session, "GpuWaveInitialN50");
+        let compiled = compile_requested_model(session, &requested_model)?;
+        let (opts, _) = build_simulation_options(&compiled, 0.0, 0.0, "");
+        rumoca_sim::lower_dae_for_gpu_preparation(&compiled.dae, &opts)
+            .map_err(|error| JsValue::from_str(&format!("GPU lowering failed: {error}")))
+    })
+    .expect("N=50 should lower through compact GPU initialization");
+    let initialization = &compact.problem.initialization;
+    let node_counts = initialization.residual.compute_node_counts();
+    assert!(
+        initialization.row_targets.is_empty(),
+        "GPU compact initialization must not materialize row targets"
+    );
+    assert_eq!(
+        initialization.direct_families.len(),
+        2,
+        "Wave has exactly u and w source families"
+    );
+    assert_eq!(
+        node_counts.map, 2,
+        "GPU compact initialization must preserve one Map per source family"
+    );
+    assert_eq!(
+        node_counts.scalar_programs, 0,
+        "GPU compact initialization must not build per-scalar structured programs"
+    );
+    assert_eq!(
+        initialization.residual.nodes.len(),
+        initialization.direct_families.len()
+    );
+    let settled = rumoca_sim::settle_gpu_initial_conditions(&compact, 0.0)
+        .expect("N=50 compact initialization should settle through native Map execution");
+    assert_eq!(settled.metrics.residual_evaluations, 2);
+    assert_eq!(settled.metrics.passes, 1);
+    let max_map_scratch = initialization
+        .residual
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            rumoca_ir_solve::ComputeNode::Map {
+                domain, base_ops, ..
+            } => Some(
+                domain
+                    .binders
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(base_ops.len().max(1)),
+            ),
+            _ => None,
+        })
+        .max()
+        .expect("compact GPU initialization has Map nodes");
+    assert!(
+        settled.metrics.temporary_values
+            <= initialization
+                .direct_families
+                .len()
+                .saturating_add(max_map_scratch),
+        "native Map execution must retain only direct-family bookkeeping and bounded Map scratch"
+    );
+
+    let mut samples = Vec::new();
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        let json = prepare_gpu_simulation(source, "GpuWaveInitialN50")
+            .expect("N=50 GPU preparation should settle explicit initial equations");
+        samples.push(started.elapsed());
+        let payload: serde_json::Value =
+            serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
+        let names = payload["state_names"]
+            .as_array()
+            .expect("GPU payload should include state names");
+        let y0 = payload["y0"]
+            .as_array()
+            .expect("GPU payload should include initial y0");
+        let center = names
+            .iter()
+            .position(|name| name.as_str() == Some("u[25,25]"))
+            .and_then(|index| y0.get(index))
+            .and_then(serde_json::Value::as_f64)
+            .expect("center displacement should be numeric");
+        assert!(center > 0.9, "N=50 center must settle, got {center}");
+        assert!(
+            y0.iter()
+                .all(|value| value.as_f64().is_some_and(f64::is_finite)),
+            "N=50 settled vector must be finite"
+        );
+        assert!(
+            names
+                .iter()
+                .zip(y0)
+                .filter(|(name, _)| name.as_str().is_some_and(|name| name.starts_with("w[")))
+                .all(|(_, value)| value.as_f64() == Some(0.0)),
+            "N=50 w initial family must remain zero"
+        );
+    }
+    samples.sort_unstable();
+    assert!(
+        samples
+            .last()
+            .is_some_and(|elapsed| elapsed.as_secs_f64() < 10.0),
+        "N=50 GPU preparation p95-style smoke must retain >=5x debug headroom and stay below 10s: {samples:?}"
+    );
     clear_source_root_cache().expect("clear source-root cache");
 }
 

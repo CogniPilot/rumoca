@@ -197,6 +197,13 @@ structured-family domains plus affine operand proofs. It carries the compact
 iteration domain and strides; Solve lowering must not recover stencils by
 scanning unstructured scalar rows after structured-family metadata is discarded.
 
+GPU preparation may represent a complete direct structured initialization
+family as a `Map` residual plus a compact `TensorOutputMap` of Y targets and a
+residual sign. This is an initialization-only artifact: it must not materialize
+per-scalar row targets or continuous runtime/JVP payloads, and mixed,
+non-direct, P-target, event, discrete, `pre`, or relation-memory systems fail
+closed rather than selecting a scalar/CPU fallback.
+
 The root `schema_version` field is mandatory on serialized Solve payloads.
 Deserializers reject unsupported versions and the Solve wire format does not
 accept pre-versioned `ComputeBlock` row payloads.

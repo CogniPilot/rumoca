@@ -30,6 +30,7 @@ pub use rumoca_solver::{
 
 mod build_timing;
 pub mod bulk;
+mod gpu_initialization;
 pub mod row_eval_trace;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
@@ -48,6 +49,10 @@ pub use diffsol::{
     PreparedSimulation, SimError, build_simulation, build_simulation_with_stage_timing,
     build_simulation_with_stage_timing_and_solve_model, check_initialization,
     check_prepared_initialization, run_prepared_simulation, simulate, simulate_dae,
+};
+pub use gpu_initialization::{
+    GpuInitializationError, GpuInitializationMetrics, GpuInitializationResult,
+    settle_gpu_initial_conditions,
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};

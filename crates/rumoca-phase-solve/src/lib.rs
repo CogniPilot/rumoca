@@ -79,8 +79,9 @@ use layout::INITIAL_EVENT_PARAMETER_NAME;
 pub use layout::{build_var_layout, build_var_layout_with_solver_len};
 pub use lower::LowerError;
 use lower::{
-    lower_discrete_rhs_from_equations, lower_initial_residual, lower_initial_update_rhs,
-    lower_residual_rows_and_targets_from_equations, lower_root_conditions,
+    lower_discrete_rhs_from_equations, lower_initial_residual, lower_initial_residual_cell,
+    lower_initial_update_rhs, lower_residual_rows_and_targets_from_equations,
+    lower_root_conditions,
 };
 use lower::{
     lower_dynamic_time_event_rhs, lower_runtime_assignment_rhs,
@@ -229,7 +230,7 @@ impl SolveProblemLoweringProfile {
     }
 
     fn lower_initialization_system(self) -> bool {
-        self == Self::Runtime
+        matches!(self, Self::Runtime | Self::GpuPreparation)
     }
 
     fn lower_initialization_updates(self) -> bool {
@@ -422,7 +423,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     timing::log_stage("problem.lower_runtime_systems", timer);
     let timer = timing::stage_start();
     let initialization = if profile.lower_initialization_system() {
-        lower_initialization_system(dae_model, &layout, &solve_layout)?
+        lower_initialization_system(dae_model, &layout, &solve_layout, profile)?
     } else if profile.lower_initialization_updates() {
         lower_initialization_updates_only(dae_model, &layout)?
     } else {
@@ -698,7 +699,11 @@ fn lower_initialization_system(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
     solve_layout: &solve::SolveLayout,
+    profile: SolveProblemLoweringProfile,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
+    if profile == SolveProblemLoweringProfile::GpuPreparation {
+        return lower_gpu_initialization_system(dae_model, layout);
+    }
     let residual_equations = lower::initial_residual_equations(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "collect initial residual equations"))?;
     let row_targets =
@@ -737,13 +742,18 @@ fn lower_initialization_system(
     // `sig[i,j]`) collapse into a few `Map`/`AffineStencil` tensor nodes instead of
     // one scalar program per cell. This is the dominant initialization cost on PDE
     // grids (it was ~80% of the whole Solve-IR before this change).
-    let residual = residual_compute_block::build_residual_compute_block(
+    let residual = residual_compute_block::build_initialization_residual_compute_block(
         dae_model,
         layout,
         &residual_rows,
         &row_targets,
         &residual_equations,
     )?;
+    let initialization_span = dae_model_span(dae_model)?;
+    let residual_output_count = residual
+        .len()
+        .map_err(|err| lower_contract_violation(err.to_string(), initialization_span))?;
+    let _ = residual_output_count;
     let update_rhs = solve::ScalarProgramBlock::with_program_spans(
         lower_initial_update_rhs(dae_model, layout)
             .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
@@ -751,12 +761,477 @@ fn lower_initialization_system(
     )?;
     Ok(solve::InitializationSolveSystem {
         row_targets,
+        direct_families: Vec::new(),
         projection_indices,
         projection_plan,
         residual,
         update_rhs,
         update_targets,
     })
+}
+
+/// GPU preparation deliberately accepts only direct, regular initial families.
+/// It builds one base row plus one corner per binder, never a vector of scalar
+/// rows. Runtime initialization keeps its complete scalar/general path above.
+fn lower_gpu_initialization_system(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+) -> Result<solve::InitializationSolveSystem, LowerError> {
+    if dae_model.initialization.equations.is_empty() {
+        return Ok(solve::InitializationSolveSystem::default());
+    }
+    let mut expected = 0usize;
+    let mut nodes = Vec::new();
+    let mut families = Vec::new();
+    let mut residual_start = 0usize;
+    for family in &dae_model.initialization.structured_equations {
+        let Some(_regular) = family.regular.as_ref() else {
+            return Err(LowerError::Unsupported {
+                reason: "GPU initial projection requires a regular structured initial family"
+                    .to_string(),
+            });
+        };
+        let Some(template) = family.template.as_ref() else {
+            return Err(LowerError::Unsupported {
+                reason: "GPU initial projection requires a structured initial template".to_string(),
+            });
+        };
+        let Some(body_count) = family.common_iteration_equation_count() else {
+            return Err(LowerError::Unsupported {
+                reason:
+                    "GPU initial projection requires a nonempty uniform structured initial family"
+                        .to_string(),
+            });
+        };
+        if body_count == 0 || template.body.len() != body_count {
+            return Err(LowerError::Unsupported {
+                reason: "GPU initial projection requires one uniform template body per family cell"
+                    .to_string(),
+            });
+        }
+        let cells = family
+            .domain
+            .scalar_count()
+            .map_err(|error| LowerError::contract_violation(error.to_string(), family.span))?;
+        expected = expected
+            .checked_add(cells.checked_mul(body_count).ok_or_else(|| {
+                LowerError::contract_violation("GPU initial family size overflow", family.span)
+            })?)
+            .ok_or_else(|| {
+                LowerError::contract_violation("GPU initial residual size overflow", family.span)
+            })?;
+        for position in 0..body_count {
+            let direct = lower_gpu_direct_family(
+                dae_model,
+                layout,
+                family,
+                position,
+                body_count,
+                residual_start,
+            )?;
+            residual_start = residual_start.checked_add(cells).ok_or_else(|| {
+                LowerError::contract_violation("GPU initial residual range overflow", family.span)
+            })?;
+            nodes.push(direct.residual);
+            let node_index = nodes.len() - 1;
+            let direct = solve::InitializationDirectFamily {
+                node_index,
+                targets: direct.targets,
+                residual_sign: direct.residual_sign,
+                span: direct.span,
+            };
+            families.push(direct);
+        }
+    }
+    if dae_model.initialization.equation_provenance.len()
+        != dae_model.initialization.equations.len()
+    {
+        return Err(LowerError::Unsupported {
+            reason: "GPU initial projection requires typed provenance for every initial equation"
+                .to_string(),
+        });
+    }
+    let required_user_initial_rows = dae_model
+        .initialization
+        .equations
+        .iter()
+        .zip(&dae_model.initialization.equation_provenance)
+        .filter(|(_, provenance)| **provenance != dae::InitializationEquationProvenance::FixedStart)
+        .map(|(equation, _)| equation)
+        .try_fold(0usize, |total, equation| {
+            total
+                .checked_add(equation.scalar_count.max(1))
+                .ok_or_else(|| {
+                    LowerError::contract_violation(
+                        "GPU initial user-row count overflow",
+                        equation.span,
+                    )
+                })
+        })?;
+    if expected != required_user_initial_rows {
+        return Err(LowerError::Unsupported { reason: "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported".to_string() });
+    }
+    Ok(solve::InitializationSolveSystem {
+        residual: solve::ComputeBlock { nodes },
+        direct_families: families,
+        ..Default::default()
+    })
+}
+
+fn lower_gpu_direct_family(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    family: &dae::StructuredEquationFamily,
+    position: usize,
+    body_count: usize,
+    residual_start: usize,
+) -> Result<GpuLoweredDirectFamily, LowerError> {
+    let base_index = family
+        .first_equation_index
+        .checked_add(position)
+        .ok_or_else(|| {
+            LowerError::contract_violation("GPU initial base equation index overflow", family.span)
+        })?;
+    let base_equation = dae_model
+        .initialization
+        .equations
+        .get(base_index)
+        .ok_or_else(|| {
+            LowerError::contract_violation("GPU initial base equation is missing", family.span)
+        })?;
+    let base_ops = lower_initial_residual_cell(
+        dae_model,
+        layout,
+        dae_model.continuous.equations.len() + base_index,
+        base_equation,
+    )?;
+    let base_target = direct_initial_target(dae_model, layout, base_equation, family.span)?;
+    let sign = direct_initial_assignment_sign(&base_ops, base_target).ok_or_else(|| {
+        LowerError::Unsupported {
+            reason: "GPU initial projection requires a direct target-minus-rhs structured row"
+                .to_string(),
+        }
+    })?;
+    let strides = lower_gpu_direct_family_strides(
+        dae_model,
+        layout,
+        family,
+        position,
+        body_count,
+        &base_ops,
+        base_target,
+    )?;
+    Ok(GpuLoweredDirectFamily {
+        residual: solve::ComputeNode::Map {
+            domain: family.domain.clone(),
+            output_map: solve::TensorOutputMap::dense_contiguous(residual_start, &family.domain)
+                .map_err(|error| {
+                    LowerError::contract_violation(format!("{error:?}"), family.span)
+                })?,
+            base_ops,
+            load_strides: strides.loads,
+            const_strides: strides.constants,
+            metadata: solve::TensorNodeMetadata::default(),
+            span: family.span,
+        },
+        targets: solve::TensorOutputMap {
+            start: base_target,
+            strides: strides.targets,
+        },
+        residual_sign: sign,
+        span: family.span,
+    })
+}
+
+struct GpuLoweredDirectFamily {
+    residual: solve::ComputeNode,
+    targets: solve::TensorOutputMap,
+    residual_sign: i8,
+    span: rumoca_core::Span,
+}
+
+struct GpuDirectFamilyStrides {
+    loads: Vec<solve::AffineStencilLoadStride>,
+    constants: Vec<solve::AffineStencilConstStride>,
+    targets: Vec<solve::AffineStencilIndexStrideTerm>,
+}
+
+fn lower_gpu_direct_family_strides(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    family: &dae::StructuredEquationFamily,
+    position: usize,
+    body_count: usize,
+    base_ops: &[solve::LinearOp],
+    base_target: usize,
+) -> Result<GpuDirectFamilyStrides, LowerError> {
+    let mut load_strides = Vec::new();
+    let mut const_strides = Vec::new();
+    let mut target_strides = Vec::new();
+    for dimension in 0..family.domain.binders.len() {
+        let corner_index = gpu_direct_family_corner_index(family, position, body_count, dimension)?;
+        let corner_equation = dae_model
+            .initialization
+            .equations
+            .get(corner_index)
+            .ok_or_else(|| {
+                LowerError::contract_violation(
+                    "GPU initial corner equation is missing",
+                    family.span,
+                )
+            })?;
+        let corner_ops = lower_initial_residual_cell(
+            dae_model,
+            layout,
+            dae_model.continuous.equations.len() + corner_index,
+            corner_equation,
+        )?;
+        let corner_target = direct_initial_target(dae_model, layout, corner_equation, family.span)?;
+        target_strides.push(solve::AffineStencilIndexStrideTerm {
+            dimension,
+            stride: gpu_initial_stride(corner_target, base_target, family.span, "target")?,
+        });
+        append_gpu_corner_strides(
+            base_ops,
+            &corner_ops,
+            dimension,
+            &mut load_strides,
+            &mut const_strides,
+            family.span,
+        )?;
+    }
+    Ok(GpuDirectFamilyStrides {
+        loads: load_strides,
+        constants: const_strides,
+        targets: target_strides,
+    })
+}
+
+fn gpu_direct_family_corner_index(
+    family: &dae::StructuredEquationFamily,
+    position: usize,
+    body_count: usize,
+    dimension: usize,
+) -> Result<usize, LowerError> {
+    let corner_cell = gpu_corner_cell_index(&family.domain, dimension, family.span)?;
+    family
+        .first_equation_index
+        .checked_add(corner_cell.checked_mul(body_count).ok_or_else(|| {
+            LowerError::contract_violation(
+                "GPU initial corner equation index overflow",
+                family.span,
+            )
+        })?)
+        .and_then(|value| value.checked_add(position))
+        .ok_or_else(|| {
+            LowerError::contract_violation(
+                "GPU initial corner equation index overflow",
+                family.span,
+            )
+        })
+}
+
+fn gpu_initial_stride(
+    corner: usize,
+    base: usize,
+    span: rumoca_core::Span,
+    kind: &'static str,
+) -> Result<isize, LowerError> {
+    isize::try_from(corner)
+        .ok()
+        .and_then(|value| value.checked_sub(isize::try_from(base).ok()?))
+        .ok_or_else(|| {
+            LowerError::contract_violation(format!("GPU initial {kind} stride overflows"), span)
+        })
+}
+
+fn direct_initial_target(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    equation: &dae::Equation,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let targets = lower_continuous_row_targets_for_equation(dae_model, equation, layout, 1)?;
+    match targets.as_slice() {
+        [Some(solve::ScalarSlot::Y { index, .. })] => Ok(*index),
+        _ => Err(LowerError::contract_violation(
+            "GPU initial projection requires one Y target per direct family row",
+            span,
+        )),
+    }
+}
+
+fn gpu_corner_cell_index(
+    domain: &rumoca_core::StructuredIndexDomain,
+    dimension: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let binder = domain.binders.get(dimension).ok_or_else(|| {
+        LowerError::contract_violation("GPU initial corner dimension is missing", span)
+    })?;
+    if gpu_binder_value_count(binder, span)? < 2 {
+        return Err(LowerError::Unsupported {
+            reason: "GPU initial projection requires a non-degenerate structured binder"
+                .to_string(),
+        });
+    }
+    domain.binders[dimension + 1..]
+        .iter()
+        .try_fold(1usize, |stride, later| {
+            let count = gpu_binder_value_count(later, span)?;
+            stride.checked_mul(count).ok_or_else(|| {
+                LowerError::contract_violation("GPU initial corner stride overflow", span)
+            })
+        })
+}
+
+fn gpu_binder_value_count(
+    binder: &rumoca_core::StructuredIndexBinder,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    if binder.step == 0 {
+        return Err(LowerError::contract_violation(
+            "GPU initial binder step must be nonzero",
+            span,
+        ));
+    }
+    let distance = if binder.step > 0 {
+        binder.upper.checked_sub(binder.lower)
+    } else {
+        binder.lower.checked_sub(binder.upper)
+    }
+    .ok_or_else(|| LowerError::contract_violation("GPU initial binder bounds are invalid", span))?;
+    let step = binder.step.unsigned_abs();
+    let count = distance
+        .checked_div(i64::try_from(step).map_err(|_| {
+            LowerError::contract_violation("GPU initial binder step overflow", span)
+        })?)
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| LowerError::contract_violation("GPU initial binder count overflow", span))?;
+    usize::try_from(count).map_err(|_| {
+        LowerError::contract_violation("GPU initial binder count exceeds host range", span)
+    })
+}
+
+fn append_gpu_corner_strides(
+    base: &[solve::LinearOp],
+    corner: &[solve::LinearOp],
+    dimension: usize,
+    load_strides: &mut Vec<solve::AffineStencilLoadStride>,
+    const_strides: &mut Vec<solve::AffineStencilConstStride>,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    if base.len() != corner.len() {
+        return Err(LowerError::Unsupported {
+            reason: "GPU initial projection requires identical direct-family operation shapes"
+                .to_string(),
+        });
+    }
+    for (op_position, (base_op, corner_op)) in base.iter().zip(corner).enumerate() {
+        match (base_op, corner_op) {
+            (
+                solve::LinearOp::LoadY { index: base, .. },
+                solve::LinearOp::LoadY { index: corner, .. },
+            ) => {
+                let stride = isize::try_from(*corner)
+                    .ok()
+                    .and_then(|value| value.checked_sub(isize::try_from(*base).ok()?))
+                    .ok_or_else(|| {
+                        LowerError::contract_violation("GPU initial Y stride overflows", span)
+                    })?;
+                if stride != 0 {
+                    load_strides.push(solve::AffineStencilLoadStride {
+                        op_position,
+                        terms: vec![solve::AffineStencilIndexStrideTerm { dimension, stride }],
+                    });
+                }
+            }
+            (
+                solve::LinearOp::LoadP { index: base, .. },
+                solve::LinearOp::LoadP { index: corner, .. },
+            ) => {
+                let stride = isize::try_from(*corner)
+                    .ok()
+                    .and_then(|value| value.checked_sub(isize::try_from(*base).ok()?))
+                    .ok_or_else(|| {
+                        LowerError::contract_violation("GPU initial P stride overflows", span)
+                    })?;
+                if stride != 0 {
+                    load_strides.push(solve::AffineStencilLoadStride {
+                        op_position,
+                        terms: vec![solve::AffineStencilIndexStrideTerm { dimension, stride }],
+                    });
+                }
+            }
+            (
+                solve::LinearOp::Const { value: base, .. },
+                solve::LinearOp::Const { value: corner, .. },
+            ) => {
+                let stride = corner - base;
+                if !stride.is_finite() {
+                    return Err(LowerError::contract_violation(
+                        "GPU initial constant stride is not finite",
+                        span,
+                    ));
+                }
+                if stride != 0.0 {
+                    const_strides.push(solve::AffineStencilConstStride {
+                        op_position,
+                        terms: vec![solve::AffineStencilConstStrideTerm { dimension, stride }],
+                    });
+                }
+            }
+            (
+                solve::LinearOp::LoadY { .. }
+                | solve::LinearOp::LoadP { .. }
+                | solve::LinearOp::Const { .. },
+                _,
+            ) => {
+                return Err(LowerError::Unsupported {
+                    reason: "GPU initial projection requires uniform direct-family access kinds"
+                        .to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn direct_initial_assignment_sign(ops: &[solve::LinearOp], target_index: usize) -> Option<i8> {
+    let solve::LinearOp::StoreOutput { src } = ops.last()? else {
+        return None;
+    };
+    let solve::LinearOp::Binary {
+        op: solve::BinaryOp::Sub,
+        lhs,
+        rhs,
+        dst,
+    } = ops
+        .iter()
+        .find(|op| matches!(op, solve::LinearOp::Binary { dst, .. } if dst == src))?
+    else {
+        return None;
+    };
+    let target_loads = ops
+        .iter()
+        .filter_map(|op| match op {
+            solve::LinearOp::LoadY { dst, index } if *index == target_index => Some(*dst),
+            solve::LinearOp::LoadY { .. } => Some(u32::MAX),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if target_loads.len() != 1 || target_loads[0] == u32::MAX || *dst != *src {
+        return None;
+    }
+    let residual_sign = if target_loads[0] == *lhs {
+        1
+    } else if target_loads[0] == *rhs {
+        -1
+    } else {
+        return None;
+    };
+    Some(residual_sign)
 }
 
 fn lower_initialization_updates_only(

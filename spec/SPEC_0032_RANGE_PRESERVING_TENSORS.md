@@ -71,6 +71,14 @@ must not rediscover stencils by scanning anonymous scalar rows. Backends may
 fuse or split generated kernels as target-local codegen, but the reported
 kernel inventory must match the generated work.
 
+For direct structured initialization, the same domain can pair a residual `Map`
+with a compact target `TensorOutputMap`. The target map is the sole scalar-view
+mapping for that family; creating parallel `row_targets`, `StructuredProgram`,
+or `Vec<Vec<LinearOp>>` ownership is forbidden on the compact path. The
+`ComputeBlock` remains the sole owner of the Map; initialization metadata refers
+to it by node index. `rumoca-eval-solve` executes the base program and affine
+strides natively over the domain, without per-cell `LinearOp` construction.
+
 ### 5. Ownership Boundaries
 
 | Thing | Owner/Where | Brief Justification |

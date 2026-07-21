@@ -1267,11 +1267,7 @@ impl SolveProblem {
         self.initialization
             .update_rhs
             .validate_shape_contract("initialization.update_rhs")?;
-        validate_count(
-            "initialization.row_targets",
-            self.initialization.residual.len()?,
-            self.initialization.row_targets.len(),
-        )?;
+        validate_initialization_direct_families(&self.initialization)?;
         validate_count(
             "initialization.update_targets",
             self.initialization.update_rhs.len(),
@@ -1363,6 +1359,91 @@ fn validate_indices(
         });
     }
     Ok(())
+}
+
+fn validate_initialization_direct_families(
+    initialization: &InitializationSolveSystem,
+) -> Result<(), SolveProblemShapeContractError> {
+    if initialization.direct_families.is_empty() {
+        return validate_count(
+            "initialization.row_targets",
+            initialization.residual.len()?,
+            initialization.row_targets.len(),
+        );
+    }
+    validate_count(
+        "initialization.row_targets.compact",
+        0,
+        initialization.row_targets.len(),
+    )?;
+    validate_count(
+        "initialization.direct_families",
+        initialization.residual.nodes.len(),
+        initialization.direct_families.len(),
+    )?;
+    let mut covered_nodes = std::collections::BTreeSet::new();
+    let mut covered_targets = std::collections::BTreeSet::new();
+    for family in &initialization.direct_families {
+        if !covered_nodes.insert(family.node_index) {
+            return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+                context: "initialization.direct_families".to_string(),
+                node_index: family.node_index,
+                dimension: "duplicate direct-family node index",
+                span: family.span,
+            });
+        }
+        let target_indices = validate_initialization_direct_family(initialization, family)?;
+        for target_index in target_indices {
+            if !covered_targets.insert(target_index) {
+                return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+                    context: "initialization.direct_families".to_string(),
+                    node_index: family.node_index,
+                    dimension: "overlapping direct-family target map",
+                    span: family.span,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_initialization_direct_family(
+    initialization: &InitializationSolveSystem,
+    family: &InitializationDirectFamily,
+) -> Result<Vec<usize>, SolveProblemShapeContractError> {
+    let Some(node) = initialization.residual.nodes.get(family.node_index) else {
+        return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+            context: "initialization.direct_families".to_string(),
+            node_index: family.node_index,
+            dimension: "direct-family node index outside residual block",
+            span: family.span,
+        });
+    };
+    let ComputeNode::Map { domain, span, .. } = node else {
+        return Err(SolveProblemShapeContractError::ZeroTensorDimension {
+            context: "initialization.direct_families".to_string(),
+            node_index: family.node_index,
+            dimension: "non-Map direct family",
+            span: family.span,
+        });
+    };
+    validate_tensor_output_map(
+        "initialization.direct_families.targets",
+        family.node_index,
+        "Map",
+        domain,
+        &family.targets,
+        *span,
+    )?;
+    family.targets.output_indices(domain).map_err(|error| {
+        tensor_output_map_error(
+            "initialization.direct_families.targets",
+            family.node_index,
+            "Map",
+            error,
+            *span,
+        )
+    })
 }
 
 fn validate_scheduled_root_conditions(
@@ -1662,6 +1743,10 @@ pub struct ContinuousSolveArtifacts {
 pub struct InitializationSolveSystem {
     pub residual: ComputeBlock,
     pub row_targets: Vec<Option<ScalarSlot>>,
+    /// Compact, fully-proven direct initial assignments. Unlike `row_targets`,
+    /// this does not create one owned record per scalar initial row.
+    #[serde(default)]
+    pub direct_families: Vec<InitializationDirectFamily>,
     pub projection_indices: Vec<usize>,
     #[serde(default)]
     pub projection_plan: AlgebraicProjectionPlan,
@@ -1669,6 +1754,17 @@ pub struct InitializationSolveSystem {
     pub update_rhs: ScalarProgramBlock,
     #[serde(default)]
     pub update_targets: Vec<ScalarSlot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InitializationDirectFamily {
+    /// Index of the sole residual `Map` owner in `initialization.residual`.
+    pub node_index: usize,
+    /// Destination Y slot for every residual element, in the same domain.
+    pub targets: TensorOutputMap,
+    /// `+1` for `target - rhs`, `-1` for `rhs - target`.
+    pub residual_sign: i8,
+    pub span: rumoca_core::Span,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

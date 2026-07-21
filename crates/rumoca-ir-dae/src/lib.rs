@@ -294,6 +294,7 @@ impl<'de> Deserialize<'de> for Dae {
             initialization: DaeInitializationPartition {
                 equations: wire.initial_equations,
                 structured_equations: wire.initial_structured_equations,
+                equation_provenance: Vec::new(),
             },
             discrete: DaeDiscretePartition {
                 real_updates: wire.real_updates,
@@ -502,6 +503,19 @@ pub struct DaeInitializationPartition {
     /// `initial_equations`.
     #[serde(rename = "initial_structured_equations")]
     pub structured_equations: Vec<StructuredEquationFamily>,
+    /// Typed provenance for generated initialization rows. This remains an
+    /// in-memory phase contract so legacy DAE JSON stays schema-compatible.
+    #[serde(skip)]
+    pub equation_provenance: Vec<InitializationEquationProvenance>,
+}
+
+/// Semantic origin of an initialization equation.  Consumers must use this
+/// rather than parsing the human-readable `Equation::origin` debug label.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InitializationEquationProvenance {
+    #[default]
+    User,
+    FixedStart,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -4,12 +4,69 @@ use rumoca_ir_solve as solve;
 
 use crate::{lower, lower::LowerError, stencil};
 
+struct ResidualStructuredPartition<'a> {
+    equations: &'a [dae::StructuredEquationFamily],
+    source_equations: &'a [dae::Equation],
+    equation_index_offset: usize,
+}
+
 pub(crate) fn build_residual_compute_block(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
     residual_rows: &[Vec<solve::LinearOp>],
     residual_targets: &[Option<solve::ScalarSlot>],
     residual_equations: &[(usize, &dae::Equation)],
+) -> Result<solve::ComputeBlock, LowerError> {
+    let partition = ResidualStructuredPartition {
+        equations: &dae_model.continuous.structured_equations,
+        source_equations: &dae_model.continuous.equations,
+        equation_index_offset: 0,
+    };
+    build_residual_compute_block_with_structured_partition(
+        dae_model,
+        layout,
+        residual_rows,
+        residual_targets,
+        residual_equations,
+        &partition,
+    )
+}
+
+/// Initialization residuals share the generic ComputeBlock evaluator with the
+/// continuous system, but their structured-family provenance lives in the DAE
+/// initialization partition.  Keeping that provenance here avoids scalarizing
+/// an otherwise compact initial `for` family before the lean GPU settle path
+/// can evaluate it.
+pub(crate) fn build_initialization_residual_compute_block(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    residual_rows: &[Vec<solve::LinearOp>],
+    residual_targets: &[Option<solve::ScalarSlot>],
+    residual_equations: &[(usize, &dae::Equation)],
+) -> Result<solve::ComputeBlock, LowerError> {
+    let continuous_len = dae_model.continuous.equations.len();
+    let partition = ResidualStructuredPartition {
+        equations: &dae_model.initialization.structured_equations,
+        source_equations: &dae_model.initialization.equations,
+        equation_index_offset: continuous_len,
+    };
+    build_residual_compute_block_with_structured_partition(
+        dae_model,
+        layout,
+        residual_rows,
+        residual_targets,
+        residual_equations,
+        &partition,
+    )
+}
+
+fn build_residual_compute_block_with_structured_partition(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    residual_rows: &[Vec<solve::LinearOp>],
+    residual_targets: &[Option<solve::ScalarSlot>],
+    residual_equations: &[(usize, &dae::Equation)],
+    partition: &ResidualStructuredPartition<'_>,
 ) -> Result<solve::ComputeBlock, LowerError> {
     let span = residual_context_span(dae_model, residual_equations);
     validate_residual_compute_block_contract(
@@ -52,7 +109,7 @@ pub(crate) fn build_residual_compute_block(
                     residual_index,
                     equation.span,
                 )?,
-                dae_equation_index: Some(*equation_index),
+                dae_equation_index: equation_index.checked_sub(partition.equation_index_offset),
                 access_proof: residual_row_access_proof(
                     layout,
                     &structural_bindings,
@@ -69,8 +126,8 @@ pub(crate) fn build_residual_compute_block(
     stencil::push_structured_programs(
         &mut block.nodes,
         &mut rows,
-        &dae_model.continuous.structured_equations,
-        &dae_model.continuous.equations,
+        partition.equations,
+        partition.source_equations,
     )?;
     Ok(block)
 }
