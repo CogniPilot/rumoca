@@ -447,7 +447,9 @@ fn shift_structured_families_after_equation_removal(dae: &mut Dae, removed_sorte
         return;
     }
     dae.continuous.structured_equations.retain_mut(|family| {
-        let total: usize = family.equation_counts.iter().sum();
+        let total = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         let block_end = family.first_equation_index + total;
         let removed_inside_block = removed_sorted
             .iter()
@@ -476,7 +478,9 @@ fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[
         return;
     }
     dae.continuous.structured_equations.retain(|family| {
-        let total: usize = family.equation_counts.iter().sum();
+        let total = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         let block_end = family.first_equation_index + total;
         !touched_sorted
             .iter()

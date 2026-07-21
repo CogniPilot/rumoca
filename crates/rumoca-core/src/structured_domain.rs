@@ -174,18 +174,102 @@ impl StructuredIndexDomain {
         self.validate()
     }
 
+    /// Number of values along each binder, in declaration order.
+    pub fn extents(&self) -> Result<Vec<usize>, StructuredIndexDomainError> {
+        self.validate()?;
+        self.binders
+            .iter()
+            .map(StructuredIndexBinder::value_count)
+            .collect()
+    }
+
+    /// Row-major ordinal strides, with the innermost binder varying fastest.
+    pub fn ordinal_strides(&self) -> Result<Vec<usize>, StructuredIndexDomainError> {
+        ordinal_strides_for_extents(&self.extents()?)
+    }
+
+    /// Convert a row-major domain ordinal to binder coordinates without
+    /// materializing any preceding tuples.
+    pub fn index_tuple_at(
+        &self,
+        ordinal: usize,
+    ) -> Result<Option<Vec<i64>>, StructuredIndexDomainError> {
+        let scalar_count = self.validate()?;
+        if ordinal >= scalar_count {
+            return Ok(None);
+        }
+        let extents = self.extents()?;
+        let strides = ordinal_strides_for_extents(&extents)?;
+        Ok(Some(
+            self.index_tuple_at_validated(ordinal, &extents, &strides)?,
+        ))
+    }
+
+    /// Convert binder coordinates to their row-major ordinal. Coordinates
+    /// outside the domain return `None`.
+    pub fn ordinal_of(
+        &self,
+        index_tuple: &[i64],
+    ) -> Result<Option<usize>, StructuredIndexDomainError> {
+        self.validate()?;
+        if index_tuple.len() != self.binders.len() {
+            return Ok(None);
+        }
+        let strides = self.ordinal_strides()?;
+        let mut ordinal = 0usize;
+        for ((binder, value), stride) in self.binders.iter().zip(index_tuple).zip(strides) {
+            let Some(position) = binder.position_of(*value)? else {
+                return Ok(None);
+            };
+            ordinal = ordinal
+                .checked_add(
+                    position
+                        .checked_mul(stride)
+                        .ok_or(StructuredIndexDomainError::ScalarCountOverflow)?,
+                )
+                .ok_or(StructuredIndexDomainError::ScalarCountOverflow)?;
+        }
+        Ok(Some(ordinal))
+    }
+
+    /// Ordinals needed to inspect the base point and one neighbor along every
+    /// non-singleton binder. This is O(rank), independent of domain cardinality.
+    pub fn corner_ordinals(&self) -> Result<Vec<usize>, StructuredIndexDomainError> {
+        let scalar_count = self.validate()?;
+        if scalar_count == 0 {
+            return Ok(Vec::new());
+        }
+        let extents = self.extents()?;
+        let strides = ordinal_strides_for_extents(&extents)?;
+        let mut ordinals = Vec::with_capacity(1 + extents.len());
+        ordinals.push(0);
+        ordinals.extend(
+            extents
+                .into_iter()
+                .zip(strides)
+                .filter_map(|(extent, stride)| (extent > 1).then_some(stride)),
+        );
+        Ok(ordinals)
+    }
+
+    /// Lazily enumerate binder tuples in deterministic scalar-view order.
+    pub fn index_tuple_iter(
+        &self,
+    ) -> Result<impl ExactSizeIterator<Item = Vec<i64>> + '_, StructuredIndexDomainError> {
+        let scalar_count = self.validate()?;
+        let extents = self.extents()?;
+        let strides = ordinal_strides_for_extents(&extents)?;
+        Ok((0..scalar_count).map(move |ordinal| {
+            self.index_tuple_at_validated(ordinal, &extents, &strides)
+                .expect("validated structured domain ordinal must produce coordinates")
+        }))
+    }
+
     pub fn index_tuples(&self) -> Result<Vec<Vec<i64>>, StructuredIndexDomainError> {
         let tuple_count = self.validate()?;
         let mut tuples = Vec::new();
         reserve_tuple_capacity(&mut tuples, tuple_count)?;
-        let values = self
-            .binders
-            .iter()
-            .map(StructuredIndexBinder::values)
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut current = Vec::new();
-        reserve_current_tuple_capacity(&mut current, values.len())?;
-        push_index_tuples(&values, 0, &mut current, &mut tuples)?;
+        tuples.extend(self.index_tuple_iter()?);
         Ok(tuples)
     }
 
@@ -198,27 +282,33 @@ impl StructuredIndexDomain {
         }
         Ok(count)
     }
+
+    fn index_tuple_at_validated(
+        &self,
+        ordinal: usize,
+        extents: &[usize],
+        strides: &[usize],
+    ) -> Result<Vec<i64>, StructuredIndexDomainError> {
+        let mut tuple = Vec::new();
+        reserve_current_tuple_capacity(&mut tuple, self.binders.len())?;
+        for ((binder, extent), stride) in self.binders.iter().zip(extents).zip(strides) {
+            let position = (ordinal / stride) % extent;
+            tuple.push(binder.value_at(position)?);
+        }
+        Ok(tuple)
+    }
 }
 
-fn push_index_tuples(
-    values: &[Vec<i64>],
-    depth: usize,
-    current: &mut Vec<i64>,
-    tuples: &mut Vec<Vec<i64>>,
-) -> Result<(), StructuredIndexDomainError> {
-    if depth == values.len() {
-        let mut tuple = Vec::new();
-        reserve_current_tuple_capacity(&mut tuple, current.len())?;
-        tuple.extend(current.iter().copied());
-        tuples.push(tuple);
-        return Ok(());
+fn ordinal_strides_for_extents(
+    extents: &[usize],
+) -> Result<Vec<usize>, StructuredIndexDomainError> {
+    let mut strides = vec![1usize; extents.len()];
+    for index in (0..extents.len().saturating_sub(1)).rev() {
+        strides[index] = strides[index + 1]
+            .checked_mul(extents[index + 1])
+            .ok_or(StructuredIndexDomainError::ScalarCountOverflow)?;
     }
-    for value in &values[depth] {
-        current.push(*value);
-        push_index_tuples(values, depth + 1, current, tuples)?;
-        current.pop();
-    }
-    Ok(())
+    Ok(strides)
 }
 
 fn reserve_tuple_capacity(
@@ -273,26 +363,33 @@ impl StructuredIndexBinder {
         distance / step as u128 + 1
     }
 
-    fn values(&self) -> Result<Vec<i64>, StructuredIndexDomainError> {
-        let count = self.value_count()?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| StructuredIndexDomainError::IndexTupleCapacityOverflow)?;
-        let mut value = self.lower;
-        for _ in 0..count {
-            values.push(value);
-            if values.len() == count {
-                break;
+    fn value_at(&self, position: usize) -> Result<i64, StructuredIndexDomainError> {
+        let offset = (self.step as i128) * (position as i128);
+        i64::try_from(self.lower as i128 + offset).map_err(|_| {
+            StructuredIndexDomainError::BinderValueOverflow {
+                binder_id: self.id,
+                display_name: self.display_name.clone(),
             }
-            value = value.checked_add(self.step).ok_or_else(|| {
-                StructuredIndexDomainError::BinderValueOverflow {
-                    binder_id: self.id,
-                    display_name: self.display_name.clone(),
-                }
-            })?;
+        })
+    }
+
+    fn position_of(&self, value: i64) -> Result<Option<usize>, StructuredIndexDomainError> {
+        let count = self.value_count()?;
+        if count == 0 {
+            return Ok(None);
         }
-        Ok(values)
+        let distance = value as i128 - self.lower as i128;
+        let step = self.step as i128;
+        if distance % step != 0 {
+            return Ok(None);
+        }
+        let position = distance / step;
+        if position < 0 {
+            return Ok(None);
+        }
+        let position = usize::try_from(position)
+            .map_err(|_| StructuredIndexDomainError::ScalarCountOverflow)?;
+        Ok((position < count).then_some(position))
     }
 }
 
@@ -428,6 +525,70 @@ mod tests {
             domain.index_tuples(),
             Err(StructuredIndexDomainError::ScalarCountOverflow)
         );
+    }
+
+    #[test]
+    fn ordinal_coordinates_support_reverse_and_non_unit_ranges() {
+        let domain = StructuredIndexDomain {
+            binders: vec![
+                StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 5,
+                    upper: 1,
+                    step: -2,
+                },
+                StructuredIndexBinder {
+                    id: 1,
+                    display_name: "j".to_string(),
+                    lower: 2,
+                    upper: 8,
+                    step: 3,
+                },
+            ],
+        };
+
+        assert_eq!(domain.extents(), Ok(vec![3, 3]));
+        assert_eq!(domain.ordinal_strides(), Ok(vec![3, 1]));
+        assert_eq!(domain.index_tuple_at(5), Ok(Some(vec![3, 8])));
+        assert_eq!(domain.ordinal_of(&[3, 8]), Ok(Some(5)));
+        assert_eq!(domain.ordinal_of(&[4, 8]), Ok(None));
+        assert_eq!(domain.corner_ordinals(), Ok(vec![0, 3, 1]));
+    }
+
+    #[test]
+    fn empty_domain_has_no_tuples_or_corners() {
+        let domain = StructuredIndexDomain {
+            binders: vec![StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 3,
+                upper: 1,
+                step: 1,
+            }],
+        };
+
+        assert_eq!(domain.scalar_count(), Ok(0));
+        assert_eq!(domain.index_tuple_at(0), Ok(None));
+        assert_eq!(domain.ordinal_of(&[3]), Ok(None));
+        assert_eq!(domain.corner_ordinals(), Ok(Vec::new()));
+        assert_eq!(domain.index_tuple_iter().unwrap().next(), None);
+    }
+
+    #[test]
+    fn distant_ordinal_is_computed_without_materializing_prefix() {
+        let domain = StructuredIndexDomain {
+            binders: vec![StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 1_000_000,
+                step: 1,
+            }],
+        };
+
+        assert_eq!(domain.index_tuple_at(999_999), Ok(Some(vec![1_000_000])));
+        assert_eq!(domain.ordinal_of(&[1_000_000]), Ok(Some(999_999)));
     }
 
     fn access(var: &str, subscripts: Vec<AffineForm>) -> ArrayAccess {

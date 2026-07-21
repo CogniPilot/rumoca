@@ -14,8 +14,11 @@ pub struct StructuredEquationFamily {
     /// First equation index in the corresponding DAE equation vector.
     #[serde(default)]
     pub first_equation_index: usize,
-    /// Scalar-view equation count for each domain point in deterministic order.
-    pub equation_counts: Vec<usize>,
+    /// Uniform scalar-view equation count emitted by each domain point.
+    ///
+    /// Keeping one body-row count instead of a per-point vector makes family
+    /// metadata independent of compact-domain cardinality.
+    pub equations_per_point: usize,
     /// Source span for diagnostics.
     pub span: Span,
     /// Human-readable origin description for traceability.
@@ -62,15 +65,14 @@ pub struct StructuredEquationSlot {
 }
 
 impl StructuredEquationFamily {
-    pub fn common_iteration_equation_count(&self) -> Option<usize> {
-        let first = *self.equation_counts.first()?;
-        if first == 0 {
-            return None;
-        }
-        self.equation_counts
-            .iter()
-            .all(|equation_count| *equation_count == first)
-            .then_some(first)
+    pub fn point_count(&self) -> Result<usize, rumoca_core::StructuredIndexDomainError> {
+        self.domain.scalar_count()
+    }
+
+    pub fn scalar_view_row_count(&self) -> Result<usize, rumoca_core::StructuredIndexDomainError> {
+        self.point_count()?
+            .checked_mul(self.equations_per_point)
+            .ok_or(rumoca_core::StructuredIndexDomainError::ScalarCountOverflow)
     }
 
     pub fn slot_for_equation(
@@ -78,9 +80,9 @@ impl StructuredEquationFamily {
         family_index: usize,
         equation_index: usize,
     ) -> Option<StructuredEquationSlot> {
-        let equation_count = self.common_iteration_equation_count()?;
+        let equation_count = (self.equations_per_point > 0).then_some(self.equations_per_point)?;
         let relative_equation = equation_index.checked_sub(self.first_equation_index)?;
-        let family_len = equation_count.checked_mul(self.equation_counts.len())?;
+        let family_len = self.scalar_view_row_count().ok()?;
         if relative_equation >= family_len {
             return None;
         }
@@ -109,14 +111,14 @@ pub fn structured_equation_slot(
 /// `spans[old_idx] == (new_start, new_len)` records where input equation `old_idx`
 /// landed: an equation expanded into `new_len` rows starting at `new_start`, an
 /// unchanged equation reports `new_len == 1`. A family's `first_equation_index`
-/// and `equation_counts` index into the equation vector, so expanding an earlier
+/// and compact cardinality index into the equation vector, so expanding an earlier
 /// equation shifts every later family and silently corrupts its row references
 /// unless it is remapped here (e.g. a `pin[:].v` member slice expanded ahead of a
 /// `for`-loop family).
 ///
 /// Each family's scalar rows stay contiguous through expansion, so each family is
 /// rebuilt by walking its covered input rows and re-deriving its first-row index
-/// and per-cell counts in the new row space. A family whose covered rows are
+/// and uniform body-row count in the new row space. A family whose covered rows are
 /// missing or no longer contiguous is dropped, degrading to safe scalar lowering
 /// rather than indexing the wrong rows.
 pub fn remap_structured_families_after_expansion(
@@ -124,33 +126,42 @@ pub fn remap_structured_families_after_expansion(
     spans: &[(usize, usize)],
 ) {
     families.retain_mut(|family| match remapped_family_block(family, spans) {
-        Some((first, counts)) => {
+        Some((first, equations_per_point)) => {
             family.first_equation_index = first;
-            family.equation_counts = counts;
+            family.equations_per_point = equations_per_point;
             true
         }
         None => false,
     });
 }
 
-/// Compute one family's `(first_equation_index, equation_counts)` in the new row
+/// Compute one family's `(first_equation_index, equations_per_point)` in the new row
 /// space, or `None` if its covered rows are missing or no longer contiguous.
 fn remapped_family_block(
     family: &StructuredEquationFamily,
     spans: &[(usize, usize)],
-) -> Option<(usize, Vec<usize>)> {
+) -> Option<(usize, usize)> {
     let mut old_idx = family.first_equation_index;
-    let mut new_rows: Vec<usize> = Vec::with_capacity(family.equation_counts.len());
-    let mut new_counts = Vec::with_capacity(family.equation_counts.len());
-    for count in &family.equation_counts {
+    let point_count = family.point_count().ok()?;
+    let mut new_rows = Vec::new();
+    new_rows
+        .try_reserve_exact(family.scalar_view_row_count().ok()?)
+        .ok()?;
+    let mut new_equations_per_point = None;
+    for _ in 0..point_count {
         let before = new_rows.len();
-        collect_expanded_rows(old_idx, *count, spans, &mut new_rows)?;
+        collect_expanded_rows(old_idx, family.equations_per_point, spans, &mut new_rows)?;
         let new_count = new_rows.len() - before;
         if new_count == 0 {
             return None;
         }
-        new_counts.push(new_count);
-        old_idx += count;
+        if new_equations_per_point
+            .replace(new_count)
+            .is_some_and(|count| count != new_count)
+        {
+            return None;
+        }
+        old_idx += family.equations_per_point;
     }
     // The family's rows must remain one contiguous run after expansion, else it
     // can no longer describe a single array block and the caller drops it.
@@ -162,7 +173,7 @@ fn remapped_family_block(
     {
         return None;
     }
-    Some((first, new_counts))
+    Some((first, new_equations_per_point?))
 }
 
 /// Append the post-expansion row indices of input equations `old_idx..old_idx+count`
@@ -186,20 +197,26 @@ mod tests {
 
     fn family(
         first_equation_index: usize,
-        equation_counts: Vec<usize>,
+        point_row_counts: Vec<usize>,
     ) -> StructuredEquationFamily {
+        let equations_per_point = *point_row_counts.first().expect("test family has points");
+        assert!(
+            point_row_counts
+                .iter()
+                .all(|count| *count == equations_per_point)
+        );
         StructuredEquationFamily {
             domain: StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
-                    upper: equation_counts.len() as i64,
+                    upper: point_row_counts.len() as i64,
                     step: 1,
                 }],
             },
             first_equation_index,
-            equation_counts,
+            equations_per_point,
             span: Span::DUMMY,
             origin: "test".to_string(),
             regular: None,
@@ -224,8 +241,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_uniform_family_slots() {
-        let families = vec![family(10, vec![1, 2, 1])];
+    fn rejects_zero_row_family_slots() {
+        let mut zero_row_family = family(10, vec![1, 1, 1]);
+        zero_row_family.equations_per_point = 0;
+        let families = vec![zero_row_family];
 
         assert_eq!(structured_equation_slot(&families, 11), None);
     }
@@ -242,7 +261,7 @@ mod tests {
 
         assert_eq!(families.len(), 1);
         assert_eq!(families[0].first_equation_index, 3);
-        assert_eq!(families[0].equation_counts, vec![1, 1, 1]);
+        assert_eq!(families[0].equations_per_point, 1);
     }
 
     #[test]
@@ -256,7 +275,7 @@ mod tests {
 
         assert_eq!(families.len(), 1);
         assert_eq!(families[0].first_equation_index, 1);
-        assert_eq!(families[0].equation_counts, vec![2, 2]);
+        assert_eq!(families[0].equations_per_point, 2);
     }
 
     #[test]

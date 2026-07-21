@@ -27,7 +27,7 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 7;
+pub const DAE_SCHEMA_VERSION: u16 = 8;
 
 pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 

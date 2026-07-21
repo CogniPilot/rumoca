@@ -281,7 +281,7 @@ mod admissibility {
                     binders: Vec::new(),
                 },
                 first_equation_index: 0,
-                equation_counts: vec![1],
+                equations_per_point: 1,
                 span: Span::DUMMY,
                 origin: "test".to_owned(),
                 regular: None,

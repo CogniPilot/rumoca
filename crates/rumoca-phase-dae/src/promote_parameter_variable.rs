@@ -234,7 +234,9 @@ fn cheapened_algebraic_families(dae: &dae::Dae) -> Vec<(String, rumoca_core::Spa
         if family.interiors_materialized {
             continue;
         }
-        let total: usize = family.equation_counts.iter().sum();
+        let total = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         let start = family.first_equation_index;
         let Some(equations) = dae.continuous.equations.get(start..start + total) else {
             continue;
@@ -332,7 +334,9 @@ fn comprehension_starts_from_families(
 ) -> HashMap<String, (rumoca_core::Expression, usize)> {
     let mut result = HashMap::new();
     for family in families {
-        let total: usize = family.equation_counts.iter().sum();
+        let total = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         let fully_removed = (family.first_equation_index..family.first_equation_index + total)
             .all(|index| removed.contains(&index));
         if !fully_removed {
@@ -716,7 +720,9 @@ fn structured_family_targets(
         .structured_equations
         .iter()
         .filter_map(|family| {
-            let total: usize = family.equation_counts.iter().sum();
+            let total = family
+                .scalar_view_row_count()
+                .expect("validated structured family row count");
             let indices = family.first_equation_index..family.first_equation_index + total;
             if !indices.clone().all(|index| family_removed.contains(&index)) {
                 return None;
@@ -768,7 +774,9 @@ fn removable_indices_respecting_families(
     // Map each equation index to its owning family (if any).
     let mut family_of: Vec<Option<usize>> = vec![None; equation_count];
     for (family_index, family) in families.iter().enumerate() {
-        let span: usize = family.equation_counts.iter().sum();
+        let span = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         for index in family.first_equation_index..family.first_equation_index + span {
             if let Some(slot) = family_of.get_mut(index) {
                 *slot = Some(family_index);
@@ -778,7 +786,9 @@ fn removable_indices_respecting_families(
     // A family is fully promotable iff every one of its equations is removable.
     let mut family_all_removable: Vec<bool> = vec![true; families.len()];
     for (family_index, family) in families.iter().enumerate() {
-        let span: usize = family.equation_counts.iter().sum();
+        let span = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         for index in family.first_equation_index..family.first_equation_index + span {
             if !removable.contains_key(&index) {
                 family_all_removable[family_index] = false;
@@ -816,7 +826,12 @@ fn remap_structured_families(
     // Prefix count of removed equations strictly before each index.
     let max_index = families
         .iter()
-        .map(|f| f.first_equation_index + f.equation_counts.iter().sum::<usize>())
+        .map(|family| {
+            family.first_equation_index
+                + family
+                    .scalar_view_row_count()
+                    .expect("validated structured family row count")
+        })
         .max()
         .unwrap_or(0);
     let mut removed_before = vec![0usize; max_index + 1];
@@ -824,7 +839,9 @@ fn remap_structured_families(
         removed_before[index + 1] = removed_before[index] + usize::from(removed.contains(&index));
     }
     families.retain(|family| {
-        let span: usize = family.equation_counts.iter().sum();
+        let span = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         // Keep a family only if none of its equations were removed.
         !(family.first_equation_index..family.first_equation_index + span)
             .any(|index| removed.contains(&index))
