@@ -290,6 +290,42 @@ fn test_orphan_drop_does_not_keep_scalarized_unknown_by_base_alias_only() {
 }
 
 #[test]
+fn test_orphan_drop_keeps_exact_scalarized_lhs_owner() {
+    let mut dae = Dae::new();
+
+    dae.variables.algebraics.insert(
+        VarName::new("resistor.plug_p.pin[2].v.im"),
+        test_dae_variable("resistor.plug_p.pin[2].v.im"),
+    );
+    dae.continuous
+        .equations
+        .push(dae::Equation::explicit_with_scalar_count(
+            VarName::new("resistor.plug_p.pin[2].v.im"),
+            lit(0.0),
+            Span::DUMMY,
+            "exact scalarized lhs",
+            1,
+        ));
+
+    drop_unreferenced_continuous_unknowns(&mut dae);
+
+    let sorted = crate::sort_dae(&dae)
+        .expect("the retained explicit scalarized lhs must remain structurally matchable");
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("resistor.plug_p.pin[2].v.im")),
+        "an exact scalarized lhs must keep its owning unknown live"
+    );
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert_eq!(
+        sorted.matching.len(),
+        1,
+        "the retained equation must match its one exact scalarized unknown"
+    );
+}
+
+#[test]
 fn test_orphan_drop_keeps_exact_scalarized_unknown_reference() {
     let mut dae = Dae::new();
 
