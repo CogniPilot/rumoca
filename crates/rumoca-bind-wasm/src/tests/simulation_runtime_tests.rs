@@ -316,6 +316,8 @@ fn test_prepare_gpu_simulation_settles_wave_initial_equations() {
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 fn assert_n50_compact_initialization(compact: &rumoca_ir_solve::SolveModel) {
     let initialization = &compact.problem.initialization;
+    assert_eq!(compact.problem.layout.y_scalars(), 2 * 50 * 50);
+    assert_eq!(compact.initial_y.len(), 2 * 50 * 50);
     let node_counts = initialization.residual.compute_node_counts();
     assert!(initialization.row_targets.is_empty());
     assert_eq!(initialization.direct_families.len(), 2);
@@ -427,6 +429,8 @@ fn test_prepare_gpu_simulation_settles_wave_initial_equations_n50_in_linear_budg
         let y0 = payload["y0"]
             .as_array()
             .expect("GPU payload should include initial y0");
+        assert_eq!(names.len(), 2 * 50 * 50);
+        assert_eq!(y0.len(), 2 * 50 * 50);
         let center = names
             .iter()
             .position(|name| name.as_str() == Some("u[25,25]"))

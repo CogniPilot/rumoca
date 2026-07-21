@@ -101,10 +101,13 @@ pub(super) fn lower_gpu_initialization_system(
     if expected != required_user_initial_rows {
         return Err(LowerError::Unsupported { reason: "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported".to_string() });
     }
-    require_complete_gpu_initial_target_coverage(dae_model, layout, &families)?;
+    let (required_target_ranges, fixed_target_ranges) =
+        require_complete_gpu_initial_target_coverage(dae_model, layout, &families)?;
     Ok(solve::InitializationSolveSystem {
         residual: solve::ComputeBlock { nodes },
         direct_families: families,
+        required_target_ranges,
+        fixed_target_ranges,
         ..Default::default()
     })
 }
@@ -113,8 +116,14 @@ fn require_complete_gpu_initial_target_coverage(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
     families: &[solve::InitializationDirectFamily],
-) -> Result<(), LowerError> {
-    let mut covered = vec![false; layout.y_scalars()];
+) -> Result<
+    (
+        Vec<solve::InitializationTargetRange>,
+        Vec<solve::InitializationTargetRange>,
+    ),
+    LowerError,
+> {
+    let mut direct_ranges = Vec::with_capacity(families.len());
     for (structured, direct) in dae_model
         .initialization
         .structured_equations
@@ -124,20 +133,30 @@ fn require_complete_gpu_initial_target_coverage(
         })
         .zip(families)
     {
-        for index in direct
-            .targets
-            .output_indices(&structured.domain)
-            .map_err(|error| LowerError::contract_violation(format!("{error:?}"), direct.span))?
-        {
-            let Some(slot) = covered.get_mut(index) else {
-                return Err(LowerError::contract_violation(
-                    "GPU initial target is outside the solver Y vector",
-                    direct.span,
-                ));
-            };
-            *slot = true;
+        let dense =
+            solve::TensorOutputMap::dense_contiguous(direct.targets.start, &structured.domain)
+                .map_err(|error| {
+                    LowerError::contract_violation(format!("{error:?}"), direct.span)
+                })?;
+        if direct.targets.strides != dense.strides {
+            return Err(LowerError::contract_violation(
+                "GPU initial target map must be dense and contiguous",
+                direct.span,
+            ));
         }
+        let count = structured
+            .domain
+            .scalar_count()
+            .map_err(|error| LowerError::contract_violation(error.to_string(), direct.span))?;
+        let end = direct.targets.start.checked_add(count).ok_or_else(|| {
+            LowerError::contract_violation("GPU initial target range overflow", direct.span)
+        })?;
+        direct_ranges.push(solve::InitializationTargetRange {
+            start: direct.targets.start,
+            end,
+        });
     }
+    let mut fixed_ranges = Vec::new();
     for (equation, provenance) in dae_model
         .initialization
         .equations
@@ -160,21 +179,56 @@ fn require_complete_gpu_initial_target_coverage(
                     equation.span,
                 ));
             };
-            let Some(slot) = covered.get_mut(index) else {
+            let Some(end) = index.checked_add(1) else {
                 return Err(LowerError::contract_violation(
-                    "GPU fixed-start target is outside the solver Y vector",
+                    "GPU fixed-start target range overflow",
                     equation.span,
                 ));
             };
-            *slot = true;
+            fixed_ranges.push(solve::InitializationTargetRange { start: index, end });
         }
     }
-    if covered.iter().any(|covered| !covered) {
+    let fixed_ranges = normalize_gpu_target_ranges(fixed_ranges, layout.y_scalars())?;
+    direct_ranges.extend(fixed_ranges.iter().copied());
+    let actual = normalize_gpu_target_ranges(direct_ranges, layout.y_scalars())?;
+    let required = if layout.y_scalars() == 0 {
+        Vec::new()
+    } else {
+        vec![solve::InitializationTargetRange {
+            start: 0,
+            end: layout.y_scalars(),
+        }]
+    };
+    if actual != required {
         return Err(LowerError::Unsupported {
             reason: "GPU initial projection requires the union of user equations and fixed starts to cover every solver Y slot".to_string(),
         });
     }
-    Ok(())
+    Ok((required, fixed_ranges))
+}
+
+fn normalize_gpu_target_ranges(
+    mut ranges: Vec<solve::InitializationTargetRange>,
+    upper_bound: usize,
+) -> Result<Vec<solve::InitializationTargetRange>, LowerError> {
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut normalized: Vec<solve::InitializationTargetRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.start >= range.end || range.end > upper_bound {
+            return Err(LowerError::Unsupported {
+                reason: "GPU initial target range is empty or outside the solver Y vector"
+                    .to_string(),
+            });
+        }
+        if let Some(last) = normalized.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            normalized.push(range);
+        }
+    }
+    Ok(normalized)
 }
 
 fn lower_gpu_direct_family(

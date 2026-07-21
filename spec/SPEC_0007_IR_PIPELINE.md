@@ -188,9 +188,11 @@ Canonical terminology:
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
 
-`ScalarProgramBlock` and `ComputeNode::ScalarPrograms` are the public source-code
-names. New Solve-IR APIs must use `ScalarProgram` / `ScalarProgramBlock`
-terminology and must not reintroduce `RowBlock` / `ScalarRows` naming.
+Public APIs use `ScalarProgram`/`ScalarProgramBlock`; `RowBlock`/`ScalarRows`
+must not return.
+
+GPU initialization is complete-or-error: compact direct plus fixed-start ranges
+cover solver Y; unsupported semantics never fall back.
 
 `ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
 structured-family domains plus affine operand proofs. It carries the compact

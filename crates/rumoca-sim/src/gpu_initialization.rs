@@ -152,6 +152,7 @@ fn validate_assignment_shape(
             span: None,
         });
     }
+    let mut actual_ranges = initialization.fixed_target_ranges.clone();
     for family in &initialization.direct_families {
         if !matches!(family.residual_sign, -1 | 1) {
             return Err(GpuInitializationError::Malformed {
@@ -169,9 +170,82 @@ fn validate_assignment_shape(
                 span: Some(family.span),
             });
         };
-        let _ = (domain, y_len);
+        let dense = solve::TensorOutputMap::dense_contiguous(family.targets.start, domain)
+            .map_err(|error| GpuInitializationError::Malformed {
+                message: format!("invalid direct target map: {error:?}"),
+                row: 0,
+                span: Some(family.span),
+            })?;
+        if family.targets.strides != dense.strides {
+            return Err(GpuInitializationError::Malformed {
+                message: "direct target map must be dense and contiguous".to_string(),
+                row: 0,
+                span: Some(family.span),
+            });
+        }
+        let count = domain
+            .scalar_count()
+            .map_err(|error| GpuInitializationError::Malformed {
+                message: format!("invalid direct target domain: {error}"),
+                row: 0,
+                span: Some(family.span),
+            })?;
+        let end = family.targets.start.checked_add(count).ok_or_else(|| {
+            GpuInitializationError::Malformed {
+                message: "direct target range overflow".to_string(),
+                row: 0,
+                span: Some(family.span),
+            }
+        })?;
+        actual_ranges.push(solve::InitializationTargetRange {
+            start: family.targets.start,
+            end,
+        });
+    }
+    let required = normalize_target_ranges(&initialization.required_target_ranges, y_len)?;
+    let expected = if y_len == 0 {
+        Vec::new()
+    } else {
+        vec![solve::InitializationTargetRange {
+            start: 0,
+            end: y_len,
+        }]
+    };
+    let actual = normalize_target_ranges(&actual_ranges, y_len)?;
+    if required != expected || actual != required {
+        return Err(GpuInitializationError::Malformed {
+            message: "incomplete direct plus fixed-start target union".to_string(),
+            row: 0,
+            span: None,
+        });
     }
     Ok(())
+}
+
+fn normalize_target_ranges(
+    ranges: &[solve::InitializationTargetRange],
+    upper_bound: usize,
+) -> Result<Vec<solve::InitializationTargetRange>, GpuInitializationError> {
+    let mut ranges = ranges.to_vec();
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut normalized: Vec<solve::InitializationTargetRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.start >= range.end || range.end > upper_bound {
+            return Err(GpuInitializationError::Malformed {
+                message: "initial target range is empty or out of bounds".to_string(),
+                row: 0,
+                span: None,
+            });
+        }
+        if let Some(last) = normalized.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            normalized.push(range);
+        }
+    }
+    Ok(normalized)
 }
 
 struct DirectFamilyExecution<'a> {
@@ -415,6 +489,7 @@ mod tests {
                 residual_sign: 1,
                 span,
             }],
+            required_target_ranges: vec![solve::InitializationTargetRange { start: 0, end: 2 }],
             ..Default::default()
         };
         solve::SolveModel {
@@ -435,6 +510,15 @@ mod tests {
         assert_eq!(result.metrics.residual_evaluations, 2);
         assert_eq!(result.metrics.passes, 1);
         assert!(result.metrics.temporary_values <= result.y0.len() * 3);
+    }
+
+    #[test]
+    fn settlement_rejects_partial_required_target_union_independently() {
+        let mut model = direct_model();
+        model.problem.initialization.required_target_ranges[0].end = 1;
+        let error = settle_gpu_initial_conditions(&model, 0.0)
+            .expect_err("settlement must reject a partial hand-built artifact");
+        assert!(error.to_string().contains("incomplete"));
     }
 
     #[test]

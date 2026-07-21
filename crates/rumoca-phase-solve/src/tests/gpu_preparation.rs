@@ -212,6 +212,8 @@ fn gpu_initial_projection_rejects_degenerate_structured_binder() {
 
 #[test]
 fn gpu_initial_projection_handles_negative_binder_steps() {
+    // Source binder traversal may descend. Target maps remain canonical dense
+    // positive-stride maps; Solve-IR validation rejects negative target strides.
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
             id: 0,

@@ -64,8 +64,30 @@ fn compact_initialization_validation_rejects_noncontiguous_target_strides() {
         ..Default::default()
     };
 
-    let error = validate_initialization_direct_families(&initialization)
+    let error = validate_initialization_direct_families(&initialization, 6)
         .expect_err("sparse compact target maps must fail closed");
+    assert!(error.to_string().contains("non-contiguous"));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_negative_target_strides() {
+    let (node, family) = direct_initialization_family(
+        0,
+        2,
+        vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: -1,
+        }],
+    );
+    let initialization = InitializationSolveSystem {
+        residual: ComputeBlock { nodes: vec![node] },
+        direct_families: vec![family],
+        required_target_ranges: vec![InitializationTargetRange { start: 0, end: 3 }],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization, 3)
+        .expect_err("descending target maps must fail closed");
     assert!(error.to_string().contains("non-contiguous"));
 }
 
@@ -85,9 +107,49 @@ fn compact_initialization_validation_rejects_overlapping_affine_ranges() {
         ..Default::default()
     };
 
-    let error = validate_initialization_direct_families(&initialization)
+    let error = validate_initialization_direct_families(&initialization, 6)
         .expect_err("overlapping compact target ranges must fail closed");
     assert!(error.to_string().contains("overlapping"));
+}
+
+fn complete_compact_initialization() -> InitializationSolveSystem {
+    let (node, family) = direct_initialization_family(
+        0,
+        0,
+        vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 1,
+        }],
+    );
+    InitializationSolveSystem {
+        residual: ComputeBlock { nodes: vec![node] },
+        direct_families: vec![family],
+        required_target_ranges: vec![InitializationTargetRange { start: 0, end: 3 }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn compact_initialization_validation_rejects_partial_required_union() {
+    let mut initialization = complete_compact_initialization();
+    initialization.required_target_ranges[0].end = 4;
+    let error = validate_initialization_direct_families(&initialization, 4)
+        .expect_err("hand-built partial target union must fail closed");
+    assert!(error.to_string().contains("incomplete"));
+}
+
+#[test]
+fn compact_initialization_json_rejects_partial_required_union() {
+    let problem = SolveProblem {
+        layout: make_layout(&[("x", vec![3])], &[]),
+        initialization: complete_compact_initialization(),
+        ..Default::default()
+    };
+    let mut value = serde_json::to_value(problem).expect("serialize compact Solve artifact");
+    value["layout"]["y_scalars"] = serde_json::json!(4);
+    let error = serde_json::from_value::<SolveProblem>(value)
+        .expect_err("JSON with a partial target union must fail closed");
+    assert!(error.to_string().contains("incomplete"));
 }
 
 fn fixture_span() -> Span {
@@ -239,6 +301,8 @@ fn representative_initialization_system() -> InitializationSolveSystem {
     InitializationSolveSystem {
         row_targets: vec![Some(scalar_slot_y(1))],
         direct_families: Vec::new(),
+        required_target_ranges: Vec::new(),
+        fixed_target_ranges: Vec::new(),
         residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 0.0 },

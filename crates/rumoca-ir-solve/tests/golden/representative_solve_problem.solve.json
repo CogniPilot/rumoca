@@ -289,6 +289,8 @@
       }
     ],
     "direct_families": [],
+    "required_target_ranges": [],
+    "fixed_target_ranges": [],
     "projection_indices": [],
     "projection_plan": {
       "blocks": []

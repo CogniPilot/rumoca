@@ -1123,6 +1123,14 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.continuous.structured_equations,
         &continuous_spans,
     );
+    if dae.initialization.equation_provenance.len() != dae.initialization.equations.len() {
+        return Err(ToDaeError::runtime_metadata_violation(format!(
+            "initial equation provenance cardinality {} does not match equation cardinality {} before phantom scalarization",
+            dae.initialization.equation_provenance.len(),
+            dae.initialization.equations.len()
+        )));
+    }
+    let initialization_provenance = dae.initialization.equation_provenance.clone();
     let initialization_spans = scalarize_equation_list(
         &mut dae.initialization.equations,
         &phantom_map,
@@ -1135,6 +1143,11 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.initialization.structured_equations,
         &initialization_spans,
     );
+    dae.initialization.equation_provenance = initialization_spans
+        .iter()
+        .zip(initialization_provenance)
+        .flat_map(|((_, new_len), provenance)| std::iter::repeat_n(provenance, *new_len))
+        .collect();
     // The discrete and condition partitions carry no structured families.
     scalarize_equation_list(
         &mut dae.discrete.real_updates,

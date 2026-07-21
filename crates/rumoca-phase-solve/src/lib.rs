@@ -588,7 +588,12 @@ fn lower_event_partition_for_profile(
             .map_err(|err| lower_problem_context(err, "lower root relation memory targets"))?,
         scheduled_root_conditions: lower::lower_scheduled_root_conditions(dae_model)
             .map_err(|err| lower_problem_context(err, "lower scheduled root conditions"))?,
-        scheduled_time_events: dae_model.events.scheduled_time_events.clone(),
+        scheduled_time_events: dae_model
+            .events
+            .scheduled_time_events
+            .iter()
+            .map(|event| event.time)
+            .collect(),
         dynamic_time_event_names: dynamic_events::collect_dynamic_time_event_names(dae_model),
         dynamic_time_event_rhs: solve::ScalarProgramBlock::with_program_spans(
             lower_dynamic_time_event_rhs(dae_model, layout, dynamic_time_event_exprs)
@@ -767,6 +772,8 @@ fn lower_initialization_system(
     Ok(solve::InitializationSolveSystem {
         row_targets,
         direct_families: Vec::new(),
+        required_target_ranges: Vec::new(),
+        fixed_target_ranges: Vec::new(),
         projection_indices,
         projection_plan,
         residual,

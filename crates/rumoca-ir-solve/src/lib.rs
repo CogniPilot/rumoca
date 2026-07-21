@@ -1200,7 +1200,7 @@ impl<'de> Deserialize<'de> for SolveProblem {
             )));
         }
 
-        Ok(Self {
+        let problem = Self {
             schema_version: wire.schema_version,
             layout: wire.layout,
             solve_layout: wire.solve_layout,
@@ -1209,7 +1209,11 @@ impl<'de> Deserialize<'de> for SolveProblem {
             discrete: wire.discrete,
             events: wire.events,
             clocks: wire.clocks,
-        })
+        };
+        problem
+            .validate_shape_contract()
+            .map_err(serde::de::Error::custom)?;
+        Ok(problem)
     }
 }
 
@@ -1269,7 +1273,7 @@ impl SolveProblem {
         self.initialization
             .update_rhs
             .validate_shape_contract("initialization.update_rhs")?;
-        validate_initialization_direct_families(&self.initialization)?;
+        validate_initialization_direct_families(&self.initialization, self.layout.y_scalars())?;
         validate_count(
             "initialization.update_targets",
             self.initialization.update_rhs.len(),
@@ -1429,6 +1433,10 @@ pub enum SolveProblemShapeContractError {
         actual: usize,
         span: Option<Span>,
     },
+    InitializationTargetCoverage {
+        reason: &'static str,
+        span: Option<Span>,
+    },
     ZeroTensorDimension {
         context: String,
         node_index: usize,
@@ -1483,6 +1491,7 @@ impl SolveProblemShapeContractError {
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
+            | Self::InitializationTargetCoverage { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
@@ -1531,6 +1540,9 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 actual,
                 ..
             } => write!(f, "{context} expected {expected} rows, got {actual}"),
+            Self::InitializationTargetCoverage { reason, .. } => {
+                write!(f, "initialization target coverage is invalid: {reason}")
+            }
             Self::ZeroTensorDimension {
                 context,
                 node_index,
@@ -1664,6 +1676,12 @@ pub struct InitializationSolveSystem {
     /// this does not create one owned record per scalar initial row.
     #[serde(default)]
     pub direct_families: Vec<InitializationDirectFamily>,
+    /// Complete solver-Y coverage required by this initialization artifact.
+    #[serde(default)]
+    pub required_target_ranges: Vec<InitializationTargetRange>,
+    /// Required ranges already satisfied by declared fixed starts.
+    #[serde(default)]
+    pub fixed_target_ranges: Vec<InitializationTargetRange>,
     pub projection_indices: Vec<usize>,
     #[serde(default)]
     pub projection_plan: AlgebraicProjectionPlan,
@@ -1671,6 +1689,12 @@ pub struct InitializationSolveSystem {
     pub update_rhs: ScalarProgramBlock,
     #[serde(default)]
     pub update_targets: Vec<ScalarSlot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct InitializationTargetRange {
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

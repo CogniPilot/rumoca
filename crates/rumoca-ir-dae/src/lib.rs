@@ -144,7 +144,7 @@ struct DaeWire {
     #[serde(default, rename = "relation")]
     relations: Vec<Expression>,
     synthetic_root_conditions: Vec<Expression>,
-    scheduled_time_events: Vec<f64>,
+    scheduled_time_events: Vec<DaeScheduledTimeEvent>,
     scheduled_root_conditions: Vec<DaeScheduledRootCondition>,
     event_actions: Vec<DaeEventAction>,
     constructor_exprs: Vec<Expression>,
@@ -559,7 +559,7 @@ pub struct DaeEventPartition {
     pub synthetic_root_conditions: Vec<Expression>,
     /// Scheduled discontinuity instants derived at compile time.
     /// This is canonical runtime metadata (always present in DAE schema).
-    pub scheduled_time_events: Vec<f64>,
+    pub scheduled_time_events: Vec<DaeScheduledTimeEvent>,
     /// Root rows that correspond to periodic sample schedules.
     ///
     /// `root_index` is in Solve root-condition order:
@@ -573,6 +573,14 @@ pub struct DaeEventPartition {
     /// residual expressions. `reinit` is lowered earlier into guarded discrete
     /// state-update equations and must not appear here.
     pub event_actions: Vec<DaeEventAction>,
+}
+
+/// Compile-time scheduled discontinuity with the source expression that
+/// established the runtime instant.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DaeScheduledTimeEvent {
+    pub time: f64,
+    pub source_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1393,7 +1401,12 @@ mod tests {
             Span::DUMMY,
             "when sample trigger then hold.y",
         ));
-        dae.events.scheduled_time_events.push(0.1);
+        dae.events
+            .scheduled_time_events
+            .push(super::DaeScheduledTimeEvent {
+                time: 0.1,
+                source_span: fixture_span(),
+            });
         dae.clocks.schedules.push(ClockSchedule {
             period_seconds: 0.1,
             phase_seconds: 0.0,
@@ -1509,9 +1522,9 @@ mod tests {
         dae.initialization.equations.push(Equation::residual(
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(0.0),
-                span: Span::DUMMY,
+                span: fixture_span(),
             },
-            Span::DUMMY,
+            fixture_span(),
             "roundtrip",
         ));
         dae.initialization
@@ -1522,6 +1535,22 @@ mod tests {
         assert_eq!(
             decoded.initialization.equation_provenance,
             dae.initialization.equation_provenance
+        );
+        let encoded = bincode::serialize(&dae).expect("serialize nonempty DAE provenance");
+        let equation_bytes = bincode::serialize(&dae.initialization.equations)
+            .expect("serialize nonempty initialization equations");
+        let _: Vec<Equation> = bincode::deserialize(&equation_bytes)
+            .expect("roundtrip nonempty initialization equations");
+        let provenance_bytes = bincode::serialize(&dae.initialization.equation_provenance)
+            .expect("serialize nonempty initialization provenance");
+        let _: Vec<super::InitializationEquationProvenance> =
+            bincode::deserialize(&provenance_bytes)
+                .expect("roundtrip nonempty initialization provenance");
+        let binary_decoded: Dae =
+            bincode::deserialize(&encoded).expect("roundtrip nonempty DAE provenance");
+        assert_eq!(
+            binary_decoded.initialization.equation_provenance,
+            vec![super::InitializationEquationProvenance::FixedStart]
         );
 
         let mut malformed = value;

@@ -497,7 +497,14 @@
   ],
   "synthetic_root_conditions": [],
   "scheduled_time_events": [
-    0.1
+    {
+      "time": 0.1,
+      "source_span": {
+        "source": 6737700698879693057,
+        "start": 10,
+        "end": 20
+      }
+    }
   ],
   "scheduled_root_conditions": [],
   "event_actions": [],
