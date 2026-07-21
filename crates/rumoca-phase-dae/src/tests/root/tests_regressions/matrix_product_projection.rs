@@ -1194,6 +1194,32 @@ fn test_todae_preserves_dynamic_row_slice_reductions_in_scalar_products() {
 }
 
 #[test]
+fn test_todae_rejects_vectorized_builtins_hiding_dynamic_row_slices() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[2, 3]);
+    declare_array(&mut flat, "B", &[2, 3]);
+    declare_array(&mut flat, "i", &[]);
+    declare_array(&mut flat, "j", &[]);
+    declare_array(&mut flat, "z", &[]);
+    add_equation(
+        &mut flat,
+        make_structured_var_ref("z"),
+        multiply(
+            builtin(
+                rumoca_core::BuiltinFunction::Sin,
+                vec![expression_row_slice("A", make_structured_var_ref("i"))],
+            ),
+            builtin(
+                rumoca_core::BuiltinFunction::Sin,
+                vec![expression_row_slice("B", make_structured_var_ref("j"))],
+            ),
+        ),
+        1,
+    );
+    assert_projection_error(&flat, "unknown operand shape");
+}
+
+#[test]
 fn test_todae_rejects_array_valued_function_product_operand() {
     let mut flat = Model::new();
     declare_array(&mut flat, "x", &[3]);
