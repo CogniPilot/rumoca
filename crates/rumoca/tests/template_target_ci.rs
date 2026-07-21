@@ -32,6 +32,24 @@ equation
 end Smoke;
 "#;
 
+const FMI_EXTERNAL_DEPENDENCIES_MODEL: &str = "FmiExternalDependencies";
+const FMI_EXTERNAL_DEPENDENCIES_SOURCE: &str = r#"
+function NativeProbe
+  input Real u;
+  output Real y;
+  external "C" y = native_probe(u)
+    annotation(
+      IncludeDirectory="modelica://NativeProbe/Resources/Include",
+      Library="native_probe");
+end NativeProbe;
+
+model FmiExternalDependencies
+  Real x(start = 1);
+equation
+  der(x) = NativeProbe(x);
+end FmiExternalDependencies;
+"#;
+
 const FMI_START_EXPRESSIONS_MODEL: &str = "FmiStartExpressions";
 const FMI_START_EXPRESSIONS_SOURCE: &str = r#"
 model FmiStartExpressions
@@ -251,6 +269,103 @@ fn galec_target_rejects_continuous_fixture_via_capability_gate() {
         message.contains("unsupported-feature:continuous_states"),
         "expected the generic continuous_states capability diagnostic, got: {message}"
     );
+}
+
+#[test]
+fn builtin_target_allow_empty_entries_are_exactly_fmi_dependency_lists() {
+    let mut actual = BTreeSet::new();
+    for target in templates::builtin_targets() {
+        let manifest = parse_target_manifest(target.manifest)
+            .unwrap_or_else(|err| panic!("target {} manifest should parse: {err}", target.name));
+        for file in manifest.files {
+            if file.allow_empty {
+                actual.insert((target.name.to_string(), file.path));
+            }
+        }
+    }
+    let expected = [
+        ("fmi2", "resources/externalLibraries.txt"),
+        ("fmi2", "resources/externalIncludeDirectories.txt"),
+        ("fmi3", "resources/externalLibraries.txt"),
+        ("fmi3", "resources/externalIncludeDirectories.txt"),
+    ]
+    .into_iter()
+    .map(|(target, path)| (target.to_string(), path.to_string()))
+    .collect();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn fmi_no_external_function_allows_only_declared_dependency_lists_to_be_empty() {
+    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    let optional_paths = [
+        "resources/externalLibraries.txt",
+        "resources/externalIncludeDirectories.txt",
+    ];
+    for target_name in ["fmi2", "fmi3"] {
+        let target = templates::builtin_target(target_name).expect("built-in FMI target");
+        let manifest = parse_target_manifest(target.manifest).expect("parse FMI target manifest");
+        let files = render_target_files(&fixture.compiled, fixture.model_name, target_name, None)
+            .expect("render FMI target without external functions");
+        assert_eq!(files.len(), manifest.files.len());
+
+        for path in optional_paths {
+            let declared = manifest
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{target_name} must declare {path}"));
+            assert!(declared.allow_empty, "{target_name}:{path} must opt in");
+            let rendered = find_rendered_file(&files, path);
+            assert_eq!(
+                rendered.content.as_bytes(),
+                b"",
+                "{target_name}:{path} must be present and zero bytes"
+            );
+        }
+
+        for (declared, rendered) in manifest
+            .files
+            .iter()
+            .zip(&files)
+            .filter(|(file, _)| !optional_paths.contains(&file.path.as_str()))
+        {
+            assert!(
+                !declared.allow_empty,
+                "{target_name}:{} must remain required",
+                declared.path
+            );
+            assert!(
+                !rendered.content.trim().is_empty(),
+                "{target_name}:{} must remain non-empty",
+                declared.path
+            );
+        }
+    }
+}
+
+#[test]
+fn fmi_external_function_populates_optional_dependency_lists() {
+    let fixture = compile_fixture(
+        FMI_EXTERNAL_DEPENDENCIES_MODEL,
+        FMI_EXTERNAL_DEPENDENCIES_SOURCE,
+    );
+    for target_name in ["fmi2", "fmi3"] {
+        let render = |template_name| {
+            let template = templates::builtin_template_source(target_name, template_name)
+                .expect("built-in FMI dependency template");
+            fixture
+                .compiled
+                .render_template_str_with_name_and_ir(template, fixture.model_name, TemplateIr::Dae)
+                .expect("render FMI dependency metadata from DAE")
+        };
+        assert_eq!(render("externalLibraries.txt.jinja"), "native_probe\n");
+        assert_eq!(
+            render("externalIncludeDirectories.txt.jinja"),
+            "modelica://NativeProbe/Resources/Include\n"
+        );
+    }
 }
 
 #[test]
@@ -528,7 +643,8 @@ fn assert_manifest_only_target(target: &templates::BuiltinTarget, manifest: &Tar
 
 /// Render every `[[files]]` entry through the real CLI path (capability
 /// validation, path templates, name-dispatched renderers) and assert each
-/// rendered file is non-empty.
+/// rendered file is non-empty unless its manifest entry explicitly allows
+/// empty output.
 fn render_manifest_target_files(
     fixture: &Fixture,
     target: &'static templates::BuiltinTarget,
@@ -547,14 +663,14 @@ fn render_manifest_target_files(
         "target {} rendered a different file count than its manifest declares",
         target.name
     );
-    for file in &files {
+    for (declared, file) in manifest.files.iter().zip(&files) {
         assert!(
             !file.path.is_empty(),
             "target {} rendered an empty output path",
             target.name
         );
         assert!(
-            !file.content.trim().is_empty(),
+            declared.allow_empty || !file.content.trim().is_empty(),
             "target {} rendered empty content for {}",
             target.name,
             file.path
