@@ -4222,21 +4222,17 @@ impl Projector<'_> {
                 lhs,
                 rhs,
                 span,
-            } => {
-                if has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs) {
-                    return Ok(true);
-                }
-                let operand_dims = [lhs.as_ref(), rhs.as_ref()]
-                    .into_iter()
-                    .filter(|operand| !matches!(operand, Expr::Binary { .. }))
-                    .map(|operand| self.dims(operand, *span))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if operand_dims.iter().flatten().any(|dims| !dims.is_empty()) {
-                    return Ok(true);
-                }
-                Ok(self.has_descendant_matrix_product_candidate(lhs)?
-                    || self.has_descendant_matrix_product_candidate(rhs)?)
-            }
+            } => [lhs.as_ref(), rhs.as_ref()]
+                .into_iter()
+                .map(|operand| {
+                    let dims = self.dims(operand, *span)?;
+                    Ok(dims.as_ref().is_some_and(|dims| !dims.is_empty())
+                        || dims.is_none()
+                            && (has_array_slice_syntax(operand)
+                                || self.has_descendant_matrix_product_candidate(operand)?))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(|candidates| candidates.into_iter().any(std::convert::identity)),
             Expr::Binary { lhs, rhs, .. } => Ok(self
                 .has_descendant_matrix_product_candidate(lhs)?
                 || self.has_descendant_matrix_product_candidate(rhs)?),
