@@ -42,6 +42,11 @@ binder varying fastest, respecting explicit step direction. For each index
 tuple, body equations emit in source/body order. Scalar views must preserve
 parent structured/tensor id, index tuple, scalar row id, and instantiated
 lhs/rhs or output expression.
+Function projection derives slice shape from selector kind: `:` preserves the
+axis, a confirmed scalar selector removes it without evaluating its value, and
+compatible elementwise binary array operands retain that shape. Function-
+projection shape inference declines unknown or array-valued selectors and
+ranges with unknown compile-time length.
 
 For a regular family whose interiors are not materialized, only the base and
 per-binder neighbor rows carry the reconstruction proof. Structural rewrites of
