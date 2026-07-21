@@ -64,6 +64,14 @@ fn real(value: f64) -> Expression {
     }
 }
 
+fn builtin(function: rumoca_core::BuiltinFunction, args: Vec<Expression>) -> Expression {
+    Expression::BuiltinCall {
+        function,
+        args,
+        span: crate::test_support::test_span(),
+    }
+}
+
 fn add_equation(flat: &mut Model, lhs: Expression, rhs: Expression, scalar_count: usize) {
     flat.add_equation(flat::Equation {
         residual: Expression::Binary {
@@ -142,23 +150,6 @@ fn residual_rhs(equation: &rumoca_ir_dae::Equation) -> &Expression {
     rhs
 }
 
-fn collect_refs<'a>(expr: &'a Expression, refs: &mut Vec<(&'a str, Vec<i64>)>) {
-    match expr {
-        Expression::VarRef { .. } => refs.push(literal_subscripts(expr).expect("literal lanes")),
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_refs(lhs, refs);
-            collect_refs(rhs, refs);
-        }
-        Expression::Unary { rhs, .. } => collect_refs(rhs, refs),
-        Expression::FunctionCall { args, .. } | Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_refs(arg, refs);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn assert_projection_error(flat: &Model, expected: &str) {
     let error = to_dae_with_options(
         flat,
@@ -187,6 +178,85 @@ fn expression_row_slice(name: &str, selector: Expression) -> Expression {
             },
         ],
         span: crate::test_support::test_span(),
+    }
+}
+
+fn dae_scaling_with_missing_base(variants: &[&str]) -> rumoca_ir_dae::Dae {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    for (name, dims) in [("x", vec![2]), ("y", vec![2])]
+        .into_iter()
+        .chain(variants.iter().map(|name| (*name, vec![])))
+    {
+        let mut variable =
+            rumoca_ir_dae::Variable::new(VarName::new(name), crate::test_support::test_span());
+        variable.dims = dims;
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+    }
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                colon_vector("y"),
+                multiply(make_structured_var_ref("gain"), colon_vector("x")),
+            ),
+            crate::test_support::test_span(),
+            "missing-base scaling",
+            2,
+        ));
+    dae
+}
+
+#[test]
+fn test_todae_preserves_ordinary_scalar_product_operands() {
+    let cases = [
+        builtin(
+            rumoca_core::BuiltinFunction::Sin,
+            vec![make_structured_var_ref("x")],
+        ),
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Box::new(make_structured_var_ref("x")),
+            span: crate::test_support::test_span(),
+        },
+        Expression::If {
+            branches: vec![(
+                Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: crate::test_support::test_span(),
+                },
+                make_structured_var_ref("x"),
+            )],
+            else_branch: Box::new(real(1.0)),
+            span: crate::test_support::test_span(),
+        },
+    ];
+    for operand in cases {
+        let mut flat = Model::new();
+        declare_array(&mut flat, "x", &[]);
+        declare_array(&mut flat, "y", &[]);
+        add_equation(
+            &mut flat,
+            make_structured_var_ref("y"),
+            multiply(operand, make_structured_var_ref("x")),
+            1,
+        );
+        let dae = to_dae_with_options(
+            &flat,
+            ToDaeOptions {
+                error_on_unbalanced: false,
+            },
+        )
+        .expect("ordinary scalar products must retain the existing lowering path");
+        assert!(matches!(
+            residual_rhs(&dae.continuous.equations[0]),
+            Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                ..
+            }
+        ));
     }
 }
 
@@ -394,15 +464,39 @@ fn test_todae_projects_proven_scalar_scaling_forms() {
     assert_eq!(dae.continuous.equations.len(), 15);
     for (index, equation) in dae.continuous.equations.iter().enumerate() {
         let lane = i64::try_from(index % 3 + 1).expect("lane fits i64");
-        let mut refs = Vec::new();
-        collect_refs(residual_rhs(equation), &mut refs);
-        assert!(refs.contains(&("x", vec![lane])), "refs were {refs:?}");
-        assert!(
-            refs.iter()
-                .filter(|(name, _)| *name != "x")
-                .all(|(_, indices)| indices.is_empty()),
-            "scalar factor was lane-projected: {refs:?}"
-        );
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } = residual_rhs(equation)
+        else {
+            panic!("expected scaling Mul");
+        };
+        let case = index / 3;
+        let (factor, vector) = if case == 4 { (rhs, lhs) } else { (lhs, rhs) };
+        assert_eq!(literal_subscripts(vector), Some(("x", vec![lane])));
+        match case {
+            0 => assert!(matches!(
+                factor.as_ref(),
+                Expression::Literal {
+                    value: Literal::Real(2.0),
+                    ..
+                }
+            )),
+            1 | 4 => assert_eq!(literal_subscripts(factor), Some(("gain", vec![]))),
+            2 => assert!(matches!(
+                factor.as_ref(),
+                Expression::Binary {
+                    op: rumoca_core::OpBinary::Add,
+                    ..
+                }
+            )),
+            3 => assert!(
+                matches!(factor.as_ref(), Expression::FunctionCall { name, .. } if name.as_str() == "scalarFunction")
+            ),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -508,18 +602,27 @@ fn test_todae_projects_nested_matrix_vector_scaling_in_both_orders() {
         },
     )
     .expect("nested scaling should project only the array side");
-    for equation in &dae.continuous.equations {
+    for (index, equation) in dae.continuous.equations.iter().enumerate() {
         let Expression::Binary { lhs, rhs, .. } = residual_rhs(equation) else {
             panic!("expected outer multiplication");
         };
-        let product = if matches!(lhs.as_ref(), Expression::Literal { .. }) {
-            rhs
-        } else {
-            lhs
-        };
+        let (literal, product) = if index < 2 { (lhs, rhs) } else { (rhs, lhs) };
+        assert!(matches!(
+            literal.as_ref(),
+            Expression::Literal {
+                value: Literal::Real(2.0),
+                ..
+            }
+        ));
         let mut terms = Vec::new();
         assert!(flatten_dot_terms(product, &mut terms), "got {product:?}");
-        assert_eq!(terms.len(), 2);
+        let row = i64::try_from(index % 2 + 1).expect("row fits i64");
+        assert_eq!(
+            terms,
+            (1_i64..=2)
+                .map(|inner| (("A", vec![row, inner]), ("x", vec![inner])))
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -671,4 +774,74 @@ fn test_todae_rejects_array_valued_function_product_operand() {
         1,
     );
     assert_projection_error(&flat, "array-valued function output cannot be projected");
+}
+
+#[test]
+fn test_todae_rejects_bare_unknown_scaling_in_array_projection() {
+    let mut dae = dae_scaling_with_missing_base(&[]);
+    let error = scalarize_phantom_vector_equations(&mut dae)
+        .expect_err("missing declared scalar must fail during array projection");
+    assert!(
+        error.to_string().contains("unknown operand shape"),
+        "{error}"
+    );
+    assert_eq!(error.source_span(), Some(crate::test_support::test_span()));
+}
+
+#[test]
+fn test_scalarizer_rejects_phantom_base_as_scaling_scalar() {
+    let mut dae = dae_scaling_with_missing_base(&["gain[1]", "gain[2]"]);
+    let error = scalarize_phantom_vector_equations(&mut dae)
+        .expect_err("phantom base must not be guessed scalar during array projection");
+    assert!(
+        error.to_string().contains("unknown operand shape"),
+        "{error}"
+    );
+    assert_eq!(error.source_span(), Some(crate::test_support::test_span()));
+}
+
+#[test]
+fn test_todae_projects_zero_inner_matrix_product_to_zero() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[2, 0]);
+    declare_array(&mut flat, "B", &[0, 2]);
+    declare_array(&mut flat, "C", &[2, 2]);
+    add_equation(
+        &mut flat,
+        colon_array("C", 2),
+        multiply(colon_array("A", 2), colon_array("B", 2)),
+        4,
+    );
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("zero inner dimensions have the empty-sum value zero");
+    assert_eq!(dae.continuous.equations.len(), 4);
+    for equation in &dae.continuous.equations {
+        assert!(matches!(
+            residual_rhs(equation),
+            Expression::Literal {
+                value: Literal::Real(0.0),
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn test_todae_rejects_negative_matrix_dimensions() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[2, -1]);
+    declare_array(&mut flat, "x", &[-1]);
+    declare_array(&mut flat, "y", &[2]);
+    add_equation(
+        &mut flat,
+        colon_vector("y"),
+        multiply(make_structured_var_ref("A"), colon_vector("x")),
+        2,
+    );
+    assert_projection_error(&flat, "NegativeDimension");
 }
