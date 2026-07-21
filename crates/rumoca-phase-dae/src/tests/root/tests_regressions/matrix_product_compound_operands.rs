@@ -198,3 +198,57 @@ fn test_todae_preserves_scalar_scaling_of_vector_scalar_division() {
         }
     }
 }
+
+#[test]
+fn test_todae_rejects_bare_divided_array_operands_in_matrix_product() {
+    let mut flat = Model::new();
+    for (name, dims) in [
+        ("A", [2, 2].as_slice()),
+        ("x", [2].as_slice()),
+        ("s", [].as_slice()),
+        ("t", [].as_slice()),
+        ("Y", [2].as_slice()),
+    ] {
+        declare_array(&mut flat, name, dims);
+    }
+    let divided = |array, scalar| {
+        binary(
+            rumoca_core::OpBinary::Div,
+            make_structured_var_ref(array),
+            make_structured_var_ref(scalar),
+        )
+    };
+    flat.add_equation(flat::Equation {
+        residual: binary(
+            rumoca_core::OpBinary::Sub,
+            Expression::Index {
+                base: Box::new(make_structured_var_ref("Y")),
+                subscripts: vec![rumoca_core::Subscript::Colon {
+                    span: crate::test_support::test_span(),
+                }],
+                span: crate::test_support::test_span(),
+            },
+            binary(
+                rumoca_core::OpBinary::Mul,
+                divided("A", "s"),
+                divided("x", "t"),
+            ),
+        ),
+        span: crate::test_support::test_span(),
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: "BareDividedArrayProduct".to_string(),
+        },
+        scalar_count: 2,
+    });
+
+    let error = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect_err("bare divided array operands must not be scalarized lane-wise");
+
+    assert!(error.to_string().contains("unknown operand shape"));
+    assert_eq!(error.source_span(), Some(crate::test_support::test_span()));
+}
