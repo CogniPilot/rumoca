@@ -1466,7 +1466,7 @@ events = false
             .scheduled_time_events
             .push(rumoca_ir_dae::DaeScheduledTimeEvent {
                 time: 0.1,
-                source_span: Span::DUMMY,
+                source_span: None,
             });
 
         let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)

@@ -984,7 +984,7 @@ fn maybe_push_time_event_condition(
     if seen.insert(key) {
         out.push(dae::DaeScheduledTimeEvent {
             time: event_time,
-            source_span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            source_span: expr.span(),
         });
     }
 }

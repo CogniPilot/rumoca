@@ -459,7 +459,7 @@ fn msl_buf3s_no_state_model() -> dae::Dae {
         .scheduled_time_events
         .push(dae::DaeScheduledTimeEvent {
             time: 0.0,
-            source_span: fixture_span(),
+            source_span: Some(fixture_span()),
         });
     dae_model
 }

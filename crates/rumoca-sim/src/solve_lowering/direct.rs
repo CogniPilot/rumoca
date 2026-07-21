@@ -124,7 +124,7 @@ fn validate_gpu_dae_admission(
         return Err(rejection("root conditions", expression.span()));
     }
     if let Some(event) = dae_model.events.scheduled_time_events.first() {
-        return Err(rejection("scheduled time events", Some(event.source_span)));
+        return Err(rejection("scheduled time events", event.source_span));
     }
     if let Some(event) = dae_model.events.scheduled_root_conditions.first() {
         let span = dae_model
@@ -453,7 +453,7 @@ mod tests {
             .scheduled_time_events
             .push(dae::DaeScheduledTimeEvent {
                 time: 1.0,
-                source_span: event_span,
+                source_span: Some(event_span),
             });
         let error = validate_gpu_dae_admission(&scheduled)
             .expect_err("scheduled time events must reject before fast lowering");

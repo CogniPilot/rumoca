@@ -162,7 +162,7 @@ mod admissibility {
             .scheduled_time_events
             .push(dae::DaeScheduledTimeEvent {
                 time: 0.5,
-                source_span: Span::DUMMY,
+                source_span: None,
             });
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
         assert_eq!(codes(&errors), vec!["ET003"]);
@@ -257,7 +257,7 @@ mod admissibility {
             .scheduled_time_events
             .push(dae::DaeScheduledTimeEvent {
                 time: 1.0,
-                source_span: Span::DUMMY,
+                source_span: None,
             });
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
         let codes = codes(&errors);

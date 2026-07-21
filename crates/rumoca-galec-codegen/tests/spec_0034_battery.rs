@@ -331,7 +331,7 @@ mod rejected_constructs {
                     .scheduled_time_events
                     .push(rumoca_ir_dae::DaeScheduledTimeEvent {
                         time: 0.5,
-                        source_span: Span::DUMMY,
+                        source_span: None,
                     });
             }),
             ("dynamic clock", "ET004", |model| {
