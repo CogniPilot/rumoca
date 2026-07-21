@@ -35,17 +35,114 @@ const C_TOLERANCE: f64 = 0.05;
 // ============================================================================
 
 #[cfg(feature = "template-runtime-tests")]
-fn python_command() -> &'static str {
-    for candidate in ["python3", "python"] {
-        if Command::new(candidate)
-            .args(["-c", "import casadi, numpy, sympy"])
+fn python_modules(backend: &str) -> &'static [&'static str] {
+    match backend {
+        "CasADi" => &["casadi", "numpy"],
+        "SymPy" => &["sympy"],
+        "ONNX" => &["onnx", "onnxruntime", "numpy"],
+        "JAX" => &["jax", "diffrax", "numpy"],
+        _ => panic!("unknown Python template backend: {backend}"),
+    }
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn discover_python<'a>(candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    candidates.into_iter().find(|candidate| {
+        Command::new(candidate)
+            .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success())
-        {
-            return candidate;
-        }
+    })
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn python_command() -> &'static str {
+    discover_python(["python3", "python"])
+        .unwrap_or_else(|| panic!("expected python3 or python to be available"))
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn probe_python_modules(interpreter: &str, backend: &str, modules: &[&str]) -> Result<(), String> {
+    let output = Command::new(interpreter)
+        .args(["-c", &format!("import {}", modules.join(", "))])
+        .output()
+        .map_err(|error| {
+            format!("{backend} dependency probe could not run {interpreter}: {error}")
+        })?;
+    if output.status.success() {
+        return Ok(());
     }
-    panic!("expected python3 or python with casadi, numpy, and sympy installed");
+    Err(format!(
+        "{backend} Python runtime dependency probe failed\ninterpreter: {interpreter}\nrequired modules: {}\nstdout:\n{}\nstderr:\n{}",
+        modules.join(", "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    ))
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn require_python_modules(backend: &str, modules: &[&str]) {
+    if let Err(error) = probe_python_modules(python_command(), backend, modules) {
+        panic!("{error}");
+    }
+}
+
+#[cfg(all(feature = "template-runtime-tests", unix))]
+fn probe_executable(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join(name);
+    fs::write(&path, body).expect("write fake Python executable");
+    let mut permissions = fs::metadata(&path)
+        .expect("fake Python metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).expect("make fake Python executable");
+    path
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn python_runtime_probe_contract_modules_are_backend_specific() {
+    assert_eq!(python_modules("CasADi"), &["casadi", "numpy"]);
+    assert_eq!(python_modules("SymPy"), &["sympy"]);
+    assert_eq!(python_modules("ONNX"), &["onnx", "onnxruntime", "numpy"]);
+    assert_eq!(python_modules("JAX"), &["jax", "diffrax", "numpy"]);
+}
+
+#[test]
+#[cfg(all(feature = "template-runtime-tests", unix))]
+fn python_runtime_probe_contract_preserves_backend_import_errors() {
+    let dir = Builder::new()
+        .prefix("rumoca_python_probe_")
+        .tempdir()
+        .expect("create Python probe dir");
+    let args_log = dir.path().join("args");
+    let executable = probe_executable(
+        dir.path(),
+        "python-isolated",
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '%s\\n' \"$*\" > \"{}\"; exit 0; fi\necho \"ModuleNotFoundError: No module named 'onnxruntime'\" >&2\nexit 7\n",
+            args_log.display()
+        ),
+    );
+
+    let candidate = executable.to_str().expect("UTF-8 executable path");
+    assert_eq!(discover_python([candidate]), Some(candidate));
+    assert_eq!(
+        fs::read_to_string(args_log).expect("read probe args"),
+        "--version\n"
+    );
+
+    let error = probe_python_modules(candidate, "ONNX", python_modules("ONNX"))
+        .expect_err("missing ONNX dependency must fail closed");
+    for expected in [
+        "ONNX",
+        "onnx, onnxruntime, numpy",
+        "ModuleNotFoundError: No module named 'onnxruntime'",
+    ] {
+        assert!(error.contains(expected), "missing {expected:?}: {error}");
+    }
 }
 
 #[cfg(feature = "template-runtime-tests")]
@@ -301,7 +398,8 @@ fn assert_traces_match(
 // ============================================================================
 
 #[cfg(feature = "template-runtime-tests")]
-fn run_python(rendered: &str, driver: &str) -> String {
+fn run_python(rendered: &str, driver: &str, backend: &str) -> String {
+    require_python_modules(backend, python_modules(backend));
     let dir = Builder::new()
         .prefix("rumoca_runtime_test_")
         .tempdir()
@@ -570,7 +668,7 @@ for i, t in enumerate(tgrid):
 #[cfg(feature = "template-runtime-tests")]
 fn casadi_trace_test(source: &str, model_name: &str, template: &str) {
     let rendered = render_template(source, model_name, template);
-    let csv = run_python(&rendered, CASADI_CSV_DRIVER);
+    let csv = run_python(&rendered, CASADI_CSV_DRIVER, "CasADi");
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
     assert_traces_match(&backend_traces, &dae.dae, &sim, CASADI_TOLERANCE, "CasADi");
@@ -1655,7 +1753,7 @@ fn sympy_trace_test(source: &str, model_name: &str) {
     )
     .expect("render template");
 
-    let stdout = run_python(&rendered, SYMPY_EVAL_DRIVER);
+    let stdout = run_python(&rendered, SYMPY_EVAL_DRIVER, "SymPy");
     let result: serde_json::Value = serde_json::from_str(stdout.trim()).expect("parse JSON output");
 
     // Get reference derivatives at t=0 from rumoca simulator
@@ -1720,25 +1818,13 @@ print(mod.simulate())
 "#;
 
 #[cfg(feature = "template-runtime-tests")]
-fn python_has_onnx() -> bool {
-    Command::new(python_command())
-        .args(["-c", "import onnx; import onnxruntime; import numpy"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "template-runtime-tests")]
 fn onnx_trace_test(source: &str, model_name: &str) {
-    if !runtime_dependency_available(python_has_onnx(), "onnx/onnxruntime") {
-        return;
-    }
     let rendered = render_template(
         source,
         model_name,
         templates::builtin_template_source("onnx", "onnx.py.jinja").unwrap(),
     );
-    let csv = run_python(&rendered, ONNX_CSV_DRIVER);
+    let csv = run_python(&rendered, ONNX_CSV_DRIVER, "ONNX");
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
     assert_traces_match(&backend_traces, &dae.dae, &sim, C_TOLERANCE, "ONNX");
@@ -1784,25 +1870,13 @@ print(mod.simulate_csv())
 "#;
 
 #[cfg(feature = "template-runtime-tests")]
-fn python_has_jax() -> bool {
-    Command::new(python_command())
-        .args(["-c", "import jax; import diffrax; import numpy"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "template-runtime-tests")]
 fn jax_trace_test(source: &str, model_name: &str) {
-    if !runtime_dependency_available(python_has_jax(), "jax/diffrax") {
-        return;
-    }
     let rendered = render_template(
         source,
         model_name,
         templates::builtin_template_source("jax", "jax.py.jinja").unwrap(),
     );
-    let csv = run_python(&rendered, JAX_CSV_DRIVER);
+    let csv = run_python(&rendered, JAX_CSV_DRIVER, "JAX");
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
     assert_traces_match(&backend_traces, &dae.dae, &sim, JAX_TOLERANCE, "JAX");
