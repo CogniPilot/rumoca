@@ -240,7 +240,8 @@ fn reserve_current_tuple_capacity(
 }
 
 impl StructuredIndexBinder {
-    fn value_count(&self) -> Result<usize, StructuredIndexDomainError> {
+    /// Number of values enumerated by this binder's inclusive stepped range.
+    pub fn value_count(&self) -> Result<usize, StructuredIndexDomainError> {
         if self.step == 0 {
             return Err(StructuredIndexDomainError::ZeroStep {
                 binder_id: self.id,

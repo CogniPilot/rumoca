@@ -35,12 +35,24 @@ explicitly when identity crosses phase boundaries.
 | View ordering is deterministic | Domain enumeration | Backend agreement |
 | Views carry provenance | Scalar-view metadata | Diagnostics and fallback |
 | No scalar-row reassembly | Solve lowering | Prevents fragile recovery |
+| Unmaterialized interior rows are non-semantic placeholders | Flat/DAE structural metadata | Corner proof remains authoritative |
 
 Domains enumerate in binder declaration order, lexicographic with the innermost
 binder varying fastest, respecting explicit step direction. For each index
 tuple, body equations emit in source/body order. Scalar views must preserve
 parent structured/tensor id, index tuple, scalar row id, and instantiated
 lhs/rhs or output expression.
+
+For a regular family whose interiors are not materialized, only the base and
+per-binder neighbor rows carry the reconstruction proof. Structural rewrites of
+an interior placeholder do not invalidate that proof; rewrites of a corner row
+must discard the family metadata unless a new proof is produced.
+
+An extent-1 binder has no distinct neighbor row: the base row is sufficient and
+that binder contributes zero stride to every affine access and output map. Corner
+selection skips such binders while retaining base/neighbor proof for all other
+dimensions. An all-singleton non-empty domain therefore uses only its base row;
+an empty domain produces zero rows and no corner proof.
 
 ### 3. DAE Canonical Form
 

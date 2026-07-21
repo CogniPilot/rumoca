@@ -614,41 +614,96 @@ fn shift_structured_families_after_equation_removal(dae: &mut Dae, removed_sorte
         return;
     }
     dae.continuous.structured_equations.retain_mut(|family| {
-        let total: usize = family.equation_counts.iter().sum();
-        let block_end = family.first_equation_index + total;
-        let removed_inside_block = removed_sorted
-            .iter()
-            .any(|&idx| idx >= family.first_equation_index && idx < block_end);
-        if removed_inside_block {
+        let Some(block_end) = structured_family_block_end(family) else {
+            return false;
+        };
+        if sorted_rows_touch_range(removed_sorted, family.first_equation_index, block_end) {
             return false;
         }
-        let shift = removed_sorted
-            .iter()
-            .filter(|&&idx| idx < family.first_equation_index)
-            .count();
-        family.first_equation_index -= shift;
+        let shift = removed_sorted.partition_point(|idx| *idx < family.first_equation_index);
+        let Some(shifted_start) = family.first_equation_index.checked_sub(shift) else {
+            return false;
+        };
+        family.first_equation_index = shifted_start;
         true
     });
 }
 
-/// Drop structured families whose row bodies were symbolically rewritten.
+/// Drop structured families whose proof-carrying row bodies were symbolically rewritten.
 ///
 /// Substitutions can change a family row's LHS/RHS without changing row count.
 /// The old compact family metadata was proven for the pre-substitution body, so
 /// keeping it would let downstream Solve-IR rebuild a tensor node from stale row
-/// provenance. Regenerating a family proof belongs in a dedicated pass; the safe
-/// structural-elimination behavior is to scalarize rewritten families.
+/// provenance. An unmaterialized regular family's interior rows are different:
+/// they are explicitly non-semantic placeholders, and only its base/neighbor
+/// corner rows carry the reconstruction proof. Rewriting an interior placeholder
+/// therefore must not discard the authoritative family metadata.
 fn drop_structured_families_touching_equations(dae: &mut Dae, touched_sorted: &[usize]) {
     if touched_sorted.is_empty() {
         return;
     }
     dae.continuous.structured_equations.retain(|family| {
-        let total: usize = family.equation_counts.iter().sum();
-        let block_end = family.first_equation_index + total;
-        !touched_sorted
-            .iter()
-            .any(|&idx| idx >= family.first_equation_index && idx < block_end)
+        let Some(block_end) = structured_family_block_end(family) else {
+            return false;
+        };
+        let touches_family =
+            sorted_rows_touch_range(touched_sorted, family.first_equation_index, block_end);
+        if !touches_family {
+            return true;
+        }
+        if family.regular.is_some() && !family.interiors_materialized {
+            return unmaterialized_family_corner_is_touched(family, touched_sorted) == Some(false);
+        }
+        false
     });
+}
+
+fn structured_family_block_end(family: &dae::StructuredEquationFamily) -> Option<usize> {
+    family
+        .equation_counts
+        .iter()
+        .try_fold(family.first_equation_index, |end, count| {
+            end.checked_add(*count)
+        })
+}
+
+fn unmaterialized_family_corner_is_touched(
+    family: &dae::StructuredEquationFamily,
+    touched_sorted: &[usize],
+) -> Option<bool> {
+    if family.domain.scalar_count().ok()? != family.equation_counts.len() {
+        return None;
+    }
+    let mut corner_iterations = vec![0usize];
+    let mut iteration_stride = 1usize;
+    for binder in family.domain.binders.iter().rev() {
+        let extent = binder.value_count().ok()?;
+        if extent > 1 {
+            corner_iterations.push(iteration_stride);
+        }
+        iteration_stride = iteration_stride.checked_mul(extent)?;
+    }
+    corner_iterations.sort_unstable();
+    corner_iterations.dedup();
+
+    let mut next_corner = corner_iterations.into_iter().peekable();
+    let mut row_start = family.first_equation_index;
+    for (iteration, &row_count) in family.equation_counts.iter().enumerate() {
+        let row_end = row_start.checked_add(row_count)?;
+        if next_corner.peek() == Some(&iteration) {
+            if sorted_rows_touch_range(touched_sorted, row_start, row_end) {
+                return Some(true);
+            }
+            next_corner.next();
+        }
+        row_start = row_end;
+    }
+    Some(false)
+}
+
+fn sorted_rows_touch_range(rows: &[usize], start: usize, end: usize) -> bool {
+    let first_candidate = rows.partition_point(|row| *row < start);
+    rows.get(first_candidate).is_some_and(|row| *row < end)
 }
 
 fn finish_boundary_elimination(
