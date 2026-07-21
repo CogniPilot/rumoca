@@ -5,35 +5,7 @@ pub(super) fn validate_initialization_direct_families(
     y_upper_bound: usize,
 ) -> Result<(), SolveProblemShapeContractError> {
     if initialization.direct_families.is_empty() {
-        validate_count(
-            "initialization.row_targets",
-            initialization.residual.len()?,
-            initialization.row_targets.len(),
-        )?;
-        if initialization.residual.is_empty() && initialization.row_targets.is_empty() {
-            let required = normalized_ranges(
-                &initialization.required_target_ranges,
-                y_upper_bound,
-                "invalid required target range",
-            )?;
-            let fixed = normalized_ranges(
-                &initialization.fixed_target_ranges,
-                y_upper_bound,
-                "invalid fixed-start target range",
-            )?;
-            if required != fixed {
-                return Err(initialization_range_error(
-                    "incomplete fixed-start target union",
-                ));
-            }
-        } else if !initialization.required_target_ranges.is_empty()
-            || !initialization.fixed_target_ranges.is_empty()
-        {
-            return Err(initialization_range_error(
-                "target coverage metadata without compact direct families",
-            ));
-        }
-        return Ok(());
+        return validate_initialization_without_direct_families(initialization, y_upper_bound);
     }
     validate_count(
         "initialization.row_targets.compact",
@@ -117,6 +89,41 @@ pub(super) fn validate_initialization_direct_families(
     if actual != required {
         return Err(initialization_range_error(
             "incomplete direct plus fixed-start target union",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_initialization_without_direct_families(
+    initialization: &InitializationSolveSystem,
+    y_upper_bound: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    validate_count(
+        "initialization.row_targets",
+        initialization.residual.len()?,
+        initialization.row_targets.len(),
+    )?;
+    if initialization.residual.is_empty() && initialization.row_targets.is_empty() {
+        let required = normalized_ranges(
+            &initialization.required_target_ranges,
+            y_upper_bound,
+            "invalid required target range",
+        )?;
+        let fixed = normalized_ranges(
+            &initialization.fixed_target_ranges,
+            y_upper_bound,
+            "invalid fixed-start target range",
+        )?;
+        if required != fixed {
+            return Err(initialization_range_error(
+                "incomplete fixed-start target union",
+            ));
+        }
+    } else if !initialization.required_target_ranges.is_empty()
+        || !initialization.fixed_target_ranges.is_empty()
+    {
+        return Err(initialization_range_error(
+            "target coverage metadata without compact direct families",
         ));
     }
     Ok(())

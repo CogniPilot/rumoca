@@ -73,6 +73,22 @@ pub(super) fn lower_gpu_initialization_system(
             families.push(direct);
         }
     }
+    let required_user_initial_rows = required_user_initial_rows(dae_model)?;
+    if expected != required_user_initial_rows {
+        return Err(LowerError::Unsupported { reason: "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported".to_string() });
+    }
+    let (required_target_ranges, fixed_target_ranges) =
+        require_complete_gpu_initial_target_coverage(dae_model, layout, &families)?;
+    Ok(solve::InitializationSolveSystem {
+        residual: solve::ComputeBlock { nodes },
+        direct_families: families,
+        required_target_ranges,
+        fixed_target_ranges,
+        ..Default::default()
+    })
+}
+
+fn required_user_initial_rows(dae_model: &dae::Dae) -> Result<usize, LowerError> {
     if dae_model.initialization.equation_provenance.len()
         != dae_model.initialization.equations.len()
     {
@@ -81,7 +97,7 @@ pub(super) fn lower_gpu_initialization_system(
                 .to_string(),
         });
     }
-    let required_user_initial_rows = dae_model
+    dae_model
         .initialization
         .equations
         .iter()
@@ -97,19 +113,7 @@ pub(super) fn lower_gpu_initialization_system(
                         equation.span,
                     )
                 })
-        })?;
-    if expected != required_user_initial_rows {
-        return Err(LowerError::Unsupported { reason: "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported".to_string() });
-    }
-    let (required_target_ranges, fixed_target_ranges) =
-        require_complete_gpu_initial_target_coverage(dae_model, layout, &families)?;
-    Ok(solve::InitializationSolveSystem {
-        residual: solve::ComputeBlock { nodes },
-        direct_families: families,
-        required_target_ranges,
-        fixed_target_ranges,
-        ..Default::default()
-    })
+        })
 }
 
 fn require_complete_gpu_initial_target_coverage(

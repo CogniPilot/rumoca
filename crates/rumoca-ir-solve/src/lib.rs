@@ -1543,6 +1543,39 @@ impl std::fmt::Display for SolveProblemShapeContractError {
             Self::InitializationTargetCoverage { reason, .. } => {
                 write!(f, "initialization target coverage is invalid: {reason}")
             }
+            error @ (Self::ZeroTensorDimension { .. }
+            | Self::StructuredIndexDomain { .. }
+            | Self::TensorOutputMapDimension { .. }
+            | Self::TensorOutputMapNegativeIndex { .. }) => error.fmt_tensor_error(f),
+            Self::OutputIndexOverflow {
+                context,
+                node_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} output index arithmetic overflowed"
+            ),
+            Self::SolverIndexOutOfBounds {
+                context,
+                index,
+                upper_bound,
+                ..
+            } => write!(
+                f,
+                "{context} references solver index {index}, but upper bound is {upper_bound}"
+            ),
+            Self::InvalidScheduledRootTiming {
+                context,
+                root_index,
+                ..
+            } => write!(f, "{context} root {root_index} has invalid periodic timing"),
+        }
+    }
+}
+
+impl SolveProblemShapeContractError {
+    fn fmt_tensor_error(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::ZeroTensorDimension {
                 context,
                 node_index,
@@ -1584,28 +1617,7 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "{context} node {node_index} {dimension} output map produced negative output index {value}"
             ),
-            Self::OutputIndexOverflow {
-                context,
-                node_index,
-                ..
-            } => write!(
-                f,
-                "{context} node {node_index} output index arithmetic overflowed"
-            ),
-            Self::SolverIndexOutOfBounds {
-                context,
-                index,
-                upper_bound,
-                ..
-            } => write!(
-                f,
-                "{context} references solver index {index}, but upper bound is {upper_bound}"
-            ),
-            Self::InvalidScheduledRootTiming {
-                context,
-                root_index,
-                ..
-            } => write!(f, "{context} root {root_index} has invalid periodic timing"),
+            _ => unreachable!("only tensor errors are delegated to fmt_tensor_error"),
         }
     }
 }
