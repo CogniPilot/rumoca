@@ -319,6 +319,57 @@ fn test_todae_preserves_derivative_vector_scalar_scaling() {
 }
 
 #[test]
+fn test_todae_preserves_compound_derivative_vector_target() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "x", &[2]);
+    add_equation(
+        &mut flat,
+        binary(
+            rumoca_core::OpBinary::Add,
+            builtin(rumoca_core::BuiltinFunction::Der, vec![colon_vector("x")]),
+            colon_vector("x"),
+        ),
+        multiply(real(2.0), colon_vector("x")),
+        2,
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("shape-preserving compound derivative lhs must scalarize by lane");
+
+    assert_eq!(dae.continuous.equations.len(), 2);
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let index = i64::try_from(lane + 1).expect("two lanes fit i64");
+        let Expression::Binary { lhs, .. } = &equation.rhs else {
+            panic!("expected residual");
+        };
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: derivative,
+            rhs: current,
+            ..
+        } = lhs.as_ref()
+        else {
+            panic!("expected compound derivative lhs, got {lhs:?}");
+        };
+        let Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            ..
+        } = derivative.as_ref()
+        else {
+            panic!("expected derivative term");
+        };
+        assert_eq!(literal_subscripts(&args[0]), Some(("x", vec![index])));
+        assert_eq!(literal_subscripts(current), Some(("x", vec![index])));
+    }
+}
+
+#[test]
 fn test_todae_projects_matrix_product_for_derivative_vector_target() {
     let mut dae = rumoca_ir_dae::Dae::new();
     declare_dae_array(&mut dae, "A", &[3, 3]);
@@ -376,6 +427,82 @@ fn test_todae_projects_matrix_product_for_derivative_vector_target() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+#[test]
+fn test_todae_projects_matrix_product_for_derivative_matrix_target() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "A", &[2, 3]);
+    declare_dae_array(&mut dae, "B", &[3, 2]);
+    declare_dae_array(&mut dae, "C", &[2, 2]);
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                builtin(rumoca_core::BuiltinFunction::Der, vec![colon_array("C", 2)]),
+                multiply(make_structured_var_ref("A"), make_structured_var_ref("B")),
+            ),
+            crate::test_support::test_span(),
+            "derivative matrix product",
+            4,
+        ));
+
+    scalarize_phantom_vector_equations(&mut dae)
+        .expect("derivative matrix target must project every result cell");
+
+    assert_eq!(dae.continuous.equations.len(), 4);
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let row = i64::try_from(lane / 2 + 1).expect("row fits i64");
+        let column = i64::try_from(lane % 2 + 1).expect("column fits i64");
+        let Expression::Binary { lhs, rhs, .. } = &equation.rhs else {
+            panic!("expected scalar residual");
+        };
+        let Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            ..
+        } = lhs.as_ref()
+        else {
+            panic!("expected derivative lhs, got {lhs:?}");
+        };
+        assert_eq!(literal_subscripts(&args[0]), Some(("C", vec![row, column])));
+        let mut terms = Vec::new();
+        assert!(
+            flatten_dot_terms(rhs, &mut terms),
+            "expected complete dot: {rhs:?}"
+        );
+        assert_eq!(
+            terms,
+            (1_i64..=3)
+                .map(|inner| (("A", vec![row, inner]), ("B", vec![inner, column])))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn test_scalarizer_rejects_unknown_target_for_proven_array_product() {
+    let mut dae = rumoca_ir_dae::Dae::new();
+    declare_dae_array(&mut dae, "A", &[2, 2]);
+    declare_dae_array(&mut dae, "x", &[2]);
+    dae.continuous
+        .equations
+        .push(rumoca_ir_dae::Equation::residual_array(
+            binary(
+                rumoca_core::OpBinary::Sub,
+                make_structured_var_ref("missing_target"),
+                multiply(colon_array("A", 2), colon_vector("x")),
+            ),
+            crate::test_support::test_span(),
+            "unknown matrix-product target",
+            2,
+        ));
+
+    let error = scalarize_phantom_vector_equations(&mut dae)
+        .expect_err("proven array product must not use a same-lane unknown-target fallback");
+    assert!(error.to_string().contains("unknown target shape"));
+    assert_eq!(error.source_span(), Some(crate::test_support::test_span()));
 }
 
 #[test]
