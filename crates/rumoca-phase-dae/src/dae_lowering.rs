@@ -1,12 +1,6 @@
-//! DAE-level lowering passes for code generation.
-//!
-//! SPEC_0021 file-size exception: DAE pre-codegen lowering still hosts record,
-//! array-size, dependency, and vector-equation passes together. split plan:
-//! move each pass family into focused dae_lowering submodules.
-//!
-//! This module contains record function parameter decomposition, array size
-//! argument insertion, parameter dependency sorting, and vector equation
-//! scalarization that operate on the DAE IR before code generation.
+//! DAE-level pre-codegen record, array-size, dependency, and vector lowering.
+//! SPEC_0021 file-size exception: split plan: move pass families into focused
+//! `dae_lowering` submodules.
 
 use crate::ToDaeError;
 use crate::scalar_size::compute_var_size;
@@ -2364,14 +2358,8 @@ fn subscript_has_colon_slice(subscript: &rumoca_core::Subscript) -> bool {
     }
 }
 
-/// Scalarize an expression at index `k` (0-based).
-///
-/// - Phantom VarRefs are replaced by the k-th indexed variant from `phantom_map`.
-/// - Declared array VarRefs (with no subscripts) get subscript `[k+1]` (1-based)
-///   only while expanding an equation that already contains a phantom reference.
-///   MLS §10.6: ordinary declared-array equations must remain array equations so
-///   later matrix-aware scalarization can preserve linear algebra semantics.
-/// - All other expressions are recursively processed.
+/// Scalarize phantom references and their declared-array arguments at lane `k`.
+/// Ordinary arrays stay aggregate, preserving MLS §10.6 matrix semantics.
 fn scalarize_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
@@ -3629,13 +3617,8 @@ fn array_from_binary_elements(
     }
 }
 
-/// Process an equation list, expanding vector equations with phantom refs.
-/// Scalarize phantom/comprehension array equations in place, returning one
-/// `(new_start, new_len)` span per input equation (indexed by pre-expansion
-/// position). An array equation that expands into `scalar_count` rows reports
-/// `new_len == scalar_count`; every other equation reports `new_len == 1`. The
-/// spans feed [`rumoca_ir_dae::remap_structured_families_after_expansion`] so
-/// structured families stay pointed at their post-expansion row blocks.
+/// Expand scalarizable equations and return each input row's post-expansion
+/// `(new_start, new_len)` span for structured-family remapping.
 fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
@@ -3748,7 +3731,7 @@ fn project_scalarized_residual_rhs(
         return Ok(dae::Equation { rhs, ..eq });
     };
     let k = if target_dims.is_empty() {
-        scalarized_lhs_zero_based_index(subscripts).unwrap_or(0)
+        scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims).unwrap_or(0)
     } else {
         let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims)
         else {
@@ -4167,12 +4150,37 @@ fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
 }
 
 fn has_array_slice_syntax(expr: &Expr) -> bool {
-    matrix_var_slice(expr).is_some_and(|(_, subscripts)| {
-        subscripts_have_colon(subscripts)
-            || subscripts.iter().any(
-                |subscript| matches!(subscript, Subscript::Expr { expr, .. } if subscript_expr_selects_vector(expr) == Some(true)),
-            )
-    })
+    match expr {
+        Expr::VarRef { .. } | Expr::Index { .. } => {
+            matrix_var_slice(expr).is_some_and(|(_, subscripts)| {
+                subscripts_have_colon(subscripts)
+                    || subscripts.iter().any(
+                        |subscript| matches!(subscript, Subscript::Expr { expr, .. } if subscript_expr_selects_vector(expr) == Some(true)),
+                    )
+            })
+        }
+        Expr::Unary { rhs, .. } => has_array_slice_syntax(rhs),
+        Expr::BuiltinCall { function, args, .. }
+            if matches!(function, Builtin::Transpose | Builtin::Der) =>
+        {
+            args.iter().any(has_array_slice_syntax)
+        }
+        Expr::Binary { op, lhs, rhs, .. }
+            if matches!(op, OpBinary::Add | OpBinary::Sub | OpBinary::MulElem) =>
+        {
+            has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs)
+        }
+        Expr::If {
+            branches,
+            else_branch,
+            ..
+        } => branches
+            .iter()
+            .map(|(_, value)| value)
+            .chain([else_branch.as_ref()])
+            .any(has_array_slice_syntax),
+        _ => false,
+    }
 }
 
 fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
@@ -4750,33 +4758,25 @@ fn is_stream_passthrough_intrinsic_dae(name: &str) -> bool {
         || rumoca_core::qualified_type_name_matches(name, "inStream")
 }
 
-fn scalarized_lhs_zero_based_index(subscripts: &[rumoca_core::Subscript]) -> Option<usize> {
-    match subscripts {
-        [subscript] => {
-            let index = match subscript {
-                rumoca_core::Subscript::Index { value, .. } => *value,
-                rumoca_core::Subscript::Expr { expr, .. } => integer_literal_value(expr)?,
-                rumoca_core::Subscript::Colon { .. } => return None,
-            };
-            usize::try_from(index.checked_sub(1)?).ok()
-        }
-        _ => None,
-    }
-}
-
 fn scalarized_lhs_zero_based_index_or_singleton(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     array_dims: &HashMap<String, Vec<i64>>,
 ) -> Option<usize> {
-    if let Some(index) = scalarized_lhs_zero_based_index(subscripts) {
-        return Some(index);
-    }
-    if !subscripts.is_empty() {
-        return None;
-    }
     let dims = array_dims.get(name.as_str())?;
-    (dims.iter().copied().product::<i64>() == 1).then_some(0)
+    if subscripts.is_empty() {
+        return (dims.iter().copied().product::<i64>() == 1).then_some(0);
+    }
+    (subscripts.len() == dims.len()).then_some(())?;
+    let indices = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Some(*value),
+            rumoca_core::Subscript::Expr { expr, .. } => integer_literal_value(expr),
+            rumoca_core::Subscript::Colon { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    linear_lane_for_indices(&indices, dims)
 }
 
 fn scalarized_equation_at(
