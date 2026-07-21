@@ -61,7 +61,7 @@ fn residual(lhs: serde_json::Value, rhs: serde_json::Value) -> serde_json::Value
 
 fn family(
     first_equation_index: usize,
-    equation_counts: Vec<usize>,
+    equations_per_point: usize,
     lower: i64,
     upper: i64,
 ) -> serde_json::Value {
@@ -76,7 +76,7 @@ fn family(
             }]
         },
         "first_equation_index": first_equation_index,
-        "equation_counts": equation_counts,
+        "equations_per_point": equations_per_point,
         "origin": "test"
     })
 }
@@ -89,7 +89,7 @@ fn dae_modelica_renders_structured_vector_equation_as_slice() {
             residual(der(var_ref("u", vec![index(2)])), var_ref("w", vec![index(2)])),
             residual(der(var_ref("u", vec![index(3)])), var_ref("w", vec![index(3)]))
         ],
-        "structured_equations": [family(0, vec![1, 1, 1], 1, 3)]
+        "structured_equations": [family(0, 1, 1, 3)]
     });
     let template = cfg_template(r#"{{ render_dae_equations(dae, "f_x", cfg) }}"#);
 
@@ -105,7 +105,7 @@ fn dae_modelica_renders_structured_boundary_slice_with_literal_rhs() {
             residual(der(var_ref("w", vec![index(1), index(2)])), real(0.0)),
             residual(der(var_ref("w", vec![index(1), index(3)])), real(0.0))
         ],
-        "structured_equations": [family(0, vec![1, 1], 2, 3)]
+        "structured_equations": [family(0, 1, 2, 3)]
     });
     let template = cfg_template(r#"{{ render_dae_equations(dae, "f_x", cfg) }}"#);
 
@@ -168,7 +168,7 @@ fn dae_modelica_renders_regular_stencil_as_comprehension() {
                 {"id": 1, "display_name": "j", "lower": 2, "upper": 3, "step": 1}
             ]},
             "first_equation_index": 0,
-            "equation_counts": [1, 1, 1, 1],
+            "equations_per_point": 1,
             "origin": "test",
             "template": {"body": [template_body]}
         }]
@@ -192,7 +192,7 @@ fn dae_modelica_keeps_literal_when_family_is_not_regular() {
             residual(der(var_ref("u", vec![index(1)])), real(1.0)),
             residual(der(var_ref("u", vec![index(2)])), real(2.0))
         ],
-        "structured_equations": [family(0, vec![1, 1], 1, 2)]
+        "structured_equations": [family(0, 1, 1, 2)]
     });
     let template = cfg_template(r#"{{ render_dae_equations(dae, "f_x", cfg) }}"#);
 

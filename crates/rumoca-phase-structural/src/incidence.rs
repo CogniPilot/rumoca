@@ -158,8 +158,8 @@ fn debug_check_one_regular_family(
 /// neighbor cells -- never an interior row -- so it stays correct even when the
 /// interior rows carry no real body.
 ///
-/// `None` when the corner model does not apply: a non-uniform per-cell equation
-/// count, a domain/row-count mismatch, a missing corner row, or a row whose
+/// `None` when the corner model does not apply: a domain/row-count mismatch, a
+/// missing corner row, or a row whose
 /// incidence is not a uniform per-binder translation (i.e. not actually regular).
 fn synthesize_regular_family_incidence(
     family: &dae::StructuredEquationFamily,
@@ -167,21 +167,17 @@ fn synthesize_regular_family_incidence(
 ) -> Option<Vec<HashSet<usize>>> {
     // A uniform scalar equation count per domain point is what lets cell `p` occupy
     // the contiguous row range `[first + p*per_cell .. first + (p+1)*per_cell)`.
-    let (&per_cell, rest) = family.equation_counts.split_first()?;
-    if per_cell == 0 || rest.iter().any(|&n| n != per_cell) {
+    let per_cell = family.equations_per_point;
+    if per_cell == 0 {
         return None;
     }
-    let num_cells = family.equation_counts.len();
+    let num_cells = family.point_count().ok()?;
 
-    // Binder extents from the enumerated index domain (row-major, outermost binder
-    // most significant -- the order flatten materializes cells in).
-    let tuples = family.domain.index_tuples().ok()?;
-    if tuples.len() != num_cells {
-        return None;
-    }
+    // Binder extents and row-major strides come directly from compact range
+    // arithmetic; structural analysis does not materialize the domain tuples.
+    let extents = family.domain.extents().ok()?;
     let ndim = family.domain.binders.len();
-    let extents = binder_extents_from_tuples(&tuples, ndim);
-    let cell_strides = rumoca_core::row_major_strides(&extents);
+    let cell_strides = family.domain.ordinal_strides().ok()?;
     let first = family.first_equation_index;
 
     // The base cell's per-row unknown sets (corner: cell 0).
@@ -198,7 +194,7 @@ fn synthesize_regular_family_incidence(
         if extent <= 1 {
             continue;
         }
-        let neighbor_cell = cell_strides[k] as usize;
+        let neighbor_cell = cell_strides[k];
         for offset in 0..per_cell {
             let neighbor = eq_unknowns.get(first + neighbor_cell * per_cell + offset)?;
             units[offset][k] = uniform_translation(&base_rows[offset], neighbor)?;
@@ -211,8 +207,7 @@ fn synthesize_regular_family_incidence(
         for offset in 0..per_cell {
             let shift: i64 = (0..ndim)
                 .map(|k| {
-                    cell_coordinate(cell, cell_strides[k] as usize, extents[k]) as i64
-                        * units[offset][k]
+                    cell_coordinate(cell, cell_strides[k], extents[k]) as i64 * units[offset][k]
                 })
                 .sum();
             synthesized.push(
@@ -224,21 +219,6 @@ fn synthesize_regular_family_incidence(
         }
     }
     Some(synthesized)
-}
-
-/// Number of distinct values taken by each binder position across the enumerated
-/// domain tuples. The domain is a Cartesian product of independent binder ranges,
-/// so this recovers each binder's extent.
-fn binder_extents_from_tuples(tuples: &[Vec<i64>], ndim: usize) -> Vec<usize> {
-    (0..ndim)
-        .map(|k| {
-            tuples
-                .iter()
-                .filter_map(|tuple| tuple.get(k).copied())
-                .collect::<std::collections::BTreeSet<i64>>()
-                .len()
-        })
-        .collect()
 }
 
 /// The position-count of cell `cell` along one binder, given that binder's
@@ -1067,17 +1047,26 @@ mod tests {
     }
 
     #[test]
-    fn binder_extents_recovers_cartesian_shape() {
-        // Tuples enumerated row-major over a 2x3 domain.
-        let tuples = vec![
-            vec![0, 0],
-            vec![0, 1],
-            vec![0, 2],
-            vec![1, 0],
-            vec![1, 1],
-            vec![1, 2],
-        ];
-        assert_eq!(binder_extents_from_tuples(&tuples, 2), vec![2, 3]);
+    fn compact_domain_reports_cartesian_extents() {
+        let domain = rumoca_core::StructuredIndexDomain {
+            binders: vec![
+                rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 0,
+                    upper: 1,
+                    step: 1,
+                },
+                rumoca_core::StructuredIndexBinder {
+                    id: 1,
+                    display_name: "j".to_string(),
+                    lower: 0,
+                    upper: 2,
+                    step: 1,
+                },
+            ],
+        };
+        assert_eq!(domain.extents(), Ok(vec![2, 3]));
     }
 
     /// A 1-D `regular` family of `cells` cells (`i = 1..cells`, one equation per
@@ -1095,7 +1084,7 @@ mod tests {
                 }],
             },
             first_equation_index: 0,
-            equation_counts: vec![1; cells as usize],
+            equations_per_point: 1,
             span: test_span(),
             origin: "corner_check_fixture".to_string(),
             // The inner check does not gate on `regular`; production only reaches it
@@ -1122,7 +1111,7 @@ mod tests {
                 binders: vec![binder(0, "i", rows), binder(1, "j", cols)],
             },
             first_equation_index: 0,
-            equation_counts: vec![1; (rows * cols) as usize],
+            equations_per_point: 1,
             span: test_span(),
             origin: "corner_check_fixture_2d".to_string(),
             regular: None,

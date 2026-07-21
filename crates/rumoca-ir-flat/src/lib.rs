@@ -850,8 +850,11 @@ pub struct StructuredEquationFamily {
     /// First equation index in the corresponding flat equation vector.
     #[serde(default)]
     pub first_equation_index: usize,
-    /// Scalar-view equation count for each domain point in deterministic order.
-    pub equation_counts: Vec<usize>,
+    /// Uniform scalar-view equation count emitted by each domain point.
+    ///
+    /// A structured family is retained only when this count is uniform, keeping
+    /// its metadata independent of domain cardinality.
+    pub equations_per_point: usize,
     /// Source span for diagnostics.
     pub span: Span,
     /// Typed origin for traceability.

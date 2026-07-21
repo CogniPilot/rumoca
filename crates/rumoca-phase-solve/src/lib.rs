@@ -45,6 +45,7 @@ mod runtime_assignments;
 pub mod solve_model;
 mod stencil;
 mod subscript_indices;
+mod tensor_report;
 #[cfg(test)]
 #[path = "tests/test_support.rs"]
 mod test_support;
@@ -103,6 +104,9 @@ pub use solve_model::{
     propagate_parameter_overrides, visible_expressions_for_dae,
 };
 pub(crate) use subscript_indices::{checked_literal_positive_indices, subscript_source_span};
+pub use tensor_report::{
+    TensorFallback, TensorFallbackReason, TensorPreservationReport, tensor_preservation_report,
+};
 /// Reset DAE evaluator state used while lowering DAE into Solve IR.
 ///
 /// Solve lowering now creates and threads an explicit `EvalRuntimeState` for

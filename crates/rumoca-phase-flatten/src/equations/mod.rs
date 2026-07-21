@@ -1096,15 +1096,30 @@ fn expand_for_equation(
     if nested_family_lifted {
         return Ok(result);
     }
+    let Some(equations_per_point) = iterations
+        .first()
+        .map(|iteration| iteration.equation_count)
+        .filter(|count| *count > 0)
+        .filter(|count| {
+            iterations
+                .iter()
+                .all(|iteration| iteration.equation_count == *count)
+        })
+    else {
+        if cheapen_plan.is_some() {
+            return Err(FlattenError::unsupported_equation(
+                "cheapened structured equation family has a non-uniform body row count",
+                span,
+            ));
+        }
+        return Ok(result);
+    };
     result
         .structured_equations
         .push(flat::StructuredEquationFamily {
             domain,
             first_equation_index: 0,
-            equation_counts: iterations
-                .iter()
-                .map(|iteration| iteration.equation_count)
-                .collect(),
+            equations_per_point,
             span,
             origin: origin.clone(),
             regular,

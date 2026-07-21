@@ -171,7 +171,9 @@ fn remap_structured_families_after_row_order(
         }
     }
     families.retain_mut(|family| {
-        let total: usize = family.equation_counts.iter().sum();
+        let total = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         if total == 0 {
             return false;
         }
@@ -245,7 +247,7 @@ mod tests {
                 }],
             },
             first_equation_index,
-            equation_counts: vec![1; count],
+            equations_per_point: 1,
             span: test_span(),
             origin: "test".to_string(),
             regular: None,

@@ -321,7 +321,7 @@ fn test_flatten_for_equation_records_iteration_grouping() {
     let for_eq = &flattened.structured_equations[0];
     assert_eq!(for_eq.domain.binders[0].display_name, "i");
     assert_eq!(for_eq.first_equation_index, 0);
-    assert_eq!(for_eq.equation_counts, vec![1, 1, 1]);
+    assert_eq!(for_eq.equations_per_point, 1);
     assert_eq!(
         for_eq
             .domain
@@ -426,10 +426,7 @@ fn test_flatten_nested_for_equation_lifts_inner_grouping() {
             .expect("fixture domain should enumerate index tuples"),
         vec![vec![1, 1], vec![1, 2], vec![2, 1], vec![2, 2]]
     );
-    assert_eq!(
-        flattened.structured_equations[0].equation_counts,
-        vec![1, 1, 1, 1]
-    );
+    assert_eq!(flattened.structured_equations[0].equations_per_point, 1);
 }
 
 #[test]

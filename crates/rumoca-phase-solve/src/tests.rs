@@ -1751,7 +1751,7 @@ fn solve_problem_lowers_structured_continuous_residual_to_map() {
                 }],
             },
             first_equation_index: 1,
-            equation_counts: vec![1, 1, 1],
+            equations_per_point: 1,
             span,
             origin: "structured z=w residual".to_string(),
             regular: None,
@@ -1760,8 +1760,15 @@ fn solve_problem_lowers_structured_continuous_residual_to_map() {
         });
 
     let problem = lower_solve_problem(&dae_model).expect("structured residual should lower");
+    let report = tensor_preservation_report(&dae_model, &problem)
+        .expect("tensor preservation report should inspect compact metadata");
 
     assert_eq!(problem.continuous.residual.len(), Ok(3));
+    assert_eq!(report.compact_family_count, 1);
+    assert_eq!(report.compact_domain_points, 3);
+    assert_eq!(report.preserved_family_bodies, 1);
+    assert_eq!(report.scalarized_family_rows, 0);
+    assert!(report.fallbacks.is_empty());
     assert!(matches!(
         problem.continuous.residual.nodes.as_slice(),
         [solve::ComputeNode::Map { .. }]
@@ -1844,7 +1851,7 @@ fn solve_problem_lowers_structured_continuous_residual_with_scalar_math_to_map()
                 }],
             },
             first_equation_index: 1,
-            equation_counts: vec![1, 1, 1],
+            equations_per_point: 1,
             span,
             origin: "structured trig residual".to_string(),
             regular: None,
@@ -1928,7 +1935,7 @@ fn solve_problem_lowers_structured_continuous_residual_with_guard_to_map() {
                 }],
             },
             first_equation_index: 1,
-            equation_counts: vec![1, 1, 1],
+            equations_per_point: 1,
             span,
             origin: "structured guarded residual".to_string(),
             regular: None,

@@ -166,23 +166,18 @@ fn structured_families_by_start(
 }
 
 fn parse_structured_family(family: &Value) -> Result<Option<StructuredFamily>, minijinja::Error> {
-    let counts = usize_sequence_field(family, "equation_counts", "structured family")?;
-    let Some((&first_count, rest)) = counts.split_first() else {
-        return optional_render_miss();
-    };
-    if first_count == 0 || rest.iter().any(|count| *count != first_count) {
+    let equation_count = usize_field(family, "equations_per_point", "structured family")?;
+    if equation_count == 0 {
         return optional_render_miss();
     }
     let domain = parse_domain(&required_field(family, "domain", "structured family")?)?;
-    if domain.iteration_count()? != counts.len() {
-        return optional_render_miss();
-    }
+    let iteration_count = domain.iteration_count()?;
     Ok(Some(StructuredFamily {
         first_equation_index: usize_field(family, "first_equation_index", "structured family")?,
-        equation_count: first_count,
-        iteration_count: counts.len(),
+        equation_count,
+        iteration_count,
         domain,
-        template: parse_family_template(family, first_count)?,
+        template: parse_family_template(family, equation_count)?,
     }))
 }
 
@@ -673,23 +668,6 @@ fn sequence_item(value: &Value, index: usize, context: &str) -> Result<Value, mi
                 Ok(item)
             }
         })
-}
-
-fn usize_sequence_field(
-    value: &Value,
-    field: &str,
-    context: &str,
-) -> Result<Vec<usize>, minijinja::Error> {
-    let sequence = required_field(value, field, context)?;
-    let value_count = sequence_len(&sequence, field)?;
-    let mut values = render_vec_with_capacity(value_count, "usize sequence field count")?;
-    for index in 0..value_count {
-        let value = sequence_item(&sequence, index, field)?;
-        values.push(value.as_usize().ok_or_else(|| {
-            render_err(format!("{context} `{field}` entry {index} is not a usize"))
-        })?);
-    }
-    Ok(values)
 }
 
 fn usize_field(value: &Value, field: &str, context: &str) -> Result<usize, minijinja::Error> {

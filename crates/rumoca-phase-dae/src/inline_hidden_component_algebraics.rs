@@ -347,7 +347,9 @@ fn removable_hidden_variables(dae: &dae::Dae) -> HashSet<String> {
 fn structured_equation_indices(dae: &dae::Dae) -> HashSet<usize> {
     let mut indices = HashSet::new();
     for family in &dae.continuous.structured_equations {
-        let count = family.equation_counts.iter().sum::<usize>();
+        let count = family
+            .scalar_view_row_count()
+            .expect("validated structured family row count");
         indices.extend(family.first_equation_index..family.first_equation_index + count);
     }
     indices

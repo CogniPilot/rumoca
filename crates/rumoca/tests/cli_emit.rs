@@ -142,7 +142,7 @@ fn emit_flat_json_exposes_structured_equation_families() {
         families[0]["domain"]["binders"][0]["display_name"],
         serde_json::json!("i")
     );
-    assert_eq!(families[0]["equation_counts"], serde_json::json!([1, 1, 1]));
+    assert_eq!(families[0]["equations_per_point"], serde_json::json!(1));
     assert!(
         families[0].get("iterations").is_none(),
         "structured family should not serialize one entry per scalar iteration"

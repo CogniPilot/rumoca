@@ -134,7 +134,7 @@ fn family(start: usize, count: usize) -> dae::StructuredEquationFamily {
     dae::StructuredEquationFamily {
         domain: test_domain(count),
         first_equation_index: start,
-        equation_counts: vec![1; count],
+        equations_per_point: 1,
         span: stencil_test_span(),
         origin: "test".to_string(),
         regular: None,
@@ -151,7 +151,7 @@ fn multi_equation_family(
     dae::StructuredEquationFamily {
         domain: test_domain(count),
         first_equation_index: start,
-        equation_counts: vec![equation_count; count],
+        equations_per_point: equation_count,
         span: stencil_test_span(),
         origin: "test".to_string(),
         regular: None,
@@ -225,7 +225,7 @@ fn family_2d(start: usize, rows: usize, cols: usize) -> dae::StructuredEquationF
     dae::StructuredEquationFamily {
         domain: test_domain_2d(rows, cols),
         first_equation_index: start,
-        equation_counts: vec![1; rows * cols],
+        equations_per_point: 1,
         span: stencil_test_span(),
         origin: "test".to_string(),
         regular: None,
@@ -719,6 +719,7 @@ fn leaves_orphaned_structured_slot_scalar() -> Result<(), LowerError> {
         panic!("expected orphaned structured slot to decline")
     };
     assert_eq!(decline, StructuredTensorDecline::MissingStructuredFamily);
+    assert_eq!(decline.code(), "solve:missing-structured-family");
     Ok(())
 }
 
@@ -1153,25 +1154,24 @@ fn corner_rows_reproduce_full_row_affine_strides_for_2d_family() {
 }
 
 #[test]
-fn corner_rows_decline_when_a_dimension_has_extent_one() {
-    // With j pinned to a single value there is no j-neighbor to pin its stride, so
-    // the corner path declines (returns None) and the caller falls back to the
-    // full-row inference.
+fn corner_rows_support_singleton_dimensions() {
+    // With j pinned to a single value its stride is irrelevant. The compact corner
+    // selection needs only the base and the i-neighbor.
     let domain = test_domain_2d(3, 1);
     let count = domain_scalar_count(&domain);
     let rows: Vec<StructuredProgram> = (0..count).map(|y| stencil_row(y, y)).collect();
     let row_indices: Vec<usize> = (0..count).collect();
     let span = stencil_test_span();
 
-    assert_eq!(
-        affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
-            .expect("corner-row strides should compute"),
-        None
-    );
+    let corner = affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
+        .expect("corner-row strides should compute");
+    let full = affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
+        .expect("full-row strides should compute");
+    assert_eq!(corner, full);
 }
 
 #[test]
-fn affine_strides_for_family_uses_corners_then_falls_back_to_full_scan() {
+fn affine_strides_for_family_uses_corners_with_bounded_full_scan_oracle() {
     let span = stencil_test_span();
 
     // 3x3: corners succeed, so the production wrapper returns the corner result,
@@ -1190,24 +1190,24 @@ fn affine_strides_for_family_uses_corners_then_falls_back_to_full_scan() {
         "with corners available the wrapper returns the corner result (== full)"
     );
 
-    // 3x1: corners decline (no j-neighbor), so the wrapper must fall back to exactly
-    // the full-row result rather than declining to scalar.
+    // 3x1: the singleton j dimension needs no neighbor, so corners still reproduce
+    // the full-row result.
     let domain = test_domain_2d(3, 1);
     let count = domain_scalar_count(&domain);
     let rows: Vec<StructuredProgram> = (0..count).map(|y| stencil_row(y, y)).collect();
     let row_indices: Vec<usize> = (0..count).collect();
-    assert_eq!(
-        affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
-            .expect("corner-row strides should compute"),
-        None,
-        "precondition: corners decline on an extent-1 dimension"
+    let corner = affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
+        .expect("corner-row strides should compute");
+    assert!(
+        corner.is_some(),
+        "singleton dimensions stay corner-derivable"
     );
     assert_eq!(
         affine_strides_for_family(&rows, &row_indices, &domain, span, true)
             .expect("family strides should compute"),
         affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
             .expect("full-row strides should compute"),
-        "with corners declined the wrapper returns the full-row fallback result"
+        "corner inference matches the bounded full-row oracle"
     );
 }
 

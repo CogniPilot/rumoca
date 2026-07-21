@@ -1121,11 +1121,12 @@ fn remap_flat_structured_equation(
     let mut flat_idx = family.first_equation_index;
     let mut first_dae_index = None;
     let mut expected_next_dae_index = None;
-    let mut equation_counts = Vec::with_capacity(family.equation_counts.len());
+    let point_count = family.domain.scalar_count().ok()?;
+    let mut equations_per_point = None;
 
-    for equation_count in &family.equation_counts {
+    for _ in 0..point_count {
         let mut dae_equation_count = 0;
-        for source_idx in flat_idx..flat_idx + equation_count {
+        for source_idx in flat_idx..flat_idx + family.equations_per_point {
             let dae_idx = *flat_to_dae_index.get(&source_idx)?;
             if let Some(expected) = expected_next_dae_index
                 && dae_idx != expected
@@ -1139,14 +1140,19 @@ fn remap_flat_structured_equation(
         if dae_equation_count == 0 {
             return None;
         }
-        equation_counts.push(dae_equation_count);
-        flat_idx += equation_count;
+        if equations_per_point
+            .replace(dae_equation_count)
+            .is_some_and(|count| count != dae_equation_count)
+        {
+            return None;
+        }
+        flat_idx += family.equations_per_point;
     }
 
     Some(dae::StructuredEquationFamily {
         domain: family.domain.clone(),
         first_equation_index: first_dae_index?,
-        equation_counts,
+        equations_per_point: equations_per_point?,
         span: family.span,
         origin: family.origin.to_string(),
         regular: family.regular.clone(),

@@ -22,17 +22,17 @@ pub(super) fn compact_domain_from_iterations(
             FlattenError::unsupported_equation("structured equation domain is not compact", span)
         })?;
     let domain = rumoca_core::StructuredIndexDomain { binders };
-    let expected = iterations
-        .iter()
-        .map(|iteration| iteration.index_values.clone())
-        .collect::<Vec<_>>();
-    let actual = domain.index_tuples().map_err(|err| {
+    let actual = domain.index_tuple_iter().map_err(|err| {
         FlattenError::unsupported_equation(
             format!("structured equation domain is invalid: {err}"),
             span,
         )
     })?;
-    if actual != expected {
+    if actual.len() != iterations.len()
+        || actual
+            .zip(iterations)
+            .any(|(actual, iteration)| actual != iteration.index_values)
+    {
         return Err(FlattenError::unsupported_equation(
             "structured equation domain order is not compact",
             span,
@@ -46,29 +46,18 @@ fn compact_binder(
     iterations: &[SourceStructuredIteration],
     dimension: usize,
 ) -> Option<rumoca_core::StructuredIndexBinder> {
-    let mut values = Vec::new();
-    for iteration in iterations {
-        let value = iteration.index_values[dimension];
-        if !values.contains(&value) {
-            values.push(value);
-        }
-    }
-    let step = match values.as_slice() {
-        [] => return None,
-        [_] => 1,
-        [first, second, rest @ ..] => {
-            let step = second - first;
-            if step == 0 || rest.iter().any(|value| (value - first) % step != 0) {
-                return None;
-            }
-            step
-        }
-    };
+    let lower = iterations.first()?.index_values[dimension];
+    let upper = iterations.last()?.index_values[dimension];
+    let step = iterations
+        .iter()
+        .map(|iteration| iteration.index_values[dimension])
+        .find(|value| *value != lower)
+        .map_or(1, |value| value - lower);
     Some(rumoca_core::StructuredIndexBinder {
         id: dimension,
         display_name: index.ident.text.to_string(),
-        lower: values[0],
-        upper: *values.last()?,
+        lower,
+        upper,
         step,
     })
 }
@@ -90,14 +79,10 @@ pub(super) fn lift_full_iteration_child_family(
         &first_family.domain.binders,
         parent_domain.binders.len(),
     ));
-    let mut equation_counts = Vec::new();
-    for _ in iterations {
-        equation_counts.extend(first_family.equation_counts.iter().copied());
-    }
     let lifted = flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain { binders },
         first_equation_index: first_family.first_equation_index,
-        equation_counts,
+        equations_per_point: first_family.equations_per_point,
         span: first_family.span,
         origin: first_family.origin,
         regular,
@@ -149,13 +134,13 @@ fn complete_liftable_child_group(
 #[derive(Clone, PartialEq)]
 struct ChildFamilySignature {
     domain: rumoca_core::StructuredIndexDomain,
-    equation_counts: Vec<usize>,
+    equations_per_point: usize,
 }
 
 fn child_signature(family: &flat::StructuredEquationFamily) -> ChildFamilySignature {
     ChildFamilySignature {
         domain: family.domain.clone(),
-        equation_counts: family.equation_counts.clone(),
+        equations_per_point: family.equations_per_point,
     }
 }
 
@@ -164,7 +149,11 @@ fn full_iteration_child_index(
     iterations: &[SourceStructuredIteration],
     starts: &[usize],
 ) -> Option<usize> {
-    let total_count = family.equation_counts.iter().sum::<usize>();
+    let total_count = family
+        .domain
+        .scalar_count()
+        .ok()?
+        .checked_mul(family.equations_per_point)?;
     starts
         .iter()
         .zip(iterations)
