@@ -1,7 +1,4 @@
-//! DAE-level pre-codegen record, array-size, dependency, and vector lowering.
-//! SPEC_0021 file-size exception: split plan: move pass families into focused
-//! `dae_lowering` submodules.
-
+//! DAE pre-codegen lowering. SPEC_0021 file-size exception: split plan: move pass families into focused `dae_lowering` submodules.
 use crate::ToDaeError;
 use crate::scalar_size::compute_var_size;
 use indexmap::{IndexMap, IndexSet};
@@ -1062,8 +1059,7 @@ impl ExpressionVisitor for VarRefListCollector {
 // Vector equation scalarization
 // =============================================================================
 
-/// Expand vector equations that reference phantom unsubscripted connector-array bases.
-/// Each lane indexes the phantom reference and matching declared-array arguments.
+/// Expand phantom connector-array equations, indexing phantom bases and declared-array arguments.
 pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeError> {
     let known_names = build_known_var_name_set(dae);
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
@@ -2478,7 +2474,7 @@ fn scalarize_binary_expr_at(
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<Expr, ToDaeError> {
     if matches!(op, OpBinary::Sub)
-        && matches!(rhs, Expr::Binary { op, .. } if matches!(op, OpBinary::Mul | OpBinary::MulElem))
+        && matches!(rhs, Expr::Binary { op, .. } if matches!(op, OpBinary::Add | OpBinary::Sub | OpBinary::Mul | OpBinary::MulElem))
     {
         let projector = Projector(ctx.var_dims, ctx.functions);
         let dims = projector.dims(lhs, span)?;
@@ -2491,20 +2487,15 @@ fn scalarize_binary_expr_at(
             let indices = lane_indices_for_dims(ctx.k, &dims)
                 .ok_or_else(|| projection_error("result shape mismatch", span))?;
             let lhs = projector.element(lhs, &indices, span)?;
-            return Ok(Expr::Binary {
-                op: op.clone(),
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-                span,
-            });
+            return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
         }
     }
-    Ok(Expr::Binary {
-        op: op.clone(),
-        lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
-        rhs: Box::new(scalarize_expr_with_context(rhs, ctx)?),
+    Ok(vectorized_binary_expr(
+        op.clone(),
+        scalarize_expr_with_context(lhs, ctx)?,
+        scalarize_expr_with_context(rhs, ctx)?,
         span,
-    })
+    ))
 }
 
 fn scalarize_builtin_vector_output_at(
@@ -3997,6 +3988,17 @@ impl Projector<'_> {
         let Expr::Binary { op, lhs, rhs, span } = expr else {
             return Ok(None);
         };
+        if matches!(op, OpBinary::Add | OpBinary::Sub) {
+            if self.dims(expr, *span)?.as_deref() != Some(target_dims) {
+                return Err(projection_error("result shape mismatch", *span));
+            }
+            if target_dims.is_empty() {
+                return Ok(None);
+            }
+            let indices = lane_indices_for_dims(k, target_dims)
+                .ok_or_else(|| projection_error("result shape mismatch", *span))?;
+            return self.element(expr, &indices, *span).map(Some);
+        }
         if !matches!(op, OpBinary::Mul | OpBinary::MulElem) {
             return Ok(None);
         }
