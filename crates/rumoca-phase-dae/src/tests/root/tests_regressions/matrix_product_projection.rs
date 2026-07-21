@@ -1179,7 +1179,7 @@ fn test_todae_preserves_dynamic_row_slice_reductions_in_scalar_products() {
             multiply(
                 real(2.0),
                 builtin(
-                    reduction.clone(),
+                    reduction,
                     vec![expression_row_slice("A", make_structured_var_ref("i"))],
                 ),
             ),

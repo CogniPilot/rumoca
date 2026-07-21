@@ -2396,36 +2396,7 @@ fn scalarize_expr_with_context(
         )
         .and_then(|projected| projected.map_or_else(|| Ok(expr.clone()), Ok)),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
-            if matches!(op, OpBinary::Sub)
-                && matches!(rhs.as_ref(), Expr::Binary { op, .. } if matches!(op, OpBinary::Mul | OpBinary::MulElem))
-            {
-                let projector = Projector(ctx.var_dims, ctx.functions);
-                let dims = projector.dims(lhs, *span)?;
-                if dims.is_none()
-                    && matches!(projector.dims(rhs, *span)?, Some(dims) if !dims.is_empty())
-                {
-                    return Err(projection_error("unknown target shape", *span));
-                }
-                if let Some(dims) = dims
-                    && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
-                {
-                    let indices = lane_indices_for_dims(ctx.k, &dims)
-                        .ok_or_else(|| projection_error("result shape mismatch", *span))?;
-                    let lhs = projector.element(lhs, &indices, *span)?;
-                    return Ok(Expr::Binary {
-                        op: op.clone(),
-                        lhs: Box::new(lhs),
-                        rhs: Box::new(rhs),
-                        span: *span,
-                    });
-                }
-            }
-            Ok(rumoca_core::Expression::Binary {
-                op: op.clone(),
-                lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
-                rhs: Box::new(scalarize_expr_with_context(rhs, ctx)?),
-                span: *span,
-            })
+            scalarize_binary_expr_at(op, lhs, rhs, *span, ctx)
         }
         rumoca_core::Expression::Unary { op, rhs, span } => Ok(rumoca_core::Expression::Unary {
             op: op.clone(),
@@ -2497,6 +2468,43 @@ fn scalarize_expr_with_context(
         } => scalarize_array_comprehension_at(expr, inner, indices, filter.as_deref(), *span, ctx),
         _ => Ok(expr.clone()),
     }
+}
+
+fn scalarize_binary_expr_at(
+    op: &OpBinary,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<Expr, ToDaeError> {
+    if matches!(op, OpBinary::Sub)
+        && matches!(rhs, Expr::Binary { op, .. } if matches!(op, OpBinary::Mul | OpBinary::MulElem))
+    {
+        let projector = Projector(ctx.var_dims, ctx.functions);
+        let dims = projector.dims(lhs, span)?;
+        if dims.is_none() && matches!(projector.dims(rhs, span)?, Some(dims) if !dims.is_empty()) {
+            return Err(projection_error("unknown target shape", span));
+        }
+        if let Some(dims) = dims
+            && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
+        {
+            let indices = lane_indices_for_dims(ctx.k, &dims)
+                .ok_or_else(|| projection_error("result shape mismatch", span))?;
+            let lhs = projector.element(lhs, &indices, span)?;
+            return Ok(Expr::Binary {
+                op: op.clone(),
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            });
+        }
+    }
+    Ok(Expr::Binary {
+        op: op.clone(),
+        lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
+        rhs: Box::new(scalarize_expr_with_context(rhs, ctx)?),
+        span,
+    })
 }
 
 fn scalarize_builtin_vector_output_at(
