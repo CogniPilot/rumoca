@@ -871,11 +871,80 @@ fn lower_gpu_initialization_system(
     if expected != required_user_initial_rows {
         return Err(LowerError::Unsupported { reason: "GPU initial projection requires complete structured coverage; mixed or nonstructured initial rows are unsupported".to_string() });
     }
+    require_complete_gpu_initial_target_coverage(dae_model, layout, &families)?;
     Ok(solve::InitializationSolveSystem {
         residual: solve::ComputeBlock { nodes },
         direct_families: families,
         ..Default::default()
     })
+}
+
+fn require_complete_gpu_initial_target_coverage(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    families: &[solve::InitializationDirectFamily],
+) -> Result<(), LowerError> {
+    let mut covered = vec![false; layout.y_scalars()];
+    for (structured, direct) in dae_model
+        .initialization
+        .structured_equations
+        .iter()
+        .flat_map(|structured| {
+            (0..structured.common_iteration_equation_count().unwrap_or(0)).map(move |_| structured)
+        })
+        .zip(families)
+    {
+        for index in direct
+            .targets
+            .output_indices(&structured.domain)
+            .map_err(|error| LowerError::contract_violation(format!("{error:?}"), direct.span))?
+        {
+            let Some(slot) = covered.get_mut(index) else {
+                return Err(LowerError::contract_violation(
+                    "GPU initial target is outside the solver Y vector",
+                    direct.span,
+                ));
+            };
+            *slot = true;
+        }
+    }
+    for (equation, provenance) in dae_model
+        .initialization
+        .equations
+        .iter()
+        .zip(&dae_model.initialization.equation_provenance)
+    {
+        if *provenance != dae::InitializationEquationProvenance::FixedStart {
+            continue;
+        }
+        let targets = lower_continuous_row_targets_for_equation(
+            dae_model,
+            equation,
+            layout,
+            equation.scalar_count.max(1),
+        )?;
+        for target in targets {
+            let Some(solve::ScalarSlot::Y { index, .. }) = target else {
+                return Err(LowerError::contract_violation(
+                    "GPU fixed-start initialization requires a Y target",
+                    equation.span,
+                ));
+            };
+            let Some(slot) = covered.get_mut(index) else {
+                return Err(LowerError::contract_violation(
+                    "GPU fixed-start target is outside the solver Y vector",
+                    equation.span,
+                ));
+            };
+            *slot = true;
+        }
+    }
+    if covered.iter().any(|covered| !covered) {
+        return Err(LowerError::Unsupported {
+            reason: "GPU initial projection requires the union of user equations and fixed starts to cover every solver Y slot".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn lower_gpu_direct_family(

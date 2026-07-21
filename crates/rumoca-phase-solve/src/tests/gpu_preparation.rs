@@ -148,6 +148,44 @@ fn gpu_preparation_ignores_automatic_fixed_start_rows() {
 }
 
 #[test]
+fn gpu_preparation_rejects_partial_fixed_start_target_coverage() {
+    let span = solve_test_span();
+    let mut dae_model = dae::Dae::default();
+    for name in ["x", "y"] {
+        dae_model
+            .variables
+            .states
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            binary(rumoca_core::OpBinary::Sub, der(var(name)), int_expr(0)),
+            span,
+            "derivative",
+        ));
+    }
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            binary(rumoca_core::OpBinary::Sub, var("x"), int_expr(7)),
+            span,
+            "fixed start initialization for x",
+        ));
+    dae_model
+        .initialization
+        .equation_provenance
+        .push(dae::InitializationEquationProvenance::FixedStart);
+
+    let error = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        2,
+        Some(span),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect_err("partial GPU initialization coverage must fail closed");
+    assert!(error.to_string().contains("cover every solver Y slot"));
+}
+
+#[test]
 fn gpu_initial_projection_rejects_degenerate_structured_binder() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {

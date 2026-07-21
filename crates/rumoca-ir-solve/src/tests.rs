@@ -562,6 +562,12 @@ fn solve_problem_json_has_supported_schema_version() {
         "SolveProblem JSON must carry an explicit schema_version"
     );
 
+    let mut previous = value.clone();
+    previous["schema_version"] = serde_json::json!(SOLVE_SCHEMA_VERSION - 1);
+    let err = serde_json::from_value::<SolveProblem>(previous)
+        .expect_err("previous Solve schema version must fail after initialization IR replacement");
+    assert!(err.to_string().contains("unsupported Solve schema_version"));
+
     let mut unsupported = value;
     unsupported["schema_version"] = serde_json::json!(SOLVE_SCHEMA_VERSION + 1);
     let err = serde_json::from_value::<SolveProblem>(unsupported)

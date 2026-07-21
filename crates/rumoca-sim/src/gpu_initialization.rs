@@ -61,18 +61,18 @@ pub fn settle_gpu_initial_conditions(
 ) -> Result<GpuInitializationResult, GpuInitializationError> {
     let initialization = &model.problem.initialization;
     reject_unsupported_runtime_features(model)?;
-    if initialization.residual.is_empty() {
-        return Ok(GpuInitializationResult {
-            y0: model.initial_y.clone(),
-            p0: model.parameters.clone(),
-            metrics: GpuInitializationMetrics::default(),
-        });
-    }
-    validate_assignment_shape(initialization, model.initial_y.len())?;
     let mut y0 = model.initial_y.clone();
     let p0 = model.parameters.clone();
     ensure_finite(&y0, "initial y", None)?;
     ensure_finite(&p0, "initial p", None)?;
+    if initialization.residual.is_empty() {
+        return Ok(GpuInitializationResult {
+            y0,
+            p0,
+            metrics: GpuInitializationMetrics::default(),
+        });
+    }
+    validate_assignment_shape(initialization, model.initial_y.len())?;
     let mut worst = (0usize, 0.0f64, None);
     let mut native_metrics = rumoca_eval_solve::MapEvaluationMetrics::default();
     for family in &initialization.direct_families {
@@ -455,5 +455,40 @@ mod tests {
             .expect_err("non-finite GPU initialization input must fail closed");
         assert!(matches!(error, GpuInitializationError::NonConverged { .. }));
         assert!(error.to_string().contains("initial y"));
+    }
+
+    #[test]
+    fn no_initial_equations_preserve_finite_vectors_exactly() {
+        let model = solve::SolveModel {
+            initial_y: vec![-0.0, 3.25],
+            parameters: vec![7.5, -2.0],
+            ..Default::default()
+        };
+        let result = settle_gpu_initial_conditions(&model, 0.0).expect("finite vectors pass");
+        assert_eq!(
+            result.y0.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            model
+                .initial_y
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            result.p0.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            model
+                .parameters
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_initial_equations_still_reject_nonfinite_vectors() {
+        let model = solve::SolveModel {
+            initial_y: vec![f64::INFINITY],
+            ..Default::default()
+        };
+        assert!(settle_gpu_initial_conditions(&model, 0.0).is_err());
     }
 }

@@ -62,7 +62,7 @@ pub(super) fn lower_direct_dae_for_simulation(
 
 pub(super) fn lower_direct_dae_for_gpu_preparation(
     dae_model: &dae::Dae,
-) -> Result<Option<solve::SolveModel>, rumoca_phase_solve::SolveModelLowerError> {
+) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
     validate_gpu_dae_admission(dae_model)?;
     let metadata_dae = attach_reference_metadata(dae_model)?;
     let lowered = metadata_dae.clone();
@@ -71,7 +71,7 @@ pub(super) fn lower_direct_dae_for_gpu_preparation(
             lowered,
             &metadata_dae,
         )?;
-    Ok(Some(solve_model))
+    Ok(solve_model)
 }
 
 /// GPU preparation has no event/discrete runtime payload.  Reject these DAE
@@ -123,6 +123,12 @@ fn validate_gpu_dae_admission(
     if let Some(expression) = dae_model.events.synthetic_root_conditions.first() {
         return Err(rejection("root conditions", expression.span()));
     }
+    if !dae_model.events.scheduled_time_events.is_empty() {
+        return Err(rejection(
+            "scheduled time events",
+            gpu_dae_source_span(dae_model),
+        ));
+    }
     if let Some(event) = dae_model.events.scheduled_root_conditions.first() {
         let span = dae_model
             .conditions
@@ -163,6 +169,29 @@ fn validate_gpu_dae_admission(
         return Err(rejection("initial P-slot target", Some(equation.span)));
     }
     Ok(())
+}
+
+fn gpu_dae_source_span(dae_model: &dae::Dae) -> Option<rumoca_core::Span> {
+    dae_model
+        .continuous
+        .equations
+        .first()
+        .map(|equation| equation.span)
+        .or_else(|| {
+            dae_model
+                .initialization
+                .equations
+                .first()
+                .map(|equation| equation.span)
+        })
+        .or_else(|| {
+            dae_model
+                .variables
+                .states
+                .values()
+                .next()
+                .map(|variable| variable.source_span)
+        })
 }
 
 fn attach_reference_metadata(
@@ -442,6 +471,14 @@ mod tests {
         events.events.synthetic_root_conditions.push(zero());
         let error = validate_gpu_dae_admission(&events).expect_err("events must reject");
         assert!(error.to_string().contains("root conditions"));
+
+        let mut scheduled = dae::Dae::default();
+        scheduled.continuous.equations.push(equation());
+        scheduled.events.scheduled_time_events.push(1.0);
+        let error = validate_gpu_dae_admission(&scheduled)
+            .expect_err("scheduled time events must reject before fast lowering");
+        assert!(error.to_string().contains("scheduled time events"));
+        assert_eq!(error.source_span(), Some(span()));
 
         let mut clocks = dae::Dae::default();
         clocks.clocks.constructor_exprs.push(zero());

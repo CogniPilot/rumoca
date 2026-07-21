@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "x": {},
   "y": {},
   "u": {},
@@ -155,6 +155,7 @@
   "structured_equations": [],
   "initial_equations": [],
   "initial_structured_equations": [],
+  "initial_equation_provenance": [],
   "f_z": [
     {
       "lhs": {

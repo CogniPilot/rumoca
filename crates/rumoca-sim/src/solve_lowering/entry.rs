@@ -22,16 +22,9 @@ pub fn lower_dae_for_simulation(
 
 pub fn lower_dae_for_gpu_preparation(
     dae_model: &dae::Dae,
-    opts: &SimOptions,
+    _opts: &SimOptions,
 ) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
-    if let Some(solve_model) = lower_direct_dae_for_gpu_preparation(dae_model)? {
-        return Ok(solve_model);
-    }
-    let structurally_lowered = structurally_lower_dae_for_simulation(dae_model, opts)?;
-    rumoca_phase_solve::lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata(
-        structurally_lowered.dae,
-        &structurally_lowered.metadata_dae,
-    )
+    lower_direct_dae_for_gpu_preparation(dae_model)
 }
 
 /// Lower for simulation while applying tunable scalar-parameter overrides during
