@@ -3977,11 +3977,11 @@ impl Projector<'_> {
         };
         if matches!(op, OpBinary::Add | OpBinary::Sub) {
             let has_array_syntax = has_array_slice_syntax(expr);
-            if target_dims.is_empty() && !has_array_syntax {
-                return Ok(None);
-            }
             let result_dims = self.dims(expr, *span)?;
-            if result_dims.is_none() && !has_array_syntax {
+            if !has_array_syntax
+                && (result_dims.is_none()
+                    || target_dims.is_empty() && result_dims.as_ref().is_some_and(Vec::is_empty))
+            {
                 return Ok(None);
             }
             let result_dims =

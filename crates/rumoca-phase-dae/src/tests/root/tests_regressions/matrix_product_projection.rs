@@ -658,30 +658,39 @@ fn test_todae_projects_function_sibling_and_nested_matrix_product() {
 
 #[test]
 fn test_todae_rejects_compound_vector_rhs_for_scalar_target() {
-    let mut flat = Model::new();
-    declare_array(&mut flat, "A", &[3, 3]);
-    declare_array(&mut flat, "x", &[3]);
-    declare_array(&mut flat, "position", &[3]);
-    declare_array(&mut flat, "y", &[2]);
-    let lhs = Expression::VarRef {
-        name: VarName::new("y").into(),
-        subscripts: vec![rumoca_core::Subscript::Index {
-            value: 2,
+    for explicit_slice in [true, false] {
+        let mut flat = Model::new();
+        declare_array(&mut flat, "A", &[3, 3]);
+        declare_array(&mut flat, "x", &[3]);
+        declare_array(&mut flat, "position", &[3]);
+        declare_array(&mut flat, "y", &[2]);
+        let lhs = Expression::VarRef {
+            name: VarName::new("y").into(),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 2,
+                span: crate::test_support::test_span(),
+            }],
             span: crate::test_support::test_span(),
-        }],
-        span: crate::test_support::test_span(),
-    };
-    add_equation(
-        &mut flat,
-        lhs,
-        binary(
-            rumoca_core::OpBinary::Add,
-            colon_vector("position"),
-            multiply(make_structured_var_ref("A"), colon_vector("x")),
-        ),
-        1,
-    );
-    assert_projection_error(&flat, "result shape mismatch");
+        };
+        let vector = |name| {
+            if explicit_slice {
+                colon_vector(name)
+            } else {
+                make_structured_var_ref(name)
+            }
+        };
+        add_equation(
+            &mut flat,
+            lhs,
+            binary(
+                rumoca_core::OpBinary::Add,
+                vector("position"),
+                multiply(make_structured_var_ref("A"), vector("x")),
+            ),
+            1,
+        );
+        assert_projection_error(&flat, "result shape mismatch");
+    }
 }
 
 #[test]
