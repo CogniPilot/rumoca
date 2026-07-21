@@ -1,6 +1,6 @@
 use super::*;
 
-fn declare_array(flat: &mut Model, name: &str, dims: &[i64]) {
+pub(super) fn declare_array(flat: &mut Model, name: &str, dims: &[i64]) {
     flat.add_variable(
         VarName::new(name),
         crate::test_support::with_component_ref(flat::Variable {
@@ -48,7 +48,7 @@ fn multiply(lhs: Expression, rhs: Expression) -> Expression {
     binary(rumoca_core::OpBinary::Mul, lhs, rhs)
 }
 
-fn binary(op: rumoca_core::OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+pub(super) fn binary(op: rumoca_core::OpBinary, lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
         op,
         lhs: Box::new(lhs),
@@ -88,7 +88,7 @@ fn add_equation(flat: &mut Model, lhs: Expression, rhs: Expression, scalar_count
     });
 }
 
-fn literal_subscripts(expr: &Expression) -> Option<(&str, Vec<i64>)> {
+pub(super) fn literal_subscripts(expr: &Expression) -> Option<(&str, Vec<i64>)> {
     let Expression::VarRef {
         name, subscripts, ..
     } = expr

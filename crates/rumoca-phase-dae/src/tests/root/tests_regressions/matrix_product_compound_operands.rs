@@ -1,42 +1,5 @@
+use super::matrix_product_projection::{binary, declare_array, literal_subscripts};
 use super::*;
-
-fn declare_array(flat: &mut Model, name: &str, dims: &[i64]) {
-    flat.add_variable(
-        VarName::new(name),
-        crate::test_support::with_component_ref(flat::Variable {
-            name: VarName::new(name),
-            dims: dims.to_vec(),
-            is_primitive: true,
-            ..flat::Variable::empty_with_span(crate::test_support::test_span())
-        }),
-    );
-}
-
-fn binary(op: rumoca_core::OpBinary, lhs: Expression, rhs: Expression) -> Expression {
-    Expression::Binary {
-        op,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-        span: crate::test_support::test_span(),
-    }
-}
-
-fn literal_subscripts(expr: &Expression) -> Option<(&str, Vec<i64>)> {
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = expr
-    else {
-        return None;
-    };
-    let indices = subscripts
-        .iter()
-        .map(|subscript| match subscript {
-            rumoca_core::Subscript::Index { value, .. } => Some(*value),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some((name.as_str(), indices))
-}
 
 fn assert_compound_dot_term(expr: &Expression, row: i64, inner: i64) {
     let Expression::Binary {
@@ -135,5 +98,103 @@ fn test_todae_projects_bare_compound_array_operands_as_complete_dots() {
         };
         assert_compound_dot_term(first, row, 1);
         assert_compound_dot_term(second, row, 2);
+    }
+}
+
+#[test]
+fn test_todae_preserves_scalar_scaling_of_vector_scalar_division() {
+    for scalar_on_left in [true, false] {
+        let mut flat = Model::new();
+        declare_array(&mut flat, "V", &[2]);
+        declare_array(&mut flat, "s", &[]);
+        declare_array(&mut flat, "Y", &[2]);
+        let vector = Expression::Index {
+            base: Box::new(make_structured_var_ref("V")),
+            subscripts: vec![rumoca_core::Subscript::Colon {
+                span: crate::test_support::test_span(),
+            }],
+            span: crate::test_support::test_span(),
+        };
+        let quotient = binary(
+            rumoca_core::OpBinary::Div,
+            vector,
+            make_structured_var_ref("s"),
+        );
+        let scalar = Expression::Literal {
+            value: Literal::Real(2.0),
+            span: crate::test_support::test_span(),
+        };
+        let product = if scalar_on_left {
+            binary(rumoca_core::OpBinary::Mul, scalar, quotient)
+        } else {
+            binary(rumoca_core::OpBinary::Mul, quotient, scalar)
+        };
+        flat.add_equation(flat::Equation {
+            residual: binary(
+                rumoca_core::OpBinary::Sub,
+                Expression::Index {
+                    base: Box::new(make_structured_var_ref("Y")),
+                    subscripts: vec![rumoca_core::Subscript::Colon {
+                        span: crate::test_support::test_span(),
+                    }],
+                    span: crate::test_support::test_span(),
+                },
+                product,
+            ),
+            span: crate::test_support::test_span(),
+            origin: flat::EquationOrigin::ComponentEquation {
+                component: "ArrayScalarDivision".to_string(),
+            },
+            scalar_count: 2,
+        });
+
+        let dae = to_dae_with_options(
+            &flat,
+            ToDaeOptions {
+                error_on_unbalanced: false,
+            },
+        )
+        .expect("scalar scaling of vector/scalar division is legal ARR-030 input");
+
+        assert_eq!(dae.continuous.equations.len(), 2);
+        for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+            let index = i64::try_from(lane + 1).expect("two lanes fit i64");
+            let Expression::Binary { lhs, rhs, .. } = &equation.rhs else {
+                panic!("expected scalar residual");
+            };
+            assert_eq!(literal_subscripts(lhs), Some(("Y", vec![index])));
+            let Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs,
+                rhs,
+                ..
+            } = rhs.as_ref()
+            else {
+                panic!("expected preserved scalar product, got {rhs:?}");
+            };
+            let (scalar, quotient) = if scalar_on_left {
+                (lhs.as_ref(), rhs.as_ref())
+            } else {
+                (rhs.as_ref(), lhs.as_ref())
+            };
+            assert!(matches!(
+                scalar,
+                Expression::Literal {
+                    value: Literal::Real(2.0),
+                    ..
+                }
+            ));
+            let Expression::Binary {
+                op: rumoca_core::OpBinary::Div,
+                lhs: dividend,
+                rhs: divisor,
+                ..
+            } = quotient
+            else {
+                panic!("expected indexed vector/scalar quotient, got {quotient:?}");
+            };
+            assert_eq!(literal_subscripts(dividend), Some(("V", vec![index])));
+            assert_eq!(literal_subscripts(divisor), Some(("s", vec![])));
+        }
     }
 }

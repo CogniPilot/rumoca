@@ -4222,17 +4222,44 @@ impl Projector<'_> {
                 lhs,
                 rhs,
                 span,
-            } => [lhs.as_ref(), rhs.as_ref()]
-                .into_iter()
-                .map(|operand| {
-                    let dims = self.dims(operand, *span)?;
-                    Ok(dims.as_ref().is_some_and(|dims| !dims.is_empty())
-                        || dims.is_none()
-                            && (has_array_slice_syntax(operand)
-                                || self.has_descendant_matrix_product_candidate(operand)?))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map(|candidates| candidates.into_iter().any(std::convert::identity)),
+            } => {
+                let operands = [lhs.as_ref(), rhs.as_ref()];
+                let operand_dims = operands
+                    .iter()
+                    .map(|operand| match operand {
+                        Expr::Binary { op, .. }
+                            if !matches!(
+                                op,
+                                OpBinary::Add | OpBinary::Sub | OpBinary::Mul | OpBinary::MulElem
+                            ) =>
+                        {
+                            Ok(None)
+                        }
+                        _ => self.dims(operand, *span),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if operand_dims.iter().flatten().any(Vec::is_empty) {
+                    return operands
+                        .into_iter()
+                        .map(|operand| self.has_descendant_matrix_product_candidate(operand))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|candidates| candidates.into_iter().any(std::convert::identity));
+                }
+                Ok(operand_dims.iter().flatten().any(|dims| !dims.is_empty())
+                    || operands
+                        .into_iter()
+                        .zip(operand_dims)
+                        .filter(|(_, dims)| dims.is_none())
+                        .map(|(operand, _)| {
+                            Ok::<bool, ToDaeError>(
+                                has_array_slice_syntax(operand)
+                                    || self.has_descendant_matrix_product_candidate(operand)?,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .any(std::convert::identity))
+            }
             Expr::Binary { lhs, rhs, .. } => Ok(self
                 .has_descendant_matrix_product_candidate(lhs)?
                 || self.has_descendant_matrix_product_candidate(rhs)?),
