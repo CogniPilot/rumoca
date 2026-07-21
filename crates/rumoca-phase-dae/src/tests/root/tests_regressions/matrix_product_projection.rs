@@ -587,6 +587,100 @@ fn test_todae_projects_matrix_product_nested_in_vector_addition() {
 }
 
 #[test]
+fn test_todae_projects_function_sibling_and_nested_matrix_product() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[3, 3]);
+    declare_array(&mut flat, "x", &[3]);
+    declare_array(&mut flat, "y", &[3]);
+    let mut function =
+        rumoca_core::Function::new("arrayFunction", crate::test_support::test_span());
+    function.add_output(
+        rumoca_core::FunctionParam::new("result", "Real", crate::test_support::test_span())
+            .with_dims(vec![3]),
+    );
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("array_function".to_string()),
+        output_name: Some("result".to_string()),
+        ..Default::default()
+    });
+    flat.add_function(function);
+    let call = Expression::FunctionCall {
+        name: VarName::new("arrayFunction").into(),
+        args: Vec::new(),
+        is_constructor: false,
+        span: crate::test_support::test_span(),
+    };
+    add_equation(
+        &mut flat,
+        colon_vector("y"),
+        binary(
+            rumoca_core::OpBinary::Add,
+            call,
+            multiply(make_structured_var_ref("A"), colon_vector("x")),
+        ),
+        3,
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("function sibling must not disable nested matrix projection");
+    for (lane, equation) in dae.continuous.equations.iter().enumerate() {
+        let index = i64::try_from(lane + 1).expect("three lanes fit i64");
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } = residual_rhs(equation)
+        else {
+            panic!("expected projected addition");
+        };
+        let Expression::Index { subscripts, .. } = lhs.as_ref() else {
+            panic!("expected indexed function output");
+        };
+        assert!(
+            matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value, .. }] if *value == index)
+        );
+        let mut terms = Vec::new();
+        assert!(flatten_dot_terms(rhs, &mut terms));
+        assert_eq!(terms.len(), 3);
+    }
+}
+
+#[test]
+fn test_todae_rejects_compound_vector_rhs_for_scalar_target() {
+    let mut flat = Model::new();
+    declare_array(&mut flat, "A", &[3, 3]);
+    declare_array(&mut flat, "x", &[3]);
+    declare_array(&mut flat, "position", &[3]);
+    declare_array(&mut flat, "y", &[2]);
+    let lhs = Expression::VarRef {
+        name: VarName::new("y").into(),
+        subscripts: vec![rumoca_core::Subscript::Index {
+            value: 2,
+            span: crate::test_support::test_span(),
+        }],
+        span: crate::test_support::test_span(),
+    };
+    add_equation(
+        &mut flat,
+        lhs,
+        binary(
+            rumoca_core::OpBinary::Add,
+            colon_vector("position"),
+            multiply(make_structured_var_ref("A"), colon_vector("x")),
+        ),
+        1,
+    );
+    assert_projection_error(&flat, "result shape mismatch");
+}
+
+#[test]
 fn test_todae_projects_matrix_product_for_derivative_matrix_target() {
     let mut dae = rumoca_ir_dae::Dae::new();
     declare_dae_array(&mut dae, "A", &[2, 3]);
