@@ -33,19 +33,17 @@ pub fn initial_residual_equations<'a>(
     // itself only uses the index for per-row temp namespacing (uniqueness) and
     // `row_idx >= state_scalar_count` comparisons (`state_scalar_count` is 0 in
     // initial mode, so the value beyond "is it < 0" is irrelevant there).
-    let continuous =
-        dae_model
-            .continuous
-            .equations
-            .iter()
-            .enumerate()
-            .filter(|(row_idx, equation)| {
-                !state_derivative_rows
-                    .get(*row_idx)
-                    .copied()
-                    .unwrap_or(false)
-                    || derivative_row_constrains_initial_unknown(layout, equation)
-            });
+    let continuous = dae_model
+        .continuous
+        .equations
+        .iter()
+        .enumerate()
+        .filter(|(row_idx, _)| {
+            !state_derivative_rows
+                .get(*row_idx)
+                .copied()
+                .unwrap_or(false)
+        });
     // Initialization-specific equations are not part of the continuous system, so
     // they take indices past the continuous range: no structured family matches
     // (clean scalar fallback) while the index stays unique for temp namespacing.
@@ -58,43 +56,6 @@ pub fn initial_residual_equations<'a>(
         .enumerate()
         .map(move |(offset, eq)| (continuous_len + offset, eq));
     Ok(continuous.chain(initial).collect())
-}
-
-fn derivative_row_constrains_initial_unknown(layout: &VarLayout, equation: &dae::Equation) -> bool {
-    if equation
-        .lhs
-        .as_ref()
-        .is_some_and(|lhs| is_initialization_unknown(layout.binding(lhs.as_str())))
-    {
-        return true;
-    }
-    let Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs,
-        rhs,
-        ..
-    } = &equation.rhs
-    else {
-        return false;
-    };
-    expression_is_direct_initial_unknown(layout, lhs)
-        || expression_is_direct_initial_unknown(layout, rhs)
-}
-
-fn expression_is_direct_initial_unknown(layout: &VarLayout, expr: &Expression) -> bool {
-    if expr.contains_der() {
-        return false;
-    }
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = expr
-    else {
-        return false;
-    };
-    if !subscripts.is_empty() {
-        return false;
-    }
-    is_initialization_unknown(layout.binding(name.as_str()))
 }
 
 fn initial_equation_constrains_solver_unknown(

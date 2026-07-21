@@ -62,7 +62,9 @@ fn fmi_templates_snapshot_solve_pre_parameters_before_discrete_rows() {
                         {"StoreOutput": {"src": 0}}
                     ]]
                 },
-                "root_relation_memory_targets": [{"P": {"index": 5}}]
+                "root_relation_memory_targets": [{"P": {"index": 5}}],
+                "root_zero_domains": ["Previous"],
+                "scheduled_root_conditions": []
             },
             "discrete": {
                 "rhs": {
@@ -96,9 +98,21 @@ fn fmi_templates_snapshot_solve_pre_parameters_before_discrete_rows() {
             "{target} should snapshot P-sourced pre parameters:\n{rendered}"
         );
         assert_snapshot_before_discrete_rows(target, &rendered);
-        assert_root_snapshot_before_relation_memory_commit(target, &rendered);
         if target == "fmi3" {
+            assert_fmi3_event_iteration_refreshes_relation_memory(&rendered);
             assert_fmi3_initial_updates_refresh_pre_params(&rendered);
+            assert!(
+                rendered.contains("root_zero_is_nonpositive(root_index, previous <= 0.0)"),
+                "FMI3 Previous zero-domain handling should preserve the prior indicator domain"
+            );
+            assert!(
+                rendered.contains(
+                    "root_zero_is_nonpositive(root_index, m->event_indicators_prev[root_index] <= 0.0)"
+                ),
+                "FMI3 public zero indicators should use the prior exposed domain"
+            );
+        } else {
+            assert_root_snapshot_before_relation_memory_commit(target, &rendered);
         }
     }
 }
@@ -111,12 +125,34 @@ fn assert_snapshot_before_discrete_rows(target: &str, rendered: &str) {
     let snapshot_pos = event_update
         .find("snapshot_pre_parameters(m);")
         .expect("event update should snapshot lowered pre parameters");
+    let update_call = if target == "fmi3" {
+        "iterate_event_discrete_update(m)"
+    } else {
+        "compute_event_discrete_updates(m);"
+    };
     let compute_pos = event_update
-        .find("compute_event_discrete_updates(m);")
+        .find(update_call)
         .expect("event update should evaluate discrete rows");
     assert!(
         snapshot_pos < compute_pos,
         "{target} should snapshot lowered pre parameters before discrete rows"
+    );
+}
+
+fn assert_fmi3_event_iteration_refreshes_relation_memory(rendered: &str) {
+    let event_iteration = rendered
+        .rsplit("static fmi3Status iterate_event_discrete_update(ModelInstance* m) {")
+        .next()
+        .expect("FMI3 template should define event iteration");
+    let relation_memory_pos = event_iteration
+        .find("refresh_root_relation_memory(m);")
+        .expect("FMI3 event iteration should refresh relation memory");
+    let discrete_update_pos = event_iteration
+        .find("compute_discrete_updates(m);")
+        .expect("FMI3 event iteration should evaluate discrete rows");
+    assert!(
+        relation_memory_pos < discrete_update_pos,
+        "FMI3 should refresh relation memory before evaluating discrete rows"
     );
 }
 

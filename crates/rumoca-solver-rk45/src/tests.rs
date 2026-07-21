@@ -100,15 +100,22 @@ fn rk45_refreshes_algebraic_solve_ir_layout() {
             LinearOp::StoreOutput { src: 0 },
         ],
         vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::Const { dst: 1, value: 2.0 },
+            LinearOp::LoadY { dst: 0, index: 1 },
+            LinearOp::LoadY { dst: 1, index: 0 },
+            LinearOp::Const { dst: 2, value: 2.0 },
             LinearOp::Binary {
-                dst: 2,
+                dst: 3,
                 op: solve::BinaryOp::Mul,
-                lhs: 0,
-                rhs: 1,
+                lhs: 1,
+                rhs: 2,
             },
-            LinearOp::StoreOutput { src: 2 },
+            LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            LinearOp::StoreOutput { src: 4 },
         ],
     ]);
     model.problem.solve_layout.algebraic_scalar_count = 1;
@@ -119,6 +126,12 @@ fn rk45_refreshes_algebraic_solve_ir_layout() {
         IndexMap::from([("x".to_string(), vec![0]), ("a".to_string(), vec![1])]);
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+    model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![solve::AlgebraicProjectionBlock {
+            rows: vec![1],
+            y_indices: vec![1],
+        }],
+    };
     model.initial_y = vec![1.0, 2.0];
     model.visible_names = vec!["x".to_string(), "a".to_string()];
 
@@ -1079,6 +1092,7 @@ fn stiff_contact_model() -> solve::SolveModel {
                     fixture_span!(),
                 ),
                 root_relation_memory_targets: vec![Some(solve::scalar_slot_p(2))],
+                root_zero_domains: vec![solve::RootZeroDomain::Previous],
                 ..Default::default()
             },
             clocks: solve::SolveClockPartition::default(),
@@ -1106,6 +1120,7 @@ fn stiff_contact_model() -> solve::SolveModel {
         },
         artifacts: solve::SolveArtifacts {
             continuous: solve::ContinuousSolveArtifacts::default(),
+            ..Default::default()
         },
         initial_y: vec![0.02, 0.0],
         parameters: vec![0.0, 0.0, 0.0],
@@ -1182,6 +1197,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                 implicit_jacobian_v_scalar: zero.clone(),
                 full_jacobian_v: zero.clone(),
             },
+            ..Default::default()
         },
         initial_y: vec![1.0],
         parameters: Vec::new(),
@@ -1271,6 +1287,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                 implicit_jacobian_v_scalar: zero,
                 full_jacobian_v: ScalarProgramBlock::default(),
             },
+            ..Default::default()
         },
         initial_y: vec![0.0],
         parameters: vec![0.0],

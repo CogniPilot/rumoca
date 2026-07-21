@@ -1511,6 +1511,9 @@ fn validate_partial_component_instantiation(
     )))
 }
 
+// SPEC_0021: Exception - component instantiation is the phase entry point that
+// coordinates the independently extracted type, binding, shape, and nesting helpers.
+#[allow(clippy::too_many_lines)]
 fn instantiate_component(
     tree: &ast::ClassTree,
     comp: &ast::Component,
@@ -1521,24 +1524,21 @@ fn instantiate_component(
     imports: ComponentImports<'_>,
 ) -> InstantiateResult<()> {
     let type_name = comp.type_name.to_string();
-
     let instance_id = overlay.alloc_id();
     let qualified_name = ctx.current_path();
-
     handle_inner_outer(tree, comp, ctx, overlay, &qualified_name, &type_name)?;
-
     let TypeInfo {
         class_def,
         is_primitive,
         is_discrete: is_discrete_type,
     } = validated_component_type_info(tree, comp, ctx, &qualified_name, &type_name)?;
-
     let ComponentBindingInfo {
         mut attrs,
         binding,
         binding_source,
         binding_source_scope,
         binding_from_modification,
+        binding_is_each,
     } = prepare_component_binding_info(
         tree,
         comp,
@@ -1547,12 +1547,9 @@ fn instantiate_component(
         is_discrete_type,
         imports.attributes,
     )?;
-
     let (flow, stream) = component_flow_stream(comp, ctx);
-
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
     merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
-
     let (dims, dims_expr) = resolve_component_shape(
         tree,
         comp,
@@ -1561,7 +1558,6 @@ fn instantiate_component(
         effective_components,
         imports.qualification,
     )?;
-
     let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let binding_scope_for_record_expansion = binding_scope_for_record_expansion(
@@ -1569,13 +1565,9 @@ fn instantiate_component(
         binding_from_modification,
         binding_source_scope.as_ref(),
     );
-
     let causality = resolve_component_causality(comp, class_def, ctx.inherited_causality());
-
     let evaluate = has_evaluate_annotation(comp);
-
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
-
     let (class_overrides, has_forwarding_class_redeclare, nested_type_overrides) =
         resolve_component_nested_type_overrides(
             tree,
@@ -1614,6 +1606,11 @@ fn instantiate_component(
         class_def,
     })?;
 
+    if binding_is_each {
+        overlay
+            .each_modifier_bindings
+            .insert(instance_data.qualified_name.to_component_path());
+    }
     overlay.add_component(instance_data);
 
     instantiate_nested_component_if_needed(
@@ -1630,6 +1627,7 @@ fn instantiate_component(
             stream,
             binding_for_record_expansion: binding_for_record_expansion.as_ref(),
             binding_scope_for_record_expansion: binding_scope_for_record_expansion.as_ref(),
+            binding_is_each,
             effective_components,
             type_overrides: &nested_type_overrides,
         },
@@ -1683,6 +1681,7 @@ struct ComponentBindingInfo {
     binding_source: Option<ast::Expression>,
     binding_source_scope: Option<ast::QualifiedName>,
     binding_from_modification: bool,
+    binding_is_each: bool,
 }
 
 fn prepare_component_binding_info(
@@ -1705,6 +1704,7 @@ fn prepare_component_binding_info(
         binding_source,
         binding_source_scope,
         binding_from_modification,
+        binding_is_each,
     } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
@@ -1730,6 +1730,7 @@ fn prepare_component_binding_info(
         binding_source,
         binding_source_scope,
         binding_from_modification,
+        binding_is_each,
     })
 }
 
@@ -1754,6 +1755,7 @@ struct NestedComponentRequest<'a> {
     stream: bool,
     binding_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
+    binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
 }
@@ -1783,6 +1785,7 @@ fn instantiate_nested_component_if_needed(
             stream: request.stream,
             binding_for_record_expansion: request.binding_for_record_expansion,
             binding_scope_for_record_expansion: request.binding_scope_for_record_expansion,
+            binding_is_each: request.binding_is_each,
             effective_components: request.effective_components,
             type_overrides: request.type_overrides,
         },
@@ -1822,6 +1825,7 @@ struct NestedInstantiationInput<'a> {
     stream: bool,
     binding_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
+    binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
 }
@@ -1841,6 +1845,7 @@ fn instantiate_nested_class(
         stream,
         binding_for_record_expansion,
         binding_scope_for_record_expansion,
+        binding_is_each,
         effective_components,
         type_overrides,
     } = input;
@@ -1882,6 +1887,7 @@ fn instantiate_nested_class(
             ctx,
             binding_expr,
             binding_scope_for_record_expansion.cloned(),
+            binding_is_each,
             nested_class,
             &targeted_keys,
         )?

@@ -1,3 +1,4 @@
+mod assignment_shape;
 #[cfg(test)]
 mod assignment_shape_tests;
 mod dependency;
@@ -27,16 +28,20 @@ use crate::{
     row_register_flow_is_valid, validate_input_requirements, validate_input_requirements_with_span,
     validate_output_len,
 };
-use dependency::reg_depends_on_y_index;
+#[cfg(test)]
+use assignment_shape::checked_expr_eval_len;
+use assignment_shape::target_assignment_shapes;
+pub use assignment_shape::{TargetAssignmentShape, target_assignment_shape};
 
 /// Reusable evaluator for one Solve-IR row block.
 pub struct PreparedScalarProgramBlock {
     block: ScalarProgramBlock,
     output_count: usize,
+    row_outputs: Box<PreparedRowOutputMetadata>,
     row_registers: Vec<usize>,
     row_requirements: Vec<RowInputRequirements>,
     row_register_safe: Vec<bool>,
-    row_assignment_shapes: Vec<Option<TargetAssignmentShape>>,
+    row_assignment_shapes: Vec<Box<[TargetAssignmentShape]>>,
     requirements: RowInputRequirements,
     scratch: RefCell<RowEvalScratch>,
     row_output_scratch: RefCell<Vec<f64>>,
@@ -47,6 +52,7 @@ impl Clone for PreparedScalarProgramBlock {
         Self {
             block: self.block.clone(),
             output_count: self.output_count,
+            row_outputs: self.row_outputs.clone(),
             row_registers: self.row_registers.clone(),
             row_requirements: self.row_requirements.clone(),
             row_register_safe: self.row_register_safe.clone(),
@@ -61,8 +67,9 @@ impl Clone for PreparedScalarProgramBlock {
 impl PreparedScalarProgramBlock {
     pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
         let row_count = block.programs.len();
-        let output_count = block.output_count();
         let block_span = block.program_span(0);
+        let output_count = checked_prepared_output_count(&block)?;
+        let row_outputs = Box::new(prepare_row_output_metadata(&block, output_count)?);
         let mut row_registers =
             prepared_vec_with_capacity(row_count, "prepared row register count", block_span)?;
         let mut row_requirements =
@@ -85,13 +92,17 @@ impl PreparedScalarProgramBlock {
             row_register_safe.push(
                 row_register_flow_is_valid(row).map_err(|error| error.with_source_span(span))?,
             );
-            row_assignment_shapes
-                .push(target_assignment_shape(row).map_err(|error| error.with_source_span(span))?);
+            row_assignment_shapes.push(
+                target_assignment_shapes(row)
+                    .map_err(|error| error.with_source_span(span))?
+                    .into_boxed_slice(),
+            );
             requirements = requirements.merge(row_requirement);
         }
         Ok(Self {
             block,
             output_count,
+            row_outputs,
             row_registers,
             row_requirements,
             row_register_safe,
@@ -183,10 +194,7 @@ impl PreparedScalarProgramBlock {
     ) -> Result<(), EvalSolveError> {
         let rows = rows.min(self.block.row_count());
         let prefix = &self.block.programs[..rows];
-        let stored_output_count: usize = prefix
-            .iter()
-            .map(|program| ScalarProgramBlock::program_output_count(program))
-            .sum();
+        let stored_output_count = self.row_outputs.offsets[rows];
         let local_runtime_state;
         let context = match context.runtime_state {
             Some(_) => context,
@@ -395,7 +403,9 @@ impl PreparedScalarProgramBlock {
                 self.block.program_span(request.row_idx),
             )?;
         }
-        let output_count = ScalarProgramBlock::program_output_count(row);
+        let output_count = self.row_output_count(request.row_idx).ok_or_else(|| {
+            invalid_prepared_row("prepared row output metadata is missing the requested row")
+        })?;
         if request.output_offset >= output_count {
             return Err(EvalSolveError::OutputTooSmall {
                 required: request.output_offset.checked_add(1).ok_or_else(|| {
@@ -470,23 +480,20 @@ impl PreparedScalarProgramBlock {
     pub fn row_has_assignment_shape(&self, row_idx: usize) -> bool {
         self.row_assignment_shapes
             .get(row_idx)
-            .is_some_and(|shape| shape.is_some())
+            .is_some_and(|shapes| !shapes.is_empty())
     }
 
     pub(crate) fn row_output_count(&self, row_idx: usize) -> Option<usize> {
-        self.block
-            .programs
-            .get(row_idx)
-            .map(|row| ScalarProgramBlock::program_output_count(row))
+        let start = *self.row_outputs.offsets.get(row_idx)?;
+        let end = *self.row_outputs.offsets.get(row_idx.checked_add(1)?)?;
+        end.checked_sub(start)
     }
 
     pub(crate) fn row_output_index(&self, row_idx: usize, output_offset: usize) -> Option<usize> {
-        let mut stored_ordinal = 0usize;
-        for row in self.block.programs.get(..row_idx)? {
-            stored_ordinal =
-                stored_ordinal.checked_add(ScalarProgramBlock::program_output_count(row))?;
+        if output_offset >= self.row_output_count(row_idx)? {
+            return None;
         }
-        stored_ordinal = stored_ordinal.checked_add(output_offset)?;
+        let stored_ordinal = self.row_outputs.offsets[row_idx].checked_add(output_offset)?;
         self.block.output_indices.get(stored_ordinal).copied()
     }
 
@@ -494,84 +501,36 @@ impl PreparedScalarProgramBlock {
     /// Assignment-shape evaluation is row-based, while tensor/scalarized
     /// compute blocks may place rows through a non-identity output map.
     pub fn single_output_row_for_output_index(&self, output_index: usize) -> Option<usize> {
-        let mut stored_ordinal = 0usize;
-        for (row_idx, row) in self.block.programs.iter().enumerate() {
-            let output_count = ScalarProgramBlock::program_output_count(row);
-            if output_count == 1
-                && self.block.output_indices.get(stored_ordinal).copied() == Some(output_index)
-            {
-                return Some(row_idx);
-            }
-            stored_ordinal = stored_ordinal.checked_add(output_count)?;
-        }
-        None
+        self.row_outputs
+            .single_rows
+            .get(output_index)
+            .copied()
+            .flatten()
     }
 
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs.get(row_idx) else {
             return false;
         };
-        match self.row_assignment_shapes[row_idx] {
-            Some(shape) => shape.target_y_index() == target_y_index,
-            None => !row_loads_y_index(row, target_y_index),
-        }
+        self.assignment_shape(row_idx, target_y_index).is_some()
+            || !row_loads_y_index(row, target_y_index)
     }
 
-    pub(crate) fn target_assignment_diagonal_unchecked_with_context(
+    pub(crate) fn certifies_direct_target_assignment(
         &self,
         row_idx: usize,
         target_y_index: usize,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        context: RowEvalContext<'_>,
-    ) -> Result<Option<f64>, EvalSolveError> {
-        let Some(shape) = self.row_assignment_shapes.get(row_idx).copied().flatten() else {
-            return Ok(None);
+    ) -> bool {
+        let Some(row) = self.block.programs.get(row_idx) else {
+            return false;
         };
-        if shape.target_y_index() != target_y_index {
-            return Ok(None);
+        if row.iter().any(non_causal_linear_op) {
+            return false;
         }
-        let span = self.block.program_span(row_idx);
-        match shape {
-            TargetAssignmentShape::Direct { target_scale, .. } => Ok(Some(target_scale)),
-            TargetAssignmentShape::Affine {
-                coefficient_reg,
-                coefficient_scale,
-                expr_eval_len,
-                ..
-            } => {
-                let Some(row) = self.block.programs.get(row_idx) else {
-                    return Err(EvalSolveError::OutputTooSmall {
-                        required: checked_required_row_count(row_idx)?,
-                        len: self.block.row_count(),
-                        span,
-                    });
-                };
-                let coefficient = match coefficient_reg {
-                    Some(reg) => {
-                        let mut scratch = self.scratch.borrow_mut();
-                        eval_program_single(
-                            PreparedRowEval::new(
-                                &row[..expr_eval_len],
-                                self.row_registers[row_idx],
-                                y,
-                                p,
-                                t,
-                                context,
-                            )
-                            .with_source_span(span),
-                            self.row_register_safe[row_idx],
-                            &mut scratch,
-                        )
-                        .map_err(|error| error.with_source_span(span))?;
-                        read_shape_reg(&scratch.regs, reg, span)?
-                    }
-                    None => 1.0,
-                };
-                Ok(Some(coefficient_scale * coefficient))
-            }
-        }
+        matches!(
+            self.assignment_shape(row_idx, target_y_index),
+            Some(TargetAssignmentShape::Direct { .. })
+        )
     }
 
     pub fn eval_target_assignment_row_unchecked_with_context(
@@ -613,7 +572,9 @@ impl PreparedScalarProgramBlock {
                 len: self.block.row_count(),
                 span: self.block.program_span(row_idx),
             })?;
-        let output_count = ScalarProgramBlock::program_output_count(row);
+        let output_count = self.row_output_count(row_idx).ok_or_else(|| {
+            invalid_prepared_row("prepared row output metadata is missing the requested row")
+        })?;
         out.resize(output_count, 0.0);
         out.fill(0.0);
         let mut scratch = self.scratch.borrow_mut();
@@ -691,10 +652,13 @@ impl PreparedScalarProgramBlock {
         }
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(request.label, self.output_count, 1);
-        let Some(shape) = self.row_assignment_shapes[request.row_idx] else {
+        let Some(shape) = self.assignment_shape(request.row_idx, request.target_y_index) else {
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.
+            if !self.row_assignment_shapes[request.row_idx].is_empty() {
+                return Ok(None);
+            }
             let output = eval_program_single(
                 PreparedRowEval::new(
                     row,
@@ -711,9 +675,6 @@ impl PreparedScalarProgramBlock {
             .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
             return Ok((!row_loads_y_index(row, request.target_y_index)).then_some(output));
         };
-        if shape.target_y_index() != request.target_y_index {
-            return Ok(None);
-        }
         eval_program_single(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
@@ -751,22 +712,12 @@ impl PreparedScalarProgramBlock {
                     len: self.block.row_count(),
                     span: self.block.program_span(request.row_idx),
                 })?;
-        let Some(shape) = self.row_assignment_shapes[request.row_idx] else {
+        let Some(shape) = self.assignment_shape(request.row_idx, request.target_y_index) else {
             return Err(invalid_prepared_row_with_span(
-                "batched target assignment row has no assignment shape",
+                "batched target assignment row has no matching assignment shape",
                 self.block.program_span(request.row_idx),
             ));
         };
-        if shape.target_y_index() != request.target_y_index {
-            return Err(invalid_prepared_row_with_span(
-                format!(
-                    "batched target assignment row targets y[{}], not y[{}]",
-                    shape.target_y_index(),
-                    request.target_y_index
-                ),
-                self.block.program_span(request.row_idx),
-            ));
-        }
         eval_program_single(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
@@ -788,6 +739,18 @@ impl PreparedScalarProgramBlock {
                 self.block.program_span(request.row_idx),
             )
             .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
+    }
+
+    fn assignment_shape(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+    ) -> Option<TargetAssignmentShape> {
+        self.row_assignment_shapes
+            .get(row_idx)?
+            .iter()
+            .copied()
+            .find(|shape| shape.target_y_index() == target_y_index)
     }
 
     fn eval_rows_unchecked(
@@ -861,244 +824,6 @@ struct TargetAssignmentScratchRequest<'a> {
     scratch: &'a mut RowEvalScratch,
 }
 
-/// Scalar Solve-IR row shape that can update one solver-Y slot directly.
-///
-/// Code generators use the same analysis as the interpreter so compiled
-/// projection sweeps preserve assignment-row semantics.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum TargetAssignmentShape {
-    Direct {
-        target_y_index: usize,
-        expr_reg: u32,
-        target_scale: f64,
-        expr_eval_len: usize,
-    },
-    Affine {
-        target_y_index: usize,
-        offset_reg: u32,
-        coefficient_reg: Option<u32>,
-        offset_scale: f64,
-        coefficient_scale: f64,
-        expr_eval_len: usize,
-    },
-}
-
-impl TargetAssignmentShape {
-    pub fn target_y_index(self) -> usize {
-        match self {
-            Self::Direct { target_y_index, .. } | Self::Affine { target_y_index, .. } => {
-                target_y_index
-            }
-        }
-    }
-
-    pub fn expr_eval_len(self) -> usize {
-        match self {
-            Self::Direct { expr_eval_len, .. } | Self::Affine { expr_eval_len, .. } => {
-                expr_eval_len
-            }
-        }
-    }
-
-    fn eval_value(
-        self,
-        row_idx: usize,
-        regs: &[f64],
-        span: Option<rumoca_core::Span>,
-    ) -> Result<f64, EvalSolveError> {
-        match self {
-            Self::Direct { expr_reg, .. } => read_shape_reg(regs, expr_reg, span),
-            Self::Affine {
-                target_y_index,
-                offset_reg,
-                coefficient_reg,
-                offset_scale,
-                coefficient_scale,
-                ..
-            } => {
-                let offset = offset_scale * read_shape_reg(regs, offset_reg, span)?;
-                let coefficient = coefficient_scale
-                    * coefficient_reg.map_or(Ok(1.0), |reg| read_shape_reg(regs, reg, span))?;
-                if coefficient == 0.0 || !coefficient.is_finite() {
-                    return Err(EvalSolveError::SingularTargetAssignment {
-                        row: row_idx,
-                        target_y_index,
-                        coefficient,
-                        span,
-                    });
-                }
-                Ok(-offset / coefficient)
-            }
-        }
-    }
-}
-
-/// Recognize a scalar row that can be evaluated as `target = expression`.
-pub fn target_assignment_shape(
-    row: &[LinearOp],
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    if ScalarProgramBlock::program_output_count(row) > 1 {
-        return Ok(None);
-    }
-    let Some(output_reg) = store_output_reg(row) else {
-        return Ok(None);
-    };
-    if let Some(shape) = direct_assignment_shape(row, output_reg)? {
-        return Ok(Some(shape));
-    }
-    affine_assignment_shape(row, output_reg)
-}
-
-fn read_shape_reg(
-    regs: &[f64],
-    reg: u32,
-    span: Option<rumoca_core::Span>,
-) -> Result<f64, EvalSolveError> {
-    regs.get(reg as usize)
-        .copied()
-        .ok_or(EvalSolveError::RegisterOutOfBounds {
-            access: "read",
-            register: reg,
-            len: regs.len(),
-            span,
-        })
-}
-
-fn direct_assignment_shape(
-    row: &[LinearOp],
-    output_reg: u32,
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    let Some((target_reg, expr_reg, target_scale)) = assignment_expr_reg(row, output_reg) else {
-        return Ok(None);
-    };
-    let Some(target_y_index) = target_load_index(row, target_reg) else {
-        return Ok(None);
-    };
-    let Some(expr_pos) = producer_pos(row, expr_reg) else {
-        return Ok(None);
-    };
-    let expr_eval_len = checked_expr_eval_len(expr_pos)?;
-    Ok(Some(TargetAssignmentShape::Direct {
-        target_y_index,
-        expr_reg,
-        target_scale,
-        expr_eval_len,
-    }))
-}
-
-fn affine_assignment_shape(
-    row: &[LinearOp],
-    output_reg: u32,
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    let Some(output_op) = producer(row, output_reg) else {
-        return Ok(None);
-    };
-    let (lhs, rhs, lhs_scale, rhs_scale) = match *output_op {
-        LinearOp::Binary {
-            op: rumoca_ir_solve::BinaryOp::Add,
-            lhs,
-            rhs,
-            ..
-        } => (lhs, rhs, 1.0, 1.0),
-        LinearOp::Binary {
-            op: rumoca_ir_solve::BinaryOp::Sub,
-            lhs,
-            rhs,
-            ..
-        } => (lhs, rhs, 1.0, -1.0),
-        _ => return Ok(None),
-    };
-    affine_sum_shape(row, lhs, rhs, lhs_scale, rhs_scale)
-}
-
-fn affine_sum_shape(
-    row: &[LinearOp],
-    lhs: u32,
-    rhs: u32,
-    lhs_scale: f64,
-    rhs_scale: f64,
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    if let Some((target_reg, coefficient_reg)) = affine_target_term(row, lhs) {
-        return affine_sum_side_shape(row, target_reg, coefficient_reg, lhs_scale, rhs, rhs_scale);
-    }
-    let Some((target_reg, coefficient_reg)) = affine_target_term(row, rhs) else {
-        return Ok(None);
-    };
-    affine_sum_side_shape(row, target_reg, coefficient_reg, rhs_scale, lhs, lhs_scale)
-}
-
-fn affine_sum_side_shape(
-    row: &[LinearOp],
-    target_reg: u32,
-    coefficient_reg: Option<u32>,
-    coefficient_scale: f64,
-    offset_reg: u32,
-    offset_scale: f64,
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    let Some(target_y_index) = target_load_index(row, target_reg) else {
-        return Ok(None);
-    };
-    if coefficient_reg.is_some_and(|reg| reg_depends_on_y_index(row, reg, target_y_index))
-        || reg_depends_on_y_index(row, offset_reg, target_y_index)
-    {
-        return Ok(None);
-    }
-    let coefficient_pos = coefficient_reg
-        .and_then(|reg| producer_pos(row, reg))
-        .unwrap_or(0);
-    let Some(offset_pos) = producer_pos(row, offset_reg) else {
-        return Ok(None);
-    };
-    let expr_eval_len = checked_expr_eval_len(coefficient_pos.max(offset_pos))?;
-    Ok(Some(TargetAssignmentShape::Affine {
-        target_y_index,
-        offset_reg,
-        coefficient_reg,
-        offset_scale,
-        coefficient_scale,
-        expr_eval_len,
-    }))
-}
-
-fn checked_expr_eval_len(pos: usize) -> Result<usize, EvalSolveError> {
-    pos.checked_add(1)
-        .ok_or_else(|| invalid_prepared_row("target assignment expression length overflows"))
-}
-
-fn affine_target_term(row: &[LinearOp], reg: u32) -> Option<(u32, Option<u32>)> {
-    if is_y_load(row, reg) {
-        return Some((reg, None));
-    }
-    let LinearOp::Binary {
-        op: rumoca_ir_solve::BinaryOp::Mul,
-        lhs,
-        rhs,
-        ..
-    } = *producer(row, reg)?
-    else {
-        return None;
-    };
-    match (is_y_load(row, lhs), is_y_load(row, rhs)) {
-        (true, false) => Some((lhs, Some(rhs))),
-        (false, true) => Some((rhs, Some(lhs))),
-        _ => None,
-    }
-}
-
-fn store_output_reg(row: &[LinearOp]) -> Option<u32> {
-    row.iter().rev().find_map(|op| match *op {
-        LinearOp::StoreOutput { src } => Some(src),
-        _ => None,
-    })
-}
-
-fn target_load_index(row: &[LinearOp], target_reg: u32) -> Option<usize> {
-    row.iter().find_map(|op| match *op {
-        LinearOp::LoadY { dst, index } if dst == target_reg => Some(index),
-        _ => None,
-    })
-}
-
 fn row_loads_y_index(row: &[LinearOp], target_y_index: usize) -> bool {
     row.iter().any(|op| {
         matches!(
@@ -1108,64 +833,10 @@ fn row_loads_y_index(row: &[LinearOp], target_y_index: usize) -> bool {
     })
 }
 
-fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32, f64)> {
-    let output_op = producer(row, output_reg)?;
-    match *output_op {
-        LinearOp::Binary {
-            op: rumoca_ir_solve::BinaryOp::Sub,
-            lhs,
-            rhs,
-            ..
-        } => sub_assignment_expr_reg(row, lhs, rhs, 1.0),
-        LinearOp::Unary {
-            op: rumoca_ir_solve::UnaryOp::Neg,
-            arg,
-            ..
-        } => {
-            let inner = producer(row, arg)?;
-            let LinearOp::Binary {
-                op: rumoca_ir_solve::BinaryOp::Sub,
-                lhs,
-                rhs,
-                ..
-            } = *inner
-            else {
-                return None;
-            };
-            sub_assignment_expr_reg(row, lhs, rhs, -1.0)
-        }
-        _ => None,
-    }
-}
-
 fn producer(row: &[LinearOp], dst_reg: u32) -> Option<&LinearOp> {
     row.iter()
         .rev()
         .find(|op| op.dst_register() == Some(dst_reg))
-}
-
-fn producer_pos(row: &[LinearOp], dst_reg: u32) -> Option<usize> {
-    row.iter()
-        .rposition(|op| op.dst_register() == Some(dst_reg))
-}
-
-fn sub_assignment_expr_reg(
-    row: &[LinearOp],
-    lhs: u32,
-    rhs: u32,
-    output_scale: f64,
-) -> Option<(u32, u32, f64)> {
-    if is_y_load(row, lhs) {
-        Some((lhs, rhs, output_scale))
-    } else if is_y_load(row, rhs) {
-        Some((rhs, lhs, -output_scale))
-    } else {
-        None
-    }
-}
-
-fn is_y_load(row: &[LinearOp], reg: u32) -> bool {
-    matches!(producer(row, reg), Some(LinearOp::LoadY { .. }))
 }
 
 /// Reusable evaluator for a full tensor-aware Solve-IR compute block.
@@ -1846,6 +1517,122 @@ fn checked_register_range_last(start: u32, len: usize) -> Result<u32, EvalSolveE
     start.checked_add(offset).ok_or_else(|| {
         invalid_prepared_row(format!("register range starting at {start} overflows"))
     })
+}
+
+fn prepare_row_output_metadata(
+    block: &ScalarProgramBlock,
+    output_count: usize,
+) -> Result<PreparedRowOutputMetadata, EvalSolveError> {
+    let span = block.program_span(0);
+    let offset_count = checked_prepared_sum(
+        block.row_count(),
+        1,
+        "prepared row output offset count",
+        span,
+    )?;
+    let mut offsets =
+        prepared_vec_with_capacity(offset_count, "prepared row output offsets", span)?;
+    offsets.push(0usize);
+    for row in &block.programs {
+        let next = checked_prepared_sum(
+            *offsets.last().unwrap_or(&0),
+            ScalarProgramBlock::program_output_count(row),
+            "prepared row stored output count",
+            span,
+        )?;
+        offsets.push(next);
+    }
+
+    if offsets.last().copied() != Some(block.output_indices.len()) {
+        return Err(invalid_prepared_row_with_span(
+            format!(
+                "prepared block has {} stored outputs but {} logical output indices",
+                offsets.last().copied().unwrap_or(0),
+                block.output_indices.len()
+            ),
+            span,
+        ));
+    }
+    let mut owners =
+        prepared_vec_with_capacity(output_count, "prepared single-output ownership", span)?;
+    owners.resize(output_count, PreparedOutputOwner::Unseen);
+    for (row_idx, range) in offsets.windows(2).enumerate() {
+        let row_output_count = range[1] - range[0];
+        for stored_ordinal in range[0]..range[1] {
+            let output_index = *block.output_indices.get(stored_ordinal).ok_or_else(|| {
+                invalid_prepared_row_with_span(
+                    format!(
+                        "prepared row output ordinal {stored_ordinal} has no logical output index"
+                    ),
+                    block.program_span(row_idx),
+                )
+            })?;
+            let owner = owners.get_mut(output_index).ok_or_else(|| {
+                invalid_prepared_row_with_span(
+                    format!("logical output index {output_index} exceeds prepared output count"),
+                    block.program_span(row_idx),
+                )
+            })?;
+            *owner = match (*owner, row_output_count) {
+                (PreparedOutputOwner::Unseen, 1) => PreparedOutputOwner::Single(row_idx),
+                _ => PreparedOutputOwner::Ambiguous,
+            };
+        }
+    }
+    let single_output_rows = owners
+        .into_iter()
+        .map(|owner| match owner {
+            PreparedOutputOwner::Single(row_idx) => Some(row_idx),
+            PreparedOutputOwner::Unseen | PreparedOutputOwner::Ambiguous => None,
+        })
+        .collect();
+    Ok(PreparedRowOutputMetadata {
+        offsets,
+        single_rows: single_output_rows,
+    })
+}
+
+#[derive(Clone)]
+struct PreparedRowOutputMetadata {
+    offsets: Vec<usize>,
+    single_rows: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Copy)]
+enum PreparedOutputOwner {
+    Unseen,
+    Single(usize),
+    Ambiguous,
+}
+
+fn checked_prepared_output_count(block: &ScalarProgramBlock) -> Result<usize, EvalSolveError> {
+    block
+        .output_indices
+        .iter()
+        .copied()
+        .max()
+        .map_or(Ok(0), |index| {
+            checked_prepared_sum(
+                index,
+                1,
+                "prepared logical output count",
+                block.program_span(0),
+            )
+        })
+}
+
+fn non_causal_linear_op(op: &LinearOp) -> bool {
+    matches!(
+        op,
+        LinearOp::LoadSeed { .. }
+            | LinearOp::LoadIndexedSeed { .. }
+            | LinearOp::RandomInitialState { .. }
+            | LinearOp::RandomResult { .. }
+            | LinearOp::RandomState { .. }
+            | LinearOp::ImpureRandomInit { .. }
+            | LinearOp::ImpureRandom { .. }
+            | LinearOp::ImpureRandomInteger { .. }
+    )
 }
 
 fn prepared_vec_with_capacity<T>(

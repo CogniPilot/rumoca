@@ -607,7 +607,7 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
             fixture_span!(),
         ),
     );
-    model.problem.initialization.projection_indices = vec![1];
+    install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.initial_y = vec![0.0, 0.0];
     model.visible_names = vec!["z".to_string()];
 
@@ -644,7 +644,7 @@ fn initialization_projects_demoted_state_layout_slots() {
         solve::ScalarProgramBlock::with_source_span(vec![z_minus_one()], fixture_span!()),
     );
     model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(1))];
-    model.problem.initialization.projection_indices = vec![1];
+    install_scalar_initial_projection_plan(&mut model, 0, 1);
     model.initial_y = vec![0.0, 0.0];
     model.variable_meta = vec![
         solve::SolveVariableMeta {
@@ -769,6 +769,7 @@ fn simulate_records_algebraically_consistent_initial_sample() {
             fixture_span!(),
         ),
     );
+    install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.initial_y = vec![0.0, 0.0];
     model.visible_names = vec!["z".to_string()];
 
@@ -818,7 +819,7 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
             fixture_span!(),
         ),
     );
-    model.problem.initialization.projection_indices = vec![1];
+    install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.problem.initialization.update_rhs = solve::ScalarProgramBlock::with_source_span(
         vec![z_greater_one_condition_row()],
         fixture_span!(),
@@ -880,6 +881,7 @@ fn simulate_seeds_initial_discrete_conditions_before_initial_residual() {
             fixture_span!(),
         ),
     );
+    install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.initial_y = vec![0.0, 0.0];
     model.parameters = vec![0.0];
     model.visible_names = vec!["z".to_string()];

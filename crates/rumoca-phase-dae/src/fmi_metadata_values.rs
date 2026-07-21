@@ -912,10 +912,18 @@ fn eval_fmi_named_function(
     env: &FmiMetadataEnv<'_>,
 ) -> FmiEvalResult<FmiConstValue> {
     let short_name = name.last_segment();
+    let folded_args = args
+        .iter()
+        .map(|arg| fold_fmi_function_argument(arg, env))
+        .collect::<FmiEvalResult<Vec<_>>>()?;
 
-    if let Ok(values) =
-        rumoca_eval_dae::eval::eval_user_function_array_output_pub::<f64>(name, args, env.runtime)
-    {
+    if name.resolved_function().is_some() {
+        let values = rumoca_eval_dae::eval::eval_user_function_array_output_pub::<f64>(
+            name,
+            &folded_args,
+            env.runtime,
+        )
+        .map_err(|err| FmiEvalError::FunctionEvaluation(err.to_string()))?;
         return match values.as_slice() {
             [value] => Ok(FmiConstValue::Real(*value)),
             _ => Ok(FmiConstValue::Array(
@@ -934,9 +942,259 @@ fn eval_fmi_named_function(
         return eval_fmi_builtin(function, args, env);
     }
 
-    rumoca_eval_dae::eval_function_call_pub::<f64>(name.var_name(), args, env.runtime)
-        .map(FmiConstValue::Real)
-        .map_err(|err| FmiEvalError::FunctionEvaluation(err.to_string()))
+    Err(FmiEvalError::FunctionEvaluation(format!(
+        "missing function `{name}`"
+    )))
+}
+
+fn fold_fmi_function_argument(
+    arg: &Expression,
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<Expression> {
+    match arg {
+        Expression::Binary { op, lhs, rhs, span } => Ok(Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(fold_fmi_function_argument(lhs, env)?),
+            rhs: Box::new(fold_fmi_function_argument(rhs, env)?),
+            span: *span,
+        }),
+        Expression::Unary { op, rhs, span } => Ok(Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(fold_fmi_function_argument(rhs, env)?),
+            span: *span,
+        }),
+        Expression::BuiltinCall {
+            function,
+            args,
+            span,
+        } => Ok(Expression::BuiltinCall {
+            function: *function,
+            args: fold_fmi_function_arguments(args, env)?,
+            span: *span,
+        }),
+        Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } => Ok(Expression::FunctionCall {
+            name: name.clone(),
+            args: fold_fmi_function_arguments(args, env)?,
+            is_constructor: *is_constructor,
+            span: *span,
+        }),
+        Expression::Array {
+            elements,
+            is_matrix,
+            span,
+        } => Ok(Expression::Array {
+            elements: fold_fmi_function_arguments(elements, env)?,
+            is_matrix: *is_matrix,
+            span: *span,
+        }),
+        Expression::Tuple { elements, span } => Ok(Expression::Tuple {
+            elements: fold_fmi_function_arguments(elements, env)?,
+            span: *span,
+        }),
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => fold_fmi_if_argument(branches, else_branch, *span, env),
+        Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => Ok(Expression::Range {
+            start: Box::new(fold_fmi_function_argument(start, env)?),
+            step: step
+                .as_deref()
+                .map(|value| fold_fmi_function_argument(value, env).map(Box::new))
+                .transpose()?,
+            end: Box::new(fold_fmi_function_argument(end, env)?),
+            span: *span,
+        }),
+        Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => Ok(Expression::Index {
+            base: Box::new(fold_fmi_function_argument(base, env)?),
+            subscripts: fold_fmi_function_subscripts(subscripts, env)?,
+            span: *span,
+        }),
+        Expression::FieldAccess { base, field, span } => Ok(Expression::FieldAccess {
+            base: Box::new(fold_fmi_function_argument(base, env)?),
+            field: field.clone(),
+            span: *span,
+        }),
+        Expression::Literal { .. } => Ok(arg.clone()),
+        Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => fold_fmi_variable_argument(name, subscripts, *span, env),
+        Expression::ArrayComprehension { .. } => Err(FmiEvalError::Unsupported(
+            "function array-comprehension argument",
+        )),
+        Expression::Empty { .. } => Err(FmiEvalError::Unsupported("empty function argument")),
+    }
+}
+
+fn fold_fmi_if_argument(
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+    span: Span,
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<Expression> {
+    let branches = branches
+        .iter()
+        .map(|(condition, value)| {
+            Ok((
+                fold_fmi_function_argument(condition, env)?,
+                fold_fmi_function_argument(value, env)?,
+            ))
+        })
+        .collect::<FmiEvalResult<Vec<_>>>()?;
+    Ok(Expression::If {
+        branches,
+        else_branch: Box::new(fold_fmi_function_argument(else_branch, env)?),
+        span,
+    })
+}
+
+fn fold_fmi_variable_argument(
+    name: &Reference,
+    subscripts: &[Subscript],
+    span: Span,
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<Expression> {
+    let key = reference_key(name, env)?;
+    let value = try_eval_fmi_var_ref(name, subscripts, env)?;
+    let combined_subscripts = combined_reference_subscripts(name, subscripts);
+    let dimensions = combined_subscripts
+        .iter()
+        .all(|subscript| matches!(subscript, Subscript::Colon { .. }))
+        .then(|| env.dims.get(&key).map(Vec::as_slice))
+        .flatten();
+    fmi_const_value_expression(value, span, dimensions)
+}
+
+fn fold_fmi_function_arguments(
+    args: &[Expression],
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<Vec<Expression>> {
+    args.iter()
+        .map(|arg| fold_fmi_function_argument(arg, env))
+        .collect()
+}
+
+fn fold_fmi_function_subscripts(
+    subscripts: &[Subscript],
+    env: &FmiMetadataEnv<'_>,
+) -> FmiEvalResult<Vec<Subscript>> {
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            Subscript::Index { .. } | Subscript::Colon { .. } => Ok(subscript.clone()),
+            Subscript::Expr { expr, span } => Ok(Subscript::Expr {
+                expr: Box::new(fold_fmi_function_argument(expr, env)?),
+                span: *span,
+            }),
+        })
+        .collect()
+}
+
+fn fmi_const_value_expression(
+    value: FmiConstValue,
+    span: Span,
+    dimensions: Option<&[i64]>,
+) -> FmiEvalResult<Expression> {
+    match value {
+        FmiConstValue::Real(value) => Ok(Expression::Literal {
+            value: Literal::Real(value),
+            span,
+        }),
+        FmiConstValue::Bool(value) => Ok(Expression::Literal {
+            value: Literal::Boolean(value),
+            span,
+        }),
+        FmiConstValue::String(value) => Ok(Expression::Literal {
+            value: Literal::String(value),
+            span,
+        }),
+        FmiConstValue::Array(elements) => {
+            let dimensions = dimensions.ok_or(FmiEvalError::ShapeMismatch)?;
+            let dimensions = dimensions
+                .iter()
+                .map(|dimension| {
+                    usize::try_from(*dimension).map_err(|_| FmiEvalError::ShapeMismatch)
+                })
+                .collect::<FmiEvalResult<Vec<_>>>()?;
+            let elements = flattened_fmi_values(&elements);
+            build_fmi_array_expression(&elements, &dimensions, span)
+        }
+    }
+}
+
+fn build_fmi_array_expression(
+    values: &[FmiConstValue],
+    dimensions: &[usize],
+    span: Span,
+) -> FmiEvalResult<Expression> {
+    let Some((&extent, child_dimensions)) = dimensions.split_first() else {
+        return Err(FmiEvalError::ShapeMismatch);
+    };
+    let child_size = child_dimensions
+        .iter()
+        .try_fold(1usize, |size, extent| size.checked_mul(*extent))
+        .ok_or(FmiEvalError::Overflow)?;
+    let expected = extent
+        .checked_mul(child_size)
+        .ok_or(FmiEvalError::Overflow)?;
+    if values.len() != expected {
+        return Err(FmiEvalError::ShapeMismatch);
+    }
+    let elements = if child_dimensions.is_empty() {
+        values
+            .iter()
+            .cloned()
+            .map(|value| fmi_const_value_expression(value, span, None))
+            .collect::<FmiEvalResult<Vec<_>>>()?
+    } else {
+        let mut children = Vec::new();
+        children
+            .try_reserve_exact(extent)
+            .map_err(|_| FmiEvalError::Overflow)?;
+        for child_index in 0..extent {
+            let start = child_index
+                .checked_mul(child_size)
+                .ok_or(FmiEvalError::Overflow)?;
+            let end = start
+                .checked_add(child_size)
+                .ok_or(FmiEvalError::Overflow)?;
+            children.push(build_fmi_array_expression(
+                values.get(start..end).ok_or(FmiEvalError::ShapeMismatch)?,
+                child_dimensions,
+                span,
+            )?);
+        }
+        children
+    };
+    Ok(Expression::Array {
+        elements,
+        is_matrix: dimensions.len() == 2,
+        span,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn build_empty_fmi_array_expression_for_test(
+    dimensions: &[usize],
+    span: Span,
+) -> Result<Expression, String> {
+    build_fmi_array_expression(&[], dimensions, span).map_err(|error| error.to_string())
 }
 
 fn eval_fmi_substring(args: &[Expression], env: &FmiMetadataEnv<'_>) -> FmiEvalResult<String> {

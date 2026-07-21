@@ -10,24 +10,16 @@ use super::expr_util::{
 };
 use super::timing::{log_solve_lowering_done, log_solve_lowering_start, stage_timer_start};
 
-/// Shared structural preparation run before both the simulation lowering and the
-/// `--inspect structure` report: scalarize (when requested), demote pseudo-states
-/// and reduce index, eliminate derivative aliases, and rewrite standalone
+/// Shared structural rewrites run before both simulation lowering and the
+/// `--inspect structure` report: demote pseudo-states and reduce index,
+/// eliminate derivative aliases, and rewrite standalone
 /// `der(state)` references in non-ODE rows (`y = der(x)` → `y = <x's ODE rhs>`).
 ///
 /// Keeping this in one place ensures the structural report and the simulator
 /// agree on the matched system, and that fixes apply to both paths at once.
-pub(super) fn prepare_dae_for_structural_analysis(
+fn rewrite_dae_for_structural_analysis(
     lowered: &mut dae::Dae,
-    opts: &SimOptions,
 ) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
-    if opts.scalarize {
-        log_solve_lowering_start("prepare.scalarize_equations");
-        let timer = stage_timer_start();
-        rumoca_phase_structural::scalarize::scalarize_equations(lowered)
-            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
-        log_solve_lowering_done("prepare.scalarize_equations", timer);
-    }
     log_solve_lowering_start("prepare.demote_exact_alias_component_states");
     let timer = stage_timer_start();
     rumoca_phase_structural::dae_prepare::demote_exact_alias_component_states(lowered)
@@ -105,6 +97,14 @@ pub(super) fn prepare_dae_for_structural_analysis(
     Ok(())
 }
 
+pub(super) fn prepare_dae_for_structural_analysis(
+    lowered: &mut dae::Dae,
+    opts: &SimOptions,
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    rewrite_dae_for_structural_analysis(lowered)?;
+    scalarize_solver_view(lowered, opts, "prepare.scalarize_equations")
+}
+
 pub(super) struct StructurallyLoweredDae {
     pub(super) dae: dae::Dae,
     pub(super) metadata_dae: dae::Dae,
@@ -125,7 +125,7 @@ pub(super) fn structurally_lower_dae_for_simulation(
         source_dae,
         mut lowered,
         mut metadata_dae,
-    } = prepare_structural_daes(dae_model, opts)?;
+    } = prepare_structural_daes(dae_model)?;
 
     log_solve_lowering_start("structural.eliminate_trivial");
     let timer = stage_timer_start();
@@ -144,6 +144,7 @@ pub(super) fn structurally_lower_dae_for_simulation(
     mark_state_selection_metadata(&mut metadata_dae, &elimination.substitutions)?;
     let visible_expressions =
         visible_expressions_after_elimination(&source_dae, &elimination.substitutions, opts)?;
+    scalarize_solver_view(&mut lowered, opts, "structural.scalarize_solve_dae")?;
 
     Ok(StructurallyLoweredDae {
         dae: lowered,
@@ -154,7 +155,6 @@ pub(super) fn structurally_lower_dae_for_simulation(
 
 fn prepare_structural_daes(
     dae_model: &dae::Dae,
-    opts: &SimOptions,
 ) -> Result<PreparedStructuralDaes, rumoca_phase_solve::SolveModelLowerError> {
     log_solve_lowering_start("structural.attach_dae_reference_metadata");
     let timer = stage_timer_start();
@@ -166,7 +166,7 @@ fn prepare_structural_daes(
     let timer = stage_timer_start();
     let mut lowered = source_dae.clone();
     log_solve_lowering_done("structural.clone_source_for_lowered", timer);
-    prepare_dae_for_structural_analysis(&mut lowered, opts)?;
+    rewrite_dae_for_structural_analysis(&mut lowered)?;
     log_solve_lowering_start("structural.remove_duplicate_continuous_equations");
     let timer = stage_timer_start();
     remove_duplicate_continuous_equations(&mut lowered);
@@ -181,6 +181,22 @@ fn prepare_structural_daes(
         lowered,
         metadata_dae,
     })
+}
+
+fn scalarize_solver_view(
+    dae_model: &mut dae::Dae,
+    opts: &SimOptions,
+    stage: &'static str,
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    if !opts.scalarize {
+        return Ok(());
+    }
+    log_solve_lowering_start(stage);
+    let timer = stage_timer_start();
+    rumoca_phase_structural::scalarize::scalarize_equations(dae_model)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done(stage, timer);
+    Ok(())
 }
 
 fn apply_simulation_elimination(
@@ -256,7 +272,7 @@ fn mark_state_selection_metadata(
     log_solve_lowering_done("structural.demote_state_selection_dae", timer);
     log_solve_lowering_start("structural.mark_constrained_dummy_states_in_metadata");
     let timer = stage_timer_start();
-    mark_constrained_dummy_states_in_metadata(&state_selection_dae, metadata_dae);
+    mark_constrained_dummy_states_in_metadata(&state_selection_dae, metadata_dae)?;
     log_solve_lowering_done(
         "structural.mark_constrained_dummy_states_in_metadata",
         timer,
@@ -347,13 +363,15 @@ fn validate_residual_shapes_for_simulation(
 fn mark_constrained_dummy_states_in_metadata(
     structural_dae: &dae::Dae,
     metadata_dae: &mut dae::Dae,
-) {
-    for state_name in
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    let dummy_states =
         rumoca_phase_structural::dae_prepare::constrained_dummy_state_names(structural_dae)
-    {
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    for state_name in dummy_states {
         let name = rumoca_core::VarName::new(state_name);
         if let Some(var) = metadata_dae.variables.states.shift_remove(&name) {
             metadata_dae.variables.algebraics.insert(name, var);
         }
     }
+    Ok(())
 }

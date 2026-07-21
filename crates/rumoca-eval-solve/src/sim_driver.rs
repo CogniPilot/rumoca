@@ -1,8 +1,8 @@
 //! Backend-neutral simulation output / event / root driver.
 //!
 //! This is the simulation orchestration shared by ODE backends: it walks the
-//! output grid, lets the solver step (free dense-output or clamped onto each
-//! output point), locates zero-crossing roots, applies scheduled time events,
+//! output grid, lets the solver step with dense-output interpolation, locates
+//! zero-crossing roots, applies scheduled time events,
 //! and records the visible trajectory. Everything solver-specific — taking a
 //! step, interpolating, the native-state↔full-solver_y mapping, the post-event
 //! reset, the algebraic-projection event kernels — is delegated to a
@@ -99,12 +99,6 @@ pub trait SolverAdvanceBackend {
         t: f64,
         h_cap: f64,
     ) -> Result<(), SimDriverError>;
-    /// Whether output points should be reached by stepping the solver exactly
-    /// onto them (true) rather than by dense-output interpolation (false), for
-    /// the model being simulated. (Reduced-state backends whose interpolation
-    /// re-projects algebraics return true near discontinuities.)
-    fn prefer_exact_output_steps(&self) -> bool;
-
     // --- the two backend-specific event primitives the shared event kernels
     //     need; everything else (apply_projected_event_update, settle, the
     //     left/right-limit sequencing via `process_runtime_event_boundary`) is
@@ -710,13 +704,6 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
     backend: &mut St,
     deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
-    // Backends whose interpolation re-projects algebraics (reduced-state) ask to
-    // land exactly on each output point near discontinuities; otherwise we keep
-    // free dense-output stepping so a multi-step controller is not starved by a
-    // fine output grid.
-    if backend.prefer_exact_output_steps() {
-        return advance_output_interval_clamped(ctx, state, target, backend);
-    }
     loop {
         if backend.time() >= target {
             let y_at_target = backend.interpolate(target)?;
@@ -757,56 +744,6 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
                 write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
                 *deferred_root = Some(t_root);
                 return Ok(false);
-            }
-        }
-    }
-}
-
-fn advance_output_interval_clamped<St: SolverAdvanceBackend + ?Sized>(
-    ctx: AdvanceContext<'_>,
-    state: AdvanceState<'_>,
-    target: f64,
-    backend: &mut St,
-) -> Result<bool, SimDriverError> {
-    if backend.time() >= target {
-        let y_at_target = backend.interpolate(target)?;
-        *state.current_t = target;
-        state
-            .params
-            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-        write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
-        return Ok(false);
-    }
-    backend.set_stop_time(target)?;
-    loop {
-        let outcome = match backend.step() {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                backend.trace_step_failure(
-                    state.current_y,
-                    state.params,
-                    *state.current_t,
-                    backend.time(),
-                    &e.to_string(),
-                );
-                return Err(e);
-            }
-        };
-        match outcome {
-            StepOutcome::Stop => {
-                let stop_t = backend.time();
-                *state.current_t = stop_t;
-                state
-                    .params
-                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
-                let native = backend.native_y();
-                write_full_y(backend, &native, stop_t, state.current_y, state.params)?;
-                return Ok(false);
-            }
-            StepOutcome::Internal => continue,
-            StepOutcome::Root { t_root } => {
-                trace_step_event("output-root-clamped", backend.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, backend);
             }
         }
     }

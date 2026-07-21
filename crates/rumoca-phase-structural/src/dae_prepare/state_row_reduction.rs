@@ -1,4 +1,5 @@
 use super::*;
+use crate::static_eval::{eval_static_bool, structural_scalar_bindings};
 
 fn state_has_any_equation_reference(dae: &Dae, state_name: &VarName) -> bool {
     dae.continuous
@@ -96,6 +97,64 @@ fn state_derivative_row_is_assignable(
         return false;
     }
     true
+}
+
+pub(super) fn expression_is_smooth_for_index_reduction(
+    expr: &Expression,
+    dae: &Dae,
+    bindings: &HashMap<String, f64>,
+) -> bool {
+    let mut checker = IndexReductionSmoothness {
+        dae,
+        bindings,
+        smooth: true,
+    };
+    checker.visit_expression(expr);
+    checker.smooth
+}
+
+struct IndexReductionSmoothness<'a> {
+    dae: &'a Dae,
+    bindings: &'a HashMap<String, f64>,
+    smooth: bool,
+}
+
+impl ExpressionVisitor for IndexReductionSmoothness<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if self.smooth {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        let name = name.var_name();
+        if self.dae.variables.discrete_reals.contains_key(name)
+            || self.dae.variables.discrete_valued.contains_key(name)
+        {
+            self.smooth = false;
+            return;
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
+        for (condition, value) in branches {
+            match eval_static_bool(condition, self.bindings) {
+                Some(true) => {
+                    self.visit_expression(value);
+                    return;
+                }
+                Some(false) => continue,
+                None => {
+                    self.smooth = false;
+                    return;
+                }
+            }
+        }
+        self.visit_expression(else_branch);
+    }
 }
 
 fn expr_contains_active_exact_der_of_state(
@@ -225,118 +284,6 @@ impl ExpressionVisitor for DerivativeArgsAreStatesChecker<'_> {
             }
         }
         self.visit_expression(else_branch);
-    }
-}
-
-fn structural_scalar_bindings(dae: &Dae) -> HashMap<String, f64> {
-    let mut bindings = HashMap::new();
-    for _ in 0..dae.variables.parameters.len().max(1) {
-        let before = bindings.len();
-        for (name, var) in dae.variables.constants.iter().chain(
-            dae.variables
-                .parameters
-                .iter()
-                .filter(|(_, var)| !var.is_tunable),
-        ) {
-            let Some(start) = var.start.as_ref() else {
-                continue;
-            };
-            let Some(value) = eval_static_number(start, &bindings) else {
-                continue;
-            };
-            bindings.insert(name.as_str().to_string(), value);
-        }
-        if bindings.len() == before {
-            break;
-        }
-    }
-    bindings
-}
-
-fn eval_static_bool(expr: &Expression, bindings: &HashMap<String, f64>) -> Option<bool> {
-    match expr {
-        Expression::Literal {
-            value: Literal::Boolean(value),
-            ..
-        } => Some(*value),
-        Expression::Unary {
-            op: OpUnary::Not,
-            rhs,
-            ..
-        } => Some(!eval_static_bool(rhs, bindings)?),
-        Expression::BuiltinCall { function, args, .. }
-            if matches!(*function, BuiltinFunction::NoEvent) =>
-        {
-            eval_static_bool(args.first()?, bindings)
-        }
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = eval_static_number(lhs, bindings)?;
-            let rhs = eval_static_number(rhs, bindings)?;
-            match op {
-                OpBinary::Lt => Some(lhs < rhs),
-                OpBinary::Le => Some(lhs <= rhs),
-                OpBinary::Gt => Some(lhs > rhs),
-                OpBinary::Ge => Some(lhs >= rhs),
-                OpBinary::Eq => Some((lhs - rhs).abs() <= f64::EPSILON),
-                OpBinary::Neq => Some((lhs - rhs).abs() > f64::EPSILON),
-                _ => None,
-            }
-        }
-        _ => eval_static_number(expr, bindings).map(|value| value != 0.0),
-    }
-}
-
-fn eval_static_number(expr: &Expression, bindings: &HashMap<String, f64>) -> Option<f64> {
-    match expr {
-        Expression::Literal { value, .. } => match value {
-            Literal::Integer(value) => Some(*value as f64),
-            Literal::Real(value) => Some(*value),
-            Literal::Boolean(value) => Some(if *value { 1.0 } else { 0.0 }),
-            _ => None,
-        },
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => bindings.get(name.as_str()).copied(),
-        Expression::Unary { op, rhs, .. } => {
-            let value = eval_static_number(rhs, bindings)?;
-            match op {
-                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(value),
-                OpUnary::Minus | OpUnary::DotMinus => Some(-value),
-                OpUnary::Not => Some(if value == 0.0 { 1.0 } else { 0.0 }),
-            }
-        }
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = eval_static_number(lhs, bindings)?;
-            let rhs = eval_static_number(rhs, bindings)?;
-            match op {
-                OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
-                OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
-                OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
-                OpBinary::Div | OpBinary::DivElem => Some(lhs / rhs),
-                OpBinary::Exp | OpBinary::ExpElem => Some(lhs.powf(rhs)),
-                OpBinary::Lt => Some(if lhs < rhs { 1.0 } else { 0.0 }),
-                OpBinary::Le => Some(if lhs <= rhs { 1.0 } else { 0.0 }),
-                OpBinary::Gt => Some(if lhs > rhs { 1.0 } else { 0.0 }),
-                OpBinary::Ge => Some(if lhs >= rhs { 1.0 } else { 0.0 }),
-                OpBinary::Eq => Some(if (lhs - rhs).abs() <= f64::EPSILON {
-                    1.0
-                } else {
-                    0.0
-                }),
-                OpBinary::Neq => Some(if (lhs - rhs).abs() > f64::EPSILON {
-                    1.0
-                } else {
-                    0.0
-                }),
-                _ => None,
-            }
-        }
-        Expression::BuiltinCall { function, args, .. }
-            if matches!(*function, BuiltinFunction::NoEvent) =>
-        {
-            eval_static_number(args.first()?, bindings)
-        }
-        _ => None,
     }
 }
 
@@ -505,6 +452,15 @@ pub fn demote_states_without_retained_derivative_rows(
 pub fn index_reduce_missing_state_derivatives_once(
     dae: &mut Dae,
 ) -> Result<usize, StructuralError> {
+    let mut reduced = dae.clone();
+    let changed = index_reduce_missing_state_derivatives_once_in_place(&mut reduced)?;
+    *dae = reduced;
+    Ok(changed)
+}
+
+fn index_reduce_missing_state_derivatives_once_in_place(
+    dae: &mut Dae,
+) -> Result<usize, StructuralError> {
     let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
     if state_names.is_empty() {
         return Ok(0);
@@ -514,8 +470,8 @@ pub fn index_reduce_missing_state_derivatives_once(
         .map(|name| name.as_str().to_string())
         .collect();
     let state_derivative_matcher = DerivativeNameMatcher::from_var_names(&state_names);
-
     let defining_expr_index = collect_residual_defining_expr_index(dae);
+    let structural_bindings = structural_scalar_bindings(dae);
     let mut changed = 0usize;
     let mut used_eq = HashSet::new();
 
@@ -557,6 +513,7 @@ pub fn index_reduce_missing_state_derivatives_once(
                 dae,
                 &defining_expr_index,
                 &seed_exprs,
+                None,
             )?;
             let differentiated =
                 symbolic_time_derivative(&dae.continuous.equations[idx].rhs, dae, &der_map);
@@ -570,7 +527,19 @@ pub fn index_reduce_missing_state_derivatives_once(
             if expr_contains_der_of_non_state(&new_rhs, &state_name_set) {
                 continue;
             }
-
+            if !expression_is_smooth_for_index_reduction(
+                &dae.continuous.equations[idx].rhs,
+                dae,
+                &structural_bindings,
+            ) || !expression_is_smooth_for_index_reduction(&new_rhs, dae, &structural_bindings)
+            {
+                continue;
+            }
+            // The differentiated equation preserves the constraint only after t=0.
+            // Retain the original equation to initialize on the same solution manifold.
+            dae.initialization
+                .equations
+                .push(dae.continuous.equations[idx].clone());
             let old_origin = dae.continuous.equations[idx].origin.clone();
             dae.continuous.equations[idx].rhs = new_rhs;
             dae.continuous.equations[idx].origin = if old_origin.is_empty() {
@@ -633,15 +602,36 @@ fn is_indexed_component_of_state(expr: &Expression, state_name: &VarName) -> boo
 }
 
 pub fn index_reduce_missing_state_derivatives(dae: &mut Dae) -> Result<usize, StructuralError> {
-    let max_rounds = dae.variables.states.len().clamp(1, 8);
+    let mut reduced = dae.clone();
+    let state_names = reduced.variables.states.keys().cloned().collect::<Vec<_>>();
+    let matcher = DerivativeNameMatcher::from_var_names(&state_names);
+    let mut derivative_free_rows = reduced
+        .continuous
+        .equations
+        .iter()
+        .filter(|equation| !eq_contains_any_state_der_with_matcher(&equation.rhs, &matcher))
+        .count();
     let mut total_changed = 0usize;
-    for _round in 0..max_rounds {
-        let changed = index_reduce_missing_state_derivatives_once(dae)?;
+    loop {
+        let changed = index_reduce_missing_state_derivatives_once_in_place(&mut reduced)?;
         if changed == 0 {
             break;
         }
+        let remaining = reduced
+            .continuous
+            .equations
+            .iter()
+            .filter(|equation| !eq_contains_any_state_der_with_matcher(&equation.rhs, &matcher))
+            .count();
+        if remaining >= derivative_free_rows {
+            return Err(StructuralError::UnspannedContractViolation {
+                reason: "index reduction changed equations without reducing the finite set of derivative-free continuous rows".to_string(),
+            });
+        }
+        derivative_free_rows = remaining;
         total_changed += changed;
     }
+    *dae = reduced;
     Ok(total_changed)
 }
 

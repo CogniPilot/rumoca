@@ -37,10 +37,6 @@ impl<'a> LowerBuilder<'a> {
             });
         }
 
-        if let Some(reg) = self.lower_runtime_string_special_intrinsic(name.as_str(), args, span)? {
-            return Ok(reg);
-        }
-
         if let Some(reg) = self.lower_qualified_standard_numeric_intrinsic(
             name,
             args,
@@ -50,7 +46,6 @@ impl<'a> LowerBuilder<'a> {
         )? {
             return Ok(reg);
         }
-
         if call_depth >= MAX_FUNCTION_INLINE_DEPTH {
             if let Some(reg) =
                 self.lower_intrinsic_function_call(name, args, span, caller_scope, call_depth)?

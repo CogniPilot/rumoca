@@ -32,30 +32,12 @@ pub(crate) fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &R
             .map(|row| row.target_index)
             .collect::<IndexSet<_>>()
             .len();
-    let missing = plan
-        .missing_dependencies
-        .iter()
-        .take(32)
-        .map(|index| {
-            model
-                .problem
-                .solve_layout
-                .solver_maps
-                .names
-                .get(*index)
-                .map_or_else(|| format!("y[{index}]"), Clone::clone)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
     tracing::debug!(
         target: "rumoca_eval_solve::refresh",
-        "{name} refresh plan: rows={} duplicate_targets={} missing={} iterative={} [{}] missing=[{}]",
+        "{name} refresh plan: rows={} duplicate_targets={} [{}]",
         plan.rows.len(),
         duplicate_targets,
-        plan.missing_dependencies.len(),
-        plan.iterative,
-        preview,
-        missing
+        preview
     );
 }
 
@@ -65,6 +47,8 @@ fn trace_algebraic_refresh() -> bool {
 
 #[derive(Clone)]
 pub(crate) struct AlgebraicRefreshRow {
+    /// Logical equation/output index in the canonical implicit system.
+    pub(crate) equation_index: usize,
     /// ScalarProgramBlock program index that produces this refresh row.
     pub(crate) row_idx: usize,
     /// Output offset inside `row_idx`. Shared Solve programs may store multiple
@@ -82,9 +66,11 @@ pub(crate) struct AlgebraicRefreshRow {
 #[derive(Clone, Default)]
 pub(crate) struct RefreshPlan {
     pub(crate) source_block: Arc<solve::ScalarProgramBlock>,
+    /// Complete compiler-owned BLT used to certify and solve the canonical
+    /// implicit residual system after the causal seed schedule.
+    pub(crate) simultaneous_plan: solve::AlgebraicProjectionPlan,
     pub(crate) rows: Vec<AlgebraicRefreshRow>,
-    pub(crate) missing_dependencies: Vec<usize>,
-    pub(crate) iterative: bool,
+    pub(crate) causal_solution_certified: bool,
 }
 
 impl RefreshPlan {
@@ -98,6 +84,7 @@ pub(crate) fn build_algebraic_refresh_plan(
     block: &PreparedScalarProgramBlock,
 ) -> Result<RefreshPlan, EvalSolveError> {
     let state_count = model.state_scalar_count();
+    validate_implicit_output_inventory(model, block.block())?;
     let row_target_rows = algebraic_refresh_rows_from_row_targets(model, block, state_count)?;
     let mut rows_by_target = IndexMap::new();
     reserve_refresh_index_map_capacity(
@@ -109,16 +96,6 @@ pub(crate) fn build_algebraic_refresh_plan(
     for row in row_target_rows {
         rows_by_target.insert(row.target_index, row);
     }
-    let projection_rows = algebraic_refresh_rows_from_projection_plan(model, block, state_count)?;
-    reserve_refresh_index_map_capacity(
-        &mut rows_by_target,
-        projection_rows.len(),
-        "projection target map",
-        first_block_span(block.block()),
-    )?;
-    for row in projection_rows {
-        rows_by_target.insert(row.target_index, row);
-    }
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
         &mut rows,
@@ -127,181 +104,44 @@ pub(crate) fn build_algebraic_refresh_plan(
         first_block_span(block.block()),
     )?;
     rows.extend(rows_by_target.into_values());
-    order_refresh_rows(rows, Arc::new(block.block().clone()), state_count)
+    let causal_solution_certified = complete_causal_projection_is_certified(model, block, &rows);
+    let mut plan = order_refresh_rows(
+        rows,
+        Arc::new(block.block().clone()),
+        state_count,
+        causal_solution_certified,
+    )?;
+    plan.simultaneous_plan = model.problem.continuous.algebraic_projection_plan.clone();
+    Ok(plan)
 }
 
-fn algebraic_refresh_rows_from_projection_plan(
+fn validate_implicit_output_inventory(
     model: &solve::SolveModel,
-    block: &PreparedScalarProgramBlock,
-    state_count: usize,
-) -> Result<Vec<AlgebraicRefreshRow>, EvalSolveError> {
-    let implicit_targets = &model.problem.continuous.implicit_row_targets;
-    let output_row_positions = output_row_positions(block.block())?;
-    let assignment_target = |row_idx: usize| -> Option<usize> {
-        match implicit_targets.get(row_idx).copied().flatten() {
-            Some(solve::ScalarSlot::Y { index, .. }) => Some(index),
-            _ => None,
-        }
-    };
-    let mut rows = Vec::new();
-    reserve_refresh_vec_capacity(
-        &mut rows,
-        model
-            .problem
-            .continuous
-            .algebraic_projection_plan
-            .blocks
-            .len(),
-        "projection rows",
-        first_block_span(block.block()),
-    )?;
-    for plan_block in &model.problem.continuous.algebraic_projection_plan.blocks {
-        // A coupled block's `rows` and `y_indices` are independent sets (the
-        // unknowns are even sorted), so each row must be paired with an
-        // unknown it actually determines — positional pairing produces a
-        // convergent but wrong system (a gear-torque row "assigned" to an
-        // unrelated flange torque). Pair by maximum bipartite matching over
-        // real incidence, preferring each row's own implicit target.
-        let span = plan_block_span(block.block(), &plan_block.rows, &output_row_positions);
-        let mut eligible_ys = Vec::new();
-        reserve_refresh_vec_capacity(
-            &mut eligible_ys,
-            plan_block.y_indices.len(),
-            "projection eligible-y list",
-            span,
-        )?;
-        eligible_ys.extend(
-            plan_block
-                .y_indices
-                .iter()
-                .copied()
-                .filter(|&y| y >= state_count),
-        );
-        let pairs = match_block_rows_to_targets(
-            &plan_block.rows,
-            &eligible_ys,
-            &assignment_target,
-            |row_idx, y| {
-                output_row_positions
-                    .get(&row_idx)
-                    .is_some_and(|position| block.row_reads_y(position.program_index, y))
-            },
-            span,
-        )?;
-        let row_capacity = pairs
-            .len()
-            .checked_add(plan_block.causal_steps.len())
-            .ok_or_else(|| refresh_plan_capacity_error("projection refresh rows", span))?;
-        reserve_refresh_vec_capacity(&mut rows, row_capacity, "projection refresh rows", span)?;
-        for (row_idx, target_index) in pairs {
-            let position = required_program_position(&output_row_positions, row_idx, span)?;
-            rows.push(AlgebraicRefreshRow {
-                row_idx: position.program_index,
-                output_offset: position.output_offset,
-                target_index,
-                assignment_target: assignment_target(row_idx),
+    block: &solve::ScalarProgramBlock,
+) -> Result<(), EvalSolveError> {
+    let positions = output_row_positions(block)?;
+    let solver_count = model.solver_scalar_count();
+    for output in 0..solver_count {
+        if !positions.contains_key(&output) {
+            return Err(EvalSolveError::InvalidRow {
+                message: format!("implicit algebraic system is missing output row {output}"),
+                span: first_block_span(block),
             });
         }
-        for step in &plan_block.causal_steps {
-            if step.y_index >= state_count {
-                let position = required_program_position(&output_row_positions, step.row, span)?;
-                rows.push(AlgebraicRefreshRow {
-                    row_idx: position.program_index,
-                    output_offset: position.output_offset,
-                    target_index: step.y_index,
-                    assignment_target: assignment_target(step.row),
-                });
-            }
-        }
     }
-    Ok(rows)
-}
-
-/// Pair each block row with a distinct block unknown it can determine:
-/// its own implicit assignment target when that is part of the block,
-/// otherwise an unknown the row's program reads. Kuhn's augmenting-path
-/// matching; unmatched rows/unknowns are left out (the runtime reports the
-/// unknowns as missing producers instead of silently mis-solving).
-fn match_block_rows_to_targets(
-    rows: &[usize],
-    ys: &[usize],
-    assignment_target: &dyn Fn(usize) -> Option<usize>,
-    reads: impl Fn(usize, usize) -> bool,
-    span: Option<rumoca_core::Span>,
-) -> Result<Vec<(usize, usize)>, EvalSolveError> {
-    let mut y_pos = IndexMap::new();
-    reserve_refresh_index_map_capacity(&mut y_pos, ys.len(), "matching y-position map", span)?;
-    for (pos, y) in ys.iter().copied().enumerate() {
-        y_pos.insert(y, pos);
+    if let Some(output) = positions
+        .keys()
+        .copied()
+        .find(|output| *output >= solver_count)
+    {
+        return Err(EvalSolveError::InvalidRow {
+            message: format!(
+                "implicit algebraic system has output row {output}, but solver layout has {solver_count} rows"
+            ),
+            span: first_block_span(block),
+        });
     }
-    let mut adjacency = Vec::new();
-    reserve_refresh_vec_capacity(&mut adjacency, rows.len(), "matching adjacency", span)?;
-    for &row_idx in rows {
-        let own = assignment_target(row_idx).and_then(|y| y_pos.get(&y).copied());
-        let mut candidates = Vec::new();
-        let candidate_capacity = y_pos
-            .len()
-            .checked_add(usize::from(own.is_some()))
-            .ok_or_else(|| refresh_plan_capacity_error("matching candidates", span))?;
-        reserve_refresh_vec_capacity(
-            &mut candidates,
-            candidate_capacity,
-            "matching candidates",
-            span,
-        )?;
-        candidates.extend(own);
-        for (&y, &pos) in &y_pos {
-            if Some(pos) != own && reads(row_idx, y) {
-                candidates.push(pos);
-            }
-        }
-        adjacency.push(candidates);
-    }
-    let mut matched_row_for_y = Vec::new();
-    reserve_refresh_vec_capacity(
-        &mut matched_row_for_y,
-        ys.len(),
-        "matching result slots",
-        span,
-    )?;
-    matched_row_for_y.resize(ys.len(), None);
-    fn try_assign(
-        row_pos: usize,
-        adjacency: &[Vec<usize>],
-        matched_row_for_y: &mut [Option<usize>],
-        visited: &mut [bool],
-    ) -> bool {
-        for &y_pos in &adjacency[row_pos] {
-            if visited[y_pos] {
-                continue;
-            }
-            visited[y_pos] = true;
-            let can_assign = match matched_row_for_y[y_pos] {
-                Some(matched_row) => try_assign(matched_row, adjacency, matched_row_for_y, visited),
-                None => true,
-            };
-            if can_assign {
-                matched_row_for_y[y_pos] = Some(row_pos);
-                return true;
-            }
-        }
-        false
-    }
-    for row_pos in 0..rows.len() {
-        let mut visited = Vec::new();
-        reserve_refresh_vec_capacity(&mut visited, ys.len(), "matching visited flags", span)?;
-        visited.resize(ys.len(), false);
-        try_assign(row_pos, &adjacency, &mut matched_row_for_y, &mut visited);
-    }
-    let mut pairs = Vec::new();
-    reserve_refresh_vec_capacity(&mut pairs, ys.len(), "matching output pairs", span)?;
-    pairs.extend(
-        matched_row_for_y
-            .iter()
-            .enumerate()
-            .filter_map(|(y_pos, row_pos)| row_pos.map(|rp| (rows[rp], ys[y_pos]))),
-    );
-    Ok(pairs)
+    Ok(())
 }
 
 fn algebraic_refresh_rows_from_row_targets(
@@ -351,6 +191,7 @@ fn algebraic_refresh_rows_from_row_targets(
             continue;
         }
         rows.push(AlgebraicRefreshRow {
+            equation_index: row_idx,
             row_idx: position.program_index,
             output_offset: position.output_offset,
             target_index,
@@ -405,13 +246,6 @@ fn build_dependency_refresh_plan(
         "dependency needed set",
         span,
     )?;
-    let mut missing = IndexSet::new();
-    reserve_refresh_index_set_capacity(
-        &mut missing,
-        initial_deps.len(),
-        "dependency missing set",
-        span,
-    )?;
     let mut stack = Vec::new();
     reserve_refresh_vec_capacity(&mut stack, initial_deps.len(), "dependency stack", span)?;
     stack.extend(initial_deps);
@@ -424,8 +258,6 @@ fn build_dependency_refresh_plan(
             continue;
         }
         let Some(row_idx) = target_to_row.get(&index).copied() else {
-            reserve_refresh_index_set_capacity(&mut missing, 1, "dependency missing set", span)?;
-            missing.insert(index);
             continue;
         };
         for dep in row_all_y_dependencies(implicit_block, row_idx) {
@@ -449,14 +281,15 @@ fn build_dependency_refresh_plan(
             .filter(|row| needed.contains(&row.target_index))
             .cloned(),
     );
-    let mut plan = order_refresh_rows(rows, full_plan.source_block.clone(), state_count)?;
-    reserve_refresh_vec_capacity(
-        &mut plan.missing_dependencies,
-        missing.len(),
-        "dependency missing list",
-        span,
+    let causal_solution_certified =
+        full_plan.causal_solution_certified && rows.len() == needed.len();
+    let mut plan = order_refresh_rows(
+        rows,
+        full_plan.source_block.clone(),
+        state_count,
+        causal_solution_certified,
     )?;
-    plan.missing_dependencies.extend(missing);
+    plan.simultaneous_plan = full_plan.simultaneous_plan.clone();
     Ok(plan)
 }
 
@@ -464,6 +297,7 @@ fn order_refresh_rows(
     rows: Vec<AlgebraicRefreshRow>,
     block: Arc<solve::ScalarProgramBlock>,
     state_count: usize,
+    causal_solution_certified: bool,
 ) -> Result<RefreshPlan, EvalSolveError> {
     let span = first_block_span(&block);
     let mut producer_by_target = IndexMap::new();
@@ -522,22 +356,8 @@ fn order_refresh_rows(
             }
         }
     }
-    // A row also needs iteration when it is *nonlinear in its own target*, even
-    // with no dependency cycle: the single secant step that the non-iterative
-    // single pass performs is exact only for residuals that are affine in the
-    // target (slope constant). A self-nonlinear acyclic row (e.g. `z*z = b*x`)
-    // would otherwise be left one secant step short of convergence.
-    let mut self_nonlinear = false;
-    for row in &ordered {
-        if let Some(ops) = block.programs.get(row.row_idx)
-            && row_is_nonlinear_in_target(ops, row.target_index)?
-        {
-            self_nonlinear = true;
-            break;
-        }
-    }
-    let requires_iteration = ordered.len() != rows.len() || self_nonlinear;
-    if ordered.len() != rows.len() {
+    let causal_solution_certified = causal_solution_certified && ordered.len() == rows.len();
+    if !causal_solution_certified {
         let mut emitted = Vec::new();
         reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
         emitted.resize(rows.len(), false);
@@ -556,238 +376,70 @@ fn order_refresh_rows(
     }
     Ok(RefreshPlan {
         source_block: block,
+        simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
         rows: ordered,
-        missing_dependencies: Vec::new(),
-        iterative: requires_iteration,
+        causal_solution_certified,
     })
 }
 
-/// How a register's value depends on the refresh row's own target solver-Y slot,
-/// holding every other unknown fixed — which is exactly how a single refresh row
-/// is solved for its target.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TargetDep {
-    /// Independent of the target.
-    Independent,
-    /// Affine in the target: `c0 + c1 * target`.
-    Affine,
-    /// Depends on the target nonlinearly.
-    Nonlinear,
-}
-
-impl TargetDep {
-    /// Combine two operands under an addition-like op (Add/Sub, or a Select with
-    /// a target-independent condition): the result is as nonlinear as its most
-    /// nonlinear operand.
-    fn join_additive(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Nonlinear, _) | (_, Self::Nonlinear) => Self::Nonlinear,
-            (Self::Affine, _) | (_, Self::Affine) => Self::Affine,
-            _ => Self::Independent,
-        }
-    }
-
-    fn depends_on_target(self) -> bool {
-        !matches!(self, Self::Independent)
-    }
-}
-
-/// `Nonlinear` if `condition` holds (a target-dependent input to a nonlinear or
-/// non-smooth op), else `Independent`.
-fn nonlinear_if(condition: bool) -> TargetDep {
-    if condition {
-        TargetDep::Nonlinear
-    } else {
-        TargetDep::Independent
-    }
-}
-
-/// Class of register `reg`. `classes` is sized to `max_dst + 1`; every operand is
-/// a prior `dst` in the (SSA) op stream, so the index is in bounds by
-/// construction (a malformed forward-reference panics loudly rather than silently
-/// reading an under-classified `Independent` default).
-fn target_dep(classes: &[TargetDep], reg: solve::Reg) -> TargetDep {
-    classes[reg as usize]
-}
-
-/// Most-nonlinear class among the registers in `[base, base + count)`.
-fn range_target_dep(classes: &[TargetDep], base: solve::Reg, count: usize) -> TargetDep {
-    (0..count).fold(TargetDep::Independent, |acc, offset| {
-        acc.join_additive(target_dep(classes, base + offset as solve::Reg))
-    })
-}
-
-/// Class of a binary op's result given its operand classes.
-fn classify_binary(op: solve::BinaryOp, l: TargetDep, r: TargetDep) -> TargetDep {
-    use TargetDep::{Affine, Nonlinear};
-    match op {
-        solve::BinaryOp::Add | solve::BinaryOp::Sub => l.join_additive(r),
-        // A product is affine only when at most one factor depends on the target;
-        // two target-dependent factors give a quadratic term.
-        solve::BinaryOp::Mul => match (l, r) {
-            (Nonlinear, _) | (_, Nonlinear) | (Affine, Affine) => Nonlinear,
-            (Affine, _) | (_, Affine) => Affine,
-            _ => TargetDep::Independent,
-        },
-        // Dividing by a target-dependent denominator is nonlinear; dividing by a
-        // constant preserves the numerator's class.
-        solve::BinaryOp::Div => {
-            if r.depends_on_target() {
-                Nonlinear
-            } else {
-                l
-            }
-        }
-        // Pow, Atan2, Min, Max, And, Or are nonlinear once any operand depends.
-        _ => nonlinear_if(l.depends_on_target() || r.depends_on_target()),
-    }
-}
-
-/// Class of a single op's destination register given the classes computed so far
-/// (the `StoreOutput` sink has no destination and is handled by the caller).
-fn classify_op_target_dep(
-    op: &solve::LinearOp,
-    classes: &[TargetDep],
-    target_y_index: usize,
-) -> TargetDep {
-    use solve::LinearOp as Op;
-    match *op {
-        // Other unknowns are held fixed while this row solves for its own target,
-        // so only the target itself is (affinely) variable.
-        Op::LoadY { index, .. } if index == target_y_index => TargetDep::Affine,
-        Op::LoadY { .. }
-        | Op::Const { .. }
-        | Op::LoadTime { .. }
-        | Op::LoadP { .. }
-        | Op::LoadSeed { .. }
-        | Op::StoreOutput { .. } => TargetDep::Independent,
-        // A target-dependent subscript selects discontinuously among slots.
-        Op::LoadIndexedP { index, .. } | Op::LoadIndexedSeed { index, .. } => {
-            nonlinear_if(target_dep(classes, index).depends_on_target())
-        }
-        Op::Move { src, .. } => target_dep(classes, src),
-        // Negation preserves affinity; every other unary is nonlinear once its
-        // argument depends on the target.
-        Op::Unary {
-            op: solve::UnaryOp::Neg,
-            arg,
-            ..
-        } => target_dep(classes, arg),
-        Op::Unary { arg, .. } => nonlinear_if(target_dep(classes, arg).depends_on_target()),
-        Op::Binary { op, lhs, rhs, .. } => {
-            classify_binary(op, target_dep(classes, lhs), target_dep(classes, rhs))
-        }
-        Op::Compare { lhs, rhs, .. } => nonlinear_if(
-            target_dep(classes, lhs).depends_on_target()
-                || target_dep(classes, rhs).depends_on_target(),
-        ),
-        Op::Select { cond, .. } if target_dep(classes, cond).depends_on_target() => {
-            TargetDep::Nonlinear
-        }
-        Op::Select {
-            if_true, if_false, ..
-        } => target_dep(classes, if_true).join_additive(target_dep(classes, if_false)),
-        // A target-dependent system matrix makes the solution nonlinear; with a
-        // constant matrix the solution is only as nonlinear as the RHS.
-        Op::LinearSolveComponent {
-            matrix_start, n, ..
-        } if range_target_dep(classes, matrix_start, n.saturating_mul(n)).depends_on_target() => {
-            TargetDep::Nonlinear
-        }
-        Op::LinearSolveComponent { rhs_start, n, .. } => range_target_dep(classes, rhs_start, n),
-        Op::TableBounds { table_id, .. } => {
-            nonlinear_if(target_dep(classes, table_id).depends_on_target())
-        }
-        Op::TableLookup {
-            table_id,
-            column,
-            input,
-            ..
-        }
-        | Op::TableLookupSlope {
-            table_id,
-            column,
-            input,
-            ..
-        } => nonlinear_if(
-            target_dep(classes, table_id).depends_on_target()
-                || target_dep(classes, column).depends_on_target()
-                || target_dep(classes, input).depends_on_target(),
-        ),
-        Op::TableNextEvent { table_id, time, .. } => nonlinear_if(
-            target_dep(classes, table_id).depends_on_target()
-                || target_dep(classes, time).depends_on_target(),
-        ),
-        // Random generators are nonlinear (and non-smooth) in any target-dependent
-        // input; conservatively flag them.
-        Op::RandomInitialState {
-            local_seed,
-            global_seed,
-            ..
-        } => nonlinear_if(
-            target_dep(classes, local_seed).depends_on_target()
-                || target_dep(classes, global_seed).depends_on_target(),
-        ),
-        Op::RandomResult {
-            state_start,
-            state_len,
-            ..
-        }
-        | Op::RandomState {
-            state_start,
-            state_len,
-            ..
-        } => nonlinear_if(range_target_dep(classes, state_start, state_len).depends_on_target()),
-        Op::ImpureRandomInit { seed, .. } => {
-            nonlinear_if(target_dep(classes, seed).depends_on_target())
-        }
-        Op::ImpureRandom { id, .. } => nonlinear_if(target_dep(classes, id).depends_on_target()),
-        Op::ImpureRandomInteger { id, imin, imax, .. } => nonlinear_if(
-            target_dep(classes, id).depends_on_target()
-                || target_dep(classes, imin).depends_on_target()
-                || target_dep(classes, imax).depends_on_target(),
-        ),
-    }
-}
-
-/// True when the row's residual program is nonlinear in its own target slot, so
-/// a single secant step does not solve it exactly and the refresh must iterate.
-/// Dependency cycles are handled separately; this catches the *acyclic* case of
-/// a self-nonlinear implicit row (e.g. `z*z = b*x`), which would otherwise be
-/// classified non-iterative and left one secant step short of convergence.
-///
-/// The analysis is a conservative forward dataflow over the row's register
-/// stream (see [`classify_op_target_dep`]): any op that could make the target
-/// enter nonlinearly yields `Nonlinear`. Affine and independent rows keep the
-/// exact single-step fast path.
-fn row_is_nonlinear_in_target(
-    ops: &[solve::LinearOp],
-    target_y_index: usize,
-) -> Result<bool, EvalSolveError> {
-    use solve::LinearOp as Op;
-    let Some(max_reg) = ops.iter().filter_map(solve::LinearOp::dst_register).max() else {
-        return Ok(false);
+fn complete_causal_projection_is_certified(
+    model: &solve::SolveModel,
+    block: &PreparedScalarProgramBlock,
+    rows: &[AlgebraicRefreshRow],
+) -> bool {
+    let state_count = model.state_scalar_count();
+    let solver_count = model.solver_scalar_count();
+    // The projection tail contains both algebraic variables and computed
+    // outputs; all are solver-Y unknowns in the compiler-owned BLT plan.
+    let Some(projection_count) = solver_count.checked_sub(state_count) else {
+        return false;
     };
-    let len = (max_reg as usize)
-        .checked_add(1)
-        .ok_or_else(|| refresh_plan_capacity_error("target-dependence register map", None))?;
-    let mut classes = Vec::new();
-    reserve_refresh_vec_capacity(&mut classes, len, "target-dependence register map", None)?;
-    classes.resize(len, TargetDep::Independent);
-    let mut output = TargetDep::Independent;
-    for op in ops {
-        if let Op::StoreOutput { src } = *op {
-            output = output.join_additive(target_dep(&classes, src));
-            continue;
-        }
-        let class = classify_op_target_dep(op, &classes, target_y_index);
-        if let Some(dst) = op.dst_register()
-            && let Some(slot) = classes.get_mut(dst as usize)
+    if rows.len() != projection_count {
+        return false;
+    }
+    let rows_by_equation = rows
+        .iter()
+        .map(|row| (row.equation_index, row))
+        .collect::<IndexMap<_, _>>();
+    if rows_by_equation.len() != projection_count
+        || rows.iter().any(|row| {
+            row.equation_index < state_count
+                || row.equation_index >= solver_count
+                || row.output_offset != 0
+                || block.row_output_count(row.row_idx) != Some(1)
+                || row_all_y_dependencies(block.block(), row.row_idx)
+                    .any(|index| index >= solver_count)
+                || !block.certifies_direct_target_assignment(row.row_idx, row.target_index)
+        })
+    {
+        return false;
+    }
+    let mut matched_rows = IndexSet::new();
+    let mut matched_targets = IndexSet::new();
+    for projection_block in &model.problem.continuous.algebraic_projection_plan.blocks {
+        let ([equation_index], [target_index]) = (
+            projection_block.rows.as_slice(),
+            projection_block.y_indices.as_slice(),
+        ) else {
+            return false;
+        };
+        if *equation_index < state_count
+            || *equation_index >= solver_count
+            || *target_index < state_count
+            || *target_index >= solver_count
+            || rows_by_equation
+                .get(equation_index)
+                .is_none_or(|row| row.target_index != *target_index)
+            || !matched_rows.insert(*equation_index)
+            || !matched_targets.insert(*target_index)
         {
-            *slot = class;
+            return false;
         }
     }
-    Ok(matches!(output, TargetDep::Nonlinear))
+    matched_rows.len() == projection_count
+        && matched_targets.len() == projection_count
+        && (state_count..solver_count)
+            .all(|index| matched_rows.contains(&index) && matched_targets.contains(&index))
 }
 
 fn derivative_row_dependencies(
@@ -883,17 +535,6 @@ fn row_span(block: &solve::ScalarProgramBlock, row: usize) -> Option<rumoca_core
     block.program_span(row).or_else(|| first_block_span(block))
 }
 
-fn plan_block_span(
-    block: &solve::ScalarProgramBlock,
-    rows: &[usize],
-    output_row_positions: &IndexMap<usize, OutputRowPosition>,
-) -> Option<rumoca_core::Span> {
-    rows.iter()
-        .filter_map(|row| output_row_positions.get(row).copied())
-        .find_map(|position| block.program_span(position.program_index))
-        .or_else(|| first_block_span(block))
-}
-
 #[derive(Clone, Copy)]
 struct OutputRowPosition {
     program_index: usize,
@@ -957,22 +598,6 @@ fn output_row_positions(
         });
     }
     Ok(positions)
-}
-
-fn required_program_position(
-    output_row_positions: &IndexMap<usize, OutputRowPosition>,
-    output_row: usize,
-    span: Option<rumoca_core::Span>,
-) -> Result<OutputRowPosition, EvalSolveError> {
-    output_row_positions
-        .get(&output_row)
-        .copied()
-        .ok_or_else(|| EvalSolveError::InvalidRow {
-            message: format!(
-                "algebraic projection references missing implicit output row {output_row}"
-            ),
-            span,
-        })
 }
 
 fn reserve_refresh_vec_capacity<T>(

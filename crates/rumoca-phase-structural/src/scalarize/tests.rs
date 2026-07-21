@@ -269,13 +269,36 @@ fn scalar_lhs_targets_reject_generated_equation_without_target_provenance() {
     );
 }
 
-fn complex(re: Expression, im: Expression) -> Expression {
+const COMPLEX_CONSTRUCTOR_INSTANCE: u32 = 41;
+
+fn add_complex_constructor(dae_model: &mut dae::Dae) {
+    let mut constructor = rumoca_core::Function::new("Complex", test_span());
+    set_function_instance(&mut constructor, COMPLEX_CONSTRUCTOR_INSTANCE);
+    constructor.is_constructor = true;
+    constructor.add_input(rumoca_core::FunctionParam::new("re", "Real", test_span()));
+    let mut im = rumoca_core::FunctionParam::new("im", "Real", test_span());
+    im.default = Some(Expression::Literal {
+        value: Literal::Integer(0),
+        span: test_span(),
+    });
+    constructor.add_input(im);
+    dae_model
+        .symbols
+        .functions
+        .insert(VarName::new("Complex"), constructor);
+}
+
+fn complex_args(args: Vec<Expression>) -> Expression {
     Expression::FunctionCall {
-        name: rumoca_core::Reference::new("Complex"),
-        args: vec![re, im],
+        name: structured_function_reference("Complex", test_span(), COMPLEX_CONSTRUCTOR_INSTANCE),
+        args,
         is_constructor: true,
         span: test_span(),
     }
+}
+
+fn complex(re: Expression, im: Expression) -> Expression {
+    complex_args(vec![re, im])
 }
 
 fn array(elements: Vec<Expression>) -> Expression {
@@ -334,6 +357,7 @@ fn residual_lhs_ref(eq: &Equation) -> Option<(&str, Vec<i64>)> {
 #[test]
 fn scalarize_complex_record_array_residual_targets_each_field_element() {
     let mut dae_model = dae::Dae::default();
+    add_complex_constructor(&mut dae_model);
     dae_model
         .variables
         .algebraics
@@ -388,6 +412,68 @@ fn scalarize_complex_record_array_residual_targets_each_field_element() {
         ]
     );
     crate::sort_dae(&dae_model).expect("scalarized record-array residual should be matchable");
+}
+
+#[test]
+fn scalarize_record_constructor_uses_declared_default_for_omitted_field() {
+    let mut dae_model = dae::Dae::default();
+    add_complex_constructor(&mut dae_model);
+    for name in ["z1.re", "z1.im", "z2.re", "z2.im"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(VarName::new(name), variable(name, &[]));
+    }
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            complex_args(vec![real(0.0)]),
+            Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(var("z1")),
+                rhs: Box::new(var("z2")),
+                span: test_span(),
+            },
+            2,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let rows = &dae_model.continuous.equations;
+    assert_eq!(rows.len(), 2);
+    for (row, expected_lhs, expected_fields) in [
+        (&rows[0], Literal::Real(0.0), ["z1.re", "z2.re"]),
+        (&rows[1], Literal::Integer(0), ["z1.im", "z2.im"]),
+    ] {
+        let Expression::Binary {
+            op: OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } = &row.rhs
+        else {
+            panic!("expected scalar residual row");
+        };
+        assert!(
+            matches!(lhs.as_ref(), Expression::Literal { value, .. } if *value == expected_lhs)
+        );
+        let Expression::Binary {
+            op: OpBinary::Add,
+            lhs: first,
+            rhs: second,
+            ..
+        } = rhs.as_ref()
+        else {
+            panic!("expected projected additive fields");
+        };
+        for (field, expected) in [first, second].into_iter().zip(expected_fields) {
+            assert!(
+                matches!(field.as_ref(), Expression::VarRef { name, .. } if name.as_str() == expected)
+            );
+        }
+    }
 }
 
 #[test]
@@ -621,6 +707,45 @@ fn build_output_names_orders_states_algebraics_outputs_and_expands_arrays() {
 }
 
 #[test]
+fn scalarize_scalar_index_of_array_literal_selects_the_indexed_element() {
+    let selected = index(array(vec![var("first"), var("second")]), &[2]);
+    let projected = index_into_expr(
+        &selected,
+        1,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .unwrap();
+    assert_eq!(projected, var("second"));
+
+    let mut dae_model = dae::Dae::default();
+    for name in ["selected", "first", "second"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(VarName::new(name), variable(name, &[]));
+    }
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            var("selected"),
+            selected,
+            1,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let Expression::Binary { rhs, .. } = &dae_model.continuous.equations[0].rhs else {
+        panic!("expected residual equation");
+    };
+    assert_eq!(rhs.as_ref(), &var("second"));
+}
+
+#[test]
 fn build_output_names_expands_matrix_indices_row_major() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -652,6 +777,7 @@ fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
         function_output_dims_map: HashMap::new(),
         dynamic_function_output_map: HashMap::new(),
         record_field_projection_map: HashMap::new(),
+        constructor_input_map: HashMap::new(),
     };
     let expr = Expression::Array {
         elements: vec![
@@ -713,6 +839,73 @@ fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
 }
 
 #[test]
+fn scalarize_record_function_field_uses_record_relative_projection_key() {
+    let span = test_span();
+    let instance_id = rumoca_core::FunctionInstanceId::new(41);
+    let selector = vec![
+        rumoca_core::ComponentRefPart {
+            ident: "R".to_string(),
+            span,
+            subs: Vec::new(),
+        },
+        rumoca_core::ComponentRefPart {
+            ident: "T".to_string(),
+            span,
+            subs: vec![
+                Subscript::generated_index(1, span),
+                Subscript::generated_index(1, span),
+            ],
+        },
+    ];
+    let mut by_index = HashMap::new();
+    by_index.insert(1, selector);
+    let mut fields = HashMap::new();
+    fields.insert("T".to_string(), by_index);
+    let mut record_field_projection_map = HashMap::new();
+    record_field_projection_map.insert(
+        instance_id,
+        crate::projection_maps::RecordFieldProjection {
+            output_name: "R".to_string(),
+            fields,
+        },
+    );
+    let ctx = ExpressionScalarizationContext {
+        var_dims: HashMap::new(),
+        var_spans: HashMap::new(),
+        structural_values: HashMap::new(),
+        complex_fields: HashMap::new(),
+        component_index_map: HashMap::new(),
+        function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
+        record_field_projection_map,
+        constructor_input_map: HashMap::new(),
+    };
+    let call = Expression::FunctionCall {
+        name: structured_function_reference("Pkg.nullRotation", span, 41),
+        args: Vec::new(),
+        is_constructor: false,
+        span,
+    };
+    let output = Expression::FieldAccess {
+        base: Box::new(call),
+        field: "R".to_string(),
+        span,
+    };
+    let field = Expression::FieldAccess {
+        base: Box::new(output),
+        field: "T".to_string(),
+        span,
+    };
+
+    let rows = scalarize_expression_rows(&field, 2, &ctx).expect("record field should scalarize");
+    let Expression::FunctionCall { name, .. } = &rows[0] else {
+        panic!("expected projected function call");
+    };
+    assert_eq!(name.as_str(), "Pkg.nullRotation.R.T[1,1]");
+}
+
+#[test]
 fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
     let ctx = ExpressionScalarizationContext {
         var_dims: HashMap::new(),
@@ -724,6 +917,7 @@ fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
         function_output_dims_map: HashMap::new(),
         dynamic_function_output_map: HashMap::new(),
         record_field_projection_map: HashMap::new(),
+        constructor_input_map: HashMap::new(),
     };
     let expr = Expression::Array {
         elements: vec![
@@ -763,6 +957,232 @@ fn scalarize_expression_rows_flattens_nested_array_matrix_literals() {
             real(1.0),
         ]
     );
+}
+
+#[test]
+fn scalarize_scalar_times_rank_three_literal_projects_each_scalar() {
+    let ctx = ExpressionScalarizationContext {
+        var_dims: HashMap::new(),
+        var_spans: HashMap::new(),
+        structural_values: HashMap::new(),
+        complex_fields: HashMap::new(),
+        component_index_map: HashMap::new(),
+        function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
+        constructor_input_map: HashMap::new(),
+    };
+    let pair = |first, second| array(vec![real(first), real(second)]);
+    let tensor = array(vec![
+        array(vec![pair(0.0, 0.0), pair(1.0, 1.0)]),
+        array(vec![pair(0.0, 1.0), pair(1.0, 0.0)]),
+    ]);
+    let expr = mul_expr(real(1.5), tensor);
+
+    let rows = scalarize_expression_rows(&expr, 8, &ctx).unwrap();
+
+    assert_eq!(
+        rows,
+        [0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+            .into_iter()
+            .map(|value| mul_expr(real(1.5), real(value)))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn scalarize_array_of_vectors_projects_each_child_component() {
+    let ctx = ExpressionScalarizationContext {
+        var_dims: HashMap::from([
+            ("first".to_string(), vec![3]),
+            ("second".to_string(), vec![3]),
+        ]),
+        var_spans: HashMap::from([
+            ("first".to_string(), test_span()),
+            ("second".to_string(), test_span()),
+        ]),
+        structural_values: HashMap::new(),
+        complex_fields: HashMap::new(),
+        component_index_map: HashMap::new(),
+        function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
+        constructor_input_map: HashMap::new(),
+    };
+    let expr = array(vec![var("first"), var("second")]);
+
+    let rows = scalarize_expression_rows(&expr, 6, &ctx).unwrap();
+
+    assert_eq!(
+        rows,
+        vec![
+            var_idx("first", &[1]),
+            var_idx("first", &[2]),
+            var_idx("first", &[3]),
+            var_idx("second", &[1]),
+            var_idx("second", &[2]),
+            var_idx("second", &[3]),
+        ]
+    );
+}
+
+#[test]
+fn scalarize_static_comprehension_projects_iteration_and_body_indices() {
+    let ctx = ExpressionScalarizationContext {
+        var_dims: HashMap::new(),
+        var_spans: HashMap::new(),
+        structural_values: HashMap::new(),
+        complex_fields: HashMap::new(),
+        component_index_map: HashMap::new(),
+        function_output_index_map: HashMap::new(),
+        function_output_dims_map: HashMap::new(),
+        dynamic_function_output_map: HashMap::new(),
+        record_field_projection_map: HashMap::new(),
+        constructor_input_map: HashMap::new(),
+    };
+    let expr = Expression::ArrayComprehension {
+        expr: Box::new(array(vec![var("i"), real(0.0)])),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: Expression::Range {
+                start: Box::new(Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: test_span(),
+                }),
+                step: Some(Box::new(Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: test_span(),
+                })),
+                end: Box::new(Expression::Literal {
+                    value: Literal::Integer(3),
+                    span: test_span(),
+                }),
+                span: test_span(),
+            },
+        }],
+        filter: None,
+        span: test_span(),
+    };
+
+    let rows = scalarize_expression_rows(&expr, 6, &ctx).unwrap();
+
+    assert_eq!(
+        rows,
+        vec![
+            Expression::Literal {
+                value: Literal::Integer(1),
+                span: test_span(),
+            },
+            real(0.0),
+            Expression::Literal {
+                value: Literal::Integer(2),
+                span: test_span(),
+            },
+            real(0.0),
+            Expression::Literal {
+                value: Literal::Integer(3),
+                span: test_span(),
+            },
+            real(0.0),
+        ]
+    );
+}
+
+#[test]
+fn scalarize_nested_reduction_preserves_inner_comprehension_domain() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("matrix"), variable("matrix", &[3, 4]));
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("totals"), variable("totals", &[3]));
+    let range = |end| Expression::Range {
+        start: Box::new(Expression::Literal {
+            value: Literal::Integer(1),
+            span: test_span(),
+        }),
+        step: None,
+        end: Box::new(Expression::Literal {
+            value: Literal::Integer(end),
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+    let inner = Expression::ArrayComprehension {
+        expr: Box::new(var_sub(
+            "matrix",
+            vec![
+                Subscript::generated_expr(Box::new(var("axis")), test_span()),
+                Subscript::generated_expr(Box::new(var("foot")), test_span()),
+            ],
+        )),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "foot".to_string(),
+            range: range(4),
+        }],
+        filter: None,
+        span: test_span(),
+    };
+    let outer = Expression::ArrayComprehension {
+        expr: Box::new(Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![inner],
+            span: test_span(),
+        }),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "axis".to_string(),
+            range: range(3),
+        }],
+        filter: None,
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            var("totals"),
+            outer,
+            3,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    assert_eq!(dae_model.continuous.equations.len(), 3);
+    for (axis, equation) in (1..=3).zip(&dae_model.continuous.equations) {
+        let Expression::Binary { rhs, .. } = &equation.rhs else {
+            panic!("expected scalar residual");
+        };
+        let Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args,
+            ..
+        } = rhs.as_ref()
+        else {
+            panic!("expected sum reduction, got {rhs:?}");
+        };
+        let [Expression::ArrayComprehension { expr, indices, .. }] = args.as_slice() else {
+            panic!("sum must retain its inner comprehension domain: {args:?}");
+        };
+        assert_eq!(indices[0].name, "foot");
+        assert!(matches!(
+            expr.as_ref(),
+            Expression::VarRef { subscripts, .. }
+                if matches!(
+                    subscripts.as_slice(),
+                    [
+                        Subscript::Expr { expr, .. },
+                        Subscript::Expr { expr: foot, .. },
+                    ] if matches!(expr.as_ref(), Expression::Literal { value: Literal::Integer(value), .. } if *value == axis)
+                        && matches!(foot.as_ref(), Expression::VarRef { name, .. } if name.as_str() == "foot")
+                )
+        ));
+    }
 }
 
 #[test]
@@ -806,6 +1226,50 @@ fn scalarize_matrix_vector_product_uses_row_dot_product() {
             ("R", &[2, 3], "v", &[3]),
         ])
     );
+}
+
+#[test]
+fn scalarize_skew_vector_product_projects_builtin_result_not_argument() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["v", "w", "y"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(VarName::new(name), variable(name, &[3]));
+    }
+    let skew = Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Skew,
+        args: vec![var("v")],
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(eq("y", mul_expr(skew, var("w")), 3));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let neg = |expr| Expression::Unary {
+        op: OpUnary::Minus,
+        rhs: Box::new(expr),
+        span: test_span(),
+    };
+    let expected = [
+        [real(0.0), neg(var_idx("v", &[3])), var_idx("v", &[2])],
+        [var_idx("v", &[3]), real(0.0), neg(var_idx("v", &[1]))],
+        [neg(var_idx("v", &[2])), var_idx("v", &[1]), real(0.0)],
+    ];
+    for (row, coefficients) in dae_model.continuous.equations.iter().zip(expected) {
+        assert_eq!(
+            row.rhs,
+            sum_terms(
+                coefficients
+                    .into_iter()
+                    .zip(1..=3)
+                    .map(|(coefficient, index)| { mul_expr(coefficient, var_idx("w", &[index])) })
+            )
+        );
+    }
 }
 
 #[test]
@@ -868,8 +1332,168 @@ fn scalarize_projected_function_output_keeps_array_argument_whole() {
 }
 
 #[test]
+fn scalarize_function_output_row_slice_projects_selected_elements() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("q"), variable("q", &[4]));
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("up_body"), variable("up_body", &[3]));
+
+    let mut function = rumoca_core::Function::new("LieGroup.SO3.to_DCM", test_span());
+    set_function_instance(&mut function, 42);
+    function
+        .add_input(rumoca_core::FunctionParam::new("q", "Real", test_span()).with_dims(vec![4]));
+    function.add_output(
+        rumoca_core::FunctionParam::new("R", "Real", test_span()).with_dims(vec![3, 3]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let matrix = Expression::FunctionCall {
+        name: structured_function_reference("LieGroup.SO3.to_DCM", test_span(), 42),
+        args: vec![var("q")],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let row = Expression::Index {
+        base: Box::new(matrix),
+        subscripts: vec![
+            Subscript::generated_index(3, test_span()),
+            Subscript::generated_colon(test_span()),
+        ],
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            var("up_body"),
+            row,
+            3,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let projected_names = dae_model
+        .continuous
+        .equations
+        .iter()
+        .map(|equation| {
+            let Expression::Binary { rhs, .. } = &equation.rhs else {
+                panic!("expected scalar residual");
+            };
+            let Expression::FunctionCall { name, .. } = rhs.as_ref() else {
+                panic!("expected projected function output, got {rhs:?}");
+            };
+            name.as_str().to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected_names,
+        [
+            "LieGroup.SO3.to_DCM.R[3,1]",
+            "LieGroup.SO3.to_DCM.R[3,2]",
+            "LieGroup.SO3.to_DCM.R[3,3]",
+        ]
+    );
+}
+
+#[test]
+fn scalarize_function_output_column_slice_preserves_dot_product_indices() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("q"), variable("q", &[4]));
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("normal"), variable("normal", &[3]));
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("cosine"), variable("cosine", &[]));
+
+    let mut function = rumoca_core::Function::new("LieGroup.SO3.to_DCM", test_span());
+    set_function_instance(&mut function, 42);
+    function
+        .add_input(rumoca_core::FunctionParam::new("q", "Real", test_span()).with_dims(vec![4]));
+    function.add_output(
+        rumoca_core::FunctionParam::new("R", "Real", test_span()).with_dims(vec![3, 3]),
+    );
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+
+    let column = Expression::Index {
+        base: Box::new(Expression::FunctionCall {
+            name: structured_function_reference("LieGroup.SO3.to_DCM", test_span(), 42),
+            args: vec![var("q")],
+            is_constructor: false,
+            span: test_span(),
+        }),
+        subscripts: vec![
+            Subscript::generated_colon(test_span()),
+            Subscript::generated_index(3, test_span()),
+        ],
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            var("cosine"),
+            Expression::Binary {
+                op: OpBinary::Mul,
+                lhs: Box::new(column),
+                rhs: Box::new(var("normal")),
+                span: test_span(),
+            },
+            1,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    struct FunctionNameCollector(Vec<String>);
+    impl rumoca_core::ExpressionVisitor for FunctionNameCollector {
+        fn visit_expression(&mut self, expr: &Expression) {
+            if let Expression::FunctionCall { name, .. } = expr {
+                self.0.push(name.as_str().to_string());
+            }
+            self.walk_expression(expr);
+        }
+    }
+    let mut calls = FunctionNameCollector(Vec::new());
+    rumoca_core::ExpressionVisitor::visit_expression(
+        &mut calls,
+        &dae_model.continuous.equations[0].rhs,
+    );
+    assert_eq!(
+        calls.0,
+        [
+            "LieGroup.SO3.to_DCM.R[1,3]",
+            "LieGroup.SO3.to_DCM.R[2,3]",
+            "LieGroup.SO3.to_DCM.R[3,3]",
+        ]
+    );
+}
+
+#[test]
 fn scalarize_does_not_reproject_an_already_selected_function_output() {
     let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(VarName::new("q"), variable("q", &[4]));
     dae_model
         .variables
         .outputs
@@ -885,6 +1509,8 @@ fn scalarize_does_not_reproject_an_already_selected_function_output() {
     function.add_output(
         rumoca_core::FunctionParam::new("xhat", "Real", test_span()).with_dims(vec![2]),
     );
+    function
+        .add_input(rumoca_core::FunctionParam::new("q", "Real", test_span()).with_dims(vec![4]));
     dae_model
         .symbols
         .functions
@@ -894,7 +1520,7 @@ fn scalarize_does_not_reproject_an_already_selected_function_output() {
         "xhat",
         Expression::FunctionCall {
             name: selected_name.clone(),
-            args: Vec::new(),
+            args: vec![var("q")],
             is_constructor: false,
             span: test_span(),
         },
@@ -907,7 +1533,8 @@ fn scalarize_does_not_reproject_an_already_selected_function_output() {
     for equation in &dae_model.continuous.equations {
         assert!(matches!(
             &equation.rhs,
-            Expression::FunctionCall { name, .. } if name == &selected_name
+            Expression::FunctionCall { name, args, .. }
+                if name == &selected_name && args == &[var("q")]
         ));
     }
 }
@@ -1045,887 +1672,4 @@ fn scalarize_dynamic_function_output_resolves_shape_from_array_argument() {
     }
 }
 
-#[test]
-fn scalarize_array_field_of_untyped_function_result_selects_each_component() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("y"), variable("y", &[2]));
-
-    let mut function = rumoca_core::Function::new("Path.sample", test_span());
-    set_function_instance(&mut function, 5);
-    function.add_output(rumoca_core::FunctionParam::new(
-        "state",
-        "Path.State",
-        test_span(),
-    ));
-    dae_model
-        .symbols
-        .functions
-        .insert(VarName::new("Path.sample"), function);
-
-    let call = Expression::FunctionCall {
-        name: structured_function_reference("Path.sample", test_span(), 5),
-        args: vec![],
-        is_constructor: false,
-        span: test_span(),
-    };
-    let field = Expression::FieldAccess {
-        base: Box::new(call.clone()),
-        field: "firstDerivative".to_string(),
-        span: test_span(),
-    };
-    dae_model
-        .continuous
-        .equations
-        .push(eq("y", field.clone(), 2));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 2);
-    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
-        assert_eq!(equation.lhs, lhs(&format!("y[{}]", offset + 1)));
-        assert_eq!(
-            equation.rhs,
-            Expression::Index {
-                base: Box::new(field.clone()),
-                subscripts: vec![Subscript::generated_index(offset as i64 + 1, test_span())],
-                span: test_span(),
-            }
-        );
-    }
-}
-
-#[test]
-fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("y"), variable("y", &[2]));
-
-    let mut constructor = rumoca_core::Function::new("Path.State", test_span());
-    set_function_instance(&mut constructor, 6);
-    constructor.def_id = Some(rumoca_core::DefId::new(60));
-    constructor.is_constructor = true;
-    constructor.add_input(
-        rumoca_core::FunctionParam::new("firstDerivative", "Real", test_span()).with_dims(vec![2]),
-    );
-    dae_model
-        .symbols
-        .functions
-        .insert(VarName::new("Path.State"), constructor);
-
-    let mut function = rumoca_core::Function::new("Path.sample", test_span());
-    set_function_instance(&mut function, 7);
-    let mut state = rumoca_core::FunctionParam::new("state", "Path.State", test_span());
-    state.type_class = Some(rumoca_core::ClassType::Record);
-    state.type_def_id = Some(rumoca_core::DefId::new(60));
-    function.add_output(state);
-    dae_model
-        .symbols
-        .functions
-        .insert(VarName::new("Path.sample"), function);
-
-    let call = Expression::FunctionCall {
-        name: structured_function_reference("Path.sample", test_span(), 7),
-        args: vec![],
-        is_constructor: false,
-        span: test_span(),
-    };
-    dae_model.continuous.equations.push(eq(
-        "y",
-        Expression::FieldAccess {
-            base: Box::new(call),
-            field: "firstDerivative".to_string(),
-            span: test_span(),
-        },
-        2,
-    ));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    for (offset, equation) in dae_model.continuous.equations.iter().enumerate() {
-        assert_eq!(
-            equation.rhs,
-            Expression::FunctionCall {
-                name: projected_function_reference(
-                    &format!("Path.sample.state.firstDerivative[{}]", offset + 1),
-                    test_span(),
-                    7,
-                    2,
-                ),
-                args: vec![],
-                is_constructor: false,
-                span: test_span(),
-            }
-        );
-    }
-}
-
-#[test]
-fn scalarize_vector_matrix_product_uses_column_dot_product() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("v"), variable("v", &[2]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("R"), variable("R", &[2, 3]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("y"), variable("y", &[3]));
-    dae_model
-        .continuous
-        .equations
-        .push(eq("y", mul_expr(var("v"), var("R")), 3));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("y[1]"));
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[("v", &[1], "R", &[1, 1]), ("v", &[2], "R", &[2, 1])])
-    );
-    assert_eq!(dae_model.continuous.equations[1].lhs, lhs("y[2]"));
-    assert_eq!(
-        dae_model.continuous.equations[1].rhs,
-        product_sum(&[("v", &[1], "R", &[1, 2]), ("v", &[2], "R", &[2, 2])])
-    );
-    assert_eq!(dae_model.continuous.equations[2].lhs, lhs("y[3]"));
-    assert_eq!(
-        dae_model.continuous.equations[2].rhs,
-        product_sum(&[("v", &[1], "R", &[1, 3]), ("v", &[2], "R", &[2, 3])])
-    );
-}
-
-#[test]
-fn scalarize_matrix_matrix_product_uses_row_column_dot_product() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("A"), variable("A", &[2, 2]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("B"), variable("B", &[2, 2]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("C"), variable("C", &[2, 2]));
-    dae_model
-        .continuous
-        .equations
-        .push(eq("C", mul_expr(var("A"), var("B")), 4));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 4);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("C[1,1]"));
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[("A", &[1, 1], "B", &[1, 1]), ("A", &[1, 2], "B", &[2, 1])])
-    );
-    assert_eq!(dae_model.continuous.equations[1].lhs, lhs("C[1,2]"));
-    assert_eq!(
-        dae_model.continuous.equations[1].rhs,
-        product_sum(&[("A", &[1, 1], "B", &[1, 2]), ("A", &[1, 2], "B", &[2, 2])])
-    );
-    assert_eq!(dae_model.continuous.equations[2].lhs, lhs("C[2,1]"));
-    assert_eq!(
-        dae_model.continuous.equations[2].rhs,
-        product_sum(&[("A", &[2, 1], "B", &[1, 1]), ("A", &[2, 2], "B", &[2, 1])])
-    );
-    assert_eq!(dae_model.continuous.equations[3].lhs, lhs("C[2,2]"));
-    assert_eq!(
-        dae_model.continuous.equations[3].rhs,
-        product_sum(&[("A", &[2, 1], "B", &[1, 2]), ("A", &[2, 2], "B", &[2, 2])])
-    );
-}
-
-#[test]
-fn scalarize_transpose_matrix_vector_product_swaps_indices() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("A"), variable("A", &[2, 3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("v"), variable("v", &[2]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("y"), variable("y", &[3]));
-    dae_model
-        .continuous
-        .equations
-        .push(eq("y", mul_expr(transpose(var("A")), var("v")), 3));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("y[1]"));
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[("A", &[1, 1], "v", &[1]), ("A", &[2, 1], "v", &[2])])
-    );
-    assert_eq!(dae_model.continuous.equations[1].lhs, lhs("y[2]"));
-    assert_eq!(
-        dae_model.continuous.equations[1].rhs,
-        product_sum(&[("A", &[1, 2], "v", &[1]), ("A", &[2, 2], "v", &[2])])
-    );
-    assert_eq!(dae_model.continuous.equations[2].lhs, lhs("y[3]"));
-    assert_eq!(
-        dae_model.continuous.equations[2].rhs,
-        product_sum(&[("A", &[1, 3], "v", &[1]), ("A", &[2, 3], "v", &[2])])
-    );
-}
-
-#[test]
-fn scalarize_transpose_as_array_equation_swaps_indices() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("A"), variable("A", &[2, 3]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("C"), variable("C", &[3, 2]));
-    dae_model
-        .continuous
-        .equations
-        .push(eq("C", transpose(var("A")), 6));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 6);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("C[1,1]"));
-    assert_eq!(dae_model.continuous.equations[0].rhs, var_idx("A", &[1, 1]));
-    assert_eq!(dae_model.continuous.equations[1].lhs, lhs("C[1,2]"));
-    assert_eq!(dae_model.continuous.equations[1].rhs, var_idx("A", &[2, 1]));
-    assert_eq!(dae_model.continuous.equations[2].lhs, lhs("C[2,1]"));
-    assert_eq!(dae_model.continuous.equations[2].rhs, var_idx("A", &[1, 2]));
-    assert_eq!(dae_model.continuous.equations[3].lhs, lhs("C[2,2]"));
-    assert_eq!(dae_model.continuous.equations[3].rhs, var_idx("A", &[2, 2]));
-    assert_eq!(dae_model.continuous.equations[4].lhs, lhs("C[3,1]"));
-    assert_eq!(dae_model.continuous.equations[4].rhs, var_idx("A", &[1, 3]));
-    assert_eq!(dae_model.continuous.equations[5].lhs, lhs("C[3,2]"));
-    assert_eq!(dae_model.continuous.equations[5].rhs, var_idx("A", &[2, 3]));
-}
-
-#[test]
-fn scalarize_vector_dot_product_in_scalar_equation() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("a"), variable("a", &[3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("b"), variable("b", &[3]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("s"), variable("s", &[]));
-    dae_model
-        .continuous
-        .equations
-        .push(eq("s", mul_expr(var("a"), var("b")), 1));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 1);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("s"));
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[
-            ("a", &[1], "b", &[1]),
-            ("a", &[2], "b", &[2]),
-            ("a", &[3], "b", &[3]),
-        ])
-    );
-}
-
-#[test]
-fn scalarize_column_slice_var_ref_projects_colon_subscript() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("A"), variable("A", &[3, 4]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("y"), variable("y", &[3]));
-    dae_model.continuous.equations.push(eq(
-        "y",
-        var_sub(
-            "A",
-            vec![
-                Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-            ],
-        ),
-        3,
-    ));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("y[1]"));
-    assert_eq!(dae_model.continuous.equations[0].rhs, var_idx("A", &[1, 2]));
-    assert_eq!(dae_model.continuous.equations[1].lhs, lhs("y[2]"));
-    assert_eq!(dae_model.continuous.equations[1].rhs, var_idx("A", &[2, 2]));
-    assert_eq!(dae_model.continuous.equations[2].lhs, lhs("y[3]"));
-    assert_eq!(dae_model.continuous.equations[2].rhs, var_idx("A", &[3, 2]));
-}
-
-#[test]
-fn scalarize_sliced_vector_dot_product_in_scalar_equation() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("A"), variable("A", &[4, 3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("B"), variable("B", &[3, 4]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("s"), variable("s", &[]));
-    dae_model.continuous.equations.push(eq(
-        "s",
-        mul_expr(
-            var_sub(
-                "A",
-                vec![
-                    Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-                    Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                ],
-            ),
-            var_sub(
-                "B",
-                vec![
-                    Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                    Subscript::generated_index(3, rumoca_core::Span::DUMMY),
-                ],
-            ),
-        ),
-        1,
-    ));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 1);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("s"));
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[
-            ("A", &[2, 1], "B", &[1, 3]),
-            ("A", &[2, 2], "B", &[2, 3]),
-            ("A", &[2, 3], "B", &[3, 3]),
-        ])
-    );
-}
-
-#[test]
-fn scalarize_structural_range_slice_dot_product_in_scalar_equation() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("a"), variable("a", &[3]));
-    let mut n = variable("n", &[]);
-    n.start = Some(Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Size,
-        args: vec![
-            var("a"),
-            Expression::Literal {
-                value: Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
-            },
-        ],
-        span: rumoca_core::Span::DUMMY,
-    });
-    n.is_tunable = false;
-    dae_model.variables.parameters.insert(VarName::new("n"), n);
-    dae_model
-        .variables
-        .states
-        .insert(VarName::new("x"), variable("x", &[2]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("s"), variable("s", &[]));
-    dae_model.continuous.equations.push(eq(
-        "s",
-        mul_expr(
-            var_sub(
-                "a",
-                vec![Subscript::generated_expr(
-                    Box::new(Expression::Range {
-                        start: Box::new(Expression::Literal {
-                            value: Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        step: None,
-                        end: Box::new(var("n")),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    rumoca_core::Span::DUMMY,
-                )],
-            ),
-            var("x"),
-        ),
-        1,
-    ));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 1);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("s"));
-    // MLS §10.5 and §10.6.5: a structural range subscript selects an array
-    // slice, and vector * vector is a scalar product.
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[("a", &[2], "x", &[1]), ("a", &[3], "x", &[2])])
-    );
-}
-
-#[test]
-fn scalarize_singleton_structural_range_derivative_residual_projects_element() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(VarName::new("x"), variable("x", &[2]));
-    let mut nx = variable("nx", &[]);
-    nx.start = Some(Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Size,
-        args: vec![
-            var("x"),
-            Expression::Literal {
-                value: Literal::Integer(1),
-                span: rumoca_core::Span::DUMMY,
-            },
-        ],
-        span: rumoca_core::Span::DUMMY,
-    });
-    nx.is_tunable = false;
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("nx"), nx);
-    dae_model.continuous.equations.push(Equation {
-        lhs: None,
-        rhs: sub_expr(
-            der(var_sub(
-                "x",
-                vec![Subscript::generated_expr(
-                    Box::new(Expression::Range {
-                        start: Box::new(Expression::Literal {
-                            value: Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        step: None,
-                        end: Box::new(var("nx")),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    rumoca_core::Span::DUMMY,
-                )],
-            )),
-            var_sub(
-                "x",
-                vec![Subscript::generated_expr(
-                    Box::new(Expression::Range {
-                        start: Box::new(Expression::Literal {
-                            value: Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        step: None,
-                        end: Box::new(sub_expr(
-                            var("nx"),
-                            Expression::Literal {
-                                value: Literal::Integer(1),
-                                span: rumoca_core::Span::DUMMY,
-                            },
-                        )),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    rumoca_core::Span::DUMMY,
-                )],
-            ),
-        ),
-        span: test_span(),
-        origin: "singleton derivative slice".to_string(),
-        scalar_count: 1,
-    });
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 1);
-    // MLS §8.3 and §10.5: a one-element array equation is still one scalar
-    // equation over the selected element.
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        sub_expr(der(var_idx("x", &[2])), var_idx("x", &[1]))
-    );
-}
-
-#[test]
-fn scalarize_sliced_dot_product_in_synthetic_root_condition() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("A"), variable("A", &[4, 3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("B"), variable("B", &[3, 4]));
-    dae_model
-        .events
-        .synthetic_root_conditions
-        .push(Expression::Binary {
-            op: OpBinary::Lt,
-            lhs: Box::new(mul_expr(
-                var_sub(
-                    "A",
-                    vec![
-                        Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-                        Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                    ],
-                ),
-                var_sub(
-                    "B",
-                    vec![
-                        Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                        Subscript::generated_index(3, rumoca_core::Span::DUMMY),
-                    ],
-                ),
-            )),
-            rhs: Box::new(real(0.0)),
-            span: rumoca_core::Span::DUMMY,
-        });
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.events.synthetic_root_conditions.len(), 1);
-    assert_eq!(
-        dae_model.events.synthetic_root_conditions[0],
-        Expression::Binary {
-            op: OpBinary::Lt,
-            lhs: Box::new(product_sum(&[
-                ("A", &[2, 1], "B", &[1, 3]),
-                ("A", &[2, 2], "B", &[2, 3]),
-                ("A", &[2, 3], "B", &[3, 3]),
-            ])),
-            rhs: Box::new(real(0.0)),
-            span: rumoca_core::Span::DUMMY,
-        }
-    );
-}
-
-#[test]
-fn scalarize_cross_product_uses_vector_components() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("a"), variable("a", &[3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("b"), variable("b", &[3]));
-    dae_model
-        .variables
-        .outputs
-        .insert(VarName::new("c"), variable("c", &[3]));
-    dae_model
-        .continuous
-        .equations
-        .push(eq("c", cross(var("a"), var("b")), 3));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    assert_eq!(dae_model.continuous.equations[0].lhs, lhs("c[1]"));
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        sub_expr(
-            mul_expr(var_idx("a", &[2]), var_idx("b", &[3])),
-            mul_expr(var_idx("a", &[3]), var_idx("b", &[2])),
-        )
-    );
-    assert_eq!(dae_model.continuous.equations[1].lhs, lhs("c[2]"));
-    assert_eq!(
-        dae_model.continuous.equations[1].rhs,
-        sub_expr(
-            mul_expr(var_idx("a", &[3]), var_idx("b", &[1])),
-            mul_expr(var_idx("a", &[1]), var_idx("b", &[3])),
-        )
-    );
-    assert_eq!(dae_model.continuous.equations[2].lhs, lhs("c[3]"));
-    assert_eq!(
-        dae_model.continuous.equations[2].rhs,
-        sub_expr(
-            mul_expr(var_idx("a", &[1]), var_idx("b", &[2])),
-            mul_expr(var_idx("a", &[2]), var_idx("b", &[1])),
-        )
-    );
-}
-
-#[test]
-fn scalarize_residual_column_slice_lhs_infers_targets_from_array_ir() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .algebraics
-        .insert(VarName::new("M"), variable("M", &[3, 4]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("r"), variable("r", &[3, 4]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("f"), variable("f", &[3, 4]));
-    dae_model.continuous.equations.push(Equation {
-        lhs: None,
-        rhs: sub_expr(
-            var_sub(
-                "M",
-                vec![
-                    Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                    Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-                ],
-            ),
-            cross(
-                var_sub(
-                    "r",
-                    vec![
-                        Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                        Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-                    ],
-                ),
-                var_sub(
-                    "f",
-                    vec![
-                        Subscript::generated_colon(rumoca_core::Span::DUMMY),
-                        Subscript::generated_index(2, rumoca_core::Span::DUMMY),
-                    ],
-                ),
-            ),
-        ),
-        span: test_span(),
-        origin: "slice residual".to_string(),
-        scalar_count: 4,
-    });
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        sub_expr(
-            var_idx("M", &[1, 2]),
-            sub_expr(
-                mul_expr(var_idx("r", &[2, 2]), var_idx("f", &[3, 2])),
-                mul_expr(var_idx("r", &[3, 2]), var_idx("f", &[2, 2])),
-            ),
-        )
-    );
-    assert_eq!(
-        dae_model.continuous.equations[1].rhs,
-        sub_expr(
-            var_idx("M", &[2, 2]),
-            sub_expr(
-                mul_expr(var_idx("r", &[3, 2]), var_idx("f", &[1, 2])),
-                mul_expr(var_idx("r", &[1, 2]), var_idx("f", &[3, 2])),
-            ),
-        )
-    );
-    assert_eq!(
-        dae_model.continuous.equations[2].rhs,
-        sub_expr(
-            var_idx("M", &[3, 2]),
-            sub_expr(
-                mul_expr(var_idx("r", &[1, 2]), var_idx("f", &[2, 2])),
-                mul_expr(var_idx("r", &[2, 2]), var_idx("f", &[1, 2])),
-            ),
-        )
-    );
-}
-
-#[test]
-fn scalarize_matrix_vector_derivative_residual_uses_expression_shape() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("J"), variable("J", &[3, 3]));
-    dae_model
-        .variables
-        .states
-        .insert(VarName::new("omega"), variable("omega", &[3]));
-    dae_model
-        .variables
-        .algebraics
-        .insert(VarName::new("M_body"), variable("M_body", &[3]));
-
-    // MLS §10.6 / SPEC_0019: array equations scalarize by expression shape.
-    // A residual `J * der(omega) - M_body` must produce one derivative row per
-    // vector component even if stale metadata says there is only one row.
-    dae_model.continuous.equations.push(Equation {
-        lhs: None,
-        rhs: sub_expr(mul_expr(var("J"), der(var("omega"))), var("M_body")),
-        span: Span::DUMMY,
-        origin: "matrix derivative residual".to_string(),
-        scalar_count: 1,
-    });
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    for idx in 1..=3 {
-        assert!(
-            expr_contains_der_var_idx(
-                &dae_model.continuous.equations[idx as usize - 1].rhs,
-                "omega",
-                idx
-            ),
-            "row {idx} should contain der(omega[{idx}])"
-        );
-    }
-}
-
-#[test]
-fn scalarize_matrix_vector_derivative_residual_preserves_qualified_state_name() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("vehicle.J"), variable("vehicle.J", &[3, 3]));
-    dae_model.variables.states.insert(
-        VarName::new("vehicle.omega"),
-        variable("vehicle.omega", &[3]),
-    );
-    dae_model.variables.algebraics.insert(
-        VarName::new("vehicle.M_body"),
-        variable("vehicle.M_body", &[3]),
-    );
-
-    // MLS §10.6 / SPEC_0019: scalarizing an array equation must project the
-    // existing IR variable reference. Qualified component paths are part of
-    // the Modelica name and must not be stripped while projecting der().
-    dae_model.continuous.equations.push(Equation {
-        lhs: None,
-        rhs: sub_expr(
-            mul_expr(var("vehicle.J"), der(var("vehicle.omega"))),
-            var("vehicle.M_body"),
-        ),
-        span: Span::DUMMY,
-        origin: "qualified matrix derivative residual".to_string(),
-        scalar_count: 1,
-    });
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 3);
-    for idx in 1..=3 {
-        assert!(
-            expr_contains_der_var_idx(
-                &dae_model.continuous.equations[idx as usize - 1].rhs,
-                "vehicle.omega",
-                idx
-            ),
-            "row {idx} should contain der(vehicle.omega[{idx}])"
-        );
-    }
-}
-
-#[test]
-fn scalarize_matrix_matrix_derivative_residual_preserves_derivative_lhs_rows() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(VarName::new("R"), variable("R", &[3, 3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("skew"), variable("skew", &[3, 3]));
-
-    // MLS §10.6: `der(R) = R * skew` is an array equation. Scalarization must
-    // keep each residual row owned by the corresponding state derivative.
-    dae_model.continuous.equations.push(Equation {
-        lhs: None,
-        rhs: sub_expr(der(var("R")), mul_expr(var("R"), var("skew"))),
-        span: Span::DUMMY,
-        origin: "matrix derivative product residual".to_string(),
-        scalar_count: 1,
-    });
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 9);
-    for row in 1..=3 {
-        for col in 1..=3 {
-            let eq_idx = (row - 1) * 3 + (col - 1);
-            assert_eq!(
-                dae_model.continuous.equations[eq_idx].rhs,
-                sub_expr(
-                    der(var_idx("R", &[row as i64, col as i64])),
-                    product_sum(&[
-                        ("R", &[row as i64, 1], "skew", &[1, col as i64]),
-                        ("R", &[row as i64, 2], "skew", &[2, col as i64]),
-                        ("R", &[row as i64, 3], "skew", &[3, col as i64])
-                    ])
-                ),
-                "row {row}, col {col} should preserve der(R[{row},{col}])"
-            );
-        }
-    }
-}
-
-#[test]
-fn scalarize_lowers_indexed_matrix_vector_product_base() {
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .parameters
-        .insert(VarName::new("R"), variable("R", &[3, 3]));
-    dae_model
-        .variables
-        .states
-        .insert(VarName::new("omega"), variable("omega", &[3]));
-
-    dae_model
-        .continuous
-        .equations
-        .push(eq("y", index(mul_expr(var("R"), var("omega")), &[2]), 1));
-
-    scalarize_equations(&mut dae_model).unwrap();
-
-    assert_eq!(dae_model.continuous.equations.len(), 1);
-    assert_eq!(
-        dae_model.continuous.equations[0].rhs,
-        product_sum(&[
-            ("R", &[2, 1], "omega", &[1]),
-            ("R", &[2, 2], "omega", &[2]),
-            ("R", &[2, 3], "omega", &[3])
-        ])
-    );
-}
+mod tensor_projection;

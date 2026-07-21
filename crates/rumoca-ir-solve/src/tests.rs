@@ -130,7 +130,6 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
             blocks: vec![AlgebraicProjectionBlock {
                 rows: vec![1],
                 y_indices: vec![1],
-                causal_steps: Vec::new(),
             }],
         },
         residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
@@ -225,6 +224,8 @@ fn representative_event_partition() -> SolveEventPartition {
             ]],
             fixture_span(),
         ),
+        root_relation_memory_targets: vec![None],
+        root_zero_domains: vec![RootZeroDomain::Previous],
         scheduled_time_events: vec![0.1],
         ..SolveEventPartition::default()
     }
@@ -609,6 +610,38 @@ fn solve_problem_shape_contract_rejects_bad_schema_version() {
         Err(SolveProblemShapeContractError::SchemaVersion {
             actual: SOLVE_SCHEMA_VERSION + 1,
             expected: SOLVE_SCHEMA_VERSION,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_unaligned_root_relation_memory() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.events.root_relation_memory_targets.clear();
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "events.root_relation_memory_targets",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_unaligned_root_zero_domains() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.events.root_zero_domains.clear();
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "events.root_zero_domains",
+            expected: 1,
+            actual: 0,
+            span: None,
         })
     );
 }

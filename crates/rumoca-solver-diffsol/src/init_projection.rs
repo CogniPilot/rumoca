@@ -232,7 +232,6 @@ fn project_initial_unknowns(
         current_y,
         params,
         current_t,
-        model.initialization_projection_indices(),
         &model.problem.initialization.projection_plan,
         tol,
     )

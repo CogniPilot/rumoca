@@ -1,8 +1,11 @@
 use crate::errors::ToDaeError;
-use crate::fmi_metadata_values::fold_fmi_model_description_values_to_literals;
+use crate::fmi_metadata_values::{
+    build_empty_fmi_array_expression_for_test, fold_fmi_model_description_values_to_literals,
+};
 use rumoca_core::{
     BuiltinFunction, ComponentRefPart, ComponentReference, DefId, Expression, Function,
-    FunctionParam, Literal, OpBinary, Reference, SourceId, Span, Statement, Subscript, VarName,
+    FunctionInstanceId, FunctionParam, Literal, OpBinary, Reference, ResolvedFunctionReference,
+    SourceId, Span, Statement, Subscript, VarName,
 };
 use rumoca_ir_dae::{Dae, Variable, VariableOrigin};
 
@@ -111,6 +114,18 @@ fn assert_real_array(expr: &Expression, expected: &[f64]) {
     assert_eq!(elements.len(), expected.len());
     for (element, expected) in elements.iter().zip(expected) {
         assert_real(element, *expected);
+    }
+}
+
+fn assert_array_extents(expr: &Expression, dimensions: &[usize]) {
+    let Expression::Array { elements, .. } = expr else {
+        panic!("expected array with dimensions {dimensions:?}, got {expr:?}");
+    };
+    assert_eq!(elements.len(), dimensions[0]);
+    if dimensions.len() > 1 {
+        for element in elements {
+            assert_array_extents(element, &dimensions[1..]);
+        }
     }
 }
 
@@ -345,6 +360,25 @@ fn fmi_model_description_folds_array_alias_and_subscripted_starts() {
 }
 
 #[test]
+fn fmi_model_description_preserves_nested_zero_array_extents() {
+    for dimensions in [vec![0], vec![2, 0], vec![0, 2], vec![2, 0, 3]] {
+        let expression = build_empty_fmi_array_expression_for_test(&dimensions, test_span(1, 2))
+            .unwrap_or_else(|err| {
+                panic!("FMI zero-extent array {dimensions:?} should rebuild: {err}")
+            });
+        assert_array_extents(&expression, &dimensions);
+    }
+}
+
+#[test]
+fn fmi_model_description_rejects_array_cardinality_overflow() {
+    let error = build_empty_fmi_array_expression_for_test(&[usize::MAX, 2], test_span(1, 2))
+        .expect_err("overflowing array cardinality should fail");
+
+    assert!(error.contains("overflow"));
+}
+
+#[test]
 fn fmi_model_description_uses_structured_reference_identity_and_subscripts() {
     let mut dae = Dae::new();
     let def_id = DefId::new(100);
@@ -473,6 +507,7 @@ fn fmi_model_description_folds_identity_matrix_start() {
 fn fmi_model_description_folds_array_returning_user_function_start() {
     let mut dae = Dae::new();
     let mut vector = Function::new("Pkg.vector", test_span(41, 42));
+    vector.instance_id = Some(FunctionInstanceId::new(1));
     vector.add_output(
         FunctionParam::new("v_out", "Real", test_span(41, 42))
             .with_dims(vec![2])
@@ -488,7 +523,17 @@ fn fmi_model_description_folds_array_returning_user_function_start() {
     let mut output = state(
         "output",
         Expression::FunctionCall {
-            name: VarName::new("Pkg.vector").into(),
+            name: Reference::from_component_reference(
+                rumoca_core::component_reference_from_flat_name(
+                    &VarName::new("Pkg.vector"),
+                    test_span(43, 44),
+                )
+                .expect("structured function reference"),
+            )
+            .with_resolved_function(ResolvedFunctionReference {
+                instance_id: FunctionInstanceId::new(1),
+                base_part_count: 2,
+            }),
             args: Vec::new(),
             is_constructor: false,
             span: test_span(43, 44),

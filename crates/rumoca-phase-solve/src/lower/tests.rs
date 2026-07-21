@@ -26,6 +26,7 @@ mod event_intrinsics;
 mod explicit_residual_tests;
 mod function_expression_tests;
 mod function_loop_tests;
+mod function_metadata_tests;
 mod intrinsics;
 mod projection_derivative_tests;
 mod projection_runtime_tests;

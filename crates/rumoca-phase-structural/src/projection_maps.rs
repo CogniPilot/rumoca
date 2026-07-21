@@ -8,8 +8,11 @@ use crate::StructuralError;
 pub type ProjectionParts = Vec<ComponentRefPart>;
 pub type FunctionOutputProjectionMap =
     HashMap<rumoca_core::FunctionInstanceId, HashMap<usize, ProjectionParts>>;
-pub type RecordFieldProjectionMap =
-    HashMap<rumoca_core::FunctionInstanceId, HashMap<String, HashMap<usize, ProjectionParts>>>;
+pub struct RecordFieldProjection {
+    pub output_name: String,
+    pub fields: HashMap<String, HashMap<usize, ProjectionParts>>,
+}
+pub type RecordFieldProjectionMap = HashMap<rumoca_core::FunctionInstanceId, RecordFieldProjection>;
 
 fn extract_first_component_index(name: &rumoca_core::VarName) -> Option<usize> {
     for segment in name.segments() {
@@ -363,7 +366,13 @@ pub fn build_record_field_projection_map(
             &mut Vec::new(),
         )?;
         if !fields.is_empty() {
-            map.insert(instance_id, fields);
+            map.insert(
+                instance_id,
+                RecordFieldProjection {
+                    output_name: output.name.clone(),
+                    fields,
+                },
+            );
         }
     }
     Ok(map)

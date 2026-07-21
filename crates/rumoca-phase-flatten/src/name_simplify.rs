@@ -53,11 +53,18 @@ struct ProjectionElement {
 }
 
 fn protected_semantic_prefixes(flat: &flat::Model) -> HashSet<String> {
-    flat.top_level_connectors
+    let mut prefixes = flat
+        .top_level_connectors
         .iter()
         .chain(flat.top_level_input_components.iter())
         .cloned()
-        .collect()
+        .collect::<HashSet<_>>();
+    prefixes.extend(
+        flat.record_instances
+            .keys()
+            .map(|name| name.as_str().to_string()),
+    );
+    prefixes
 }
 
 fn build_rename_map(

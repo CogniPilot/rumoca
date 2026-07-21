@@ -2,41 +2,6 @@ use indexmap::IndexMap;
 use rumoca_solver::RuntimeSolveError;
 use std::hash::Hash;
 
-use crate::refresh_plan::AlgebraicRefreshRow;
-
-/// Write the Newton iterate back into the plan rows' target slots.
-pub(super) fn write_refresh_targets(rows: &[AlgebraicRefreshRow], x: &[f64], solver_y: &mut [f64]) {
-    for (row, value) in rows.iter().zip(x) {
-        solver_y[row.target_index] = *value;
-    }
-}
-
-/// Borrowed inputs for one Newton Jacobian assembly.
-pub(super) struct NewtonProbe<'a> {
-    pub(super) rows: &'a [AlgebraicRefreshRow],
-    pub(super) x: &'a [f64],
-    pub(super) f_base: &'a [f64],
-    pub(super) residual: &'a [f64],
-    pub(super) t: f64,
-    pub(super) params: &'a [f64],
-}
-
-/// Apply the eliminated Newton steps; false when any step is non-finite.
-pub(super) fn apply_newton_steps(
-    x: &mut [f64],
-    augmented: &crate::linear_solve::AugmentedMatrix,
-) -> bool {
-    let m = x.len();
-    for (j, value) in x.iter_mut().enumerate() {
-        let step = augmented.get(j, m);
-        if !step.is_finite() {
-            return false;
-        }
-        *value += step;
-    }
-    true
-}
-
 pub(super) fn zero_runtime_values(
     len: usize,
     context: &'static str,

@@ -160,7 +160,8 @@ fn constant_matmul_jvp_rejects_output_count_overflow() {
     assert_eq!(err.source_span(), Some(span));
     assert!(matches!(err, LowerError::ContractViolation { .. }));
     assert!(
-        err.reason().contains("constant MatMul JVP output count"),
+        err.reason().contains("MatMul JVP lhs value count")
+            || err.reason().contains("MatMul JVP operand value count"),
         "unexpected error: {err}"
     );
 }
@@ -509,20 +510,14 @@ fn compute_block_jvp_matmul_constant_lhs_emits_matmul_jvp() {
         jvp.nodes[0]
     );
 
-    // The JVP rhs_ops should use LoadSeed instead of LoadY.
+    // Exact operand AD retains primal loads needed by nonlinear expressions and
+    // packs the tangent values consumed by the MatMul kernel.
     if let ComputeNode::MatMul { rhs_ops, .. } = &jvp.nodes[0] {
         assert!(
             rhs_ops
                 .iter()
                 .any(|op| matches!(op, LinearOp::LoadSeed { .. })),
             "JVP rhs_ops should contain LoadSeed: {:?}",
-            rhs_ops
-        );
-        assert!(
-            !rhs_ops
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadY { .. })),
-            "JVP rhs_ops must not contain LoadY: {:?}",
             rhs_ops
         );
     }
@@ -593,7 +588,7 @@ fn compute_block_jvp_matmul_variable_lhs_emits_matmul_jvp() {
 }
 
 #[test]
-fn compute_block_jvp_matmul_constant_operands_emit_zero_rows() {
+fn compute_block_jvp_matmul_constant_operands_remains_tensor_native() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::MatMul {
             lhs_ops: vec![
@@ -617,17 +612,234 @@ fn compute_block_jvp_matmul_constant_operands_emit_zero_rows() {
     };
 
     let jvp = lower_compute_block_jvp(&block).expect("constant MatMul JVP should lower");
-    let ComputeNode::ScalarPrograms(rows) = &jvp.nodes[0] else {
-        panic!("constant MatMul JVP should lower to zero scalar rows");
-    };
-    assert_eq!(rows.programs.len(), 1);
-    assert_eq!(
-        rows.programs[0],
-        vec![
-            LinearOp::Const { dst: 0, value: 0.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]
+    assert!(
+        matches!(jvp.nodes[0], ComputeNode::MatMul { .. }),
+        "constant MatMul JVP should remain tensor-native"
     );
+
+    let mut out = [f64::NAN];
+    rumoca_eval_solve::PreparedComputeBlock::new(&jvp)
+        .expect("constant MatMul JVP should prepare")
+        .eval_with_context(
+            &[],
+            &[2.0, 3.0],
+            0.0,
+            rumoca_eval_solve::RowEvalContext {
+                seed: Some(&[]),
+                ..Default::default()
+            },
+            &mut out,
+        )
+        .expect("constant MatMul JVP should evaluate");
+    assert_eq!(out, [0.0]);
+}
+
+fn eval_jvp(block: &ComputeBlock, y: &[f64], p: &[f64], seed: &[f64]) -> Vec<f64> {
+    let jvp = lower_compute_block_jvp(block).expect("JVP fixture should lower");
+    let mut out = vec![0.0; jvp.len().expect("JVP fixture output count")];
+    rumoca_eval_solve::PreparedComputeBlock::new(&jvp)
+        .expect("JVP fixture should prepare")
+        .eval_with_context(
+            y,
+            p,
+            0.0,
+            rumoca_eval_solve::RowEvalContext {
+                seed: Some(seed),
+                ..Default::default()
+            },
+            &mut out,
+        )
+        .expect("JVP fixture should evaluate");
+    out
+}
+
+fn eval_scalar_reference_jvp(block: &ComputeBlock, y: &[f64], p: &[f64], seed: &[f64]) -> Vec<f64> {
+    let scalar = scalar_program_block_fixture(block);
+    let rows = lower_scalar_program_block_ad(&scalar.programs).expect("scalar reference AD");
+    let reference = ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_output_indices(rows, scalar.program_spans, scalar.output_indices)
+            .expect("scalar reference output mapping"),
+    );
+    let mut out = vec![0.0; reference.len().expect("scalar reference output count")];
+    rumoca_eval_solve::PreparedComputeBlock::new(&reference)
+        .expect("scalar reference should prepare")
+        .eval_with_context(
+            y,
+            p,
+            0.0,
+            rumoca_eval_solve::RowEvalContext {
+                seed: Some(seed),
+                ..Default::default()
+            },
+            &mut out,
+        )
+        .expect("scalar reference should evaluate");
+    out
+}
+
+#[test]
+fn compute_block_jvp_matmul_differentiates_nonlinear_operand_program() {
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::MatMul {
+            lhs_ops: vec![LinearOp::LoadP { dst: 0, index: 0 }],
+            lhs_start: 0,
+            rhs_ops: vec![
+                LinearOp::LoadY { dst: 1, index: 0 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Mul,
+                    lhs: 1,
+                    rhs: 1,
+                },
+            ],
+            rhs_start: 2,
+            m: 1,
+            k: 1,
+            n: 1,
+            lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            span: ad_test_span(),
+        }],
+    };
+
+    assert_eq!(eval_jvp(&block, &[3.0], &[2.0], &[0.5]), vec![6.0]);
+}
+
+#[test]
+fn compute_block_jvp_matmul_uses_native_block_product_rule() {
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::MatMul {
+            lhs_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::Binary {
+                    dst: 1,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 0,
+                },
+            ],
+            lhs_start: 1,
+            rhs_ops: vec![
+                LinearOp::LoadY { dst: 2, index: 1 },
+                LinearOp::Unary {
+                    dst: 3,
+                    op: UnaryOp::Sin,
+                    arg: 2,
+                },
+            ],
+            rhs_start: 3,
+            m: 1,
+            k: 1,
+            n: 1,
+            lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            span: ad_test_span(),
+        }],
+    };
+
+    let jvp = lower_compute_block_jvp(&block).expect("two-variable MatMul JVP should lower");
+    assert!(
+        matches!(jvp.nodes[0], ComputeNode::MatMul { k: 2, .. }),
+        "two-variable product rule should remain one block MatMul"
+    );
+    let native = eval_jvp(&block, &[1.7, 0.4], &[], &[0.2, -0.3]);
+    let scalar = eval_scalar_reference_jvp(&block, &[1.7, 0.4], &[], &[0.2, -0.3]);
+    assert_eq!(native.len(), scalar.len());
+    assert!((native[0] - scalar[0]).abs() <= 1.0e-12);
+}
+
+fn affine_jvp_fixture(is_map: bool) -> ComputeBlock {
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 0,
+            upper: 2,
+            step: 1,
+        }],
+    };
+    let output_map = rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+        .expect("valid affine fixture output map");
+    let base_ops = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 2,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+    let load_strides = vec![rumoca_ir_solve::AffineStencilLoadStride {
+        op_position: 0,
+        terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 1,
+        }],
+    }];
+    let const_strides = vec![rumoca_ir_solve::AffineStencilConstStride {
+        op_position: 1,
+        terms: vec![rumoca_ir_solve::AffineStencilConstStrideTerm {
+            dimension: 0,
+            stride: 10.0,
+        }],
+    }];
+    let metadata = rumoca_ir_solve::TensorNodeMetadata::default();
+    let span = ad_test_span();
+    let node = if is_map {
+        ComputeNode::Map {
+            domain,
+            output_map,
+            base_ops,
+            load_strides,
+            const_strides,
+            metadata,
+            span,
+        }
+    } else {
+        ComputeNode::AffineStencil {
+            domain,
+            output_map,
+            base_ops,
+            load_strides,
+            const_strides,
+            metadata,
+            span,
+        }
+    };
+    ComputeBlock { nodes: vec![node] }
+}
+
+#[test]
+fn compute_block_jvp_preserves_compact_affine_nodes_and_strides() {
+    for is_map in [true, false] {
+        let block = affine_jvp_fixture(is_map);
+        let jvp = lower_compute_block_jvp(&block).expect("affine JVP should lower");
+        assert!(
+            matches!(
+                (&jvp.nodes[0], is_map),
+                (ComputeNode::Map { .. }, true) | (ComputeNode::AffineStencil { .. }, false)
+            ),
+            "affine JVP must preserve its tensor node kind"
+        );
+        assert_eq!(
+            eval_jvp(&block, &[2.0, 3.0, 4.0], &[], &[0.5, 1.0, 1.5]),
+            vec![2.0, 6.0, 12.0]
+        );
+        assert_eq!(
+            eval_jvp(&block, &[2.0, 3.0, 4.0], &[], &[0.5, 1.0, 1.5]),
+            eval_scalar_reference_jvp(&block, &[2.0, 3.0, 4.0], &[], &[0.5, 1.0, 1.5])
+        );
+    }
 }
 
 #[test]

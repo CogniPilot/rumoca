@@ -1210,7 +1210,7 @@ fn lower_initial_residual_does_not_treat_initial_rows_as_derivative_rows() {
 }
 
 #[test]
-fn lower_initial_residual_keeps_derivative_rows_with_algebraic_targets() {
+fn lower_initial_residual_excludes_coupled_derivative_rows() {
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -1227,9 +1227,28 @@ fn lower_initial_residual_keeps_derivative_rows_with_algebraic_targets() {
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
 
     let rows = lower_initial_residual(&dae_model, &layout)
-        .expect("algebraic derivative row should stay in initial residual");
+        .expect("coupled derivative row should lower through derivative RHS");
 
-    assert_eq!(rows.len(), 1);
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn lower_initial_residual_excludes_derivative_rows_without_algebraic_unknowns() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    dae_model
+        .continuous
+        .equations
+        .push(residual(sub(der(var("x")), var("x"))));
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+
+    let rows = lower_initial_residual(&dae_model, &layout)
+        .expect("direct state derivative row should lower");
+
+    assert!(rows.is_empty());
 }
 
 #[test]

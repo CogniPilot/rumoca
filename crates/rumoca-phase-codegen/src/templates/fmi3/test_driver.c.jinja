@@ -18,6 +18,7 @@
 {{ ns.total }}
 {%- endmacro %}
 {%- set n_x = var_size(dae.x) | trim | int -%}
+{%- set n_event_indicators = solve.events.root_conditions.programs | length if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else 0 -%}
 {%- set n_clocks = dae.clock_schedules | default([]) | length -%}
 {%- set n_triggered_clocks = dae.triggered_clock_conditions | default([]) | length -%}
 {#- Per-variable VR counts (must match fmi3/model.c.jinja) -#}
@@ -48,6 +49,79 @@ static void dummy_logger(fmi3InstanceEnvironment env, fmi3Status status, fmi3Str
     (void)env; (void)status; (void)cat; (void)msg;
 }
 
+{% if n_event_indicators > 0 %}
+static int event_indicators_crossed(const double* previous, const double* current) {
+    for (int i = 0; i < {{ n_event_indicators }}; i++) {
+        if ((previous[i] > 0.0) != (current[i] > 0.0)) return 1;
+    }
+    return 0;
+}
+
+static fmi3Status set_continuous_point(fmi3Instance instance, double time, const double* states) {
+    fmi3Status status = fmi3SetTime(instance, time);
+{% if n_x > 0 %}
+    if (status == fmi3OK) status = fmi3SetContinuousStates(instance, states, {{ n_x }});
+{% else %}
+    (void)states;
+{% endif %}
+    return status;
+}
+
+static fmi3Status localize_state_event(
+    fmi3Instance instance,
+    double startTime,
+    double endTime,
+    const double* startStates,
+    const double* endStates,
+    const double* startIndicators,
+    double* eventTime,
+    double* eventStates,
+    double* eventIndicators) {
+    double lowerTime = startTime;
+    double upperTime = endTime;
+    double lowerIndicators[{{ n_event_indicators }}];
+    double trialIndicators[{{ n_event_indicators }}];
+    double trialStates[{{ n_x }} > 0 ? {{ n_x }} : 1];
+    memcpy(lowerIndicators, startIndicators, sizeof(lowerIndicators));
+
+    while (nextafter(lowerTime, upperTime) < upperTime) {
+        const double trialTime = lowerTime + 0.5 * (upperTime - lowerTime);
+        if (trialTime <= lowerTime || trialTime >= upperTime) return fmi3Error;
+        const double fraction = (trialTime - startTime) / (endTime - startTime);
+{% if n_x > 0 %}
+        for (int i = 0; i < {{ n_x }}; i++) {
+            trialStates[i] = startStates[i] + fraction * (endStates[i] - startStates[i]);
+        }
+{% endif %}
+        fmi3Status status = set_continuous_point(instance, trialTime, trialStates);
+        if (status != fmi3OK) return status;
+        status = fmi3GetEventIndicators(instance, trialIndicators, {{ n_event_indicators }});
+        if (status != fmi3OK) return status;
+        if (event_indicators_crossed(lowerIndicators, trialIndicators)) {
+            upperTime = trialTime;
+        } else {
+            lowerTime = trialTime;
+            memcpy(lowerIndicators, trialIndicators, sizeof(lowerIndicators));
+        }
+    }
+
+    const double fraction = (upperTime - startTime) / (endTime - startTime);
+{% if n_x > 0 %}
+    for (int i = 0; i < {{ n_x }}; i++) {
+        eventStates[i] = startStates[i] + fraction * (endStates[i] - startStates[i]);
+    }
+{% else %}
+    (void)startStates;
+    (void)endStates;
+    (void)eventStates;
+{% endif %}
+    *eventTime = upperTime;
+    fmi3Status status = set_continuous_point(instance, upperTime, eventStates);
+    if (status != fmi3OK) return status;
+    return fmi3GetEventIndicators(instance, eventIndicators, {{ n_event_indicators }});
+}
+{% endif %}
+
 int main(int argc, char* argv[]) {
     double t_end = 1.0;
     double dt = 0.001;
@@ -58,8 +132,6 @@ int main(int argc, char* argv[]) {
         else if (strcmp(argv[i], "--dt") == 0 && i + 1 < argc)
             dt = atof(argv[++i]);
     }
-
-    int n_steps = (int)(t_end / dt);
 
     fmi3Instance inst = fmi3InstantiateModelExchange(
         "test", "{{ model_name }}-rumoca", "",
@@ -78,6 +150,12 @@ int main(int argc, char* argv[]) {
     fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
         &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
     fmi3EnterContinuousTimeMode(inst);
+
+    double previousIndicators[{{ n_event_indicators }} > 0 ? {{ n_event_indicators }} : 1];
+    double currentIndicators[{{ n_event_indicators }} > 0 ? {{ n_event_indicators }} : 1];
+{% if n_event_indicators > 0 %}
+    fmi3GetEventIndicators(inst, previousIndicators, {{ n_event_indicators }});
+{% endif %}
 
     /* CSV header */
     printf("time");
@@ -100,27 +178,8 @@ int main(int argc, char* argv[]) {
     fmi3GetContinuousStates(inst, x, {{ n_x }});
 {% endif %}
 
-    for (int step = 0; step <= n_steps; step++) {
-        double t = step * dt;
-        fmi3SetTime(inst, t);
-{% if n_x > 0 %}
-        fmi3SetContinuousStates(inst, x, {{ n_x }});
-{% endif %}
-        if (nextEventTimeDefined && fabs(t - nextEventTime) <= fmax(1.0e-12, 0.5 * dt)) {
-            fmi3EnterEventMode(inst);
-            fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
-                &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
-            fmi3EnterContinuousTimeMode(inst);
-            if (terminateSimulation) break;
-{% if n_x > 0 %}
-            fmi3GetContinuousStates(inst, x, {{ n_x }});
-            fmi3SetContinuousStates(inst, x, {{ n_x }});
-{% endif %}
-        }
-{% if n_x > 0 %}
-        fmi3GetContinuousStateDerivatives(inst, xdot, {{ n_x }});
-{% endif %}
-
+    double t = 0.0;
+    while (t <= t_end) {
         /* Print state using flat state array (VR-independent) */
         printf("%.10g", t);
 {% if n_x > 0 %}
@@ -128,53 +187,96 @@ int main(int argc, char* argv[]) {
             printf(",%.10g", x[i]);
 {% endif %}
         printf("\n");
+        if (t >= t_end) break;
 
+        double targetTime = fmin(t + dt, t_end);
+        fmi3Boolean timeEvent = 0;
+        if (nextEventTimeDefined && nextEventTime > t && nextEventTime <= targetTime) {
+            targetTime = nextEventTime;
+            timeEvent = 1;
+        }
+
+        double startStates[{{ n_x }} > 0 ? {{ n_x }} : 1];
+        double endStates[{{ n_x }} > 0 ? {{ n_x }} : 1];
 {% if n_x > 0 %}
-        /* Euler step */
-        for (int i = 0; i < {{ n_x }}; i++)
-            x[i] += dt * xdot[i];
-        fmi3SetTime(inst, t + dt);
+        fmi3GetContinuousStateDerivatives(inst, xdot, {{ n_x }});
+        memcpy(startStates, x, sizeof(startStates));
+        for (int i = 0; i < {{ n_x }}; i++) {
+            endStates[i] = x[i] + (targetTime - t) * xdot[i];
+        }
+        memcpy(x, endStates, sizeof(endStates));
+        fmi3SetTime(inst, targetTime);
         fmi3SetContinuousStates(inst, x, {{ n_x }});
+{% else %}
+        fmi3SetTime(inst, targetTime);
 {% endif %}
 
-        /* Check events */
-        {
-            fmi3Boolean enterEvent = 0, terminate = 0;
-            fmi3CompletedIntegratorStep(inst, 1, &enterEvent, &terminate);
-            if (terminate) break;
+        fmi3Boolean enterEvent = timeEvent;
+{% if n_event_indicators > 0 %}
+        fmi3GetEventIndicators(inst, currentIndicators, {{ n_event_indicators }});
+        if (event_indicators_crossed(previousIndicators, currentIndicators)) {
+            double eventTime = targetTime;
+            if (localize_state_event(inst, t, targetTime, startStates, endStates,
+                    previousIndicators, &eventTime, x, currentIndicators) != fmi3OK) {
+                break;
+            }
+            fmi3EnterEventMode(inst);
+            fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
+                &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
+            fmi3EnterContinuousTimeMode(inst);
+            fmi3GetEventIndicators(inst, previousIndicators, {{ n_event_indicators }});
+{% if n_x > 0 %}
+            fmi3GetContinuousStates(inst, x, {{ n_x }});
+{% endif %}
+            t = eventTime;
+            if (terminateSimulation) break;
+            continue;
+        }
+{% endif %}
+
+        fmi3Boolean stepEvent = 0, terminate = 0;
+        fmi3CompletedIntegratorStep(inst, 1, &stepEvent, &terminate);
+        if (stepEvent) enterEvent = 1;
+        if (terminate) break;
 
 {% if n_clocks > 0 %}
-            /* Check periodic clocks */
-            {
+        /* Check periodic clocks */
+        {
 {% for sched in dae.clock_schedules | default([]) %}
-                double period_{{ loop.index0 }} = {{ sched.period_seconds }};
-                double phase_{{ loop.index0 }} = {{ sched.phase_seconds }};
-                double elapsed_{{ loop.index0 }} = t - phase_{{ loop.index0 }};
-                if (elapsed_{{ loop.index0 }} >= 0.0) {
-                    double remainder = elapsed_{{ loop.index0 }} - ((int)(elapsed_{{ loop.index0 }} / period_{{ loop.index0 }})) * period_{{ loop.index0 }};
-                    if (remainder < dt * 0.5 || (period_{{ loop.index0 }} - remainder) < dt * 0.5) {
-                        enterEvent = 1;
-                        fmi3ValueReference clk_vr = {{ vr_clk + loop.index0 }};
-                        fmi3Boolean clk_val = 1;
-                        fmi3SetClock(inst, &clk_vr, 1, &clk_val);
-                    }
+            double period_{{ loop.index0 }} = {{ sched.period_seconds }};
+            double phase_{{ loop.index0 }} = {{ sched.phase_seconds }};
+            double elapsed_{{ loop.index0 }} = targetTime - phase_{{ loop.index0 }};
+            if (elapsed_{{ loop.index0 }} >= 0.0) {
+                double remainder = elapsed_{{ loop.index0 }} - ((int)(elapsed_{{ loop.index0 }} / period_{{ loop.index0 }})) * period_{{ loop.index0 }};
+                if (remainder < dt * 0.5 || (period_{{ loop.index0 }} - remainder) < dt * 0.5) {
+                    enterEvent = 1;
+                    fmi3ValueReference clk_vr = {{ vr_clk + loop.index0 }};
+                    fmi3Boolean clk_val = 1;
+                    fmi3SetClock(inst, &clk_vr, 1, &clk_val);
                 }
-{% endfor %}
             }
+{% endfor %}
+        }
 {% endif %}
 
-            if (enterEvent) {
-                fmi3EnterEventMode(inst);
-                fmi3Boolean terminateSim;
-                fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSim,
-                    &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
-                fmi3EnterContinuousTimeMode(inst);
-                if (terminateSim) break;
-{% if n_x > 0 %}
-                fmi3GetContinuousStates(inst, x, {{ n_x }});
+        if (enterEvent) {
+            fmi3EnterEventMode(inst);
+            fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
+                &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
+            fmi3EnterContinuousTimeMode(inst);
+{% if n_event_indicators > 0 %}
+            fmi3GetEventIndicators(inst, previousIndicators, {{ n_event_indicators }});
 {% endif %}
-            }
+            if (terminateSimulation) break;
+{% if n_x > 0 %}
+            fmi3GetContinuousStates(inst, x, {{ n_x }});
+{% endif %}
+{% if n_event_indicators > 0 %}
+        } else {
+            memcpy(previousIndicators, currentIndicators, sizeof(previousIndicators));
+{% endif %}
         }
+        t = targetTime;
     }
 
     fmi3Terminate(inst);

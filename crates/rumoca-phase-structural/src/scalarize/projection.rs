@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use super::index_projection::IndexProjectionContext;
 use super::{
-    Equation, Expression, ExpressionShape, IndexProjectionContext, Literal, OpBinary, OpUnary,
-    Reference, ScalarizedLhsTarget, Span, StructuralError, Subscript, scalarization_var_ref_name,
+    Equation, Expression, ExpressionShape, Literal, OpBinary, OpUnary, Reference,
+    ScalarizedLhsTarget, Span, StructuralError, Subscript, scalarization_var_ref_name,
 };
 
 pub(super) struct ScalarProjectionContext<'a> {
@@ -16,6 +17,7 @@ pub(super) struct ScalarProjectionContext<'a> {
     pub(super) function_output_dims_map: &'a HashMap<rumoca_core::FunctionInstanceId, Vec<i64>>,
     pub(super) dynamic_function_output_map: &'a HashMap<rumoca_core::FunctionInstanceId, String>,
     pub(super) record_field_projection_map: &'a super::RecordFieldProjectionMap,
+    pub(super) constructor_input_map: &'a super::ConstructorInputMap,
     pub(super) expected_dims: Option<&'a [i64]>,
 }
 
@@ -32,6 +34,7 @@ impl<'a> ScalarProjectionContext<'a> {
             function_output_dims_map: self.function_output_dims_map,
             dynamic_function_output_map: self.dynamic_function_output_map,
             record_field_projection_map: self.record_field_projection_map,
+            constructor_input_map: self.constructor_input_map,
             expected_dims: self.expected_dims,
         }
     }
@@ -51,6 +54,7 @@ impl<'a> ScalarProjectionContext<'a> {
             function_output_dims_map: self.function_output_dims_map,
             dynamic_function_output_map: self.dynamic_function_output_map,
             record_field_projection_map: self.record_field_projection_map,
+            constructor_input_map: self.constructor_input_map,
             expected_dims: dims,
         }
     }
@@ -68,6 +72,7 @@ impl<'a> ScalarProjectionContext<'a> {
             function_output_dims_map: self.function_output_dims_map,
             dynamic_function_output_map: self.dynamic_function_output_map,
             record_field_projection_map: self.record_field_projection_map,
+            constructor_input_map: self.constructor_input_map,
             expected_dims: self.expected_dims,
             allow_dynamic_function_projection: true,
         }
@@ -303,22 +308,27 @@ fn project_complex_binary(
 }
 
 fn project_constructor_component(
-    expr: &Expression,
     name: &Reference,
     args: &[Expression],
     field_idx: usize,
     span: Span,
-) -> Expression {
-    if let Some(arg) = args.get(field_idx.saturating_sub(1)) {
-        return arg.clone();
-    }
-    if field_idx == 2
-        && args.len() == 1
-        && rumoca_core::qualified_type_name_matches(name.as_str(), "Complex")
-    {
-        return complex_zero(span);
-    }
-    expr.clone()
+    projection: &ScalarProjectionContext<'_>,
+) -> Result<Expression, StructuralError> {
+    let fields =
+        super::bind_constructor_fields(name, args, span, projection.constructor_input_map)?;
+    fields
+        .get(field_idx.saturating_sub(1))
+        .cloned()
+        .ok_or_else(|| {
+            super::structural_contract_violation(
+                format!(
+                    "record constructor `{}` has no field {}",
+                    name.as_str(),
+                    field_idx
+                ),
+                span,
+            )
+        })
 }
 
 fn project_function_call_component(
@@ -331,9 +341,7 @@ fn project_function_call_component(
     projection: &ScalarProjectionContext<'_>,
 ) -> Result<Expression, StructuralError> {
     if is_constructor {
-        return Ok(project_constructor_component(
-            expr, name, args, field_idx, span,
-        ));
+        return project_constructor_component(name, args, field_idx, span, projection);
     }
     let instance_id = name
         .resolved_function()

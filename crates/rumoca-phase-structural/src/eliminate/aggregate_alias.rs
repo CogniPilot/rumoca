@@ -97,3 +97,113 @@ pub(super) fn aggregate_alias_for_elimination(
         (None, None) => None,
     })
 }
+
+pub(super) fn aggregate_definition_for_elimination(
+    dae: &Dae,
+    equation: &dae::Equation,
+    rhs: &Expression,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> Result<Option<(VarName, Expression)>, StructuralError> {
+    if let Some(alias) = aggregate_alias_for_elimination(
+        dae,
+        rhs,
+        runtime_protected_unknowns,
+        runtime_defined_discrete_targets,
+    )? {
+        return Ok(Some(alias));
+    }
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = rhs
+    else {
+        return Ok(None);
+    };
+
+    aggregate_definition_candidate(
+        dae,
+        equation,
+        lhs,
+        rhs,
+        runtime_protected_unknowns,
+        runtime_defined_discrete_targets,
+    )?
+    .map_or_else(
+        || {
+            aggregate_definition_candidate(
+                dae,
+                equation,
+                rhs,
+                lhs,
+                runtime_protected_unknowns,
+                runtime_defined_discrete_targets,
+            )
+        },
+        |candidate| Ok(Some(candidate)),
+    )
+}
+
+fn aggregate_definition_candidate(
+    dae: &Dae,
+    equation: &dae::Equation,
+    target: &Expression,
+    replacement: &Expression,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> Result<Option<(VarName, Expression)>, StructuralError> {
+    let Some(target) = full_var_ref(target) else {
+        return Ok(None);
+    };
+    let target_name = target.var_name();
+    let Some(target_var) = DaeVariableScope::new(dae).exact(target_name) else {
+        return Ok(None);
+    };
+    let target_size = scalar_count_from_dims(target_name, &target_var.dims)?;
+    if target_size <= 1
+        || equation.scalar_count != target_size
+        || expr_contains_var(replacement, target_name)
+        || expression_contains_projection(replacement)
+        || !can_eliminate_aggregate_alias_var(
+            dae,
+            target_name,
+            runtime_protected_unknowns,
+            runtime_defined_discrete_targets,
+        )
+    {
+        return Ok(None);
+    }
+    let replacement_dims =
+        crate::dae_prepare::row_shape::expression_dims_for_row_count(dae, replacement)?;
+    if replacement_dims.as_deref() != Some(target_var.dims.as_slice()) {
+        return Ok(None);
+    }
+    Ok(Some((target_name.clone(), replacement.clone())))
+}
+
+fn expression_contains_projection(expr: &Expression) -> bool {
+    struct Checker {
+        found: bool,
+    }
+
+    impl rumoca_core::ExpressionVisitor for Checker {
+        fn visit_expression(&mut self, expr: &Expression) {
+            let is_projection = match expr {
+                Expression::Index { .. } => true,
+                Expression::VarRef { subscripts, .. } => !subscripts.is_empty(),
+                _ => false,
+            };
+            if is_projection {
+                self.found = true;
+            } else if !self.found {
+                self.walk_expression(expr);
+            }
+        }
+    }
+
+    let mut checker = Checker { found: false };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut checker, expr);
+    checker.found
+}

@@ -5,6 +5,7 @@ mod component_member_scope;
 mod constant_injection;
 mod constant_terminals;
 mod context_and_tests;
+mod context_import_shadowing;
 #[cfg(test)]
 mod context_tests;
 mod dim_recovery;

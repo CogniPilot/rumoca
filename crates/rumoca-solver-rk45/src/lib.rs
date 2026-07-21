@@ -404,6 +404,9 @@ impl From<RuntimeSolveError> for SimError {
                 Self::SolveIr(message)
             }
             RuntimeSolveError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
+            unassignable @ RuntimeSolveError::RefreshTargetUnassignable { .. } => {
+                Self::SolveIr(unassignable.to_string())
+            }
             RuntimeSolveError::NonFiniteDerivative { state_name } => {
                 Self::NonFiniteDerivative { state_name }
             }
@@ -619,7 +622,7 @@ impl<'a> Rk45Backend<'a> {
             boundary_event_pre_y: None,
             boundary_event_pre_p: None,
             post_event_eval_time: None,
-            solver_y_guess: RefCell::new(Vec::new()),
+            solver_y_guess: RefCell::new(model.model.initial_y.clone()),
             derivative_cache: RefCell::new(None),
             root_cache: RefCell::new(None),
             initial_observations: Vec::new(),

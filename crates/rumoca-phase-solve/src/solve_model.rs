@@ -15,13 +15,13 @@ use crate::initial_values::apply_initial_equations_to_start_values;
 use rumoca_eval_dae::build_runtime_parameter_tail_env_with_runtime;
 use rumoca_eval_dae::constant::eval_scalar_const_expr;
 use rumoca_eval_dae::eval::{
-    EvalError, EvalRuntimeState, eval_matrix_values, eval_shaped_array_values,
+    EvalError, EvalRuntimeState, eval_shaped_array_values,
     external_table_data_for_parameter_values_in,
 };
 use rumoca_eval_dae::{
     build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime,
     build_runtime_parameter_tail_env_with_declared_slots_and_runtime, can_broadcast_start_value,
-    eval_array_values, eval_expr, start_expr_is_nonnumeric,
+    eval_expr, start_expr_is_nonnumeric,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -923,33 +923,14 @@ fn start_values(
 ) -> Result<Vec<f64>, SolveModelLowerError> {
     let default_start = default_start_value(dae_model, var);
     let size = solve_model_variable_size(var)?;
+    if size == 0 {
+        return Ok(Vec::new());
+    }
     let Some(expr) = var.start.as_ref() else {
         return default_start_values_for_size(var, default_start, size);
     };
     if start_expr_is_nonnumeric(expr, env) {
         return default_start_values_for_size(var, default_start, size);
-    }
-    if size == 0 && !var.dims.is_empty() {
-        let raw = if var.dims.len() >= 2 {
-            match eval_matrix_values(expr, env) {
-                Ok(Some(matrix)) => flatten_start_matrix(matrix, var)?,
-                Ok(None) => {
-                    eval_array_values::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?
-                }
-                Err(err) => return Err(eval_start_error(var, err)),
-            }
-        } else {
-            eval_array_values::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?
-        };
-        if raw.is_empty() {
-            return Err(eval_start_error(
-                var,
-                EvalError::UnsupportedExpression {
-                    kind: "array start value",
-                },
-            ));
-        }
-        return finite_start_values(raw, default_start, var);
     }
     if size <= 1 && var.dims.is_empty() {
         let value = eval_expr::<f64>(expr, env).map_err(|err| eval_start_error(var, err))?;
@@ -1210,32 +1191,6 @@ fn seed_var_values(
     }
     rumoca_eval_dae::set_array_entries(env, name, &var.dims, values);
     Ok(())
-}
-
-fn flatten_start_matrix(
-    matrix: Vec<Vec<f64>>,
-    var: &dae::Variable,
-) -> Result<Vec<f64>, SolveModelLowerError> {
-    let mut len = 0usize;
-    for row in &matrix {
-        len = checked_solve_model_count_add(
-            len,
-            row.len(),
-            "matrix start value count",
-            var.source_span,
-        )?;
-    }
-    let mut values = solve_model_vec_with_capacity(len, "matrix start values", var.source_span)?;
-    for row in matrix {
-        reserve_solve_model_capacity(
-            &mut values,
-            row.len(),
-            "matrix start values",
-            var.source_span,
-        )?;
-        values.extend(row);
-    }
-    Ok(values)
 }
 
 fn single_start_value(value: f64, var: &dae::Variable) -> Result<Vec<f64>, SolveModelLowerError> {

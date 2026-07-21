@@ -1034,6 +1034,48 @@ fn lower_expression_handles_dynamic_index_subscript_expr() {
     }
 }
 #[test]
+fn lower_expression_projects_indexed_unary_array_expression() {
+    let span = lower_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("axis"), array_var("axis", &[3]));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("length"), scalar_var("length"));
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = rumoca_core::Expression::Index {
+        base: Box::new(rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Box::new(mul(
+                var("axis"),
+                rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Div,
+                    lhs: Box::new(var("length")),
+                    rhs: Box::new(real_lit(2.0)),
+                    span,
+                },
+            )),
+            span,
+        }),
+        subscripts: vec![rumoca_core::Subscript::generated_index(2, span)],
+        span,
+    };
+    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect("indexed unary array expression should lower");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "axis[1]", 1.0);
+    set_p_value(&layout, &mut p, "axis[2]", 2.0);
+    set_p_value(&layout, &mut p, "axis[3]", 3.0);
+    set_p_value(&layout, &mut p, "length", 6.0);
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+    assert_eq!(read_reg(&regs, lowered.result), -6.0);
+}
+
+#[test]
 fn lower_expression_handles_dynamic_index_over_array_literal() {
     let span = lower_test_span();
     let mut dae_model = dae::Dae::default();

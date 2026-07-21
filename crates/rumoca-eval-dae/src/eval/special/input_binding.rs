@@ -187,23 +187,42 @@ pub(super) fn copy_array_literal_vector_entries<T: SimFloat>(
     if elements.is_empty() {
         return Ok(false);
     }
-    if param.shape_expr.is_empty()
-        && let Some(expected) = concrete_param_size(&param.dims)
-        && expected != elements.len()
-    {
-        return Err(EvalError::ShapeMismatch {
-            context: "function array input",
-            expected,
-            actual: elements.len(),
-        });
-    }
-
     let selection_field = selected_component_field_in_current_call(caller_env);
     let values = elements
         .iter()
-        .map(|element| eval_expr::<T>(element, caller_env))
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    let shape = vec![elements.len() as i64];
+        .map(|element| eval_array_values::<T>(element, caller_env))
+        .collect::<Result<Vec<_>, EvalError>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let shape = try_runtime_array_literal_dims(elements, caller_env)?
+        .into_iter()
+        .map(|dimension| {
+            i64::try_from(dimension).map_err(|_| EvalError::UnsupportedExpression {
+                kind: "function array input shape",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if param.shape_expr.is_empty()
+        && param.dims.iter().all(|dimension| *dimension > 0)
+        && param.dims != shape
+    {
+        let expected =
+            concrete_param_size(&param.dims).ok_or(EvalError::UnsupportedExpression {
+                kind: "function array input shape",
+            })?;
+        if expected != values.len() {
+            return Err(EvalError::ShapeMismatch {
+                context: "function array input",
+                expected,
+                actual: values.len(),
+            });
+        }
+        return Err(EvalError::InvalidShape {
+            context: "function array input",
+            reason: format!("expected dimensions {:?}, got {shape:?}", param.dims),
+        });
+    }
     set_array_entries(local_env, &param.name, &shape, &values);
     if let Some(field) = selection_field {
         set_array_entries(

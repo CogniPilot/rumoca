@@ -575,7 +575,7 @@ fn scalarize_reports_native_stride_wrong_op_kind() {
         .expect_err("load stride pointing at Const should fail scalarization");
     assert!(
         error.to_string().contains(
-            "native affine stencil family stride op position 0 points at Const, expected LoadY or LoadP"
+            "native affine stencil family stride op position 0 points at Const, expected LoadY, LoadP, or LoadSeed"
         ),
         "error should explain the wrong stride target: {error}"
     );

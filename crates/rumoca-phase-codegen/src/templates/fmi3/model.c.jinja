@@ -8,6 +8,7 @@
  */
 
 #include <string.h>
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -34,6 +35,8 @@
 {% set solve_event_actions = solve.events.actions if solve is defined and solve.events is defined and solve.events.actions is defined else [] %}
 {% set cosim_supported = solve_dynamic_time_rows | length == 0 and solve_event_actions | length == 0 and dae.event_actions | default([]) | length == 0 and dae.scheduled_time_events | default([]) | length == 0 and dae.clock_schedules | default([]) | length == 0 and dae.triggered_clock_conditions | default([]) | length == 0 %}
 {% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}
+{% set solve_root_zero_domains = solve.events.root_zero_domains if solve is defined and solve.events is defined else [] %}
+{% set solve_scheduled_root_conditions = solve.events.scheduled_root_conditions if solve is defined and solve.events is defined else [] %}
 {% set solve_discrete_rows = solve.discrete.rhs.programs if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined and solve.discrete.rhs.programs is defined else [] %}
 {% set solve_discrete_targets = solve.discrete.update_targets if solve is defined and solve.discrete is defined and solve.discrete.update_targets is defined else [] %}
 {% set solve_pre_param_bindings = solve.solve_layout.pre_param_bindings if solve is defined and solve.solve_layout is defined and solve.solve_layout.pre_param_bindings is defined else [] %}
@@ -395,10 +398,10 @@ typedef struct {
     fmi3Float64  constants[N_CONSTANTS > 0 ? N_CONSTANTS : 1];
     fmi3Float64  event_indicators[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
     fmi3Float64  event_indicators_prev[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
+    fmi3Boolean  event_indicator_nonpositive[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
     ModelState   state;
     fmi3Boolean  dirty_values;
     fmi3Boolean  is_new_event_iteration;
-    fmi3Boolean  root_event_pending;
     fmi3Boolean  evaluation_error;
     fmi3String   instance_name;
     fmi3String   instantiation_token;
@@ -497,50 +500,52 @@ static void compute_derivatives(ModelInstance* m);
 static void compute_outputs(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
-
-static double event_right_limit_time(double event_time) {
-    double scale = 1.0 + fabs(event_time);
-    double stepped = event_time + fmax(1.0e-6 * scale, 2.220446049250313e-16 * scale);
-    double adjacent = nextafter(event_time, INFINITY);
-    return stepped > adjacent ? stepped : adjacent;
-}
+static fmi3Status iterate_event_discrete_update(ModelInstance* m);
 
 static int event_indicator_crossed(double previous, double current) {
-    return (previous <= 0.0 && current > 0.0) || (previous >= 0.0 && current < 0.0);
+    return (previous > 0.0) != (current > 0.0);
 }
 
-static double root_relation_memory_value(double previous, double current) {
+static int real_values_equal(const fmi3Float64* lhs, const fmi3Float64* rhs, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (!isfinite(lhs[i]) || !isfinite(rhs[i]) || lhs[i] != rhs[i]) return 0;
+    }
+    return 1;
+}
+
+static int root_zero_is_nonpositive(int root_index, int previous_nonpositive) {
+{% for domain in solve_root_zero_domains %}
+{% if domain == "NonPositive" %}
+    if (root_index == {{ loop.index0 }}) return 1;
+{% elif domain == "Positive" %}
+    if (root_index == {{ loop.index0 }}) return 0;
+{% endif %}
+{% endfor %}
+    (void)root_index;
+    return previous_nonpositive;
+}
+
+static double root_relation_memory_value(int root_index, double previous, double current) {
     if (current < 0.0) return 1.0;
     if (current > 0.0) return 0.0;
-    if (previous > 0.0) return 1.0;
-    return 0.0;
+    return root_zero_is_nonpositive(root_index, previous <= 0.0);
 }
 
-static int scheduled_time_event_active(double time) {
-{% if dae.scheduled_time_events | default([]) | length > 0 %}
-    static const double scheduled_events[] = {
-{% for t_event in dae.scheduled_time_events | default([]) %}
-        {{ t_event }}{{ "," if not loop.last else "" }}
+static void refresh_event_indicator_domains(ModelInstance* m) {
+{% for target in solve_root_relation_memory_targets %}
+    m->event_indicator_nonpositive[{{ loop.index0 }}] = root_relation_memory_value(
+        {{ loop.index0 }}, m->event_indicators_prev[{{ loop.index0 }}], m->event_indicators[{{ loop.index0 }}]);
 {% endfor %}
-    };
-    static const int n_scheduled = {{ dae.scheduled_time_events | default([]) | length }};
-    for (int i = 0; i < n_scheduled; i++) {
-        double tol = 1.0e-12 * (1.0 + fabs(scheduled_events[i]));
-        if (fabs(time - scheduled_events[i]) <= tol) return 1;
-    }
-{% else %}
-    (void)time;
+{% if solve_root_relation_memory_targets | length == 0 %}
+    (void)m;
 {% endif %}
-    return 0;
 }
 
-static void compute_event_discrete_updates(ModelInstance* m) {
-    double saved_time = m->time;
-    if (m->root_event_pending || scheduled_time_event_active(m->time)) {
-        m->time = event_right_limit_time(m->time);
-    }
-    compute_discrete_updates(m);
-    m->time = saved_time;
+static void refresh_root_relation_memory(ModelInstance* m) {
+    refresh_event_indicator_domains(m);
+{% for target in solve_root_relation_memory_targets %}
+    {{ render_optional_solve_slot_assign_c(target, "m->event_indicator_nonpositive[" ~ loop.index0 ~ "] ? 1.0 : 0.0", solve_slot_assign_c_cfg) }}
+{% endfor %}
 }
 
 static void snapshot_pre_parameters(ModelInstance* m) {
@@ -551,6 +556,92 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% else %}
     (void)m;
 {% endif %}
+}
+
+static int root_has_periodic_schedule(int root_index) {
+{% for root in solve_scheduled_root_conditions %}
+    if (root_index == {{ root.root_index }}) return 1;
+{% endfor %}
+    (void)root_index;
+    return 0;
+}
+
+static double exposed_event_indicator(const ModelInstance* m, int root_index, double value) {
+    if (root_has_periodic_schedule(root_index)) return 1.0;
+    if (value != 0.0) return value;
+    return root_zero_is_nonpositive(root_index, m->event_indicators_prev[root_index] <= 0.0)
+        ? -DBL_MIN : DBL_MIN;
+}
+
+static void snapshot_event_indicator_domains(ModelInstance* m) {
+    for (int i = 0; i < N_EVENT_INDICATORS; i++) {
+        m->event_indicators_prev[i] = exposed_event_indicator(m, i, m->event_indicators[i]);
+    }
+}
+
+static void clear_periodic_relation_memory(ModelInstance* m) {
+{% for root in solve_scheduled_root_conditions %}
+    {{ render_optional_solve_slot_assign_c(solve_root_relation_memory_targets[root.root_index], "0.0", solve_slot_assign_c_cfg) }}
+    m->event_indicator_nonpositive[{{ root.root_index }}] = 0;
+{% endfor %}
+{% if solve_scheduled_root_conditions | length > 0 %}
+    m->dirty_values = 1;
+{% else %}
+    (void)m;
+{% endif %}
+}
+
+static int periodic_next_time(double time, double phase, double period, double* candidate) {
+    const double first_representable_time = nextafter(time, INFINITY);
+    double cycle = ceil((first_representable_time - phase) / period);
+    if (!isfinite(cycle)) return 0;
+    if (cycle < 0.0) cycle = 0.0;
+
+    *candidate = fma(cycle, period, phase);
+    while (isfinite(*candidate) && *candidate <= time) {
+        double next_cycle = cycle + 1.0;
+        if (next_cycle <= cycle) next_cycle = nextafter(cycle, INFINITY);
+        if (!isfinite(next_cycle) || next_cycle <= cycle) return 0;
+        cycle = next_cycle;
+        *candidate = fma(cycle, period, phase);
+    }
+    return isfinite(*candidate);
+}
+
+static int next_time_event(ModelInstance* m, double* next_time) {
+    const double time = m->time;
+    int defined = 0;
+{% for root in solve_scheduled_root_conditions %}
+    {
+        const double period = {{ root.period_seconds }};
+        const double phase = {{ root.phase_seconds }};
+        double candidate = 0.0;
+        if (periodic_next_time(time, phase, period, &candidate) &&
+            (!defined || candidate < *next_time)) {
+            *next_time = candidate;
+            defined = 1;
+        }
+    }
+{% endfor %}
+{% for t_event in dae.scheduled_time_events | default([]) %}
+    if ({{ t_event }} > time && (!defined || {{ t_event }} < *next_time)) {
+        *next_time = {{ t_event }};
+        defined = 1;
+    }
+{% endfor %}
+{% if solve_dynamic_time_rows | length > 0 %}
+    double dynamic_events[{{ solve_dynamic_time_rows | length }}];
+    {{ render_solve_block_c(solve_dynamic_time_rows, solve_row_c_cfg, "dynamic_events[{}] = {}") }}
+    for (int i = 0; i < {{ solve_dynamic_time_rows | length }}; i++) {
+        const double candidate = dynamic_events[i];
+        if (isfinite(candidate) && candidate > time &&
+            (!defined || candidate < *next_time)) {
+            *next_time = candidate;
+            defined = 1;
+        }
+    }
+{% endif %}
+    return defined;
 }
 
 {#- Macro: check if a function has any record-typed parameters -#}
@@ -1454,10 +1545,10 @@ FMI3_Export fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
     snapshot_pre_parameters(m);
-    compute_discrete_updates(m);
-    memcpy(m->pre_z, m->z, sizeof(m->z));
-    memcpy(m->pre_m, m->m, sizeof(m->m));
-    snapshot_pre_parameters(m);
+    if (iterate_event_discrete_update(m) != fmi3OK) {
+        m->state = modelError;
+        return fmi3Error;
+    }
 
     /* Compute initial derivatives and outputs */
     compute_derivatives(m);
@@ -1466,7 +1557,7 @@ FMI3_Export fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
         return fmi3Error;
     }
     compute_event_indicators(m);
-    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
+    snapshot_event_indicator_domains(m);
 
     m->state = m->is_co_simulation && !m->event_mode_used ? modelStepMode : modelEventMode;
     return fmi3OK;
@@ -1847,8 +1938,12 @@ FMI3_Export fmi3Status fmi3GetEventIndicators(
     if (!m || m->is_co_simulation || nEventIndicators != N_EVENT_INDICATORS ||
         (nEventIndicators > 0 && !eventIndicators)) return fmi3Error;
 
+    if (m->dirty_values) compute_derivatives(m);
+    if (m->evaluation_error) return fmi3Error;
     compute_event_indicators(m);
-    memcpy(eventIndicators, m->event_indicators, nEventIndicators * sizeof(fmi3Float64));
+    for (size_t i = 0; i < nEventIndicators; i++) {
+        eventIndicators[i] = exposed_event_indicator(m, (int)i, m->event_indicators[i]);
+    }
     return fmi3OK;
 }
 
@@ -1879,41 +1974,36 @@ FMI3_Export fmi3Status fmi3UpdateDiscreteStates(
     /* Save pre-values before discrete update */
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
-    if (!m->root_event_pending) {
-        snapshot_pre_parameters(m);
-    }
+    snapshot_pre_parameters(m);
+
+#if N_STATES > 0
+    fmi3Float64 states_before[N_STATES];
+    memcpy(states_before, m->x, sizeof(states_before));
+#endif
 
     /* Evaluate discrete update equations */
-    compute_event_discrete_updates(m);
-    m->root_event_pending = 0;
+    if (iterate_event_discrete_update(m) != fmi3OK) {
+        m->state = modelError;
+        return fmi3Error;
+    }
 
     *discreteStatesNeedUpdate = 0;
     *terminateSimulation = 0;
     *nominalsOfContinuousStatesChanged = 0;
+#if N_STATES > 0
+    *valuesOfContinuousStatesChanged = !real_values_equal(states_before, m->x, N_STATES);
+#else
     *valuesOfContinuousStatesChanged = 0;
+#endif
 
-{% if dae.scheduled_time_events | default([]) | length > 0 %}
-    /* Scheduled time events */
-    {
-        static const double scheduled_events[] = {
-{% for t_event in dae.scheduled_time_events | default([]) %}
-            {{ t_event }}{{ "," if not loop.last else "" }}
-{% endfor %}
-        };
-        static const int n_scheduled = {{ dae.scheduled_time_events | default([]) | length }};
-        *nextEventTimeDefined = 0;
-        for (int i = 0; i < n_scheduled; i++) {
-            if (scheduled_events[i] > m->time + 1.0e-15) {
-                *nextEventTimeDefined = 1;
-                *nextEventTime = scheduled_events[i];
-                break;
-            }
-        }
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) {
+        m->state = modelError;
+        return fmi3Error;
     }
-{% else %}
-    *nextEventTimeDefined = 0;
-    *nextEventTime = 0.0;
-{% endif %}
+    *nextEventTimeDefined = next_time_event(m, nextEventTime);
+    if (!*nextEventTimeDefined) *nextEventTime = 0.0;
 
 #if N_CLOCKS > 0
     /* Check periodic clock activation and trigger discrete updates */
@@ -1957,9 +2047,16 @@ FMI3_Export fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance instance) {
     if (!m || m->is_co_simulation || m->state != modelEventMode) return fmi3Error;
     m->state = modelContinuousTimeMode;
 
-    /* Save event indicators for zero-crossing detection */
+    /* Save the converged event state for subsequent zero-crossing detection. */
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) {
+        m->state = modelError;
+        return fmi3Error;
+    }
     compute_event_indicators(m);
-    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
+    snapshot_event_indicator_domains(m);
+    clear_periodic_relation_memory(m);
 
     return fmi3OK;
 }
@@ -1986,30 +2083,6 @@ FMI3_Export fmi3Status fmi3CompletedIntegratorStep(
 
     *enterEventMode = 0;
     *terminateSimulation = 0;
-
-#if N_EVENT_INDICATORS > 0
-    /* Check for zero-crossings in event indicators */
-    compute_event_indicators(m);
-    int any_root_event = 0;
-    for (int i = 0; i < N_EVENT_INDICATORS; i++) {
-        if (event_indicator_crossed(m->event_indicators_prev[i], m->event_indicators[i])) {
-            *enterEventMode = 1;
-            m->root_event_pending = 1;
-            any_root_event = 1;
-        }
-    }
-    if (any_root_event) {
-        snapshot_pre_parameters(m);
-    }
-{% for target in solve_root_relation_memory_targets %}
-    if (event_indicator_crossed(m->event_indicators_prev[{{ loop.index0 }}], m->event_indicators[{{ loop.index0 }}])) {
-        {{ render_optional_solve_slot_assign_c(target, "root_relation_memory_value(m->event_indicators_prev[" ~ loop.index0 ~ "], m->event_indicators[" ~ loop.index0 ~ "])", solve_slot_assign_c_cfg) }}
-    }
-{% endfor %}
-    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
-#else
-    (void)m;
-#endif
 
     return fmi3OK;
 }
@@ -2382,7 +2455,9 @@ static void apply_internal_root_relation_memory(
 {
 {% for target in solve_root_relation_memory_targets %}
     if (event_indicator_crossed(before[{{ loop.index0 }}], after[{{ loop.index0 }}])) {
-        {{ render_optional_solve_slot_assign_c(target, "root_relation_memory_value(before[" ~ loop.index0 ~ "], after[" ~ loop.index0 ~ "])", solve_slot_assign_c_cfg) }}
+        m->event_indicator_nonpositive[{{ loop.index0 }}] = root_relation_memory_value(
+            {{ loop.index0 }}, before[{{ loop.index0 }}], after[{{ loop.index0 }}]);
+        {{ render_optional_solve_slot_assign_c(target, "m->event_indicator_nonpositive[" ~ loop.index0 ~ "] ? 1.0 : 0.0", solve_slot_assign_c_cfg) }}
     }
 {% endfor %}
 {% if solve_root_relation_memory_targets | length == 0 %}
@@ -2390,24 +2465,42 @@ static void apply_internal_root_relation_memory(
 {% endif %}
 }
 
-static fmi3Status iterate_internal_discrete_update(ModelInstance* m) {
-#if N_DISCRETE_REAL > 0 || N_DISCRETE_VAL > 0
+static fmi3Status iterate_event_discrete_update(ModelInstance* m) {
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    if (m->evaluation_error) {
+        return fmi3Error;
+    }
+    compute_event_indicators(m);
+    refresh_root_relation_memory(m);
+
     fmi3Float64 old_z[N_DISCRETE_REAL > 0 ? N_DISCRETE_REAL : 1];
     fmi3Float64 old_m[N_DISCRETE_VAL > 0 ? N_DISCRETE_VAL : 1];
+    fmi3Float64 old_x[N_STATES > 0 ? N_STATES : 1];
+    fmi3Boolean old_domains[N_EVENT_INDICATORS > 0 ? N_EVENT_INDICATORS : 1];
     for (int iteration = 0; iteration < RUMOCA_EVENT_ITERATION_LIMIT; iteration++) {
         memcpy(old_z, m->z, sizeof(m->z));
         memcpy(old_m, m->m, sizeof(m->m));
-        compute_event_discrete_updates(m);
-        if (memcmp(old_z, m->z, sizeof(m->z)) == 0 &&
-            memcmp(old_m, m->m, sizeof(m->m)) == 0) {
+        memcpy(old_x, m->x, sizeof(m->x));
+        memcpy(old_domains, m->event_indicator_nonpositive,
+               sizeof(m->event_indicator_nonpositive));
+        compute_discrete_updates(m);
+
+        m->dirty_values = 1;
+        compute_derivatives(m);
+        if (m->evaluation_error) return fmi3Error;
+        compute_event_indicators(m);
+        refresh_event_indicator_domains(m);
+
+        if (real_values_equal(old_z, m->z, N_DISCRETE_REAL) &&
+            real_values_equal(old_m, m->m, N_DISCRETE_VAL) &&
+            real_values_equal(old_x, m->x, N_STATES) &&
+            memcmp(old_domains, m->event_indicator_nonpositive,
+                   N_EVENT_INDICATORS * sizeof(fmi3Boolean)) == 0) {
             return fmi3OK;
         }
     }
     return fmi3Error;
-#else
-    compute_event_discrete_updates(m);
-    return fmi3OK;
-#endif
 }
 
 static fmi3Status process_internal_root(
@@ -2434,16 +2527,14 @@ static fmi3Status process_internal_root(
     memcpy(m->pre_m, m->m, sizeof(m->m));
     snapshot_pre_parameters(m);
     apply_internal_root_relation_memory(m, roots_start, roots_after);
-    m->root_event_pending = 1;
-    if (iterate_internal_discrete_update(m) != fmi3OK) return fmi3Error;
-    m->root_event_pending = 0;
+    if (iterate_event_discrete_update(m) != fmi3OK) return fmi3Error;
 
-    m->time = fmin(event_right_limit_time(root_time), t_stop);
+    m->time = root_time;
     m->dirty_values = 1;
     compute_derivatives(m);
     if (m->evaluation_error) return fmi3Error;
     compute_event_indicators(m);
-    memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
+    snapshot_event_indicator_domains(m);
     return fmi3OK;
 #else
     (void)m; (void)t_start; (void)x_start; (void)roots_start; (void)t_stop; (void)x_stop;

@@ -210,6 +210,7 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
                 implicit_jacobian_v_scalar: zero_rb.clone(),
                 full_jacobian_v: zero_rb.clone(),
             },
+            ..Default::default()
         },
         initial_y: vec![0.0; 6],
         parameters: vec![m, j, f, g],

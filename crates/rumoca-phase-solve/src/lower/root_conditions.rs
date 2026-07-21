@@ -143,6 +143,44 @@ pub(super) fn lower_root_relation_memory_targets(
     Ok(targets)
 }
 
+pub(super) fn lower_root_zero_domains(
+    dae_model: &dae::Dae,
+) -> Result<Vec<rumoca_ir_solve::RootZeroDomain>, LowerError> {
+    let span = root_condition_context_span(dae_model);
+    let root_count = root_condition_count(dae_model, span)?;
+    let mut domains = root_vec_with_capacity(root_count, "root zero-domain count", span)?;
+    domains.extend(dae_model.conditions.relations.iter().map(root_zero_domain));
+    domains.extend(
+        dae_model
+            .events
+            .synthetic_root_conditions
+            .iter()
+            .map(root_zero_domain),
+    );
+    domains.extend(
+        dae_model
+            .clocks
+            .triggered_conditions
+            .iter()
+            .map(|_| rumoca_ir_solve::RootZeroDomain::Previous),
+    );
+    Ok(domains)
+}
+
+fn root_zero_domain(condition: &rumoca_core::Expression) -> rumoca_ir_solve::RootZeroDomain {
+    match condition {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Le | rumoca_core::OpBinary::Ge,
+            ..
+        } => rumoca_ir_solve::RootZeroDomain::NonPositive,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Lt | rumoca_core::OpBinary::Gt,
+            ..
+        } => rumoca_ir_solve::RootZeroDomain::Positive,
+        _ => rumoca_ir_solve::RootZeroDomain::Previous,
+    }
+}
+
 pub(super) fn lower_scheduled_root_conditions(
     dae_model: &dae::Dae,
 ) -> Result<Vec<rumoca_ir_solve::ScheduledRootCondition>, LowerError> {

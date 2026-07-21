@@ -8,8 +8,20 @@ use super::{equation_analysis_expr, expr_contains_var};
 
 pub(super) fn runtime_protected_unknown_names(dae: &Dae) -> IndexSet<String> {
     let mut protected = crate::runtime_defined::runtime_defined_continuous_unknown_names(dae);
+    protected.extend(pre_source_protected_unknown_names(dae));
     protected.extend(branch_local_analog_protected_unknown_names(dae));
     protected.extend(clocked_value_source_protected_unknown_names(dae));
+    protected
+}
+
+fn pre_source_protected_unknown_names(dae: &Dae) -> HashSet<String> {
+    let mut protected = HashSet::new();
+    for name in dae.variables.parameters.keys() {
+        let Some(source) = rumoca_core::pre_slot_base(name.as_str()) else {
+            continue;
+        };
+        maybe_protect_continuous_unknown(dae, &mut protected, &VarName::new(source));
+    }
     protected
 }
 
@@ -51,10 +63,10 @@ fn branch_local_analog_protected_unknown_names(dae: &Dae) -> HashSet<String> {
         let mut refs = HashSet::new();
         analysis_expr.collect_var_refs(&mut refs);
         for name in refs {
-            maybe_protect_branch_local_unknown(dae, &mut protected, &name);
+            maybe_protect_continuous_unknown(dae, &mut protected, &name);
         }
         if let Some(target) = assignment_target_name(&analysis_expr) {
-            maybe_protect_branch_local_unknown(dae, &mut protected, &target);
+            maybe_protect_continuous_unknown(dae, &mut protected, &target);
         }
     }
     protected
@@ -91,7 +103,7 @@ impl ClockedValueSourceCollector<'_> {
         let mut refs = HashSet::new();
         source.collect_var_refs(&mut refs);
         for name in refs {
-            maybe_protect_branch_local_unknown(self.dae, self.protected, &name);
+            maybe_protect_continuous_unknown(self.dae, self.protected, &name);
         }
     }
 }
@@ -134,7 +146,7 @@ impl ExpressionVisitor for ClockedValueSourceCollector<'_> {
     }
 }
 
-fn maybe_protect_branch_local_unknown(dae: &Dae, protected: &mut HashSet<String>, name: &VarName) {
+fn maybe_protect_continuous_unknown(dae: &Dae, protected: &mut HashSet<String>, name: &VarName) {
     if dae.variables.algebraics.contains_key(name) || dae.variables.outputs.contains_key(name) {
         protected.insert(name.as_str().to_string());
     }

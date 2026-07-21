@@ -67,22 +67,27 @@ fn scan_boundary_equation(
     let eq_rhs = apply_substitutions_in_order(&expr, &state.substitutions)?;
     let is_connection_eq = equation.origin.starts_with("connection equation:");
     let live = find_live_scalar_unknowns(&eq_rhs, ctx.unknown_index, &state.resolved)?;
+    let aggregate_definition = aggregate_definition_for_elimination(
+        ctx.dae,
+        equation,
+        &eq_rhs,
+        ctx.runtime_protected_unknowns,
+        ctx.runtime_defined_discrete_targets,
+    )?;
     if should_skip_connection_equation(
         ctx.dae,
         &eq_rhs,
         is_connection_eq,
         &live,
         ctx.runtime_defined_discrete_targets,
+        aggregate_definition.is_some(),
     ) {
         return Ok(());
     }
     let has_state_derivative = expr_contains_der_of_any(&eq_rhs, ctx.state_derivative_matcher);
-    if let Some((var_name, solution)) = aggregate_alias_for_elimination(
-        ctx.dae,
-        &eq_rhs,
-        ctx.runtime_protected_unknowns,
-        ctx.runtime_defined_discrete_targets,
-    )? {
+    if let Some((var_name, solution)) = aggregate_definition
+        && (!has_state_derivative || output_partition_contains_unknown(ctx.dae, &var_name))
+    {
         return state.push_solution(ctx.dae, eq_idx, var_name, solution);
     }
     if live.is_empty() {

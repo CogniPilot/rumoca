@@ -1304,6 +1304,7 @@ mod tests {
                     implicit_jacobian_v_scalar: zero.clone(),
                     full_jacobian_v: zero.clone(),
                 },
+                ..solve::SolveArtifacts::default()
             },
             initial_y: vec![0.0],
             parameters: vec![0.0],
@@ -1346,7 +1347,6 @@ mod tests {
                         blocks: vec![solve::AlgebraicProjectionBlock {
                             rows: vec![1],
                             y_indices: vec![1],
-                            causal_steps: Vec::new(),
                         }],
                     },
                     residual: ComputeBlock::from_scalar_program_block(derivative.clone()),
@@ -1369,33 +1369,12 @@ mod tests {
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::StoreOutput { src: 0 },
                     ]]),
+                    root_relation_memory_targets: vec![None],
+                    root_zero_domains: vec![solve::RootZeroDomain::Previous],
                     ..Default::default()
                 },
                 clocks: solve::SolveClockPartition::default(),
-                solve_layout: SolveLayout {
-                    solver_maps: SolverNameIndexMaps {
-                        names: vec!["z".to_string(), "force".to_string()],
-                        name_to_idx: IndexMap::from([
-                            ("z".to_string(), 0),
-                            ("force".to_string(), 1),
-                        ]),
-                        base_to_indices: IndexMap::from([
-                            ("z".to_string(), vec![0]),
-                            ("force".to_string(), vec![1]),
-                        ]),
-                    },
-                    state_scalar_count: 1,
-                    algebraic_scalar_count: 1,
-                    output_scalar_count: 0,
-                    parameter_count: 0,
-                    compiled_parameter_len: 1,
-                    input_scalar_names: Vec::new(),
-                    discrete_real_scalar_names: Vec::new(),
-                    discrete_valued_scalar_names: vec!["c".to_string()],
-                    relation_memory_parameter_indices: vec![0],
-                    initial_event_parameter_index: None,
-                    pre_param_bindings: Vec::new(),
-                },
+                solve_layout: falling_contact_layout(),
             },
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
@@ -1406,6 +1385,7 @@ mod tests {
                     implicit_jacobian_v_scalar: jacobian_v.clone(),
                     full_jacobian_v: jacobian_v.clone(),
                 },
+                ..solve::SolveArtifacts::default()
             },
             initial_y: vec![0.1, 0.0],
             parameters: vec![0.0],
@@ -1413,6 +1393,30 @@ mod tests {
             visible_names: vec!["z".to_string(), "force".to_string()],
             visible_value_rows: solve::ScalarProgramBlock::default(),
             variable_meta: Vec::new(),
+        }
+    }
+
+    fn falling_contact_layout() -> SolveLayout {
+        SolveLayout {
+            solver_maps: SolverNameIndexMaps {
+                names: vec!["z".to_string(), "force".to_string()],
+                name_to_idx: IndexMap::from([("z".to_string(), 0), ("force".to_string(), 1)]),
+                base_to_indices: IndexMap::from([
+                    ("z".to_string(), vec![0]),
+                    ("force".to_string(), vec![1]),
+                ]),
+            },
+            state_scalar_count: 1,
+            algebraic_scalar_count: 1,
+            output_scalar_count: 0,
+            parameter_count: 0,
+            compiled_parameter_len: 1,
+            input_scalar_names: Vec::new(),
+            discrete_real_scalar_names: Vec::new(),
+            discrete_valued_scalar_names: vec!["c".to_string()],
+            relation_memory_parameter_indices: vec![0],
+            initial_event_parameter_index: None,
+            pre_param_bindings: Vec::new(),
         }
     }
 

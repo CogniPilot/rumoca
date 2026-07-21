@@ -31,7 +31,9 @@ impl Rk45Backend<'_> {
         self.boundary_event_pre_y = None;
         self.boundary_event_pre_p = None;
         self.post_event_eval_time = None;
-        self.solver_y_guess.borrow_mut().clear();
+        self.solver_y_guess
+            .borrow_mut()
+            .clone_from(&self.model.model.initial_y);
         self.clear_runtime_caches();
     }
 }

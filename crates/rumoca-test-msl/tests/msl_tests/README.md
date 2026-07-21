@@ -87,7 +87,12 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   promoted baseline for the same fixed target set. `cargo xtask verify
   msl-parity` downloads the latest promoted baseline from the
   `msl-quality-baseline` GitHub release asset and falls back to the checked-in
-  JSON when offline. Focused subsets and one-off explicit target files are not
+  JSON when offline. An explicitly reviewed checked-in full baseline may use
+  `omc_context_migration` to declare the exact old and new OMC versions and
+  fixed target count; only a declaration matching both baseline contexts is
+  used until a successful main run promotes that context. Once both contexts
+  match, the promoted baseline is authoritative and the declaration is inactive
+  provenance. Focused subsets and one-off explicit target files are not
   baselines.
 - Baseline JSON also captures OMC parity distributions for this set (runtime
   speedup ratio + trace-accuracy min/median/mean/max), populated from

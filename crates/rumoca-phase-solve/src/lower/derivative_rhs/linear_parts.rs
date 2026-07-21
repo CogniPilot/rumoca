@@ -94,25 +94,8 @@ pub(in crate::lower) fn derivative_linear_parts_any(
     owner_span: rumoca_core::Span,
 ) -> Result<Option<LinearParts>, LowerError> {
     match expr {
-        rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_add(op) => {
-            let child_owner = inherited_linear_span(*span, owner_span);
-            let Some(lhs_parts) = derivative_linear_parts_any(lhs, ctx, child_owner)? else {
-                return Ok(None);
-            };
-            let Some(rhs_parts) = derivative_linear_parts_any(rhs, ctx, child_owner)? else {
-                return Ok(None);
-            };
-            combine_linear_parts(lhs_parts, rhs_parts, false, *span).map(Some)
-        }
-        rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_sub(op) => {
-            let child_owner = inherited_linear_span(*span, owner_span);
-            let Some(lhs_parts) = derivative_linear_parts_any(lhs, ctx, child_owner)? else {
-                return Ok(None);
-            };
-            let Some(rhs_parts) = derivative_linear_parts_any(rhs, ctx, child_owner)? else {
-                return Ok(None);
-            };
-            combine_linear_parts(lhs_parts, rhs_parts, true, *span).map(Some)
+        rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_add(op) || is_sub(op) => {
+            derivative_additive_linear_parts(lhs, rhs, ctx, owner_span, is_sub(op), *span)
         }
         rumoca_core::Expression::Unary { op, rhs, span } if is_unary_minus(op) => {
             let Some(parts) =
@@ -180,8 +163,39 @@ pub(in crate::lower) fn derivative_linear_parts_any(
             divide_linear_parts(parts, rhs.as_ref().clone(), *span).map(Some)
         }
         _ if !expr.contains_der() => Ok(Some((IndexMap::new(), Some(expr.clone())))),
-        _ => derivative_terminal_linear_parts(expr, ctx.state_names, owner_span),
+        _ => {
+            let span = linear_expr_or_owner_span(expr, owner_span)?;
+            if let Some(projected) = function_call_projected_scalars_with_owner(
+                expr,
+                ctx.dae_model,
+                ctx.structural_bindings,
+                span,
+            )? && let [projected] = projected.as_slice()
+                && projected != expr
+            {
+                return derivative_linear_parts_any(projected, ctx, span);
+            }
+            derivative_terminal_linear_parts(expr, ctx.state_names, owner_span)
+        }
     }
+}
+
+fn derivative_additive_linear_parts(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    ctx: &DerivativeLinearCtx<'_>,
+    owner_span: rumoca_core::Span,
+    subtract_rhs: bool,
+    span: rumoca_core::Span,
+) -> Result<Option<LinearParts>, LowerError> {
+    let child_owner = inherited_linear_span(span, owner_span);
+    let Some(lhs_parts) = derivative_linear_parts_any(lhs, ctx, child_owner)? else {
+        return Ok(None);
+    };
+    let Some(rhs_parts) = derivative_linear_parts_any(rhs, ctx, child_owner)? else {
+        return Ok(None);
+    };
+    combine_linear_parts(lhs_parts, rhs_parts, subtract_rhs, span).map(Some)
 }
 
 fn derivative_terminal_linear_parts(

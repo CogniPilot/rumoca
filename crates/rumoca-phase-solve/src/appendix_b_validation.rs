@@ -111,6 +111,11 @@ pub(super) fn validate_solve_artifacts_appendix_b_invariants(
         &artifacts.continuous.full_jacobian_v,
         SeedUse::Allowed,
     )?;
+    validate_compute_block(
+        "artifacts.initialization.residual_jacobian_v",
+        &artifacts.initialization.residual_jacobian_v,
+        SeedUse::Allowed,
+    )?;
     Ok(())
 }
 
@@ -610,7 +615,11 @@ fn validate_affine_row_tensor_node(
     for stride in load_strides {
         validate_index_stride_terms(context, node_name, domain, &stride.terms, span)?;
         match base_ops.get(stride.op_position) {
-            Some(solve::LinearOp::LoadY { .. } | solve::LinearOp::LoadP { .. }) => {}
+            Some(
+                solve::LinearOp::LoadY { .. }
+                | solve::LinearOp::LoadP { .. }
+                | solve::LinearOp::LoadSeed { .. },
+            ) => {}
             Some(other) => {
                 return Err(solve_validation_error(
                     format!(

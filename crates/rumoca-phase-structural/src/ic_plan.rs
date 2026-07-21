@@ -117,8 +117,12 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
     let (incidence, alg_eq_offset, alg_var_indices, alg_var_names) =
         build_algebraic_incidence(dae, n_x, &var_name_to_idx);
 
-    let (match_eq, match_var) =
-        crate::matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns);
+    let (match_eq, match_var) = crate::matching::maximum_matching(
+        incidence.n_eq,
+        incidence.n_var,
+        &incidence.eq_unknowns,
+        &[],
+    );
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
     if matching_size < incidence.n_eq || matching_size < incidence.n_var {
         let unmatched_equation_indices: Vec<usize> = match_eq
@@ -213,8 +217,12 @@ pub fn build_ic_relaxation_hint(dae: &Dae, n_x: usize) -> Option<IcRelaxationHin
     let (var_name_to_idx, _) = build_var_index_maps(dae, n_eq);
     let (incidence, alg_eq_offset, _alg_var_indices, alg_var_names) =
         build_algebraic_incidence(dae, n_x, &var_name_to_idx);
-    let (match_eq, match_var) =
-        crate::matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns);
+    let (match_eq, match_var) = crate::matching::maximum_matching(
+        incidence.n_eq,
+        incidence.n_var,
+        &incidence.eq_unknowns,
+        &[],
+    );
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
     if matching_size >= incidence.n_eq && matching_size >= incidence.n_var {
         return None;
@@ -413,7 +421,7 @@ fn score_relaxed_drop_candidate(
     test_drop.insert(row_idx);
     let reduced = project_relaxed_ic_incidence(incidence, &test_drop, dropped_var)?;
     let (match_eq, match_var) =
-        crate::matching::maximum_matching(reduced.n_eq, reduced.n_var, &reduced.eq_unknowns);
+        crate::matching::maximum_matching(reduced.n_eq, reduced.n_var, &reduced.eq_unknowns, &[]);
     let mut matched = match_eq.iter().filter(|m| m.is_some()).count();
     let full_match =
         matched >= reduced.n_eq && matched >= reduced.n_var && matched >= match_var.len();
@@ -436,6 +444,7 @@ fn score_relaxed_drop_candidate(
                 candidate_reduced.n_eq,
                 candidate_reduced.n_var,
                 &candidate_reduced.eq_unknowns,
+                &[],
             );
             let cand_matched = cand_eq.iter().filter(|m| m.is_some()).count();
             let cand_full = cand_matched >= candidate_reduced.n_eq
@@ -826,7 +835,7 @@ fn trace_relaxed_drop_selection(
 
 fn reduction_is_fully_matched(reduced: &Incidence) -> bool {
     let (match_eq, match_var) =
-        crate::matching::maximum_matching(reduced.n_eq, reduced.n_var, &reduced.eq_unknowns);
+        crate::matching::maximum_matching(reduced.n_eq, reduced.n_var, &reduced.eq_unknowns, &[]);
     let matched = match_eq.iter().filter(|m| m.is_some()).count();
     matched >= reduced.n_eq && matched >= reduced.n_var && matched >= match_var.len()
 }

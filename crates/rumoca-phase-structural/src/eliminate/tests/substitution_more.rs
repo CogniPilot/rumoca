@@ -214,6 +214,81 @@ fn test_eliminate_trivial_keeps_runtime_partition_defined_output() {
 }
 
 #[test]
+fn test_eliminate_trivial_drops_exact_runtime_identity() {
+    let mut dae = Dae::new();
+    dae.continuous.equations.push(residual(
+        var_ref("time"),
+        var_ref("time"),
+        1,
+        "exact runtime identity",
+    ));
+
+    let result = eliminate_trivial(&mut dae).expect("exact identity should eliminate");
+
+    assert_eq!(result.n_eliminated, 1);
+    assert!(dae.continuous.equations.is_empty());
+}
+
+#[test]
+fn test_arithmetic_identity_keeps_partial_expression_obligation() {
+    let partial = binary(rumoca_core::OpBinary::Div, real(1.0), real(0.0));
+    let expression = binary(sub_op(), partial.clone(), partial);
+
+    let simplified = simplify_arithmetic_identities(expression);
+
+    assert!(matches!(
+        simplified,
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_eliminate_trivial_keeps_vector_source_of_generated_pre_slot() {
+    let mut dae = Dae::new();
+
+    let mut state = test_dae_variable("state");
+    state.dims = vec![3];
+    dae.variables.states.insert(VarName::new("state"), state);
+
+    let mut sampled = test_dae_variable("sampled");
+    sampled.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("sampled"), sampled);
+
+    let pre_name = rumoca_core::pre_slot_name("sampled");
+    let mut pre_sampled = test_dae_variable(pre_name.as_str());
+    pre_sampled.dims = vec![3];
+    dae.variables.parameters.insert(pre_name, pre_sampled);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: Some(reference("sampled")),
+        rhs: var_ref("state"),
+        span: test_span(),
+        origin: "sampled vector source".to_string(),
+        scalar_count: 3,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .all(|sub| sub.var_name.as_str() != "sampled"),
+        "a generated pre slot requires its continuous source to remain live"
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("sampled"))
+    );
+}
+
+#[test]
 fn test_eliminate_trivial_keeps_branch_local_analog_helper_unknown() {
     let mut dae = Dae::new();
 
@@ -701,6 +776,183 @@ fn test_eliminate_trivial_eliminates_array_alias_equations() {
 }
 
 #[test]
+fn test_eliminate_trivial_eliminates_continuous_connection_array_alias() {
+    let mut dae = Dae::new();
+
+    let mut arr = test_dae_variable("arr");
+    arr.dims = vec![3];
+    dae.variables.algebraics.insert(VarName::new("arr"), arr);
+
+    let mut pin = test_dae_variable("plug.pin.i");
+    pin.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("plug.pin.i"), pin);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("arr")),
+            rhs: Box::new(var_ref("plug.pin.i")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: arr = plug.pin.i".to_string(),
+        scalar_count: 3,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+    assert_eq!(result.n_eliminated, 1);
+    assert!(dae.continuous.equations.is_empty());
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("arr")));
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("plug.pin.i"))
+    );
+}
+
+#[test]
+fn test_eliminate_trivial_eliminates_exact_shape_connection_array_definition() {
+    let mut dae = Dae::new();
+
+    let mut target = test_dae_variable("target");
+    target.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("target"), target);
+
+    let mut source = test_dae_variable("source");
+    source.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("source"), source);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("target")),
+            rhs: Box::new(Expression::Unary {
+                op: OpUnary::Minus,
+                rhs: Box::new(var_ref("source")),
+                span: Span::DUMMY,
+            }),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: target = -source".to_string(),
+        scalar_count: 3,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+    assert_eq!(result.n_eliminated, 1);
+    assert!(dae.continuous.equations.is_empty());
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("target"))
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("source"))
+    );
+}
+
+#[test]
+fn test_eliminate_trivial_rejects_equal_cardinality_array_definition_shape_mismatch() {
+    let mut dae = Dae::new();
+
+    let mut target = test_dae_variable("target");
+    target.dims = vec![2, 2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("target"), target);
+
+    let mut source = test_dae_variable("source");
+    source.dims = vec![4];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("source"), source);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("target")),
+            rhs: Box::new(Expression::Unary {
+                op: OpUnary::Minus,
+                rhs: Box::new(var_ref("source")),
+                span: Span::DUMMY,
+            }),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: target = -source".to_string(),
+        scalar_count: 4,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("target"))
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("source"))
+    );
+}
+
+#[test]
+fn eliminate_trivial_validates_compact_tensor_equations_through_a_scalar_view() {
+    let mut dae = Dae::new();
+    for name in ["a", "b"] {
+        let mut variable = component_var(name);
+        variable.dims = vec![3];
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), variable);
+    }
+    let values = array(vec![lit(1.0), lit(2.0), lit(3.0)]);
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: binary(
+            sub_op(),
+            binary(OpBinary::Add, var_ref("a"), var_ref("b")),
+            values.clone(),
+        ),
+        span: test_span(),
+        origin: "compact tensor sum".to_string(),
+        scalar_count: 3,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: binary(
+            sub_op(),
+            binary(OpBinary::Sub, var_ref("a"), var_ref("b")),
+            values,
+        ),
+        span: test_span(),
+        origin: "compact tensor difference".to_string(),
+        scalar_count: 3,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("compact tensor system should validate");
+
+    assert!(result.blt_error.is_none());
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.continuous.equations.len(), 2);
+    assert_eq!(dae.variables.algebraics[&VarName::new("a")].dims, [3]);
+    assert_eq!(dae.variables.algebraics[&VarName::new("b")].dims, [3]);
+}
+
+#[test]
 fn test_eliminate_trivial_keeps_discrete_path_connection_array_alias() {
     let mut dae = Dae::new();
 
@@ -837,7 +1089,7 @@ fn test_eliminate_trivial_eliminates_output_array_alias_equations() {
 }
 
 #[test]
-fn test_eliminate_trivial_drops_unknown_free_record_shell_alias() {
+fn test_eliminate_trivial_rejects_record_shell_alias_without_metadata() {
     let mut dae = Dae::new();
 
     let mut lhs_field = component_var("a.R.w");
@@ -877,11 +1129,13 @@ fn test_eliminate_trivial_drops_unknown_free_record_shell_alias() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
-    assert_eq!(result.n_eliminated, 2);
     assert!(
-        dae.continuous.equations.is_empty(),
-        "record shell alias should be dropped once it has no live DAE variables"
+        matches!(
+            eliminate_trivial(&mut dae),
+            Err(StructuralError::ContractViolation { ref reason, .. })
+                if reason.contains("missing DAE variable metadata for `a.R`")
+        ),
+        "record shells require resolved producer metadata"
     );
 }
 
@@ -1176,6 +1430,43 @@ fn test_eliminate_trivial_rewrites_eliminated_indexed_record_field_aggregate() {
 }
 
 #[test]
+fn test_eliminate_trivial_rewrites_indexed_component_field_selection() {
+    let expr = Expression::FieldAccess {
+        base: Box::new(Expression::Index {
+            base: Box::new(var_ref("pin")),
+            subscripts: vec![rumoca_core::Subscript::generated_colon(test_span())],
+            span: test_span(),
+        }),
+        field: "v".to_string(),
+        span: test_span(),
+    };
+    let substitutions = [("pin[1].v", 10.0), ("pin[2].v", 20.0)]
+        .into_iter()
+        .map(|(name, value)| Substitution {
+            var_name: VarName::new(name),
+            var_ref: Some(reference(name)),
+            expr: lit(value),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: vec![name.to_string()],
+        })
+        .collect::<Vec<_>>();
+
+    let rewritten = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
+    let Expression::Index {
+        base, subscripts, ..
+    } = rewritten
+    else {
+        panic!("component-field selection should remain an indexed tensor expression");
+    };
+    assert!(matches!(base.as_ref(), Expression::Array { elements, .. } if elements.len() == 2));
+    assert!(matches!(
+        subscripts.as_slice(),
+        [rumoca_core::Subscript::Colon { .. }]
+    ));
+}
+
+#[test]
 fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
     let expr = Expression::FieldAccess {
         base: Box::new(Expression::Binary {
@@ -1288,8 +1579,7 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
 
 #[test]
 fn test_eliminate_structurally_singular_boundary_resolution() {
-    // 2 equations both referencing only `a`, `b` unmatched.
-    // Phase A resolves a=1.0, then eq2 becomes zero-unknown and is removed.
+    // Two contradictory equations both reference only `a`; `b` is unmatched.
     let mut dae = Dae::new();
     dae.variables
         .algebraics
@@ -1323,8 +1613,14 @@ fn test_eliminate_structurally_singular_boundary_resolution() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
-    // Phase A: eq1 solves a=1.0 (1 unknown), eq2 becomes 0-unknown → removed.
-    assert_eq!(result.n_eliminated, 2);
-    assert_eq!(dae.continuous.equations.len(), 0);
+    let error = eliminate_trivial(&mut dae)
+        .expect_err("a=1 and a=2 must be diagnosed as an inconsistent equation set");
+    assert!(matches!(
+        error,
+        StructuralError::InconsistentEquation {
+            residual: -1.0,
+            ref origin,
+            ..
+        } if origin == "eq2"
+    ));
 }

@@ -421,6 +421,42 @@ fn projected_function_field_outputs_infer_dense_selector_dimensions() -> Result<
 }
 
 #[test]
+fn selected_record_field_projection_matches_projected_output_metadata() {
+    let projection = crate::projection_suffix::OutputProjectionSuffix {
+        output_name: "R".to_string(),
+        output_fields: vec!["w".to_string()],
+        indices: vec![2],
+    };
+    let outputs = vec![ProjectedFunctionOutput {
+        output_name: Some("R".to_string()),
+        field_path: vec!["w".to_string()],
+        selector_indices: vec![2],
+        expr: real(3.0),
+    }];
+
+    let selected = take_selected_projected_output(outputs, &projection);
+
+    assert!(selected.is_some());
+}
+
+#[test]
+fn selected_record_field_projection_rejects_other_tensor_lane() {
+    let projection = crate::projection_suffix::OutputProjectionSuffix {
+        output_name: "R".to_string(),
+        output_fields: vec!["w".to_string()],
+        indices: vec![2],
+    };
+    let outputs = vec![ProjectedFunctionOutput {
+        output_name: Some("R".to_string()),
+        field_path: vec!["w".to_string()],
+        selector_indices: vec![1],
+        expr: real(3.0),
+    }];
+
+    assert!(take_selected_projected_output(outputs, &projection).is_none());
+}
+
+#[test]
 fn repeated_scalar_field_outputs_have_unknown_dimensions() -> Result<(), LowerError> {
     let outputs = vec![
         ProjectedFunctionOutput {

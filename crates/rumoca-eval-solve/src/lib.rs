@@ -148,6 +148,12 @@ pub enum EvalSolveError {
         helper: &'static str,
         op: &'static str,
     },
+    LinearSolve {
+        size: usize,
+        component: Option<usize>,
+        reason: &'static str,
+        span: Option<rumoca_core::Span>,
+    },
     InvalidRow {
         message: String,
         span: Option<rumoca_core::Span>,
@@ -170,6 +176,7 @@ impl EvalSolveError {
             Self::UninitializedRegister { span, .. } => *span,
             Self::OutputTooSmall { span, .. } => *span,
             Self::SingularTargetAssignment { span, .. } => *span,
+            Self::LinearSolve { span, .. } => *span,
             Self::InvalidRow { span, .. } => *span,
             Self::Scalarization { span, .. } => *span,
             Self::ShapeContract { span, .. } => *span,
@@ -223,6 +230,17 @@ impl EvalSolveError {
                 row,
                 target_y_index,
                 coefficient,
+                span,
+            },
+            Self::LinearSolve {
+                size,
+                component,
+                reason,
+                span: None,
+            } => Self::LinearSolve {
+                size,
+                component,
+                reason,
                 span,
             },
             Self::InvalidRow {
@@ -309,6 +327,18 @@ impl std::fmt::Display for EvalSolveError {
             Self::InvalidLinearOp { helper, op } => {
                 write!(f, "Solve-IR {helper} helper cannot evaluate {op} op")
             }
+            Self::LinearSolve {
+                size,
+                component,
+                reason,
+                ..
+            } => match component {
+                Some(component) => write!(
+                    f,
+                    "Solve-IR linear solve of size {size} cannot evaluate component {component}: {reason}"
+                ),
+                None => write!(f, "Solve-IR linear solve of size {size} failed: {reason}"),
+            },
             Self::InvalidRow { message, .. } => write!(f, "invalid Solve-IR row: {message}"),
             Self::Scalarization { message, .. } => {
                 write!(f, "Solve-IR scalarization failed: {message}")

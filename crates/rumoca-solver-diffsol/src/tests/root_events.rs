@@ -47,6 +47,83 @@ fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
 }
 
 #[test]
+fn state_only_root_event_is_independent_of_output_grid() {
+    let model = rising_state_with_root_reinit();
+    let simulate_with_dt = |dt| {
+        simulate(
+            &model,
+            &SimOptions {
+                t_end: 0.2,
+                dt: Some(dt),
+                ..Default::default()
+            },
+        )
+        .expect("root-triggered reinit should integrate on any output grid")
+        .data[0]
+            .last()
+            .copied()
+            .expect("the final state should be recorded")
+    };
+
+    let coarse = simulate_with_dt(0.1);
+    let fine = simulate_with_dt(0.001);
+    assert!(
+        (coarse - fine).abs() <= 2.0e-6,
+        "output sampling changed the event trajectory: coarse={coarse}, fine={fine}"
+    );
+}
+
+#[test]
+fn root_at_scheduled_stop_resumes_to_simulation_horizon() {
+    let mut model = rising_state_with_root_reinit();
+    model.problem.clocks.periodic_event_schedules = vec![
+        solve::PeriodicEventSchedule {
+            phase_seconds: 0.05,
+            period_seconds: 10.0,
+        },
+        solve::PeriodicEventSchedule {
+            phase_seconds: 0.075,
+            period_seconds: 10.0,
+        },
+    ];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("a root at a scheduled stop must resume continuous integration");
+
+    assert_eq!(result.times.last().copied(), Some(0.1));
+    assert!(
+        result
+            .times
+            .iter()
+            .any(|time| (*time - 0.075).abs() < 1.0e-12)
+    );
+    assert!(result.data[0].last().copied().unwrap() > 2.0);
+}
+
+#[test]
+fn root_at_simulation_horizon_finishes_event_iteration() {
+    let result = simulate(
+        &rising_state_with_root_reinit(),
+        &SimOptions {
+            t_end: 0.05,
+            dt: Some(0.05),
+            ..Default::default()
+        },
+    )
+    .expect("a root at the simulation horizon must not install a current-time stop");
+
+    assert_eq!(result.times.last().copied(), Some(0.05));
+    assert!(result.data[0].last().copied().unwrap() >= 2.0);
+}
+
+#[test]
 fn strict_post_crossing_reinit_evaluates_on_event_right_limit() {
     let model = falling_ball_with_strict_reinit_guard();
 

@@ -10,6 +10,7 @@ pub(crate) fn propagate_record_binding_to_fields(
     ctx: &mut InstantiateContext,
     binding_expr: &ast::Expression,
     binding_source_scope: Option<ast::QualifiedName>,
+    binding_is_each: bool,
     nested_class: &ast::ClassDef,
     targeted_keys: &IndexMap<ast::QualifiedName, ()>,
 ) -> InstantiateResult<IndexMap<ast::QualifiedName, ()>> {
@@ -79,10 +80,12 @@ pub(crate) fn propagate_record_binding_to_fields(
 
         ctx.mod_env_mut().active.insert(
             field_qn.clone(),
-            ast::ModificationValue::with_source_scope(
+            ast::ModificationValue::with_source_scope_and_prefixes(
                 field_access.clone(),
                 Some(field_access),
                 binding_source_scope.clone(),
+                binding_is_each,
+                false,
             ),
         );
         projected_keys.insert(field_qn, ());
@@ -444,5 +447,5 @@ fn record_constructor_matches_class(
 }
 
 fn has_declared_field_default(comp: &ast::Component) -> bool {
-    comp.binding.is_some() || !matches!(comp.start, ast::Expression::Empty { .. })
+    comp.binding.is_some()
 }

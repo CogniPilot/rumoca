@@ -74,6 +74,17 @@ pub use when_equations::{WhenClause, WhenEquation};
 pub struct Model {
     /// All variables with globally unique names.
     pub variables: VarNameIndexMap<Variable>,
+    /// Resolved record containers retained for record-equation lowering.
+    ///
+    /// Record fields remain the authoritative Flat variables. This table only
+    /// preserves the compact type identity discarded when containers expand.
+    #[serde(default)]
+    pub record_instances: VarNameIndexMap<RecordInstance>,
+    /// Resolved field layout for each record declaration used by an instance.
+    ///
+    /// This is type metadata, not callable-function reachability. Record
+    /// equations use it to preserve one tensor equation per declared field.
+    pub record_types: IndexMap<DefId, RecordType, rustc_hash::FxBuildHasher>,
     /// Declared flat-output type name for each variable (e.g., Boolean, Integer, MyEnum).
     ///
     /// Keys match `variables` and values preserve resolved type identity for rendering.
@@ -167,6 +178,32 @@ pub struct Model {
     /// checks without rendered-name prefix matching.
     #[serde(default)]
     pub symbol_ancestry: SymbolAncestryMap,
+}
+
+/// Compact resolved identity for a record container expanded into Flat fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordInstance {
+    pub component_ref: ComponentReference,
+    pub source_span: Span,
+    pub canonical_type_id: TypeId,
+    pub type_name: String,
+    pub type_def_id: DefId,
+    pub dims: Vec<i64>,
+}
+
+/// Resolved field layout of one record declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordType {
+    pub name: String,
+    pub fields: Vec<RecordField>,
+}
+
+/// One declared record field retained for exact Flat-to-DAE expansion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordField {
+    pub name: String,
+    pub def_id: DefId,
+    pub dims: Vec<i64>,
 }
 
 impl Model {

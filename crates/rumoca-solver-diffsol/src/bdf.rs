@@ -392,12 +392,6 @@ fn projection_producer_rows(
             .iter()
             .copied()
             .zip(block.y_indices.iter().copied())
-            .chain(
-                block
-                    .causal_steps
-                    .iter()
-                    .map(|step| (step.row, step.y_index)),
-            )
         {
             if row_idx >= implicit_row_count {
                 return None;
