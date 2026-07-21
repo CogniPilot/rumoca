@@ -36,7 +36,7 @@ fn test_runtime_precompute_extracts_affine_time_event() {
     populate_conditions(&mut dae_model);
     populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
     assert_eq!(dae_model.events.scheduled_time_events.len(), 1);
-    assert!((dae_model.events.scheduled_time_events[0] - 1.25).abs() <= 1e-12);
+    assert!((dae_model.events.scheduled_time_events[0].time - 1.25).abs() <= 1e-12);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn test_runtime_precompute_extracts_discrete_partition_events() {
         ));
 
     populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
-    assert_eq!(dae_model.events.scheduled_time_events, vec![0.5]);
+    assert_eq!(scheduled_times(&dae_model), vec![0.5]);
 }
 
 #[test]

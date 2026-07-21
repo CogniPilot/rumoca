@@ -1,10 +1,4 @@
 //! Solve-IR row evaluation.
-//!
-//! ## Threading and Test Isolation
-//!
-//! Simulation facades should pass model-local table data through
-//! [`RowEvalContext::external_tables`]. Impure random-generator streams are
-//! carried by [`SimulationRuntimeState`] and are never process-global.
 
 use std::{
     collections::BTreeMap,
@@ -16,7 +10,7 @@ use std::{
 };
 
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
+    BinaryOp, CompareOp, ComputeNode, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
     SolveEventMessagePart, SolveEventPartition, SolveProblemShapeContractError, UnaryOp,
     resolve_indexed_slot,
 };
@@ -28,6 +22,7 @@ mod iterative_solve;
 pub mod jacobian;
 mod linear_solve;
 pub mod nan_trace;
+mod native_map;
 mod prepared;
 mod random_runtime;
 mod refresh_plan;
@@ -48,6 +43,7 @@ pub use jacobian::{
     JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
 };
 use linear_solve::{solve_component_op, solve_component_unchecked};
+pub use native_map::{MapEvaluationMetrics, eval_map_elements_with_context};
 pub use prepared::{
     PreparedComputeBlock, PreparedScalarProgramBlock, TargetAssignmentShape,
     target_assignment_shape,
@@ -989,6 +985,43 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             }
         }
         Ok(())
+    }
+
+    fn eval_affine_op(
+        &mut self,
+        position: usize,
+        op: LinearOp,
+        offsets: native_map::AffineMapOffsets<'_>,
+    ) -> Result<(), EvalSolveError> {
+        match op {
+            LinearOp::LoadY { dst, index } => {
+                let index = index
+                    .checked_add_signed(native_map::affine_load_offset(position, offsets)?)
+                    .ok_or_else(|| {
+                        native_map::affine_map_error(
+                            "affine Y load index overflows host range",
+                            offsets.span,
+                        )
+                    })?;
+                self.set(dst, self.input.read_input("y", self.input.y, index)?)
+            }
+            LinearOp::LoadP { dst, index } => {
+                let index = index
+                    .checked_add_signed(native_map::affine_load_offset(position, offsets)?)
+                    .ok_or_else(|| {
+                        native_map::affine_map_error(
+                            "affine P load index overflows host range",
+                            offsets.span,
+                        )
+                    })?;
+                self.set(dst, self.input.read_input("p", self.input.p, index)?)
+            }
+            LinearOp::Const { dst, value } => self.set(
+                dst,
+                value + native_map::affine_const_offset(position, offsets)?,
+            ),
+            _ => self.eval_op(op),
+        }
     }
 
     fn eval_table_op(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
