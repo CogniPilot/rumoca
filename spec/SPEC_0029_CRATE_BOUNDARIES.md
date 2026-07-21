@@ -249,8 +249,6 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
 | Simulation facade | `rumoca-sim` | Composes solvers/reporting/viz behind features |
-| Compact Solve Map execution | `rumoca-eval-solve` | Backend-neutral native execution over a Map domain; no scalar-row reassembly |
-| GPU initial-condition settlement | `rumoca-sim` | Orchestrates proven compact targets through the evaluator; no Diffsol/OdeModel dependency |
 | Simulation session APIs | separate from runtime contracts | Simulation sessions are the scheduled runtime surface |
 | Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
 | Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
