@@ -72,7 +72,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 if base_dims.is_empty() {
                     return Ok(None);
                 }
-                if !self.index_expr_selectors_are_scalar(subscripts, scope, depth, span)? {
+                if !self.index_expr_selectors_have_known_shape(subscripts, scope, depth, span)? {
                     return Ok(None);
                 }
                 self.subscripted_dims(&base_dims, subscripts, scope, span)
@@ -193,7 +193,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
     }
 
-    fn index_expr_selectors_are_scalar(
+    fn index_expr_selectors_have_known_shape(
         &self,
         subscripts: &[rumoca_core::Subscript],
         scope: &FunctionProjectionScope,
@@ -204,13 +204,17 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
                 continue;
             };
-            if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. }) {
-                continue;
-            }
-            let Some(dims) = self.expr_dims_with_owner(expr, scope, depth + 1, span)? else {
-                return Ok(false);
+            let known_shape = match expr.as_ref() {
+                rumoca_core::Expression::Range {
+                    start, step, end, ..
+                } => self
+                    .range_subscript_dim_count(start, step.as_deref(), end, scope, span)?
+                    .is_some(),
+                _ => self
+                    .expr_dims_with_owner(expr, scope, depth + 1, span)?
+                    .is_some_and(|dims| dims.is_empty()),
             };
-            if !dims.is_empty() {
+            if !known_shape {
                 return Ok(false);
             }
         }
