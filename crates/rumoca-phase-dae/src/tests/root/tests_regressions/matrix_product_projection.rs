@@ -138,6 +138,42 @@ fn flatten_dot_terms<'a>(expr: &'a Expression, terms: &mut Vec<ProductTerm<'a>>)
     }
 }
 
+type LiteralProductTerm<'a> = ((&'a str, Vec<i64>), f64);
+
+fn flatten_literal_dot_terms<'a>(
+    expr: &'a Expression,
+    terms: &mut Vec<LiteralProductTerm<'a>>,
+) -> bool {
+    match expr {
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } => flatten_literal_dot_terms(lhs, terms) && flatten_literal_dot_terms(rhs, terms),
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let Some(lhs) = literal_subscripts(lhs) else {
+                return false;
+            };
+            let Expression::Literal {
+                value: Literal::Real(rhs),
+                ..
+            } = rhs.as_ref()
+            else {
+                return false;
+            };
+            terms.push((lhs, *rhs));
+            true
+        }
+        _ => false,
+    }
+}
+
 fn flatten_builtin_dot_terms(expr: &Expression, terms: &mut Vec<(Vec<i64>, i64)>) -> bool {
     match expr {
         Expression::Binary {
@@ -1521,7 +1557,7 @@ fn test_todae_preserves_scalar_scaled_sum_of_vector_slices() {
 }
 
 #[test]
-fn test_todae_preserves_vector_scaling_with_nested_unproven_dot_shape() {
+fn test_todae_projects_fill_vector_dot_inside_vector_scaling() {
     let mut flat = Model::new();
     declare_array(&mut flat, "velocity", &[2]);
     declare_array(&mut flat, "work", &[2]);
@@ -1550,9 +1586,39 @@ fn test_todae_preserves_vector_scaling_with_nested_unproven_dot_shape() {
             error_on_unbalanced: false,
         },
     )
-    .expect("an unproven nested dot shape must stay on ordinary array scalarization");
+    .expect("literal fill dimensions must prove the nested vector dot shape");
 
     assert_eq!(dae.continuous.equations.len(), 2);
+    for equation in &dae.continuous.equations {
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } = residual_rhs(equation)
+        else {
+            panic!(
+                "expected scaled dot product, got {:?}",
+                residual_rhs(equation)
+            );
+        };
+        assert!(matches!(
+            lhs.as_ref(),
+            Expression::Literal {
+                value: Literal::Real(0.5),
+                ..
+            }
+        ));
+        let mut terms = Vec::new();
+        assert!(
+            flatten_literal_dot_terms(rhs, &mut terms),
+            "expected a complete fill-vector dot product, got {rhs:?}"
+        );
+        assert_eq!(
+            terms,
+            vec![(("velocity", vec![1]), 0.5), (("velocity", vec![2]), 0.5)]
+        );
+    }
 }
 
 #[test]
