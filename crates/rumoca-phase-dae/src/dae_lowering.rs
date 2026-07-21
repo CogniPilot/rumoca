@@ -38,7 +38,9 @@ struct RecordArgDecomposition {
 mod record_field_inference;
 use record_field_inference::{FieldUseMap, infer_record_fields_by_function};
 mod colon_slice_dot;
-use colon_slice_dot::lower_colon_slice_dot_products;
+use colon_slice_dot::{
+    DotOperand, classify_dot_operand, is_colon_slice, lower_colon_slice_dot_products,
+};
 
 #[derive(Default)]
 struct ArrayParamMap {
@@ -3884,6 +3886,41 @@ fn lower_colon_slice_binary_expr(
             rhs: Box::new(lower_colon_slice_dot_products(rhs, array_dims)?),
             span,
         });
+    }
+    if is_colon_slice(lhs) || is_colon_slice(rhs) {
+        let preserve = match (
+            classify_dot_operand(lhs, array_dims)?,
+            classify_dot_operand(rhs, array_dims)?,
+        ) {
+            (DotOperand::Vector(projected_lhs), DotOperand::Vector(projected_rhs)) => {
+                if let (
+                    Expr::Array {
+                        elements: lhs_values,
+                        ..
+                    },
+                    Expr::Array {
+                        elements: rhs_values,
+                        ..
+                    },
+                ) = (&projected_lhs, &projected_rhs)
+                    && lhs_values.len() == rhs_values.len()
+                    && let Some(dot) = dot_product_expr(lhs_values, rhs_values, span)
+                {
+                    return Ok(dot);
+                }
+                true
+            }
+            (DotOperand::Unsafe, _) | (_, DotOperand::Unsafe) => true,
+            _ => false,
+        };
+        if preserve {
+            return Ok(rumoca_core::Expression::Binary {
+                op: op.clone(),
+                lhs: Box::new(lower_colon_slice_dot_products(lhs, array_dims)?),
+                rhs: Box::new(lower_colon_slice_dot_products(rhs, array_dims)?),
+                span,
+            });
+        }
     }
     let lhs = lower_colon_slice_dot_operand(lhs, array_dims)?;
     let rhs = lower_colon_slice_dot_operand(rhs, array_dims)?;
