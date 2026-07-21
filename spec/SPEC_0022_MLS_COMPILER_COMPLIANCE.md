@@ -607,7 +607,7 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-015 | Component types | §12.2 | "Function must not contain model, block, operator, or connector components" |
 | FUNC-016 | Not in connections | §12.2 | "Functions shall not be used in connections" |
 | FUNC-017 | Return in algorithm only | §12.1.2 | "Return statement can only be used in an algorithm section of a function" |
-| FUNC-018 | Input ordering significant | §12.1.1 | "Relative ordering between input formal parameter declarations is significant" |
+| FUNC-018 | Input ordering significant | §12.1.1 | "Relative ordering between input formal parameter declarations is significant"; flattening preserves positional actual order when actual and formal counts match |
 | FUNC-019 | Named arg slot error | §12.4.1 | "Error if named argument slot is already filled" |
 | FUNC-020 | Unfilled slots error | §12.4.1 | "Error if any unfilled slots remain after argument processing" |
 | FUNC-021 | Impure inheritance | §12.3 | "If function declared impure, any extending function shall be declared impure" |
