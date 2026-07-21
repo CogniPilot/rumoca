@@ -62,6 +62,18 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } => self.subscripted_var_ref_dims(name, subscripts, scope, depth, span),
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => {
+                let Some(base_dims) = self.expr_dims_with_owner(base, scope, depth + 1, span)?
+                else {
+                    return Ok(None);
+                };
+                if base_dims.is_empty() {
+                    return Ok(None);
+                }
+                self.subscripted_dims(&base_dims, subscripts, scope, span)
+            }
             rumoca_core::Expression::Array {
                 elements,
                 is_matrix,

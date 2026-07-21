@@ -736,6 +736,67 @@ fn projection_dims_preserve_range_slice_and_scalar_division_shape() -> Result<()
 }
 
 #[test]
+fn projection_dims_preserve_matrix_slice_with_dynamic_scalar_index() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.dims.insert("vertices".to_string(), vec![2, 3]);
+    scope.dims.insert("other".to_string(), vec![3, 3]);
+
+    let span = test_span();
+    let dynamic_index = rumoca_core::Expression::Index {
+        base: Box::new(local_var("next_vertex")),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(local_var("vertex")),
+            span,
+        }],
+        span,
+    };
+    let slice = |name: &str, second| rumoca_core::Expression::Index {
+        base: Box::new(local_var(name)),
+        subscripts: vec![rumoca_core::Subscript::colon(span), second],
+        span,
+    };
+    let dynamic_slice = slice(
+        "vertices",
+        rumoca_core::Subscript::Expr {
+            expr: Box::new(dynamic_index),
+            span,
+        },
+    );
+    let literal_slice = slice("vertices", rumoca_core::Subscript::index(1, span));
+    let subtraction = binary(
+        rumoca_core::OpBinary::Sub,
+        dynamic_slice.clone(),
+        literal_slice.clone(),
+        span,
+    );
+
+    assert_eq!(
+        analysis.expr_dims(&dynamic_slice, &scope, 0, span)?,
+        Some(vec![2])
+    );
+    assert_eq!(
+        analysis.expr_dims(&literal_slice, &scope, 0, span)?,
+        Some(vec![2])
+    );
+    assert_eq!(
+        analysis.expr_dims(&subtraction, &scope, 0, span)?,
+        Some(vec![2])
+    );
+
+    let mismatched = binary(
+        rumoca_core::OpBinary::Sub,
+        literal_slice,
+        slice("other", rumoca_core::Subscript::index(1, span)),
+        span,
+    );
+    assert_eq!(analysis.expr_dims(&mismatched, &scope, 0, span)?, None);
+    Ok(())
+}
+
+#[test]
 fn nested_flattened_record_call_uses_caller_projection_scope() -> Result<(), LowerError> {
     let mut dae_model = dae::Dae::default();
     let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
