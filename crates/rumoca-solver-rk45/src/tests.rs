@@ -1232,6 +1232,8 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                 residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                 row_targets: Vec::new(),
                 direct_families: Vec::new(),
+                required_target_ranges: Vec::new(),
+                fixed_target_ranges: Vec::new(),
                 projection_indices: Vec::new(),
                 projection_plan: solve::AlgebraicProjectionPlan::default(),
                 update_rhs: solve::ScalarProgramBlock::default(),
