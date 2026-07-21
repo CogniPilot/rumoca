@@ -286,7 +286,11 @@ fn test_todae_preserves_ordinary_scalar_product_operands() {
         add_equation(
             &mut flat,
             make_structured_var_ref("y"),
-            multiply(operand, make_structured_var_ref("x")),
+            binary(
+                rumoca_core::OpBinary::Add,
+                real(1.0),
+                multiply(operand, make_structured_var_ref("x")),
+            ),
             1,
         );
         let dae = to_dae_with_options(
@@ -299,7 +303,7 @@ fn test_todae_preserves_ordinary_scalar_product_operands() {
         assert!(matches!(
             residual_rhs(&dae.continuous.equations[0]),
             Expression::Binary {
-                op: rumoca_core::OpBinary::Mul,
+                op: rumoca_core::OpBinary::Add,
                 ..
             }
         ));

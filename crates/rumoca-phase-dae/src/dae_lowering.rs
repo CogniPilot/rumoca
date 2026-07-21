@@ -2303,7 +2303,6 @@ fn expr_has_vectorized_scalar_function_call(
         _ => false,
     }
 }
-
 fn expr_has_vectorized_scalar_actual(
     expr: &rumoca_core::Expression,
     formal_rank: usize,
@@ -2324,21 +2323,18 @@ fn expr_has_vectorized_scalar_actual(
                 .is_some_and(|dims| dims.len() == formal_rank + 1)
     )
 }
-
 fn subscript_has_record_array_member_slice(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
         rumoca_core::Subscript::Expr { expr, .. } => expr_has_record_array_member_slice(expr),
         rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
     }
 }
-
 fn subscript_has_colon_slice(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
         rumoca_core::Subscript::Expr { expr, .. } => expr_has_colon_slice(expr),
         rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
     }
 }
-
 fn scalarize_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
@@ -2493,7 +2489,6 @@ fn scalarize_binary_expr_at(
         span,
     ))
 }
-
 fn scalarize_builtin_vector_output_at(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
@@ -2524,7 +2519,6 @@ fn scalarize_builtin_vector_output_at(
         span,
     }))
 }
-
 fn vectorize_builtin_vector_arg(
     arg: &rumoca_core::Expression,
     ctx: &ScalarizeExprContext<'_>,
@@ -3669,7 +3663,6 @@ fn scalarize_equation_list(
     *equations = new_equations;
     Ok(spans)
 }
-
 fn project_scalarized_residual_rhs(
     eq: dae::Equation,
     array_dims: &HashMap<String, Vec<i64>>,
@@ -4006,9 +3999,16 @@ impl Projector<'_> {
             return Ok(None);
         };
         if matches!(op, OpBinary::Add | OpBinary::Sub) {
-            let result_dims = self
-                .dims(expr, *span)?
-                .ok_or_else(|| projection_error("unknown operand shape", *span))?;
+            let has_array_syntax = has_array_slice_syntax(expr);
+            if target_dims.is_empty() && !has_array_syntax {
+                return Ok(None);
+            }
+            let result_dims = self.dims(expr, *span)?;
+            if result_dims.is_none() && !has_array_syntax {
+                return Ok(None);
+            }
+            let result_dims =
+                result_dims.ok_or_else(|| projection_error("unknown operand shape", *span))?;
             if result_dims != target_dims {
                 return Err(projection_error("result shape mismatch", *span));
             }
@@ -4078,8 +4078,7 @@ impl Projector<'_> {
         if inner == 0 {
             return Ok(Some(real_literal(0.0, *span)));
         }
-        let mut lhs_values = Vec::new();
-        let mut rhs_values = Vec::new();
+        let (mut lhs_values, mut rhs_values) = (Vec::new(), Vec::new());
         let row = (lhs_dims.len() == 2).then(|| indices[0]);
         let column = (rhs_dims.len() == 2).then(|| *indices.last().unwrap());
         for inner_index in 1..=inner {
@@ -4161,6 +4160,7 @@ impl Projector<'_> {
                 let lane = linear_lane_for_indices(indices, &dims)
                     .ok_or_else(|| projection_error("result shape mismatch", span))?;
                 self.project(expr, lane, &dims)?
+                    .or_else(|| dims.is_empty().then(|| expr.clone()))
                     .ok_or_else(|| projection_error("array operand cannot be projected", span))
             }
             Expr::FunctionCall { span, .. } => {
