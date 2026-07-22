@@ -95,8 +95,9 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
             &mut scheduled_time_events,
         );
     }
-    scheduled_time_events.sort_by(f64::total_cmp);
-    scheduled_time_events.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * (1.0 + a.abs().max(b.abs())));
+    scheduled_time_events.sort_by(|a, b| a.time.total_cmp(&b.time));
+    scheduled_time_events
+        .dedup_by(|a, b| (a.time - b.time).abs() <= 1e-12 * (1.0 + a.time.abs().max(b.time.abs())));
     log_runtime_precompute_profile("scheduled_time_events", time_event_start);
 
     let clock_metadata_start = maybe_start_timer_if(profile);
@@ -971,7 +972,7 @@ fn maybe_push_time_event_condition(
     suppress_events: bool,
     constants: &HashMap<String, f64>,
     seen: &mut HashSet<String>,
-    out: &mut Vec<f64>,
+    out: &mut Vec<dae::DaeScheduledTimeEvent>,
 ) {
     if suppress_events {
         return;
@@ -981,7 +982,10 @@ fn maybe_push_time_event_condition(
     };
     let key = format!("time::{event_time:.15e}");
     if seen.insert(key) {
-        out.push(event_time);
+        out.push(dae::DaeScheduledTimeEvent {
+            time: event_time,
+            source_span: expr.span(),
+        });
     }
 }
 fn collect_time_discontinuity_events_expr(
@@ -989,7 +993,7 @@ fn collect_time_discontinuity_events_expr(
     suppress_events: bool,
     constants: &HashMap<String, f64>,
     seen: &mut HashSet<String>,
-    out: &mut Vec<f64>,
+    out: &mut Vec<dae::DaeScheduledTimeEvent>,
 ) {
     let mut collector = TimeDiscontinuityEventCollector {
         suppress_events,
@@ -1004,7 +1008,7 @@ struct TimeDiscontinuityEventCollector<'a> {
     suppress_events: bool,
     constants: &'a HashMap<String, f64>,
     seen: &'a mut HashSet<String>,
-    out: &'a mut Vec<f64>,
+    out: &'a mut Vec<dae::DaeScheduledTimeEvent>,
 }
 
 impl TimeDiscontinuityEventCollector<'_> {

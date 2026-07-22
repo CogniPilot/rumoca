@@ -163,6 +163,9 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
                 row_targets: Vec::new(),
+                direct_families: Vec::new(),
+                required_target_ranges: Vec::new(),
+                fixed_target_ranges: Vec::new(),
                 projection_indices: Vec::new(),
                 projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
                 update_rhs: ScalarProgramBlock::default(),

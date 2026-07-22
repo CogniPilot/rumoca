@@ -401,7 +401,7 @@ fn sim_009_runtime_metadata_consistent_for_hybrid_model() {
             .events
             .scheduled_time_events
             .iter()
-            .any(|event| (*event - 0.5).abs() <= 1.0e-12),
+            .any(|event| (event.time - 0.5).abs() <= 1.0e-12),
         "time-driven discontinuity should be reflected in scheduled_time_events"
     );
     assert!(
@@ -410,7 +410,7 @@ fn sim_009_runtime_metadata_consistent_for_hybrid_model() {
             .events
             .scheduled_time_events
             .iter()
-            .all(|event| event.is_finite()),
+            .all(|event| event.time.is_finite()),
         "scheduled_time_events must contain finite values"
     );
 }

@@ -62,6 +62,8 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
         let (opts, _solver_label) = build_simulation_options(&result, 0.0, 0.0, "");
         let solve_model = rumoca_sim::lower_dae_for_gpu_preparation(&result.dae, &opts)
             .map_err(|e| JsValue::from_str(&format!("Solve lowering failed: {e}")))?;
+        let settled = rumoca_sim::settle_gpu_initial_conditions(&solve_model, opts.t_start)
+            .map_err(|e| JsValue::from_str(&format!("GPU initial projection failed: {e}")))?;
 
         let bundle = TargetBundle::builtin("wgsl-solve")
             .ok_or_else(|| JsValue::from_str("wgsl-solve builtin target is missing"))?;
@@ -117,8 +119,8 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             "layout": layout,
             "var_layout": solve_model.problem.layout,
             "input_names": solve_model.problem.solve_layout.input_scalar_names(),
-            "y0": solve_model.initial_y,
-            "p0": solve_model.parameters,
+            "y0": settled.y0,
+            "p0": settled.p0,
             "n_states": state_count,
             "state_names": state_names,
             "t_start": opts.t_start,
