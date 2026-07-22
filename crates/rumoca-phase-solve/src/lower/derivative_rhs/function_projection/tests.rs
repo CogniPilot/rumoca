@@ -3,6 +3,9 @@
 // call-projection, and tensor-row cases into focused test modules.
 use super::*;
 
+#[path = "tests/vector_dot_projection.rs"]
+mod vector_dot_projection;
+
 fn test_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("function_projection_test.mo"),
@@ -637,6 +640,15 @@ fn vector_output_projection_scalarizes_ordinary_division_by_lane() -> Result<(),
 #[test]
 fn scalar_output_projection_preserves_vector_division_as_elementwise_operand()
 -> Result<(), LowerError> {
+    fn count_elementwise_divisions(expr: &rumoca_core::Expression) -> usize {
+        let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = expr else {
+            return 0;
+        };
+        usize::from(matches!(op, rumoca_core::OpBinary::DivElem))
+            + count_elementwise_divisions(lhs)
+            + count_elementwise_divisions(rhs)
+    }
+
     let mut function = rumoca_core::Function::new("My.scalarDotDiv", test_span());
     function.inputs.push(function_param_with_dims("a", &[3]));
     function.inputs.push(function_param_with_dims("b", &[3]));
@@ -683,16 +695,7 @@ fn scalar_output_projection_preserves_vector_division_as_elementwise_operand()
     .expect("scalar output with vector division should project");
 
     assert_eq!(values.len(), 1);
-    let rumoca_core::Expression::Binary { lhs, .. } = &values[0] else {
-        panic!("expected scalar product expression, got {:?}", values[0]);
-    };
-    assert!(matches!(
-        lhs.as_ref(),
-        rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::DivElem,
-            ..
-        }
-    ));
+    assert_eq!(count_elementwise_divisions(&values[0]), 3);
     Ok(())
 }
 
