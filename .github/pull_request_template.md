@@ -70,9 +70,13 @@ If `net_added_lines` is positive, add:
 
 <!-- Leave blank for normal PRs. Use only for an Explicitly authorized ClimaMind Rumoca broken-main recovery batch. -->
 
-- Authorization / `expires_at`:
+- Authorization / `batch_id` / `expires_at`:
+- Authorized `owner_prs` / owner PR `head_sha` values:
+- `target_branch` / baseline `head_sha`:
 - Independent technical review:
 - Owner mechanism test:
-- Exact-head integration PR / hosted CI:
+- Integration PR / `head_sha`:
+- Hosted CI workflow / `head_sha`:
 - [ ] Evidence recorded in order; owner PR merges only after hosted CI is green.
+- [ ] Integration input = target baseline + listed pending owner heads only; CI workflow head = integration head.
 - [ ] Draft, validation-only, never merge; no unique fixes.

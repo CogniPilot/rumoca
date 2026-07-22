@@ -214,7 +214,11 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
         "exact-head integration hosted CI is green",
         "all required hosted CI checks are green",
         "then merge in sequence",
+        "required fields: `batch_id`, authorized `owner_prs`, `target_branch`, and",
         "machine-checkable `expires_at` timestamp",
+        "owner PR `head_sha` values",
+        "recorded integration PR `head_sha` MUST be constructed solely from the recorded `target_branch` baseline `head_sha` and the explicitly listed pending owner PR `head_sha` values",
+        "hosted CI workflow `head_sha` MUST equal the recorded integration PR `head_sha`",
         "No GitHub approving review is required only for owner PRs in that active batch",
         "Draft",
         "validation-only",
@@ -226,10 +230,14 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
     let required_template_contract = [
         "## Authorized Broken-Main Recovery (optional)",
         "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
-        "Authorization / `expires_at`:",
+        "Authorization / `batch_id` / `expires_at`:",
+        "Authorized `owner_prs` / owner PR `head_sha` values:",
+        "`target_branch` / baseline `head_sha`:",
         "Independent technical review:",
         "Owner mechanism test:",
-        "Exact-head integration PR / hosted CI:",
+        "Integration PR / `head_sha`:",
+        "Hosted CI workflow / `head_sha`:",
+        "Integration input = target baseline + listed pending owner heads only; CI workflow head = integration head.",
         "Draft, validation-only, never merge; no unique fixes",
     ];
 

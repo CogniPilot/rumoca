@@ -181,9 +181,10 @@ may waive the GitHub approving review for its owner PRs only.
 
 | Rule | Owner / Where | Brief justification |
 |---|---|---|
-| An explicitly recorded ClimaMind Rumoca authorization names the batch, owner PRs, target branch, and machine-checkable `expires_at` timestamp. At expiry it ends automatically. | Recovery authorization | Bounds the exception |
+| An explicitly recorded ClimaMind Rumoca authorization has these required fields: `batch_id`, authorized `owner_prs`, `target_branch`, and machine-checkable `expires_at` timestamp. At expiry it ends automatically. | Recovery authorization | Bounds the exception |
 | Each owner PR records an independent technical review, then its owner mechanism test passes, then exact-head integration hosted CI is green and all required hosted CI checks are green; then merge in sequence. | Owner PR | Preserves ordered evidence |
-| Exact-head provenance records the owner commit SHA plus the Draft integration PR and hosted-CI links. | Owner PR | Proves tested commit |
+| Exact-head provenance records the owner PR `head_sha` values. The recorded integration PR `head_sha` MUST be constructed solely from the recorded `target_branch` baseline `head_sha` and the explicitly listed pending owner PR `head_sha` values. | Owner PR | Proves tested commits |
+| All required hosted CI checks MUST run on the recorded integration head; the hosted CI workflow `head_sha` MUST equal the recorded integration PR `head_sha`. | Integration PR | Prevents stale CI reuse |
 | No GitHub approving review is required only for owner PRs in that active batch. Every other §6 rule remains required. | Maintainer | Keeps waiver narrow |
 | Integration PR is Draft and validation-only; it MUST NEVER merge and MUST NOT contain unique fixes. | Integration PR | Keeps validation disposable |
 
