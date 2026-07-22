@@ -70,13 +70,19 @@ If `net_added_lines` is positive, add:
 
 <!-- Leave blank for normal PRs. Use only for an Explicitly authorized ClimaMind Rumoca broken-main recovery batch. -->
 
-- Authorization / `batch_id` / `expires_at`:
-- Authorized `owner_prs` / owner PR `head_sha` values:
+- `authorization_url` (the `authorization_ref`; maintainer-controlled artifact outside owner PR branches):
+- `authorized_by` (ClimaMind Rumoca repository maintainer, not an owner-PR author):
+- `batch_id`:
+- Authorized ordered `owner_prs`:
 - `target_branch` / baseline `head_sha`:
-- Independent technical review:
-- Owner mechanism test:
+- RFC 3339 UTC `expires_at`:
+- Owner PR / final `head_sha`:
+- Independent technical review / reviewed `head_sha`:
+- Owner mechanism test / tested `head_sha`:
 - Integration PR / `head_sha`:
 - Hosted CI workflow / `head_sha`:
-- [ ] Evidence recorded in order; owner PR merges only after hosted CI is green.
+- [ ] Authorization exists, was published by the listed independent maintainer (not self-attested by an owner-PR author), matches this merge and final owner head, and is unexpired.
+- [ ] Evidence order is recorded without skipping: authorization verification; independent technical review on final owner `head_sha`; passing owner mechanism test on that same `head_sha`; exact-head integration; hosted CI green on the integration head; then merge. No later step occurs before its predecessor.
 - [ ] Integration input = target baseline + listed pending owner heads only; CI workflow head = integration head.
+- [ ] Any owner, baseline, or integration head change fails closed; rebuild and rerun affected evidence and CI.
 - [ ] Draft, validation-only, never merge; no unique fixes.

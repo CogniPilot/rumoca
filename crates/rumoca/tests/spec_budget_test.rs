@@ -206,19 +206,42 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
     let template = fs::read_to_string(root.join(".github/pull_request_template.md"))
         .expect("read PR template");
 
+    let spec_heading = "### 6a. Authorized Broken-Main Recovery (optional)";
+    let spec_tail = &spec[spec.find(spec_heading).expect("SPEC_0025 recovery section")..];
+    let spec_recovery = &spec_tail[..spec_tail
+        .find("\n### 7.")
+        .expect("SPEC_0025 recovery section end")];
+    let template_heading = "## Authorized Broken-Main Recovery (optional)";
+    let template_tail = &template[template
+        .find(template_heading)
+        .expect("PR template recovery section")..];
+    let template_after_heading = &template_tail[template_heading.len()..];
+    let template_end = template_after_heading
+        .find("\n## ")
+        .map_or(template_tail.len(), |offset| {
+            template_heading.len() + offset
+        });
+    let template_recovery = &template_tail[..template_end];
+
     let required_spec_contract = [
         "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
         "normal reviewer gate remains unchanged",
+        "authoritative record MUST live outside every owner PR branch",
+        "published by a ClimaMind Rumoca repository maintainer",
+        "required fields: `authorization_ref`, `authorized_by`, `batch_id`, authorized ordered `owner_prs`, `target_branch`, and RFC 3339 UTC `expires_at`",
+        "ends automatically at `expires_at`",
+        "Before each owner PR merge, the authoritative record MUST exist, match the recorded batch, PR, head, and target values, and remain unexpired",
         "independent technical review",
-        "owner mechanism test passes",
+        "owner mechanism test",
+        "evidence to that owner PR's final `head_sha`",
         "exact-head integration hosted CI is green",
         "all required hosted CI checks are green",
         "then merge in sequence",
-        "required fields: `batch_id`, authorized `owner_prs`, `target_branch`, and",
-        "machine-checkable `expires_at` timestamp",
         "owner PR `head_sha` values",
         "recorded integration PR `head_sha` MUST be constructed solely from the recorded `target_branch` baseline `head_sha` and the explicitly listed pending owner PR `head_sha` values",
         "hosted CI workflow `head_sha` MUST equal the recorded integration PR `head_sha`",
+        "Any owner PR `head_sha`, target baseline `head_sha`, or integration PR `head_sha` change MUST invalidate affected evidence and fail closed",
+        "reconstruct the integration PR, refresh affected review or mechanism-test evidence, and rerun all required hosted CI",
         "No GitHub approving review is required only for owner PRs in that active batch",
         "Draft",
         "validation-only",
@@ -229,26 +252,34 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
     ];
     let required_template_contract = [
         "## Authorized Broken-Main Recovery (optional)",
+        "Leave blank for normal PRs",
         "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
-        "Authorization / `batch_id` / `expires_at`:",
-        "Authorized `owner_prs` / owner PR `head_sha` values:",
+        "`authorization_ref` (authoritative record outside owner PR branches):",
+        "`authorized_by` (ClimaMind Rumoca repository maintainer):",
+        "`batch_id`:",
+        "Authorized ordered `owner_prs`:",
         "`target_branch` / baseline `head_sha`:",
-        "Independent technical review:",
-        "Owner mechanism test:",
+        "RFC 3339 UTC `expires_at`:",
+        "Owner PR / final `head_sha`:",
+        "Independent technical review / reviewed `head_sha`:",
+        "Owner mechanism test / tested `head_sha`:",
         "Integration PR / `head_sha`:",
         "Hosted CI workflow / `head_sha`:",
+        "Authorization exists, matches this merge, and is unexpired.",
+        "Evidence is bound to the owner final head and recorded in order; merge only after all required hosted CI is green on the integration head.",
         "Integration input = target baseline + listed pending owner heads only; CI workflow head = integration head.",
+        "Any owner, baseline, or integration head change fails closed; rebuild and rerun affected evidence and CI.",
         "Draft, validation-only, never merge; no unique fixes",
     ];
 
     let mut missing = Vec::new();
     for required in required_spec_contract {
-        if !spec.contains(required) {
+        if !spec_recovery.contains(required) {
             missing.push(format!("SPEC_0025 missing recovery contract: `{required}`"));
         }
     }
     for required in required_template_contract {
-        if !template.contains(required) {
+        if !template_recovery.contains(required) {
             missing.push(format!(
                 "PR template missing recovery linkage: `{required}`"
             ));
