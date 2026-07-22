@@ -70,8 +70,11 @@ If `net_added_lines` is positive, add:
 
 <!-- Leave blank for normal PRs. Use only for an Explicitly authorized ClimaMind Rumoca broken-main recovery batch. -->
 
-- `authorization_url` (the `authorization_ref`; maintainer-controlled artifact outside owner PR branches):
-- `authorized_by` (ClimaMind Rumoca repository maintainer, not an owner-PR author):
+- `authorization_url` (maintainer-controlled artifact; required fixed field):
+- `authorization_ref` (authoritative record outside owner PR branches):
+  the `authorization_url` above; it was published by an independent maintainer, not self-attested by an owner-PR author.
+- `authorized_by` (ClimaMind Rumoca repository maintainer):
+  must be an independent maintainer, not an owner-PR author.
 - `batch_id`:
 - Authorized ordered `owner_prs`:
 - `target_branch` / baseline `head_sha`:
@@ -81,7 +84,9 @@ If `net_added_lines` is positive, add:
 - Owner mechanism test / tested `head_sha`:
 - Integration PR / `head_sha`:
 - Hosted CI workflow / `head_sha`:
-- [ ] Authorization exists, was published by the listed independent maintainer (not self-attested by an owner-PR author), matches this merge and final owner head, and is unexpired.
+- [ ] Authorization exists, matches this merge, and is unexpired.
+- [ ] Authorization was published by the listed independent maintainer (not self-attested by an owner-PR author) and matches this final owner head.
+- [ ] Evidence is bound to the owner final head and recorded in order; merge only after all required hosted CI is green on the integration head.
 - [ ] Evidence order is recorded without skipping: authorization verification; independent technical review on final owner `head_sha`; passing owner mechanism test on that same `head_sha`; exact-head integration; hosted CI green on the integration head; then merge. No later step occurs before its predecessor.
 - [ ] Integration input = target baseline + listed pending owner heads only; CI workflow head = integration head.
 - [ ] Any owner, baseline, or integration head change fails closed; rebuild and rerun affected evidence and CI.
