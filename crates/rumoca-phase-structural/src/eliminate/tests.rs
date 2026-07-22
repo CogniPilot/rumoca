@@ -2573,6 +2573,33 @@ fn shift_structured_families_drops_family_with_removed_interior_row() {
     );
 }
 
+#[test]
+fn shift_structured_families_drops_overflowing_row_ranges() {
+    for (name, first_equation_index, equation_counts) in [
+        ("row-count sum overflow", 0, vec![usize::MAX, 1]),
+        ("first-index overflow", usize::MAX, vec![1]),
+    ] {
+        let mut dae = Dae::new();
+        dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain { binders: vec![] },
+            first_equation_index,
+            equation_counts,
+            span: test_span(),
+            origin: name.to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
+        }];
+
+        shift_structured_families_after_equation_removal(&mut dae, &[0]);
+
+        assert!(
+            dae.continuous.structured_equations.is_empty(),
+            "malformed family must be dropped: {name}"
+        );
+    }
+}
+
 /// A substitution can rewrite a structured family's row bodies while leaving the
 /// row count unchanged. The original family proof no longer applies, so the
 /// family must be dropped and lowered as scalar rows.
@@ -2605,6 +2632,184 @@ fn drop_structured_families_touching_equations_drops_rewritten_family() {
     assert_eq!(
         dae.continuous.structured_equations[0].first_equation_index,
         4
+    );
+}
+
+#[test]
+fn drop_structured_families_handles_compact_corners_and_malformed_ranges() {
+    for case in compact_family_cases()
+        .into_iter()
+        .chain(malformed_family_cases())
+    {
+        assert_compact_family_retention(case);
+    }
+}
+
+type CompactFamilyCase = (
+    &'static str,
+    Vec<rumoca_core::StructuredIndexBinder>,
+    usize,
+    Vec<usize>,
+    Vec<usize>,
+    bool,
+);
+
+fn compact_family_cases() -> Vec<CompactFamilyCase> {
+    vec![
+        (
+            "1d positive non-unit base corner",
+            vec![compact_family_binder(0, 1, 7, 2)],
+            10,
+            vec![1; 4],
+            vec![10],
+            false,
+        ),
+        (
+            "1d positive non-unit corner",
+            vec![compact_family_binder(0, 1, 7, 2)],
+            10,
+            vec![1; 4],
+            vec![11],
+            false,
+        ),
+        (
+            "1d positive non-unit interior",
+            vec![compact_family_binder(0, 1, 7, 2)],
+            10,
+            vec![1; 4],
+            vec![12],
+            true,
+        ),
+        (
+            "1d negative non-unit corner",
+            vec![compact_family_binder(0, 7, 1, -2)],
+            20,
+            vec![1; 4],
+            vec![21],
+            false,
+        ),
+        (
+            "1d negative non-unit interior",
+            vec![compact_family_binder(0, 7, 1, -2)],
+            20,
+            vec![1; 4],
+            vec![22],
+            true,
+        ),
+        (
+            "2d corner row range",
+            vec![
+                compact_family_binder(0, 1, 3, 1),
+                compact_family_binder(1, 10, 14, 2),
+            ],
+            100,
+            vec![1, 2, 1, 1, 1, 1, 1, 1, 1],
+            vec![102],
+            false,
+        ),
+        (
+            "2d interior row",
+            vec![
+                compact_family_binder(0, 1, 3, 1),
+                compact_family_binder(1, 10, 14, 2),
+            ],
+            100,
+            vec![1, 2, 1, 1, 1, 1, 1, 1, 1],
+            vec![103],
+            true,
+        ),
+        (
+            "2d outer-dimension corner",
+            vec![
+                compact_family_binder(0, 1, 3, 1),
+                compact_family_binder(1, 10, 14, 2),
+            ],
+            100,
+            vec![1, 2, 1, 1, 1, 1, 1, 1, 1],
+            vec![104],
+            false,
+        ),
+    ]
+}
+
+fn malformed_family_cases() -> Vec<CompactFamilyCase> {
+    vec![
+        (
+            "empty domain",
+            vec![compact_family_binder(0, 1, 0, 1)],
+            400,
+            vec![],
+            vec![400],
+            true,
+        ),
+        (
+            "domain count mismatch",
+            vec![compact_family_binder(0, 1, 3, 1)],
+            500,
+            vec![1, 1],
+            vec![500],
+            false,
+        ),
+        (
+            "row count overflow",
+            vec![compact_family_binder(0, 1, 2, 1)],
+            0,
+            vec![usize::MAX, 1],
+            vec![0],
+            false,
+        ),
+        (
+            "first row overflow",
+            vec![compact_family_binder(0, 1, 1, 1)],
+            usize::MAX,
+            vec![1],
+            vec![usize::MAX],
+            false,
+        ),
+    ]
+}
+
+fn compact_family_binder(
+    id: usize,
+    lower: i64,
+    upper: i64,
+    step: i64,
+) -> rumoca_core::StructuredIndexBinder {
+    rumoca_core::StructuredIndexBinder {
+        id,
+        display_name: format!("i{id}"),
+        lower,
+        upper,
+        step,
+    }
+}
+
+fn assert_compact_family_retention(case: CompactFamilyCase) {
+    let (name, binders, first_equation_index, equation_counts, touched, retained) = case;
+    let regular_binders = binders
+        .iter()
+        .map(|binder| binder.display_name.clone())
+        .collect();
+    let mut dae = Dae::new();
+    dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain { binders },
+        first_equation_index,
+        equation_counts,
+        span: test_span(),
+        origin: name.to_string(),
+        regular: Some(rumoca_core::RegularForFamily {
+            binders: regular_binders,
+            accesses: vec![],
+        }),
+        template: None,
+        interiors_materialized: false,
+    }];
+
+    drop_structured_families_touching_equations(&mut dae, &touched);
+    assert_eq!(
+        !dae.continuous.structured_equations.is_empty(),
+        retained,
+        "{name}"
     );
 }
 
