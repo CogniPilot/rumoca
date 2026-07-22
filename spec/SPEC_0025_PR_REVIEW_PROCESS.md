@@ -173,6 +173,25 @@ net_added_lines:
 | No new trait without ≥ 2 concrete impls | Single-impl traits are noise |
 | No old/new code paths left side-by-side without explicit migration plan | Dead-but-alive code accretes |
 
+### 6a. Authorized Broken-Main Recovery (optional)
+
+The normal reviewer gate remains unchanged. The following is the sole
+exception: an Explicitly authorized ClimaMind Rumoca broken-main recovery batch
+may waive the GitHub approving review for its owner PRs only.
+
+| Rule | Owner / Where | Brief justification |
+|---|---|---|
+| An explicitly recorded ClimaMind Rumoca authorization names the batch, owner PRs, target branch, and machine-checkable `expires_at` timestamp. At expiry it ends automatically. | Recovery authorization | Bounds the exception |
+| Each owner PR records an independent technical review, then its owner mechanism test passes, then exact-head integration hosted CI is green and all required hosted CI checks are green; then merge in sequence. | Owner PR | Preserves ordered evidence |
+| Exact-head provenance records the owner commit SHA plus the Draft integration PR and hosted-CI links. | Owner PR | Proves tested commit |
+| No GitHub approving review is required only for owner PRs in that active batch. Every other §6 rule remains required. | Maintainer | Keeps waiver narrow |
+| Integration PR is Draft and validation-only; it MUST NEVER merge and MUST NOT contain unique fixes. | Integration PR | Keeps validation disposable |
+
+**PROHIBITED:**
+- MUST NOT weaken or bypass any existing gate, including CI, sign-off, or sequencing.
+- MUST NOT apply to third-party contributors or an unauthorized batch.
+- MUST NOT merge the integration PR or place a repair only on its branch.
+
 ### 7. Maintainability Quick Reference
 
 See SPEC_0021 for the authoritative function-length, nesting, and arg-count

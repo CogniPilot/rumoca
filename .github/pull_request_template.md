@@ -65,3 +65,14 @@ If `net_added_lines` is positive, add:
 - [ ] No `#[allow(clippy::...)]` added outside generated code.
 - [ ] Every commit signed off (`git commit -s`); no `Co-Authored-By` for AI.
 - [ ] External material (if any) attributed and Apache-2.0 compatible.
+
+## Authorized Broken-Main Recovery (optional)
+
+<!-- Leave blank for normal PRs. Use only for an Explicitly authorized ClimaMind Rumoca broken-main recovery batch. -->
+
+- Authorization / `expires_at`:
+- Independent technical review:
+- Owner mechanism test:
+- Exact-head integration PR / hosted CI:
+- [ ] Evidence recorded in order; owner PR merges only after hosted CI is green.
+- [ ] Draft, validation-only, never merge; no unique fixes.

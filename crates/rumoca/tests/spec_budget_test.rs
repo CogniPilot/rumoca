@@ -196,6 +196,65 @@ fn test_spec_0025_aligns_with_pr_template() {
 }
 
 #[test]
+fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
+    // The narrow recovery path is documentation-enforced policy. Keep its
+    // activation boundary, ordered evidence, expiry, and integration-only
+    // restrictions mechanically visible so a later edit cannot broaden it.
+    let root = workspace_root();
+    let spec = fs::read_to_string(root.join("spec/SPEC_0025_PR_REVIEW_PROCESS.md"))
+        .expect("read SPEC_0025");
+    let template = fs::read_to_string(root.join(".github/pull_request_template.md"))
+        .expect("read PR template");
+
+    let required_spec_contract = [
+        "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
+        "normal reviewer gate remains unchanged",
+        "independent technical review",
+        "owner mechanism test passes",
+        "exact-head integration hosted CI is green",
+        "all required hosted CI checks are green",
+        "then merge in sequence",
+        "machine-checkable `expires_at` timestamp",
+        "No GitHub approving review is required only for owner PRs in that active batch",
+        "Draft",
+        "validation-only",
+        "MUST NEVER merge",
+        "MUST NOT contain unique fixes",
+        "MUST NOT weaken or bypass any existing gate",
+        "MUST NOT apply to third-party contributors or an unauthorized batch",
+    ];
+    let required_template_contract = [
+        "## Authorized Broken-Main Recovery (optional)",
+        "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
+        "Authorization / `expires_at`:",
+        "Independent technical review:",
+        "Owner mechanism test:",
+        "Exact-head integration PR / hosted CI:",
+        "Draft, validation-only, never merge; no unique fixes",
+    ];
+
+    let mut missing = Vec::new();
+    for required in required_spec_contract {
+        if !spec.contains(required) {
+            missing.push(format!("SPEC_0025 missing recovery contract: `{required}`"));
+        }
+    }
+    for required in required_template_contract {
+        if !template.contains(required) {
+            missing.push(format!(
+                "PR template missing recovery linkage: `{required}`"
+            ));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "authorized broken-main recovery contract is incomplete:\n  {}",
+        missing.join("\n  "),
+    );
+}
+
+#[test]
 fn test_specs_have_required_status_marker() {
     // SPEC_0000 §"Required Sections": every spec must declare a parseable
     // Status. This catches specs that drop the marker during edits.
