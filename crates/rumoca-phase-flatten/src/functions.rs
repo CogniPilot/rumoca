@@ -30,7 +30,10 @@ mod function_param_alias;
 mod tests;
 pub(crate) use call_args::validate_flat_function_call_args;
 use constant_overrides::active_constant_def_overrides;
-use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
+use constructor_signature::{
+    convert_constructor_signature, inherit_operator_constructor_defaults,
+    normalize_function_local_references,
+};
 use function_metadata::*;
 pub(crate) use function_metadata::{
     lower_record_function_params, specialize_static_function_params,
@@ -1682,6 +1685,15 @@ fn convert_callable<'tree>(
                 class_index,
                 qualified_name,
                 &mut constructor,
+            )?;
+            inherit_operator_constructor_defaults(
+                tree,
+                class_index,
+                class_def,
+                &mut constructor,
+                source_map,
+                def_map,
+                member_cache,
             )?;
             Ok(Some(constructor))
         }

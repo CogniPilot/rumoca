@@ -1,8 +1,21 @@
-use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, UnaryOp};
+use std::collections::HashMap;
+
+use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp, resolve_indexed_slot};
 
 use super::dependency::reg_depends_on_y_index;
 use super::{invalid_prepared_row, producer};
-use crate::EvalSolveError;
+use crate::{EvalSolveError, RowEvalContext, eval_binary, eval_compare, eval_unary};
+
+#[derive(Clone, Copy, Default)]
+struct AffineScalar {
+    coefficient: f64,
+    offset: f64,
+}
+
+#[derive(Default)]
+pub(super) struct AffineTargetScratch {
+    registers: Vec<AffineScalar>,
+}
 
 /// Scalar Solve-IR row shape that can update one solver-Y slot directly.
 ///
@@ -83,7 +96,392 @@ pub fn target_assignment_shape(
     Ok(target_assignment_shapes(row)?.into_iter().next())
 }
 
-pub(super) fn target_assignment_shapes(
+/// Prove that a scalar residual row is affine in one solver-Y variable.
+///
+/// Coefficients may depend on time, parameters, and other solver variables;
+/// only dependence on `target_y_index` is classified. The conservative result
+/// is used to authorize exact scalar pivoting during algebraic-loop tearing.
+pub fn row_is_affine_in_y_index(row: &[LinearOp], target_y_index: usize) -> bool {
+    if ScalarProgramBlock::program_output_count(row) != 1 {
+        return false;
+    }
+    let mut degrees = HashMap::<Reg, TargetDegree>::new();
+    let mut output = None;
+    for op in row {
+        if let Some((dst, degree)) = target_degree_for_op(op, &degrees, target_y_index) {
+            degrees.insert(dst, degree);
+        }
+        if let LinearOp::StoreOutput { src } = *op {
+            output = degrees.get(&src).copied();
+        }
+    }
+    matches!(output, Some(TargetDegree::Affine))
+}
+
+/// Evaluate the exact scalar pivot of a row proven affine in `target_y_index`.
+///
+/// Every register carries `(a, b)` for the symbolic value `a * target + b`.
+/// This fuses the residual and target-coefficient evaluations into one pass
+/// while preserving the same guarded scalar operations as the canonical row
+/// evaluator. The caller only invokes this for targets accepted by
+/// [`row_is_affine_in_y_index`].
+pub(super) struct AffineTargetRequest<'a> {
+    pub(super) row_idx: usize,
+    pub(super) row: &'a [LinearOp],
+    pub(super) register_count: usize,
+    pub(super) target_y_index: usize,
+    pub(super) y: &'a [f64],
+    pub(super) p: &'a [f64],
+    pub(super) t: f64,
+    pub(super) context: RowEvalContext<'a>,
+}
+
+pub(super) fn eval_affine_target_value(
+    request: AffineTargetRequest<'_>,
+    scratch: &mut AffineTargetScratch,
+) -> Result<f64, EvalSolveError> {
+    scratch.registers.clear();
+    scratch
+        .registers
+        .resize(request.register_count, AffineScalar::default());
+    let mut output = None;
+    for op in request.row {
+        eval_affine_op(
+            *op,
+            request.target_y_index,
+            request.y,
+            request.p,
+            request.t,
+            request.context,
+            &mut scratch.registers,
+            &mut output,
+        )?;
+    }
+    let Some(AffineScalar {
+        coefficient,
+        offset,
+    }) = output
+    else {
+        return Err(invalid_prepared_row(
+            "affine target row has no scalar output",
+        ));
+    };
+    if coefficient == 0.0 || !coefficient.is_finite() {
+        return Err(EvalSolveError::SingularTargetAssignment {
+            row: request.row_idx,
+            target_y_index: request.target_y_index,
+            coefficient,
+            span: None,
+        });
+    }
+    Ok(-offset / coefficient)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_affine_op(
+    op: LinearOp,
+    target_y_index: usize,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    context: RowEvalContext<'_>,
+    registers: &mut [AffineScalar],
+    output: &mut Option<AffineScalar>,
+) -> Result<(), EvalSolveError> {
+    let value = match op {
+        LinearOp::Const { value, .. } => affine_constant(value),
+        LinearOp::LoadTime { .. } => affine_constant(t),
+        LinearOp::LoadY { index, .. } if index == target_y_index => AffineScalar {
+            coefficient: 1.0,
+            offset: 0.0,
+        },
+        LinearOp::LoadY { index, .. } => affine_constant(read_input("y", y, index)?),
+        LinearOp::LoadP { index, .. } => affine_constant(read_input("p", p, index)?),
+        LinearOp::LoadSeed { index, .. } => affine_constant(read_optional_seed(context, index)?),
+        LinearOp::LoadIndexedP {
+            base, count, index, ..
+        } => {
+            let index = independent_register(registers, index)?;
+            affine_constant(read_input(
+                "p",
+                p,
+                resolve_indexed_slot(index, base, count),
+            )?)
+        }
+        LinearOp::LoadIndexedSeed {
+            base, count, index, ..
+        } => {
+            let index = independent_register(registers, index)?;
+            affine_constant(read_optional_seed(
+                context,
+                resolve_indexed_slot(index, base, count),
+            )?)
+        }
+        LinearOp::Move { src, .. } => read_register(registers, src)?,
+        LinearOp::Unary { op, arg, .. } => affine_unary(op, read_register(registers, arg)?)?,
+        LinearOp::Binary { op, lhs, rhs, .. } => affine_binary(
+            op,
+            read_register(registers, lhs)?,
+            read_register(registers, rhs)?,
+        )?,
+        LinearOp::Compare { op, lhs, rhs, .. } => affine_constant(eval_compare(
+            op,
+            independent_register(registers, lhs)?,
+            independent_register(registers, rhs)?,
+        )),
+        LinearOp::Select {
+            cond,
+            if_true,
+            if_false,
+            ..
+        } => {
+            if independent_register(registers, cond)? != 0.0 {
+                read_register(registers, if_true)?
+            } else {
+                read_register(registers, if_false)?
+            }
+        }
+        LinearOp::StoreOutput { src } => {
+            *output = Some(read_register(registers, src)?);
+            return Ok(());
+        }
+        _ => {
+            return Err(invalid_prepared_row(
+                "affine target row contains an unsupported operation",
+            ));
+        }
+    };
+    let dst = op
+        .dst_register()
+        .ok_or_else(|| invalid_prepared_row("affine target operation has no destination"))?;
+    write_register(registers, dst, value)
+}
+
+fn affine_constant(offset: f64) -> AffineScalar {
+    AffineScalar {
+        coefficient: 0.0,
+        offset,
+    }
+}
+
+fn affine_unary(op: UnaryOp, value: AffineScalar) -> Result<AffineScalar, EvalSolveError> {
+    if value.coefficient == 0.0 {
+        return Ok(affine_constant(eval_unary(op, value.offset)));
+    }
+    if op == UnaryOp::Neg {
+        return Ok(AffineScalar {
+            coefficient: -value.coefficient,
+            offset: -value.offset,
+        });
+    }
+    Err(invalid_prepared_row(
+        "nonlinear unary operation depends on affine target",
+    ))
+}
+
+fn affine_binary(
+    op: BinaryOp,
+    lhs: AffineScalar,
+    rhs: AffineScalar,
+) -> Result<AffineScalar, EvalSolveError> {
+    if lhs.coefficient == 0.0 && rhs.coefficient == 0.0 {
+        return Ok(affine_constant(eval_binary(op, lhs.offset, rhs.offset)));
+    }
+    match op {
+        BinaryOp::Add => Ok(AffineScalar {
+            coefficient: lhs.coefficient + rhs.coefficient,
+            offset: lhs.offset + rhs.offset,
+        }),
+        BinaryOp::Sub => Ok(AffineScalar {
+            coefficient: lhs.coefficient - rhs.coefficient,
+            offset: lhs.offset - rhs.offset,
+        }),
+        BinaryOp::Mul if lhs.coefficient == 0.0 => Ok(AffineScalar {
+            coefficient: lhs.offset * rhs.coefficient,
+            offset: lhs.offset * rhs.offset,
+        }),
+        BinaryOp::Mul if rhs.coefficient == 0.0 => Ok(AffineScalar {
+            coefficient: lhs.coefficient * rhs.offset,
+            offset: lhs.offset * rhs.offset,
+        }),
+        BinaryOp::Div if rhs.coefficient == 0.0 => Ok(AffineScalar {
+            coefficient: lhs.coefficient / rhs.offset,
+            offset: eval_binary(BinaryOp::Div, lhs.offset, rhs.offset),
+        }),
+        _ => Err(invalid_prepared_row(
+            "nonlinear binary operation depends on affine target",
+        )),
+    }
+}
+
+fn read_register(
+    registers: &[AffineScalar],
+    register: Reg,
+) -> Result<AffineScalar, EvalSolveError> {
+    registers
+        .get(register as usize)
+        .copied()
+        .ok_or(EvalSolveError::RegisterOutOfBounds {
+            access: "read",
+            register,
+            len: registers.len(),
+            span: None,
+        })
+}
+
+fn independent_register(registers: &[AffineScalar], register: Reg) -> Result<f64, EvalSolveError> {
+    let value = read_register(registers, register)?;
+    if value.coefficient == 0.0 {
+        return Ok(value.offset);
+    }
+    Err(invalid_prepared_row(
+        "affine target unexpectedly controls a discrete operation",
+    ))
+}
+
+fn write_register(
+    registers: &mut [AffineScalar],
+    register: Reg,
+    value: AffineScalar,
+) -> Result<(), EvalSolveError> {
+    let len = registers.len();
+    let slot = registers
+        .get_mut(register as usize)
+        .ok_or(EvalSolveError::RegisterOutOfBounds {
+            access: "write",
+            register,
+            len,
+            span: None,
+        })?;
+    *slot = value;
+    Ok(())
+}
+
+fn read_input(vector: &'static str, values: &[f64], index: usize) -> Result<f64, EvalSolveError> {
+    values
+        .get(index)
+        .copied()
+        .ok_or(EvalSolveError::MissingInput {
+            vector,
+            index,
+            len: values.len(),
+            span: None,
+        })
+}
+
+fn read_optional_seed(context: RowEvalContext<'_>, index: usize) -> Result<f64, EvalSolveError> {
+    let seed = context.seed.ok_or(EvalSolveError::MissingInput {
+        vector: "seed",
+        index,
+        len: 0,
+        span: None,
+    })?;
+    read_input("seed", seed, index)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetDegree {
+    Independent,
+    Affine,
+    Nonlinear,
+}
+
+fn target_degree_for_op(
+    op: &LinearOp,
+    degrees: &HashMap<Reg, TargetDegree>,
+    target_y_index: usize,
+) -> Option<(Reg, TargetDegree)> {
+    use TargetDegree::{Affine, Independent, Nonlinear};
+    let degree = |reg| degrees.get(&reg).copied().unwrap_or(Nonlinear);
+    let result = match *op {
+        LinearOp::Const { dst, .. }
+        | LinearOp::LoadTime { dst }
+        | LinearOp::LoadP { dst, .. }
+        | LinearOp::LoadSeed { dst, .. } => (dst, Independent),
+        LinearOp::LoadY { dst, index } => (
+            dst,
+            if index == target_y_index {
+                Affine
+            } else {
+                Independent
+            },
+        ),
+        LinearOp::Move { dst, src } => (dst, degree(src)),
+        LinearOp::Unary { dst, op, arg } => (
+            dst,
+            match (op, degree(arg)) {
+                (_, Independent) => Independent,
+                (UnaryOp::Neg, Affine) => Affine,
+                _ => Nonlinear,
+            },
+        ),
+        LinearOp::Binary { dst, op, lhs, rhs } => {
+            (dst, binary_target_degree(op, degree(lhs), degree(rhs)))
+        }
+        LinearOp::LoadIndexedP { dst, index, .. }
+        | LinearOp::LoadIndexedSeed { dst, index, .. } => (
+            dst,
+            if degree(index) == Independent {
+                Independent
+            } else {
+                Nonlinear
+            },
+        ),
+        LinearOp::Compare { dst, lhs, rhs, .. } => (
+            dst,
+            if degree(lhs) == Independent && degree(rhs) == Independent {
+                Independent
+            } else {
+                Nonlinear
+            },
+        ),
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => (
+            dst,
+            if degree(cond) == Independent {
+                merge_affine_branches(degree(if_true), degree(if_false))
+            } else {
+                Nonlinear
+            },
+        ),
+        _ => (op.dst_register()?, Nonlinear),
+    };
+    Some(result)
+}
+
+fn binary_target_degree(op: BinaryOp, lhs: TargetDegree, rhs: TargetDegree) -> TargetDegree {
+    use TargetDegree::{Affine, Independent, Nonlinear};
+    match op {
+        BinaryOp::Add | BinaryOp::Sub => merge_affine_branches(lhs, rhs),
+        BinaryOp::Mul => match (lhs, rhs) {
+            (Independent, Independent) => Independent,
+            (Independent, Affine) | (Affine, Independent) => Affine,
+            _ => Nonlinear,
+        },
+        BinaryOp::Div => match (lhs, rhs) {
+            (Independent, Independent) => Independent,
+            (Affine, Independent) => Affine,
+            _ => Nonlinear,
+        },
+        _ if lhs == Independent && rhs == Independent => Independent,
+        _ => Nonlinear,
+    }
+}
+
+fn merge_affine_branches(lhs: TargetDegree, rhs: TargetDegree) -> TargetDegree {
+    use TargetDegree::{Affine, Independent, Nonlinear};
+    match (lhs, rhs) {
+        (Nonlinear, _) | (_, Nonlinear) => Nonlinear,
+        (Affine, _) | (_, Affine) => Affine,
+        (Independent, Independent) => Independent,
+    }
+}
+
+pub fn target_assignment_shapes(
     row: &[LinearOp],
 ) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
     if ScalarProgramBlock::program_output_count(row) > 1 {

@@ -44,6 +44,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
+            tearing: None,
         }],
     };
     // full_jacobian_v: JVP of der(x)=a → d(der) = seed[a]
@@ -211,6 +212,7 @@ fn parameter_projection_model() -> solve::SolveModel {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
+            tearing: None,
         }],
     };
     model.artifacts.continuous.implicit_jacobian_v_scalar = parameter_projection_jvp(true);
@@ -295,6 +297,7 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1, 2],
             y_indices: vec![1, 2],
+            tearing: None,
         }],
     };
     // full_jacobian_v: JVP of der = a + b.

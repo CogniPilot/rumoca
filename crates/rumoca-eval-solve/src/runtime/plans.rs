@@ -115,7 +115,11 @@ pub(super) fn root_condition_plan(
     let mut entries = Vec::with_capacity(roots.row_count());
     let mut evaluated_rows = Vec::new();
     let mut search_rows = Vec::new();
-    let static_y = parameter_static_refresh_targets(root_refresh, model.state_scalar_count());
+    let static_y = root_refresh
+        .static_causal_seed_rows
+        .iter()
+        .map(|row| row.target_index)
+        .collect::<BTreeSet<_>>();
     for (row_idx, row) in roots.programs.iter().enumerate() {
         if solve::ScalarProgramBlock::program_output_count(row) != 1 {
             return None;
@@ -232,48 +236,6 @@ fn constant_root_op_allowed(op: &solve::LinearOp) -> bool {
 fn parameter_static_root(row: &[solve::LinearOp], static_y: &BTreeSet<usize>) -> bool {
     row.iter().all(|op| match op {
         solve::LinearOp::LoadY { index, .. } => static_y.contains(index),
-        _ => parameter_static_root_op_allowed(op),
-    })
-}
-
-fn parameter_static_refresh_targets(plan: &RefreshPlan, state_count: usize) -> BTreeSet<usize> {
-    let mut static_targets = BTreeSet::new();
-    loop {
-        let mut changed = false;
-        for refresh_row in &plan.rows {
-            if static_targets.contains(&refresh_row.target_index) {
-                continue;
-            }
-            let Some(row) = plan.source_block.programs.get(refresh_row.row_idx) else {
-                continue;
-            };
-            if parameter_static_refresh_row(
-                row,
-                refresh_row.target_index,
-                state_count,
-                &static_targets,
-            ) {
-                static_targets.insert(refresh_row.target_index);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    static_targets
-}
-
-fn parameter_static_refresh_row(
-    row: &[solve::LinearOp],
-    target_index: usize,
-    state_count: usize,
-    static_targets: &BTreeSet<usize>,
-) -> bool {
-    row.iter().all(|op| match op {
-        solve::LinearOp::LoadY { index, .. } => {
-            *index == target_index || (*index >= state_count && static_targets.contains(index))
-        }
         _ => parameter_static_root_op_allowed(op),
     })
 }

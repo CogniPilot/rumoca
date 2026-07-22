@@ -130,6 +130,7 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
             blocks: vec![AlgebraicProjectionBlock {
                 rows: vec![1],
                 y_indices: vec![1],
+                tearing: None,
             }],
         },
         residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(

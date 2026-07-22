@@ -86,14 +86,28 @@ pub(crate) fn initial_bdf_state<Eqn>(
 where
     Eqn: OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>,
 {
-    if initial_algebraic_residual_is_consistent(model, ode_model, y, p, problem.t0)? {
+    if initial_algebraic_residual_is_consistent(
+        model,
+        ode_model,
+        y,
+        p,
+        problem.t0,
+        problem.atol.as_slice(),
+    )? {
         return projected_initial_bdf_state(model, ode_model, problem, y, p);
     }
     let bdf_state = catch_solver_panic(|| problem.bdf_state::<LinearSolver>());
     match bdf_state {
         Ok(Ok(state)) => Ok(state),
         Ok(Err(_)) | Err(_)
-            if initial_algebraic_residual_is_consistent(model, ode_model, y, p, problem.t0)? =>
+            if initial_algebraic_residual_is_consistent(
+                model,
+                ode_model,
+                y,
+                p,
+                problem.t0,
+                problem.atol.as_slice(),
+            )? =>
         {
             projected_initial_bdf_state(model, ode_model, problem, y, p)
         }
@@ -139,6 +153,7 @@ fn initial_algebraic_residual_is_consistent(
     y: &[f64],
     p: &[f64],
     t: f64,
+    absolute_tolerances: &[f64],
 ) -> Result<bool, SimError> {
     let mut rhs = vec![0.0; y.len()];
     ode_model.eval_residual(y, p, t, &mut rhs)?;
@@ -146,11 +161,21 @@ fn initial_algebraic_residual_is_consistent(
         return Ok(false);
     }
     let state_count = model.state_scalar_count().min(rhs.len());
-    Ok(max_abs(&rhs[state_count..]) <= 1.0e-8)
+    Ok(residuals_within_absolute_tolerance(
+        &rhs[state_count..],
+        absolute_tolerances.get(state_count..).unwrap_or_default(),
+    ))
 }
 
-fn max_abs(values: &[f64]) -> f64 {
-    values.iter().copied().map(f64::abs).fold(0.0, f64::max)
+fn residuals_within_absolute_tolerance(residuals: &[f64], tolerances: &[f64]) -> bool {
+    residuals.iter().enumerate().all(|(index, residual)| {
+        let tolerance = tolerances
+            .get(index)
+            .copied()
+            .unwrap_or_default()
+            .max(1.0e-10);
+        residual.is_finite() && residual.abs() <= tolerance
+    })
 }
 
 fn projected_initial_bdf_state<Eqn>(
@@ -368,9 +393,20 @@ fn projection_plan_covers_non_state_loads(
             continue;
         }
         let Some(output_idx) = producer_rows.get(&index).copied() else {
+            tracing::debug!(
+                target: "rumoca_solver_diffsol::bdf_path",
+                y_index = index,
+                "state-only BDF rejected: derivative dependency has no algebraic projection producer"
+            );
             return Ok(false);
         };
         let Some(program_idx) = implicit_rows.program_index_for_output(output_idx) else {
+            tracing::debug!(
+                target: "rumoca_solver_diffsol::bdf_path",
+                y_index = index,
+                output_index = output_idx,
+                "state-only BDF rejected: projection producer has no scalar program"
+            );
             return Ok(false);
         };
         let Some(row) = implicit_rows.programs.get(program_idx) else {
@@ -425,4 +461,27 @@ fn non_state_y_loads(
     loads.sort_unstable();
     loads.dedup();
     loads
+}
+
+#[cfg(test)]
+mod initial_consistency_tests {
+    use super::residuals_within_absolute_tolerance;
+
+    #[test]
+    fn uses_configured_absolute_tolerance_for_each_algebraic_residual() {
+        assert!(residuals_within_absolute_tolerance(
+            &[5.0e-7, -9.0e-7],
+            &[1.0e-6, 1.0e-6]
+        ));
+        assert!(!residuals_within_absolute_tolerance(
+            &[5.0e-7, -9.0e-7],
+            &[1.0e-8, 1.0e-6]
+        ));
+    }
+
+    #[test]
+    fn rejects_non_finite_or_missing_tolerance_residuals() {
+        assert!(!residuals_within_absolute_tolerance(&[f64::NAN], &[1.0]));
+        assert!(!residuals_within_absolute_tolerance(&[5.0e-9], &[]));
+    }
 }

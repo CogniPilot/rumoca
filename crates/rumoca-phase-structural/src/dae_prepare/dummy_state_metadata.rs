@@ -983,8 +983,29 @@ pub fn constrained_dummy_state_defining_exprs(
             .then_with(|| a.as_str().cmp(b.as_str()))
     });
     let mut result = IndexMap::new();
-    for (name, expr) in definitions {
-        result.entry(name).or_insert(expr);
+    for (name, definition) in definitions {
+        insert_preferred_dummy_definition(dae, &mut result, name, definition)?;
     }
     Ok(result)
+}
+
+fn insert_preferred_dummy_definition(
+    dae: &Dae,
+    definitions: &mut IndexMap<VarName, ConstrainedDummyDefinition>,
+    name: VarName,
+    candidate: ConstrainedDummyDefinition,
+) -> Result<(), crate::StructuralError> {
+    let Some(existing) = definitions.get_mut(&name) else {
+        definitions.insert(name, candidate);
+        return Ok(());
+    };
+    let existing_is_viable =
+        super::constrained_dummy_derivative_plan_for_definition(dae, &name, existing)?.is_some();
+    if !existing_is_viable
+        && super::constrained_dummy_derivative_plan_for_definition(dae, &name, &candidate)?
+            .is_some()
+    {
+        *existing = candidate;
+    }
+    Ok(())
 }

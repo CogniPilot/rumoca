@@ -101,6 +101,7 @@ use special::{
     copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
     resolve_user_function_reference_target,
 };
+mod complex_field_arithmetic;
 mod eval_expr_impl;
 use array_eval::{
     declared_dims, eval_array_like_f64_values, eval_array_like_values, eval_binary_array_values,

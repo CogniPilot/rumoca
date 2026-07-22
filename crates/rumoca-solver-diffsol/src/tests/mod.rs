@@ -23,6 +23,41 @@ fn speculative_algebraic_guess_does_not_mutate_accepted_state() {
     assert_eq!(warm_start.speculative(), vec![3.0, 4.0]);
 }
 
+#[test]
+fn algebraic_candidate_commits_only_for_the_exact_accepted_state() {
+    let warm_start = AlgebraicWarmStart::new(vec![1.0, 2.0]);
+    warm_start.record_candidate(0.5, &[3.0, 4.0], vec![5.0, 6.0]);
+
+    assert!(!warm_start.commit_matching_candidate(0.5, &[3.0, 4.1]));
+    assert_eq!(warm_start.speculative(), vec![1.0, 2.0]);
+    assert!(warm_start.commit_matching_candidate(0.5, &[3.0, 4.0]));
+    assert_eq!(warm_start.speculative(), vec![5.0, 6.0]);
+}
+
+#[test]
+fn speculative_continuation_uses_only_a_closer_same_time_candidate() {
+    let warm_start = AlgebraicWarmStart::new(vec![0.0, 0.0, 10.0]);
+    warm_start.record_candidate(0.5, &[0.9, 0.9], vec![0.9, 0.9, 20.0]);
+
+    assert_eq!(
+        warm_start.speculative_nearest(0.5, &[1.0, 1.0]),
+        vec![0.9, 0.9, 20.0]
+    );
+    assert_eq!(
+        warm_start.speculative_nearest(0.5, &[-0.1, -0.1]),
+        vec![0.0, 0.0, 10.0]
+    );
+    assert_eq!(
+        warm_start.speculative_nearest(0.6, &[1.0, 1.0]),
+        vec![0.0, 0.0, 10.0]
+    );
+    assert_eq!(
+        warm_start.speculative(),
+        vec![0.0, 0.0, 10.0],
+        "speculative continuation must not commit a rejected solver trial"
+    );
+}
+
 fn install_dense_algebraic_projection_plan(model: &mut solve::SolveModel) {
     let state_count = model.problem.solve_layout.state_scalar_count;
     let algebraic_count = model.problem.solve_layout.algebraic_scalar_count;
@@ -36,6 +71,7 @@ fn install_dense_algebraic_projection_plan(model: &mut solve::SolveModel) {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: y_indices.clone(),
             y_indices,
+            tearing: None,
         }],
     };
 }
@@ -50,6 +86,7 @@ fn install_scalar_initial_projection_plan(
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![row],
             y_indices: vec![y_index],
+            tearing: None,
         }],
     };
 }
@@ -189,10 +226,12 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
             solve::AlgebraicProjectionBlock {
                 rows: vec![1],
                 y_indices: vec![1],
+                tearing: None,
             },
             solve::AlgebraicProjectionBlock {
                 rows: vec![2],
                 y_indices: vec![2],
+                tearing: None,
             },
         ],
     };
@@ -255,6 +294,7 @@ fn projected_derivative_model() -> solve::SolveModel {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
+            tearing: None,
         }],
     };
     model.initial_y = vec![0.0, 0.0];

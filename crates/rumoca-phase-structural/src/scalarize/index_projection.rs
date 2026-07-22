@@ -25,6 +25,23 @@ pub(super) struct IndexProjectionContext<'a> {
 }
 
 impl<'a> IndexProjectionContext<'a> {
+    fn scalar_projection_context(&self) -> ScalarProjectionContext<'a> {
+        ScalarProjectionContext {
+            context_span: self.context_span,
+            var_dims: self.var_dims,
+            var_spans: self.var_spans,
+            structural_values: self.structural_values,
+            complex_fields: self.complex_fields,
+            component_index_map: self.component_index_map,
+            function_output_index_map: self.function_output_index_map,
+            function_output_dims_map: self.function_output_dims_map,
+            dynamic_function_output_map: self.dynamic_function_output_map,
+            record_field_projection_map: self.record_field_projection_map,
+            constructor_input_map: self.constructor_input_map,
+            expected_dims: self.expected_dims,
+        }
+    }
+
     fn with_index(&self, i: usize) -> IndexProjectionContext<'a> {
         IndexProjectionContext {
             i,
@@ -671,6 +688,21 @@ impl<'a> IndexProjectionContext<'a> {
                     span: *span,
                 })
             }
+            Expression::FieldAccess { base, field, span } => {
+                if let Some(field_index) = self.complex_field_index(base, field) {
+                    let projected = super::projection::project_complex_component(
+                        base,
+                        field_index,
+                        &self.scalar_projection_context(),
+                    )?;
+                    return self.lower_scalar_linear_algebra(&projected);
+                }
+                Ok(Expression::FieldAccess {
+                    base: Box::new(self.lower_scalar_linear_algebra(base)?),
+                    field: field.clone(),
+                    span: *span,
+                })
+            }
             Expression::ArrayComprehension {
                 expr,
                 indices,
@@ -686,6 +718,50 @@ impl<'a> IndexProjectionContext<'a> {
                 span: *span,
             }),
             _ => Ok(expr.clone()),
+        }
+    }
+
+    fn complex_field_index(&self, base: &Expression, field: &str) -> Option<usize> {
+        let field_index = match field {
+            "re" => 1,
+            "im" => 2,
+            _ => return None,
+        };
+        self.is_complex_expression(base).then_some(field_index)
+    }
+
+    fn is_complex_expression(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::VarRef { name, .. } => self.complex_fields.contains_key(name.as_str()),
+            Expression::Unary { rhs, .. } => self.is_complex_expression(rhs),
+            Expression::Binary { lhs, rhs, .. } => {
+                self.is_complex_expression(lhs) || self.is_complex_expression(rhs)
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches
+                    .iter()
+                    .any(|(_, value)| self.is_complex_expression(value))
+                    || self.is_complex_expression(else_branch)
+            }
+            Expression::FunctionCall {
+                name,
+                is_constructor: true,
+                ..
+            } => constructor_inputs_for_call(name, self.constructor_input_map).is_some_and(
+                |inputs| matches!(inputs, [re, im] if re.name == "re" && im.name == "im"),
+            ),
+            Expression::FunctionCall { name, .. } => name
+                .resolved_function()
+                .and_then(|resolved| self.function_output_index_map.get(&resolved.instance_id))
+                .is_some_and(|outputs| outputs.contains_key(&1) && outputs.contains_key(&2)),
+            Expression::Array { elements, .. } => elements
+                .iter()
+                .any(|element| self.is_complex_expression(element)),
+            _ => false,
         }
     }
 

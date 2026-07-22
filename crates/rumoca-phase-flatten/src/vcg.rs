@@ -600,6 +600,196 @@ pub(crate) fn build_vcg(
     }
 }
 
+struct VcgEdgeForest {
+    index: FxHashMap<String, usize>,
+    parent: Vec<usize>,
+    has_definite_root: Vec<bool>,
+}
+
+/// Disposition of one generated primitive equality from an overconstrained
+/// record connection edge.
+pub(crate) enum GeneratedEqualityDisposition {
+    /// Keep the ordinary primitive equality because the record edge belongs to
+    /// the selected spanning forest (or is not overconstrained).
+    Retain,
+    /// Omit the primitive equality. This is either a later field of a broken
+    /// edge or a broken edge whose equality constraint has zero width.
+    Omit,
+    /// Replace the complete broken record edge with one equalityConstraint
+    /// call. This variant is emitted exactly once for the normalized pair.
+    Replace {
+        lhs_record: String,
+        rhs_record: String,
+        constraint_size: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum RecordPairDisposition {
+    Retain,
+    Omit,
+    ReplacePending { constraint_size: usize },
+    ReplaceEmitted,
+}
+
+/// MLS §9.4 forest used while emitting equations for overconstrained records.
+///
+/// Connection sets are already transitive closures, so their generated equality
+/// chain need not preserve the original `connect` edge identity. Any
+/// deterministic spanning forest over the same VCG nodes is equivalent.
+/// Required `Connections.branch` edges seed this forest, while generated
+/// potential equalities are admitted only when they extend it. Broken edges
+/// with a nonempty constraint are replaced once by `equalityConstraint`;
+/// zero-width constraints are omitted.
+pub(crate) struct OverconstrainedEquationForest {
+    forest: VcgEdgeForest,
+    pair_dispositions: FxHashMap<(String, String), RecordPairDisposition>,
+}
+
+impl OverconstrainedEquationForest {
+    pub(crate) fn new(
+        definite_roots: &FxHashSet<String>,
+        branches: &[(String, String)],
+        optional_edges: &[(String, String)],
+    ) -> Self {
+        Self {
+            forest: VcgEdgeForest::new(definite_roots, branches, optional_edges),
+            pair_dispositions: FxHashMap::default(),
+        }
+    }
+
+    pub(crate) fn generated_equality_disposition(
+        &mut self,
+        flat: &flat::Model,
+        lhs: &rumoca_core::VarName,
+        rhs: &rumoca_core::VarName,
+    ) -> Result<GeneratedEqualityDisposition, FlattenError> {
+        let Some((lhs_record, lhs_constraint_size)) = overconstrained_record_info(flat, lhs) else {
+            return Ok(GeneratedEqualityDisposition::Retain);
+        };
+        let Some((rhs_record, rhs_constraint_size)) = overconstrained_record_info(flat, rhs) else {
+            return Ok(GeneratedEqualityDisposition::Retain);
+        };
+        if lhs_constraint_size != rhs_constraint_size {
+            return Err(FlattenError::internal(format!(
+                "overconstrained record edge `{lhs_record}`--`{rhs_record}` has mismatched equalityConstraint widths {lhs_constraint_size} and {rhs_constraint_size}"
+            )));
+        }
+        let key = normalize_edge_key(lhs_record, rhs_record);
+        let disposition = self.pair_dispositions.entry(key).or_insert_with(|| {
+            if !self.forest.reject_optional_edge(lhs_record, rhs_record) {
+                RecordPairDisposition::Retain
+            } else if lhs_constraint_size == 0 {
+                RecordPairDisposition::Omit
+            } else {
+                RecordPairDisposition::ReplacePending {
+                    constraint_size: lhs_constraint_size,
+                }
+            }
+        });
+        Ok(match *disposition {
+            RecordPairDisposition::Retain => GeneratedEqualityDisposition::Retain,
+            RecordPairDisposition::Omit | RecordPairDisposition::ReplaceEmitted => {
+                GeneratedEqualityDisposition::Omit
+            }
+            RecordPairDisposition::ReplacePending { constraint_size } => {
+                *disposition = RecordPairDisposition::ReplaceEmitted;
+                GeneratedEqualityDisposition::Replace {
+                    lhs_record: lhs_record.to_string(),
+                    rhs_record: rhs_record.to_string(),
+                    constraint_size,
+                }
+            }
+        })
+    }
+}
+
+impl VcgEdgeForest {
+    fn new(
+        definite_roots: &FxHashSet<String>,
+        branches: &[(String, String)],
+        optional_edges: &[(String, String)],
+    ) -> Self {
+        let mut nodes: Vec<String> = branches
+            .iter()
+            .chain(optional_edges)
+            .flat_map(|(lhs, rhs)| [lhs.clone(), rhs.clone()])
+            .chain(definite_roots.iter().cloned())
+            .collect();
+        nodes.sort();
+        nodes.dedup();
+        let index: FxHashMap<String, usize> = nodes
+            .into_iter()
+            .enumerate()
+            .map(|(index, node)| (node, index))
+            .collect();
+        let mut forest = Self {
+            parent: (0..index.len()).collect(),
+            has_definite_root: vec![false; index.len()],
+            index,
+        };
+        for root in definite_roots {
+            if let Some(index) = forest.index.get(root).copied() {
+                forest.has_definite_root[index] = true;
+            }
+        }
+        for (lhs, rhs) in branches {
+            forest.union_paths(lhs, rhs);
+        }
+        forest
+    }
+
+    fn reject_optional_edge(&mut self, lhs: &str, rhs: &str) -> bool {
+        let Some(lhs) = self.index.get(lhs).copied() else {
+            return false;
+        };
+        let Some(rhs) = self.index.get(rhs).copied() else {
+            return false;
+        };
+        let lhs_root = self.find(lhs);
+        let rhs_root = self.find(rhs);
+        if lhs_root == rhs_root
+            || self.has_definite_root[lhs_root] && self.has_definite_root[rhs_root]
+        {
+            return true;
+        }
+        self.union(lhs_root, rhs_root);
+        false
+    }
+
+    fn union_paths(&mut self, lhs: &str, rhs: &str) {
+        let Some(lhs) = self.index.get(lhs).copied() else {
+            return;
+        };
+        let Some(rhs) = self.index.get(rhs).copied() else {
+            return;
+        };
+        self.union(lhs, rhs);
+    }
+
+    fn find(&mut self, index: usize) -> usize {
+        let parent = self.parent[index];
+        if parent == index {
+            return index;
+        }
+        let root = self.find(parent);
+        self.parent[index] = root;
+        root
+    }
+
+    fn union(&mut self, lhs: usize, rhs: usize) {
+        let lhs = self.find(lhs);
+        let rhs = self.find(rhs);
+        if lhs == rhs {
+            return;
+        }
+        let (keep, merge) = if lhs < rhs { (lhs, rhs) } else { (rhs, lhs) };
+        self.parent[merge] = keep;
+        self.has_definite_root[keep] =
+            self.has_definite_root[keep] || self.has_definite_root[merge];
+    }
+}
+
 /// Collect all unique nodes from all edge sources.
 fn collect_all_nodes(
     definite_roots: &FxHashSet<String>,
@@ -743,7 +933,10 @@ fn find_best_potential_root<'a>(
 /// For an overconstrained connection graph with V vertices and E edges per connected
 /// component, the spanning tree has V-1 edges. The remaining E-(V-1) edges are "break
 /// edges" whose equality equations should be replaced by `equalityConstraint()` calls.
-/// Since we don't yet generate `equalityConstraint()`, these are excess equations.
+/// This is conservative metadata: zero-result constraints can already be omitted
+/// exactly during connection-equation generation, while balance accounting clamps
+/// the correction to the excess still present. Nonempty constraints remain
+/// unresolved metadata until their replacement equations are lowered.
 ///
 /// Each break edge contributes one excess equality equation per scalar field in the
 /// overconstrained record (e.g., 1 for Reference.gamma, 12 for Orientation.T+w).
@@ -773,6 +966,17 @@ pub(crate) fn compute_break_edge_scalar_count(
         total_excess += break_edges * oc_scalar;
     }
     total_excess
+}
+
+fn overconstrained_record_info<'a>(
+    flat: &'a flat::Model,
+    name: &rumoca_core::VarName,
+) -> Option<(&'a str, usize)> {
+    let variable = flat.variables.get(name)?;
+    variable.is_overconstrained.then_some((
+        variable.oc_record_path.as_deref()?,
+        variable.oc_eq_constraint_size?,
+    ))
 }
 
 /// Compute overconstrained-record scalar size for a VCG component.
@@ -1280,5 +1484,152 @@ mod tests {
             )),
             "unindexed wrapper edges should expand to indexed edges"
         );
+    }
+
+    fn add_overconstrained_field(
+        flat: &mut flat::Model,
+        record: &str,
+        field: &str,
+        constraint_size: usize,
+    ) {
+        let name = rumoca_core::VarName::new(format!("{record}.{field}"));
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name,
+                is_primitive: true,
+                is_overconstrained: true,
+                oc_record_path: Some(record.to_string()),
+                oc_eq_constraint_size: Some(constraint_size),
+                ..flat::Variable::empty_with_span(test_span(1, 2))
+            },
+        );
+    }
+
+    #[test]
+    fn zero_sized_equality_constraint_breaks_generated_edge_against_required_edge() {
+        let mut flat = flat::Model::new();
+        for record in ["a.R", "b.R", "c.R"] {
+            add_overconstrained_field(&mut flat, record, "gamma", 0);
+        }
+        let roots = FxHashSet::from_iter(["a.R".to_string()]);
+        let branches = vec![("a.R".to_string(), "b.R".to_string())];
+        let optional = vec![
+            ("a.R".to_string(), "c.R".to_string()),
+            ("c.R".to_string(), "b.R".to_string()),
+        ];
+        let mut forest = OverconstrainedEquationForest::new(&roots, &branches, &optional);
+
+        assert!(matches!(
+            forest
+                .generated_equality_disposition(
+                    &flat,
+                    &rumoca_core::VarName::new("a.R.gamma"),
+                    &rumoca_core::VarName::new("c.R.gamma"),
+                )
+                .unwrap(),
+            GeneratedEqualityDisposition::Retain
+        ));
+        assert!(matches!(
+            forest
+                .generated_equality_disposition(
+                    &flat,
+                    &rumoca_core::VarName::new("c.R.gamma"),
+                    &rumoca_core::VarName::new("b.R.gamma"),
+                )
+                .unwrap(),
+            GeneratedEqualityDisposition::Omit
+        ));
+    }
+
+    #[test]
+    fn zero_sized_equality_constraint_uses_one_source_edge_decision_for_every_field() {
+        let mut flat = flat::Model::new();
+        for record in ["a.R", "b.R", "c.R"] {
+            add_overconstrained_field(&mut flat, record, "x", 0);
+            add_overconstrained_field(&mut flat, record, "y", 0);
+        }
+        let branches = vec![("a.R".to_string(), "b.R".to_string())];
+        let optional = vec![
+            ("a.R".to_string(), "c.R".to_string()),
+            ("c.R".to_string(), "b.R".to_string()),
+        ];
+        let mut forest =
+            OverconstrainedEquationForest::new(&FxHashSet::default(), &branches, &optional);
+
+        for field in ["x", "y"] {
+            assert!(matches!(
+                forest
+                    .generated_equality_disposition(
+                        &flat,
+                        &rumoca_core::VarName::new(format!("a.R.{field}")),
+                        &rumoca_core::VarName::new(format!("c.R.{field}")),
+                    )
+                    .unwrap(),
+                GeneratedEqualityDisposition::Retain
+            ));
+            assert!(matches!(
+                forest
+                    .generated_equality_disposition(
+                        &flat,
+                        &rumoca_core::VarName::new(format!("c.R.{field}")),
+                        &rumoca_core::VarName::new(format!("b.R.{field}")),
+                    )
+                    .unwrap(),
+                GeneratedEqualityDisposition::Omit
+            ));
+        }
+    }
+
+    #[test]
+    fn nonempty_equality_constraint_break_is_replaced_once() {
+        let mut flat = flat::Model::new();
+        for record in ["a.R", "b.R", "c.R"] {
+            add_overconstrained_field(&mut flat, record, "T", 3);
+            add_overconstrained_field(&mut flat, record, "w", 3);
+        }
+        let branches = vec![("a.R".to_string(), "b.R".to_string())];
+        let optional = vec![
+            ("a.R".to_string(), "c.R".to_string()),
+            ("c.R".to_string(), "b.R".to_string()),
+        ];
+        let mut forest =
+            OverconstrainedEquationForest::new(&FxHashSet::default(), &branches, &optional);
+
+        assert!(matches!(
+            forest
+                .generated_equality_disposition(
+                    &flat,
+                    &rumoca_core::VarName::new("a.R.T"),
+                    &rumoca_core::VarName::new("c.R.T"),
+                )
+                .unwrap(),
+            GeneratedEqualityDisposition::Retain
+        ));
+
+        assert!(matches!(
+            forest
+                .generated_equality_disposition(
+                    &flat,
+                    &rumoca_core::VarName::new("c.R.T"),
+                    &rumoca_core::VarName::new("b.R.T"),
+                )
+                .unwrap(),
+            GeneratedEqualityDisposition::Replace {
+                lhs_record,
+                rhs_record,
+                constraint_size: 3,
+            } if lhs_record == "c.R" && rhs_record == "b.R"
+        ));
+        assert!(matches!(
+            forest
+                .generated_equality_disposition(
+                    &flat,
+                    &rumoca_core::VarName::new("c.R.w"),
+                    &rumoca_core::VarName::new("b.R.w"),
+                )
+                .unwrap(),
+            GeneratedEqualityDisposition::Omit
+        ));
     }
 }

@@ -30,6 +30,95 @@ fn simulation_structural_lowering_keeps_observations_for_torn_variables() {
 }
 
 #[test]
+fn simulation_structural_lowering_restores_shared_observation_computation_as_causal_slot() {
+    let mut dae = dae::Dae::new();
+    dae.variables.states.insert(
+        VarName::new("u"),
+        dae::Variable::new(VarName::new("u"), fixture_span()),
+    );
+    for name in ["x", "y"] {
+        dae.variables.algebraics.insert(
+            VarName::new(name),
+            dae::Variable::new(VarName::new(name), fixture_span()),
+        );
+    }
+    dae.continuous
+        .equations
+        .push(eq(sub(der(var("u")), real(0.0))));
+    let shared = Expression::BuiltinCall {
+        function: BuiltinFunction::Sin,
+        args: vec![var("u")],
+        span: fixture_span(),
+    };
+    dae.continuous.equations.push(dae::Equation::explicit(
+        reference("x"),
+        shared.clone(),
+        fixture_span(),
+        "shared x definition",
+    ));
+    dae.continuous.equations.push(dae::Equation::explicit(
+        reference("y"),
+        Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var("x")),
+            rhs: Box::new(var("x")),
+            span: fixture_span(),
+        },
+        fixture_span(),
+        "dependent y definition",
+    ));
+
+    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("shared observation computation should lower as a causal DAG");
+
+    assert!(
+        lowered
+            .dae
+            .variables
+            .algebraics
+            .contains_key(&VarName::new("x"))
+    );
+    assert!(
+        lowered
+            .dae
+            .variables
+            .algebraics
+            .contains_key(&VarName::new("y"))
+    );
+    let restored = lowered
+        .dae
+        .continuous
+        .equations
+        .iter()
+        .filter(|equation| equation.origin == "causal reconstruction after structural elimination")
+        .collect::<Vec<_>>();
+    assert_eq!(restored.len(), 2);
+    assert!(rumoca_core::expressions_semantically_equal(
+        &restored[0].rhs,
+        &shared
+    ));
+    assert!(rumoca_core::expressions_semantically_equal(
+        &restored[1].rhs,
+        &Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var("x")),
+            rhs: Box::new(var("x")),
+            span: fixture_span(),
+        }
+    ));
+    let visible_y = lowered
+        .visible_expressions
+        .iter()
+        .find(|visible| visible.name == "y")
+        .expect("y remains observable");
+    let expected_y = var("y");
+    assert!(rumoca_core::expressions_semantically_equal(
+        &visible_y.expr,
+        &expected_y
+    ));
+}
+
+#[test]
 fn simulation_structural_lowering_reports_blt_singularity() {
     let mut dae = dae::Dae::new();
     dae.variables.algebraics.insert(

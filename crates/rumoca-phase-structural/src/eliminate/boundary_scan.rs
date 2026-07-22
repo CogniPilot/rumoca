@@ -64,7 +64,7 @@ fn scan_boundary_equation(
     }
     let equation = &ctx.dae.continuous.equations[eq_idx];
     let expr = equation_analysis_expr(equation);
-    let eq_rhs = apply_substitutions_in_order(&expr, &state.substitutions)?;
+    let eq_rhs = apply_substitutions_in_order(ctx.dae, &expr, &state.substitutions)?;
     let is_connection_eq = equation.origin.starts_with("connection equation:");
     let live = find_live_scalar_unknowns(&eq_rhs, ctx.unknown_index, &state.resolved)?;
     let aggregate_definition = aggregate_definition_for_elimination(

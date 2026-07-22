@@ -848,6 +848,15 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 ),
                 _ => None,
             },
+            Expression::Index {
+                base,
+                subscripts,
+                span,
+            } if static_subscript_indices(subscripts).is_some() => Some(Expression::Index {
+                base: Box::new(self.differentiate(base, active_functions)?),
+                subscripts: subscripts.clone(),
+                span: *span,
+            }),
             // d/dt(der(X)) — a higher-order derivative (successive `Der` blocks,
             // or a relative acceleration `a = der(der(phi))`). `der(X)` is X's
             // first time-derivative; differentiate that expression to climb one

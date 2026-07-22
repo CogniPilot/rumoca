@@ -603,6 +603,7 @@ pub(super) fn eval_binary_array_values<T: SimFloat>(
             | OpBinary::SubElem
             | OpBinary::Div
             | OpBinary::DivElem
+            | OpBinary::ExpElem
     ) {
         return Ok(None);
     }
@@ -626,6 +627,7 @@ fn try_eval_binary_array_values<T: SimFloat>(
             | OpBinary::SubElem
             | OpBinary::Div
             | OpBinary::DivElem
+            | OpBinary::ExpElem
     ) {
         return Ok(eval_shaped_binary_operand(op, lhs, rhs, env)?.values);
     }
@@ -1021,6 +1023,7 @@ fn eval_shaped_operand<T: SimFloat>(
                 | OpBinary::SubElem
                 | OpBinary::Div
                 | OpBinary::DivElem
+                | OpBinary::ExpElem
         )
     {
         return eval_shaped_binary_operand(op, lhs, rhs, env);
@@ -1063,6 +1066,9 @@ pub(super) fn eval_shaped_binary_operand<T: SimFloat>(
         OpBinary::AddElem => combine_elementwise_operands(lhs, rhs, |l, r| l + r),
         OpBinary::SubElem => combine_elementwise_operands(lhs, rhs, |l, r| l - r),
         OpBinary::DivElem => combine_elementwise_operands(lhs, rhs, |l, r| l / r),
+        // MLS §10.6: dot exponentiation is element-wise and permits a
+        // scalar operand to be broadcast over the array operand.
+        OpBinary::ExpElem => combine_elementwise_operands(lhs, rhs, |l, r| l.powf(r)),
         _ => Err(EvalError::UnsupportedExpression {
             kind: "binary array operator",
         }),

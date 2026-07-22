@@ -5,6 +5,13 @@ fn unspanned_derivative_rhs_test_span() -> rumoca_core::Span {
 }
 
 #[test]
+fn native_linsolve_requires_contiguous_component_output_indices() {
+    assert!(component_indices_are_contiguous_from(&[2, 3, 4], 2));
+    assert!(!component_indices_are_contiguous_from(&[0, 1, 4], 0));
+    assert!(!component_indices_are_contiguous_from(&[3, 4], 2));
+}
+
+#[test]
 fn derivative_vec_with_capacity_reports_capacity_overflow() -> Result<(), LowerError> {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(

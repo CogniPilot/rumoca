@@ -16,7 +16,15 @@ pub(crate) fn maximum_matching(
     let mut match_eq: Vec<Option<usize>> = vec![None; n_eq];
     let mut match_var: Vec<Option<usize>> = vec![None; n_var];
 
-    for eq in 0..n_eq {
+    // Match untargeted equations first.  Targeted equations then get the last
+    // augmenting-path opportunity to reclaim their causal target while moving
+    // an untargeted equation to an alternative unknown.  Processing purely in
+    // source order lets a later untargeted equation displace an earlier
+    // preferred edge even when an equal-cardinality matching preserves it.
+    let equation_order = (0..n_eq)
+        .filter(|&eq| preferred_vars.get(eq).copied().flatten().is_none())
+        .chain((0..n_eq).filter(|&eq| preferred_vars.get(eq).copied().flatten().is_some()));
+    for eq in equation_order {
         let mut visited = vec![false; n_var];
         augment(
             eq,
@@ -28,7 +36,151 @@ pub(crate) fn maximum_matching(
         );
     }
 
+    maximize_preserved_preferences(&mut match_eq, &mut match_var, eq_vars, preferred_vars);
+
     (match_eq, match_var)
+}
+
+/// Improve causal-target preservation without changing matching cardinality.
+///
+/// A later augmenting path may retain maximum cardinality while displacing an
+/// earlier equation from its unique direct-assignment target. Reclaim such a
+/// target only when the displaced, currently-unsatisfied equations can be
+/// relocated without moving any equation that already owns its preference.
+fn maximize_preserved_preferences(
+    match_eq: &mut [Option<usize>],
+    match_var: &mut [Option<usize>],
+    eq_vars: &[HashSet<usize>],
+    preferred_vars: &[Option<usize>],
+) {
+    loop {
+        let mut changed = false;
+        for eq in 0..match_eq.len() {
+            let Some(preferred) = preferred_vars
+                .get(eq)
+                .copied()
+                .flatten()
+                .filter(|var| eq_vars[eq].contains(var))
+            else {
+                continue;
+            };
+            if match_eq[eq].is_none() || match_eq[eq] == Some(preferred) {
+                continue;
+            }
+            changed |=
+                try_claim_preferred(eq, preferred, match_eq, match_var, eq_vars, preferred_vars);
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn try_claim_preferred(
+    eq: usize,
+    preferred: usize,
+    match_eq: &mut [Option<usize>],
+    match_var: &mut [Option<usize>],
+    eq_vars: &[HashSet<usize>],
+    preferred_vars: &[Option<usize>],
+) -> bool {
+    let Some(owner) = match_var[preferred] else {
+        assign_match(eq, preferred, match_eq, match_var);
+        return true;
+    };
+    if owner == eq {
+        return false;
+    }
+    let mut visited_eq = vec![false; match_eq.len()];
+    let mut visited_var = vec![false; match_var.len()];
+    visited_var[preferred] = true;
+    let relocated = RelocationSearch {
+        root: eq,
+        match_eq,
+        match_var,
+        eq_vars,
+        preferred_vars,
+        visited_eq: &mut visited_eq,
+        visited_var: &mut visited_var,
+    }
+    .relocate(owner);
+    if !relocated {
+        return false;
+    }
+    assign_match(eq, preferred, match_eq, match_var);
+    true
+}
+
+struct RelocationSearch<'a> {
+    root: usize,
+    match_eq: &'a mut [Option<usize>],
+    match_var: &'a mut [Option<usize>],
+    eq_vars: &'a [HashSet<usize>],
+    preferred_vars: &'a [Option<usize>],
+    visited_eq: &'a mut [bool],
+    visited_var: &'a mut [bool],
+}
+
+impl RelocationSearch<'_> {
+    fn relocate(&mut self, eq: usize) -> bool {
+        if self.visited_eq[eq]
+            || self.preferred_vars.get(eq).copied().flatten() == self.match_eq[eq]
+        {
+            return false;
+        }
+        self.visited_eq[eq] = true;
+        let mut variables = self.eq_vars[eq].iter().copied().collect::<Vec<_>>();
+        variables.sort_unstable();
+        move_preferred_first(eq, &mut variables, self.eq_vars, self.preferred_vars);
+        for variable in variables {
+            if self.match_eq[eq] == Some(variable) || self.visited_var[variable] {
+                continue;
+            }
+            self.visited_var[variable] = true;
+            let can_relocate = match self.match_var[variable] {
+                None => true,
+                Some(owner) if owner == self.root => true,
+                Some(owner) => self.relocate(owner),
+            };
+            if can_relocate {
+                assign_match(eq, variable, self.match_eq, self.match_var);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn move_preferred_first(
+    eq: usize,
+    variables: &mut Vec<usize>,
+    eq_vars: &[HashSet<usize>],
+    preferred_vars: &[Option<usize>],
+) {
+    if let Some(preferred) = preferred_vars
+        .get(eq)
+        .copied()
+        .flatten()
+        .filter(|var| eq_vars[eq].contains(var))
+        && let Ok(position) = variables.binary_search(&preferred)
+    {
+        variables.remove(position);
+        variables.insert(0, preferred);
+    }
+}
+
+fn assign_match(
+    equation: usize,
+    variable: usize,
+    match_eq: &mut [Option<usize>],
+    match_var: &mut [Option<usize>],
+) {
+    if let Some(previous) = match_eq[equation].replace(variable)
+        && match_var[previous] == Some(equation)
+    {
+        match_var[previous] = None;
+    }
+    match_var[variable] = Some(equation);
 }
 
 /// Try to find an augmenting path starting from an unmatched equation.
@@ -128,5 +280,39 @@ mod tests {
         let eq_vars = vec![HashSet::from([0, 1]), HashSet::from([0])];
         let (match_eq, _match_var) = maximum_matching(2, 2, &eq_vars, &[Some(0), Some(0)]);
         assert_eq!(match_eq, vec![Some(1), Some(0)]);
+    }
+
+    #[test]
+    fn test_untargeted_equation_does_not_displace_preferred_edge() {
+        let eq_vars = vec![HashSet::from([0, 1]), HashSet::from([0, 2])];
+        let (match_eq, match_var) = maximum_matching(2, 3, &eq_vars, &[Some(0), None]);
+
+        assert_eq!(match_eq[0], Some(0));
+        assert_eq!(match_var[0], Some(0));
+        assert_eq!(
+            match_eq.iter().filter(|matched| matched.is_some()).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn post_matching_exchange_recovers_causal_targets_without_losing_cardinality() {
+        let eq_vars = vec![
+            HashSet::from([0, 3]),
+            HashSet::from([0, 1]),
+            HashSet::from([1, 2, 3]),
+            HashSet::from([2, 3]),
+        ];
+        let preferred = [Some(0), Some(1), None, Some(2)];
+
+        let (match_eq, match_var) = maximum_matching(4, 4, &eq_vars, &preferred);
+
+        assert_eq!(match_eq.iter().flatten().count(), 4);
+        assert_eq!(match_eq[0], Some(0));
+        assert_eq!(match_eq[1], Some(1));
+        assert_eq!(match_eq[3], Some(2));
+        for (equation, variable) in match_eq.iter().copied().enumerate() {
+            assert_eq!(variable.and_then(|index| match_var[index]), Some(equation));
+        }
     }
 }

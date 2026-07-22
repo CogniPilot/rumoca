@@ -662,10 +662,11 @@ pub struct DaeMetadata {
     #[serde(default)]
     pub overconstrained_interface_count: i64,
 
-    /// Scalar count of excess equations from VCG break edges (MLS §9.4).
-    /// Break edges in the overconstrained connection graph generate equality equations
-    /// that should be replaced by `equalityConstraint()` calls. This correction
-    /// tracks the number of excess equation scalars.
+    /// Conservative scalar budget for VCG break-edge equations (MLS §9.4).
+    /// Zero-result constraints can already have been removed during flattening,
+    /// so balance accounting clamps this budget to the excess equations still
+    /// present. Replacement equations for nonempty `equalityConstraint` results
+    /// remain deferred.
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
 

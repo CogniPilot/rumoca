@@ -109,6 +109,73 @@ pub(crate) fn reverse_scalar_block_vjp(
     Ok(())
 }
 
+/// Reverse one scalar-output row into its complete solver-`y` gradient.
+///
+/// A scalar residual row has one output, so reverse mode obtains every
+/// `d(row)/d(y[i])` in one forward/reverse sweep. Returning `false` preserves a
+/// precise fallback for rows containing operations whose reverse rule is not
+/// implemented yet.
+pub(crate) fn reverse_scalar_row_y_gradient(
+    program: &ScalarVjpProgram<'_>,
+    row_idx: usize,
+    inputs: &ReverseInputs<'_>,
+    y_gradient: &mut [f64],
+    scratch: &mut ReverseScratch,
+) -> Result<bool, EvalSolveError> {
+    let Some(row) = program.block.programs.get(row_idx) else {
+        return Ok(false);
+    };
+    let mut output_sources = row.iter().filter_map(|op| match op {
+        LinearOp::StoreOutput { src } => Some(*src),
+        _ => None,
+    });
+    let Some(output_source) = output_sources.next() else {
+        return Ok(false);
+    };
+    if output_sources.next().is_some() || row.iter().any(|op| !reverse_row_op_supported(op)) {
+        return Ok(false);
+    }
+
+    scratch.regs.clear();
+    scratch.regs.resize(program.row_registers[row_idx], 0.0);
+    scratch.adj.clear();
+    scratch.adj.resize(program.row_registers[row_idx], 0.0);
+    forward_row_tape(row, inputs, &mut scratch.regs)
+        .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    add_adj(&mut scratch.adj, output_source, 1.0);
+    y_gradient.fill(0.0);
+    reverse_row_adjoints(
+        row,
+        &scratch.regs,
+        &mut scratch.adj,
+        &mut ReverseCotangents {
+            y: y_gradient,
+            p: &mut [],
+            seed: &mut [],
+        },
+    )
+    .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    Ok(true)
+}
+
+pub(crate) fn reverse_row_op_supported(op: &LinearOp) -> bool {
+    matches!(
+        op,
+        LinearOp::Const { .. }
+            | LinearOp::LoadTime { .. }
+            | LinearOp::LoadY { .. }
+            | LinearOp::LoadP { .. }
+            | LinearOp::LoadIndexedP { .. }
+            | LinearOp::Move { .. }
+            | LinearOp::LinearSolveComponent { .. }
+            | LinearOp::Unary { .. }
+            | LinearOp::Binary { .. }
+            | LinearOp::Compare { .. }
+            | LinearOp::Select { .. }
+            | LinearOp::StoreOutput { .. }
+    )
+}
+
 /// Seed the row's `StoreOutput` register adjoints with the matching output
 /// cotangents. `StoreOutput`s are visited in output-ordinal order — the same
 /// order the forward sink stores them — so the running `ordinal` maps each to its
@@ -146,6 +213,15 @@ fn forward_row_tape(
             LinearOp::LoadTime { dst } => set(regs, dst, inputs.t),
             LinearOp::LoadY { dst, index } => set(regs, dst, load(inputs.y, "y", index)?),
             LinearOp::LoadP { dst, index } => set(regs, dst, load(inputs.p, "p", index)?),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+                set(regs, dst, load(inputs.p, "p", slot)?);
+            }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = inputs
                     .context
@@ -220,6 +296,7 @@ fn reverse_row_adjoints(
             // derivative). Consume the adjoint without redistributing it.
             LinearOp::Const { dst, .. }
             | LinearOp::LoadTime { dst }
+            | LinearOp::LoadIndexedP { dst, .. }
             | LinearOp::Compare { dst, .. } => {
                 take_adj(adj, dst);
             }

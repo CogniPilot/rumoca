@@ -1530,27 +1530,45 @@ fn try_eval_field_access<T: SimFloat>(
         is_constructor,
         ..
     } = base
+        && let Some(value) = try_eval_function_call_field(name, args, *is_constructor, field, env)?
     {
-        if *is_constructor
-            && let Some(value) =
-                eval_field_access_constructor_by_signature(name.var_name(), args, field, env)?
-        {
-            return Ok(value);
-        }
-        if let Some(value) = try_eval_function_record_scalar_field(name, args, field, env)? {
-            return Ok(value);
-        }
+        return Ok(value);
+    }
 
-        let selected = name.with_appended_field(field);
-        if function_call_supported(selected.var_name(), env) {
-            validate_expr_slice_checked(args, env)?;
-            return eval_function_call::<T>(&selected, args, false, env);
-        }
+    if let Some(value) =
+        super::complex_field_arithmetic::try_eval_arithmetic_field(base, field, env)?
+    {
+        return Ok(value);
     }
 
     Err(EvalError::UnsupportedExpression {
         kind: "field access",
     })
+}
+
+pub(super) fn try_eval_function_call_field<T: SimFloat>(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    is_constructor: bool,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    if is_constructor
+        && let Some(value) =
+            eval_field_access_constructor_by_signature(name.var_name(), args, field, env)?
+    {
+        return Ok(Some(value));
+    }
+    if let Some(value) = try_eval_function_record_scalar_field(name, args, field, env)? {
+        return Ok(Some(value));
+    }
+
+    let selected = name.with_appended_field(field);
+    if function_call_supported(selected.var_name(), env) {
+        validate_expr_slice_checked(args, env)?;
+        return eval_function_call::<T>(&selected, args, false, env).map(Some);
+    }
+    Ok(None)
 }
 
 fn try_eval_function_record_scalar_field<T: SimFloat>(

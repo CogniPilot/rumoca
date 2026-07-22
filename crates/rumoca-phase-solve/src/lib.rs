@@ -12,7 +12,7 @@
 //! compatibility tests, and lowering integration. split plan: keep moving
 //! tests and integration-only helpers into focused modules.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use indexmap::IndexMap;
 
@@ -716,13 +716,16 @@ fn lower_initialization_system(
     let residual_rows = lower_initial_residual(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
     let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout)?;
-    let projection_plan = lower_projection_plan(
+    let mut projection_plan = lower_projection_plan(
         &residual_rows,
         &row_targets,
         &projection_indices,
         0..residual_rows.len(),
         dae_model_span(dae_model)?,
     )?;
+    for block in &mut projection_plan.blocks {
+        block.tearing = None;
+    }
 
     // Array-native residual: route through the same structured lowering the
     // continuous system uses, so grid `for`-loop equations (e.g. the immersed-mask
@@ -1050,7 +1053,7 @@ fn lower_projection_plan(
     )?;
     let blocks = projection_blt_blocks(&projection_incidence, context_span)?;
     Ok(solve::AlgebraicProjectionPlan {
-        blocks: lower_blt_projection_blocks(&blocks, &projection_incidence, context_span)?,
+        blocks: lower_blt_projection_blocks(&blocks, &projection_incidence, rows, context_span)?,
     })
 }
 
@@ -1256,7 +1259,6 @@ fn algebraic_projection_incidence(
         .enumerate()
         .map(|(local_idx, y_idx)| (y_idx, local_idx))
         .collect::<BTreeMap<_, _>>();
-
     let mut equation_refs = lower_vec_with_capacity(
         row_to_vars.len(),
         "projection equation ref count",
@@ -1321,6 +1323,7 @@ fn projection_y_index(
 fn lower_blt_projection_blocks(
     blocks: &[BltBlock],
     projection_incidence: &ProjectionIncidence,
+    rows: &[Vec<solve::LinearOp>],
     context_span: rumoca_core::Span,
 ) -> Result<Vec<solve::AlgebraicProjectionBlock>, LowerError> {
     let mut lowered = lower_vec_with_capacity(
@@ -1347,6 +1350,7 @@ fn lower_blt_projection_blocks(
                 equations,
                 unknowns,
                 projection_incidence,
+                rows,
                 context_span,
             )?,
         };
@@ -1372,17 +1376,11 @@ fn scalar_projection_block(
         context_span,
     )?;
     y_indices.push(y_index);
-    Ok(solve::AlgebraicProjectionBlock { rows, y_indices })
-}
-
-fn sorted_set_values(
-    values: BTreeSet<usize>,
-    context: &'static str,
-    context_span: rumoca_core::Span,
-) -> Result<Vec<usize>, LowerError> {
-    let mut out = lower_vec_with_capacity(values.len(), context, context_span)?;
-    out.extend(values);
-    Ok(out)
+    Ok(solve::AlgebraicProjectionBlock {
+        rows,
+        y_indices,
+        tearing: None,
+    })
 }
 
 fn collect_equation_rows(
@@ -1404,10 +1402,15 @@ fn lower_algebraic_loop_projection_block(
     equations: &[EquationRef],
     unknowns: &[UnknownId],
     projection_incidence: &ProjectionIncidence,
+    program_rows: &[Vec<solve::LinearOp>],
     context_span: rumoca_core::Span,
 ) -> Result<solve::AlgebraicProjectionBlock, LowerError> {
     let rows = collect_equation_rows(equations, context_span)?;
-    let mut unknown_indices = BTreeSet::new();
+    let mut loop_y_indices = lower_vec_with_capacity(
+        unknowns.len(),
+        "algebraic loop projection target count",
+        context_span,
+    )?;
     for unknown in unknowns {
         let y_index = projection_y_index(unknown, projection_incidence).ok_or_else(|| {
             lower_contract_violation(
@@ -1415,24 +1418,360 @@ fn lower_algebraic_loop_projection_block(
                 context_span,
             )
         })?;
-        unknown_indices.insert(y_index);
+        loop_y_indices.push(y_index);
     }
-    let y_indices = sorted_set_values(
-        unknown_indices,
-        "algebraic loop projection target count",
-        context_span,
-    )?;
-    if rows.len() != y_indices.len() {
+    if rows.len() != loop_y_indices.len() {
         return Err(lower_contract_violation(
             format!(
                 "projection BLT block has {} equations but {} solver-y unknowns",
                 rows.len(),
-                y_indices.len()
+                loop_y_indices.len()
             ),
             context_span,
         ));
     }
-    Ok(solve::AlgebraicProjectionBlock { rows, y_indices })
+    let mut y_indices = loop_y_indices.clone();
+    y_indices.sort_unstable();
+    let tearing = lower_algebraic_tearing_plan(&rows, &loop_y_indices, program_rows, context_span)?;
+    Ok(solve::AlgebraicProjectionBlock {
+        rows,
+        y_indices,
+        tearing,
+    })
+}
+
+/// Admit exact tearing when its exact structural program-operation count does
+/// not exceed the preserved Newton update.
+///
+/// Both paths first discover a nonzero block through the outer residual sweep.
+/// The preserved path then evaluates the block residual, every structurally
+/// nonzero Jacobian row/column pair, and an acceptance residual. The torn path
+/// evaluates its causal and residual partitions twice, and propagates each tear
+/// seed only through causally reachable rows. Counting the compiler-owned row
+/// programs avoids treating a sparse block as dense, treating every row as
+/// equally expensive, or charging unreachable causal rows. Saturating
+/// arithmetic conservatively declines an
+/// unrepresentable estimate; either choice preserves exact semantics.
+fn runtime_tearing_is_cost_effective(
+    plan: &solve::AlgebraicTearingPlan,
+    block_rows: &[usize],
+    block_y_indices: &[usize],
+    primal_program_rows: &[Vec<solve::LinearOp>],
+    jvp_program_rows: &[Vec<solve::LinearOp>],
+) -> bool {
+    let full_unknowns = block_y_indices.len();
+    let causal = plan.causal_steps.len();
+    let tear = plan.tear_y_indices.len();
+    let block_y = block_y_indices.iter().copied().collect::<BTreeSet<_>>();
+    let row_dependencies = |row: usize| {
+        primal_program_rows
+            .get(row)
+            .map_or_else(BTreeSet::new, |program| {
+                collect_algebraic_y_indices_for_row(program, &block_y)
+            })
+    };
+    let primal_row_work = |row: usize| primal_program_rows.get(row).map_or(usize::MAX, Vec::len);
+    let block_sweep_work = block_rows.iter().copied().fold(0usize, |work, row| {
+        work.saturating_add(primal_row_work(row))
+    });
+    let mut preserved_jacobian_profile = HashMap::new();
+    for &row in block_rows {
+        let Some(program) = jvp_program_rows.get(row) else {
+            return false;
+        };
+        add_program_work(
+            &mut preserved_jacobian_profile,
+            program,
+            row_dependencies(row).len(),
+        );
+    }
+    let mut torn_jacobian_profile = HashMap::new();
+    for &tear_y_index in &plan.tear_y_indices {
+        let mut active = BTreeSet::from([tear_y_index]);
+        for step in &plan.causal_steps {
+            let dependencies = row_dependencies(step.row);
+            if dependencies.is_disjoint(&active) {
+                continue;
+            }
+            active.insert(step.target_y_index);
+            let Some(program) = jvp_program_rows.get(step.row) else {
+                return false;
+            };
+            add_program_work(
+                &mut torn_jacobian_profile,
+                program,
+                1 + usize::from(step.target_residual_coefficient.is_none()),
+            );
+        }
+    }
+    for &row in &plan.residual_rows {
+        let Some(program) = jvp_program_rows.get(row) else {
+            return false;
+        };
+        add_program_work(&mut torn_jacobian_profile, program, tear);
+    }
+    let preserved_jacobian_work = total_program_work(&preserved_jacobian_profile);
+    let torn_jacobian_work = total_program_work(&torn_jacobian_profile);
+    let partition_sweeps = block_sweep_work.saturating_mul(2);
+    let torn_work = partition_sweeps.saturating_add(torn_jacobian_work);
+    let preserved_work = block_sweep_work
+        .saturating_mul(2)
+        .saturating_add(preserved_jacobian_work);
+    // Component-wise dominance proves the reduction is no more expensive for
+    // every non-negative weighting of solver-IR operation kinds. A scalar
+    // instruction count can incorrectly trade extra expensive calls for cheap
+    // loads, as happens in some large linkage functions.
+    let admitted = torn_jacobian_profile
+        .iter()
+        .all(|(kind, &work)| work <= preserved_jacobian_profile.get(kind).copied().unwrap_or(0));
+    tracing::debug!(
+        target: "rumoca_phase_solve::tearing",
+        full_unknowns,
+        tear_unknowns = tear,
+        causal_steps = causal,
+        block_sweep_work,
+        torn_jacobian_work,
+        preserved_jacobian_work,
+        torn_work,
+        preserved_work,
+        admitted,
+        "evaluated exact tearing plan under operation-kind dominance model"
+    );
+    admitted
+}
+
+type ProgramOperationKind = std::mem::Discriminant<solve::LinearOp>;
+
+fn add_program_work(
+    profile: &mut HashMap<ProgramOperationKind, usize>,
+    program: &[solve::LinearOp],
+    multiplier: usize,
+) {
+    for operation in program {
+        let work = profile
+            .entry(std::mem::discriminant(operation))
+            .or_default();
+        *work = work.saturating_add(multiplier);
+    }
+}
+
+fn total_program_work(profile: &HashMap<ProgramOperationKind, usize>) -> usize {
+    profile
+        .values()
+        .copied()
+        .fold(0usize, usize::saturating_add)
+}
+
+pub(crate) fn retain_cost_effective_algebraic_tearing(
+    problem: &mut solve::SolveProblem,
+    artifacts: &solve::SolveArtifacts,
+) -> Result<(), LowerError> {
+    let primal = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs)
+        .map_err(|err| {
+            lower_problem_context(err.into(), "scalarize implicit rows for tearing cost")
+        })?;
+    let jvp = &artifacts.continuous.implicit_jacobian_v_scalar.programs;
+    for block in &mut problem.continuous.algebraic_projection_plan.blocks {
+        let Some(plan) = block.tearing.as_ref() else {
+            continue;
+        };
+        if !runtime_tearing_is_cost_effective(
+            plan,
+            &block.rows,
+            &block.y_indices,
+            &primal.programs,
+            jvp,
+        ) {
+            trace_rejected_tearing_plan(plan, &problem.solve_layout.solver_maps.names);
+            block.tearing = None;
+        }
+    }
+    Ok(())
+}
+
+fn trace_rejected_tearing_plan(plan: &solve::AlgebraicTearingPlan, solver_names: &[String]) {
+    let tear_names = plan
+        .tear_y_indices
+        .iter()
+        .map(|index| solver_names.get(*index).map_or("?", String::as_str))
+        .collect::<Vec<_>>();
+    let causal_names = plan
+        .causal_steps
+        .iter()
+        .map(|step| {
+            solver_names
+                .get(step.target_y_index)
+                .map_or("?", String::as_str)
+        })
+        .collect::<Vec<_>>();
+    tracing::debug!(
+        target: "rumoca_phase_solve::tearing",
+        tear_y_indices = ?plan.tear_y_indices,
+        tear_names = ?tear_names,
+        residual_rows = ?plan.residual_rows,
+        causal_targets = ?causal_names,
+        "rejected exact tearing plan inventory"
+    );
+}
+
+fn lower_algebraic_tearing_plan(
+    block_rows: &[usize],
+    block_y_indices: &[usize],
+    program_rows: &[Vec<solve::LinearOp>],
+    context_span: rumoca_core::Span,
+) -> Result<Option<solve::AlgebraicTearingPlan>, LowerError> {
+    let y_positions = block_y_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(position, index)| (index, position))
+        .collect::<BTreeMap<_, _>>();
+    let mut incidence = lower_vec_with_capacity(
+        block_rows.len(),
+        "algebraic tearing incidence row count",
+        context_span,
+    )?;
+    let mut causal_candidates = lower_vec_with_capacity(
+        block_rows.len(),
+        "algebraic tearing causal candidate count",
+        context_span,
+    )?;
+    for &row in block_rows {
+        let program = program_rows.get(row).ok_or_else(|| {
+            lower_contract_violation(
+                format!("algebraic tearing row {row} has no scalar program"),
+                context_span,
+            )
+        })?;
+        incidence.push(
+            collect_algebraic_y_indices_for_row(
+                program,
+                &block_y_indices.iter().copied().collect(),
+            )
+            .into_iter()
+            .filter_map(|index| y_positions.get(&index).copied())
+            .collect::<HashSet<_>>(),
+        );
+        causal_candidates.push(causal_candidates_for_row(
+            program,
+            &y_positions,
+            context_span,
+        )?);
+    }
+    let Some(tearing) = rumoca_phase_structural::tear_algebraic_loop_with_causal_candidates(
+        block_rows.len(),
+        &incidence,
+        &causal_candidates,
+    ) else {
+        return Ok(None);
+    };
+    let plan = map_algebraic_tearing_plan(
+        &tearing,
+        block_rows,
+        block_y_indices,
+        program_rows,
+        context_span,
+    )?;
+    tracing::debug!(
+        target: "rumoca_phase_solve::tearing",
+        full_unknowns = block_y_indices.len(),
+        tear_unknowns = plan.tear_y_indices.len(),
+        causal_steps = plan.causal_steps.len(),
+        "lowered exact algebraic tearing plan"
+    );
+    Ok(Some(plan))
+}
+
+fn causal_candidates_for_row(
+    row: &[solve::LinearOp],
+    y_positions: &BTreeMap<usize, usize>,
+    context_span: rumoca_core::Span,
+) -> Result<HashSet<usize>, LowerError> {
+    let mut candidates = HashSet::new();
+    candidates.try_reserve(y_positions.len()).map_err(|_| {
+        lower_contract_violation(
+            "algebraic tearing causal candidate count exceeds host memory limits".to_string(),
+            context_span,
+        )
+    })?;
+    for (&y_index, &position) in y_positions {
+        if rumoca_eval_solve::row_is_affine_in_y_index(row, y_index) {
+            candidates.insert(position);
+        }
+    }
+    Ok(candidates)
+}
+
+fn map_algebraic_tearing_plan(
+    tearing: &rumoca_phase_structural::TearingResult,
+    block_rows: &[usize],
+    block_y_indices: &[usize],
+    program_rows: &[Vec<solve::LinearOp>],
+    context_span: rumoca_core::Span,
+) -> Result<solve::AlgebraicTearingPlan, LowerError> {
+    let residual_rows = tearing
+        .residual_eq_local_indices
+        .iter()
+        .map(|&index| block_rows[index])
+        .collect();
+    let tear_y_indices = tearing
+        .tear_var_local_indices
+        .iter()
+        .map(|&index| block_y_indices[index])
+        .collect();
+    let mut causal_steps = lower_vec_with_capacity(
+        tearing.causal_sequence.len(),
+        "algebraic tearing causal step count",
+        context_span,
+    )?;
+    for &(row, target) in &tearing.causal_sequence {
+        let equation_row = block_rows[row];
+        let target_y_index = block_y_indices[target];
+        causal_steps.push(solve::AlgebraicCausalStep {
+            row: equation_row,
+            target_y_index,
+            target_residual_coefficient: constant_target_residual_coefficient(
+                &program_rows[equation_row],
+                target_y_index,
+                context_span,
+            )?,
+        });
+    }
+    Ok(solve::AlgebraicTearingPlan {
+        residual_rows,
+        tear_y_indices,
+        causal_steps,
+    })
+}
+
+fn constant_target_residual_coefficient(
+    row: &[solve::LinearOp],
+    target_y_index: usize,
+    context_span: rumoca_core::Span,
+) -> Result<Option<f64>, LowerError> {
+    let shapes = rumoca_eval_solve::target_assignment_shapes(row).map_err(|err| {
+        lower_contract_violation(
+            format!("invalid algebraic target-assignment row: {err}"),
+            context_span,
+        )
+    })?;
+    let shape = shapes
+        .into_iter()
+        .find(|shape| shape.target_y_index() == target_y_index);
+    Ok(match shape {
+        Some(rumoca_eval_solve::TargetAssignmentShape::Direct {
+            target_y_index: target,
+            target_scale,
+            ..
+        }) if target == target_y_index => Some(target_scale),
+        Some(rumoca_eval_solve::TargetAssignmentShape::Affine {
+            target_y_index: target,
+            coefficient_reg: None,
+            coefficient_scale,
+            ..
+        }) if target == target_y_index => Some(coefficient_scale),
+        _ => None,
+    })
 }
 
 pub fn solver_vector_names(

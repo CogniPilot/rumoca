@@ -939,8 +939,17 @@ pub(crate) fn finalize_flat_model(
     outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
 
     let connections_start = maybe_start_timer();
-    let connections_result =
-        connections::process_connections(flat, overlay, options.strict_connection_validation);
+    let mut oc_forest = vcg::OverconstrainedEquationForest::new(
+        &flatten_graph.vcg_data.definite_roots,
+        &flatten_graph.vcg_data.branches,
+        &flatten_graph.optional_edges,
+    );
+    let connections_result = connections::process_connections(
+        flat,
+        overlay,
+        options.strict_connection_validation,
+        &mut oc_forest,
+    );
     maybe_record_connections_timing(connections_start);
     connections_result?;
 

@@ -1020,6 +1020,52 @@ fn lower_discrete_rhs_supports_interval_intrinsic_for_clocked_varref_metadata() 
 }
 
 #[test]
+fn lower_discrete_rhs_infers_interval_as_scalar_inside_arithmetic() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("pulse.u"), scalar_var("pulse.u"));
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("pulse.tol"),
+        scalar_var("pulse.tol"),
+    );
+    dae_model
+        .clocks
+        .intervals
+        .insert("pulse.u".to_string(), 0.1);
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("pulse.tol").into()),
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(0.25),
+                span: test_span(),
+            }),
+            rhs: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("interval").into(),
+                args: vec![rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new("pulse.u").into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }],
+                is_constructor: false,
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: "test scalar interval arithmetic".to_string(),
+        scalar_count: 1,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_discrete_rhs(&dae_model, &layout).expect("interval arithmetic should lower");
+    let (_, output) = eval_linear_ops(&rows[0], &[], &[], 0.0);
+    assert!((output.expect("row output") - 0.025).abs() < 1e-12);
+}
+
+#[test]
 fn lower_discrete_rhs_preserves_super_sample_value_form_for_clocked_varref() {
     let mut dae_model = dae::Dae::default();
     dae_model

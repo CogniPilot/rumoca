@@ -17,12 +17,13 @@ pub(in crate::lower) fn collect_derivative_equations(
     }
     for (equation_index, equation) in dae_model.continuous.equations.iter().enumerate() {
         let before = equations.len();
-        if let Some(projected) = function_projected_residuals_with_owner(
+        let projected = function_projected_residuals_with_owner(
             &equation.rhs,
             dae_model,
             structural_bindings,
             equation.span,
-        )? {
+        )?;
+        if let Some(projected) = projected {
             for residual in projected {
                 append_derivative_rows_for_residual(
                     &mut equations,

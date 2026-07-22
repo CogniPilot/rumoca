@@ -1,6 +1,195 @@
 use super::*;
 
 #[test]
+fn test_singular_holonomic_reduction_demotes_dependent_state_pair() {
+    let mut dae = Dae::new();
+    for name in ["q", "w"] {
+        let mut state = test_variable(name);
+        state.state_select = rumoca_core::StateSelect::Always;
+        dae.variables.states.insert(VarName::new(name), state);
+    }
+    for name in ["s", "v"] {
+        let mut state = test_variable(name);
+        state.state_select = rumoca_core::StateSelect::Prefer;
+        dae.variables.states.insert(VarName::new(name), state);
+    }
+    for name in ["aq", "av"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.continuous.equations.push(eq(sub(der("q"), var("w"))));
+    dae.continuous.equations.push(eq(sub(der("w"), var("aq"))));
+    dae.continuous.equations.push(eq(sub(der("s"), var("v"))));
+    dae.continuous.equations.push(eq(sub(der("v"), var("av"))));
+    dae.continuous.equations.push(eq(sub(
+        mul(var("s"), var("s")),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Sin,
+            args: vec![var("q")],
+            span: Span::DUMMY,
+        },
+    )));
+
+    let candidates = crate::dae_prepare::singular_holonomic_state_candidates(&dae)
+        .expect("the position/velocity state-selection chain should be constructible");
+    let selected = candidates
+        .into_iter()
+        .find(|candidate| candidate.demoted_states.len() == 2)
+        .expect("the complete second-order constraint chain should be present");
+    dae = selected.dae;
+
+    assert!(dae.variables.states.contains_key(&VarName::new("q")));
+    assert!(dae.variables.states.contains_key(&VarName::new("w")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("s")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("v")));
+    assert_eq!(
+        dae.continuous
+            .equations
+            .iter()
+            .filter(|equation| equation.origin.contains("d_dt_holonomic_constraint"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn test_singular_holonomic_reduction_preserves_vector_constraint_rank() {
+    let mut dae = Dae::new();
+    let mut position = test_variable("position");
+    position.dims = vec![3];
+    position.state_select = rumoca_core::StateSelect::Avoid;
+    dae.variables
+        .states
+        .insert(VarName::new("position"), position);
+    let mut velocity = test_variable("velocity");
+    velocity.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("velocity"), velocity);
+
+    let mut ode = eq(sub(der("position"), var("velocity")));
+    ode.scalar_count = 3;
+    dae.continuous.equations.push(ode);
+    for component in 1..=3 {
+        dae.continuous
+            .equations
+            .push(eq(sub(var_idx("position", component), int(0))));
+    }
+
+    assert_eq!(
+        build_der_value_map(&dae).get("position"),
+        Some(&var("velocity")),
+        "the aggregate ODE must provide the vector derivative value"
+    );
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(&dae);
+    let groups = crate::dae_prepare::dummy_derivative_group::holonomic_constraint_groups(
+        &dae,
+        &VarName::new("position"),
+        &structural_bindings,
+    )
+    .expect("vector constraint grouping should succeed");
+    assert_eq!(groups, vec![vec![1, 2, 3]]);
+    let differentiated =
+        crate::dae_prepare::dummy_derivative_group::differentiate_holonomic_constraint_group(
+            &dae,
+            &VarName::new("position"),
+            &groups[0],
+            &collect_residual_defining_expr_index(&dae),
+            &structural_bindings,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("vector constraint differentiation should succeed");
+    assert!(
+        differentiated.is_some(),
+        "the complete vector constraint should have a closed derivative"
+    );
+
+    let candidates = crate::dae_prepare::singular_holonomic_state_candidates(&dae)
+        .expect("the complete vector constraint should be differentiated as one rank-3 block");
+    let selected = candidates
+        .into_iter()
+        .find(|candidate| {
+            candidate
+                .demoted_states
+                .iter()
+                .any(|(_, name)| name.as_str() == "position")
+        })
+        .expect("the vector position state should have a holonomic reduction candidate");
+
+    assert!(
+        selected
+            .dae
+            .variables
+            .algebraics
+            .contains_key(&VarName::new("position"))
+    );
+    let differentiated = selected
+        .dae
+        .continuous
+        .equations
+        .iter()
+        .filter(|equation| equation.origin.contains("d_dt_holonomic_constraint"))
+        .collect::<Vec<_>>();
+    assert_eq!(differentiated.len(), 3);
+    for component in 1..=3 {
+        assert!(
+            differentiated.iter().any(|equation| expr_contains_var(
+                &equation.rhs,
+                &VarName::new(format!("velocity[{component}]"))
+            )),
+            "the differentiated block must retain velocity component {component}"
+        );
+    }
+    assert!(
+        selected
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("position")))
+    );
+}
+
+#[test]
+fn test_index_reduction_normalizes_exact_derivative_alias_from_independent_constraint() {
+    let mut dae = Dae::new();
+    for name in ["x", "q"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), test_variable(name));
+    }
+    for name in ["dx", "a", "b"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+
+    dae.continuous.equations.push(eq(sub(var("dx"), der("x"))));
+    dae.continuous.equations.push(eq(sub(der("q"), real(1.0))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("a"), add(var("q"), var("x")))));
+    dae.continuous.equations.push(eq(sub(var("a"), var("b"))));
+    dae.continuous.equations.push(eq(sub(var("b"), var("q"))));
+
+    let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+        .expect("index reduction should follow the exact derivative alias");
+
+    assert_eq!(changed, 1);
+    assert!(
+        expr_contains_der_of(&dae.continuous.equations[2].rhs, &VarName::new("x")),
+        "the differentiated constraint must expose the canonical state derivative"
+    );
+    assert_eq!(dae.initialization.equations.len(), 1);
+    assert!(expr_contains_var(
+        &dae.initialization.equations[0].rhs,
+        &VarName::new("x")
+    ));
+}
+
+#[test]
 fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
     let indexed_constraint_span = Span::from_offsets(
         rumoca_core::SourceId::from_source_name("vector_constraint.mo"),
@@ -336,6 +525,224 @@ fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
             .algebraics
             .contains_key(&VarName::new("mass.v"))
     );
+}
+
+#[test]
+fn test_constrained_dummy_derivative_reduction_handles_parameter_guarded_vector_constraint() {
+    let mut dae = Dae::new();
+    let mut constrained = test_variable("x");
+    constrained.dims = vec![3];
+    constrained.state_select = rumoca_core::StateSelect::Avoid;
+    dae.variables.states.insert(VarName::new("x"), constrained);
+    let mut independent = test_variable("y");
+    independent.dims = vec![3];
+    dae.variables.states.insert(VarName::new("y"), independent);
+    let mut mass = test_variable("m");
+    mass.start = Some(real(0.5));
+    mass.is_tunable = true;
+    dae.variables.parameters.insert(VarName::new("m"), mass);
+
+    dae.continuous.equations.push(Equation {
+        lhs: None,
+        rhs: Expression::If {
+            branches: vec![(gt(var("m"), int(0)), sub(var("x"), var("y")))],
+            else_branch: Box::new(sub(var("x"), array(vec![int(0), int(0), int(0)]))),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "parameter-guarded vector constraint".to_string(),
+        scalar_count: 3,
+    });
+    dae.continuous.equations.push(Equation {
+        lhs: None,
+        rhs: sub(der("x"), der("y")),
+        span: Span::DUMMY,
+        origin: "constrained vector derivative".to_string(),
+        scalar_count: 3,
+    });
+    dae.continuous.equations.push(Equation {
+        lhs: None,
+        rhs: sub(der("y"), array(vec![int(1), int(2), int(3)])),
+        span: Span::DUMMY,
+        origin: "independent vector derivative".to_string(),
+        scalar_count: 3,
+    });
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("parameter-guarded vector constraint should be reducible");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("x")))
+    );
+}
+
+#[test]
+fn test_complete_dummy_derivative_group_preserves_position_and_adds_velocity_constraint() {
+    let mut dae = Dae::new();
+    for index in 1..=3 {
+        let core_name = format!("q{index}");
+        let mut core = test_variable(&core_name);
+        core.state_select = rumoca_core::StateSelect::Prefer;
+        dae.variables.states.insert(VarName::new(&core_name), core);
+
+        let dummy_name = format!("dummy{index}");
+        let mut dummy = test_variable(&dummy_name);
+        dummy.state_select = rumoca_core::StateSelect::Never;
+        dae.variables
+            .states
+            .insert(VarName::new(&dummy_name), dummy);
+
+        let velocity_name = format!("velocity{index}");
+        dae.variables
+            .algebraics
+            .insert(VarName::new(&velocity_name), test_variable(&velocity_name));
+        dae.continuous
+            .equations
+            .push(eq(sub(var(&velocity_name), der(&dummy_name))));
+        dae.continuous
+            .equations
+            .push(eq(sub(der(&core_name), int(index))));
+        dae.continuous
+            .equations
+            .push(eq(sub(var_idx("position", index), var(&dummy_name))));
+    }
+    let mut position = test_variable("position");
+    position.dims = vec![3];
+    position.state_select = rumoca_core::StateSelect::Never;
+    dae.variables
+        .algebraics
+        .insert(VarName::new("position"), position);
+    let position_constraint = sub(
+        var("position"),
+        array((1..=3).map(|index| var(&format!("q{index}"))).collect()),
+    );
+    dae.continuous.equations.push(Equation {
+        lhs: None,
+        rhs: position_constraint.clone(),
+        span: Span::DUMMY,
+        origin: "holonomic position constraint".to_string(),
+        scalar_count: 3,
+    });
+    let original_equation_count = dae.continuous.equations.len();
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("the complete vector dummy-derivative group should reduce");
+
+    assert_eq!(demoted, 3);
+    assert_eq!(dae.continuous.equations.len(), original_equation_count + 1);
+    assert!(dae.continuous.equations.iter().any(|equation| {
+        equation.origin == "holonomic position constraint" && equation.rhs == position_constraint
+    }));
+    let differentiated = dae
+        .continuous
+        .equations
+        .iter()
+        .find(|equation| {
+            equation
+                .origin
+                .contains("d_dt_complete_dummy_derivative_group")
+        })
+        .expect("the differentiated velocity constraint should be appended");
+    for index in 1..=3 {
+        let dummy = VarName::new(format!("dummy{index}"));
+        assert!(!dae.variables.states.contains_key(&dummy));
+        assert!(dae.variables.algebraics.contains_key(&dummy));
+        assert!(
+            dae.continuous
+                .equations
+                .iter()
+                .all(|equation| !expr_contains_der_of(&equation.rhs, &dummy))
+        );
+        assert!(expr_contains_var(
+            &differentiated.rhs,
+            &VarName::new(format!("velocity{index}"))
+        ));
+    }
+}
+
+#[test]
+fn test_constrained_dummy_prefers_viable_duplicate_definition() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .states
+        .insert(VarName::new("q"), test_variable("q"));
+    for name in ["bad_alias", "good_alias"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+
+    // Both rows constrain x to the same q trajectory. The first route passes
+    // through a self-dependent algebraic definition, so differentiating it
+    // would retain der(x); the later direct route has the closed derivative
+    // der(q) and must win duplicate-definition selection.
+    dae.continuous
+        .equations
+        .push(eq(sub(var("x"), var("bad_alias"))));
+    dae.continuous.equations.push(eq(sub(
+        var("bad_alias"),
+        sub(add(var("x"), var("q")), var("q")),
+    )));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("x"), var("good_alias"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("good_alias"), var("q"))));
+    dae.continuous.equations.push(eq(sub(der("x"), der("q"))));
+    dae.continuous.equations.push(eq(sub(der("q"), int(1))));
+
+    let definitions = constrained_dummy_state_defining_exprs(&dae)
+        .expect("duplicate constrained-state definitions should be analyzable");
+    assert_eq!(
+        definitions
+            .get(&VarName::new("x"))
+            .and_then(|definition| definition.aggregate_defining_expr.as_ref()),
+        Some(&var("good_alias")),
+        "a viable closed derivative plan should replace an earlier unusable definition"
+    );
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("the viable duplicate definition should support reduction");
+    assert_eq!(demoted, 1);
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+}
+
+#[test]
+fn test_constrained_dummy_derivative_reduction_rejects_time_guarded_constraint() {
+    let mut dae = Dae::new();
+    for name in ["x", "y"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.continuous.equations.push(eq(Expression::If {
+        branches: vec![(gt(var("time"), int(0)), sub(var("x"), var("y")))],
+        else_branch: Box::new(sub(var("x"), int(0))),
+        span: Span::DUMMY,
+    }));
+    dae.continuous.equations.push(eq(sub(der("x"), der("y"))));
+    dae.continuous.equations.push(eq(sub(der("y"), int(1))));
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae)
+        .expect("dynamic constraint analysis should remain well formed");
+
+    assert_eq!(demoted, 0);
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
+
+    let directly_demoted = demote_direct_assigned_states(&mut dae)
+        .expect("dynamic direct-assignment analysis should remain well formed");
+    assert_eq!(directly_demoted, 0);
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
 }
 
 #[test]

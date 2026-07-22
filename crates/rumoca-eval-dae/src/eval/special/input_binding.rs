@@ -243,70 +243,55 @@ pub(super) fn copy_array_literal_vector_entries<T: SimFloat>(
 pub(super) fn copy_array_literal_matrix_entries<T: SimFloat>(
     local_env: &mut VarEnv<T>,
     param: &FunctionParam,
-    rows: &[Expression],
+    arg_expr: &Expression,
     caller_env: &VarEnv<T>,
 ) -> Result<bool, EvalError> {
-    if rows.is_empty() {
+    let Expression::Array {
+        elements,
+        is_matrix: true,
+        ..
+    } = arg_expr
+    else {
+        return Ok(false);
+    };
+    if elements.is_empty() {
         return Ok(false);
     }
 
-    let mut max_cols = 0usize;
-    let mut expected_cols = None;
-    let mut actual = 0usize;
-    let mut values = Vec::new();
-    let selection_field = selected_component_field_in_current_call(caller_env);
-    for row_expr in rows {
-        let row_values: Vec<&Expression> = match row_expr {
-            Expression::Array { elements, .. } => elements.iter().collect(),
-            _ => vec![row_expr],
-        };
-        if let Some(expected) = expected_cols
-            && row_values.len() != expected
-        {
-            return Err(EvalError::ShapeMismatch {
-                context: "function matrix input rectangularity",
-                expected,
-                actual: row_values.len(),
-            });
-        }
-        expected_cols = Some(row_values.len());
-        max_cols = max_cols.max(row_values.len());
-        actual += row_values.len();
-        for value_expr in row_values {
-            let value = eval_expr::<T>(value_expr, caller_env)?;
-            values.push(value);
-        }
-    }
-
-    if max_cols == 0 {
-        return Ok(false);
-    }
-    // Only enforce fully concrete declared shapes; zero/negative dims are
-    // size-expression placeholders resolved by the actual argument.
-    if param.dims.iter().all(|dim| *dim > 0)
-        && let Some(expected) = concrete_param_size(&param.dims)
-        && expected != actual
-    {
+    // Matrix constructors are concatenations (MLS §10.4.2), so an element
+    // may itself be an array-valued row or column expression.  Use the same
+    // canonical evaluator as every other array context instead of imposing a
+    // second, row-only interpretation at the function-call boundary.
+    let values = eval_array_like_values::<T>(arg_expr, caller_env)?;
+    let dims = resolved_array_input_dims(param, arg_expr, caller_env, local_env, values.len())?
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "function matrix input shape",
+        })?;
+    let expected = concrete_param_size(&dims).ok_or(EvalError::UnsupportedExpression {
+        kind: "function matrix input shape",
+    })?;
+    if expected != values.len() {
         return Err(EvalError::ShapeMismatch {
             context: "function matrix input",
             expected,
-            actual,
+            actual: values.len(),
         });
     }
-    let shape = vec![rows.len() as i64, max_cols as i64];
-    set_array_entries(local_env, &param.name, &shape, &values);
+
+    let selection_field = selected_component_field_in_current_call(caller_env);
+    set_array_entries(local_env, &param.name, &dims, &values);
     if let Some(field) = selection_field {
         set_array_entries(
             local_env,
             &format!("{}.{field}", param.name),
-            &shape,
+            &dims,
             &values,
         );
     }
-    let dims = std::sync::Arc::make_mut(&mut local_env.dims);
-    dims.insert(param.name.clone(), shape.clone());
+    let local_dims = std::sync::Arc::make_mut(&mut local_env.dims);
+    local_dims.insert(param.name.clone(), dims.clone());
     if let Some(field) = selection_field {
-        dims.insert(format!("{}.{field}", param.name), shape);
+        local_dims.insert(format!("{}.{field}", param.name), dims);
     }
     Ok(true)
 }
@@ -323,17 +308,18 @@ pub(super) fn copy_array_literal_input_entries<T: SimFloat>(
     arg_expr: &Expression,
     caller_env: &VarEnv<T>,
 ) -> Result<bool, EvalError> {
-    let Expression::Array {
-        elements,
-        is_matrix,
-        ..
-    } = arg_expr
-    else {
+    let Expression::Array { elements, .. } = arg_expr else {
         return Ok(false);
     };
 
-    if *is_matrix {
-        copy_array_literal_matrix_entries(local_env, param, elements, caller_env)
+    if matches!(
+        arg_expr,
+        Expression::Array {
+            is_matrix: true,
+            ..
+        }
+    ) {
+        copy_array_literal_matrix_entries(local_env, param, arg_expr, caller_env)
     } else {
         copy_array_literal_vector_entries(local_env, param, elements, caller_env)
     }

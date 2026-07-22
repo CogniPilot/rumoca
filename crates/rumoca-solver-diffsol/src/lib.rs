@@ -58,20 +58,96 @@ pub(crate) type LinearSolver = FaerSparseLU<f64>;
 pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
 
 #[derive(Clone)]
-pub(crate) struct AlgebraicWarmStart(Rc<RefCell<Vec<f64>>>);
+pub(crate) struct AlgebraicWarmStart(Rc<RefCell<AlgebraicWarmStartState>>);
+
+struct AlgebraicWarmStartState {
+    committed: Vec<f64>,
+    candidate: Option<AlgebraicWarmStartCandidate>,
+}
+
+struct AlgebraicWarmStartCandidate {
+    time: f64,
+    state: Vec<f64>,
+    solver_y: Vec<f64>,
+}
 
 impl AlgebraicWarmStart {
     fn new(solver_y: Vec<f64>) -> Self {
-        Self(Rc::new(RefCell::new(solver_y)))
+        Self(Rc::new(RefCell::new(AlgebraicWarmStartState {
+            committed: solver_y,
+            candidate: None,
+        })))
     }
 
     fn speculative(&self) -> Vec<f64> {
-        self.0.borrow().clone()
+        self.0.borrow().committed.clone()
+    }
+
+    /// Choose the closest constraint-consistent continuation point at the same
+    /// solver time. A speculative candidate is only an initial Newton guess;
+    /// accepted-state commitment remains exact in [`Self::commit_matching_candidate`].
+    fn speculative_nearest(&self, time: f64, state: &[f64]) -> Vec<f64> {
+        let warm_start = self.0.borrow();
+        let Some(candidate) = warm_start.candidate.as_ref().filter(|candidate| {
+            candidate.time.to_bits() == time.to_bits() && candidate.state.len() == state.len()
+        }) else {
+            return warm_start.committed.clone();
+        };
+        let committed_state = warm_start.committed.get(..state.len()).unwrap_or_default();
+        if normalized_state_distance(&candidate.state, state)
+            <= normalized_state_distance(committed_state, state)
+        {
+            candidate.solver_y.clone()
+        } else {
+            warm_start.committed.clone()
+        }
     }
 
     fn commit(&self, solver_y: Vec<f64>) {
-        *self.0.borrow_mut() = solver_y;
+        let mut state = self.0.borrow_mut();
+        state.committed = solver_y;
+        state.candidate = None;
     }
+
+    fn record_candidate(&self, time: f64, state: &[f64], solver_y: Vec<f64>) {
+        self.0.borrow_mut().candidate = Some(AlgebraicWarmStartCandidate {
+            time,
+            state: state.to_vec(),
+            solver_y,
+        });
+    }
+
+    fn commit_matching_candidate(&self, time: f64, state: &[f64]) -> bool {
+        let mut warm_start = self.0.borrow_mut();
+        let matches = warm_start.candidate.as_ref().is_some_and(|candidate| {
+            candidate.time.to_bits() == time.to_bits()
+                && candidate.state.len() == state.len()
+                && candidate
+                    .state
+                    .iter()
+                    .zip(state)
+                    .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits())
+        });
+        if !matches {
+            return false;
+        }
+        let Some(candidate) = warm_start.candidate.take() else {
+            return false;
+        };
+        warm_start.committed = candidate.solver_y;
+        true
+    }
+}
+
+fn normalized_state_distance(lhs: &[f64], rhs: &[f64]) -> f64 {
+    if lhs.len() != rhs.len() {
+        return f64::INFINITY;
+    }
+    lhs.iter()
+        .copied()
+        .zip(rhs.iter().copied())
+        .map(|(lhs, rhs)| (lhs - rhs).abs() / (1.0 + lhs.abs().max(rhs.abs())))
+        .fold(0.0, f64::max)
 }
 pub use error::SimError;
 pub(crate) use ode::{
@@ -686,8 +762,21 @@ where
             return Ok(());
         };
         let state = self.solver.state();
+        if warm_start.commit_matching_candidate(state.t, state.y.as_slice()) {
+            tracing::debug!(
+                target: "rumoca_solver_diffsol::warm_start",
+                time = state.t,
+                "committed algebraic warm start from matching accepted RHS evaluation"
+            );
+            return Ok(());
+        }
+        tracing::debug!(
+            target: "rumoca_solver_diffsol::warm_start",
+            time = state.t,
+            "accepted state had no matching RHS algebraic candidate; refreshing"
+        );
         let mut solver_y = warm_start.speculative();
-        self.runtime.full_solver_y_with_guess(
+        self.runtime.refresh_derivative_solver_y_with_guess(
             state.t,
             state.y.as_slice(),
             self.runtime_params.borrow().as_slice(),

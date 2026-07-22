@@ -712,6 +712,17 @@ fn eval_user_function_call<T: SimFloat>(
         initialize_user_function_scope_values(&mut local_env, &outputs, &locals)?;
         crate::statement::eval_statements(&body, &mut local_env)
     });
+    if trace_call && let Err(error) = &eval_result {
+        tracing::debug!(
+            target: "rumoca_eval_dae::function_match",
+            requested = %name.as_str(),
+            resolved = %resolved_name.as_str(),
+            ?error,
+            ?inputs,
+            ?args,
+            "function-call evaluation failed"
+        );
+    }
     eval_result?;
     trace_function_call_outputs(trace_call, &local_env, &outputs);
     maybe_trace_interpolation_coefficients_state(&resolved_name, &local_env, &body);

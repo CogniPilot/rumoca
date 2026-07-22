@@ -390,12 +390,24 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             for idx in component {
                 group.push(analysis.states[*idx].clone());
             }
-            let node = lower_linsolve_group(&group, &lowering_ctx)?;
+            let span = derivative_state_or_context_span(dae_model, state)?;
+            let node = if component_indices_are_contiguous_from(component, i) {
+                lower_linsolve_group(&group, &lowering_ctx)?
+            } else {
+                let program = lower_linsolve_group_program(&group, &lowering_ctx)?;
+                ComputeNode::ScalarPrograms(
+                    rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+                        vec![program],
+                        vec![span],
+                        component.clone(),
+                    )?,
+                )
+            };
             reserve_derivative_capacity(
                 &mut block.nodes,
                 1,
                 "derivative compute node count",
-                derivative_state_or_context_span(dae_model, state)?,
+                span,
             )?;
             block.nodes.push(node);
             for idx in component.iter().copied() {
@@ -496,6 +508,13 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     )?;
 
     Ok(block)
+}
+
+fn component_indices_are_contiguous_from(component: &[usize], start: usize) -> bool {
+    component
+        .iter()
+        .copied()
+        .eq(start..start.saturating_add(component.len()))
 }
 
 fn flush_pending_derivative_programs(
@@ -1506,6 +1525,34 @@ fn lower_linsolve_group(
         metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
         span: setup.span,
     })
+}
+
+fn lower_linsolve_group_program(
+    states: &[StateScalar],
+    ctx: &DerivativeRhsLoweringContext<'_>,
+) -> Result<Vec<LinearOp>, LowerError> {
+    let mut setup = build_dense_group_solve_setup(states, ctx)?;
+    for component in 0..setup.n {
+        let dst = setup.next_reg;
+        setup.next_reg = setup.next_reg.checked_add(1).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "Solve register allocation overflow after r{}",
+                    setup.next_reg
+                ),
+                setup.span,
+            )
+        })?;
+        setup.ops.push(LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start: setup.matrix_start,
+            rhs_start: setup.rhs_start,
+            n: setup.n,
+            component,
+        });
+        setup.ops.push(LinearOp::StoreOutput { src: dst });
+    }
+    Ok(setup.ops)
 }
 
 fn lower_linsolve_group_component(

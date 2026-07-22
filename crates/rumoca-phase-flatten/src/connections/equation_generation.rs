@@ -76,6 +76,7 @@ pub(super) fn generate_equality_equations(
     flat: &mut flat::Model,
     variables: &[rumoca_core::VarName],
     span: rumoca_core::Span,
+    oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
 ) -> Result<(), FlattenError> {
     let provenance = require_connection_provenance(span, "connection equality equation")?;
     // Generate chain of equality equations: v1 - v2 = 0, v2 - v3 = 0, ...
@@ -104,6 +105,25 @@ pub(super) fn generate_equality_equations(
             continue;
         }
 
+        match oc_forest.generated_equality_disposition(flat, var_a, var_b)? {
+            crate::vcg::GeneratedEqualityDisposition::Retain => {}
+            crate::vcg::GeneratedEqualityDisposition::Omit => continue,
+            crate::vcg::GeneratedEqualityDisposition::Replace {
+                lhs_record,
+                rhs_record,
+                constraint_size,
+            } => {
+                generate_equality_constraint_equation(
+                    flat,
+                    &lhs_record,
+                    &rhs_record,
+                    constraint_size,
+                    span,
+                )?;
+                continue;
+            }
+        }
+
         // Mark both variables as connected
         mark_connected(flat, var_a);
         mark_connected(flat, var_b);
@@ -121,6 +141,62 @@ pub(super) fn generate_equality_equations(
         flat.add_equation(eq);
     }
 
+    Ok(())
+}
+
+fn generate_equality_constraint_equation(
+    flat: &mut flat::Model,
+    lhs_record: &str,
+    rhs_record: &str,
+    constraint_size: usize,
+    span: rumoca_core::Span,
+) -> Result<(), FlattenError> {
+    let provenance = require_connection_provenance(span, "overconstrained equalityConstraint")?;
+    let lhs_name = rumoca_core::VarName::new(lhs_record);
+    let rhs_name = rumoca_core::VarName::new(rhs_record);
+    let lhs_instance = flat.record_instances.get(&lhs_name).ok_or_else(|| {
+        FlattenError::internal(format!(
+            "overconstrained record `{lhs_record}` is absent from Flat record metadata"
+        ))
+    })?;
+    let rhs_instance = flat.record_instances.get(&rhs_name).ok_or_else(|| {
+        FlattenError::internal(format!(
+            "overconstrained record `{rhs_record}` is absent from Flat record metadata"
+        ))
+    })?;
+    if lhs_instance.type_def_id != rhs_instance.type_def_id {
+        return Err(FlattenError::internal(format!(
+            "overconstrained record edge `{lhs_record}`--`{rhs_record}` has incompatible record types"
+        )));
+    }
+    let record_type = flat
+        .record_types
+        .get(&lhs_instance.type_def_id)
+        .ok_or_else(|| {
+            FlattenError::internal(format!(
+                "overconstrained record `{lhs_record}` has no Flat record type metadata"
+            ))
+        })?;
+    let function_name = format!("{}.equalityConstraint", record_type.name);
+    let residual = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::generated(function_name.clone()),
+        args: vec![
+            var_to_expr(&lhs_name, provenance),
+            var_to_expr(&rhs_name, provenance),
+        ],
+        is_constructor: false,
+        span: provenance.span(),
+    };
+    let origin = flat::EquationOrigin::Connection {
+        lhs: format!("zeros({constraint_size})"),
+        rhs: format!("{function_name}({lhs_record}, {rhs_record})"),
+    };
+    flat.add_equation(flat::Equation::new_array(
+        residual,
+        span,
+        origin,
+        constraint_size,
+    ));
     Ok(())
 }
 
@@ -297,6 +373,7 @@ pub(crate) fn process_connections(
     flat: &mut flat::Model,
     overlay: &ast::InstanceOverlay,
     strict_validation: bool,
+    oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
 ) -> Result<(), FlattenError> {
     // Build prefix-to-children index once for O(1) sub-variable lookups
     let prefix_children = build_prefix_children(flat);
@@ -370,7 +447,7 @@ pub(crate) fn process_connections(
                 set.span,
             )?,
             ConnectionKind::Potential => {
-                generate_equality_equations(flat, &set.variables, set.span)?
+                generate_equality_equations(flat, &set.variables, set.span, oc_forest)?;
             }
             ConnectionKind::Stream => mark_stream_connection_set(flat, &set.variables),
         }

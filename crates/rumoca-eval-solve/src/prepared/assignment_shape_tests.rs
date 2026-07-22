@@ -98,3 +98,84 @@ fn direct_assignment_shape_rejects_target_dependent_expression() {
 
     assert_eq!(target_assignment_shape(&row).unwrap(), None);
 }
+
+#[test]
+fn nested_affine_row_is_proven_for_exact_pivoting() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 7 },
+        LinearOp::LoadY { dst: 1, index: 8 },
+        LinearOp::Const { dst: 2, value: 3.0 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Mul,
+            lhs: 2,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+
+    assert!(row_is_affine_in_y_index(&row, 7));
+    assert!(row_is_affine_in_y_index(&row, 8));
+}
+
+#[test]
+fn nested_affine_row_evaluates_exact_target_in_one_prepared_pass() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 1 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::Const { dst: 3, value: 3.0 },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Mul,
+            lhs: 3,
+            rhs: 2,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    assert!(target_assignment_shape(&row).unwrap().is_none());
+    let prepared = PreparedScalarProgramBlock::new(
+        rumoca_ir_solve::ScalarProgramBlock::with_source_span(vec![row], fixture_span()),
+    )
+    .expect("valid nested affine row should prepare");
+
+    let value = prepared
+        .eval_proven_affine_target_row_unchecked_with_context(
+            0,
+            0,
+            &[9.0, 2.0],
+            &[],
+            0.0,
+            RowEvalContext::default(),
+        )
+        .expect("exact affine pivot should evaluate");
+
+    assert_eq!(value, -2.0);
+}
+
+#[test]
+fn target_product_is_not_claimed_as_affine() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 7 },
+        LinearOp::Binary {
+            dst: 1,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ];
+
+    assert!(!row_is_affine_in_y_index(&row, 7));
+}

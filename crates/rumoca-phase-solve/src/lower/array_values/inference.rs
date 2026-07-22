@@ -59,6 +59,11 @@ impl<'a> LowerBuilder<'a> {
                 })?
             }
             rumoca_core::Expression::FunctionCall {
+                name,
+                is_constructor,
+                ..
+            } if self.is_record_constructor_call(name, *is_constructor) => Vec::new(),
+            rumoca_core::Expression::FunctionCall {
                 name, args, span, ..
             } => self.infer_function_call_output_dims(name, args, scope, *span)?,
             rumoca_core::Expression::Array {
@@ -394,7 +399,9 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
-        if resolve_intrinsic_builtin(name.as_str()).is_some() {
+        if resolve_intrinsic_builtin(name.as_str()).is_some()
+            || is_synchronous_scalar_intrinsic(name.as_str())
+        {
             return Ok(Vec::new());
         }
         if let Some(projection) = self.lookup_function_output_projection(name, span)? {

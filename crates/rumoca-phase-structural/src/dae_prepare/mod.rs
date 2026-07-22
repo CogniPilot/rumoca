@@ -39,7 +39,8 @@ mod derivative_map;
 #[cfg(test)]
 use derivative_map::needs_compound_derivative_expansion;
 use derivative_map::{
-    build_relaxed_derivative_map_for_exprs, build_relaxed_derivative_map_for_exprs_with_index,
+    RelaxedDerivativeMapOptions, build_relaxed_derivative_map_for_exprs,
+    build_relaxed_derivative_map_for_exprs_with_index,
     build_relaxed_derivative_map_for_state_definition,
 };
 pub use derivative_map::{compute_full_derivative_map, expand_compound_derivatives};
@@ -56,6 +57,12 @@ pub use dummy_state_metadata::{
     constrained_dummy_state_names,
 };
 mod direct_demotion;
+mod dummy_derivative_group;
+#[cfg(test)]
+pub(crate) use dummy_derivative_group::singular_holonomic_state_candidates;
+pub(crate) use dummy_derivative_group::{
+    isolated_state_derivative_values, singular_holonomic_state_candidates_with_derivative_values,
+};
 mod state_row_reduction;
 pub use direct_demotion::demote_direct_assigned_states;
 use direct_demotion::{
@@ -144,7 +151,7 @@ fn split_linear_target(
     context_span: Span,
 ) -> Option<(i32, Expression)> {
     let span = expr.span().unwrap_or(context_span);
-    if expr_refers_to_var(expr, target) {
+    if direct_reference_targets_exact_unknown(expr, target) {
         return Some((1, zero_expr(span)));
     }
 
@@ -179,6 +186,18 @@ fn split_linear_target(
             None
         }
         _ => None,
+    }
+}
+
+fn direct_reference_targets_exact_unknown(expr: &Expression, target: &VarName) -> bool {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if !subscripts.is_empty() => {
+            crate::scalarize::scalarization_var_ref_name(name, subscripts)
+                .is_some_and(|name| name == target.as_str())
+        }
+        _ => expr_refers_to_var(expr, target),
     }
 }
 
@@ -422,6 +441,28 @@ pub fn substitute_var_in_expr(
         replacement,
     }
     .rewrite_expression(expr)
+}
+
+/// Fold exact scalar arithmetic identities after array projection has exposed
+/// literal zeros and ones, while retaining a residual equation's outer
+/// subtraction for later assignment and matching analysis.
+pub fn simplify_scalarized_continuous_equations(dae: &mut Dae) {
+    for equation in &mut dae.continuous.equations {
+        equation.rhs = match equation.rhs.clone() {
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs,
+                rhs,
+                span,
+            } if equation.lhs.is_none() => Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(crate::eliminate::simplify_arithmetic_identities(*lhs)),
+                rhs: Box::new(crate::eliminate::simplify_arithmetic_identities(*rhs)),
+                span,
+            },
+            rhs => crate::eliminate::simplify_arithmetic_identities(rhs),
+        };
+    }
 }
 
 struct VarSubstitutionRewriter<'a> {
@@ -1229,6 +1270,31 @@ fn extract_state_direct_assignment(
             rhs,
             ..
         } => extract_state_direct_assignment(rhs, state_name_set),
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => {
+            let (state_name, else_value) =
+                extract_state_direct_assignment(else_branch, state_name_set)?;
+            let mut defining_branches = Vec::with_capacity(branches.len());
+            for (condition, value) in branches {
+                let (branch_state, defining_value) =
+                    extract_state_direct_assignment(value, state_name_set)?;
+                if branch_state != state_name {
+                    return None;
+                }
+                defining_branches.push((condition.clone(), defining_value));
+            }
+            Some((
+                state_name,
+                Expression::If {
+                    branches: defining_branches,
+                    else_branch: Box::new(else_value),
+                    span: *span,
+                },
+            ))
+        }
         _ => None,
     }
 }
@@ -1407,6 +1473,7 @@ struct DirectDemotionCounters {
     n_skip_always_state: usize,
     n_skip_self_der: usize,
     n_skip_der_in_defining_expr: usize,
+    n_skip_nonsmooth_defining_expr: usize,
     n_skip_unsliced_vector_ref: usize,
     n_skip_non_state_der: usize,
     n_skip_no_der_expr: usize,
@@ -1421,6 +1488,7 @@ struct DirectDemotionRound<'a> {
     non_state_unknown_names: HashSet<String>,
     non_state_defining_exprs: DefiningExprIndex,
     der_map: HashMap<String, Expression>,
+    structural_bindings: HashMap<String, f64>,
     trace: bool,
 }
 
@@ -1449,6 +1517,7 @@ impl<'a> DirectDemotionRound<'a> {
             non_state_unknown_names,
             non_state_defining_exprs,
             der_map,
+            structural_bindings: crate::static_eval::structural_scalar_bindings(dae),
             trace,
         }))
     }
@@ -1558,6 +1627,8 @@ fn direct_demotion_derivative_seed_exprs(
 /// and moves the dummy variable to the algebraic partition before BLT.
 pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> Result<usize, StructuralError> {
     let mut total_demoted = 0usize;
+    let protected_group_states =
+        dummy_derivative_group::planned_complete_dummy_derivative_group_states(dae)?;
 
     // Each round commits one plan. Exchanges strictly raise StateSelect rank;
     // ordinary demotions reduce the finite state set, so neither can cycle.
@@ -1568,12 +1639,18 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> Result<usize, Stru
             definitions.keys().collect::<Vec<_>>()
         );
         if definitions.is_empty() {
-            break;
+            let demoted = dummy_derivative_group::reduce_one_complete_dummy_derivative_group(dae)?;
+            if demoted == 0 {
+                break;
+            }
+            total_demoted += demoted;
+            continue;
         }
 
         let mut demoted_this_round = false;
         for (state_name, definition) in definitions {
             if !dae.variables.states.contains_key(&state_name)
+                || protected_group_states.contains(&state_name)
                 || state_has_overlapping_event_update(dae, &state_name)
             {
                 continue;
@@ -1602,7 +1679,11 @@ pub fn reduce_constrained_dummy_derivatives(dae: &mut Dae) -> Result<usize, Stru
             break;
         }
         if !demoted_this_round {
-            break;
+            let demoted = dummy_derivative_group::reduce_one_complete_dummy_derivative_group(dae)?;
+            if demoted == 0 {
+                break;
+            }
+            total_demoted += demoted;
         }
     }
 
@@ -1761,20 +1842,45 @@ fn preferred_derivative_state_exchange(
     promoted.sort();
     promoted.dedup();
     if promoted.len() > 1 {
+        crate::structural_trace!(
+            "[sim-trace] constrained-dummy exchange rejected state={} reason=multiple_promoted_states promoted={:?}",
+            state_name.as_str(),
+            promoted.iter().map(VarName::as_str).collect::<Vec<_>>()
+        );
         return None;
     }
     if let Some(target_name) = promoted.first() {
         let target = dae.variables.algebraics.get(target_name)?;
-        if !dae.discrete.real_updates.is_empty()
-            || !dae.discrete.valued_updates.is_empty()
-            || target.dims != source.dims
-            || target.state_select == rumoca_core::StateSelect::Never
-            || state_select_rank(target.state_select) <= state_select_rank(source.state_select)
-            || state_has_overlapping_event_update(dae, target_name)
-            || !derivative_exprs
-                .iter()
-                .any(|expression| expr_contains_der_of(expression, target_name))
+        let has_discrete_updates =
+            !dae.discrete.real_updates.is_empty() || !dae.discrete.valued_updates.is_empty();
+        let shape_mismatch = target.dims != source.dims;
+        let target_forbidden = target.state_select == rumoca_core::StateSelect::Never;
+        let rank_not_improved =
+            state_select_rank(target.state_select) <= state_select_rank(source.state_select);
+        let target_has_event_update = state_has_overlapping_event_update(dae, target_name);
+        let derivative_missing = !derivative_exprs
+            .iter()
+            .any(|expression| expr_contains_der_of(expression, target_name));
+        if has_discrete_updates
+            || shape_mismatch
+            || target_forbidden
+            || rank_not_improved
+            || target_has_event_update
+            || derivative_missing
         {
+            crate::structural_trace!(
+                "[sim-trace] constrained-dummy exchange rejected state={} target={} reason=target_ineligible discrete_updates={} shape_mismatch={} target_forbidden={} rank_not_improved={} target_event_update={} derivative_missing={} source_select={:?} target_select={:?}",
+                state_name.as_str(),
+                target_name.as_str(),
+                has_discrete_updates,
+                shape_mismatch,
+                target_forbidden,
+                rank_not_improved,
+                target_has_event_update,
+                derivative_missing,
+                source.state_select,
+                target.state_select
+            );
             return None;
         }
     }
@@ -1786,10 +1892,17 @@ fn preferred_derivative_state_exchange(
         .chain(promoted.iter())
         .map(|name| name.as_str().to_string())
         .collect::<HashSet<_>>();
-    derivative_exprs
+    let derivative_closed = derivative_exprs
         .iter()
-        .all(|expression| !expr_contains_der_of_non_state(expression, &future_states))
-        .then_some(promoted)
+        .all(|expression| !expr_contains_der_of_non_state(expression, &future_states));
+    if !derivative_closed {
+        crate::structural_trace!(
+            "[sim-trace] constrained-dummy exchange rejected state={} reason=non_state_derivative",
+            state_name.as_str()
+        );
+        return None;
+    }
+    Some(promoted)
 }
 
 fn compact_uniform_static_derivative(

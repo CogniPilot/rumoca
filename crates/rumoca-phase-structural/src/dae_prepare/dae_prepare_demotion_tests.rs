@@ -130,6 +130,36 @@ fn gt(lhs: Expression, rhs: Expression) -> Expression {
     }
 }
 
+#[test]
+fn scalar_projection_does_not_define_its_aggregate_owner() {
+    let mut dae = Dae::new();
+    let mut vector = test_variable("vector");
+    vector.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vector"), vector);
+    dae.variables
+        .outputs
+        .insert(VarName::new("scalar"), test_variable("scalar"));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("scalar"), var_idx("vector", 2))));
+
+    let definitions = collect_residual_defining_expr_index(&dae);
+
+    assert!(
+        definitions.get("vector").is_none(),
+        "a scalar projection must not be indexed as a definition of its aggregate owner"
+    );
+    assert_eq!(
+        definitions
+            .get("scalar")
+            .and_then(|candidates| candidates.first())
+            .map(|candidate| &candidate.expr),
+        Some(&var_idx("vector", 2))
+    );
+}
+
 fn no_event(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::NoEvent,
@@ -279,6 +309,32 @@ fn compound_derivative_expansion_keeps_algebraic_derivative_path() {
             .iter()
             .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("y"))),
         "der(y) should still expand through y = x"
+    );
+}
+
+#[test]
+fn compound_derivative_expansion_rewrites_initial_algebraic_derivatives() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(sub(der("x"), int(1))));
+    dae.initialization.equations.push(eq(sub(der("y"), int(0))));
+
+    assert!(needs_compound_derivative_expansion(&dae));
+
+    expand_compound_derivatives(&mut dae);
+
+    assert!(
+        dae.initialization
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("y"))),
+        "initial der(y) should expand through the continuous definition y = x"
     );
 }
 
@@ -1508,6 +1564,15 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
     );
 }
 
+fn assert_derivative_references_all_q_components(derivative: &Expression) {
+    assert!(
+        (1..=4).all(|index| {
+            expr_contains_der_of(derivative, &VarName::new(format!("Q[{index}]")))
+        }),
+        "the projected derivative must retain every state dependency"
+    );
+}
+
 #[test]
 fn test_symbolic_derivative_resolves_projected_single_function_output() {
     let constraint_span = Span::from_offsets(
@@ -1589,10 +1654,25 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
     )
     .expect("projected single-output function call should be differentiable");
 
-    assert!(
-        (1..=4)
-            .all(|idx| { expr_contains_der_of(&derivative, &VarName::new(format!("Q[{idx}]"))) })
-    );
+    assert_derivative_references_all_q_components(&derivative);
+
+    let indexed_call = Expression::Index {
+        base: Box::new(resolved_call_with_span(
+            "orientationConstraint",
+            vec![var("Q")],
+            constraint_span,
+            4_102,
+        )),
+        subscripts: vec![Subscript::generated_index(1, constraint_span)],
+        span: constraint_span,
+    };
+    let indexed_derivative = symbolic_time_derivative(
+        &indexed_call,
+        &dae,
+        &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build"),
+    )
+    .expect("a static projection of a function result should be differentiable");
+    assert_derivative_references_all_q_components(&indexed_derivative);
 }
 
 #[test]

@@ -147,6 +147,9 @@ impl ExpressionVisitor for IndexReductionSmoothness<'_> {
                     return;
                 }
                 Some(false) => continue,
+                None if condition_is_time_invariant(condition, self.dae) => {
+                    self.visit_expression(value);
+                }
                 None => {
                     self.smooth = false;
                     return;
@@ -155,6 +158,14 @@ impl ExpressionVisitor for IndexReductionSmoothness<'_> {
         }
         self.visit_expression(else_branch);
     }
+}
+
+fn condition_is_time_invariant(condition: &Expression, dae: &Dae) -> bool {
+    let mut references = Vec::new();
+    condition.collect_var_refs(&mut references);
+    references.into_iter().all(|name| {
+        dae.variables.parameters.contains_key(&name) || dae.variables.constants.contains_key(&name)
+    })
 }
 
 fn expr_contains_active_exact_der_of_state(
@@ -492,12 +503,10 @@ fn index_reduce_missing_state_derivatives_once_in_place(
                 if eq_contains_any_state_der_with_matcher(&eq.rhs, &state_derivative_matcher) {
                     return None;
                 }
-                if dae
-                    .variables
-                    .algebraics
-                    .keys()
-                    .any(|alg_name| is_unsliced_algebraic_definition(eq, alg_name))
-                {
+                if dae.variables.algebraics.keys().any(|alg_name| {
+                    is_unsliced_algebraic_definition(eq, alg_name)
+                        && !has_independent_exact_alias_equation(dae, idx, alg_name)
+                }) {
                     return None;
                 }
                 if is_indexed_state_component_alias_definition(eq, state_name) {
@@ -513,13 +522,18 @@ fn index_reduce_missing_state_derivatives_once_in_place(
                 dae,
                 &defining_expr_index,
                 &seed_exprs,
-                None,
+                RelaxedDerivativeMapOptions {
+                    canonical_state_derivative: Some(state_name),
+                    rejected_state_derivative: None,
+                    excluded_equation: Some(idx),
+                },
             )?;
             let differentiated =
                 symbolic_time_derivative(&dae.continuous.equations[idx].rhs, dae, &der_map);
             let Some(new_rhs) = differentiated else {
                 continue;
             };
+            let new_rhs = crate::eliminate::simplify_arithmetic_identities(new_rhs);
             let der_states = derivative_states_in_eq(&new_rhs, &state_names);
             if !der_states.iter().any(|der_state| der_state == state_name) {
                 continue;
@@ -574,6 +588,20 @@ fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
                 if name.var_name() == alg_name && subscripts.is_empty()
         )
     })
+}
+
+fn has_independent_exact_alias_equation(
+    dae: &Dae,
+    defining_equation: usize,
+    name: &VarName,
+) -> bool {
+    dae.continuous
+        .equations
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != defining_equation)
+        .filter_map(|(_, equation)| try_extract_state_alias_pair(&equation.rhs))
+        .any(|(lhs, rhs)| lhs == *name || rhs == *name)
 }
 
 fn is_indexed_state_component_alias_definition(eq: &Equation, state_name: &VarName) -> bool {
@@ -734,7 +762,24 @@ pub fn substitute_standalone_state_derivatives_in_non_ode_rows(dae: &mut Dae) ->
         return 0;
     }
 
-    let der_map = build_der_value_map(dae);
+    let mut der_map = build_der_value_map(dae);
+    // Multiple scalar equations may constrain the same derivative after
+    // boundary alias elimination (`der(x)=a`, `der(x)=b`). They are exactly
+    // equivalent to one defining derivative row plus algebraic equalities, so
+    // choose the first source-ordered assignment as the canonical definition.
+    // Ranked states remain on the stricter component-aware map path above.
+    for (state_name, variable) in &dae.variables.states {
+        if !variable.dims.is_empty() || der_map.contains_key(state_name.as_str()) {
+            continue;
+        }
+        let replacement = dae.continuous.equations.iter().find_map(|equation| {
+            let value = try_extract_der_value(&equation.rhs, state_name)?;
+            (!expr_contains_der_of(&value, state_name)).then_some(value)
+        });
+        if let Some(replacement) = replacement {
+            der_map.insert(state_name.as_str().to_string(), replacement);
+        }
+    }
     if der_map.is_empty() {
         return 0;
     }
@@ -869,5 +914,42 @@ mod tests {
             panic!("expected normalized unary minus");
         };
         assert_eq!(actual, span);
+    }
+
+    #[test]
+    fn substitutes_duplicate_scalar_derivative_assignments_with_first_value() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("s"), Variable::new(VarName::new("s"), span));
+        for value in ["v1", "v2", "v3"] {
+            dae.variables.algebraics.insert(
+                VarName::new(value),
+                Variable::new(VarName::new(value), span),
+            );
+            dae.continuous.equations.push(Equation::residual(
+                Expression::Binary {
+                    op: OpBinary::Sub,
+                    lhs: Box::new(der_call("s", span)),
+                    rhs: Box::new(var_ref(value, span)),
+                    span,
+                },
+                span,
+                "duplicate derivative assignment",
+            ));
+        }
+
+        let rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(&mut dae);
+
+        assert_eq!(rewritten, 2);
+        assert!(expr_contains_der_of(
+            &dae.continuous.equations[0].rhs,
+            &VarName::new("s")
+        ));
+        for equation in &dae.continuous.equations[1..] {
+            assert!(!expr_contains_der_of(&equation.rhs, &VarName::new("s")));
+            assert!(expr_contains_var(&equation.rhs, &VarName::new("v1")));
+        }
     }
 }

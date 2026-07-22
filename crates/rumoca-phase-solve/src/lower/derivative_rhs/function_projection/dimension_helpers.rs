@@ -432,10 +432,22 @@ impl FunctionScopeSubstituter<'_> {
         }
         let values = self.scope.scalars.get(name.as_str())?;
         let dims = self.scope.dims.get(name.as_str())?;
+        // Resolve loop indices and other compile-time scope bindings before
+        // replacing the aggregate formal with its full actual expression.
+        // Otherwise `v[k]` can become `actual_v[1]` and lose the scalar
+        // projection already recorded for `v`.
+        let subscripts = self.rewrite_subscripts(subscripts);
         let indices = subscripts
             .iter()
             .map(|subscript| match subscript {
                 rumoca_core::Subscript::Index { value, .. } if *value > 0 => Some(*value),
+                rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
+                    rumoca_core::Expression::Literal {
+                        value: Literal::Integer(value),
+                        ..
+                    } if *value > 0 => Some(*value),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()?;

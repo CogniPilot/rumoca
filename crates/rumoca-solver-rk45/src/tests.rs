@@ -130,6 +130,7 @@ fn rk45_refreshes_algebraic_solve_ir_layout() {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
+            tearing: None,
         }],
     };
     model.initial_y = vec![1.0, 2.0];

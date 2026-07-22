@@ -7,6 +7,13 @@ enum DerivativeClosureState {
     Blocked,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct RelaxedDerivativeMapOptions<'a> {
+    pub(super) canonical_state_derivative: Option<&'a VarName>,
+    pub(super) rejected_state_derivative: Option<&'a VarName>,
+    pub(super) excluded_equation: Option<usize>,
+}
+
 fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable> {
     dae.variables
         .states
@@ -55,25 +62,36 @@ fn resolved_derivative_candidate(
     defining_expr_index: &DefiningExprIndex,
     closure_states: &IndexMap<String, DerivativeClosureState>,
     state_name_set: &HashSet<String>,
-    excluded_state_derivative: Option<&VarName>,
+    options: RelaxedDerivativeMapOptions<'_>,
     map: &HashMap<String, Expression>,
     name: &VarName,
 ) -> Option<Expression> {
-    defining_expr_candidates(defining_expr_index, name).find_map(|defining_expr| {
-        let dependencies_resolved = collect_rhs_var_refs(defining_expr)
-            .iter()
-            .all(|dependency| derivative_dependency_is_resolved(dae, closure_states, dependency));
-        if !dependencies_resolved {
-            return None;
-        }
+    defining_expr_index
+        .get(name.as_str())
+        .into_iter()
+        .flatten()
+        .filter(|candidate| Some(candidate.equation_index) != options.excluded_equation)
+        .find_map(|candidate| {
+            let defining_expr = &candidate.expr;
+            let dependencies_resolved =
+                collect_rhs_var_refs(defining_expr)
+                    .iter()
+                    .all(|dependency| {
+                        derivative_dependency_is_resolved(dae, closure_states, dependency)
+                    });
+            if !dependencies_resolved {
+                return None;
+            }
 
-        let derivative = symbolic_time_derivative(defining_expr, dae, map)?;
-        let self_derivative = expr_contains_der_of(&derivative, name);
-        let excluded_derivative = excluded_state_derivative
-            .is_some_and(|state_name| expr_contains_der_of(&derivative, state_name));
-        let non_state_derivative = expr_contains_der_of_non_state(&derivative, state_name_set);
-        (!self_derivative && !excluded_derivative && !non_state_derivative).then_some(derivative)
-    })
+            let derivative = symbolic_time_derivative(defining_expr, dae, map)?;
+            let self_derivative = expr_contains_der_of(&derivative, name);
+            let excluded_derivative = options
+                .rejected_state_derivative
+                .is_some_and(|state_name| expr_contains_der_of(&derivative, state_name));
+            let non_state_derivative = expr_contains_der_of_non_state(&derivative, state_name_set);
+            (!self_derivative && !excluded_derivative && !non_state_derivative)
+                .then_some(derivative)
+        })
 }
 
 pub(super) fn build_relaxed_derivative_map_for_exprs(
@@ -81,7 +99,12 @@ pub(super) fn build_relaxed_derivative_map_for_exprs(
     seed_exprs: &[Expression],
 ) -> Result<HashMap<String, Expression>, StructuralError> {
     let defining_expr_index = collect_residual_defining_expr_index(dae);
-    build_relaxed_derivative_map_for_exprs_with_index(dae, &defining_expr_index, seed_exprs, None)
+    build_relaxed_derivative_map_for_exprs_with_index(
+        dae,
+        &defining_expr_index,
+        seed_exprs,
+        RelaxedDerivativeMapOptions::default(),
+    )
 }
 
 pub(super) fn build_relaxed_derivative_map_for_state_definition(
@@ -94,7 +117,11 @@ pub(super) fn build_relaxed_derivative_map_for_state_definition(
         dae,
         &defining_expr_index,
         seed_exprs,
-        Some(state_name),
+        RelaxedDerivativeMapOptions {
+            canonical_state_derivative: Some(state_name),
+            rejected_state_derivative: Some(state_name),
+            excluded_equation: None,
+        },
     )
 }
 
@@ -102,10 +129,10 @@ pub(super) fn build_relaxed_derivative_map_for_exprs_with_index(
     dae: &Dae,
     defining_expr_index: &DefiningExprIndex,
     seed_exprs: &[Expression],
-    excluded_state_derivative: Option<&VarName>,
+    options: RelaxedDerivativeMapOptions<'_>,
 ) -> Result<HashMap<String, Expression>, StructuralError> {
     let mut map = build_der_value_map(dae);
-    if let Some(state_name) = excluded_state_derivative
+    if let Some(state_name) = options.canonical_state_derivative
         && let Some(variable) = dae.variables.states.get(state_name)
     {
         map.insert(
@@ -165,7 +192,7 @@ pub(super) fn build_relaxed_derivative_map_for_exprs_with_index(
                     defining_expr_index,
                     &closure_states,
                     &state_name_set,
-                    excluded_state_derivative,
+                    options,
                     &map,
                     name,
                 )
@@ -278,13 +305,27 @@ pub fn expand_compound_derivatives(dae: &mut Dae) {
         .map(|n| n.as_str().to_string())
         .collect();
 
-    let expanded: Vec<Expression> = dae
+    let expanded_continuous: Vec<Expression> = dae
         .continuous
         .equations
         .iter()
         .map(|eq| expand_der_in_expr_full(&eq.rhs, dae, &der_map, &state_names))
         .collect();
-    for (eq, new_rhs) in dae.continuous.equations.iter_mut().zip(expanded) {
+    let expanded_initialization: Vec<Expression> = dae
+        .initialization
+        .equations
+        .iter()
+        .map(|eq| expand_der_in_expr_full(&eq.rhs, dae, &der_map, &state_names))
+        .collect();
+    for (eq, new_rhs) in dae.continuous.equations.iter_mut().zip(expanded_continuous) {
+        eq.rhs = new_rhs;
+    }
+    for (eq, new_rhs) in dae
+        .initialization
+        .equations
+        .iter_mut()
+        .zip(expanded_initialization)
+    {
         eq.rhs = new_rhs;
     }
 }
@@ -295,6 +336,7 @@ pub(super) fn needs_compound_derivative_expansion(dae: &Dae) -> bool {
     dae.continuous
         .equations
         .iter()
+        .chain(&dae.initialization.equations)
         .any(|eq| expr_contains_expandable_derivative(&eq.rhs, &matcher))
 }
 

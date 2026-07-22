@@ -36,6 +36,7 @@ type Span = rumoca_core::Span;
 type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
 type StructuralError = crate::StructuralError;
+type ScalarizedEquations = (Vec<Equation>, Vec<(usize, usize)>);
 
 struct StaticComprehensionSubstituter {
     values: HashMap<String, i64>,
@@ -1036,6 +1037,30 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
         constructor_input_map: &constructor_input_map,
         expected_dims: None,
     };
+    let (expanded, spans) = scalarize_continuous_equations(
+        dae,
+        &projection,
+        &var_dims,
+        &var_spans,
+        &structural_values,
+    )?;
+    dae.continuous.equations = expanded;
+    rumoca_ir_dae::remap_structured_families_after_expansion(
+        &mut dae.continuous.structured_equations,
+        &spans,
+    );
+
+    lower_event_scalar_linear_algebra(dae, &projection)?;
+    Ok(())
+}
+
+fn scalarize_continuous_equations(
+    dae: &Dae,
+    projection: &ScalarProjectionContext<'_>,
+    var_dims: &HashMap<String, Vec<i64>>,
+    var_spans: &HashMap<String, Span>,
+    structural_values: &HashMap<String, i64>,
+) -> Result<ScalarizedEquations, StructuralError> {
     let scalar_names = build_output_names(dae)?;
     let mut expanded = Vec::new();
     // One `(new_start, new_len)` span per input equation, so structured families
@@ -1056,15 +1081,15 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
             .with_context_span(eq.span)
             .with_expected_dims(expected_dims);
         let residual_lhs_targets =
-            residual_lhs_scalar_targets(&eq.rhs, eq.span, &var_dims, &structural_values)?;
+            residual_lhs_scalar_targets(&eq.rhs, eq.span, var_dims, structural_values)?;
         let (lhs_targets, has_residual_lhs_targets) = scalar_lhs_targets_for_equation(
             residual_lhs_targets,
             scalarization_target.as_deref(),
             eq.lhs.as_ref(),
             eq.span,
             &scalar_names,
-            &var_dims,
-            &var_spans,
+            var_dims,
+            var_spans,
         )?;
         let rhs_shape_count = shape_scalar_count(eq_projection.expression_shape(&eq.rhs));
         let scalar_count = if has_residual_lhs_targets {
@@ -1098,6 +1123,7 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
                     rhs: project_rhs_for_scalar_target(
                         &eq.rhs,
                         i,
+                        scalar_count,
                         scalarization_target.as_deref(),
                         target,
                         eq.span,
@@ -1111,14 +1137,7 @@ pub fn scalarize_equations(dae: &mut Dae) -> Result<(), StructuralError> {
         }
         spans.push((new_start, expanded.len() - new_start));
     }
-    dae.continuous.equations = expanded;
-    rumoca_ir_dae::remap_structured_families_after_expansion(
-        &mut dae.continuous.structured_equations,
-        &spans,
-    );
-
-    lower_event_scalar_linear_algebra(dae, &projection)?;
-    Ok(())
+    Ok((expanded, spans))
 }
 
 fn lower_event_scalar_linear_algebra(

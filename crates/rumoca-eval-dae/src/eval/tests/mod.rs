@@ -14,6 +14,7 @@ type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
 mod clock_and_tables;
 mod complex_array_selection;
+mod complex_field_arithmetic;
 mod env_refresh;
 mod pre_seed_regressions;
 mod runtime_specials_more;

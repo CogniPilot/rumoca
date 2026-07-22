@@ -10,7 +10,7 @@ fn log_direct_demotion_scan_summary(
         return;
     }
     crate::structural_trace!(
-        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_der_in_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
+        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_der_in_defining_expr={} skip_nonsmooth_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
         state_count,
         counters.n_candidates,
         substitutions.len(),
@@ -20,6 +20,7 @@ fn log_direct_demotion_scan_summary(
         counters.n_skip_always_state,
         counters.n_skip_self_der,
         counters.n_skip_der_in_defining_expr,
+        counters.n_skip_nonsmooth_defining_expr,
         counters.n_skip_unsliced_vector_ref,
         counters.n_skip_no_der_expr,
         counters.n_skip_non_state_der
@@ -250,6 +251,14 @@ fn direct_demotion_plan_for_equation(
     }
     if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round) {
         counters.n_skip_der_in_defining_expr += 1;
+        return None;
+    }
+    if !super::state_row_reduction::expression_is_smooth_for_index_reduction(
+        &defining_expr,
+        round.dae,
+        &round.structural_bindings,
+    ) {
+        counters.n_skip_nonsmooth_defining_expr += 1;
         return None;
     }
     // `der(state)` links are substituted symbolically on demotion (gated by

@@ -34,7 +34,7 @@ pub use report::{BlockReport, StructuralReport, TearingReport};
 pub use runtime_defined::{
     runtime_defined_continuous_unknown_names, runtime_defined_unknown_names,
 };
-pub use tearing::{TearingResult, tear_algebraic_loop};
+pub use tearing::{TearingResult, tear_algebraic_loop, tear_algebraic_loop_with_causal_candidates};
 pub use types::{BltBlock, EquationRef, SortedDae, StructuralError, UnknownId};
 
 use rumoca_ir_dae as dae;

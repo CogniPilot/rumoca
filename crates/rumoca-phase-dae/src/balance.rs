@@ -196,6 +196,10 @@ struct BalanceSymbolSet<'a> {
     /// component-level references count as referencing their scalarized
     /// members.
     prefixes: HashSet<rumoca_core::VarName>,
+    /// Index-free views of scalarized descendants. These let an aggregate
+    /// source reference such as `plug.pin.i` match `plug.pin[1].i.re` without
+    /// treating an explicitly indexed reference as a wildcard.
+    normalized_names_and_prefixes: HashSet<rumoca_core::VarName>,
     def_ids: IndexSet<DefId>,
     ancestry: &'a dae::SymbolAncestryMap,
 }
@@ -207,12 +211,18 @@ impl<'a> BalanceSymbolSet<'a> {
             .filter_map(|name| variable_def_id(dae_model, name))
             .collect();
         let mut prefixes = HashSet::new();
+        let mut normalized_names_and_prefixes = HashSet::new();
         for name in names {
             prefixes.extend(name.structural_ancestors());
+            let normalized =
+                rumoca_core::VarName::new(rumoca_core::strip_all_subscripts(name.as_str()));
+            normalized_names_and_prefixes.insert(normalized.clone());
+            normalized_names_and_prefixes.extend(normalized.structural_ancestors());
         }
         Self {
             names,
             prefixes,
+            normalized_names_and_prefixes,
             def_ids,
             ancestry: &dae_model.metadata.symbol_ancestry,
         }
@@ -221,6 +231,10 @@ impl<'a> BalanceSymbolSet<'a> {
     fn matches_reference(&self, reference: &rumoca_core::Reference) -> bool {
         self.names.contains(reference.var_name())
             || self.prefixes.contains(reference.var_name())
+            || (!reference.var_name().as_str().contains('[')
+                && self
+                    .normalized_names_and_prefixes
+                    .contains(reference.var_name()))
             || reference
                 .target_def_id()
                 .is_some_and(|def_id| self.matches_def_id(def_id))
@@ -1645,5 +1659,29 @@ mod tests {
             0,
             "the connection still supplies the second equation for coupled unknowns"
         );
+    }
+
+    #[test]
+    fn aggregate_reference_matches_indexed_continuous_descendant() {
+        let mut dae = dae::Dae::default();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("plug.pin[1].i.re"),
+            discrete_var("plug.pin[1].i.re"),
+        );
+        dae.continuous
+            .equations
+            .push(scalar_eq_with_lhs("plug.pin.i", 1));
+
+        assert_eq!(balance(&dae).expect("valid aggregate balance fixture"), 0);
+    }
+
+    #[test]
+    fn explicit_index_does_not_wildcard_other_continuous_element() {
+        let dae = dae::Dae::default();
+        let names = HashSet::from_iter([rumoca_core::VarName::new("plug.pin[2].i")]);
+        let symbols = BalanceSymbolSet::new(&dae, &names);
+        let reference: rumoca_core::Reference = rumoca_core::VarName::new("plug.pin[1].i").into();
+
+        assert!(!symbols.matches_reference(&reference));
     }
 }

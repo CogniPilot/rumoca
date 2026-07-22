@@ -1490,7 +1490,17 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
         })
         .collect::<Vec<_>>();
 
-    let rewritten = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
+    let constructor =
+        Reference::new("Complex").with_resolved_function(rumoca_core::ResolvedFunctionReference {
+            instance_id: rumoca_core::FunctionInstanceId::new(17),
+            base_part_count: 0,
+        });
+    let rewritten = structural_ok(apply_substitutions_to_expr_with_derivatives(
+        &expr,
+        &substitutions,
+        Some(&constructor),
+        |_| Ok(None),
+    ));
     assert!(
         !contains_exact_var_ref(&rewritten, "z"),
         "parent Complex reference should be rewritten when eliminated fields define the full value"
