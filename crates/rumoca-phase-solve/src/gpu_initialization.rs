@@ -439,7 +439,10 @@ fn lower_gpu_direct_family_strides(
     let mut load_strides = Vec::new();
     let mut const_strides = Vec::new();
     let mut target_strides = Vec::new();
-    for dimension in 0..family.domain.binders.len() {
+    for (dimension, binder) in family.domain.binders.iter().enumerate() {
+        if gpu_binder_value_count(binder, family.span)? == 1 {
+            continue;
+        }
         let corner_index = gpu_direct_family_corner_index(family, position, body_count, dimension)?;
         let corner_equation = dae_model
             .initialization

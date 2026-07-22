@@ -1,25 +1,49 @@
 use super::*;
 
 fn gpu_indexed_var(name: &str, index: i64, span: rumoca_core::Span) -> rumoca_core::Expression {
+    gpu_indexed_var_at(name, &[index], span)
+}
+
+fn gpu_indexed_var_at(
+    name: &str,
+    indices: &[i64],
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: source_ref(name),
-        subscripts: vec![rumoca_core::Subscript::generated_index(index, span)],
+        subscripts: indices
+            .iter()
+            .map(|index| rumoca_core::Subscript::generated_index(*index, span))
+            .collect(),
         span,
     }
 }
 
 fn gpu_initial_family_fixture(values: &[i64], spans: &[rumoca_core::Span]) -> dae::Dae {
+    let indices = (1..=values.len() as i64)
+        .map(|index| vec![index])
+        .collect::<Vec<_>>();
+    gpu_initial_family_fixture_at(values, spans, &[values.len() as i64], indices)
+}
+
+fn gpu_initial_family_fixture_at(
+    values: &[i64],
+    spans: &[rumoca_core::Span],
+    shape: &[i64],
+    indices: Vec<Vec<i64>>,
+) -> dae::Dae {
     assert_eq!(values.len(), spans.len());
+    assert_eq!(values.len(), indices.len());
     let mut dae_model = dae::Dae::default();
-    dae_model.variables.states.insert(
-        rumoca_core::VarName::new("x"),
-        array_var("x", &[values.len() as i64]),
-    );
-    for (ordinal, (&value, &span)) in values.iter().zip(spans).enumerate() {
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), array_var("x", shape));
+    for ((&value, &span), indices) in values.iter().zip(spans).zip(&indices) {
         dae_model.continuous.equations.push(dae::Equation::residual(
             binary(
                 rumoca_core::OpBinary::Sub,
-                der(gpu_indexed_var("x", ordinal as i64 + 1, span)),
+                der(gpu_indexed_var_at("x", indices, span)),
                 rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(0),
                     span,
@@ -34,7 +58,7 @@ fn gpu_initial_family_fixture(values: &[i64], spans: &[rumoca_core::Span]) -> da
             .push(dae::Equation::residual(
                 binary(
                     rumoca_core::OpBinary::Sub,
-                    gpu_indexed_var("x", ordinal as i64 + 1, span),
+                    gpu_indexed_var_at("x", indices, span),
                     rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(value),
                         span,
@@ -49,25 +73,30 @@ fn gpu_initial_family_fixture(values: &[i64], spans: &[rumoca_core::Span]) -> da
             .push(dae::InitializationEquationProvenance::User);
     }
     let template = dae_model.initialization.equations[0].rhs.clone();
+    let binders = shape
+        .iter()
+        .enumerate()
+        .map(|(dimension, upper)| rumoca_core::StructuredIndexBinder {
+            id: dimension,
+            display_name: format!("i{dimension}"),
+            lower: 1,
+            upper: *upper,
+            step: 1,
+        })
+        .collect();
     dae_model
         .initialization
         .structured_equations
         .push(dae::StructuredEquationFamily {
-            domain: rumoca_core::StructuredIndexDomain {
-                binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: values.len() as i64,
-                    step: 1,
-                }],
-            },
+            domain: rumoca_core::StructuredIndexDomain { binders },
             first_equation_index: 0,
             equation_counts: vec![1; values.len()],
             span: spans[0],
             origin: "structured initial fixture".to_string(),
             regular: Some(rumoca_core::RegularForFamily {
-                binders: vec!["i".to_string()],
+                binders: (0..shape.len())
+                    .map(|dimension| format!("i{dimension}"))
+                    .collect(),
                 accesses: Vec::new(),
             }),
             template: Some(rumoca_core::ComprehensionTemplate {
@@ -394,7 +423,7 @@ fn gpu_phase_range_validation_merges_adjacency_only() {
 }
 
 #[test]
-fn gpu_initial_projection_rejects_degenerate_structured_binder() {
+fn gpu_corner_cell_index_rejects_request_for_singleton_dimension() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
             id: 0,
@@ -415,6 +444,117 @@ fn gpu_initial_projection_rejects_degenerate_structured_binder() {
         error
             .to_string()
             .contains("non-degenerate structured binder")
+    );
+}
+
+#[test]
+fn gpu_preparation_accepts_mixed_singleton_structured_domain() {
+    let spans = [
+        solve_numbered_span(310, 10, 20),
+        solve_numbered_span(310, 30, 40),
+        solve_numbered_span(310, 50, 60),
+    ];
+    let dae_model = gpu_initial_family_fixture_at(
+        &[1, 2, 3],
+        &spans,
+        &[1, 3],
+        vec![vec![1, 1], vec![1, 2], vec![1, 3]],
+    );
+
+    let gpu = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        3,
+        Some(spans[0]),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect("singleton axis has no affine degree of freedom");
+    assert!(gpu.initialization.row_targets.is_empty());
+    assert_eq!(gpu.initialization.direct_families.len(), 1);
+    assert_eq!(gpu.initialization.required_target_ranges.len(), 1);
+    assert_eq!(
+        (
+            gpu.initialization.required_target_ranges[0].start,
+            gpu.initialization.required_target_ranges[0].end,
+        ),
+        (0, 3)
+    );
+    let solve::ComputeNode::Map {
+        domain,
+        load_strides,
+        const_strides,
+        ..
+    } = &gpu.initialization.residual.nodes[0]
+    else {
+        panic!("structured initialization should remain a compact Map")
+    };
+    assert_eq!(domain.binders.len(), 2);
+    assert_eq!(domain.scalar_count(), Ok(3));
+    assert_eq!(
+        load_strides
+            .iter()
+            .flat_map(|stride| &stride.terms)
+            .map(|term| term.dimension)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(
+        const_strides
+            .iter()
+            .flat_map(|stride| &stride.terms)
+            .map(|term| term.dimension)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    let targets = &gpu.initialization.direct_families[0].targets;
+    assert_eq!(
+        targets,
+        &solve::TensorOutputMap::dense_contiguous(0, domain).unwrap()
+    );
+    assert_eq!(targets.strides.len(), 1);
+    assert_eq!(targets.strides[0].dimension, 1);
+    assert_eq!(targets.strides[0].stride, 1);
+}
+
+#[test]
+fn gpu_preparation_accepts_all_singleton_structured_domain() {
+    let span = solve_numbered_span(311, 10, 20);
+    let dae_model = gpu_initial_family_fixture_at(&[7], &[span], &[1, 1], vec![vec![1, 1]]);
+
+    let gpu = lower_solve_problem_with_solver_len_and_model_span_and_profile(
+        &dae_model,
+        1,
+        Some(span),
+        SolveProblemLoweringProfile::GpuPreparation,
+    )
+    .expect("all-singleton domain is one valid family cell");
+    assert!(gpu.initialization.row_targets.is_empty());
+    assert_eq!(gpu.initialization.direct_families.len(), 1);
+    assert_eq!(gpu.initialization.required_target_ranges.len(), 1);
+    assert_eq!(
+        (
+            gpu.initialization.required_target_ranges[0].start,
+            gpu.initialization.required_target_ranges[0].end,
+        ),
+        (0, 1)
+    );
+    let solve::ComputeNode::Map {
+        domain,
+        load_strides,
+        const_strides,
+        ..
+    } = &gpu.initialization.residual.nodes[0]
+    else {
+        panic!("structured initialization should remain a compact Map")
+    };
+    assert_eq!(domain.binders.len(), 2);
+    assert_eq!(domain.scalar_count(), Ok(1));
+    assert!(load_strides.is_empty());
+    assert!(const_strides.is_empty());
+    assert!(
+        gpu.initialization.direct_families[0]
+            .targets
+            .strides
+            .is_empty()
     );
 }
 

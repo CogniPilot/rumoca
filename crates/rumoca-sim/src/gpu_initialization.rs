@@ -630,6 +630,27 @@ mod tests {
         }
     }
 
+    fn singleton_domain(active_upper: i64) -> rumoca_core::StructuredIndexDomain {
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![
+                rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 1,
+                    step: 1,
+                },
+                rumoca_core::StructuredIndexBinder {
+                    id: 1,
+                    display_name: "j".to_string(),
+                    lower: 1,
+                    upper: active_upper,
+                    step: 1,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn direct_initial_assignment_is_one_pass_with_linear_temporary_storage() {
         let result = settle_gpu_initial_conditions(&direct_model(), 0.0)
@@ -638,6 +659,86 @@ mod tests {
         assert_eq!(result.metrics.residual_evaluations, 2);
         assert_eq!(result.metrics.passes, 1);
         assert!(result.metrics.temporary_values <= result.y0.len() * 3);
+    }
+
+    #[test]
+    fn settlement_executes_mixed_singleton_domain_without_scalar_rows() {
+        let mut model = direct_model();
+        let domain = singleton_domain(2);
+        let solve::ComputeNode::Map {
+            domain: residual_domain,
+            output_map,
+            load_strides,
+            const_strides,
+            ..
+        } = &mut model.problem.initialization.residual.nodes[0]
+        else {
+            unreachable!()
+        };
+        *residual_domain = domain.clone();
+        *output_map = TensorOutputMap::dense_contiguous(0, &domain).unwrap();
+        load_strides[0].terms[0].dimension = 1;
+        const_strides[0].terms[0].dimension = 1;
+        model.problem.initialization.direct_families[0].targets =
+            TensorOutputMap::dense_contiguous(0, &domain).unwrap();
+
+        assert!(model.problem.initialization.row_targets.is_empty());
+        assert_eq!(
+            model.problem.initialization.direct_families[0]
+                .targets
+                .strides,
+            vec![AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            }]
+        );
+        let result = settle_gpu_initial_conditions(&model, 0.0)
+            .expect("mixed-singleton direct rows should settle without scalar fallback");
+        assert_eq!(result.y0, vec![2.0, 0.0]);
+        assert_eq!(result.metrics.residual_evaluations, 2);
+        assert_eq!(result.metrics.passes, 1);
+    }
+
+    #[test]
+    fn settlement_executes_all_singleton_domain_with_empty_strides() {
+        let mut model = direct_model();
+        let domain = singleton_domain(1);
+        let solve::ComputeNode::Map {
+            domain: residual_domain,
+            output_map,
+            base_ops,
+            load_strides,
+            const_strides,
+            ..
+        } = &mut model.problem.initialization.residual.nodes[0]
+        else {
+            unreachable!()
+        };
+        *residual_domain = domain.clone();
+        *output_map = TensorOutputMap::dense_contiguous(0, &domain).unwrap();
+        let LinearOp::Const { value, .. } = &mut base_ops[1] else {
+            unreachable!()
+        };
+        *value = 7.0;
+        load_strides.clear();
+        const_strides.clear();
+        model.problem.initialization.direct_families[0].targets =
+            TensorOutputMap::dense_contiguous(0, &domain).unwrap();
+        model.problem.initialization.required_target_ranges[0].end = 1;
+        model.initial_y.truncate(1);
+
+        assert!(model.problem.initialization.row_targets.is_empty());
+        assert!(
+            model.problem.initialization.direct_families[0]
+                .targets
+                .strides
+                .is_empty()
+        );
+        let result = settle_gpu_initial_conditions(&model, 0.0)
+            .expect("all-singleton direct row should settle with empty strides");
+        assert_eq!(result.y0, vec![7.0]);
+        assert_eq!(result.metrics.residual_evaluations, 2);
+        assert_eq!(result.metrics.passes, 1);
     }
 
     #[test]
