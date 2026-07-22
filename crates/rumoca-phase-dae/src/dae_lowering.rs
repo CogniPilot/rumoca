@@ -1,17 +1,11 @@
-//! DAE-level lowering passes for code generation.
-//!
-//! SPEC_0021 file-size exception: DAE pre-codegen lowering still hosts record,
-//! array-size, dependency, and vector-equation passes together. split plan:
-//! move each pass family into focused dae_lowering submodules.
-//!
-//! This module contains record function parameter decomposition, array size
-//! argument insertion, parameter dependency sorting, and vector equation
-//! scalarization that operate on the DAE IR before code generation.
-
+//! DAE pre-codegen lowering. SPEC_0021 file-size exception: split plan: move pass families into focused `dae_lowering` submodules.
 use crate::ToDaeError;
 use crate::scalar_size::compute_var_size;
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
+use rumoca_core::{
+    BuiltinFunction as Builtin, Expression as Expr, ExpressionRewriter, ExpressionVisitor,
+    Function, OpBinary, Reference, Span, StatementRewriter, Subscript, VarName,
+};
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::DaeExpressionRewriter;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1065,24 +1059,13 @@ impl ExpressionVisitor for VarRefListCollector {
 // Vector equation scalarization
 // =============================================================================
 
-/// Scalarize vector equations that reference "phantom" base names.
-///
-/// In Modelica, connector arrays like `plug_p.pin[3]` produce scalarized
-/// variables (`sineVoltage.plug_p.pin[1].v`, `…pin[2].v`, `…pin[3].v`)
-/// but some component-level equations reference the unsubscripted base name
-/// (`sineVoltage.plug_p.pin.v`) as a vector.  These phantom base names do
-/// not appear in any DAE variable map, so backends that render equations
-/// directly (CasADi, SymPy, JAX) produce undefined identifiers.
-///
-/// This pass detects equations with `scalar_count > 1` whose expressions
-/// contain such phantom VarRefs, and expands each into `scalar_count`
-/// scalar equations — one per element — with every phantom VarRef replaced
-/// by its indexed variant and every declared-array VarRef subscripted.
+/// Expand phantom connector-array equations, indexing phantom bases and declared-array arguments.
 pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeError> {
     let known_names = build_known_var_name_set(dae);
     let phantom_map = build_phantom_expansion_map(dae, &known_names);
-    let array_dims = build_array_dims_map(dae);
-    let declared_dims = build_dae_var_dims_map(dae);
+    let var_dims = build_dae_var_dims_map(dae);
+    let mut array_dims = var_dims.clone();
+    array_dims.retain(|_, dims| !dims.is_empty());
     let record_array_projection_aliases = build_record_array_projection_alias_map(dae)?;
     let record_array_fields = build_record_array_field_map(dae);
 
@@ -1120,7 +1103,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.continuous.equations,
         &phantom_map,
         &array_dims,
-        &declared_dims,
+        &var_dims,
         &record_array_fields,
         &dae.symbols.functions,
         false,
@@ -1141,7 +1124,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.initialization.equations,
         &phantom_map,
         &array_dims,
-        &declared_dims,
+        &var_dims,
         &record_array_fields,
         &dae.symbols.functions,
         false,
@@ -1160,7 +1143,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.discrete.real_updates,
         &phantom_map,
         &array_dims,
-        &declared_dims,
+        &var_dims,
         &record_array_fields,
         &dae.symbols.functions,
         true,
@@ -1169,7 +1152,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.discrete.valued_updates,
         &phantom_map,
         &array_dims,
-        &declared_dims,
+        &var_dims,
         &record_array_fields,
         &dae.symbols.functions,
         true,
@@ -1178,7 +1161,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &mut dae.conditions.equations,
         &phantom_map,
         &array_dims,
-        &declared_dims,
+        &var_dims,
         &record_array_fields,
         &dae.symbols.functions,
         false,
@@ -1638,28 +1621,6 @@ fn phantom_variant_reference(dae: &Dae, variant: String) -> rumoca_core::Referen
         Some(reference) => rumoca_core::Reference::with_component_reference(variant, reference),
         None => rumoca_core::Reference::generated(variant),
     }
-}
-
-/// Build a map from variable name → dims for declared array variables.
-fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
-    let mut dims_map = HashMap::new();
-    for map in [
-        &dae.variables.states,
-        &dae.variables.algebraics,
-        &dae.variables.inputs,
-        &dae.variables.outputs,
-        &dae.variables.parameters,
-        &dae.variables.constants,
-        &dae.variables.discrete_reals,
-        &dae.variables.discrete_valued,
-    ] {
-        for (name, var) in map {
-            if !var.dims.is_empty() {
-                dims_map.insert(name.as_str().to_string(), var.dims.clone());
-            }
-        }
-    }
-    dims_map
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -2359,7 +2320,6 @@ fn expr_has_vectorized_scalar_function_call(
         _ => false,
     }
 }
-
 fn expr_has_vectorized_scalar_actual(
     expr: &rumoca_core::Expression,
     formal_rank: usize,
@@ -2380,34 +2340,24 @@ fn expr_has_vectorized_scalar_actual(
                 .is_some_and(|dims| dims.len() == formal_rank + 1)
     )
 }
-
 fn subscript_has_record_array_member_slice(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
         rumoca_core::Subscript::Expr { expr, .. } => expr_has_record_array_member_slice(expr),
         rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
     }
 }
-
 fn subscript_has_colon_slice(subscript: &rumoca_core::Subscript) -> bool {
     match subscript {
         rumoca_core::Subscript::Expr { expr, .. } => expr_has_colon_slice(expr),
         rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
     }
 }
-
-/// Scalarize an expression at index `k` (0-based).
-///
-/// - Phantom VarRefs are replaced by the k-th indexed variant from `phantom_map`.
-/// - Declared array VarRefs (with no subscripts) get subscript `[k+1]` (1-based)
-///   only while expanding an equation that already contains a phantom reference.
-///   MLS §10.6: ordinary declared-array equations must remain array equations so
-///   later matrix-aware scalarization can preserve linear algebra semantics.
-/// - All other expressions are recursively processed.
 fn scalarize_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
+    var_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
@@ -2415,6 +2365,7 @@ fn scalarize_expr_at(
         k,
         phantom_map,
         array_dims,
+        var_dims,
         record_array_fields,
         functions,
     };
@@ -2425,6 +2376,7 @@ struct ScalarizeExprContext<'a> {
     k: usize,
     phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &'a HashMap<String, Vec<i64>>,
+    var_dims: &'a HashMap<String, Vec<i64>>,
     record_array_fields: &'a RecordArrayFieldMap,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 }
@@ -2449,12 +2401,7 @@ fn scalarize_expr_with_context(
         )
         .and_then(|projected| projected.map_or_else(|| Ok(expr.clone()), Ok)),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
-            Ok(rumoca_core::Expression::Binary {
-                op: op.clone(),
-                lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
-                rhs: Box::new(scalarize_expr_with_context(rhs, ctx)?),
-                span: *span,
-            })
+            scalarize_binary_expr_at(op, lhs, rhs, *span, ctx)
         }
         rumoca_core::Expression::Unary { op, rhs, span } => Ok(rumoca_core::Expression::Unary {
             op: op.clone(),
@@ -2509,6 +2456,7 @@ fn scalarize_expr_with_context(
                     k: element_lane,
                     phantom_map: ctx.phantom_map,
                     array_dims: ctx.array_dims,
+                    var_dims: ctx.var_dims,
                     record_array_fields: ctx.record_array_fields,
                     functions: ctx.functions,
                 };
@@ -2527,6 +2475,39 @@ fn scalarize_expr_with_context(
     }
 }
 
+fn scalarize_binary_expr_at(
+    op: &OpBinary,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+    ctx: &ScalarizeExprContext<'_>,
+) -> Result<Expr, ToDaeError> {
+    if matches!(op, OpBinary::Sub) {
+        let projector = Projector(ctx.var_dims, ctx.functions);
+        if projector.has_descendant_matrix_product_candidate(rhs, false)? {
+            let dims = projector.dims(lhs, span)?;
+            if dims.is_none()
+                && matches!(projector.dims(rhs, span)?, Some(dims) if !dims.is_empty())
+            {
+                return Err(projection_error("unknown target shape", span));
+            }
+            if let Some(dims) = dims
+                && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
+            {
+                let indices = projection_lane_indices(ctx.k, &dims)
+                    .ok_or_else(|| projection_error("result shape mismatch", span))?;
+                let lhs = projector.element(lhs, &indices, span)?;
+                return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
+            }
+        }
+    }
+    Ok(vectorized_binary_expr(
+        op.clone(),
+        scalarize_expr_with_context(lhs, ctx)?,
+        scalarize_expr_with_context(rhs, ctx)?,
+        span,
+    ))
+}
 fn scalarize_builtin_vector_output_at(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
@@ -2557,7 +2538,6 @@ fn scalarize_builtin_vector_output_at(
         span,
     }))
 }
-
 fn vectorize_builtin_vector_arg(
     arg: &rumoca_core::Expression,
     ctx: &ScalarizeExprContext<'_>,
@@ -3342,7 +3322,6 @@ fn scalarize_if_expr_at(
         span,
     })
 }
-
 fn scalarize_builtin_array_constructor_at(
     function: rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
@@ -3368,6 +3347,7 @@ fn scalarize_builtin_array_constructor_at(
                 value_lane,
                 ctx.phantom_map,
                 ctx.array_dims,
+                ctx.var_dims,
                 ctx.record_array_fields,
                 ctx.functions,
             )
@@ -3384,7 +3364,6 @@ fn scalarize_builtin_array_constructor_at(
         _ => Ok(None),
     }
 }
-
 fn scalarized_fill_value_lane(
     value: &rumoca_core::Expression,
     k: usize,
@@ -3399,7 +3378,6 @@ fn scalarized_fill_value_lane(
     };
     if width <= 1 { 0 } else { k % width }
 }
-
 fn scalarized_fill_value_width(
     value: &rumoca_core::Expression,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
@@ -3445,7 +3423,6 @@ fn scalarized_fill_value_width(
         _ => None,
     }
 }
-
 fn literal_positive_usize(expr: &rumoca_core::Expression) -> Option<usize> {
     match expr {
         rumoca_core::Expression::Literal {
@@ -3459,14 +3436,12 @@ fn literal_positive_usize(expr: &rumoca_core::Expression) -> Option<usize> {
         _ => None,
     }
 }
-
 fn real_literal(value: f64, span: rumoca_core::Span) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
         span,
     }
 }
-
 fn first_function_output_size(
     name: &str,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -3476,18 +3451,15 @@ fn first_function_output_size(
     let output = function.outputs.first()?;
     Some(compute_var_size(&output.dims))
 }
-
 fn vectorize_phantom_expr(
     expr: &rumoca_core::Expression,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
 ) -> rumoca_core::Expression {
     PhantomVectorizer { phantom_map }.rewrite_expression(expr)
 }
-
 struct PhantomVectorizer<'a> {
     phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
 }
-
 impl ExpressionRewriter for PhantomVectorizer<'_> {
     fn rewrite_var_ref_expression(
         &mut self,
@@ -3631,18 +3603,11 @@ fn array_from_binary_elements(
     }
 }
 
-/// Process an equation list, expanding vector equations with phantom refs.
-/// Scalarize phantom/comprehension array equations in place, returning one
-/// `(new_start, new_len)` span per input equation (indexed by pre-expansion
-/// position). An array equation that expands into `scalar_count` rows reports
-/// `new_len == scalar_count`; every other equation reports `new_len == 1`. The
-/// spans feed [`rumoca_ir_dae::remap_structured_families_after_expansion`] so
-/// structured families stay pointed at their post-expansion row blocks.
 fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
-    declared_dims: &HashMap<String, Vec<i64>>,
+    var_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     recover_discrete_assignments: bool,
@@ -3671,6 +3636,7 @@ fn scalarize_equation_list(
                     k,
                     phantom_map,
                     array_dims,
+                    var_dims,
                     record_array_fields,
                     functions,
                 )?;
@@ -3691,6 +3657,7 @@ fn scalarize_equation_list(
                 0,
                 phantom_map,
                 array_dims,
+                var_dims,
                 record_array_fields,
                 functions,
             )?;
@@ -3704,9 +3671,8 @@ fn scalarize_equation_list(
         } else {
             new_equations.push(project_scalarized_residual_rhs(
                 eq,
-                phantom_map,
                 array_dims,
-                declared_dims,
+                var_dims,
                 record_array_fields,
                 functions,
             )?);
@@ -3716,12 +3682,10 @@ fn scalarize_equation_list(
     *equations = new_equations;
     Ok(spans)
 }
-
 fn project_scalarized_residual_rhs(
     eq: dae::Equation,
-    phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
     array_dims: &HashMap<String, Vec<i64>>,
-    declared_dims: &HashMap<String, Vec<i64>>,
+    var_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 ) -> Result<dae::Equation, ToDaeError> {
@@ -3735,27 +3699,49 @@ fn project_scalarized_residual_rhs(
         span,
     } = &eq.rhs
     else {
-        let rhs = lower_colon_slice_dot_products(&eq.rhs, declared_dims)?;
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, var_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = lhs.as_ref()
     else {
-        let rhs = lower_colon_slice_dot_products(&eq.rhs, declared_dims)?;
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, var_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
-    let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims) else {
-        let rhs = lower_colon_slice_dot_products(&eq.rhs, declared_dims)?;
+    let Some(target_dims) = Projector(var_dims, functions).dims(lhs, *span)? else {
+        let rhs = lower_colon_slice_dot_products(&eq.rhs, var_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
-    let _ = phantom_map;
-    let scalar_lhs =
-        project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?;
-    let scalar_rhs =
-        project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?;
-    let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, declared_dims)?;
-    let scalar_rhs = lower_colon_slice_dot_products(&scalar_rhs, declared_dims)?;
+    let k = if target_dims.is_empty() {
+        scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims).unwrap_or(0)
+    } else {
+        let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims)
+        else {
+            let rhs = lower_colon_slice_dot_products(&eq.rhs, var_dims)?;
+            return Ok(dae::Equation { rhs, ..eq });
+        };
+        k
+    };
+    let scalar_lhs = if target_dims.is_empty() {
+        lhs.as_ref().clone()
+    } else {
+        project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?
+    };
+    let projector = Projector(var_dims, functions);
+    let projected = projector.project(rhs, k, &target_dims)?;
+    let scalar_rhs = match projected {
+        Some(projected) => projected,
+        None if target_dims.is_empty()
+            && !matches!(rhs.as_ref(), Expr::ArrayComprehension { .. })
+            && !expr_has_vectorized_scalar_function_call(rhs, array_dims, functions) =>
+        {
+            rhs.as_ref().clone()
+        }
+        None => project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?,
+    };
+    let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, var_dims)?;
+    let scalar_rhs = lower_colon_slice_dot_products(&scalar_rhs, var_dims)?;
     Ok(dae::Equation {
         rhs: rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
@@ -3877,8 +3863,18 @@ fn lower_colon_slice_binary_expr(
             classify_dot_operand(rhs, array_dims)?,
         ) {
             (DotOperand::Vector(projected_lhs), DotOperand::Vector(projected_rhs)) => {
-                if let Some(dot) =
-                    dot_product_if_matching_vectors(op, &projected_lhs, &projected_rhs, span)
+                if let (
+                    Expr::Array {
+                        elements: lhs_values,
+                        ..
+                    },
+                    Expr::Array {
+                        elements: rhs_values,
+                        ..
+                    },
+                ) = (&projected_lhs, &projected_rhs)
+                    && lhs_values.len() == rhs_values.len()
+                    && let Some(dot) = dot_product_expr(lhs_values, rhs_values, span)
                 {
                     return Ok(dot);
                 }
@@ -3896,118 +3892,553 @@ fn lower_colon_slice_binary_expr(
             });
         }
     }
-    let lhs = lower_colon_slice_dot_operand(op, lhs, array_dims)?;
-    let rhs = lower_colon_slice_dot_operand(op, rhs, array_dims)?;
-    if let Some(dot) = dot_product_if_matching_vectors(op, &lhs, &rhs, span) {
+    let lhs = lower_colon_slice_dot_operand(lhs, array_dims)?;
+    let rhs = lower_colon_slice_dot_operand(rhs, array_dims)?;
+    if let (
+        Expr::Array {
+            elements: lhs_values,
+            ..
+        },
+        Expr::Array {
+            elements: rhs_values,
+            ..
+        },
+    ) = (&lhs, &rhs)
+        && lhs_values.len() == rhs_values.len()
+        && let Some(dot) = dot_product_expr(lhs_values, rhs_values, span)
+    {
         return Ok(dot);
     }
     Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span))
 }
 
 fn lower_colon_slice_dot_operand(
-    op: &rumoca_core::OpBinary,
     expr: &rumoca_core::Expression,
     array_dims: &HashMap<String, Vec<i64>>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
-    if matches!(op, rumoca_core::OpBinary::Mul)
-        && let Some(projected) = try_project_colon_slice_var_ref(expr, array_dims)?
-    {
+    if let Some(projected) = try_project_colon_slice_var_ref(expr, array_dims)? {
         return Ok(projected);
     }
     lower_colon_slice_dot_products(expr, array_dims)
 }
-
-fn dot_product_if_matching_vectors(
-    op: &rumoca_core::OpBinary,
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    span: rumoca_core::Span,
-) -> Option<rumoca_core::Expression> {
-    if !matches!(op, rumoca_core::OpBinary::Mul) {
-        return None;
-    }
-    let (
-        rumoca_core::Expression::Array {
-            elements: lhs_values,
-            ..
-        },
-        rumoca_core::Expression::Array {
-            elements: rhs_values,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return None;
-    };
-    if lhs_values.len() != rhs_values.len() {
-        return None;
-    }
-    dot_product_expr(lhs_values, rhs_values, span)
-}
-
-fn dot_product_expr(
-    lhs_values: &[rumoca_core::Expression],
-    rhs_values: &[rumoca_core::Expression],
-    span: rumoca_core::Span,
-) -> Option<rumoca_core::Expression> {
-    let mut terms = lhs_values
+fn dot_product_expr(lhs_values: &[Expr], rhs_values: &[Expr], span: Span) -> Option<Expr> {
+    lhs_values
         .iter()
         .cloned()
         .zip(rhs_values.iter().cloned())
-        .map(|(lhs, rhs)| rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span,
-        });
-    let first = terms.next()?;
-    Some(
-        terms.fold(first, |acc, term| rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Box::new(acc),
-            rhs: Box::new(term),
-            span,
-        }),
-    )
+        .map(|(lhs, rhs)| vectorized_binary_expr(OpBinary::Mul, lhs, rhs, span))
+        .reduce(|lhs, rhs| vectorized_binary_expr(OpBinary::Add, lhs, rhs, span))
 }
+struct Projector<'a>(
+    &'a HashMap<String, Vec<i64>>,
+    &'a IndexMap<VarName, Function>,
+);
+impl Projector<'_> {
+    fn dims(&self, expr: &Expr, span: Span) -> Result<Option<Vec<i64>>, ToDaeError> {
+        if let Some((name, subscripts)) = matrix_var_slice(expr) {
+            return match self.0.get(name.as_str()) {
+                Some(dims) if dims.iter().any(|dim| *dim < 0) => {
+                    Err(projection_error("negative dimension", span))
+                }
+                Some(dims) => Ok(proven_projected_dims(dims, subscripts)),
+                None => Ok(None),
+            };
+        }
+        match expr {
+            Expr::BuiltinCall {
+                function: Builtin::Fill,
+                args,
+                ..
+            } => literal_fill_dims(args, span),
+            Expr::BuiltinCall { function, args, .. }
+                if matches!(function, Builtin::Transpose | Builtin::Der) =>
+            {
+                let [arg] = args.as_slice() else {
+                    return Err(projection_error("unknown operand shape", span));
+                };
+                match (function, self.dims(arg, span)?) {
+                    (_, None) => Ok(None),
+                    (Builtin::Der, Some(dims)) => Ok(Some(dims)),
+                    (Builtin::Transpose, Some(dims)) if dims.len() == 2 => {
+                        Ok(Some(vec![dims[1], dims[0]]))
+                    }
+                    _ => Err(projection_error("unsupported rank", span)),
+                }
+            }
+            Expr::BuiltinCall { function, .. } => Ok(builtin_fixed_vector_output_width(*function)
+                .and_then(|width| i64::try_from(width).ok().map(|width| vec![width]))),
+            Expr::FunctionCall { name, .. } => Ok(self
+                .1
+                .get(name.var_name())
+                .and_then(|f| f.outputs.first())
+                .map(|v| v.dims.clone())),
+            Expr::Literal { .. } => Ok(Some(Vec::new())),
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let (Some(lhs_dims), Some(rhs_dims)) =
+                    (self.dims(lhs, span)?, self.dims(rhs, span)?)
+                else {
+                    return Ok(None);
+                };
+                if matches!(op, OpBinary::Mul | OpBinary::MulElem) {
+                    product_dims(op, &lhs_dims, &rhs_dims, span).map(Some)
+                } else if (lhs_dims.is_empty() && rhs_dims.is_empty())
+                    || (matches!(op, OpBinary::Add | OpBinary::Sub) && lhs_dims == rhs_dims)
+                {
+                    Ok(Some(lhs_dims))
+                } else {
+                    Err(projection_error("unknown operand shape", span))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+    fn project(
+        &self,
+        expr: &Expr,
+        k: usize,
+        target_dims: &[i64],
+    ) -> Result<Option<Expr>, ToDaeError> {
+        let Expr::Binary { op, lhs, rhs, span } = expr else {
+            return Ok(None);
+        };
+        if matches!(op, OpBinary::Add | OpBinary::Sub) {
+            let has_array_syntax = has_array_slice_syntax(expr);
+            let result_dims = self.dims(expr, *span)?;
+            if !has_array_syntax
+                && (result_dims.is_none()
+                    || target_dims.is_empty() && result_dims.as_ref().is_some_and(Vec::is_empty))
+            {
+                return Ok(None);
+            }
+            let result_dims =
+                result_dims.ok_or_else(|| projection_error("unknown operand shape", *span))?;
+            if result_dims != target_dims {
+                return Err(projection_error("result shape mismatch", *span));
+            }
+            let indices = projection_lane_indices(k, target_dims)
+                .ok_or_else(|| projection_error("result shape mismatch", *span))?;
+            return self.element(expr, &indices, *span).map(Some);
+        }
+        if !matches!(op, OpBinary::Mul | OpBinary::MulElem) {
+            return Ok(None);
+        }
+        if target_dims.iter().any(|dim| *dim < 0) {
+            return Err(projection_error("negative dimension", *span));
+        }
+        let lhs_dims = self.dims(lhs, *span)?;
+        let rhs_dims = self.dims(rhs, *span)?;
+        if scalar_times_unknown_non_product(self, lhs, &lhs_dims, rhs, &rhs_dims)? {
+            return Ok(None);
+        }
+        let has_array = lhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
+            || rhs_dims.as_ref().is_some_and(|dims| !dims.is_empty())
+            || has_array_slice_syntax(lhs)
+            || has_array_slice_syntax(rhs);
+        if target_dims.is_empty() && !has_array && (lhs_dims.is_none() || rhs_dims.is_none()) {
+            return Ok(None);
+        }
+        let lhs_dims = lhs_dims.ok_or_else(|| projection_error("unknown operand shape", *span))?;
+        let rhs_dims = rhs_dims.ok_or_else(|| projection_error("unknown operand shape", *span))?;
+        if (!lhs_dims.is_empty() && matches!(lhs.as_ref(), Expr::FunctionCall { .. }))
+            || (!rhs_dims.is_empty() && matches!(rhs.as_ref(), Expr::FunctionCall { .. }))
+        {
+            return Err(projection_error(
+                "array-valued function output cannot be projected",
+                *span,
+            ));
+        }
+        let result_dims = product_dims(op, &lhs_dims, &rhs_dims, *span)?;
+        if result_dims != target_dims {
+            let detail = if target_dims.is_empty() {
+                "non-scalar result in scalar context"
+            } else {
+                "result shape mismatch"
+            };
+            return Err(projection_error(detail, *span));
+        }
+        if result_dims.is_empty() && lhs_dims.is_empty() && rhs_dims.is_empty() {
+            return Ok(None);
+        }
+        let indices = projection_lane_indices(k, target_dims)
+            .ok_or_else(|| projection_error("result shape mismatch", *span))?;
+        if matches!(op, OpBinary::MulElem) {
+            return Ok(Some(vectorized_binary_expr(
+                op.clone(),
+                self.element(lhs, &indices, *span)?,
+                self.element(rhs, &indices, *span)?,
+                *span,
+            )));
+        }
+        if lhs_dims.is_empty() || rhs_dims.is_empty() {
+            let lhs_indices: &[i64] = if lhs_dims.is_empty() { &[] } else { &indices };
+            let rhs_indices: &[i64] = if rhs_dims.is_empty() { &[] } else { &indices };
+            let lhs = self.element(lhs, lhs_indices, *span)?;
+            let rhs = self.element(rhs, rhs_indices, *span)?;
+            return Ok(Some(vectorized_binary_expr(op.clone(), lhs, rhs, *span)));
+        }
+        let inner = *lhs_dims.last().unwrap();
+        if inner < 0 {
+            return Err(projection_error("negative dimension", *span));
+        }
+        if inner == 0 {
+            return Ok(Some(real_literal(0.0, *span)));
+        }
+        let (mut lhs_values, mut rhs_values) = (Vec::new(), Vec::new());
+        let row = (lhs_dims.len() == 2).then(|| indices[0]);
+        let column = (rhs_dims.len() == 2).then(|| *indices.last().unwrap());
+        for inner_index in 1..=inner {
+            let lhs_indices = row.into_iter().chain([inner_index]).collect::<Vec<_>>();
+            let rhs_indices = [inner_index].into_iter().chain(column).collect::<Vec<_>>();
+            lhs_values.push(self.element(lhs, &lhs_indices, *span)?);
+            rhs_values.push(self.element(rhs, &rhs_indices, *span)?);
+        }
+        dot_product_expr(&lhs_values, &rhs_values, *span)
+            .map(Some)
+            .ok_or_else(|| projection_error("unsupported inner dimension", *span))
+    }
+    fn element(&self, expr: &Expr, indices: &[i64], span: Span) -> Result<Expr, ToDaeError> {
+        if !matches!(expr, Expr::Binary { .. })
+            && matches!(self.dims(expr, span)?, Some(dims) if dims.is_empty())
+        {
+            return Ok(expr.clone());
+        }
+        if let Some((name, subscripts)) = matrix_var_slice(expr) {
+            let expr_span = expr.span().unwrap_or(span);
+            let base_dims = self
+                .0
+                .get(name.as_str())
+                .ok_or_else(|| projection_error("unknown operand shape", span))?;
+            let lane = proven_projected_dims(base_dims, subscripts)
+                .and_then(|dims| linear_lane_for_indices(indices, &dims))
+                .ok_or_else(|| projection_error("result shape mismatch", span))?;
+            let projected =
+                project_slice_subscripts_for_lane(base_dims, subscripts, lane, expr_span)?
+                    .ok_or_else(|| projection_error("unknown operand shape", span))?;
+            return Ok(Expr::VarRef {
+                name: name.clone(),
+                subscripts: projected,
+                span: expr_span,
+            });
+        }
+        match expr {
+            Expr::BuiltinCall {
+                function: Builtin::Der,
+                args,
+                span,
+            } if args.len() == 1 => Ok(Expr::BuiltinCall {
+                function: Builtin::Der,
+                args: vec![self.element(&args[0], indices, *span)?],
+                span: *span,
+            }),
+            Expr::BuiltinCall {
+                function: Builtin::Transpose,
+                args,
+                span,
+            } if indices.len() == 2 && args.len() == 1 => {
+                self.element(&args[0], &[indices[1], indices[0]], *span)
+            }
+            Expr::BuiltinCall {
+                function: Builtin::Fill,
+                args,
+                span,
+            } => self.fill_element(args, indices, *span),
+            Expr::BuiltinCall { function, span, .. }
+                if builtin_fixed_vector_output_width(*function).is_some() && indices.len() == 1 =>
+            {
+                Ok(Expr::Index {
+                    base: Box::new(expr.clone()),
+                    subscripts: vec![generated_index_subscript(
+                        indices[0],
+                        *span,
+                        "DAE matrix-product builtin projection",
+                    )?],
+                    span: *span,
+                })
+            }
+            Expr::Binary { op, lhs, rhs, span } if matches!(op, OpBinary::Add | OpBinary::Sub) => {
+                Ok(vectorized_binary_expr(
+                    op.clone(),
+                    self.element(lhs, indices, *span)?,
+                    self.element(rhs, indices, *span)?,
+                    *span,
+                ))
+            }
+            Expr::Binary { .. } => {
+                let dims = self
+                    .dims(expr, span)?
+                    .ok_or_else(|| projection_error("unknown operand shape", span))?;
+                let lane = linear_lane_for_indices(indices, &dims)
+                    .ok_or_else(|| projection_error("result shape mismatch", span))?;
+                self.project(expr, lane, &dims)?
+                    .or_else(|| dims.is_empty().then(|| expr.clone()))
+                    .ok_or_else(|| projection_error("array operand cannot be projected", span))
+            }
+            Expr::FunctionCall { span, .. } => {
+                let dims = self
+                    .dims(expr, *span)?
+                    .ok_or_else(|| projection_error("unknown operand shape", *span))?;
+                let lane = linear_lane_for_indices(indices, &dims)
+                    .ok_or_else(|| projection_error("result shape mismatch", *span))?;
+                let index = one_based_scalar_index(
+                    lane,
+                    *span,
+                    "DAE matrix-product function output projection",
+                )?;
+                Ok(Expr::Index {
+                    base: Box::new(expr.clone()),
+                    subscripts: vec![generated_index_subscript(
+                        index,
+                        *span,
+                        "DAE matrix-product function output projection",
+                    )?],
+                    span: *span,
+                })
+            }
+            _ => Err(projection_error("unknown operand shape", span)),
+        }
+    }
 
+    fn fill_element(&self, args: &[Expr], indices: &[i64], span: Span) -> Result<Expr, ToDaeError> {
+        let (value, _) = args
+            .split_first()
+            .ok_or_else(|| projection_error("unknown operand shape", span))?;
+        let dims = literal_fill_dims(args, span)?
+            .ok_or_else(|| projection_error("unknown operand shape", span))?;
+        linear_lane_for_indices(indices, &dims)
+            .ok_or_else(|| projection_error("result shape mismatch", span))?;
+        self.element(value, &[], span)
+    }
+
+    fn has_descendant_matrix_product_candidate(
+        &self,
+        expr: &Expr,
+        allow_non_scalar_evidence: bool,
+    ) -> Result<bool, ToDaeError> {
+        match expr {
+            Expr::Binary {
+                op: OpBinary::Mul | OpBinary::MulElem,
+                lhs,
+                rhs,
+                span,
+            } => {
+                let operands = [lhs.as_ref(), rhs.as_ref()];
+                let operand_dims = operands
+                    .iter()
+                    .map(|operand| match operand {
+                        Expr::Binary { op, .. }
+                            if !matches!(
+                                op,
+                                OpBinary::Add | OpBinary::Sub | OpBinary::Mul | OpBinary::MulElem
+                            ) =>
+                        {
+                            Ok(None)
+                        }
+                        _ => self.dims(operand, *span),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if operand_dims.iter().flatten().any(Vec::is_empty) {
+                    return operands
+                        .into_iter()
+                        .map(|operand| self.has_descendant_matrix_product_candidate(operand, false))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|candidates| candidates.into_iter().any(std::convert::identity));
+                }
+                Ok(operand_dims.iter().flatten().any(|dims| !dims.is_empty())
+                    || operands
+                        .into_iter()
+                        .zip(operand_dims)
+                        .filter(|(_, dims)| dims.is_none())
+                        .map(|(operand, _)| {
+                            Ok::<bool, ToDaeError>(
+                                has_array_slice_syntax(operand)
+                                    || self
+                                        .has_descendant_matrix_product_candidate(operand, true)?,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .any(std::convert::identity))
+            }
+            Expr::Binary { lhs, rhs, .. } => Ok(self
+                .has_descendant_matrix_product_candidate(lhs, allow_non_scalar_evidence)?
+                || self.has_descendant_matrix_product_candidate(rhs, allow_non_scalar_evidence)?),
+            Expr::Unary { rhs, .. } => {
+                self.has_descendant_matrix_product_candidate(rhs, allow_non_scalar_evidence)
+            }
+            Expr::BuiltinCall { function, args, .. }
+                if !builtin_is_scalar_boundary(function, args.len()) =>
+            {
+                args.iter()
+                    .map(|arg| {
+                        self.has_descendant_matrix_product_candidate(arg, allow_non_scalar_evidence)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|candidates| candidates.into_iter().any(std::convert::identity))
+            }
+            Expr::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let branch_candidates = branches
+                    .iter()
+                    .map(|(_, value)| {
+                        self.has_descendant_matrix_product_candidate(
+                            value,
+                            allow_non_scalar_evidence,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(branch_candidates.into_iter().any(std::convert::identity)
+                    || self.has_descendant_matrix_product_candidate(
+                        else_branch,
+                        allow_non_scalar_evidence,
+                    )?)
+            }
+            _ if allow_non_scalar_evidence => {
+                let Some(span) = expr.span() else {
+                    return Ok(false);
+                };
+                Ok(has_array_slice_syntax(expr)
+                    || matches!(self.dims(expr, span)?, Some(dims) if !dims.is_empty()))
+            }
+            _ => Ok(false),
+        }
+    }
+}
+fn matrix_var_slice(expr: &Expr) -> Option<(&Reference, &[Subscript])> {
+    match expr {
+        Expr::VarRef {
+            name, subscripts, ..
+        } => Some((name, subscripts)),
+        Expr::Index {
+            base, subscripts, ..
+        } => matrix_var_slice(base)
+            .filter(|(_, base_subscripts)| base_subscripts.is_empty())
+            .map(|(name, _)| (name, subscripts.as_slice())),
+        _ => None,
+    }
+}
+fn has_array_slice_syntax(expr: &Expr) -> bool {
+    match expr {
+        Expr::VarRef { .. } | Expr::Index { .. } => {
+            matrix_var_slice(expr).is_some_and(|(_, subscripts)| {
+                subscripts_have_colon(subscripts)
+                    || subscripts.iter().any(
+                        |subscript| matches!(subscript, Subscript::Expr { expr, .. } if subscript_expr_selects_vector(expr) == Some(true)),
+                    )
+            })
+        }
+        Expr::Unary { rhs, .. } => has_array_slice_syntax(rhs),
+        Expr::BuiltinCall { function, args, .. }
+            if !builtin_is_scalar_boundary(function, args.len()) =>
+        {
+            args.iter().any(has_array_slice_syntax)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            has_array_slice_syntax(lhs) || has_array_slice_syntax(rhs)
+        }
+        Expr::If {
+            branches,
+            else_branch,
+            ..
+        } => branches
+            .iter()
+            .map(|(_, value)| value)
+            .chain([else_branch.as_ref()])
+            .any(has_array_slice_syntax),
+        _ => false,
+    }
+}
+fn builtin_is_scalar_boundary(function: &Builtin, arity: usize) -> bool {
+    matches!(
+        function,
+        Builtin::Sum | Builtin::Product | Builtin::Scalar | Builtin::Ndims | Builtin::Size
+    ) || arity == 1 && matches!(function, Builtin::Min | Builtin::Max)
+}
+fn literal_fill_dims(args: &[Expr], span: Span) -> Result<Option<Vec<i64>>, ToDaeError> {
+    let Some((_, dimension_args)) = args.split_first().filter(|(_, dims)| !dims.is_empty()) else {
+        return Err(projection_error("unknown operand shape", span));
+    };
+    let Some(dims) = dimension_args
+        .iter()
+        .map(integer_literal_value)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    if dims.iter().any(|dim| *dim < 0) {
+        return Err(projection_error("negative dimension", span));
+    }
+    Ok(Some(dims))
+}
+fn scalar_times_unknown_non_product(
+    projector: &Projector<'_>,
+    lhs: &Expr,
+    lhs_dims: &Option<Vec<i64>>,
+    rhs: &Expr,
+    rhs_dims: &Option<Vec<i64>>,
+) -> Result<bool, ToDaeError> {
+    let lhs_unknown_non_product =
+        lhs_dims.is_none() && !projector.has_descendant_matrix_product_candidate(lhs, false)?;
+    let rhs_unknown_non_product =
+        rhs_dims.is_none() && !projector.has_descendant_matrix_product_candidate(rhs, false)?;
+    let result = lhs_dims.as_ref().is_some_and(Vec::is_empty) && rhs_unknown_non_product
+        || rhs_dims.as_ref().is_some_and(Vec::is_empty) && lhs_unknown_non_product;
+    Ok(result)
+}
+fn product_dims(op: &OpBinary, lhs: &[i64], rhs: &[i64], at: Span) -> Result<Vec<i64>, ToDaeError> {
+    if matches!(op, OpBinary::MulElem) {
+        return (lhs == rhs)
+            .then(|| lhs.to_vec())
+            .ok_or_else(|| projection_error("elementwise shape mismatch", at));
+    }
+    match (lhs.len(), rhs.len()) {
+        (0, _) => Ok(rhs.to_vec()),
+        (_, 0) => Ok(lhs.to_vec()),
+        (l, r) if l > 2 || r > 2 => Err(projection_error("unsupported rank", at)),
+        _ if lhs.last() != rhs.first() => Err(projection_error("inner dimension mismatch", at)),
+        (1, 1) => Ok(Vec::new()),
+        (2, 1) => Ok(vec![lhs[0]]),
+        (1, 2) => Ok(vec![rhs[1]]),
+        (2, 2) => Ok(vec![lhs[0], rhs[1]]),
+        _ => unreachable!(),
+    }
+}
+fn proven_projected_dims(dims: &[i64], subscripts: &[Subscript]) -> Option<Vec<i64>> {
+    (subscripts.len() <= dims.len()).then_some(())?;
+    projected_dims_for_subscripts(dims, subscripts)
+}
+fn linear_lane_for_indices(indices: &[i64], dims: &[i64]) -> Option<usize> {
+    (indices.len() == dims.len()).then_some(())?;
+    indices
+        .iter()
+        .zip(dims)
+        .try_fold(0usize, |lane, (index, dim)| {
+            let dim = usize::try_from(*dim).ok()?;
+            let index = usize::try_from(index.checked_sub(1)?).ok()?;
+            (index < dim).then_some(lane.checked_mul(dim)?.checked_add(index)?)
+        })
+}
+fn projection_error(why: &str, span: Span) -> ToDaeError {
+    ToDaeError::runtime_contract_violation_at(format!("DAE matrix-product projection: {why}"), span)
+}
 fn project_slice_subscripts_for_lane(
     dims: &[i64],
     subscripts: &[rumoca_core::Subscript],
     k: usize,
     span: rumoca_core::Span,
 ) -> Result<Option<Vec<rumoca_core::Subscript>>, ToDaeError> {
-    let mut selected_dims = Vec::new();
-    let mut dim_idx = 0usize;
-    for subscript in subscripts {
-        if dim_idx >= dims.len() {
-            break;
-        }
-        match subscript {
-            rumoca_core::Subscript::Index { .. } => {
-                dim_idx += 1;
-            }
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                if subscript_expr_selects_vector(expr).unwrap_or(true) {
-                    return Ok(None);
-                }
-                dim_idx += 1;
-            }
-            rumoca_core::Subscript::Colon { .. } => {
-                selected_dims.push(dims[dim_idx]);
-                dim_idx += 1;
-            }
-        }
-    }
-    selected_dims.extend_from_slice(&dims[dim_idx..]);
-    if selected_dims.is_empty() {
+    let Some(selected_dims) =
+        projected_dims_for_subscripts(dims, subscripts).filter(|dims| !dims.is_empty())
+    else {
         return Ok(None);
-    }
+    };
     let Some(lane_indices) = lane_indices_for_dims(k, &selected_dims) else {
         return Ok(None);
     };
     let mut lane_iter = lane_indices.into_iter();
-    let mut projected = Vec::with_capacity(subscripts.len() + dims.len().saturating_sub(dim_idx));
+    let mut projected = Vec::with_capacity(dims.len());
     for subscript in subscripts {
         match subscript {
             rumoca_core::Subscript::Colon { .. } => {
@@ -4020,16 +4451,12 @@ fn project_slice_subscripts_for_lane(
                     "DAE scalarized colon slice projection",
                 )?);
             }
-            rumoca_core::Subscript::Index { .. } => projected.push(subscript.clone()),
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                if subscript_expr_selects_vector(expr).unwrap_or(true) {
-                    return Ok(None);
-                }
+            rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Expr { .. } => {
                 projected.push(subscript.clone());
             }
         }
     }
-    for _ in dim_idx..dims.len() {
+    for _ in subscripts.len()..dims.len() {
         let Some(index) = lane_iter.next() else {
             return Ok(None);
         };
@@ -4041,40 +4468,32 @@ fn project_slice_subscripts_for_lane(
     }
     Ok(Some(projected))
 }
-
 fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
     let mut remaining = k;
     let mut indices = Vec::with_capacity(dims.len());
-    for (idx, dim) in dims.iter().enumerate() {
+    for dim in dims.iter().rev() {
         let dim = usize::try_from(*dim).ok()?;
         if dim == 0 {
             return None;
         }
-        let stride =
-            dims.get(idx + 1..)
-                .unwrap_or_default()
-                .iter()
-                .try_fold(1usize, |acc, next_dim| {
-                    let next_dim = usize::try_from(*next_dim).ok()?;
-                    acc.checked_mul(next_dim)
-                })?;
-        let zero_based = remaining / stride;
-        if zero_based >= dim {
-            return None;
-        }
-        remaining %= stride;
-        indices.push(i64::try_from(zero_based.checked_add(1)?).ok()?);
+        indices.push(i64::try_from(remaining % dim + 1).ok()?);
+        remaining /= dim;
     }
+    indices.reverse();
     (remaining == 0).then_some(indices)
 }
-
+fn projection_lane_indices(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
+    if dims.is_empty() {
+        return Some(Vec::new());
+    }
+    lane_indices_for_dims(k, dims)
+}
 struct RhsProjectionCtx<'a> {
     k: usize,
     array_dims: &'a HashMap<String, Vec<i64>>,
     record_array_fields: &'a RecordArrayFieldMap,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
 }
-
 impl RhsProjectionCtx<'_> {
     fn project(
         &self,
@@ -4115,7 +4534,6 @@ impl RhsProjectionCtx<'_> {
             _ => Ok(expr.clone()),
         }
     }
-
     fn project_var_ref(
         &self,
         expr: &rumoca_core::Expression,
@@ -4151,7 +4569,6 @@ impl RhsProjectionCtx<'_> {
         }
         Ok(expr.clone())
     }
-
     fn project_index(
         &self,
         base: &rumoca_core::Expression,
@@ -4184,7 +4601,6 @@ impl RhsProjectionCtx<'_> {
             span,
         })
     }
-
     fn project_array(
         &self,
         elements: &[rumoca_core::Expression],
@@ -4201,7 +4617,6 @@ impl RhsProjectionCtx<'_> {
         }
         Ok(expr.clone())
     }
-
     fn project_array_comprehension(
         &self,
         inner: &rumoca_core::Expression,
@@ -4224,7 +4639,6 @@ impl RhsProjectionCtx<'_> {
         let selected = substitution.rewrite_expression(inner);
         self.project(&selected)
     }
-
     fn project_function_call(
         &self,
         name: &rumoca_core::Reference,
@@ -4256,7 +4670,6 @@ impl RhsProjectionCtx<'_> {
             span,
         })
     }
-
     fn project_function_call_with_formals(
         &self,
         name: &rumoca_core::Reference,
@@ -4288,7 +4701,6 @@ impl RhsProjectionCtx<'_> {
             span,
         })
     }
-
     fn project_field_access(
         &self,
         base: &rumoca_core::Expression,
@@ -4315,7 +4727,6 @@ impl RhsProjectionCtx<'_> {
             span,
         })
     }
-
     fn project_binary(
         &self,
         op: &rumoca_core::OpBinary,
@@ -4330,7 +4741,6 @@ impl RhsProjectionCtx<'_> {
             span,
         })
     }
-
     fn project_unary(
         &self,
         op: &rumoca_core::OpUnary,
@@ -4343,7 +4753,6 @@ impl RhsProjectionCtx<'_> {
             span,
         })
     }
-
     fn project_if(
         &self,
         branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
@@ -4361,7 +4770,6 @@ impl RhsProjectionCtx<'_> {
         })
     }
 }
-
 fn scalarized_array_literal_lane(
     elements: &[rumoca_core::Expression],
     k: usize,
@@ -4384,7 +4792,6 @@ fn scalarized_array_literal_lane(
     }
     Some((element_index, k % width))
 }
-
 fn scalarized_array_literal_element_width(
     element: &rumoca_core::Expression,
     array_dims: &HashMap<String, Vec<i64>>,
@@ -4399,11 +4806,9 @@ fn scalarized_array_literal_element_width(
         _ => Some(1),
     }
 }
-
 fn scalar_output_function(function: Option<&rumoca_core::Function>) -> bool {
     matches!(function.and_then(|function| function.outputs.first()), Some(output) if output.dims.is_empty())
 }
-
 fn scalarized_function_arg_formal_rank(
     function: Option<&rumoca_core::Function>,
     arg: &rumoca_core::Expression,
@@ -4426,7 +4831,6 @@ fn scalarized_function_arg_formal_rank(
     *positional_idx += 1;
     rank
 }
-
 fn project_scalarized_function_arg_at(
     arg: &rumoca_core::Expression,
     formal_rank: usize,
@@ -4536,41 +4940,30 @@ fn project_scalarized_function_arg_at(
         span: *span,
     })
 }
-
 fn is_stream_passthrough_intrinsic_dae(name: &str) -> bool {
     rumoca_core::qualified_type_name_matches(name, "actualStream")
         || rumoca_core::qualified_type_name_matches(name, "inStream")
 }
-
-fn scalarized_lhs_zero_based_index(subscripts: &[rumoca_core::Subscript]) -> Option<usize> {
-    match subscripts {
-        [subscript] => {
-            let index = match subscript {
-                rumoca_core::Subscript::Index { value, .. } => *value,
-                rumoca_core::Subscript::Expr { expr, .. } => integer_literal_value(expr)?,
-                rumoca_core::Subscript::Colon { .. } => return None,
-            };
-            usize::try_from(index.checked_sub(1)?).ok()
-        }
-        _ => None,
-    }
-}
-
 fn scalarized_lhs_zero_based_index_or_singleton(
     name: &rumoca_core::Reference,
     subscripts: &[rumoca_core::Subscript],
     array_dims: &HashMap<String, Vec<i64>>,
 ) -> Option<usize> {
-    if let Some(index) = scalarized_lhs_zero_based_index(subscripts) {
-        return Some(index);
-    }
-    if !subscripts.is_empty() {
-        return None;
-    }
     let dims = array_dims.get(name.as_str())?;
-    (dims.iter().copied().product::<i64>() == 1).then_some(0)
+    if subscripts.is_empty() {
+        return (dims.iter().copied().product::<i64>() == 1).then_some(0);
+    }
+    (subscripts.len() == dims.len()).then_some(())?;
+    let indices = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Some(*value),
+            rumoca_core::Subscript::Expr { expr, .. } => integer_literal_value(expr),
+            rumoca_core::Subscript::Colon { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    linear_lane_for_indices(&indices, dims)
 }
-
 fn scalarized_equation_at(
     eq: &dae::Equation,
     scalar_rhs: rumoca_core::Expression,
@@ -4595,7 +4988,6 @@ fn scalarized_equation_at(
         origin,
     ))
 }
-
 fn residual_assignment_parts(
     expr: rumoca_core::Expression,
 ) -> Result<Option<(rumoca_core::Reference, rumoca_core::Expression)>, ToDaeError> {
@@ -4613,7 +5005,6 @@ fn residual_assignment_parts(
     };
     Ok(Some((lhs, *rhs)))
 }
-
 fn assignment_target_reference(
     expr: rumoca_core::Expression,
 ) -> Result<Option<rumoca_core::Reference>, ToDaeError> {
