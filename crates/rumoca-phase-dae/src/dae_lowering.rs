@@ -2494,7 +2494,7 @@ fn scalarize_binary_expr_at(
             if let Some(dims) = dims
                 && let Some(rhs) = projector.project(rhs, ctx.k, &dims)?
             {
-                let indices = lane_indices_for_dims(ctx.k, &dims)
+                let indices = projection_lane_indices(ctx.k, &dims)
                     .ok_or_else(|| projection_error("result shape mismatch", span))?;
                 let lhs = projector.element(lhs, &indices, span)?;
                 return Ok(vectorized_binary_expr(op.clone(), lhs, rhs, span));
@@ -4005,7 +4005,7 @@ impl Projector<'_> {
             if result_dims != target_dims {
                 return Err(projection_error("result shape mismatch", *span));
             }
-            let indices = lane_indices_for_dims(k, target_dims)
+            let indices = projection_lane_indices(k, target_dims)
                 .ok_or_else(|| projection_error("result shape mismatch", *span))?;
             return self.element(expr, &indices, *span).map(Some);
         }
@@ -4049,7 +4049,7 @@ impl Projector<'_> {
         if result_dims.is_empty() && lhs_dims.is_empty() && rhs_dims.is_empty() {
             return Ok(None);
         }
-        let indices = lane_indices_for_dims(k, target_dims)
+        let indices = projection_lane_indices(k, target_dims)
             .ok_or_else(|| projection_error("result shape mismatch", *span))?;
         if matches!(op, OpBinary::MulElem) {
             return Ok(Some(vectorized_binary_expr(
@@ -4471,6 +4471,12 @@ fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
     }
     indices.reverse();
     (remaining == 0).then_some(indices)
+}
+fn projection_lane_indices(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
+    if dims.is_empty() {
+        return Some(Vec::new());
+    }
+    lane_indices_for_dims(k, dims)
 }
 struct RhsProjectionCtx<'a> {
     k: usize,
