@@ -1012,6 +1012,7 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
+            tearing: None,
         }],
     };
     assert!(fmi3_native_projection_available(&problem).unwrap());

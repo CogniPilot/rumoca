@@ -128,10 +128,7 @@ fn eval_values(
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } => {
-            let key = var_key(name, subscripts, bindings)?;
-            bindings.get(key.as_str()).copied().map(|value| vec![value])
-        }
+        } => eval_var_ref_values(name, subscripts, bindings, shapes),
         rumoca_core::Expression::Unary { op, rhs, .. } => eval_unary(op, rhs, bindings, shapes),
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             eval_binary(op, lhs, rhs, bindings, shapes)
@@ -152,6 +149,31 @@ fn eval_values(
         } => eval_range(start, step.as_deref(), end, bindings, shapes),
         _ => None,
     }
+}
+
+fn eval_var_ref_values(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    bindings: &IndexMap<String, f64>,
+    shapes: &IndexMap<String, Vec<i64>>,
+) -> Option<Vec<f64>> {
+    if !subscripts.is_empty() {
+        let key = var_key(name, subscripts, bindings)?;
+        return bindings.get(key.as_str()).copied().map(|value| vec![value]);
+    }
+    let name = name.as_str();
+    let Some(dims) = shapes.get(name).filter(|dims| !dims.is_empty()) else {
+        return bindings.get(name).copied().map(|value| vec![value]);
+    };
+    let size = dims.iter().try_fold(1usize, |size, dim| {
+        size.checked_mul(usize::try_from(*dim).ok()?)
+    })?;
+    (0..size)
+        .map(|index| {
+            let key = dae::scalar_name_text_for_flat_index(name, dims, index);
+            bindings.get(key.as_str()).copied()
+        })
+        .collect()
 }
 
 fn eval_scalar(
@@ -515,6 +537,42 @@ mod tests {
                 .expect("non-scalar structural starts are left unchanged"),
             vec![1.0, 2.0]
         );
+    }
+
+    #[test]
+    fn structural_array_alias_preserves_each_source_component() {
+        let span = compile_time_test_span();
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("alias"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("alias"),
+                dims: vec![3],
+                start: Some(var_ref("source")),
+                is_tunable: false,
+                ..dae::Variable::empty_with_span(span)
+            },
+        );
+        dae_model.variables.parameters.insert(
+            rumoca_core::VarName::new("source"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("source"),
+                dims: vec![3],
+                start: Some(rumoca_core::Expression::Array {
+                    elements: vec![real(1.0), real(2.0), real(3.0)],
+                    is_matrix: false,
+                    span,
+                }),
+                is_tunable: false,
+                ..dae::Variable::empty_with_span(span)
+            },
+        );
+
+        let bindings = structural_bindings(&dae_model).expect("structural aliases should resolve");
+
+        assert_eq!(bindings.get("alias[1]"), Some(&1.0));
+        assert_eq!(bindings.get("alias[2]"), Some(&2.0));
+        assert_eq!(bindings.get("alias[3]"), Some(&3.0));
     }
 
     #[test]

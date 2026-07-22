@@ -176,8 +176,39 @@ fn trace_solve_model(solve_model: &solve::SolveModel) {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            trace_projection_tearing(block_idx, block, &names_by_y);
         }
     }
+}
+
+fn trace_projection_tearing(
+    block_index: usize,
+    block: &solve::AlgebraicProjectionBlock,
+    names_by_y: &std::collections::HashMap<usize, &str>,
+) {
+    let Some(tearing) = &block.tearing else {
+        return;
+    };
+    let tear_names = tearing
+        .tear_y_indices
+        .iter()
+        .map(|index| names_by_y.get(index).copied().unwrap_or("?"))
+        .collect::<Vec<_>>();
+    let causal_names = tearing
+        .causal_steps
+        .iter()
+        .map(|step| names_by_y.get(&step.target_y_index).copied().unwrap_or("?"))
+        .collect::<Vec<_>>();
+    tracing::debug!(
+        target: "rumoca_phase_structural",
+        "[sim-trace] projection block {block_index} tearing: residual_rows={:?} \
+         tear_y={:?} ({}) causal_targets={} ({})",
+        tearing.residual_rows,
+        tearing.tear_y_indices,
+        tear_names.join(", "),
+        causal_names.len(),
+        causal_names.join(", ")
+    );
 }
 
 fn lower_structured_dae_for_simulation(

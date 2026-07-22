@@ -12,6 +12,7 @@
 //! The root keeps only module wiring and a curated set of re-exports so the sim
 //! facade (`lib.rs`) and the solver backends keep referring to the same paths.
 
+mod causal_reconstruction;
 mod diagnostics;
 mod direct;
 mod entry;

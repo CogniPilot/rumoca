@@ -11,31 +11,72 @@ use super::{
     substitution_for_var,
 };
 
-#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "tracing")]
+macro_rules! trace_tearing {
+    ($($tokens:tt)*) => {
+        tracing::debug!(target: "rumoca_phase_structural::tearing", $($tokens)*);
+    };
+}
+
+#[cfg(not(feature = "tracing"))]
+macro_rules! trace_tearing {
+    ($($tokens:tt)*) => {};
+}
+
+pub(super) struct EliminationOutputs<'a> {
+    pub(super) substitutions: &'a mut Vec<Substitution>,
+    pub(super) eliminated_eq_indices: &'a mut Vec<usize>,
+    pub(super) eliminated_eq_flags: &'a mut [bool],
+    pub(super) eliminated_var_names: &'a mut Vec<VarName>,
+}
+
 pub(super) fn tear_and_eliminate_loop_block(
     dae: &Dae,
     equations: &[EquationRef],
     unknowns: &[UnknownId],
     runtime_protected_unknowns: &IndexSet<String>,
     state_derivative_matcher: &DerivativeNameMatcher,
-    substitutions: &mut Vec<Substitution>,
-    eliminated_eq_indices: &mut Vec<usize>,
-    eliminated_eq_flags: &mut [bool],
-    eliminated_var_names: &mut Vec<VarName>,
+    outputs: EliminationOutputs<'_>,
 ) -> Result<(), StructuralError> {
+    let EliminationOutputs {
+        substitutions,
+        eliminated_eq_indices,
+        eliminated_eq_flags,
+        eliminated_var_names,
+    } = outputs;
     let Some(var_names) = loop_elimination_unknowns(dae, unknowns, runtime_protected_unknowns)?
     else {
+        trace_tearing!(
+            unknowns = unknowns.len(),
+            "algebraic loop is not wholly eligible for symbolic tearing"
+        );
         return Ok(());
     };
     let eq_indices: Vec<usize> = equations.iter().map(|eq| eq.0).collect();
     if !loop_equations_can_be_torn(dae, &eq_indices, state_derivative_matcher) {
+        trace_tearing!(
+            equations = eq_indices.len(),
+            "algebraic loop contains an equation outside symbolic tearing scope"
+        );
         return Ok(());
     }
 
     let local_eq_unknowns = loop_local_incidence(dae, &eq_indices, &var_names, substitutions)?;
     let Some(tearing) = tear_algebraic_loop(var_names.len(), &local_eq_unknowns) else {
+        trace_tearing!(
+            unknowns = var_names.len(),
+            "incidence tearing did not reduce the algebraic loop"
+        );
         return Ok(());
     };
+    trace_tearing!(
+        unknowns = var_names.len(),
+        tear_variables = tearing.tear_var_local_indices.len(),
+        causal_steps = tearing.causal_sequence.len(),
+        "attempting symbolic algebraic-loop tearing"
+    );
+    let _causal_step_count = tearing.causal_sequence.len();
+    let _tear_variable_count = tearing.tear_var_local_indices.len();
 
     let mut loop_substitutions = Vec::new();
     let mut trial_substitutions = substitutions.clone();
@@ -51,10 +92,16 @@ pub(super) fn tear_and_eliminate_loop_block(
         }
         let var_name = var_names[local_var].clone();
         let eq_rhs = apply_substitutions_in_order(
+            dae,
             &dae.continuous.equations[eq_idx].rhs,
             &trial_substitutions,
         )?;
         let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
+            trace_tearing!(
+                variable = var_name.as_str(),
+                equation = eq_idx,
+                "symbolic tearing could not isolate a causal variable"
+            );
             return Ok(());
         };
         trial_substitutions.push(substitution_for_var(
@@ -71,6 +118,11 @@ pub(super) fn tear_and_eliminate_loop_block(
         eliminated_eq_flags[eq_idx] = true;
         eliminated_var_names.push(var_name);
     }
+    trace_tearing!(
+        eliminated = _causal_step_count,
+        retained_tears = _tear_variable_count,
+        "symbolic algebraic-loop tearing succeeded"
+    );
     Ok(())
 }
 
@@ -82,10 +134,19 @@ fn loop_elimination_unknowns(
     let mut var_names = Vec::with_capacity(unknowns.len());
     for unknown in unknowns {
         let Some(raw_var_name) = algebraic_or_output_unknown(unknown) else {
+            trace_tearing!(
+                unknown = ?unknown,
+                "symbolic tearing requires algebraic or output unknowns"
+            );
             return Ok(None);
         };
         let var_name = raw_var_name.clone();
         if !can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns)? {
+            trace_tearing!(
+                variable = var_name.as_str(),
+                runtime_protected = runtime_protected_unknowns.contains(var_name.as_str()),
+                "symbolic tearing cannot eliminate loop unknown"
+            );
             return Ok(None);
         }
         var_names.push(var_name);
@@ -115,8 +176,11 @@ fn loop_local_incidence(
     eq_indices
         .iter()
         .map(|&eq_idx| {
-            let rhs =
-                apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions)?;
+            let rhs = apply_substitutions_in_order(
+                dae,
+                &dae.continuous.equations[eq_idx].rhs,
+                substitutions,
+            )?;
             Ok(var_names
                 .iter()
                 .enumerate()

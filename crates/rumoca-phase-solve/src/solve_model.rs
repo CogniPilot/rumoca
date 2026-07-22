@@ -400,7 +400,7 @@ fn lower_dae_to_solve_model_inner(
     let solver_len = profiled_solver_len(&dae_model, state_count, profile)?;
     let model_span = model_provenance_span(&dae_model, metadata_dae_model)?;
     let timer = crate::timing::stage_start();
-    let problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
+    let mut problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
     crate::timing::log_stage("model.lower_solve_problem", timer);
     let timer = crate::timing::stage_start();
     let artifacts = if profile.needs_solve_artifacts() {
@@ -409,6 +409,9 @@ fn lower_dae_to_solve_model_inner(
     } else {
         solve::SolveArtifacts::default()
     };
+    if profile.needs_solve_artifacts() {
+        crate::retain_cost_effective_algebraic_tearing(&mut problem, &artifacts)?;
+    }
     crate::timing::log_stage("model.lower_solve_artifacts", timer);
     let timer = crate::timing::stage_start();
     let mut parameters = compiled_parameter_values(

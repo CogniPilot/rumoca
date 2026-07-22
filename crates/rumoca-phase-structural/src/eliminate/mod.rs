@@ -22,7 +22,9 @@ use rumoca_core::{
 use rumoca_ir_dae as dae;
 
 mod aggregate_alias;
+mod block_condensation;
 mod boundary_scan;
+mod causal_factor;
 mod connection_policy;
 mod diagnostics;
 mod direct_definition_index;
@@ -42,13 +44,17 @@ use aggregate_alias::{
     aggregate_definition_for_elimination, aggregate_variable_fully_resolved,
     is_scalarized_element_of_aggregate,
 };
+pub use block_condensation::{
+    CondensedAlgebraicBlock, ScalarBlockCondensationResult, condense_scalar_algebraic_loops,
+};
 use boundary_scan::{BoundaryScanCtx, BoundaryScanState, scan_boundary_equations};
+pub use causal_factor::{CausalSubstitutionPlan, factor_causal_substitutions};
 use connection_policy::should_skip_connection_equation;
 use diagnostics::trace_singular_reduced_rows;
 use direct_definition_index::DirectDefinitionIndex;
 use flow_policy::{expr_contains_indexed_multiscalar_ref, is_flow_equation_origin};
 use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_contains_unknown};
-use profiling::{eliminate_profile_enabled, log_eliminate_profile};
+use profiling::{eliminate_profile_enabled, log_blt_profile, log_eliminate_profile};
 use runtime_known::singular_rows_are_runtime_known_assignments;
 use runtime_protection::{
     expr_references_any_discrete_name, expr_references_any_runtime_discrete_target,
@@ -58,14 +64,16 @@ use runtime_protection::{
 };
 use scalar_shape::expression_is_scalar_after_subscripts;
 pub use solve_for_unknown::try_solve_for_unknown;
+pub(crate) use substitution_application::simplify_arithmetic_identities;
 use substitution_application::{
-    apply_substitutions_in_order, apply_substitutions_to_dae_partitions,
-    apply_substitutions_to_remaining_once, equation_analysis_expr, simplify_arithmetic_identities,
+    apply_aggregate_substitutions_to_dae_partitions, apply_substitutions_in_order,
+    apply_substitutions_to_dae_partitions, apply_substitutions_to_expressions_in_order,
+    apply_substitutions_to_remaining_once, equation_analysis_expr,
 };
 use substitution_target::{
     expr_contains_derivative_substitution_target, expr_contains_substitution_target,
 };
-use tearing_elimination::tear_and_eliminate_loop_block;
+use tearing_elimination::{EliminationOutputs, tear_and_eliminate_loop_block};
 use unknown_index::{
     BoundaryUnknownIndex, checked_count_live_unknowns, expression_references_boundary_unknown,
     find_live_scalar_unknowns, has_any_live_unknown,
@@ -131,6 +139,12 @@ struct ZeroUnknownEliminationCtx<'a> {
     eliminated_eq_flags: &'a mut [bool],
 }
 
+struct BltPreparation {
+    blocks: Option<Vec<BltBlock>>,
+    error: Option<StructuralError>,
+    uses_scalar_view: bool,
+}
+
 /// Eliminate trivially solvable equations from the DAE.
 ///
 /// Pipeline:
@@ -168,9 +182,56 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         );
     }
 
-    // Phase B: BLT scalar-block elimination on the (now hopefully non-singular) system.
-    // Extract blocks before mutating dae (SortedDae borrows dae immutably).
-    let mut blt_error = None;
+    // Boundary substitutions can expose additional standalone `der(state)`
+    // rows after the structural-preparation pass has already canonicalized
+    // them. Keep one defining ODE row and rewrite the newly exposed copies to
+    // its exact right-hand side before BLT matching.
+    crate::dae_prepare::substitute_standalone_state_derivatives_in_non_ode_rows(dae);
+    // Phase B: BLT scalar-block elimination on the reduced system.
+    let prepared = prepare_blt_elimination(dae, trace, profile)?;
+    if let Some(blocks) = prepared.blocks.filter(|_| !prepared.uses_scalar_view) {
+        let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
+        let t_blt = maybe_start_timer_if(trace);
+        let p_blt = maybe_start_timer_if(profile);
+        let blt_result = eliminate_via_blt(dae, &blocks, &state_names)?;
+        log_eliminate_profile(profile, "eliminate_via_blt", p_blt, blt_result.n_eliminated);
+        if trace {
+            crate::structural_trace!(
+                "[sim-trace] eliminate_trivial blt elapsed={:.3}s eliminated_eqs={}",
+                maybe_elapsed_seconds(t_blt),
+                blt_result.n_eliminated
+            );
+        }
+        result.substitutions.extend(blt_result.substitutions);
+        result.n_eliminated += blt_result.n_eliminated;
+    }
+    result.blt_error = prepared.error;
+    let p_apply = maybe_start_timer_if(profile);
+    apply_substitutions_to_dae_partitions(dae, &result.substitutions)?;
+    log_eliminate_profile(
+        profile,
+        "apply_substitutions_to_partitions",
+        p_apply,
+        result.substitutions.len(),
+    );
+    log_eliminate_profile(profile, "total", p_total, result.n_eliminated);
+    if trace {
+        crate::structural_trace!(
+            "[sim-trace] eliminate_trivial total elapsed={:.3}s eliminated_eqs={}",
+            maybe_elapsed_seconds(t_total),
+            result.n_eliminated
+        );
+    }
+
+    Ok(result)
+}
+
+fn prepare_blt_elimination(
+    dae: &Dae,
+    trace: bool,
+    profile: bool,
+) -> Result<BltPreparation, StructuralError> {
+    // Extract blocks from a clone before mutating the source DAE.
     let p_clone = maybe_start_timer_if(profile);
     let mut sort_input = dae.clone();
     log_eliminate_profile(
@@ -196,13 +257,14 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         crate::scalarize::scalarize_equations(&mut sort_input)?;
     }
     let p_sort = maybe_start_timer_if(profile);
+    let mut error = None;
     let blocks = match sort_dae(&sort_input) {
         Ok(sorted) => Some(sorted.blocks.clone()),
         Err(StructuralError::EmptySystem) => None,
         Err(err) if singular_rows_are_runtime_known_assignments(&sort_input, &err) => None,
         Err(err) => {
             trace_singular_reduced_rows(trace, &sort_input, &err);
-            blt_error = Some(err);
+            error = Some(err);
             None
         }
     };
@@ -212,41 +274,190 @@ pub fn eliminate_trivial(dae: &mut Dae) -> Result<EliminationResult, StructuralE
         p_sort,
         blocks.as_ref().map_or(0, Vec::len),
     );
-    if let Some(blocks) = blocks.filter(|_| !uses_scalar_view) {
-        let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
-        let t_blt = maybe_start_timer_if(trace);
-        let p_blt = maybe_start_timer_if(profile);
-        let blt_result = eliminate_via_blt(dae, &blocks, &state_names)?;
-        log_eliminate_profile(profile, "eliminate_via_blt", p_blt, blt_result.n_eliminated);
-        if trace {
-            crate::structural_trace!(
-                "[sim-trace] eliminate_trivial blt elapsed={:.3}s eliminated_eqs={}",
-                maybe_elapsed_seconds(t_blt),
-                blt_result.n_eliminated
-            );
-        }
-        result.substitutions.extend(blt_result.substitutions);
-        result.n_eliminated += blt_result.n_eliminated;
+    if profile && let Some(blocks) = &blocks {
+        log_blt_block_profile(blocks);
     }
-    result.blt_error = blt_error;
-    let p_apply = maybe_start_timer_if(profile);
-    apply_substitutions_to_dae_partitions(dae, &result.substitutions)?;
-    log_eliminate_profile(
-        profile,
-        "apply_substitutions_to_partitions",
-        p_apply,
-        result.substitutions.len(),
-    );
-    log_eliminate_profile(profile, "total", p_total, result.n_eliminated);
-    if trace {
-        crate::structural_trace!(
-            "[sim-trace] eliminate_trivial total elapsed={:.3}s eliminated_eqs={}",
-            maybe_elapsed_seconds(t_total),
-            result.n_eliminated
-        );
-    }
+    Ok(BltPreparation {
+        blocks,
+        error,
+        uses_scalar_view,
+    })
+}
 
-    Ok(result)
+fn log_blt_block_profile(blocks: &[BltBlock]) {
+    let n_scalar = blocks
+        .iter()
+        .filter(|block| matches!(block, BltBlock::Scalar { .. }))
+        .count();
+    let mut n_loops = 0usize;
+    let mut max_loop = 0usize;
+    for size in blocks.iter().filter_map(|block| match block {
+        BltBlock::AlgebraicLoop { equations, .. } => Some(equations.len()),
+        BltBlock::Scalar { .. } => None,
+    }) {
+        n_loops += 1;
+        max_loop = max_loop.max(size);
+    }
+    log_blt_profile(true, n_scalar, n_loops, max_loop);
+}
+
+/// Eliminate a DAE and, only when maximum matching proves it singular, select
+/// a minimal smooth holonomic state chain that strictly reduces the global
+/// matching deficiency.
+///
+/// Candidate construction is Pantelides-style symbolic prolongation. The
+/// matching proof is the selection rule: `StateSelect`, names, and equation
+/// indices are used only to order equally regular candidates.
+pub fn eliminate_trivial_with_state_selection(
+    dae: &mut Dae,
+) -> Result<EliminationResult, StructuralError> {
+    let retained_derivative_values = crate::dae_prepare::isolated_state_derivative_values(dae);
+    let mut cumulative = eliminate_trivial(dae)?;
+    let Some(mut current_error) = cumulative.blt_error.take() else {
+        return Ok(cumulative);
+    };
+
+    loop {
+        let Some(baseline_defect) = matching_defect(&current_error) else {
+            cumulative.blt_error = Some(current_error);
+            return Ok(cumulative);
+        };
+        let profile = eliminate_profile_enabled();
+        let p_candidates = maybe_start_timer_if(profile);
+        let candidates =
+            crate::dae_prepare::singular_holonomic_state_candidates_with_derivative_values(
+                dae,
+                &retained_derivative_values,
+            )?;
+        log_eliminate_profile(
+            profile,
+            "state_selection_candidate_generation",
+            p_candidates,
+            candidates.len(),
+        );
+        crate::structural_trace!(
+            "[sim-trace] state selection candidates={} baseline_defect={:?}",
+            candidates.len(),
+            baseline_defect
+        );
+        let mut best: Option<StateSelectionTrial> = None;
+        for candidate in candidates {
+            let p_trial = maybe_start_timer_if(profile);
+            let mut trial_dae = candidate.dae;
+            let elimination = eliminate_trivial(&mut trial_dae)?;
+            log_eliminate_profile(
+                profile,
+                "state_selection_candidate_trial",
+                p_trial,
+                candidate.demoted_states.len(),
+            );
+            let defect = elimination
+                .blt_error
+                .as_ref()
+                .and_then(matching_defect)
+                .unwrap_or(MatchingDefect::REGULAR);
+            // State selection is a rank-improving equivalence transform, not a
+            // way to trade a square singular system for a rectangular one.
+            // Require a strict reduction in total unmatched rows/columns while
+            // preserving (or reducing) the equation/unknown count mismatch.
+            if !defect.strictly_improves_without_rectangularity_regression(baseline_defect) {
+                continue;
+            }
+            let order = StateSelectionOrder {
+                defect,
+                n_demoted: candidate.demoted_states.len(),
+                state_select: candidate
+                    .demoted_states
+                    .iter()
+                    .map(|(rank, _)| *rank)
+                    .collect(),
+                state_names: candidate
+                    .demoted_states
+                    .iter()
+                    .map(|(_, name)| name.as_str().to_string())
+                    .collect(),
+                constraint_index: candidate.constraint_index,
+            };
+            if best.as_ref().is_none_or(|selected| order < selected.order) {
+                best = Some(StateSelectionTrial {
+                    dae: trial_dae,
+                    elimination,
+                    order,
+                });
+            }
+        }
+
+        let Some(mut selected) = best else {
+            cumulative.blt_error = Some(current_error);
+            return Ok(cumulative);
+        };
+        crate::structural_trace!(
+            "[sim-trace] state selection accepted states={:?} constraint={} defect={:?}->{:?}",
+            selected.order.state_names,
+            selected.order.constraint_index,
+            baseline_defect,
+            selected.order.defect
+        );
+        *dae = selected.dae;
+        cumulative.n_eliminated += selected.elimination.n_eliminated;
+        cumulative
+            .substitutions
+            .append(&mut selected.elimination.substitutions);
+        let Some(next_error) = selected.elimination.blt_error.take() else {
+            return Ok(cumulative);
+        };
+        current_error = next_error;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct MatchingDefect {
+    unmatched_total: usize,
+    rectangularity: usize,
+}
+
+impl MatchingDefect {
+    const REGULAR: Self = Self {
+        unmatched_total: 0,
+        rectangularity: 0,
+    };
+
+    fn strictly_improves_without_rectangularity_regression(self, baseline: Self) -> bool {
+        self.unmatched_total < baseline.unmatched_total
+            && self.rectangularity <= baseline.rectangularity
+    }
+}
+
+fn matching_defect(error: &StructuralError) -> Option<MatchingDefect> {
+    let StructuralError::Singular {
+        n_equations,
+        n_unknowns,
+        n_matched,
+        ..
+    } = error
+    else {
+        return None;
+    };
+    Some(MatchingDefect {
+        unmatched_total: n_equations.saturating_sub(*n_matched)
+            + n_unknowns.saturating_sub(*n_matched),
+        rectangularity: n_equations.abs_diff(*n_unknowns),
+    })
+}
+
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct StateSelectionOrder {
+    defect: MatchingDefect,
+    n_demoted: usize,
+    state_select: Vec<u8>,
+    state_names: Vec<String>,
+    constraint_index: usize,
+}
+
+struct StateSelectionTrial {
+    dae: Dae,
+    elimination: EliminationResult,
+    order: StateSelectionOrder,
 }
 
 fn resolve_boundary_equations_to_fixpoint(
@@ -260,6 +471,11 @@ fn resolve_boundary_equations_to_fixpoint(
         }
         result.n_eliminated += pass.n_eliminated;
         result.substitutions.extend(pass.substitutions);
+        // Aggregate values can be defined by scalar field substitutions found
+        // in different fixed-point passes. Reapply the cumulative set so a
+        // complete record value (for example Complex(re, im)) is reconstructed
+        // before a later pass examines an equation that references its parent.
+        apply_aggregate_substitutions_to_dae_partitions(dae, &result.substitutions)?;
     }
 }
 
@@ -284,8 +500,14 @@ fn resolve_boundary_and_direct_demotions_to_fixpoint(
         result.substitutions.extend(pass.substitutions);
 
         let p_demote = maybe_start_timer_if(profile);
-        let demoted = crate::dae_prepare::demote_direct_assigned_states(dae)?;
-        log_eliminate_profile(profile, "boundary_direct_demotion", p_demote, demoted);
+        let direct_demoted = crate::dae_prepare::demote_direct_assigned_states(dae)?;
+        log_eliminate_profile(
+            profile,
+            "boundary_direct_demotion",
+            p_demote,
+            direct_demoted,
+        );
+        let demoted = direct_demoted;
         total_demoted += demoted;
         if eliminated == 0 && demoted == 0 {
             return Ok((result, total_demoted));
@@ -698,13 +920,24 @@ fn choose_solvable_unknown_for_elimination(
         // `fixed=true` introduces a hard initialization constraint. Eliminating
         // that unknown can erase user intent (especially through alias chains)
         // and alter the selected initialization branch.
-        if unknown_is_fixed(dae, candidate) {
+        if unknown_is_fixed(dae, candidate)
+            && !fixed_alias_constraint_is_duplicated_by_peer(dae, rhs, candidate)
+        {
             continue;
         }
         if dae.variables.states.contains_key(candidate) {
             continue;
         }
         if is_scalarized_element_of_aggregate(dae, candidate)? {
+            continue;
+        }
+        // MLS §10.6: an array or record equation denotes one scalar equation
+        // per element. Eliminating its whole row is sound only when the solved
+        // target has the same scalar cardinality. In particular, do not solve
+        // one record field and discard the other component equations.
+        if dae.continuous.equations[eq_idx].scalar_count
+            != DaeVariableScope::new(dae).size(candidate)?
+        {
             continue;
         }
         if is_runtime_protected_unknown(candidate, runtime_protected_unknowns) {
@@ -864,6 +1097,59 @@ fn unknown_is_fixed(dae: &Dae, name: &VarName) -> bool {
         .unwrap_or(false)
 }
 
+fn fixed_alias_constraint_is_duplicated_by_peer(
+    dae: &Dae,
+    rhs: &Expression,
+    candidate: &VarName,
+) -> bool {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = rhs
+    else {
+        return false;
+    };
+    let Some(lhs_ref) = full_var_ref(lhs) else {
+        return false;
+    };
+    let Some(rhs_ref) = full_var_ref(rhs) else {
+        return false;
+    };
+    let peer = if lhs_ref.var_name() == candidate {
+        rhs_ref.var_name()
+    } else if rhs_ref.var_name() == candidate {
+        lhs_ref.var_name()
+    } else {
+        return false;
+    };
+    let Some(candidate_var) = continuous_variable(dae, candidate) else {
+        return false;
+    };
+    let Some(peer_var) = continuous_variable(dae, peer) else {
+        return false;
+    };
+    if candidate_var.fixed != Some(true) || peer_var.fixed != Some(true) {
+        return false;
+    }
+    match (&candidate_var.start, &peer_var.start) {
+        (Some(candidate_start), Some(peer_start)) => {
+            rumoca_core::expressions_semantically_equal(candidate_start, peer_start)
+        }
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
+fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a dae::Variable> {
+    dae.variables
+        .states
+        .get(name)
+        .or_else(|| dae.variables.algebraics.get(name))
+        .or_else(|| dae.variables.outputs.get(name))
+}
+
 fn has_direct_assignment_form(rhs: &Expression, candidate: &VarName) -> bool {
     match rhs {
         Expression::Binary {
@@ -981,10 +1267,6 @@ fn dae_var_size(dae: &Dae, name: &VarName) -> Result<usize, StructuralError> {
     DaeVariableScope::new(dae).size(name)
 }
 
-fn dae_var_dims(dae: &Dae, name: &VarName) -> Result<Vec<i64>, StructuralError> {
-    DaeVariableScope::new(dae).dims(name)
-}
-
 fn dae_var<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a dae::Variable> {
     DaeVariableScope::new(dae).exact(name)
 }
@@ -995,9 +1277,11 @@ pub(super) fn substitution_for_var(
     expr: Expression,
 ) -> Result<Substitution, StructuralError> {
     let scope = DaeVariableScope::new(dae);
+    let var_dims = scope.dims(&var_name)?;
+    let replacement_dims = replacement_expr_dims(dae, &expr, &var_dims)?;
     Ok(Substitution {
-        var_dims: scope.dims(&var_name)?,
-        replacement_dims: replacement_expr_dims(dae, &expr)?,
+        replacement_dims,
+        var_dims,
         env_keys: vec![var_name.as_str().to_string()],
         var_ref: scope
             .exact(&var_name)
@@ -1008,11 +1292,17 @@ pub(super) fn substitution_for_var(
     })
 }
 
-fn replacement_expr_dims(dae: &Dae, expr: &Expression) -> Result<Vec<i64>, StructuralError> {
+fn replacement_expr_dims(
+    dae: &Dae,
+    expr: &Expression,
+    expected_dims: &[i64],
+) -> Result<Vec<i64>, StructuralError> {
     Ok(match expr {
         Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => dae_var_dims(dae, name.var_name())?,
+        } if subscripts.is_empty() => DaeVariableScope::new(dae)
+            .dims_for_reference(name)?
+            .unwrap_or_else(|| expected_dims.to_vec()),
         Expression::VarRef { .. } | Expression::Index { .. } => Vec::new(),
         Expression::Array {
             elements,
@@ -1063,10 +1353,12 @@ fn eliminate_via_blt(
                 &runtime_protected_unknowns,
                 &runtime_defined_discrete_targets,
                 &state_derivative_matcher,
-                &mut substitutions,
-                &mut eliminated_eq_indices,
-                &mut eliminated_eq_flags,
-                &mut eliminated_var_names,
+                EliminationOutputs {
+                    substitutions: &mut substitutions,
+                    eliminated_eq_indices: &mut eliminated_eq_indices,
+                    eliminated_eq_flags: &mut eliminated_eq_flags,
+                    eliminated_var_names: &mut eliminated_var_names,
+                },
             )?,
             BltBlock::AlgebraicLoop {
                 equations,
@@ -1077,10 +1369,12 @@ fn eliminate_via_blt(
                 unknowns,
                 &runtime_protected_unknowns,
                 &state_derivative_matcher,
-                &mut substitutions,
-                &mut eliminated_eq_indices,
-                &mut eliminated_eq_flags,
-                &mut eliminated_var_names,
+                EliminationOutputs {
+                    substitutions: &mut substitutions,
+                    eliminated_eq_indices: &mut eliminated_eq_indices,
+                    eliminated_eq_flags: &mut eliminated_eq_flags,
+                    eliminated_var_names: &mut eliminated_var_names,
+                },
             )?,
         }
     }
@@ -1110,7 +1404,6 @@ fn eliminate_via_blt(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eliminate_scalar_blt_block(
     dae: &Dae,
     equation: &EquationRef,
@@ -1118,11 +1411,14 @@ fn eliminate_scalar_blt_block(
     runtime_protected_unknowns: &IndexSet<String>,
     runtime_defined_discrete_targets: &HashSet<String>,
     state_derivative_matcher: &DerivativeNameMatcher,
-    substitutions: &mut Vec<Substitution>,
-    eliminated_eq_indices: &mut Vec<usize>,
-    eliminated_eq_flags: &mut [bool],
-    eliminated_var_names: &mut Vec<VarName>,
+    outputs: EliminationOutputs<'_>,
 ) -> Result<(), StructuralError> {
+    let EliminationOutputs {
+        substitutions,
+        eliminated_eq_indices,
+        eliminated_eq_flags,
+        eliminated_var_names,
+    } = outputs;
     let Some((eq_idx, var_name, solution)) = scalar_blt_solution(
         dae,
         equation,
@@ -1167,7 +1463,7 @@ fn scalar_blt_solution(
     }
 
     let eq_rhs =
-        apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions)?;
+        apply_substitutions_in_order(dae, &dae.continuous.equations[eq_idx].rhs, substitutions)?;
     if is_flow_equation_origin(&dae.continuous.equations[eq_idx].origin)
         && expr_contains_indexed_multiscalar_ref(&eq_rhs, dae)?
     {
@@ -1272,17 +1568,28 @@ pub fn apply_substitutions_to_expr(
     expr: &Expression,
     substitutions: &[Substitution],
 ) -> Result<Expression, StructuralError> {
-    apply_substitutions_to_expr_with_derivatives(expr, substitutions, |_| Ok(None))
+    apply_substitutions_to_expr_with_derivatives(expr, substitutions, None, |_| Ok(None))
 }
 
 pub(crate) fn apply_substitutions_to_expr_with_derivatives(
     expr: &Expression,
     substitutions: &[Substitution],
+    aggregate_constructor: Option<&Reference>,
+    derivative_replacement_for: impl FnMut(&Substitution) -> Result<Option<Expression>, StructuralError>,
+) -> Result<Expression, StructuralError> {
+    let plan = SubstitutionApplicationPlan::new(substitutions, aggregate_constructor);
+    apply_substitutions_to_expr_with_plan(expr, substitutions, &plan, derivative_replacement_for)
+}
+
+pub(super) fn apply_substitutions_to_expr_with_plan(
+    expr: &Expression,
+    substitutions: &[Substitution],
+    plan: &SubstitutionApplicationPlan,
     mut derivative_replacement_for: impl FnMut(
         &Substitution,
     ) -> Result<Option<Expression>, StructuralError>,
 ) -> Result<Expression, StructuralError> {
-    let mut out = apply_record_field_aggregate_substitutions(expr, substitutions);
+    let mut out = apply_record_field_aggregate_substitutions(expr, plan);
     for sub in substitutions {
         if expr_contains_substitution_target(&out, sub) {
             let derivative_replacement = if expr_contains_derivative_substitution_target(&out, sub)
@@ -1303,18 +1610,33 @@ pub(crate) fn apply_substitutions_to_expr_with_derivatives(
     Ok(out)
 }
 
+pub(super) struct SubstitutionApplicationPlan {
+    aggregate_alias_groups: IndexMap<VarName, AggregateAliasSubstitutionGroup>,
+    complex_groups: IndexMap<String, ComplexFieldSubstitutionGroup>,
+}
+
+impl SubstitutionApplicationPlan {
+    pub(super) fn new(
+        substitutions: &[Substitution],
+        aggregate_constructor: Option<&Reference>,
+    ) -> Self {
+        Self {
+            aggregate_alias_groups: aggregate_alias_substitution_groups(substitutions),
+            complex_groups: complex_field_substitution_groups(substitutions, aggregate_constructor),
+        }
+    }
+}
+
 fn apply_record_field_aggregate_substitutions(
     expr: &Expression,
-    substitutions: &[Substitution],
+    plan: &SubstitutionApplicationPlan,
 ) -> Expression {
-    let aggregate_alias_groups = aggregate_alias_substitution_groups(substitutions);
-    let complex_groups = complex_field_substitution_groups(substitutions);
-    if aggregate_alias_groups.is_empty() && complex_groups.is_empty() {
+    if plan.aggregate_alias_groups.is_empty() && plan.complex_groups.is_empty() {
         return expr.clone();
     }
     RecordFieldAggregateRewriter {
-        aggregate_alias_groups,
-        complex_groups,
+        aggregate_alias_groups: &plan.aggregate_alias_groups,
+        complex_groups: &plan.complex_groups,
     }
     .rewrite_expression(expr)
 }
@@ -1543,13 +1865,22 @@ fn substitution_indexed_base_matches(name: &Reference, substitution: &Substituti
     references_same_base(name, &base)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ComplexFieldSubstitutionGroup {
+    constructor: Reference,
     re: Option<Expression>,
     im: Option<Expression>,
 }
 
 impl ComplexFieldSubstitutionGroup {
+    fn new(constructor: Reference) -> Self {
+        Self {
+            constructor,
+            re: None,
+            im: None,
+        }
+    }
+
     fn insert(&mut self, field: &str, expr: Expression) {
         match field {
             "re" => self.re = Some(expr),
@@ -1560,7 +1891,7 @@ impl ComplexFieldSubstitutionGroup {
 
     fn to_constructor_expr(&self, span: rumoca_core::Span) -> Option<Expression> {
         Some(Expression::FunctionCall {
-            name: Reference::new("Complex"),
+            name: self.constructor.clone(),
             args: vec![self.re.clone()?, self.im.clone()?],
             is_constructor: true,
             span,
@@ -1570,26 +1901,30 @@ impl ComplexFieldSubstitutionGroup {
 
 fn complex_field_substitution_groups(
     substitutions: &[Substitution],
+    aggregate_constructor: Option<&Reference>,
 ) -> IndexMap<String, ComplexFieldSubstitutionGroup> {
     let mut groups = IndexMap::new();
+    let Some(constructor) = aggregate_constructor else {
+        return groups;
+    };
     for substitution in substitutions {
         let Some((base, field)) = split_complex_field_suffix(substitution.var_name.as_str()) else {
             continue;
         };
         groups
             .entry(base.to_string())
-            .or_insert_with(ComplexFieldSubstitutionGroup::default)
+            .or_insert_with(|| ComplexFieldSubstitutionGroup::new(constructor.clone()))
             .insert(field, substitution.expr.clone());
     }
     groups
 }
 
-struct RecordFieldAggregateRewriter {
-    aggregate_alias_groups: IndexMap<VarName, AggregateAliasSubstitutionGroup>,
-    complex_groups: IndexMap<String, ComplexFieldSubstitutionGroup>,
+struct RecordFieldAggregateRewriter<'a> {
+    aggregate_alias_groups: &'a IndexMap<VarName, AggregateAliasSubstitutionGroup>,
+    complex_groups: &'a IndexMap<String, ComplexFieldSubstitutionGroup>,
 }
 
-impl RecordFieldAggregateRewriter {
+impl RecordFieldAggregateRewriter<'_> {
     fn aggregate_replacement(
         &self,
         name: &Reference,
@@ -1607,7 +1942,7 @@ impl RecordFieldAggregateRewriter {
     }
 }
 
-impl ExpressionRewriter for RecordFieldAggregateRewriter {
+impl ExpressionRewriter for RecordFieldAggregateRewriter<'_> {
     fn rewrite_var_ref_expression(
         &mut self,
         name: &Reference,
@@ -1649,9 +1984,29 @@ pub fn resolve_substitutions_in_expr(
     expr: &Expression,
     substitutions: &[Substitution],
 ) -> Result<Expression, StructuralError> {
+    let plan = SubstitutionApplicationPlan::new(substitutions, None);
+    resolve_substitutions_in_expr_with_plan(expr, substitutions, &plan)
+}
+
+pub fn resolve_substitutions_in_exprs(
+    expressions: &mut [Expression],
+    substitutions: &[Substitution],
+) -> Result<(), StructuralError> {
+    let plan = SubstitutionApplicationPlan::new(substitutions, None);
+    for expression in expressions {
+        *expression = resolve_substitutions_in_expr_with_plan(expression, substitutions, &plan)?;
+    }
+    Ok(())
+}
+
+fn resolve_substitutions_in_expr_with_plan(
+    expr: &Expression,
+    substitutions: &[Substitution],
+    plan: &SubstitutionApplicationPlan,
+) -> Result<Expression, StructuralError> {
     let mut out = expr.clone();
     for _ in 0..substitutions.len() {
-        let next = apply_substitutions_to_expr(&out, substitutions)?;
+        let next = apply_substitutions_to_expr_with_plan(&out, substitutions, plan, |_| Ok(None))?;
         if next == out {
             return Ok(out);
         }

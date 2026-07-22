@@ -1631,6 +1631,33 @@ impl AlgebraicProjectionPlan {
 pub struct AlgebraicProjectionBlock {
     pub rows: Vec<usize>,
     pub y_indices: Vec<usize>,
+    /// Optional exact reduction of this coupled block. Missing metadata has
+    /// the same semantics as solving the full block, so this is a compatible
+    /// same-schema optimization artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tearing: Option<AlgebraicTearingPlan>,
+}
+
+/// Exact causal reduction of an algebraic projection block.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AlgebraicTearingPlan {
+    /// Residual rows solved simultaneously after causal reconstruction.
+    pub residual_rows: Vec<usize>,
+    /// Tear variables paired positionally with `residual_rows`.
+    pub tear_y_indices: Vec<usize>,
+    /// Exact assignments evaluated in dependency order for every tear iterate.
+    pub causal_steps: Vec<AlgebraicCausalStep>,
+}
+
+/// One exact algebraic assignment in a tearing plan.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+pub struct AlgebraicCausalStep {
+    pub row: usize,
+    pub target_y_index: usize,
+    /// Constant coefficient of the target in the original residual when
+    /// statically known. `None` requests an exact runtime JVP coefficient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_residual_coefficient: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

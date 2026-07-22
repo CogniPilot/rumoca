@@ -69,6 +69,19 @@ fn test_eval_binary_exp() {
 }
 
 #[test]
+fn elementwise_vector_power_broadcasts_scalar_exponent() {
+    let mut env = VarEnv::new();
+    set_array_entries(&mut env, "x", &[3], &[2.0, 3.0, 4.0]);
+    std::sync::Arc::make_mut(&mut env.dims).insert("x".to_string(), vec![3]);
+    let expr = binop(OpBinary::ExpElem, var("x"), lit(2.0));
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &env).unwrap(),
+        vec![4.0, 9.0, 16.0]
+    );
+}
+
+#[test]
 fn row_slice_quadratic_form_evaluates_to_scalar() {
     // coeff[2, :] * (P * coeff[2, :]) with P = identity(4) is the squared
     // norm of row 2 — a scalar, evaluated through the checked scalar path.

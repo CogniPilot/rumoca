@@ -50,7 +50,7 @@ pub use jacobian::{
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{
     PreparedComputeBlock, PreparedScalarProgramBlock, TargetAssignmentShape,
-    target_assignment_shape,
+    row_is_affine_in_y_index, target_assignment_shape, target_assignment_shapes,
 };
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,

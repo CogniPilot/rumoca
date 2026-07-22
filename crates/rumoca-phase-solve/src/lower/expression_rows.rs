@@ -1383,6 +1383,22 @@ fn lower_expression_row(
         value
     };
     builder.ops.push(LinearOp::StoreOutput { src: value });
+    if tracing::enabled!(
+        target: "rumoca_phase_solve::direct_assignment",
+        tracing::Level::DEBUG
+    ) && (builder.direct_assignment_cache_hits > 0
+        || builder.direct_assignment_cache_misses >= 16)
+    {
+        tracing::debug!(
+            target: "rumoca_phase_solve::direct_assignment",
+            expanded = builder.direct_assignment_cache_misses,
+            cache_hits = builder.direct_assignment_cache_hits,
+            current_nodes = builder.direct_assignment_current_cache.len(),
+            pre_nodes = builder.direct_assignment_pre_cache.len(),
+            operations = builder.ops.len(),
+            "lowered direct-assignment DAG row"
+        );
+    }
     Ok(builder.ops)
 }
 

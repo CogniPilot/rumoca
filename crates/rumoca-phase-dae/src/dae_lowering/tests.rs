@@ -888,6 +888,93 @@ fn test_scalarize_phantom_vector_equations_selects_zeros() {
 }
 
 #[test]
+fn test_scalarize_phantom_equation_uses_coordinate_subscripts_for_tensor() {
+    let mut dae = Dae::new();
+    let mut tensor = dae::Variable::new(rumoca_core::VarName::new("tensor"), test_span());
+    tensor.dims = vec![2, 3];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("tensor"), tensor);
+    for index in 1..=6 {
+        let name = format!("phantom[{index}]");
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new(&name),
+            dae::Variable::new(rumoca_core::VarName::new(&name), test_span()),
+        );
+    }
+    dae.continuous.equations.push(dae::Equation::residual_array(
+        sub(var_ref("tensor"), var_ref("phantom")),
+        test_span(),
+        "tensor phantom equation",
+        6,
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    assert_eq!(dae.continuous.equations.len(), 6);
+    for (flat_index, equation) in dae.continuous.equations.iter().enumerate() {
+        let rumoca_core::Expression::Binary { lhs, .. } = &equation.rhs else {
+            panic!("expected scalarized subtraction residual");
+        };
+        let rumoca_core::Expression::VarRef { subscripts, .. } = lhs.as_ref() else {
+            panic!("expected tensor variable reference");
+        };
+        let expected = rumoca_ir_dae::flat_index_to_subscripts(&[2, 3], flat_index)
+            .unwrap()
+            .into_iter()
+            .map(|index| rumoca_core::Subscript::generated_index(index as i64, test_span()))
+            .collect::<Vec<_>>();
+        assert_eq!(subscripts, &expected);
+    }
+}
+
+#[test]
+fn test_scalarize_phantom_equation_repeats_literal_over_leading_dimension() {
+    let mut dae = Dae::new();
+    let mut tensor = dae::Variable::new(rumoca_core::VarName::new("tensor"), test_span());
+    tensor.dims = vec![2, 3];
+    dae.variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("tensor"), tensor);
+    for index in 1..=6 {
+        let name = format!("phantom[{index}]");
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new(&name),
+            dae::Variable::new(rumoca_core::VarName::new(&name), test_span()),
+        );
+    }
+    let literal = rumoca_core::Expression::Array {
+        elements: vec![int_lit(1), int_lit(2), int_lit(3)],
+        is_matrix: false,
+        span: test_span(),
+    };
+    dae.continuous.equations.push(dae::Equation::residual_array(
+        sub(sub(var_ref("tensor"), literal), var_ref("phantom")),
+        test_span(),
+        "tensor repeated literal equation",
+        6,
+    ));
+
+    scalarize_phantom_vector_equations(&mut dae).unwrap();
+
+    for (flat_index, equation) in dae.continuous.equations.iter().enumerate() {
+        let rumoca_core::Expression::Binary { lhs, .. } = &equation.rhs else {
+            panic!("expected outer subtraction");
+        };
+        let rumoca_core::Expression::Binary { rhs, .. } = lhs.as_ref() else {
+            panic!("expected tensor minus repeated literal");
+        };
+        assert!(matches!(
+            rhs.as_ref(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(value),
+                ..
+            } if *value == (flat_index % 3 + 1) as i64
+        ));
+    }
+}
+
+#[test]
 fn test_scalarize_preserves_vector_function_arguments_for_array_output() {
     let mut dae = Dae::new();
     let span = test_span();

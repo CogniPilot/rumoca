@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve as solve;
@@ -32,11 +35,44 @@ pub(crate) fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &R
             .map(|row| row.target_index)
             .collect::<IndexSet<_>>()
             .len();
+    let projection_unknowns = plan
+        .simultaneous_plan
+        .blocks
+        .iter()
+        .map(|block| block.y_indices.len())
+        .sum::<usize>();
+    let coupled_blocks = plan
+        .simultaneous_plan
+        .blocks
+        .iter()
+        .filter(|block| block.y_indices.len() > 1)
+        .count();
+    let max_block = plan
+        .simultaneous_plan
+        .blocks
+        .iter()
+        .map(|block| block.y_indices.len())
+        .max()
+        .unwrap_or(0);
+    let direct_rows = plan
+        .rows
+        .iter()
+        .filter(|row| row.direct_assignment_certified)
+        .count();
     tracing::debug!(
         target: "rumoca_eval_solve::refresh",
-        "{name} refresh plan: rows={} duplicate_targets={} [{}]",
+        "{name} refresh plan: rows={} seed_rows={} static_seed_rows={} direct_rows={} duplicate_targets={} projection_blocks={} value_projection_blocks={} projection_unknowns={} coupled_blocks={} max_block={} causal_certified={} [{}]",
         plan.rows.len(),
+        plan.causal_seed_rows.len(),
+        plan.static_causal_seed_rows.len(),
+        direct_rows,
         duplicate_targets,
+        plan.simultaneous_plan.blocks.len(),
+        plan.value_projection_plan.blocks.len(),
+        projection_unknowns,
+        coupled_blocks,
+        max_block,
+        plan.causal_solution_certified,
         preview
     );
 }
@@ -61,6 +97,13 @@ pub(crate) struct AlgebraicRefreshRow {
     /// must linear-solve the row's residual for the paired variable instead
     /// of evaluating the assignment value.
     pub(crate) assignment_target: Option<usize>,
+    /// The prepared row proves a direct target assignment, allowing an
+    /// acyclic dependency-complete schedule to skip simultaneous projection.
+    pub(crate) direct_assignment_certified: bool,
+    /// The row has an exact direct or affine target assignment. This can omit
+    /// a seeded singleton from value rechecking without changing sensitivity
+    /// projection or whole-plan causal certification.
+    pub(crate) exact_assignment_certified: bool,
 }
 
 #[derive(Clone, Default)]
@@ -69,7 +112,21 @@ pub(crate) struct RefreshPlan {
     /// Complete compiler-owned BLT used to certify and solve the canonical
     /// implicit residual system after the causal seed schedule.
     pub(crate) simultaneous_plan: solve::AlgebraicProjectionPlan,
+    /// Residual blocks that still require value settling after exact causal
+    /// seed rows run. Sensitivity projection retains `simultaneous_plan`.
+    pub(crate) value_projection_plan: solve::AlgebraicProjectionPlan,
     pub(crate) rows: Vec<AlgebraicRefreshRow>,
+    /// Causal seed rows outside compiler-torn blocks. Values internal to a
+    /// torn block are reconstructed from its preserved tear variables by the
+    /// exact tearing plan and must not overwrite that warm start first.
+    pub(crate) causal_seed_rows: Vec<AlgebraicRefreshRow>,
+    /// Causal rows proven to depend only on the parameter vector and other
+    /// rows in this set. Runtime may reuse them while that complete snapshot
+    /// is unchanged.
+    pub(crate) static_causal_seed_rows: Vec<AlgebraicRefreshRow>,
+    /// Causal rows that can depend on time, state, runtime operations, or
+    /// dynamic algebraics and therefore execute on every refresh.
+    pub(crate) dynamic_causal_seed_rows: Vec<AlgebraicRefreshRow>,
     pub(crate) causal_solution_certified: bool,
 }
 
@@ -112,6 +169,7 @@ pub(crate) fn build_algebraic_refresh_plan(
         causal_solution_certified,
     )?;
     plan.simultaneous_plan = model.problem.continuous.algebraic_projection_plan.clone();
+    configure_causal_seed_rows(&mut plan, state_count)?;
     Ok(plan)
 }
 
@@ -196,6 +254,10 @@ fn algebraic_refresh_rows_from_row_targets(
             output_offset: position.output_offset,
             target_index,
             assignment_target: Some(target_index),
+            direct_assignment_certified: block
+                .certifies_direct_target_assignment(position.program_index, target_index),
+            exact_assignment_certified: block
+                .certifies_exact_target_assignment(position.program_index, target_index),
         });
     }
     Ok(rows)
@@ -229,44 +291,18 @@ fn build_dependency_refresh_plan(
     let implicit_block = full_plan.source_block();
     let state_count = model.state_scalar_count();
     let span = first_block_span(implicit_block);
-    let mut target_to_row = IndexMap::new();
-    reserve_refresh_index_map_capacity(
-        &mut target_to_row,
-        full_plan.rows.len(),
-        "dependency target-to-row map",
-        span,
+    let output_positions = output_row_positions(implicit_block)?;
+    let target_to_row = dependency_target_rows(full_plan, span)?;
+    let block_by_target = dependency_blocks_by_target(model, full_plan, state_count, span)?;
+    let (needed, needed_blocks) = collect_dependency_closure(
+        full_plan,
+        implicit_block,
+        initial_deps,
+        &target_to_row,
+        &block_by_target,
+        &output_positions,
+        state_count,
     )?;
-    for row in &full_plan.rows {
-        target_to_row.insert(row.target_index, row.row_idx);
-    }
-    let mut needed = IndexSet::new();
-    reserve_refresh_index_set_capacity(
-        &mut needed,
-        initial_deps.len(),
-        "dependency needed set",
-        span,
-    )?;
-    let mut stack = Vec::new();
-    reserve_refresh_vec_capacity(&mut stack, initial_deps.len(), "dependency stack", span)?;
-    stack.extend(initial_deps);
-    while let Some(index) = stack.pop() {
-        if index < state_count {
-            continue;
-        }
-        reserve_refresh_index_set_capacity(&mut needed, 1, "dependency needed set", span)?;
-        if !needed.insert(index) {
-            continue;
-        }
-        let Some(row_idx) = target_to_row.get(&index).copied() else {
-            continue;
-        };
-        for dep in row_all_y_dependencies(implicit_block, row_idx) {
-            if dep >= state_count {
-                reserve_refresh_vec_capacity(&mut stack, 1, "dependency stack", span)?;
-                stack.push(dep);
-            }
-        }
-    }
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
         &mut rows,
@@ -281,16 +317,356 @@ fn build_dependency_refresh_plan(
             .filter(|row| needed.contains(&row.target_index))
             .cloned(),
     );
-    let causal_solution_certified =
-        full_plan.causal_solution_certified && rows.len() == needed.len();
+    let simultaneous_plan = solve::AlgebraicProjectionPlan {
+        blocks: full_plan
+            .simultaneous_plan
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(block_idx, _)| needed_blocks.contains(block_idx))
+            .map(|(_, block)| block.clone())
+            .collect(),
+    };
+    let causal_solution_certified = dependency_causal_projection_is_certified(
+        implicit_block,
+        &rows,
+        &needed,
+        &simultaneous_plan,
+        state_count,
+        model.solver_scalar_count(),
+    );
     let mut plan = order_refresh_rows(
         rows,
         full_plan.source_block.clone(),
         state_count,
         causal_solution_certified,
     )?;
-    plan.simultaneous_plan = full_plan.simultaneous_plan.clone();
+    plan.simultaneous_plan = simultaneous_plan;
+    configure_causal_seed_rows(&mut plan, state_count)?;
     Ok(plan)
+}
+
+fn dependency_target_rows(
+    plan: &RefreshPlan,
+    span: Option<rumoca_core::Span>,
+) -> Result<IndexMap<usize, usize>, EvalSolveError> {
+    let mut target_to_row = IndexMap::new();
+    reserve_refresh_index_map_capacity(
+        &mut target_to_row,
+        plan.rows.len(),
+        "dependency target-to-row map",
+        span,
+    )?;
+    target_to_row.extend(plan.rows.iter().map(|row| (row.target_index, row.row_idx)));
+    Ok(target_to_row)
+}
+
+fn dependency_blocks_by_target(
+    model: &solve::SolveModel,
+    plan: &RefreshPlan,
+    state_count: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<IndexMap<usize, usize>, EvalSolveError> {
+    let mut block_by_target = IndexMap::new();
+    reserve_refresh_index_map_capacity(
+        &mut block_by_target,
+        model.solver_scalar_count().saturating_sub(state_count),
+        "dependency projection-block map",
+        span,
+    )?;
+    for (block_index, block) in plan.simultaneous_plan.blocks.iter().enumerate() {
+        block_by_target.extend(
+            block
+                .y_indices
+                .iter()
+                .map(|target_index| (*target_index, block_index)),
+        );
+    }
+    Ok(block_by_target)
+}
+
+fn collect_dependency_closure(
+    plan: &RefreshPlan,
+    implicit_block: &solve::ScalarProgramBlock,
+    initial_deps: IndexSet<usize>,
+    target_to_row: &IndexMap<usize, usize>,
+    block_by_target: &IndexMap<usize, usize>,
+    output_positions: &IndexMap<usize, OutputRowPosition>,
+    state_count: usize,
+) -> Result<(IndexSet<usize>, IndexSet<usize>), EvalSolveError> {
+    let span = first_block_span(implicit_block);
+    let mut needed = IndexSet::new();
+    reserve_refresh_index_set_capacity(
+        &mut needed,
+        initial_deps.len(),
+        "dependency needed set",
+        span,
+    )?;
+    let mut stack = initial_deps.into_iter().collect::<Vec<_>>();
+    let mut needed_blocks = IndexSet::new();
+    reserve_refresh_index_set_capacity(
+        &mut needed_blocks,
+        plan.simultaneous_plan.blocks.len(),
+        "dependency projection blocks",
+        span,
+    )?;
+    while let Some(index) = stack.pop() {
+        if index < state_count || !insert_dependency(&mut needed, index, span)? {
+            continue;
+        }
+        if let Some(block_index) = block_by_target.get(&index).copied() {
+            if insert_projection_block(&mut needed_blocks, block_index, span)? {
+                enqueue_projection_block_dependencies(
+                    plan,
+                    implicit_block,
+                    output_positions,
+                    block_index,
+                    state_count,
+                    &mut stack,
+                )?;
+            }
+        } else if let Some(row_index) = target_to_row.get(&index).copied() {
+            enqueue_row_dependencies(implicit_block, row_index, state_count, &mut stack, span)?;
+        }
+    }
+    Ok((needed, needed_blocks))
+}
+
+fn insert_dependency(
+    needed: &mut IndexSet<usize>,
+    index: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<bool, EvalSolveError> {
+    reserve_refresh_index_set_capacity(needed, 1, "dependency needed set", span)?;
+    Ok(needed.insert(index))
+}
+
+fn insert_projection_block(
+    needed: &mut IndexSet<usize>,
+    index: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<bool, EvalSolveError> {
+    reserve_refresh_index_set_capacity(needed, 1, "dependency projection blocks", span)?;
+    Ok(needed.insert(index))
+}
+
+fn enqueue_projection_block_dependencies(
+    plan: &RefreshPlan,
+    implicit_block: &solve::ScalarProgramBlock,
+    output_positions: &IndexMap<usize, OutputRowPosition>,
+    block_index: usize,
+    state_count: usize,
+    stack: &mut Vec<usize>,
+) -> Result<(), EvalSolveError> {
+    let span = first_block_span(implicit_block);
+    let block = &plan.simultaneous_plan.blocks[block_index];
+    reserve_refresh_vec_capacity(stack, block.y_indices.len(), "dependency stack", span)?;
+    stack.extend(block.y_indices.iter().copied());
+    for equation_index in &block.rows {
+        if let Some(position) = output_positions.get(equation_index) {
+            enqueue_row_dependencies(
+                implicit_block,
+                position.program_index,
+                state_count,
+                stack,
+                span,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn enqueue_row_dependencies(
+    block: &solve::ScalarProgramBlock,
+    row_index: usize,
+    state_count: usize,
+    stack: &mut Vec<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    for dependency in row_all_y_dependencies(block, row_index) {
+        if dependency >= state_count {
+            reserve_refresh_vec_capacity(stack, 1, "dependency stack", span)?;
+            stack.push(dependency);
+        }
+    }
+    Ok(())
+}
+
+fn configure_causal_seed_rows(
+    plan: &mut RefreshPlan,
+    state_count: usize,
+) -> Result<(), EvalSolveError> {
+    let span = first_block_span(plan.source_block());
+    let torn_targets = plan
+        .simultaneous_plan
+        .blocks
+        .iter()
+        .filter(|block| block.tearing.is_some())
+        .flat_map(|block| block.y_indices.iter().copied())
+        .collect::<IndexSet<_>>();
+    let mut rows = Vec::new();
+    reserve_refresh_vec_capacity(
+        &mut rows,
+        plan.rows.len(),
+        "causal seed rows outside torn blocks",
+        span,
+    )?;
+    rows.extend(
+        plan.rows
+            .iter()
+            .filter(|row| !torn_targets.contains(&row.target_index))
+            .cloned(),
+    );
+    plan.causal_seed_rows = rows;
+    let static_targets = parameter_static_refresh_targets(plan, state_count);
+    plan.static_causal_seed_rows = plan
+        .causal_seed_rows
+        .iter()
+        .filter(|row| static_targets.contains(&row.target_index))
+        .cloned()
+        .collect();
+    plan.dynamic_causal_seed_rows = plan
+        .causal_seed_rows
+        .iter()
+        .filter(|row| !static_targets.contains(&row.target_index))
+        .cloned()
+        .collect();
+    plan.value_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: plan
+            .simultaneous_plan
+            .blocks
+            .iter()
+            .filter(|block| !block_is_exactly_seeded(block, &plan.causal_seed_rows))
+            .cloned()
+            .collect(),
+    };
+    Ok(())
+}
+
+fn parameter_static_refresh_targets(plan: &RefreshPlan, state_count: usize) -> BTreeSet<usize> {
+    let mut static_targets = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for refresh_row in &plan.causal_seed_rows {
+            if static_targets.contains(&refresh_row.target_index) {
+                continue;
+            }
+            let Some(row) = plan.source_block.programs.get(refresh_row.row_idx) else {
+                continue;
+            };
+            if parameter_static_refresh_row(
+                row,
+                refresh_row.target_index,
+                state_count,
+                &static_targets,
+            ) {
+                static_targets.insert(refresh_row.target_index);
+                changed = true;
+            }
+        }
+        if !changed {
+            return static_targets;
+        }
+    }
+}
+
+fn parameter_static_refresh_row(
+    row: &[solve::LinearOp],
+    target_index: usize,
+    state_count: usize,
+    static_targets: &BTreeSet<usize>,
+) -> bool {
+    row.iter().all(|op| match op {
+        solve::LinearOp::LoadY { index, .. } => {
+            *index == target_index || (*index >= state_count && static_targets.contains(index))
+        }
+        _ => parameter_static_refresh_op_allowed(op),
+    })
+}
+
+fn parameter_static_refresh_op_allowed(op: &solve::LinearOp) -> bool {
+    matches!(
+        op,
+        solve::LinearOp::Const { .. }
+            | solve::LinearOp::LoadP { .. }
+            | solve::LinearOp::LoadIndexedP { .. }
+            | solve::LinearOp::Move { .. }
+            | solve::LinearOp::Unary { .. }
+            | solve::LinearOp::Binary { .. }
+            | solve::LinearOp::Compare { .. }
+            | solve::LinearOp::Select { .. }
+            | solve::LinearOp::StoreOutput { .. }
+    )
+}
+
+fn block_is_exactly_seeded(
+    block: &solve::AlgebraicProjectionBlock,
+    seed_rows: &[AlgebraicRefreshRow],
+) -> bool {
+    block.tearing.is_none()
+        && block.rows.len() == 1
+        && block.y_indices.len() == 1
+        && block
+            .rows
+            .iter()
+            .zip(&block.y_indices)
+            .all(|(&row, &target)| {
+                seed_rows.iter().any(|seed| {
+                    seed.equation_index == row
+                        && seed.target_index == target
+                        && seed.assignment_target == Some(target)
+                        && seed.exact_assignment_certified
+                })
+            })
+}
+
+fn dependency_causal_projection_is_certified(
+    block: &solve::ScalarProgramBlock,
+    rows: &[AlgebraicRefreshRow],
+    needed: &IndexSet<usize>,
+    plan: &solve::AlgebraicProjectionPlan,
+    state_count: usize,
+    solver_count: usize,
+) -> bool {
+    if rows.len() != needed.len() {
+        return false;
+    }
+    let rows_by_target = rows
+        .iter()
+        .map(|row| (row.target_index, row))
+        .collect::<IndexMap<_, _>>();
+    if rows_by_target.len() != needed.len()
+        || rows.iter().any(|row| {
+            row.equation_index < state_count
+                || row.equation_index >= solver_count
+                || row.output_offset != 0
+                || solve::ScalarProgramBlock::program_output_count(&block.programs[row.row_idx])
+                    != 1
+                || row.assignment_target != Some(row.target_index)
+                || !row.direct_assignment_certified
+        })
+    {
+        return false;
+    }
+    let mut matched = IndexSet::new();
+    for projection_block in &plan.blocks {
+        let ([equation_index], [target_index]) = (
+            projection_block.rows.as_slice(),
+            projection_block.y_indices.as_slice(),
+        ) else {
+            return false;
+        };
+        let Some(row) = rows_by_target.get(target_index) else {
+            return false;
+        };
+        if row.equation_index != *equation_index
+            || !needed.contains(target_index)
+            || !matched.insert(*target_index)
+        {
+            return false;
+        }
+    }
+    matched.len() == needed.len()
 }
 
 fn order_refresh_rows(
@@ -377,6 +753,10 @@ fn order_refresh_rows(
     Ok(RefreshPlan {
         source_block: block,
         simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
+        value_projection_plan: solve::AlgebraicProjectionPlan::default(),
+        causal_seed_rows: ordered.clone(),
+        static_causal_seed_rows: Vec::new(),
+        dynamic_causal_seed_rows: Vec::new(),
         rows: ordered,
         causal_solution_certified,
     })
@@ -571,18 +951,18 @@ fn output_row_positions(
                         message: "program output ordinal overflows host index limits".to_string(),
                         span,
                     })?;
-            if positions
-                .insert(
-                    output_index,
-                    OutputRowPosition {
-                        program_index,
-                        output_offset,
-                    },
-                )
-                .is_some()
-            {
+            if let Some(previous) = positions.insert(
+                output_index,
+                OutputRowPosition {
+                    program_index,
+                    output_offset,
+                },
+            ) {
                 return Err(EvalSolveError::InvalidRow {
-                    message: format!("duplicate scalar program output row {output_index}"),
+                    message: format!(
+                        "duplicate scalar program output row {output_index}: first at program {} output {}, repeated at program {program_index} output {output_offset}",
+                        previous.program_index, previous.output_offset
+                    ),
                     span: block.program_span(program_index),
                 });
             }

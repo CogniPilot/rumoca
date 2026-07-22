@@ -6,7 +6,10 @@ use rumoca_solver::{
     push_visible_values, replace_last_visible_values, timeline::sample_time_match_with_tol,
     update_relation_memory_slots,
 };
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap},
+};
 
 use crate::refresh_plan::{
     AlgebraicRefreshRow, RefreshPlan, build_algebraic_refresh_plan, build_derivative_refresh_plan,
@@ -51,6 +54,69 @@ struct RefreshSlotArgs<'a> {
     max_iters: usize,
 }
 
+#[derive(Clone, Default)]
+struct StaticRefreshCache {
+    valid: bool,
+    params: Vec<f64>,
+    values: Vec<Option<f64>>,
+}
+
+fn cached_static_refresh_value(
+    cache: &StaticRefreshCache,
+    target_index: usize,
+) -> Result<f64, RuntimeSolveError> {
+    cache
+        .values
+        .get(target_index)
+        .copied()
+        .flatten()
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(
+                "parameter-static refresh cache inventory changed during reuse".to_string(),
+            )
+        })
+}
+
+fn trace_reverse_projection_coverage(
+    model: &solve::SolveModel,
+    implicit: &PreparedScalarProgramBlock,
+) {
+    if !tracing::enabled!(target: "rumoca_eval_solve::refresh", tracing::Level::DEBUG) {
+        return;
+    }
+    let mut coupled_rows = 0usize;
+    let mut reverse_rows = 0usize;
+    let mut unsupported_kinds = BTreeSet::new();
+    for row in model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .iter()
+        .filter(|block| block.rows.len() > 1)
+        .flat_map(|block| block.rows.iter().copied())
+    {
+        coupled_rows += 1;
+        let Some(program_idx) = implicit.single_output_row_for_output_index(row) else {
+            unsupported_kinds.insert("MissingScalarRow");
+            continue;
+        };
+        if implicit.reverse_row_y_gradient_supported(program_idx) {
+            reverse_rows += 1;
+        } else {
+            unsupported_kinds.extend(implicit.reverse_row_unsupported_op_kinds(program_idx));
+        }
+    }
+    tracing::debug!(
+        target: "rumoca_eval_solve::refresh",
+        coupled_rows,
+        reverse_rows,
+        forward_fallback_rows = coupled_rows.saturating_sub(reverse_rows),
+        unsupported_kinds = ?unsupported_kinds,
+        "coupled projection reverse-row coverage"
+    );
+}
+
 struct RefreshProjectionModel<'a> {
     runtime: &'a SolveRuntime,
     plan: &'a solve::AlgebraicProjectionPlan,
@@ -59,11 +125,14 @@ struct RefreshProjectionModel<'a> {
 
 #[derive(Clone, Copy)]
 enum ProjectionJacobian<'a> {
-    SolverY(&'a PreparedComputeBlock),
+    SolverY {
+        block: &'a PreparedComputeBlock,
+        scalar: &'a PreparedScalarProgramBlock,
+    },
     SolverYAndParameters(&'a PreparedScalarProgramBlock),
 }
 
-impl ProjectionJacobian<'_> {
+impl<'a> ProjectionJacobian<'a> {
     fn eval(
         self,
         y: &[f64],
@@ -73,8 +142,14 @@ impl ProjectionJacobian<'_> {
         out: &mut [f64],
     ) -> Result<(), EvalSolveError> {
         match self {
-            Self::SolverY(block) => block.eval_with_context(y, p, t, context, out),
+            Self::SolverY { block, .. } => block.eval_with_context(y, p, t, context, out),
             Self::SolverYAndParameters(block) => block.eval_with_context(y, p, t, context, out),
+        }
+    }
+
+    fn scalar(self) -> &'a PreparedScalarProgramBlock {
+        match self {
+            Self::SolverY { scalar, .. } | Self::SolverYAndParameters(scalar) => scalar,
         }
     }
 }
@@ -136,6 +211,71 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .map_err(Into::into)
     }
 
+    fn eval_implicit_jacobian_v_row(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let block = self.jacobian_v.scalar();
+        let Some(program_idx) = block.single_output_row_for_output_index(row_idx) else {
+            return Ok(None);
+        };
+        block
+            .eval_row_unchecked_with_context(
+                program_idx,
+                y,
+                p,
+                t,
+                RowEvalContext {
+                    seed: Some(v),
+                    ..self.runtime.row_eval_context()
+                },
+            )
+            .map(Some)
+            .map_err(Into::into)
+    }
+
+    fn eval_implicit_jacobian_row(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        gradient: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some(program_idx) = self
+            .runtime
+            .implicit_scalar_rhs
+            .single_output_row_for_output_index(row_idx)
+        else {
+            return Ok(false);
+        };
+        self.runtime
+            .implicit_scalar_rhs
+            .reverse_row_y_gradient(
+                program_idx,
+                &crate::reverse::ReverseInputs {
+                    y,
+                    p,
+                    t,
+                    context: self.runtime.row_eval_context(),
+                },
+                gradient,
+                &mut self.runtime.reverse_scratch.borrow_mut(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn implicit_jacobian_v_row_depends_on(&self, row_idx: usize, seed_index: usize) -> bool {
+        let block = self.jacobian_v.scalar();
+        block
+            .single_output_row_for_output_index(row_idx)
+            .is_none_or(|program_idx| block.row_seed_depends_on(program_idx, seed_index))
+    }
+
     fn eval_implicit_target_value(
         &self,
         row_idx: usize,
@@ -161,6 +301,89 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 t,
                 self.runtime.row_eval_context(),
             )
+            .map_err(Into::into)
+    }
+
+    fn try_apply_implicit_causal_values(
+        &self,
+        steps: &[solve::AlgebraicCausalStep],
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        self.runtime
+            .implicit_scalar_rhs
+            .apply_causal_assignment_steps_unchecked_with_context(
+                steps,
+                y,
+                p,
+                t,
+                self.runtime.row_eval_context(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn try_propagate_implicit_causal_seed(
+        &self,
+        steps: &[solve::AlgebraicCausalStep],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        self.jacobian_v
+            .scalar()
+            .propagate_causal_seed_steps_unchecked_with_context(
+                steps,
+                y,
+                p,
+                t,
+                seed,
+                self.runtime.row_eval_context(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn eval_implicit_affine_target_value(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(program_idx) = self
+            .runtime
+            .implicit_scalar_rhs
+            .single_output_row_for_output_index(row_idx)
+        else {
+            return Ok(None);
+        };
+        if let Some(value) = self
+            .runtime
+            .implicit_scalar_rhs
+            .eval_target_assignment_row_unchecked_with_context(
+                program_idx,
+                target_y_index,
+                y,
+                p,
+                t,
+                self.runtime.row_eval_context(),
+            )?
+        {
+            return Ok(Some(value));
+        }
+        self.runtime
+            .implicit_scalar_rhs
+            .eval_proven_affine_target_row_unchecked_with_context(
+                program_idx,
+                target_y_index,
+                y,
+                p,
+                t,
+                self.runtime.row_eval_context(),
+            )
+            .map(Some)
             .map_err(Into::into)
     }
 
@@ -212,6 +435,7 @@ pub struct SolveRuntime {
     pub solver_count: usize,
     implicit_rhs: PreparedComputeBlock,
     implicit_projection_jacobian_v: PreparedComputeBlock,
+    implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
     derivative_rhs: PreparedComputeBlock,
     /// Forward-mode AD Jacobian-vector product of `derivative_rhs`
@@ -239,6 +463,7 @@ pub struct SolveRuntime {
     visible_scratch: RefCell<Vec<f64>>,
     refresh_probe_scratch: RefCell<Vec<f64>>,
     refresh_tensor_scratch: RefCell<Vec<f64>>,
+    static_refresh_cache: RefCell<StaticRefreshCache>,
     runtime_state: solve_eval::SimulationRuntimeState,
     derivative_scratch: RefCell<StateDerivativeScratch>,
     root_scratch: RefCell<Vec<f64>>,
@@ -261,6 +486,7 @@ impl SolveRuntime {
         trace_refresh_plan(model, "algebraic", &algebraic_refresh);
         trace_refresh_plan(model, "derivative", &derivative_refresh);
         trace_refresh_plan(model, "root", &root_refresh);
+        trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
         Ok(Self {
@@ -274,6 +500,9 @@ impl SolveRuntime {
             implicit_projection_jacobian_v: PreparedComputeBlock::new_with_label(
                 &model.artifacts.continuous.implicit_jacobian_v,
                 "runtime_implicit_projection_jacobian_v",
+            )?,
+            implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
+                to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)?,
             )?,
             implicit_scalar_rhs,
             derivative_rhs: PreparedComputeBlock::new_with_label(
@@ -310,6 +539,7 @@ impl SolveRuntime {
             visible_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
             refresh_tensor_scratch: RefCell::new(Vec::new()),
+            static_refresh_cache: RefCell::new(StaticRefreshCache::default()),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             derivative_scratch: RefCell::new(StateDerivativeScratch::default()),
             root_scratch: RefCell::new(Vec::new()),
@@ -365,6 +595,26 @@ impl SolveRuntime {
         self.refresh_algebraic_and_output_slots(t, guess, params, tol, max_iters)
     }
 
+    /// Update an established full-layout guess for state-derivative evaluation.
+    ///
+    /// State-only integrators use this after an accepted step to preserve a
+    /// warm start for the next RHS/Jacobian call. Only the compiler-proven
+    /// derivative dependency closure is refreshed; observation-only
+    /// algebraics are reconstructed at output or event boundaries instead of
+    /// entering the integration hot loop.
+    pub fn refresh_derivative_solver_y_with_guess(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &[f64],
+        guess: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        self.update_solver_y_guess_from_state(guess, state)?;
+        self.refresh_derivative_dependencies(t, guess, params, tol, max_iters)
+    }
+
     fn refresh_derivative_dependencies(
         &self,
         t: f64,
@@ -408,7 +658,7 @@ impl SolveRuntime {
     fn refresh_slots_with_plan(
         &self,
         plan: &RefreshPlan,
-        args: RefreshSlotArgs<'_>,
+        mut args: RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
         self.validate_refresh_inputs(args.solver_y, args.params)?;
         if plan.rows.is_empty() && plan.simultaneous_plan.is_empty() {
@@ -416,25 +666,114 @@ impl SolveRuntime {
         }
         let incoming = copy_runtime_values(args.solver_y, "algebraic projection snapshot")?;
         let mut causal_refresh_succeeded = plan.rows.is_empty();
-        if !plan.rows.is_empty() {
-            match self.refresh_slots_once(&plan.rows, args.t, args.solver_y, args.params) {
+        let mut causal_seed_failed = false;
+        if !plan.causal_seed_rows.is_empty() {
+            match self.refresh_causal_seed_rows(plan, &mut args) {
                 Ok(()) => causal_refresh_succeeded = true,
                 Err(error) => {
                     restore_after_causal_seed_error(error, args.solver_y, &incoming)?;
+                    causal_seed_failed = true;
                 }
             }
         }
         if causal_refresh_succeeded && plan.causal_solution_certified {
             return Ok(());
         }
+        let result = self.project_refresh_slots(plan, &mut args, causal_seed_failed);
+        if result.is_err() {
+            args.solver_y.copy_from_slice(&incoming);
+        }
+        result
+    }
+
+    fn refresh_causal_seed_rows(
+        &self,
+        plan: &RefreshPlan,
+        args: &mut RefreshSlotArgs<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        self.refresh_parameter_static_seed_rows(
+            &plan.static_causal_seed_rows,
+            args.t,
+            args.solver_y,
+            args.params,
+        )?;
+        self.refresh_slots_once(
+            &plan.dynamic_causal_seed_rows,
+            args.t,
+            args.solver_y,
+            args.params,
+        )
+    }
+
+    fn refresh_parameter_static_seed_rows(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut cache = self.static_refresh_cache.borrow_mut();
+        let params_match = cache.valid
+            && cache.params.len() == params.len()
+            && cache
+                .params
+                .iter()
+                .zip(params)
+                .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits());
+        if !params_match {
+            cache.valid = true;
+            cache.params.clear();
+            cache.params.extend_from_slice(params);
+            cache.values.clear();
+            cache.values.resize(solver_y.len(), None);
+        }
+        let fully_cached = rows.iter().all(|row| {
+            cache
+                .values
+                .get(row.target_index)
+                .is_some_and(Option::is_some)
+        });
+        if fully_cached {
+            for row in rows {
+                solver_y[row.target_index] = cached_static_refresh_value(&cache, row.target_index)?;
+            }
+            return Ok(());
+        }
+        drop(cache);
+
+        self.refresh_slots_once(rows, t, solver_y, params)?;
+        let mut cache = self.static_refresh_cache.borrow_mut();
+        for row in rows {
+            cache.values[row.target_index] = Some(solver_y[row.target_index]);
+        }
+        Ok(())
+    }
+
+    fn project_refresh_slots(
+        &self,
+        plan: &RefreshPlan,
+        args: &mut RefreshSlotArgs<'_>,
+        use_complete_plan: bool,
+    ) -> Result<(), RuntimeSolveError> {
+        let projection_plan = if use_complete_plan {
+            &plan.simultaneous_plan
+        } else {
+            &plan.value_projection_plan
+        };
         let projection_model = RefreshProjectionModel {
             runtime: self,
-            plan: &plan.simultaneous_plan,
-            jacobian_v: ProjectionJacobian::SolverY(&self.implicit_projection_jacobian_v),
+            plan: projection_plan,
+            jacobian_v: ProjectionJacobian::SolverY {
+                block: &self.implicit_projection_jacobian_v,
+                scalar: &self.implicit_projection_scalar_jacobian_v,
+            },
         };
-        let result = project_algebraics_with_plan(
+        project_algebraics_with_plan(
             &projection_model,
-            &plan.simultaneous_plan,
+            projection_plan,
             args.solver_y,
             rumoca_solver::AlgebraicProjectionArgs {
                 parameters: args.params,
@@ -443,11 +782,7 @@ impl SolveRuntime {
                 tolerance: args.tol,
             },
             args.max_iters,
-        );
-        if result.is_err() {
-            args.solver_y.copy_from_slice(&incoming);
-        }
-        result
+        )
     }
 
     fn validate_refresh_inputs(

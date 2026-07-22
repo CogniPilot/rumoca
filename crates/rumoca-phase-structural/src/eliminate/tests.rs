@@ -33,6 +33,35 @@ fn structural_ok<T>(result: Result<T, StructuralError>) -> T {
     }
 }
 
+#[test]
+fn state_selection_requires_matching_improvement_without_shape_regression() {
+    let baseline = MatchingDefect {
+        unmatched_total: 6,
+        rectangularity: 0,
+    };
+    assert!(
+        MatchingDefect {
+            unmatched_total: 4,
+            rectangularity: 0,
+        }
+        .strictly_improves_without_rectangularity_regression(baseline)
+    );
+    assert!(
+        !MatchingDefect {
+            unmatched_total: 4,
+            rectangularity: 2,
+        }
+        .strictly_improves_without_rectangularity_regression(baseline)
+    );
+    assert!(
+        !MatchingDefect {
+            unmatched_total: 6,
+            rectangularity: 0,
+        }
+        .strictly_improves_without_rectangularity_regression(baseline)
+    );
+}
+
 fn test_dae_variable(path: &str) -> dae::Variable {
     let mut var = dae::Variable::new(
         VarName::new(path),
@@ -328,7 +357,12 @@ fn contains_complex_constructor(expr: &Expression) -> bool {
             name,
             is_constructor,
             ..
-        } if *is_constructor && name.as_str() == "Complex" => true,
+        } if *is_constructor
+            && name.as_str() == "Complex"
+            && name.resolved_function().is_some() =>
+        {
+            true
+        }
         Expression::Binary { lhs, rhs, .. } => {
             contains_complex_constructor(lhs) || contains_complex_constructor(rhs)
         }
@@ -507,6 +541,28 @@ fn test_try_solve_does_not_match_complex_base_for_field_unknown() {
     };
     let result = try_solve_for_unknown(&rhs, &VarName::new("transferFunction.aSum.re"));
     assert!(result.is_none());
+}
+
+#[test]
+fn boundary_does_not_eliminate_scalar_from_multiscalar_equation() {
+    let mut dae = Dae::new();
+    for name in ["value.re", "source.re"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), component_var(name));
+    }
+    dae.continuous.equations.push(residual(
+        var_ref("value.re"),
+        var_ref("source.re"),
+        2,
+        "two-scalar record equation",
+    ));
+
+    let result = structural_ok(resolve_boundary_equations(&mut dae));
+
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert_eq!(dae.variables.algebraics.len(), 2);
 }
 
 #[test]

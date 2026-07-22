@@ -5,6 +5,7 @@
 use rumoca_ir_dae as dae;
 use rumoca_solver::SimOptions;
 
+use super::causal_reconstruction::restore_shared_causal_assignments;
 use super::expr_util::{
     debug_render_expr, equation_lhs_prefix, remove_duplicate_continuous_equations,
 };
@@ -129,8 +130,7 @@ pub(super) fn structurally_lower_dae_for_simulation(
 
     log_solve_lowering_start("structural.eliminate_trivial");
     let timer = stage_timer_start();
-    let elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
-        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    let elimination = eliminate_with_singular_state_selection(&mut lowered)?;
     log_solve_lowering_done("structural.eliminate_trivial", timer);
     if let Some(source) = elimination.blt_error {
         if dae_model.variables.states.is_empty() {
@@ -139,18 +139,60 @@ pub(super) fn structurally_lower_dae_for_simulation(
         return Err(rumoca_phase_solve::SolveModelLowerError::Structural { source });
     }
 
+    let causal_plan = rumoca_phase_structural::eliminate::factor_causal_substitutions(
+        &source_dae,
+        &elimination.substitutions,
+    )
+    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     apply_simulation_elimination(&mut lowered, &elimination.substitutions)?;
     trace_simulation_elimination(&lowered, &elimination.substitutions);
+    log_solve_lowering_start("structural.restore_shared_causal_assignments");
+    let timer = stage_timer_start();
+    let restored_causal_targets =
+        restore_shared_causal_assignments(&mut lowered, &source_dae, &causal_plan);
+    log_solve_lowering_done("structural.restore_shared_causal_assignments", timer);
+    tracing::debug!(
+        target: "rumoca_sim::solve_lowering",
+        candidates = causal_plan.retained_targets.len(),
+        restored = restored_causal_targets.len(),
+        "restored shared causal assignments"
+    );
     mark_state_selection_metadata(&mut metadata_dae, &elimination.substitutions)?;
-    let visible_expressions =
-        visible_expressions_after_elimination(&source_dae, &elimination.substitutions, opts)?;
+    let visible_expressions = visible_expressions_after_elimination(
+        &source_dae,
+        &causal_plan.substitutions,
+        &restored_causal_targets,
+        opts,
+    )?;
     scalarize_solver_view(&mut lowered, opts, "structural.scalarize_solve_dae")?;
+    log_solve_lowering_start("structural.condense_scalar_algebraic_loops");
+    let timer = stage_timer_start();
+    let condensation =
+        rumoca_phase_structural::eliminate::condense_scalar_algebraic_loops(&mut lowered)
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    log_solve_lowering_done("structural.condense_scalar_algebraic_loops", timer);
+    tracing::debug!(
+        target: "rumoca_sim::solve_lowering",
+        blocks = condensation.blocks.len(),
+        causal_variables = condensation.causal_variable_count(),
+        "condensed exact algebraic BLT loops"
+    );
 
     Ok(StructurallyLoweredDae {
         dae: lowered,
         metadata_dae,
         visible_expressions,
     })
+}
+
+fn eliminate_with_singular_state_selection(
+    dae: &mut dae::Dae,
+) -> Result<
+    rumoca_phase_structural::eliminate::EliminationResult,
+    rumoca_phase_solve::SolveModelLowerError,
+> {
+    rumoca_phase_structural::eliminate::eliminate_trivial_with_state_selection(dae)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })
 }
 
 fn prepare_structural_daes(
@@ -195,6 +237,7 @@ fn scalarize_solver_view(
     let timer = stage_timer_start();
     rumoca_phase_structural::scalarize::scalarize_equations(dae_model)
         .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    rumoca_phase_structural::dae_prepare::simplify_scalarized_continuous_equations(dae_model);
     log_solve_lowering_done(stage, timer);
     Ok(())
 }
@@ -277,12 +320,24 @@ fn mark_state_selection_metadata(
         "structural.mark_constrained_dummy_states_in_metadata",
         timer,
     );
+    // State selection can demote a source state only after the first compound
+    // derivative pass. Re-run the same chain-rule normalization on the final
+    // metadata partition so initialization equations cannot retain an orphan
+    // `der(algebraic)` merely because classification changed late.
+    log_solve_lowering_start("structural.expand_state_selection_metadata_derivatives");
+    let timer = stage_timer_start();
+    rumoca_phase_structural::dae_prepare::expand_compound_derivatives(metadata_dae);
+    log_solve_lowering_done(
+        "structural.expand_state_selection_metadata_derivatives",
+        timer,
+    );
     Ok(())
 }
 
 fn visible_expressions_after_elimination(
     source_dae: &dae::Dae,
     substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+    restored_causal_targets: &indexmap::IndexSet<rumoca_core::VarName>,
     opts: &SimOptions,
 ) -> Result<Vec<rumoca_phase_solve::VisibleExpression>, rumoca_phase_solve::SolveModelLowerError> {
     log_solve_lowering_start("structural.clone_observation_dae");
@@ -294,20 +349,14 @@ fn visible_expressions_after_elimination(
         let timer = stage_timer_start();
         rumoca_phase_structural::scalarize::scalarize_equations(&mut observation_dae)
             .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+        rumoca_phase_structural::dae_prepare::simplify_scalarized_continuous_equations(
+            &mut observation_dae,
+        );
         log_solve_lowering_done("structural.scalarize_observation_dae", timer);
     }
-    if !substitutions.is_empty() {
-        log_solve_lowering_start("structural.resolve_observation_substitutions");
-        let timer = stage_timer_start();
-        for eq in &mut observation_dae.continuous.equations {
-            eq.rhs = rumoca_phase_structural::eliminate::resolve_substitutions_in_expr(
-                &eq.rhs,
-                substitutions,
-            )
-            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
-        }
-        log_solve_lowering_done("structural.resolve_observation_substitutions", timer);
-    }
+    // The visible inventory is declaration-based; rewriting every source
+    // equation cannot change it and duplicates large eliminated expression
+    // trees. Resolve only the selected visible expressions below.
     log_solve_lowering_start("structural.visible_expressions_for_dae");
     let timer = stage_timer_start();
     let mut visible_expressions = rumoca_phase_solve::visible_expressions_for_dae(&observation_dae)
@@ -316,12 +365,22 @@ fn visible_expressions_after_elimination(
     if !substitutions.is_empty() {
         log_solve_lowering_start("structural.resolve_visible_expression_substitutions");
         let timer = stage_timer_start();
-        for visible in &mut visible_expressions {
-            visible.expr = rumoca_phase_structural::eliminate::resolve_substitutions_in_expr(
-                &visible.expr,
-                substitutions,
-            )
-            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+        let mut expressions = visible_expressions
+            .iter()
+            .map(|visible| visible.expr.clone())
+            .collect::<Vec<_>>();
+        let observation_substitutions = substitutions
+            .iter()
+            .filter(|substitution| !restored_causal_targets.contains(&substitution.var_name))
+            .cloned()
+            .collect::<Vec<_>>();
+        rumoca_phase_structural::eliminate::resolve_substitutions_in_exprs(
+            &mut expressions,
+            &observation_substitutions,
+        )
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+        for (visible, expression) in visible_expressions.iter_mut().zip(expressions) {
+            visible.expr = expression;
         }
         log_solve_lowering_done("structural.resolve_visible_expression_substitutions", timer);
     }

@@ -477,6 +477,91 @@ fn scalarize_record_constructor_uses_declared_default_for_omitted_field() {
 }
 
 #[test]
+fn scalarize_reconstructed_complex_residual_uses_record_components() {
+    let mut dae_model = dae::Dae::default();
+    add_complex_constructor(&mut dae_model);
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            complex(var("lhs_re"), var("lhs_im")),
+            complex(var("rhs_re"), var("rhs_im")),
+            2,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let rows = &dae_model.continuous.equations;
+    assert_eq!(rows.len(), 2);
+    for (row, expected_lhs, expected_rhs) in [
+        (&rows[0], "lhs_re", "rhs_re"),
+        (&rows[1], "lhs_im", "rhs_im"),
+    ] {
+        let Expression::Binary {
+            op: OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } = &row.rhs
+        else {
+            panic!("expected projected complex residual");
+        };
+        assert!(
+            matches!(lhs.as_ref(), Expression::VarRef { name, .. } if name.as_str() == expected_lhs)
+        );
+        assert!(
+            matches!(rhs.as_ref(), Expression::VarRef { name, .. } if name.as_str() == expected_rhs)
+        );
+    }
+}
+
+#[test]
+fn scalarize_complex_field_arithmetic_nested_in_scalar_function_arguments() {
+    let mut dae_model = dae::Dae::default();
+    add_complex_constructor(&mut dae_model);
+    let product = Expression::Binary {
+        op: OpBinary::Mul,
+        lhs: Box::new(complex(var("n_re"), var("n_im"))),
+        rhs: Box::new(complex(der(var("phi_re")), der(var("phi_im")))),
+        span: test_span(),
+    };
+    let field = |name: &str| Expression::FieldAccess {
+        base: Box::new(product.clone()),
+        field: name.to_string(),
+        span: test_span(),
+    };
+    let projected_scalar_call = Expression::FunctionCall {
+        name: structured_reference("selectScalar", test_span()),
+        args: vec![field("re"), field("im")],
+        is_constructor: false,
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(residual_with_binary_span(
+            var("result"),
+            projected_scalar_call,
+            1,
+            test_span(),
+        ));
+
+    scalarize_equations(&mut dae_model).expect("nested Complex fields should scalarize");
+
+    let residual = &dae_model.continuous.equations[0].rhs;
+    assert!(!expr_contains_field_access(residual));
+    assert!(rumoca_ir_dae::expr_contains_der_of(
+        residual,
+        &VarName::new("phi_re")
+    ));
+    assert!(rumoca_ir_dae::expr_contains_der_of(
+        residual,
+        &VarName::new("phi_im")
+    ));
+}
+
+#[test]
 fn scalarize_matrix_binding_residual_targets_each_element() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -650,6 +735,53 @@ fn expr_contains_der_var_idx(expr: &Expression, target: &str, idx: i64) -> bool 
         Expression::VarRef { .. }
         | Expression::Literal { value: _, .. }
         | Expression::Empty { .. } => false,
+    }
+}
+
+fn expr_contains_field_access(expr: &Expression) -> bool {
+    match expr {
+        Expression::FieldAccess { .. } => true,
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_field_access(lhs) || expr_contains_field_access(rhs)
+        }
+        Expression::Unary { rhs, .. } | Expression::Index { base: rhs, .. } => {
+            expr_contains_field_access(rhs)
+        }
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            args.iter().any(expr_contains_field_access)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(condition, value)| {
+                expr_contains_field_access(condition) || expr_contains_field_access(value)
+            }) || expr_contains_field_access(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
+            elements.iter().any(expr_contains_field_access)
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            expr_contains_field_access(start)
+                || step.as_deref().is_some_and(expr_contains_field_access)
+                || expr_contains_field_access(end)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            expr_contains_field_access(expr)
+                || indices
+                    .iter()
+                    .any(|index| expr_contains_field_access(&index.range))
+                || filter.as_deref().is_some_and(expr_contains_field_access)
+        }
+        Expression::VarRef { .. } | Expression::Literal { .. } | Expression::Empty { .. } => false,
     }
 }
 

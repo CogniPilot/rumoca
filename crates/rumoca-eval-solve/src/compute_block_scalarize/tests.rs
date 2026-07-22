@@ -170,6 +170,43 @@ fn linsolve_scalarizes_to_one_program_with_unique_components() {
 }
 
 #[test]
+fn sparse_scalar_node_does_not_move_output_cursor_backward() {
+    let sparse = |output_index| {
+        ComputeNode::ScalarPrograms(
+            ScalarProgramBlock::with_output_indices(
+                vec![const_store_row(output_index as f64)],
+                vec![rumoca_core::Span::DUMMY],
+                vec![output_index],
+            )
+            .expect("sparse scalar fixture should be valid"),
+        )
+    };
+    let block = ComputeBlock {
+        nodes: vec![
+            sparse(5),
+            sparse(2),
+            ComputeNode::LinSolve {
+                setup_ops: vec![
+                    LinearOp::Const { dst: 0, value: 1.0 },
+                    LinearOp::Const { dst: 1, value: 2.0 },
+                ],
+                matrix_start: 0,
+                rhs_start: 1,
+                n: 1,
+                next_reg: 2,
+                metadata: TensorNodeMetadata::default(),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+    };
+
+    let scalar = to_scalar_program_block(&block).expect("mixed sparse block should scalarize");
+
+    assert_eq!(scalar.output_indices, vec![5, 2, 6]);
+    assert_eq!(scalar.output_count(), 7);
+}
+
+#[test]
 fn affine_stencil_expands_to_exact_scalar_rows() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::AffineStencil {

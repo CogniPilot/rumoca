@@ -1347,6 +1347,7 @@ mod tests {
                         blocks: vec![solve::AlgebraicProjectionBlock {
                             rows: vec![1],
                             y_indices: vec![1],
+                            tearing: None,
                         }],
                     },
                     residual: ComputeBlock::from_scalar_program_block(derivative.clone()),

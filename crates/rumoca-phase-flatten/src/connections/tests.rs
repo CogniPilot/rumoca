@@ -196,7 +196,10 @@ fn test_stream_connection_does_not_generate_potential_equality() {
         ..Default::default()
     });
 
-    process_connections(&mut flat, &overlay, false).expect("stream connection processing");
+    let mut oc_forest =
+        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("stream connection processing");
 
     assert!(
         flat.equations.is_empty(),
@@ -272,7 +275,10 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
         ..Default::default()
     });
 
-    process_connections(&mut flat, &overlay, false).expect("connector connection processing");
+    let mut oc_forest =
+        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("connector connection processing");
 
     assert!(
         flat.variables
@@ -398,7 +404,9 @@ fn test_generate_equality_equations() {
         rumoca_core::VarName::new("r3.p.v"),
     ];
 
-    generate_equality_equations(&mut flat, &vars, test_span()).unwrap();
+    let mut oc_forest =
+        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    generate_equality_equations(&mut flat, &vars, test_span(), &mut oc_forest).unwrap();
 
     // Should generate 2 equations (n-1 for n=3)
     assert_eq!(flat.equations.len(), 2);
@@ -422,6 +430,46 @@ fn test_generate_equality_equations() {
             .unwrap()
             .connected
     );
+}
+
+#[test]
+fn zero_constraint_equality_generation_respects_required_vcg_branch() {
+    let mut flat = flat::Model::new();
+    for record in ["a.R", "b.R", "c.R"] {
+        let name = rumoca_core::VarName::new(format!("{record}.gamma"));
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name,
+                is_primitive: true,
+                is_overconstrained: true,
+                oc_record_path: Some(record.to_string()),
+                oc_eq_constraint_size: Some(0),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+    let branches = vec![("a.R".to_string(), "b.R".to_string())];
+    let optional = vec![
+        ("a.R".to_string(), "c.R".to_string()),
+        ("c.R".to_string(), "b.R".to_string()),
+    ];
+    let mut oc_forest =
+        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &branches, &optional);
+    let vars = [
+        rumoca_core::VarName::new("a.R.gamma"),
+        rumoca_core::VarName::new("c.R.gamma"),
+        rumoca_core::VarName::new("b.R.gamma"),
+    ];
+
+    generate_equality_equations(&mut flat, &vars, test_span(), &mut oc_forest).unwrap();
+
+    assert_eq!(flat.equations.len(), 1);
+    assert!(matches!(
+        &flat.equations[0].origin,
+        flat::EquationOrigin::Connection { lhs, rhs }
+            if lhs == "a.R.gamma" && rhs == "c.R.gamma"
+    ));
 }
 
 #[test]
@@ -815,7 +863,10 @@ fn test_process_connections_negates_nested_connector_under_outside_root() {
         ..Default::default()
     });
 
-    process_connections(&mut flat, &overlay, false).expect("nested connector connection");
+    let mut oc_forest =
+        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("nested connector connection");
 
     let flow_origins: Vec<String> = flat
         .equations

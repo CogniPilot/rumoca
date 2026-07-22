@@ -2,9 +2,10 @@ use super::{
     BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
     Function, FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, Literal,
     OpBinary, PRE_SLOT_NAMESPACE, Reference, SourceId, Span, Subscript, VarName,
-    component_path_base_name, component_path_trailing_index, expressions_semantically_equal,
-    is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name, scoped_component_path_candidates,
-    split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
+    component_path_base_name, component_path_trailing_index, expression_semantic_fingerprint,
+    expressions_semantically_equal, is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name,
+    scoped_component_path_candidates, split_trailing_subscript_suffix,
+    strip_trailing_subscript_suffix,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -447,6 +448,11 @@ fn expression_semantic_equality_ignores_spans() {
 
     assert!(expressions_semantically_equal(&lhs, &rhs));
     assert!(lhs.semantically_eq_ignoring_spans(&rhs));
+    assert_eq!(
+        expression_semantic_fingerprint(&lhs),
+        expression_semantic_fingerprint(&rhs),
+        "semantic fingerprints must ignore source-only spans like equality does"
+    );
 }
 
 #[test]

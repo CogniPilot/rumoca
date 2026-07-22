@@ -32,6 +32,23 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         let span = inherited_projection_source_span(expr.span(), owner_span);
         match expr {
             rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span: reference_span,
+            } if !subscripts.is_empty() => {
+                let aggregate = rumoca_core::Expression::VarRef {
+                    name: name.clone(),
+                    subscripts: Vec::new(),
+                    span: *reference_span,
+                };
+                let Some(base_dims) =
+                    self.expr_dims_with_owner(&aggregate, scope, depth + 1, span)?
+                else {
+                    return Ok(None);
+                };
+                Self::static_subscript_dims(&base_dims, subscripts, span)
+            }
+            rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => {
                 if let Some(dims) = scope.dims.get(name.as_str()) {
@@ -113,6 +130,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 is_constructor: false,
                 ..
             } => self.function_call_expr_dims(name, expr, span, depth),
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => self.indexed_expression_dims(base, subscripts, scope, depth, span),
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
                 if let Some(dims) = self.bound_field_access_dims(base, field, scope, span, depth)? {
                     return Ok(Some(dims));
@@ -153,6 +173,44 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn indexed_expression_dims(
+        &self,
+        base: &rumoca_core::Expression,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        let Some(base_dims) = self.expr_dims_with_owner(base, scope, depth + 1, span)? else {
+            return Ok(None);
+        };
+        Self::static_subscript_dims(&base_dims, subscripts, span)
+    }
+
+    fn static_subscript_dims(
+        base_dims: &[i64],
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<i64>>, LowerError> {
+        if subscripts.len() > base_dims.len() {
+            return Ok(None);
+        }
+        let mut dims = projection_vec_with_capacity(
+            base_dims.len(),
+            "indexed expression dimension count",
+            span,
+        )?;
+        for (subscript, dim) in subscripts.iter().zip(base_dims) {
+            match subscript {
+                rumoca_core::Subscript::Index { value, .. } if *value > 0 && *value <= *dim => {}
+                rumoca_core::Subscript::Colon { .. } => dims.push(*dim),
+                _ => return Ok(None),
+            }
+        }
+        dims.extend_from_slice(&base_dims[subscripts.len()..]);
+        Ok(Some(dims))
     }
 
     fn if_expression_dims(
@@ -340,6 +398,23 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             } else {
                 fallback_span
             };
+            if tracing::enabled!(
+                target: "rumoca_phase_solve::function_projection",
+                tracing::Level::DEBUG
+            ) {
+                let scope_dimensions = scope
+                    .dims
+                    .iter()
+                    .map(|(name, dims)| (name.as_str(), dims.as_slice()))
+                    .collect::<Vec<_>>();
+                tracing::debug!(
+                    target: "rumoca_phase_solve::function_projection",
+                    projection_context = context,
+                    expression = ?expr,
+                    scope_dimensions = ?scope_dimensions,
+                    "function projection could not infer expression dimensions"
+                );
+            }
             return Err(unsupported_at(
                 format!("{context} has unknown dimensions"),
                 span,

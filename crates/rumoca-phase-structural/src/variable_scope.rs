@@ -72,7 +72,10 @@ impl<'a> DaeVariableScope<'a> {
         if let Some(dims) = self.indexed_reference_dims(name)? {
             return Ok(DaeVariableShape::Dimensions(dims));
         }
-        if name.as_str() == "time" || self.has_descendant_reference(name) {
+        if name.as_str() == "time"
+            || self.has_descendant_reference(name)
+            || self.has_unindexed_descendant_name(name.var_name())
+        {
             return Ok(DaeVariableShape::StructuredAggregate);
         }
         Err(missing_dae_variable_metadata(name.var_name(), name.span()))
@@ -129,6 +132,17 @@ impl<'a> DaeVariableScope<'a> {
                 .component_ref
                 .as_ref()
                 .is_some_and(|candidate| component_ref_has_prefix(candidate, prefix))
+        })
+    }
+
+    fn has_unindexed_descendant_name(&self, prefix: &VarName) -> bool {
+        if prefix.as_str().contains('[') {
+            return false;
+        }
+        let descendant_prefix = format!("{}.", prefix.as_str());
+        self.all_variables().any(|variable| {
+            rumoca_core::strip_all_subscripts(variable.name.as_str())
+                .starts_with(&descendant_prefix)
         })
     }
 
@@ -543,5 +557,28 @@ mod tests {
                 span: actual
             }) if reason.contains("missing DAE variable metadata for `missing`") && actual == span
         ));
+    }
+
+    #[test]
+    fn unresolved_aggregate_name_matches_indexed_scalar_descendants() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.algebraics.insert(
+            VarName::new("plug.pin[1].i.re"),
+            dae::Variable {
+                name: VarName::new("plug.pin[1].i.re"),
+                ..dae::Variable::empty_with_span(test_span())
+            },
+        );
+        let scope = DaeVariableScope::new(&dae_model);
+
+        assert!(matches!(
+            scope.shape_for_reference(&Reference::new("plug.pin.i")),
+            Ok(DaeVariableShape::StructuredAggregate)
+        ));
+        assert!(
+            scope
+                .shape_for_reference(&Reference::new("plug.pin[2].i"))
+                .is_err()
+        );
     }
 }

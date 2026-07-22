@@ -171,6 +171,74 @@ fn test_boundary_preserves_indexed_array_connection_constraints() {
 }
 
 #[test]
+fn test_boundary_eliminates_scalar_array_component_field_connection_alias() {
+    let mut dae = Dae::new();
+
+    let mut relative = component_var("relative_3");
+    relative.fixed = Some(true);
+    relative.start = Some(lit(0.3));
+    dae.variables
+        .outputs
+        .insert(VarName::new("relative_3"), relative);
+    let mut derivative_input = component_var("derivative[3].u");
+    derivative_input.fixed = Some(true);
+    derivative_input.start = Some(lit(0.3));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("derivative[3].u"), derivative_input);
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("relative_3")),
+            rhs: Box::new(Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(var_ref("time")),
+                rhs: Box::new(lit(1.0)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "output definition".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("relative_3")),
+            rhs: Box::new(var_ref("derivative[3].u")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: relative_3 = derivative[3].u".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|substitution| substitution.var_name.as_str() == "derivative[3].u"),
+        "a scalar field of an indexed component instance should be eliminated"
+    );
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("derivative[3].u"))
+    );
+    assert!(
+        dae.variables
+            .outputs
+            .contains_key(&VarName::new("relative_3"))
+    );
+}
+
+#[test]
 fn test_boundary_keeps_internal_discrete_connection_chain_for_runtime_alias_paths() {
     let mut dae = Dae::new();
     for name in [

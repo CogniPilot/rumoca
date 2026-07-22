@@ -1021,6 +1021,13 @@ pub(super) fn is_synchronous_array_like_intrinsic(name: &str) -> bool {
     )
 }
 
+/// Synchronous operators whose MLS result is scalar regardless of argument
+/// shape. Keep this shape contract next to the array-like synchronous
+/// classification so inference and lowering share the same distinction.
+pub(super) fn is_synchronous_scalar_intrinsic(name: &str) -> bool {
+    matches!(intrinsic_short_name(name), "interval" | "firstTick")
+}
+
 /// Detect sparsity of a `rows × cols` matrix whose elements are held in `values`
 /// (register indices, row-major) produced by `ops`.
 ///

@@ -1,6 +1,170 @@
 use super::*;
 use crate::source_spans::required_location_span;
 
+pub(super) fn inherit_operator_constructor_defaults<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    record: &'tree ast::ClassDef,
+    constructor: &mut rumoca_core::Function,
+    source_map: &rumoca_core::SourceMap,
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<(), FlattenError> {
+    let Some(candidate) = unique_identity_operator_constructor(class_index, record, constructor)
+    else {
+        return Ok(());
+    };
+    let candidate_name = candidate
+        .def_id
+        .and_then(|def_id| class_index.qualified_name(def_id))
+        .ok_or_else(|| {
+            FlattenError::missing_resolved_class_metadata(
+                candidate.name.text.as_ref(),
+                "operator-record constructor identity",
+                constructor.span,
+            )
+        })?;
+    let converted = super::convert_function(
+        tree,
+        class_index,
+        candidate,
+        candidate_name,
+        source_map,
+        def_map,
+        member_cache,
+    )?;
+    if !constructor_inputs_match(&constructor.inputs, &converted.inputs) {
+        return Ok(());
+    }
+    for (field, input) in constructor.inputs.iter_mut().zip(converted.inputs) {
+        field.default = input.default;
+    }
+    normalize_function_local_references(constructor);
+    Ok(())
+}
+
+fn unique_identity_operator_constructor<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    record: &'a ast::ClassDef,
+    constructor: &rumoca_core::Function,
+) -> Option<&'a ast::ClassDef> {
+    if !record.operator_record {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    collect_identity_operator_constructors(
+        class_index,
+        record,
+        constructor,
+        &mut HashSet::new(),
+        &mut candidates,
+    );
+    (candidates.len() == 1).then_some(*candidates.first()?)
+}
+
+fn collect_identity_operator_constructors<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    record: &'a ast::ClassDef,
+    constructor: &rumoca_core::Function,
+    visited: &mut HashSet<usize>,
+    candidates: &mut Vec<&'a ast::ClassDef>,
+) {
+    let record_ptr = record as *const ast::ClassDef as usize;
+    if !visited.insert(record_ptr) {
+        return;
+    }
+    if let Some(operator) = record.classes.get("'constructor'") {
+        candidates.extend(
+            operator
+                .classes
+                .values()
+                .filter(|candidate| candidate.class_type == rumoca_core::ClassType::Function)
+                .filter(|candidate| {
+                    operator_constructor_is_field_identity(record, candidate, constructor)
+                }),
+        );
+    }
+    for ext in &record.extends {
+        let base = ext
+            .base_def_id
+            .and_then(|def_id| class_index.get(def_id))
+            .or_else(|| class_index.get_by_qualified_name(&ext.base_name.to_string()));
+        if let Some(base) = base {
+            collect_identity_operator_constructors(
+                class_index,
+                base,
+                constructor,
+                visited,
+                candidates,
+            );
+        }
+    }
+}
+
+fn operator_constructor_is_field_identity(
+    record: &ast::ClassDef,
+    candidate: &ast::ClassDef,
+    constructor: &rumoca_core::Function,
+) -> bool {
+    let inputs = candidate
+        .components
+        .values()
+        .filter(|component| matches!(component.causality, rumoca_core::Causality::Input(_)))
+        .collect::<Vec<_>>();
+    let outputs = candidate
+        .components
+        .values()
+        .filter(|component| matches!(component.causality, rumoca_core::Causality::Output(_)))
+        .collect::<Vec<_>>();
+    inputs.len() == constructor.inputs.len()
+        && inputs
+            .iter()
+            .zip(&constructor.inputs)
+            .all(|(input, field)| input.name == field.name)
+        && matches!(outputs.as_slice(), [output] if identity_output(record, output, &inputs))
+}
+
+fn identity_output(
+    record: &ast::ClassDef,
+    output: &ast::Component,
+    inputs: &[&ast::Component],
+) -> bool {
+    if output.type_def_id.or(output.type_name.def_id) != record.def_id
+        || output.modifications.len() != inputs.len()
+    {
+        return false;
+    }
+    inputs.iter().all(|input| {
+        output
+            .modifications
+            .get(&input.name)
+            .is_some_and(|value| identity_input_reference(value, input))
+    })
+}
+
+fn identity_input_reference(value: &ast::Expression, input: &ast::Component) -> bool {
+    let ast::Expression::ComponentReference(reference) = value else {
+        return false;
+    };
+    let [part] = reference.parts.as_slice() else {
+        return false;
+    };
+    part.ident.text.as_ref() == input.name
+        && part.subs.as_ref().is_none_or(Vec::is_empty)
+        && reference.def_id == input.def_id
+}
+
+fn constructor_inputs_match(
+    fields: &[rumoca_core::FunctionParam],
+    inputs: &[rumoca_core::FunctionParam],
+) -> bool {
+    fields.len() == inputs.len()
+        && fields
+            .iter()
+            .zip(inputs)
+            .all(|(field, input)| field.name == input.name && field.dims == input.dims)
+}
+
 fn collect_constructor_params(
     class_index: &ast::ClassDefIndex<'_>,
     class_def: &ast::ClassDef,

@@ -189,6 +189,11 @@ fn flat_target_span(
         .get(target)
         .and_then(flat_variable_span)
         .or_else(|| {
+            flat.record_instances
+                .get(target)
+                .map(|record| record.source_span)
+        })
+        .or_else(|| {
             rumoca_core::parse_scalar_name(target.as_str()).and_then(|scalar| {
                 flat.variables
                     .get(&rumoca_core::VarName::new(scalar.base))
@@ -232,6 +237,11 @@ fn flat_component_ref_for_target(
     flat.variables
         .get(target)
         .and_then(|variable| variable.component_ref.clone())
+        .or_else(|| {
+            flat.record_instances
+                .get(target)
+                .map(|record| record.component_ref.clone())
+        })
         .map(|component_ref| component_ref_with_missing_spans(component_ref, owner.span()))
         .or_else(|| {
             let scalar = rumoca_core::parse_scalar_name(target.as_str())?;
@@ -688,6 +698,12 @@ impl DaeReferenceRewriter<'_> {
             .variables
             .get(name.var_name())
             .and_then(|var| var.component_ref.clone())
+            .or_else(|| {
+                self.flat
+                    .record_instances
+                    .get(name.var_name())
+                    .map(|record| record.component_ref.clone())
+            })
             .map(|component_ref| {
                 rumoca_core::Reference::with_component_reference(name.as_str(), component_ref)
             })
@@ -857,6 +873,9 @@ impl DaeReferenceScope {
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
         if let Some(metadata) = self.aggregate_prefixes.get(name.var_name()) {
+            if name.target_def_id().is_some() {
+                return Ok(name.clone());
+            }
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
         // Element reference to an aggregate variable (`sum.u[2]` while the
@@ -1357,6 +1376,115 @@ mod tests {
             "DAE expression conversion should preserve exact Flat variable component references"
         );
         Ok(())
+    }
+
+    #[test]
+    fn flat_to_dae_expression_attaches_exact_record_instance_component_ref()
+    -> Result<(), ToDaeError> {
+        let mut flat = flat::Model::new();
+        let span = test_span(28, 35);
+        let aggregate_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "source".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "value".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(rumoca_core::DefId::new(177)),
+        };
+        flat.record_instances.insert(
+            rumoca_core::VarName::new("source.value"),
+            flat::RecordInstance {
+                component_ref: aggregate_ref,
+                source_span: span,
+                canonical_type_id: rumoca_core::TypeId::new(7),
+                type_name: "Complex".to_string(),
+                type_def_id: rumoca_core::DefId::new(70),
+                dims: Vec::new(),
+            },
+        );
+        let expr = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("source.value"),
+            subscripts: Vec::new(),
+            span,
+        };
+
+        let rewritten = flat_to_dae_expression_with_refs(&expr, &flat)?;
+
+        assert!(matches!(
+            rewritten,
+            rumoca_core::Expression::VarRef { name, .. }
+                if name.target_def_id() == Some(rumoca_core::DefId::new(177))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn dae_metadata_attachment_preserves_resolved_record_aggregate_identity() {
+        let span = test_span(36, 43);
+        let aggregate_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "source".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "value".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(rumoca_core::DefId::new(177)),
+        };
+        let mut field_ref = aggregate_ref.clone();
+        field_ref.parts.push(rumoca_core::ComponentRefPart {
+            ident: "re".to_string(),
+            span,
+            subs: Vec::new(),
+        });
+        field_ref.def_id = Some(rumoca_core::DefId::new(178));
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("source.value.re"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("source.value.re"),
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "source.value",
+                    aggregate_ref,
+                ),
+                subscripts: Vec::new(),
+                span,
+            },
+            span,
+            origin: "record aggregate fixture".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae).expect("aggregate identity should remain resolved");
+
+        let rumoca_core::Expression::VarRef { name, .. } = &dae.continuous.equations[0].rhs else {
+            panic!("expected aggregate variable reference");
+        };
+        assert_eq!(name.target_def_id(), Some(rumoca_core::DefId::new(177)));
     }
 
     #[test]

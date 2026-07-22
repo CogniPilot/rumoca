@@ -707,6 +707,159 @@ fn algebraic_projection_loop_uses_blt_unknowns_not_dependency_inputs() {
 }
 
 #[test]
+fn algebraic_projection_loop_records_exact_tearing_plan() {
+    let rows = vec![
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::Const { dst: 2, value: 1.0 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Add,
+                lhs: 1,
+                rhs: 2,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ],
+    ];
+    let row_targets = vec![Some(solve::scalar_slot_y(0)), None];
+    let plan = super::lower_algebraic_projection_plan(&rows, &row_targets, 0, 2, solve_test_span())
+        .expect("projection plan should lower");
+    let block = plan.blocks.first().expect("one coupled block");
+    let tearing = block.tearing.as_ref().expect("loop should be torn");
+
+    assert_eq!(tearing.residual_rows.len(), 1);
+    assert_eq!(tearing.tear_y_indices.len(), 1);
+    assert_eq!(tearing.causal_steps.len(), 1);
+    assert_ne!(tearing.causal_steps[0].row, tearing.residual_rows[0]);
+    assert_ne!(
+        tearing.causal_steps[0].target_y_index,
+        tearing.tear_y_indices[0]
+    );
+}
+
+#[test]
+fn runtime_tearing_cost_admits_sparse_large_dimension_reduction() {
+    let plan = solve::AlgebraicTearingPlan {
+        residual_rows: vec![0, 1],
+        tear_y_indices: vec![0, 1],
+        causal_steps: (2..45)
+            .map(|index| solve::AlgebraicCausalStep {
+                row: index,
+                target_y_index: index,
+                target_residual_coefficient: Some(1.0),
+            })
+            .collect(),
+    };
+
+    let rows = (0..45).collect::<Vec<_>>();
+    let y_indices = rows.clone();
+    let programs = rows
+        .iter()
+        .map(|&index| {
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    assert!(super::runtime_tearing_is_cost_effective(
+        &plan, &rows, &y_indices, &programs, &programs
+    ));
+}
+
+#[test]
+fn runtime_tearing_cost_admits_low_overhead_exact_reduction() {
+    let plan = solve::AlgebraicTearingPlan {
+        residual_rows: vec![0],
+        tear_y_indices: vec![0],
+        causal_steps: vec![solve::AlgebraicCausalStep {
+            row: 1,
+            target_y_index: 1,
+            target_residual_coefficient: Some(1.0),
+        }],
+    };
+
+    let rows = vec![0, 1];
+    let y_indices = vec![0, 1];
+    let programs = vec![
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ],
+    ];
+
+    assert!(super::runtime_tearing_is_cost_effective(
+        &plan, &rows, &y_indices, &programs, &programs
+    ));
+}
+
+#[test]
+fn runtime_tearing_cost_declines_marginal_dimension_reduction() {
+    let plan = solve::AlgebraicTearingPlan {
+        residual_rows: (0..44).collect(),
+        tear_y_indices: (0..44).collect(),
+        causal_steps: vec![solve::AlgebraicCausalStep {
+            row: 44,
+            target_y_index: 44,
+            target_residual_coefficient: Some(1.0),
+        }],
+    };
+
+    let rows = (0..45).collect::<Vec<_>>();
+    let y_indices = rows.clone();
+    let programs = rows
+        .iter()
+        .map(|&index| {
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    assert!(!super::runtime_tearing_is_cost_effective(
+        &plan, &rows, &y_indices, &programs, &programs
+    ));
+}
+
+#[test]
 fn algebraic_projection_loop_uses_only_matched_unknowns() -> Result<(), LowerError> {
     let projection_incidence = ProjectionIncidence {
         incidence: Incidence::new(
@@ -725,6 +878,7 @@ fn algebraic_projection_loop_uses_only_matched_unknowns() -> Result<(), LowerErr
         &[EquationRef(7)],
         &[UnknownId::SolverY(10)],
         &projection_incidence,
+        &vec![Vec::new(); 8],
         solve_test_span(),
     )?;
 

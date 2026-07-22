@@ -3,6 +3,7 @@
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -1640,6 +1641,144 @@ pub fn expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> boo
         }
         (Expression::Empty { .. }, Expression::Empty { .. }) => true,
         _ => false,
+    }
+}
+
+/// Span-insensitive fingerprint paired with [`expressions_semantically_equal`].
+///
+/// The value is an in-process lookup accelerator, not a persistent content ID;
+/// callers must confirm equality within a fingerprint bucket.
+pub fn expression_semantic_fingerprint(expr: &Expression) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_expression_semantics(expr, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_discriminant<T>(value: &T, hasher: &mut impl Hasher) {
+    std::mem::discriminant(value).hash(hasher);
+}
+
+fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
+    hash_discriminant(expr, hasher);
+    match expr {
+        Expression::Binary { op, lhs, rhs, .. } => {
+            hash_discriminant(op, hasher);
+            hash_expression_semantics(lhs, hasher);
+            hash_expression_semantics(rhs, hasher);
+        }
+        Expression::Unary { op, rhs, .. } => {
+            hash_discriminant(op, hasher);
+            hash_expression_semantics(rhs, hasher);
+        }
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            name.as_str().hash(hasher);
+            hash_subscripts_semantics(subscripts, hasher);
+        }
+        Expression::BuiltinCall { function, args, .. } => {
+            hash_discriminant(function, hasher);
+            hash_expression_slice_semantics(args, hasher);
+        }
+        Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } => {
+            name.as_str().hash(hasher);
+            is_constructor.hash(hasher);
+            hash_expression_slice_semantics(args, hasher);
+        }
+        Expression::Literal { value, .. } => hash_literal_semantics(value, hasher),
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.len().hash(hasher);
+            for (condition, value) in branches {
+                hash_expression_semantics(condition, hasher);
+                hash_expression_semantics(value, hasher);
+            }
+            hash_expression_semantics(else_branch, hasher);
+        }
+        Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } => {
+            is_matrix.hash(hasher);
+            hash_expression_slice_semantics(elements, hasher);
+        }
+        Expression::Tuple { elements, .. } => hash_expression_slice_semantics(elements, hasher),
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            hash_expression_semantics(start, hasher);
+            step.is_some().hash(hasher);
+            if let Some(step) = step {
+                hash_expression_semantics(step, hasher);
+            }
+            hash_expression_semantics(end, hasher);
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            hash_expression_semantics(expr, hasher);
+            indices.len().hash(hasher);
+            for index in indices {
+                index.name.hash(hasher);
+                hash_expression_semantics(&index.range, hasher);
+            }
+            filter.is_some().hash(hasher);
+            if let Some(filter) = filter {
+                hash_expression_semantics(filter, hasher);
+            }
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            hash_expression_semantics(base, hasher);
+            hash_subscripts_semantics(subscripts, hasher);
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            hash_expression_semantics(base, hasher);
+            field.hash(hasher);
+        }
+        Expression::Empty { .. } => {}
+    }
+}
+
+fn hash_expression_slice_semantics(expressions: &[Expression], hasher: &mut impl Hasher) {
+    expressions.len().hash(hasher);
+    for expression in expressions {
+        hash_expression_semantics(expression, hasher);
+    }
+}
+
+fn hash_subscripts_semantics(subscripts: &[Subscript], hasher: &mut impl Hasher) {
+    subscripts.len().hash(hasher);
+    for subscript in subscripts {
+        hash_discriminant(subscript, hasher);
+        match subscript {
+            Subscript::Index { value, .. } => value.hash(hasher),
+            Subscript::Colon { .. } => {}
+            Subscript::Expr { expr, .. } => hash_expression_semantics(expr, hasher),
+        }
+    }
+}
+
+fn hash_literal_semantics(value: &Literal, hasher: &mut impl Hasher) {
+    hash_discriminant(value, hasher);
+    match value {
+        Literal::Real(value) => value.to_bits().hash(hasher),
+        Literal::Integer(value) => value.hash(hasher),
+        Literal::Boolean(value) => value.hash(hasher),
+        Literal::String(value) => value.hash(hasher),
     }
 }
 
