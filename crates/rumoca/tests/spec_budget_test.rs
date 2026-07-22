@@ -195,34 +195,7 @@ fn test_spec_0025_aligns_with_pr_template() {
     );
 }
 
-#[test]
-fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
-    // The narrow recovery path is documentation-enforced policy. Keep its
-    // activation boundary, ordered evidence, expiry, and integration-only
-    // restrictions mechanically visible so a later edit cannot broaden it.
-    let root = workspace_root();
-    let spec = fs::read_to_string(root.join("spec/SPEC_0025_PR_REVIEW_PROCESS.md"))
-        .expect("read SPEC_0025");
-    let template = fs::read_to_string(root.join(".github/pull_request_template.md"))
-        .expect("read PR template");
-
-    let spec_heading = "### 6a. Authorized Broken-Main Recovery (optional)";
-    let spec_tail = &spec[spec.find(spec_heading).expect("SPEC_0025 recovery section")..];
-    let spec_recovery = &spec_tail[..spec_tail
-        .find("\n### 7.")
-        .expect("SPEC_0025 recovery section end")];
-    let template_heading = "## Authorized Broken-Main Recovery (optional)";
-    let template_tail = &template[template
-        .find(template_heading)
-        .expect("PR template recovery section")..];
-    let template_after_heading = &template_tail[template_heading.len()..];
-    let template_end = template_after_heading
-        .find("\n## ")
-        .map_or(template_tail.len(), |offset| {
-            template_heading.len() + offset
-        });
-    let template_recovery = &template_tail[..template_end];
-
+fn collect_missing_spec_recovery_contract(spec_recovery: &str, missing: &mut Vec<String>) {
     let required_spec_contract = [
         "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
         "normal reviewer gate remains unchanged",
@@ -259,6 +232,14 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
         "MUST NOT weaken or bypass any existing gate",
         "MUST NOT apply to third-party contributors or an unauthorized batch",
     ];
+    for required in required_spec_contract {
+        if !spec_recovery.contains(required) {
+            missing.push(format!("SPEC_0025 missing recovery contract: `{required}`"));
+        }
+    }
+}
+
+fn collect_missing_template_recovery_contract(template_recovery: &str, missing: &mut Vec<String>) {
     let required_template_contract = [
         "## Authorized Broken-Main Recovery (optional)",
         "Leave blank for normal PRs",
@@ -287,20 +268,6 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
         "Any owner, baseline, or integration head change fails closed; rebuild and rerun affected evidence and CI.",
         "Draft, validation-only, never merge",
     ];
-    let forbidden_contract = [
-        "`authorization_url`",
-        "independent maintainer",
-        "another maintainer",
-        "not the author of an owner PR",
-        "not self-attested by an owner-PR author",
-    ];
-
-    let mut missing = Vec::new();
-    for required in required_spec_contract {
-        if !spec_recovery.contains(required) {
-            missing.push(format!("SPEC_0025 missing recovery contract: `{required}`"));
-        }
-    }
     for required in required_template_contract {
         if !template_recovery.contains(required) {
             missing.push(format!(
@@ -308,6 +275,20 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
             ));
         }
     }
+}
+
+fn collect_forbidden_recovery_contract(
+    spec_recovery: &str,
+    template_recovery: &str,
+    missing: &mut Vec<String>,
+) {
+    let forbidden_contract = [
+        "`authorization_url`",
+        "independent maintainer",
+        "another maintainer",
+        "not the author of an owner PR",
+        "not self-attested by an owner-PR author",
+    ];
     for forbidden in forbidden_contract {
         if spec_recovery.contains(forbidden) {
             missing.push(format!(
@@ -320,6 +301,40 @@ fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
             ));
         }
     }
+}
+
+#[test]
+fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
+    // The narrow recovery path is documentation-enforced policy. Keep its
+    // activation boundary, ordered evidence, expiry, and integration-only
+    // restrictions mechanically visible so a later edit cannot broaden it.
+    let root = workspace_root();
+    let spec = fs::read_to_string(root.join("spec/SPEC_0025_PR_REVIEW_PROCESS.md"))
+        .expect("read SPEC_0025");
+    let template = fs::read_to_string(root.join(".github/pull_request_template.md"))
+        .expect("read PR template");
+
+    let spec_heading = "### 6a. Authorized Broken-Main Recovery (optional)";
+    let spec_tail = &spec[spec.find(spec_heading).expect("SPEC_0025 recovery section")..];
+    let spec_recovery = &spec_tail[..spec_tail
+        .find("\n### 7.")
+        .expect("SPEC_0025 recovery section end")];
+    let template_heading = "## Authorized Broken-Main Recovery (optional)";
+    let template_tail = &template[template
+        .find(template_heading)
+        .expect("PR template recovery section")..];
+    let template_after_heading = &template_tail[template_heading.len()..];
+    let template_end = template_after_heading
+        .find("\n## ")
+        .map_or(template_tail.len(), |offset| {
+            template_heading.len() + offset
+        });
+    let template_recovery = &template_tail[..template_end];
+
+    let mut missing = Vec::new();
+    collect_missing_spec_recovery_contract(spec_recovery, &mut missing);
+    collect_missing_template_recovery_contract(template_recovery, &mut missing);
+    collect_forbidden_recovery_contract(spec_recovery, template_recovery, &mut missing);
 
     assert!(
         missing.is_empty(),
