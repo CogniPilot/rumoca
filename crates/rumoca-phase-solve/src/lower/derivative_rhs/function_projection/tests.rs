@@ -3498,6 +3498,46 @@ fn over_budget_function() -> rumoca_core::Function {
     }
 }
 
+fn expression_over_projection_budget(mut expr: rumoca_core::Expression) -> rumoca_core::Expression {
+    for _ in 0..12 {
+        expr = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(expr.clone()),
+            rhs: Box::new(expr),
+            span: test_span(),
+        };
+    }
+    expr
+}
+
+fn over_budget_wrapper_call(
+    name: &str,
+    body: Vec<rumoca_core::Statement>,
+) -> (dae::Dae, rumoca_core::Expression) {
+    let explode = over_budget_function();
+    let mut wrapper = rumoca_core::Function::new(name, test_span());
+    wrapper.inputs.push(scalar_function_param("x"));
+    wrapper.outputs.push(scalar_function_param("y"));
+    wrapper.body = body;
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(explode.name.clone(), explode);
+    dae_model
+        .symbols
+        .functions
+        .insert(wrapper.name.clone(), wrapper);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new(name).into(),
+        args: vec![real(2.0)],
+        is_constructor: false,
+        span: test_span(),
+    };
+    (dae_model, call)
+}
+
 #[test]
 fn over_budget_projection_is_a_typed_error_and_declines_at_the_boundary() {
     let mut dae_model = dae::Dae::default();
@@ -3527,6 +3567,326 @@ fn over_budget_projection_is_a_typed_error_and_declines_at_the_boundary() {
             .top_level_function_call_outputs(&call, test_span())
             .expect("budget decline must not fail the outer lowering");
         assert!(outputs.is_none());
+    }
+}
+
+fn assert_internal_budget_propagates_to_top_level(
+    dae_model: &dae::Dae,
+    call: &rumoca_core::Expression,
+) {
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(dae_model, &structural_bindings);
+    let err = analysis
+        .function_call_outputs_with_owner(call, 0, test_span())
+        .expect_err("nested budget exhaustion must remain a typed internal error");
+    assert!(err.is_projection_budget_exceeded(), "got: {err:?}");
+
+    let outputs = analysis
+        .top_level_function_call_outputs(call, test_span())
+        .expect("the outer boundary must preserve the complete runtime call");
+    assert!(outputs.is_none());
+}
+
+#[test]
+fn over_budget_function_call_statement_propagates_to_top_level() {
+    let body = vec![rumoca_core::Statement::FunctionCall {
+        comp: component_ref_target("My.explode"),
+        args: vec![local_var("x")],
+        outputs: vec![component_ref_target("y")],
+        span: test_span(),
+    }];
+    let (dae_model, call) = over_budget_wrapper_call("My.statementWrapper", body);
+
+    assert_internal_budget_propagates_to_top_level(&dae_model, &call);
+}
+
+#[test]
+fn over_budget_scalar_assignment_call_propagates_to_top_level() {
+    let body = vec![
+        scalar_assignment(
+            "y",
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("My.explode").into(),
+                args: vec![local_var("x")],
+                is_constructor: false,
+                span: test_span(),
+            },
+        ),
+        scalar_assignment("y", real(1.0)),
+    ];
+    let (dae_model, call) = over_budget_wrapper_call("My.scalarWrapper", body);
+
+    assert_internal_budget_propagates_to_top_level(&dae_model, &call);
+}
+
+#[test]
+fn lane_rewritten_over_budget_call_propagates_typed_error() {
+    let expanded = expression_over_projection_budget(real(2.0));
+    let mut function = rumoca_core::Function::new("My.laneBudget", test_span());
+    function.inputs.push(function_param_with_dims("x", &[0]));
+    function.outputs.push(scalar_function_param("y"));
+    function.locals.push(scalar_function_param("scratch"));
+    function.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: binary(
+                rumoca_core::OpBinary::Gt,
+                rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![local_var("x"), integer(1)],
+                    span: test_span(),
+                },
+                integer(1),
+                test_span(),
+            ),
+            stmts: vec![scalar_assignment("y", local_var("scratch"))],
+        }],
+        else_block: Some(vec![scalar_assignment("y", expanded)]),
+        span: test_span(),
+    });
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    let actual_values = vec![real(1.0), real(2.0), real(3.0), real(4.0)];
+    scope
+        .full
+        .insert("u".to_string(), array(actual_values.clone(), false));
+    scope.scalars.insert("u".to_string(), actual_values);
+    scope.dims.insert("u".to_string(), vec![4]);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.laneBudget").into(),
+        args: vec![local_var("u")],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let full_outputs = analysis
+        .function_call_outputs_with_projection_scope(&call, 1, test_span(), Some(&scope))
+        .expect("full caller-scope probe should not fail");
+    assert!(
+        full_outputs.is_none(),
+        "full vector call must decline because its selected output leaks a local"
+    );
+
+    let err = analysis
+        .project_function_call_value(&call, &[4], 0, &scope, 0, test_span())
+        .expect_err("lane-rewritten budget exhaustion must remain a typed error");
+    assert!(err.is_projection_budget_exceeded(), "got: {err:?}");
+}
+
+fn nested_over_budget_vector_call() -> (dae::Dae, rumoca_core::Expression) {
+    let expanded = expression_over_projection_budget(local_var("x"));
+    let mut explode_vector = over_budget_function();
+    explode_vector.name = rumoca_core::VarName::new("My.explodeVector");
+    explode_vector.inputs[0].dims = vec![4];
+    explode_vector.outputs[0].dims = vec![4];
+    explode_vector.body = vec![scalar_assignment("y", expanded)];
+
+    let mut wrapper = rumoca_core::Function::new("My.wrapper", test_span());
+    wrapper.inputs.push(function_param_with_dims("u", &[4]));
+    wrapper.outputs.push(function_param_with_dims("y", &[4]));
+    wrapper.body.push(scalar_assignment(
+        "y",
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.explodeVector").into(),
+            args: vec![local_var("u")],
+            is_constructor: false,
+            span: test_span(),
+        },
+    ));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(explode_vector.name.clone(), explode_vector);
+    dae_model
+        .symbols
+        .functions
+        .insert(wrapper.name.clone(), wrapper);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.wrapper").into(),
+        args: vec![array(
+            vec![real(1.0), real(2.0), real(3.0), real(4.0)],
+            false,
+        )],
+        is_constructor: false,
+        span: test_span(),
+    };
+    (dae_model, call)
+}
+
+fn under_budget_vector_call() -> (dae::Dae, rumoca_core::Expression) {
+    let mut function = rumoca_core::Function::new("My.vectorIdentity", test_span());
+    function.inputs.push(function_param_with_dims("x", &[2]));
+    function.outputs.push(function_param_with_dims("y", &[2]));
+    function.body.push(scalar_assignment("y", local_var("x")));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.vectorIdentity").into(),
+        args: vec![array(vec![real(1.0), real(2.0)], false)],
+        is_constructor: false,
+        span: test_span(),
+    };
+    (dae_model, call)
+}
+
+fn array_like_boundary_results(
+    expr: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+    flat_index: usize,
+) -> (
+    Option<Vec<rumoca_core::Expression>>,
+    Option<rumoca_core::Expression>,
+) {
+    let structural_bindings = IndexMap::new();
+    let values =
+        project_array_like_scalars_with_owner(expr, dae_model, &structural_bindings, test_span())
+            .expect("array-like projection should not fail");
+    let value = project_array_like_scalar_with_owner(
+        expr,
+        flat_index,
+        dae_model,
+        &structural_bindings,
+        test_span(),
+    )
+    .expect("array-like scalar projection should not fail");
+    (values, value)
+}
+
+#[test]
+fn nested_over_budget_vector_call_preserves_outer_runtime_call() {
+    let (dae_model, call) = nested_over_budget_vector_call();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+
+    let err = analysis
+        .function_call_outputs_with_owner(&call, 0, test_span())
+        .expect_err("nested budget exhaustion must remain a typed internal error");
+    assert!(err.is_projection_budget_exceeded(), "got: {err:?}");
+
+    let outputs = analysis
+        .top_level_function_call_outputs(&call, test_span())
+        .expect("the outer boundary must preserve the complete runtime call");
+    assert!(
+        outputs.is_none(),
+        "the outer boundary must decline projection instead of scalarizing call arguments"
+    );
+}
+
+#[test]
+fn over_budget_root_function_call_declines_at_array_like_scalars_boundary() {
+    let (dae_model, call) = nested_over_budget_vector_call();
+    let structural_bindings = IndexMap::new();
+
+    let values =
+        project_array_like_scalars_with_owner(&call, &dae_model, &structural_bindings, test_span())
+            .expect("the outer array-like boundary must preserve the complete runtime call");
+
+    assert!(values.is_none());
+}
+
+#[test]
+fn over_budget_root_function_call_declines_at_array_like_scalar_boundary() {
+    let (dae_model, call) = nested_over_budget_vector_call();
+    let structural_bindings = IndexMap::new();
+
+    let value = project_array_like_scalar_with_owner(
+        &call,
+        0,
+        &dae_model,
+        &structural_bindings,
+        test_span(),
+    )
+    .expect("the outer array-like scalar boundary must preserve the complete runtime call");
+
+    assert!(value.is_none());
+}
+
+#[test]
+fn under_budget_root_function_call_projects_at_array_like_boundaries() {
+    let (dae_model, call) = under_budget_vector_call();
+    let (Some(values), Some(value)) = array_like_boundary_results(&call, &dae_model, 1) else {
+        panic!("under-budget root function call should project at both boundaries");
+    };
+
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[1], value);
+}
+
+#[test]
+fn non_function_constructor_and_unknown_array_like_behavior_is_unchanged() {
+    let dae_model = dae::Dae::default();
+    let literal = array(vec![real(1.0), real(2.0)], false);
+    let (Some(values), Some(value)) = array_like_boundary_results(&literal, &dae_model, 1) else {
+        panic!("literal array should keep projecting at both boundaries");
+    };
+
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[1], value);
+    for declined in [
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.Record").into(),
+            args: vec![real(1.0), real(2.0)],
+            is_constructor: true,
+            span: test_span(),
+        },
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.unknownVector").into(),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        },
+    ] {
+        let (values, value) = array_like_boundary_results(&declined, &dae_model, 0);
+        assert!(values.is_none());
+        assert!(value.is_none());
+    }
+}
+
+#[test]
+fn external_and_impure_array_calls_keep_runtime_lane_projection() {
+    let mut external = rumoca_core::Function::new("My.externalVector", test_span());
+    external.outputs.push(function_param_with_dims("y", &[2]));
+    external.external = Some(rumoca_core::ExternalFunction::default());
+    let mut impure = rumoca_core::Function::new("My.impureVector", test_span());
+    impure.outputs.push(function_param_with_dims("y", &[2]));
+    impure.pure = false;
+
+    let mut dae_model = dae::Dae::default();
+    for function in [external, impure] {
+        dae_model
+            .symbols
+            .functions
+            .insert(function.name.clone(), function);
+    }
+    for name in ["My.externalVector", "My.impureVector"] {
+        let call = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new(name).into(),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        };
+        let (Some(values), Some(value)) = array_like_boundary_results(&call, &dae_model, 1) else {
+            panic!("external and impure calls should retain runtime lane calls");
+        };
+
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[1], value);
+        assert!(matches!(
+            value,
+            rumoca_core::Expression::FunctionCall { .. }
+        ));
     }
 }
 
