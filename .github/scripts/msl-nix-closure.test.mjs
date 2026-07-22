@@ -142,7 +142,7 @@ test('CI architecture is permanently independent of Cachix', () => {
 
 test('workflow transports one rerun-stable MSL Nix closure artifact', () => {
   const workflow = readFileSync(repoFile('.github/workflows/ci.yml'), 'utf8');
-  const artifactName = 'msl-nix-closure-${{ github.run_id }}-${{ github.sha }}';
+  const artifactName = 'msl-nix-closure-${{ github.run_id }}-${{ env.RUMOCA_CI_HEAD_SHA }}';
   assert.match(workflow, /GitHub Actions artifact[^\n]*complete Nix closure/i);
 
   const producer = workflowJob(workflow, 'nix-build-msl');
@@ -178,6 +178,25 @@ test('workflow transports one rerun-stable MSL Nix closure artifact', () => {
     Array(4).fill(`name: ${artifactName}`),
     'producer overwrite and partial consumer reruns must share one stable artifact name',
   );
+});
+
+test('every checkout and MSL closure provenance uses the selected CI head', () => {
+  const workflow = readFileSync(repoFile('.github/workflows/ci.yml'), 'utf8');
+  const lines = workflow.split('\n');
+  const checkoutLines = lines
+    .map((line, index) => [line, index])
+    .filter(([line]) => line.includes('uses: actions/checkout@v5'));
+  assert.ok(checkoutLines.length > 0);
+  for (const [, index] of checkoutLines) {
+    const block = lines.slice(index, index + 8).join('\n');
+    assert.match(block, /ref: \$\{\{ env\.RUMOCA_CI_HEAD_SHA \}\}/);
+  }
+
+  for (const job of ['nix-build-msl', 'msl-shards', 'msl-merge', 'modelicatest-gate']) {
+    const body = workflowJob(workflow, job);
+    assert.doesNotMatch(body, /\$\{\{ github\.sha \}\}|\$GITHUB_SHA/);
+    assert.match(body, /RUMOCA_CI_HEAD_SHA/);
+  }
 });
 
 test('manifest line count is derived from fixed fields and required binaries', () => {
