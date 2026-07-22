@@ -39,11 +39,12 @@ use dimension_helpers::{
     assignment_projection_dims, binary_mul_dims, constructor_input_projection_dims,
     copy_projection_dims, declared_param_dims, elementwise_binary_dims,
     exact_declared_function_output_dims, flat_index_from_indices, flatten_array_elements,
-    formal_actual_projection_dims, is_ignorable_projection_statement, is_same_plain_var_ref,
-    named_actual_span, named_argument_spans, projected_declared_output_dims,
-    projected_field_output_dims, projection_assignment_target, required_flat_index_to_subscripts,
-    reserve_projection_capacity, scalar_count_for_dims, selector_dims_from_indices,
-    single_field_path, sum_expressions, valid_product_dim,
+    formal_accepts_structured_actual, formal_actual_projection_dims,
+    is_ignorable_projection_statement, is_same_plain_var_ref, named_actual_span,
+    named_argument_spans, projected_declared_output_dims, projected_field_output_dims,
+    projection_assignment_target, required_flat_index_to_subscripts, reserve_projection_capacity,
+    scalar_count_for_dims, selector_dims_from_indices, single_field_path, sum_expressions,
+    valid_product_dim,
 };
 pub(in crate::lower) use entrypoints::function_projected_residuals_with_owner;
 use entrypoints::{
@@ -105,6 +106,25 @@ struct FunctionProjectionScope {
     full: IndexMap<String, rumoca_core::Expression>,
     scalars: IndexMap<String, Vec<rumoca_core::Expression>>,
     dims: IndexMap<String, Vec<i64>>,
+}
+
+fn seed_declared_scalar_dims(
+    function: &rumoca_core::Function,
+    scope: &mut FunctionProjectionScope,
+) {
+    for param in function
+        .inputs
+        .iter()
+        .chain(function.outputs.iter())
+        .chain(function.locals.iter())
+    {
+        if param.dims.is_empty()
+            && param.shape_expr.is_empty()
+            && !formal_accepts_structured_actual(param)
+        {
+            scope.dims.entry(param.name.clone()).or_default();
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -531,6 +551,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             )?;
         let named_spans = named_argument_spans(args, owner_span)?;
         let mut scope = FunctionProjectionScope::default();
+        seed_declared_scalar_dims(function, &mut scope);
         let mut positional_idx = 0usize;
         let used_inputs = super::super::function_calls::referenced_function_input_names(function);
         for (input_idx, input) in function.inputs.iter().enumerate() {
@@ -696,6 +717,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         depth: usize,
         owner_span: rumoca_core::Span,
     ) -> Result<(), LowerError> {
+        seed_declared_scalar_dims(function, scope);
         for param in function.outputs.iter().chain(function.locals.iter()) {
             if self.initialize_declared_default(function, param, scope, depth + 1, owner_span)? {
                 continue;
@@ -1485,7 +1507,22 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             return Ok(());
         }
         let value_span = value.span().unwrap_or(target_span);
-        let value_dims = self.expr_dims_with_owner(&value, scope, depth + 1, value_span)?;
+        let substituted_dims = self.expr_dims_with_owner(&value, scope, depth + 1, value_span)?;
+        let (value_dims, projection_value) = match substituted_dims {
+            Some(dims) => (Some(dims), &value),
+            None => {
+                let value_dims =
+                    self.expr_dims_with_owner(original_value, scope, depth + 1, value_span)?;
+                let projection_value = if self
+                    .original_projection_preserves_declared_scalar_shape(original_value, scope)
+                {
+                    original_value
+                } else {
+                    &value
+                };
+                (value_dims, projection_value)
+            }
+        };
         let vectorized_scalar_assignment = self.vectorized_scalar_assignment_dims(
             function,
             &target,
@@ -1511,7 +1548,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         };
         if let Some(dims) = dims.filter(|dims| !dims.is_empty()) {
             let scalars = self
-                .project_value_scalars(&value, &dims, scope, depth + 1, value_span)
+                .project_value_scalars(projection_value, &dims, scope, depth + 1, value_span)
                 .map_err(|err| err.with_fallback_span(value_span))?
                 .ok_or_else(|| {
                     unsupported_at(
@@ -1578,6 +1615,42 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             return Ok(None);
         }
         Ok(Some(value_dims.to_vec()))
+    }
+
+    fn original_projection_preserves_declared_scalar_shape(
+        &self,
+        expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+    ) -> bool {
+        let has_boundary = expr.contains_subexpression(|node| match node {
+            rumoca_core::Expression::VarRef { subscripts, .. } => !subscripts.is_empty(),
+            rumoca_core::Expression::Binary { op, .. } => !is_elementwise_binary_projection_op(op),
+            rumoca_core::Expression::BuiltinCall { function, .. } => {
+                !is_elementwise_builtin_projection(function)
+            }
+            rumoca_core::Expression::Unary { .. }
+            | rumoca_core::Expression::If { .. }
+            | rumoca_core::Expression::Array { .. }
+            | rumoca_core::Expression::Tuple { .. }
+            | rumoca_core::Expression::Range { .. }
+            | rumoca_core::Expression::Literal { .. }
+            | rumoca_core::Expression::Empty { .. } => false,
+            _ => true,
+        });
+        if has_boundary {
+            return false;
+        }
+        expr.contains_subexpression(|node| {
+            matches!(
+                node,
+                rumoca_core::Expression::VarRef { name, subscripts, .. }
+                    if subscripts.is_empty()
+                        && scope.dims.get(name.as_str()).is_some_and(Vec::is_empty)
+                        && scope.full.get(name.as_str()).is_some_and(
+                            |replacement| !is_same_plain_var_ref(replacement, name.as_str())
+                        )
+            )
+        })
     }
 
     #[allow(clippy::excessive_nesting)]
