@@ -5,6 +5,7 @@
 use super::*;
 use std::collections::BTreeSet;
 mod derivative_row_tests;
+mod direct_scalar_residual_projection;
 mod gpu_preparation;
 mod projection_loop_matching;
 mod projection_plan_more;
