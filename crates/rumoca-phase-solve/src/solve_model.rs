@@ -57,6 +57,14 @@ impl SolveModelLoweringProfile {
     fn needs_solve_artifacts(self) -> bool {
         self == Self::Runtime
     }
+
+    /// GPU preparation receives an already-prepared direct DAE (or the output
+    /// of the structural funnel) and must preserve its state-only layout.
+    /// Runtime-only direct-state demotion is both redundant here and expands
+    /// regular state families one component at a time.
+    fn needs_structural_derivative_preparation(self) -> bool {
+        matches!(self, Self::Runtime | Self::RuntimeValueOnly)
+    }
 }
 
 #[derive(Debug)]
@@ -396,7 +404,9 @@ fn lower_dae_to_solve_model_inner(
     profile: SolveModelLoweringProfile,
     param_overrides: &HashMap<String, f64>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
-    prepare_structural_derivative_states(&mut dae_model)?;
+    if profile.needs_structural_derivative_preparation() {
+        prepare_structural_derivative_states(&mut dae_model)?;
+    }
     let timer = crate::timing::stage_start();
     let visible_expressions =
         runtime_visible_expressions(&dae_model, visible_expressions, profile)?;
@@ -452,15 +462,17 @@ fn lower_dae_to_solve_model_inner(
         eval_runtime.clone(),
     )?;
     crate::timing::log_stage("model.initial_solver_values", timer);
-    let timer = crate::timing::stage_start();
-    apply_initial_equations_to_start_values(
-        &dae_model,
-        &problem.layout,
-        &mut parameters,
-        &mut initial_y,
-        eval_runtime.clone(),
-    )?;
-    crate::timing::log_stage("model.apply_initial_equations", timer);
+    if profile != SolveModelLoweringProfile::GpuPreparation {
+        let timer = crate::timing::stage_start();
+        apply_initial_equations_to_start_values(
+            &dae_model,
+            &problem.layout,
+            &mut parameters,
+            &mut initial_y,
+            eval_runtime.clone(),
+        )?;
+        crate::timing::log_stage("model.apply_initial_equations", timer);
+    }
     let timer = crate::timing::stage_start();
     let table_env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         &dae_model,

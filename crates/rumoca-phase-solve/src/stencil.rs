@@ -623,6 +623,14 @@ fn structured_dae_body_shapes_match(
     Ok(true)
 }
 
+pub(crate) fn dae_equation_body_shapes_match(
+    first: &dae::Equation,
+    second: &dae::Equation,
+) -> Result<bool, LowerError> {
+    Ok(expression_body_shape(&first.rhs, first.span)?
+        == expression_body_shape(&second.rhs, second.span)?)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum ExpressionBodyShape {
     Binary {

@@ -454,7 +454,13 @@ fn msl_buf3s_no_state_model() -> dae::Dae {
     insert_buf3s_parameters(&mut dae_model);
     insert_buf3s_discrete_vars(&mut dae_model);
     populate_buf3s_equations(&mut dae_model);
-    dae_model.events.scheduled_time_events.push(0.0);
+    dae_model
+        .events
+        .scheduled_time_events
+        .push(dae::DaeScheduledTimeEvent {
+            time: 0.0,
+            source_span: Some(fixture_span()),
+        });
     dae_model
 }
 

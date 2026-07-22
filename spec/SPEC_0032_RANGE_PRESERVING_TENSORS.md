@@ -50,6 +50,14 @@ lhs/rhs or output expression.
 | Derivative families map to canonical slots | DAE structured family | Explicit state identity |
 | No parallel scalarized owner | DAE IR | Avoids drift |
 
+DAE lowers colon-slice multiplication to a scalar dot product only when both
+operands are proven rank-one vectors of equal width. Proven scalar operands,
+including scalar compound expressions, retain elementwise vector scaling. A
+conditional is proven scalar only when every condition, branch value, and the
+else value are proven scalar; unresolved function/builtin calls, unknown widths,
+and higher-rank shapes remain unprojected rather than acquiring broadcast
+semantics.
+
 A source family such as `der(u[i, j]) = w[i, j]` is represented as residuals
 over canonical derivative slots/state metadata. The structured node owns the
 compact index domain and maps each tuple to the corresponding derivative/output
@@ -70,6 +78,26 @@ comes from structured DAE domains plus affine operand proofs; Solve lowering
 must not rediscover stencils by scanning anonymous scalar rows. Backends may
 fuse or split generated kernels as target-local codegen, but the reported
 kernel inventory must match the generated work.
+
+For direct structured initialization, the same domain can pair a residual `Map`
+with a compact target `TensorOutputMap`. The target map is the sole scalar-view
+mapping for that family; creating parallel `row_targets`, `StructuredProgram`,
+or `Vec<Vec<LinearOp>>` ownership is forbidden on the compact path. The
+`ComputeBlock` remains the sole owner of the Map; initialization metadata refers
+to it by node index. `rumoca-eval-solve` executes the base program and affine
+strides natively over the domain, without per-cell `LinearOp` construction.
+Direct and fixed-start target ranges form an exact, non-overlapping affine
+partition. Fixed-start array coverage is derived from the resolved contiguous
+layout base and shape without scalar row-target materialization. Descending
+source binders are normalized to an ascending execution domain by selecting the
+corresponding source base and corners; target maps therefore remain canonical
+positive-stride maps without changing source-index semantics.
+Corner-derived load, constant, and target strides are admissible only after
+Solve lowering proves the reconstructed program against every materialized
+family cell. A family whose interiors are unavailable, whose values are not
+affine, or whose initializer contains random/impure operations fails closed at
+the first source row that breaks the proof; executing a self-consistent but
+unproven affine reconstruction is forbidden.
 
 ### 5. Ownership Boundaries
 

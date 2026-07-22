@@ -80,3 +80,6 @@ rumoca-input-gamepad = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+bincode = { workspace = true }

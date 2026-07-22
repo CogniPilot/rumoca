@@ -142,6 +142,9 @@ pub enum CodegenInput<'a> {
     Ast(&'a ast::ClassTree),
 }
 
+/// Build the stable DAE template context. Scheduled-event provenance remains
+/// available as `scheduled_time_event_metadata`, while the established
+/// `scheduled_time_events` render surface contains numeric times.
 pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
     let mut value = serde_json::to_value(dae).map_err(|e| CodegenError::SerializationFailed {
         message: format!("DAE: {e}"),
@@ -151,6 +154,27 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         .ok_or_else(|| CodegenError::SerializationFailed {
             message: "DAE did not serialize to a JSON object".to_string(),
         })?;
+    let scheduled_time_event_metadata = object
+        .insert(
+            "scheduled_time_events".to_string(),
+            serde_json::to_value(
+                dae.events
+                    .scheduled_time_events
+                    .iter()
+                    .map(|event| event.time)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|e| CodegenError::SerializationFailed {
+                message: format!("scheduled_time_events: {e}"),
+            })?,
+        )
+        .ok_or_else(|| CodegenError::SerializationFailed {
+            message: "DAE omitted scheduled_time_events".to_string(),
+        })?;
+    object.insert(
+        "scheduled_time_event_metadata".to_string(),
+        scheduled_time_event_metadata,
+    );
     let enum_type_names = enum_type_names_from_ordinals(dae);
     let symbol_refs = source_refs_from_dae(dae, &enum_type_names)?;
     let symbol_aliases = symbol_aliases_from_dae(dae)?;

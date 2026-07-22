@@ -157,7 +157,13 @@ mod admissibility {
     #[test]
     fn runtime_events_rejected_with_projection_scope_wording() {
         let mut model = base_dae();
-        model.events.scheduled_time_events.push(0.5);
+        model
+            .events
+            .scheduled_time_events
+            .push(dae::DaeScheduledTimeEvent {
+                time: 0.5,
+                source_span: None,
+            });
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
         assert_eq!(codes(&errors), vec!["ET003"]);
         assert!(
@@ -246,7 +252,13 @@ mod admissibility {
         let mut model = base_dae();
         model.metadata.is_partial = true;
         model.clocks.schedules.clear();
-        model.events.scheduled_time_events.push(1.0);
+        model
+            .events
+            .scheduled_time_events
+            .push(dae::DaeScheduledTimeEvent {
+                time: 1.0,
+                source_span: None,
+            });
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
         let codes = codes(&errors);
         assert!(codes.contains(&"ET007"), "{codes:?}");

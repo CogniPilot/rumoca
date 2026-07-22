@@ -1,6 +1,8 @@
 use super::*;
 use rumoca_core::Span;
 
+mod colon_slice_dot;
+mod initialization_provenance;
 mod matrix_product_projection;
 mod record_array_member;
 mod record_array_projection_alias;

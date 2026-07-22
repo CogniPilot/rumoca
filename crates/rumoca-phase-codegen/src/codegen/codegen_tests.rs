@@ -1649,6 +1649,7 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
     problem.solve_layout.state_scalar_count = 1;
     problem.solve_layout.algebraic_scalar_count = 1;
     problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(implicit);
+    problem.continuous.implicit_row_targets = vec![None, Some(solve::scalar_slot_y(1))];
     problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],

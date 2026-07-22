@@ -1970,14 +1970,16 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     for algorithm in &flat.initial_algorithms {
         match lower_algorithm_to_equations(dae, flat, algorithm, true) {
             Ok(lowered) => {
+                let equation_count = lowered.main.len() + lowered.f_z.len() + lowered.f_m.len();
                 dae.initialization.equations.extend(lowered.main);
-                // MLS §8.6 and §11.1: initial algorithms contribute equations
-                // to the initialization problem. Discrete targets still use
-                // the same Appendix B solved forms as model algorithms, but
-                // they must initialize here rather than populate runtime event
-                // update partitions.
                 dae.initialization.equations.extend(lowered.f_z);
                 dae.initialization.equations.extend(lowered.f_m);
+                dae.initialization
+                    .equation_provenance
+                    .extend(std::iter::repeat_n(
+                        rumoca_ir_dae::InitializationEquationProvenance::User,
+                        equation_count,
+                    ));
             }
             Err(kind) => {
                 return Err(ToDaeError::unsupported_algorithm(

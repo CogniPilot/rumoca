@@ -17,6 +17,274 @@ fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
     }
 }
 
+fn direct_initialization_family(
+    node_index: usize,
+    target_start: usize,
+    target_strides: Vec<AffineStencilIndexStrideTerm>,
+) -> (ComputeNode, InitializationDirectFamily) {
+    let domain = test_tensor_domain(3);
+    let node = ComputeNode::Map {
+        output_map: TensorOutputMap::dense_contiguous(node_index * 3, &domain)
+            .expect("dense residual map"),
+        domain,
+        base_ops: vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: TensorNodeMetadata::default(),
+        span: fixture_span(),
+    };
+    let family = InitializationDirectFamily {
+        node_index,
+        targets: TensorOutputMap {
+            start: target_start,
+            strides: target_strides,
+        },
+        residual_sign: 1,
+        span: fixture_span(),
+    };
+    (node, family)
+}
+
+#[test]
+fn compact_initialization_validation_rejects_noncontiguous_target_strides() {
+    let (node, family) = direct_initialization_family(
+        0,
+        0,
+        vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 2,
+        }],
+    );
+    let initialization = InitializationSolveSystem {
+        residual: ComputeBlock { nodes: vec![node] },
+        direct_families: vec![family],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization, 6, 3)
+        .expect_err("sparse compact target maps must fail closed");
+    assert!(error.to_string().contains("non-contiguous"));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_negative_target_strides() {
+    let (node, family) = direct_initialization_family(
+        0,
+        2,
+        vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: -1,
+        }],
+    );
+    let initialization = InitializationSolveSystem {
+        residual: ComputeBlock { nodes: vec![node] },
+        direct_families: vec![family],
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization, 3, 3)
+        .expect_err("descending target maps must fail closed");
+    assert!(error.to_string().contains("non-contiguous"));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_overlapping_affine_ranges() {
+    let dense = vec![AffineStencilIndexStrideTerm {
+        dimension: 0,
+        stride: 1,
+    }];
+    let (first_node, first_family) = direct_initialization_family(0, 0, dense.clone());
+    let (second_node, second_family) = direct_initialization_family(1, 2, dense);
+    let initialization = InitializationSolveSystem {
+        residual: ComputeBlock {
+            nodes: vec![first_node, second_node],
+        },
+        direct_families: vec![first_family, second_family],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization, 6, 6)
+        .expect_err("overlapping compact target ranges must fail closed");
+    assert!(error.to_string().contains("overlapping"));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_direct_fixed_overlap() {
+    let mut initialization = complete_compact_initialization();
+    initialization.fixed_target_ranges = vec![InitializationTargetRange {
+        start: 1,
+        end: 2,
+        span: Some(fixture_span()),
+    }];
+
+    let error = validate_initialization_direct_families(&initialization, 3, 3)
+        .expect_err("direct and fixed-start target ownership must not overlap");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(error.source_span(), Some(fixture_span()));
+}
+
+#[test]
+fn compact_initialization_validation_rejects_fixed_fixed_overlap() {
+    let initialization = InitializationSolveSystem {
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
+        fixed_target_ranges: vec![
+            InitializationTargetRange {
+                start: 0,
+                end: 2,
+                span: None,
+            },
+            InitializationTargetRange {
+                start: 1,
+                end: 3,
+                span: Some(fixture_span()),
+            },
+        ],
+        ..Default::default()
+    };
+
+    let error = validate_initialization_direct_families(&initialization, 3, 0)
+        .expect_err("fixed-start target ownership must not overlap");
+    assert!(error.to_string().contains("overlap"));
+    assert_eq!(error.source_span(), Some(fixture_span()));
+}
+
+#[test]
+fn compact_initialization_validation_merges_adjacent_fixed_ranges() {
+    let initialization = InitializationSolveSystem {
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
+        fixed_target_ranges: vec![
+            InitializationTargetRange {
+                start: 0,
+                end: 1,
+                span: Some(fixture_span()),
+            },
+            InitializationTargetRange {
+                start: 1,
+                end: 3,
+                span: Some(fixture_span()),
+            },
+        ],
+        ..Default::default()
+    };
+
+    validate_initialization_direct_families(&initialization, 3, 0)
+        .expect("adjacent target ranges are one exact partition");
+}
+
+fn complete_compact_initialization() -> InitializationSolveSystem {
+    let (node, family) = direct_initialization_family(
+        0,
+        0,
+        vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 1,
+        }],
+    );
+    InitializationSolveSystem {
+        residual: ComputeBlock { nodes: vec![node] },
+        direct_families: vec![family],
+        required_target_ranges: vec![InitializationTargetRange {
+            start: 0,
+            end: 3,
+            span: None,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn compact_initialization_validation_rejects_partial_required_union() {
+    let mut initialization = complete_compact_initialization();
+    initialization.required_target_ranges[0].end = 4;
+    let error = validate_initialization_direct_families(&initialization, 4, 3)
+        .expect_err("hand-built partial target union must fail closed");
+    assert!(error.to_string().contains("incomplete"));
+}
+
+#[test]
+fn compact_initialization_json_rejects_partial_required_union() {
+    let problem = SolveProblem {
+        layout: make_layout(&[("x", vec![3])], &[]),
+        initialization: complete_compact_initialization(),
+        ..Default::default()
+    };
+    let mut value = serde_json::to_value(problem).expect("serialize compact Solve artifact");
+    value["layout"]["y_scalars"] = serde_json::json!(4);
+    let error = serde_json::from_value::<SolveProblem>(value)
+        .expect_err("JSON with a partial target union must fail closed");
+    assert!(error.to_string().contains("incomplete"));
+}
+
+#[test]
+fn compact_initialization_range_span_survives_json_and_bincode() {
+    let mut initialization = complete_compact_initialization();
+    initialization.required_target_ranges[0].span = Some(fixture_span());
+    let problem = SolveProblem {
+        layout: make_layout(&[("x", vec![3])], &[]),
+        initialization,
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&problem).expect("serialize compact Solve artifact");
+    let from_json: SolveProblem =
+        serde_json::from_str(&json).expect("deserialize compact Solve JSON");
+    assert_eq!(
+        from_json.initialization.required_target_ranges[0].span,
+        Some(fixture_span())
+    );
+    let bytes = bincode::serialize(&problem).expect("serialize compact Solve bincode");
+    let from_bincode: SolveProblem =
+        bincode::deserialize(&bytes).expect("deserialize compact Solve bincode");
+    assert_eq!(
+        from_bincode.initialization.required_target_ranges[0].span,
+        Some(fixture_span())
+    );
+    assert_eq!(
+        from_bincode.initialization.direct_families[0].span,
+        fixture_span()
+    );
+}
+
+#[test]
+fn invalid_initialization_range_reports_span_after_json_and_bincode() {
+    let range = InitializationTargetRange {
+        start: 2,
+        end: 2,
+        span: Some(fixture_span()),
+    };
+    let json = serde_json::to_string(&range).expect("serialize invalid range JSON");
+    let from_json: InitializationTargetRange =
+        serde_json::from_str(&json).expect("deserialize invalid range JSON");
+    let bytes = bincode::serialize(&range).expect("serialize invalid range bincode");
+    let from_bincode: InitializationTargetRange =
+        bincode::deserialize(&bytes).expect("deserialize invalid range bincode");
+
+    for decoded in [from_json, from_bincode] {
+        let initialization = InitializationSolveSystem {
+            required_target_ranges: vec![decoded],
+            ..Default::default()
+        };
+        let error = validate_initialization_direct_families(&initialization, 2, 0)
+            .expect_err("empty invalid range must fail closed");
+        assert_eq!(error.source_span(), Some(fixture_span()));
+    }
+}
+
 fn fixture_span() -> Span {
     Span::from_offsets(
         SourceId::from_source_name("ir_solve_tests_source_44.mo"),
@@ -165,6 +433,9 @@ fn representative_derivative_rhs() -> ComputeBlock {
 fn representative_initialization_system() -> InitializationSolveSystem {
     InitializationSolveSystem {
         row_targets: vec![Some(scalar_slot_y(1))],
+        direct_families: Vec::new(),
+        required_target_ranges: Vec::new(),
+        fixed_target_ranges: Vec::new(),
         residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 0.0 },
@@ -560,6 +831,12 @@ fn solve_problem_json_has_supported_schema_version() {
         serde_json::from_value::<SolveProblem>(missing).is_err(),
         "SolveProblem JSON must carry an explicit schema_version"
     );
+
+    let mut previous = value.clone();
+    previous["schema_version"] = serde_json::json!(SOLVE_SCHEMA_VERSION - 1);
+    let err = serde_json::from_value::<SolveProblem>(previous)
+        .expect_err("previous Solve schema version must fail after initialization IR replacement");
+    assert!(err.to_string().contains("unsupported Solve schema_version"));
 
     let mut unsupported = value;
     unsupported["schema_version"] = serde_json::json!(SOLVE_SCHEMA_VERSION + 1);
