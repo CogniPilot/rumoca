@@ -58,7 +58,7 @@ fn collect_scalarized_lhs_owners(
     scalar_count: usize,
     out: &mut Vec<VarName>,
 ) {
-    if scalar_count <= 1 {
+    if scalar_count == 0 {
         return;
     }
     let Some((base, selectors)) = lhs_base_and_selectors(lhs) else {
