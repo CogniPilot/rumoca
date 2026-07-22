@@ -242,6 +242,27 @@ fn function_call_declared_output_count(
         .map(|function| function.outputs.len())
 }
 
+fn is_direct_declared_array_output_call(
+    expr: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+) -> bool {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor: false,
+        ..
+    } = expr
+    else {
+        return false;
+    };
+    dae_model
+        .symbols
+        .functions
+        .get(name.var_name())
+        .is_some_and(
+            |function| matches!(function.outputs.as_slice(), [output] if !output.dims.is_empty()),
+        )
+}
+
 fn checked_shape_dimension(value: f64, span: rumoca_core::Span) -> Result<i64, LowerError> {
     let rounded = value.round();
     if !value.is_finite() || (rounded - value).abs() > 1e-9 {
@@ -3578,6 +3599,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
         let outputs = self.function_call_outputs_with_owner(&call, depth + 1, owner_span)?;
         let Some(outputs) = outputs else {
+            if is_direct_declared_array_output_call(expr, self.dae_model) {
+                return Ok(None);
+            }
             return Ok(Some(call));
         };
         if let [output] = outputs.as_slice() {
