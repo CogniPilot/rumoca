@@ -1444,6 +1444,12 @@ fn scalarized_binary_residual_values(
     if !requires_projected_function_scalars(rhs) {
         return Ok(None);
     }
+    if scalar_count == 1
+        && matches!(lhs.as_ref(), rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if subscripts.is_empty() && ctx.layout.binding(name.as_str()).is_some())
+    {
+        return Ok(None);
+    }
     scalarized_binary_residual_operands(lhs, rhs, scalar_count, ctx, builder, *span)
 }
 
