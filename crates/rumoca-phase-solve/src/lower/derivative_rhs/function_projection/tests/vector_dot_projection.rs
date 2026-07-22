@@ -194,6 +194,7 @@ fn vector_dot_projection_rejects_unequal_unknown_and_invalid_dimensions() {
     for (lhs_dims, rhs_dims, expected) in [
         (Some(vec![2]), Some(vec![3]), "incompatible"),
         (None, Some(vec![3]), "unknown dimensions"),
+        (Some(vec![0]), Some(vec![0]), "positive"),
         (Some(vec![-1]), Some(vec![-1]), "invalid dimension"),
     ] {
         let mut scope = FunctionProjectionScope::default();

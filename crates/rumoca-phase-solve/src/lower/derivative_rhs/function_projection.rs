@@ -3923,6 +3923,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         ctx: &ProjectionValueCtx<'_>,
         size: i64,
     ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        if size == 0 {
+            return Err(unsupported_at(
+                "vector dot product dimension must be positive",
+                ctx.span,
+            ));
+        }
         let size = valid_product_dim(size, ctx.span, "vector dot product dimension")?;
         if ctx.flat_index != 0 {
             return Ok(None);
