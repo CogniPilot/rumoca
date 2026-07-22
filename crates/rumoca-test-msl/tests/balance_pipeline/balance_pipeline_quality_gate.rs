@@ -1052,7 +1052,7 @@ fn ensure_simulation_parity_reference(
 }
 
 pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io::Result<()> {
-    let focused_or_partial = should_skip_msl_quality_gate();
+    let focused_or_partial = !requires_msl_parity_artifacts();
     if !full_parity_is_required(focused_or_partial, summary.sim_attempted) {
         if focused_or_partial {
             println!(
@@ -1949,12 +1949,16 @@ fn selected_target_result_status(summary: &MslSummary, result: &MslModelResult) 
     "ok".to_string()
 }
 
+pub(super) fn requires_msl_parity_artifacts() -> bool {
+    msl_target_scope() == MslTargetScope::RootExamples
+        && sim_targets_file_override().is_none()
+        && sim_subset_patterns().is_empty()
+        && sim_subset_limit().is_none()
+        && sim_set_mode() == SimSetMode::Full
+}
+
 pub(super) fn should_skip_msl_quality_gate() -> bool {
-    msl_target_scope() != MslTargetScope::RootExamples
-        || sim_targets_file_override().is_some()
-        || !sim_subset_patterns().is_empty()
-        || sim_subset_limit().is_some()
-        || sim_set_mode() != SimSetMode::Full
+    !requires_msl_parity_artifacts()
         // A shard sees only its stripe of the model set, so the aggregate
         // baseline ratchet + sim-ok floor are meaningless here; the fan-in job
         // runs the gate once on the merged results. Also stamps the snapshot
