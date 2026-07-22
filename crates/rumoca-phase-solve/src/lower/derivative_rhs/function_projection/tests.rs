@@ -739,6 +739,64 @@ fn projection_dims_preserve_range_slice_and_scalar_division_shape() -> Result<()
 }
 
 #[test]
+fn range_index_assignment_keeps_slice_shape() -> Result<(), LowerError> {
+    let span = test_span();
+    let mut function = rumoca_core::Function::new("My.rangeSlice", span);
+    function.inputs.push(function_param_with_dims("xi", &[9]));
+    function
+        .outputs
+        .push(function_param_with_dims("omega", &[3]));
+    function.body.push(scalar_assignment(
+        "omega",
+        rumoca_core::Expression::Index {
+            base: Box::new(local_var("xi")),
+            subscripts: vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(rumoca_core::Expression::Range {
+                    start: Box::new(integer(7)),
+                    step: None,
+                    end: Box::new(integer(9)),
+                    span,
+                }),
+                span,
+            }],
+            span,
+        },
+    ));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.rangeSlice").into(),
+        args: vec![array((1..=9).map(integer).collect(), false)],
+        is_constructor: false,
+        span,
+    };
+
+    let values =
+        function_call_projected_scalars_with_owner(&call, &dae_model, &structural_bindings, span)?
+            .expect("range slice output should project with dimensions [3]");
+
+    let projected_indices = values
+        .iter()
+        .map(|value| {
+            let rumoca_core::Expression::Index { subscripts, .. } = value else {
+                panic!("range slice scalar output should remain indexed: {value:?}");
+            };
+            let [rumoca_core::Subscript::Index { value, .. }] = subscripts.as_slice() else {
+                panic!("range slice scalar output should have one scalar selector: {value:?}");
+            };
+            *value
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(projected_indices, vec![1, 2, 3]);
+    Ok(())
+}
+
+#[test]
 fn nested_flattened_record_call_uses_caller_projection_scope() -> Result<(), LowerError> {
     let mut dae_model = dae::Dae::default();
     let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
