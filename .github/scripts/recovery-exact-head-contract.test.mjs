@@ -29,6 +29,8 @@ const recoveryBody = ({
 ].join('\n');
 
 const pullRequestEvent = (overrides = {}) => ({
+  action: 'labeled',
+  label: { name: 'recovery-exact-head-ci' },
   pull_request: {
     author_association: 'OWNER',
     base: { repo: { full_name: repo } },
@@ -56,10 +58,8 @@ const validateRecovery = (event = pullRequestEvent(), selectedSha = headSha) =>
   });
 
 test('accepts the exact authorized same-repository recovery head', () => {
-  for (const association of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
-    const event = pullRequestEvent({ author_association: association });
-    assert.deepEqual(validateRecovery(event), { mode: 'recovery', sha: headSha });
-  }
+  const event = pullRequestEvent({ author_association: 'NONE' });
+  assert.deepEqual(validateRecovery(event), { mode: 'recovery', sha: headSha });
   const fractional = pullRequestEvent({
     body: recoveryBody({ expiresAt: '2099-07-29T23:59:59.123Z' }),
   });
@@ -111,7 +111,6 @@ for (const [name, mutate, message] of [
   ['invalid expiry', (pr) => { pr.body = recoveryBody({ expiresAt: 'next-week' }); }, /RFC 3339 UTC/],
   ['invalid calendar date', (pr) => { pr.body = recoveryBody({ expiresAt: '2027-02-29T00:00:00Z' }); }, /RFC 3339 UTC/],
   ['expired authorization', (pr) => { pr.body = recoveryBody({ expiresAt: '2026-07-21T23:59:59Z' }); }, /expired/],
-  ['untrusted association', (pr) => { pr.author_association = 'CONTRIBUTOR'; }, /trusted association/],
   ['duplicate body field', (pr) => { pr.body += `\nrecovery_head_sha: ${headSha}`; }, /duplicate recovery_head_sha/],
 ]) {
   test(`rejects recovery with ${name}`, () => {
@@ -120,6 +119,20 @@ for (const [name, mutate, message] of [
     assert.throws(() => validateRecovery(event), message);
   });
 }
+
+for (const action of ['opened', 'edited', 'synchronize']) {
+  test('rejects a persistent recovery label on ' + action, () => {
+    const event = structuredClone(pullRequestEvent());
+    event.action = action;
+    assert.throws(() => validateRecovery(event), /labeled event/);
+  });
+}
+
+test('rejects a different label action even when the PR retains the recovery label', () => {
+  const event = pullRequestEvent({ author_association: 'NONE' });
+  event.label.name = 'other-label';
+  assert.throws(() => validateRecovery(event), /must apply recovery-exact-head-ci/);
+});
 
 test('rejects recovery when selected SHA differs from payload head', () => {
   assert.throws(() => validateRecovery(pullRequestEvent(), '4'.repeat(40)), /selected SHA/);
@@ -161,12 +174,14 @@ test('workflow selects recovery head narrowly and proves checked-out provenance'
     workflow.indexOf('\n\n# Prevent duplicate runs'),
   );
   assert.match(selection, /github\.event_name == 'pull_request'/);
+  assert.match(selection, /github\.event\.action == 'labeled'/);
+  assert.match(selection, /github\.event\.label\.name == 'recovery-exact-head-ci'/);
   assert.match(selection, /pull_request\.draft == true/);
   assert.match(selection, /integration\/recovery-/);
   assert.match(selection, /head\.repo\.full_name == github\.repository/);
   assert.match(selection, /base\.repo\.full_name == github\.repository/);
   assert.match(selection, /recovery-exact-head-ci/);
-  assert.match(selection, /OWNER.*MEMBER.*COLLABORATOR/);
+  assert.doesNotMatch(selection, /author_association/);
   assert.match(selection, /climamind-rumoca-broken-main-2026-07/);
   assert.match(selection, /recovery_head_sha: \{0\}.*head\.sha/);
   assert.match(selection, /recovery_expires_at:/);

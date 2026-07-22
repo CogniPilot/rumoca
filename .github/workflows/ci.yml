@@ -14,12 +14,13 @@ env:
   RUST_BACKTRACE: 1
   RUMOCA_CI_HEAD_SHA: >-
     ${{ github.event_name == 'pull_request'
+        && github.event.action == 'labeled'
+        && github.event.label.name == 'recovery-exact-head-ci'
         && github.event.pull_request.draft == true
         && startsWith(github.event.pull_request.head.ref, 'integration/recovery-')
         && github.event.pull_request.head.repo.full_name == github.repository
         && github.event.pull_request.base.repo.full_name == github.repository
         && contains(github.event.pull_request.labels.*.name, 'recovery-exact-head-ci')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
         && contains(github.event.pull_request.body, 'recovery_batch_id: climamind-rumoca-broken-main-2026-07')
         && contains(github.event.pull_request.body, format('recovery_head_sha: {0}', github.event.pull_request.head.sha))
         && contains(github.event.pull_request.body, 'recovery_expires_at: ')

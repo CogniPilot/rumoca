@@ -3,7 +3,6 @@ import { fileURLToPath } from 'node:url';
 
 const batchId = 'climamind-rumoca-broken-main-2026-07';
 const label = 'recovery-exact-head-ci';
-const trustedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 const shaPattern = /^[0-9a-f]{40}$/;
 const utcTimestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
 
@@ -82,13 +81,11 @@ export const validateRecoveryContract = ({
     String(pr.head?.ref ?? '').startsWith('integration/recovery-'),
     'recovery branch prefix must be integration/recovery-',
   );
+  requireValue(event?.action === 'labeled', 'recovery must be authorized by a labeled event');
+  requireValue(event?.label?.name === label, 'recovery labeled event must apply recovery-exact-head-ci');
   requireValue(
     labels.some((item) => item?.name === label),
     `recovery pull request requires the ${label} label`,
-  );
-  requireValue(
-    trustedAssociations.has(pr.author_association),
-    'recovery pull request requires a trusted association',
   );
   const fields = bodyFields(pr.body);
   requireValue(fields.get('recovery_batch_id') === batchId, 'recovery batch id mismatch');
