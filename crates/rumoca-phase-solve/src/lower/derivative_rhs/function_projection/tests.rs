@@ -736,6 +736,159 @@ fn projection_dims_preserve_range_slice_and_scalar_division_shape() -> Result<()
 }
 
 #[test]
+fn range_index_assignment_keeps_slice_shape() -> Result<(), LowerError> {
+    let span = test_span();
+    let mut function = rumoca_core::Function::new("My.rangeSlice", span);
+    function.inputs.push(function_param_with_dims("xi", &[9]));
+    function
+        .outputs
+        .push(function_param_with_dims("omega", &[3]));
+    function.body.push(scalar_assignment(
+        "omega",
+        rumoca_core::Expression::Index {
+            base: Box::new(local_var("xi")),
+            subscripts: vec![rumoca_core::Subscript::Expr {
+                expr: Box::new(rumoca_core::Expression::Range {
+                    start: Box::new(integer(7)),
+                    step: None,
+                    end: Box::new(integer(9)),
+                    span,
+                }),
+                span,
+            }],
+            span,
+        },
+    ));
+
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    let structural_bindings = IndexMap::new();
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.rangeSlice").into(),
+        args: vec![array((1..=9).map(integer).collect(), false)],
+        is_constructor: false,
+        span,
+    };
+
+    let values =
+        function_call_projected_scalars_with_owner(&call, &dae_model, &structural_bindings, span)?
+            .expect("range slice output should project with dimensions [3]");
+
+    let projected_indices = values
+        .iter()
+        .map(|value| {
+            let rumoca_core::Expression::Index { subscripts, .. } = value else {
+                panic!("range slice scalar output should remain indexed: {value:?}");
+            };
+            let [rumoca_core::Subscript::Index { value, .. }] = subscripts.as_slice() else {
+                panic!("range slice scalar output should have one scalar selector: {value:?}");
+            };
+            *value
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(projected_indices, vec![1, 2, 3]);
+    Ok(())
+}
+
+#[test]
+fn projection_dims_preserve_matrix_slice_with_dynamic_scalar_index() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.dims.insert("vertices".to_string(), vec![2, 3]);
+    scope.dims.insert("other".to_string(), vec![3, 3]);
+    scope.dims.insert("next_vertex".to_string(), vec![3]);
+    scope.dims.insert("vertex".to_string(), vec![]);
+    scope.dims.insert("lo".to_string(), vec![]);
+    scope.dims.insert("hi".to_string(), vec![]);
+
+    let span = test_span();
+    let dynamic_index = rumoca_core::Expression::Index {
+        base: Box::new(local_var("next_vertex")),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(local_var("vertex")),
+            span,
+        }],
+        span,
+    };
+    let slice = |name: &str, second| rumoca_core::Expression::Index {
+        base: Box::new(local_var(name)),
+        subscripts: vec![rumoca_core::Subscript::colon(span), second],
+        span,
+    };
+    assert_eq!(
+        analysis.expr_dims(&dynamic_index, &scope, 0, span)?,
+        Some(vec![])
+    );
+    let dynamic_slice = slice(
+        "vertices",
+        rumoca_core::Subscript::Expr {
+            expr: Box::new(dynamic_index),
+            span,
+        },
+    );
+    let literal_slice = slice("vertices", rumoca_core::Subscript::index(1, span));
+    let subtraction = binary(
+        rumoca_core::OpBinary::Sub,
+        dynamic_slice.clone(),
+        literal_slice.clone(),
+        span,
+    );
+
+    assert_eq!(
+        analysis.expr_dims(&dynamic_slice, &scope, 0, span)?,
+        Some(vec![2])
+    );
+    assert_eq!(
+        analysis.expr_dims(&literal_slice, &scope, 0, span)?,
+        Some(vec![2])
+    );
+    assert_eq!(
+        analysis.expr_dims(&subtraction, &scope, 0, span)?,
+        Some(vec![2])
+    );
+
+    let mismatched = binary(
+        rumoca_core::OpBinary::Sub,
+        literal_slice,
+        slice("other", rumoca_core::Subscript::index(1, span)),
+        span,
+    );
+    assert_eq!(analysis.expr_dims(&mismatched, &scope, 0, span)?, None);
+
+    let array_selector = slice(
+        "vertices",
+        rumoca_core::Subscript::Expr {
+            expr: Box::new(local_var("next_vertex")),
+            span,
+        },
+    );
+    assert_eq!(analysis.expr_dims(&array_selector, &scope, 0, span)?, None);
+
+    let range = |start, end| rumoca_core::Subscript::Expr {
+        expr: Box::new(rumoca_core::Expression::Range {
+            start: Box::new(start),
+            step: None,
+            end: Box::new(end),
+            span,
+        }),
+        span,
+    };
+    let known_range = slice("vertices", range(integer(1), integer(2)));
+    assert_eq!(
+        analysis.expr_dims(&known_range, &scope, 0, span)?,
+        Some(vec![2, 2])
+    );
+    let unknown_range = slice("vertices", range(local_var("lo"), local_var("hi")));
+    assert_eq!(analysis.expr_dims(&unknown_range, &scope, 0, span)?, None);
+    Ok(())
+}
+
+#[test]
 fn nested_flattened_record_call_uses_caller_projection_scope() -> Result<(), LowerError> {
     let mut dae_model = dae::Dae::default();
     let mut state_ctor = rumoca_core::Function::new("My.State", test_span());
