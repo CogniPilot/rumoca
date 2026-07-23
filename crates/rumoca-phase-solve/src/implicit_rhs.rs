@@ -399,7 +399,7 @@ fn uncovered_implicit_tail_rows(
     Ok((rows, output_indices))
 }
 
-fn remap_residual_compute_nodes(
+pub(crate) fn remap_residual_compute_nodes(
     residual_block: &solve::ComputeBlock,
     residual_to_implicit_rows: &[Option<usize>],
     implicit_output_cursor: usize,
@@ -505,9 +505,30 @@ fn remap_residual_compute_node(
                 },
             ),
         ),
-        solve::ComputeNode::MatMul { .. } | solve::ComputeNode::LinSolve { .. } => Ok(
-            contiguous_at_cursor(implicit_indices, implicit_output_cursor).then(|| node.clone()),
-        ),
+        solve::ComputeNode::MatMul { .. } => Ok(contiguous_at_cursor(
+            implicit_indices,
+            implicit_output_cursor,
+        )
+        .then(|| node.clone())),
+        solve::ComputeNode::LinSolve {
+            setup_ops,
+            matrix_start,
+            rhs_start,
+            n,
+            next_reg,
+            metadata,
+            span,
+            ..
+        } => Ok(Some(solve::ComputeNode::LinSolve {
+            setup_ops: setup_ops.clone(),
+            matrix_start: *matrix_start,
+            rhs_start: *rhs_start,
+            n: *n,
+            next_reg: *next_reg,
+            output_indices: implicit_indices.to_vec(),
+            metadata: metadata.clone(),
+            span: *span,
+        })),
     }
 }
 
@@ -554,8 +575,14 @@ fn residual_compute_node_output_indices(
         solve::ComputeNode::MatMul { m, n, .. } => {
             contiguous_output_indices(output_cursor, checked_output_product(*m, *n, span)?, span)
         }
-        solve::ComputeNode::LinSolve { n, .. } => {
-            contiguous_output_indices(output_cursor, *n, span)
+        solve::ComputeNode::LinSolve {
+            n, output_indices, ..
+        } => {
+            if output_indices.is_empty() {
+                contiguous_output_indices(output_cursor, *n, span)
+            } else {
+                Ok(output_indices.clone())
+            }
         }
     }
 }

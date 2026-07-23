@@ -143,6 +143,7 @@ has the same meaning as the default. Incompatible schema changes bump
 
 | Rule | Where | Why |
 |---|---|---|
+| Each proven matrix-product result lane expands to a complete inner-dimension dot sum; unknown or mismatched shapes fail closed | DAE lowering | Preserves exact matrix-product semantics without guessing shape facts |
 | No source temporal operators (`pre`, `edge`, `change`, `sample`, `previous`) survive in f_x, f_z, f_m, f_c, relations, or initialization equations | DAE lowering rewrites them into Appendix B constructs: explicit `__pre__.*` inputs, relation/c variables, scheduled events, clock metadata, and ordinary equations over `v` | MLS Appendix B states the DAE as functions over `v` and `relation(v)`; source temporal operators are not computable DAE/Solve graph nodes |
 | No `der()` on RHS | derivatives flow via `dae.states` + equation structure | Inline `der()` would hide state identity |
 | No `initial()` in f_x/f_z/f_m/f_c | initial phase is handled separately | Avoids mixing initialization into runtime equations |
@@ -282,10 +283,7 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
 
 ## Structural Lowering Scope
 
-Rumoca performs OpenModelica-class structural lowering between DAE and Solve.
-Structural lowering is DAE-to-DAE: it rewrites or annotates mathematical
-structure for downstream lowering without changing IR stage. The supported
-transformations are listed here to keep scope and ownership clear.
+Rumoca performs these DAE-to-DAE transformations before Solve.
 
 **In scope:**
 

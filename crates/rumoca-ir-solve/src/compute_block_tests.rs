@@ -77,6 +77,7 @@ fn linsolve_node() -> ComputeNode {
         rhs_start: 1,
         n: 1,
         next_reg: 2,
+        output_indices: Vec::new(),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
