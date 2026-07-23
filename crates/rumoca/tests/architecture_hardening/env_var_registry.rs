@@ -36,7 +36,10 @@ use std::path::PathBuf;
 /// Docker-backed `omc` wrapper used by MSL parity verification. The parity
 /// harness cannot pass argv into the shell wrapper, and the committed MSL
 /// baseline is tied to a specific OpenModelica image version.
-const REGISTERED_ENV_VARS: &[&str] = &["RUMOCA_OMC_DOCKER_IMAGE"];
+///
+/// `RUMOCA_CI_HEAD_SHA` carries the workflow-selected commit into checkout
+/// actions and independent shell jobs, which cannot share a CLI argument.
+const REGISTERED_ENV_VARS: &[&str] = &["RUMOCA_CI_HEAD_SHA", "RUMOCA_OMC_DOCKER_IMAGE"];
 
 /// Extract every `RUMOCA_<NAME>` token on one source line that is used as an
 /// environment variable, across both Rust and JS/TS source. A token qualifies
