@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sport Cub Physics-Aware Monte Carlo Study</title>
+  <style>
+    :root {
+      --ink: #101828;
+      --muted: #475467;
+      --line: #d0d5dd;
+      --panel: #f8fafc;
+      --blue: #175cd3;
+      --blue-soft: #eff8ff;
+      --red: #b42318;
+      --red-soft: #fef3f2;
+      --green: #027a48;
+      --green-soft: #ecfdf3;
+      --amber: #b54708;
+      --amber-soft: #fffaeb;
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #fff;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    header {
+      color: #fff;
+      background: linear-gradient(120deg, #0b1f3a 0%, #164e63 58%, #175cd3 100%);
+      padding: 4.5rem 1.5rem 4rem;
+    }
+    header .wrap, main, footer .wrap { max-width: var(--max); margin: auto; }
+    .eyebrow {
+      margin: 0 0 .7rem;
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      opacity: .82;
+    }
+    h1 { margin: 0; max-width: 900px; font-size: clamp(2.2rem, 5vw, 4.2rem); line-height: 1.04; }
+    header .lead { max-width: 850px; margin: 1.3rem 0 0; font-size: 1.18rem; color: #dbeafe; }
+    .meta { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 1.7rem; }
+    .meta span { border: 1px solid #ffffff42; border-radius: 999px; padding: .38rem .72rem; font-size: .86rem; }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--line);
+      background: #ffffffed;
+      backdrop-filter: blur(12px);
+    }
+    nav .wrap { max-width: var(--max); margin: auto; display: flex; gap: 1.25rem; overflow-x: auto; padding: .85rem 1.5rem; }
+    nav a { color: var(--muted); text-decoration: none; white-space: nowrap; font-size: .9rem; font-weight: 700; }
+    nav a:hover { color: var(--blue); }
+    main { padding: 3rem 1.5rem 5rem; }
+    section { scroll-margin-top: 4.5rem; margin-bottom: 4.5rem; }
+    h2 { margin: 0 0 .8rem; font-size: clamp(1.65rem, 3vw, 2.35rem); line-height: 1.15; }
+    h3 { margin: 0 0 .55rem; font-size: 1.15rem; }
+    .section-lead { max-width: 850px; margin: 0 0 1.8rem; color: var(--muted); font-size: 1.05rem; }
+    .answer {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 1.2rem;
+      padding: 1.6rem;
+      border: 1px solid #84caff;
+      border-radius: 16px;
+      background: var(--blue-soft);
+    }
+    .answer p { margin: 0; }
+    .answer strong { color: #1849a9; }
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-top: 1rem; }
+    .stat { padding: 1rem; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .stat b { display: block; font-size: 1.65rem; line-height: 1.1; }
+    .stat span { color: var(--muted); font-size: .84rem; }
+    .pill { display: inline-block; border-radius: 999px; padding: .25rem .55rem; font-size: .75rem; font-weight: 800; }
+    .pill.red { color: var(--red); background: var(--red-soft); }
+    .pill.green { color: var(--green); background: var(--green-soft); }
+    .pill.amber { color: var(--amber); background: var(--amber-soft); }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+    .card { border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem; background: #fff; box-shadow: 0 2px 6px #1018280d; }
+    .card p { margin: .55rem 0 0; color: var(--muted); }
+    .finding { margin-bottom: 2.2rem; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: #fff; }
+    .finding-copy { padding: 1.3rem 1.4rem .9rem; }
+    .finding-copy p { margin: .4rem 0 0; color: var(--muted); }
+    .figure { margin: 0; padding: .6rem; background: var(--panel); border-top: 1px solid var(--line); }
+    .figure img { display: block; width: 100%; height: auto; border-radius: 8px; background: #fff; }
+    figcaption { padding: .75rem .65rem .35rem; color: var(--muted); font-size: .9rem; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { padding: .72rem .75rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #344054; background: var(--panel); }
+    code { color: #1849a9; background: #eff8ff; border-radius: 5px; padding: .08rem .3rem; }
+    pre { overflow-x: auto; padding: 1rem; border-radius: 10px; color: #e4e7ec; background: #101828; }
+    .callout { padding: 1rem 1.1rem; border-left: 4px solid var(--amber); background: var(--amber-soft); }
+    .callout p { margin: 0; }
+    .equation { margin: .8rem 0; padding: .85rem 1rem; border: 1px solid #b2ddff; border-radius: 10px; background: var(--blue-soft); overflow-x: auto; }
+    .links { display: flex; flex-wrap: wrap; gap: .6rem; }
+    .links a { color: #1849a9; background: var(--blue-soft); border: 1px solid #b2ddff; border-radius: 8px; padding: .48rem .65rem; text-decoration: none; font-size: .86rem; font-weight: 700; }
+    footer { color: #d0d5dd; background: #101828; padding: 2rem 1.5rem; }
+    footer p { margin: 0; }
+    @media (max-width: 850px) {
+      .answer, .two-col { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: 1fr; }
+      .stat-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media print {
+      nav { display: none; }
+      header { padding: 2rem; }
+      main { padding-top: 1.5rem; }
+      section, .finding { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Physics-Aware CPV · Proposed Reference Solution</p>
+      <h1>Sport Cub Monte Carlo Mission-Impact Study</h1>
+      <p class="lead">A reproducible simulation study connecting controller/configuration changes and physical degradation to tracking loss, control saturation, and ground impact.</p>
+      <div class="meta">
+        <span>Public reference model</span><span>Seed 7</span><span>16 common-random trials per condition</span><span>60 s missions</span><span>CPU simulation</span>
+      </div>
+    </div>
+  </header>
+
+  <nav><div class="wrap">
+    <a href="#answer">Executive answer</a><a href="#parameters">What was varied</a><a href="#proof">Mission consequences</a><a href="#conditions">When it matters</a><a href="#performance">Performance tuning</a><a href="#method">Method</a><a href="#limits">Limits</a><a href="#parameter-details">Parameter details</a><a href="#artifacts">Artifacts</a>
+  </div></nav>
+
+  <main>
+    <section id="answer">
+      <p class="eyebrow" style="color:#175cd3">Governing conclusion</p>
+      <h2>Specific software and physical changes produce repeatable mission failure—but the outcome depends on operating state.</h2>
+      <div class="answer">
+        <p><strong>Answer first.</strong> Setting the firmware altitude-guidance gain <code>FixedWingOuterLoop.K_h</code> to zero or a negative value causes delayed ground impact; setting the simulation receiver SAFE low-speed threshold to 8 m/s with a 0.4 dive slope can force impact in about 1.4 seconds; and reducing actual plant thrust relative to actual mass causes a robust energy-deficit crash. Cruise command, initial altitude, and fault-onset state determine whether marginal cases fail.</p>
+        <p><strong>Decision implication.</strong> Protect configuration polarity, TECS thrust settings, receiver pitch-loop gains, SAFE thresholds, and minimum elevator authority; validate controller model assumptions, and evaluate faults at the actual mission state—not only from a nominal start.</p>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><b>100%</b><span>ground impact for every tested negative altitude-gain trial</span></div>
+        <div class="stat"><b>1.42 s</b><span>median impact for severe SAFE forced-dive configuration</span></div>
+        <div class="stat"><b>345/480</b><span>physical thrust–mass campaign impacts</span></div>
+        <div class="stat"><b>645/1,600</b><span>velocity-boundary campaign impacts</span></div>
+      </div>
+    </section>
+
+    <section id="parameters">
+      <p class="eyebrow" style="color:#175cd3">Parameter definition</p>
+      <h2>Exactly what was changed—and what was held constant</h2>
+      <p class="section-lead">The crash evidence comes from three deliberately separate interventions. Only the first changes an altitude-controller gain from the firmware Modelica model; the second changes a simulation-only receiver protection rule; the third changes the physical aircraft model.</p>
+
+      <p class="callout"><strong>Need the exact Modelica names, equations, nominal values, and applied sweep values?</strong> See <a href="#parameter-details">Detailed parameter definitions</a> near the bottom of this report.</p>
+
+      <h3 style="margin-top:1.8rem">Controlled variables by principal campaign</h3>
+      <table><thead><tr><th>Campaign</th><th>Varied</th><th>Held constant</th></tr></thead><tbody>
+        <tr><td>Altitude-gain polarity</td><td>Only <code>FixedWingOuterLoop.K_h</code></td><td>Cruise 4 m/s; initial and route altitude 3 m; <code>K_V = 1.0</code>; TECS, attitude PID, receiver, and plant nominal; same 16 uncertainty draws</td></tr>
+        <tr><td>Velocity with altitude feedback disabled</td><td>Cruise 2–6 m/s; <code>K_h = 0</code></td><td>Initial altitude 3 m; route, other firmware gains, receiver, and nominal plant fixed; same draws</td></tr>
+        <tr><td>Fault onset × initial altitude</td><td>Activation 0–50 s; altitude 1, 3, 5, 10, or 20 m</td><td>Cruise 4 m/s; <code>K_h = 2.0</code> before activation and 0 afterward; all other controller settings nominal</td></tr>
+        <tr><td>SAFE threshold × dive slope</td><td>Receiver <code>v_prot_lo</code>, <code>v_prot_hi</code>, <code>dive_slope</code></td><td><code>K_h = 2.0</code>, <code>K_V = 1.0</code>, cruise 4 m/s, route and plant nominal</td></tr>
+        <tr><td>Actual thrust × mass</td><td>Plant <code>thr_max</code> and <code>vehicle_mass</code></td><td>Firmware gains and TECS beliefs nominal; cruise 4 m/s; receiver and route nominal</td></tr>
+      </tbody></table>
+    </section>
+
+    <section id="proof">
+      <p class="eyebrow" style="color:#b42318">Supporting argument 1</p>
+      <h2>Both required mission consequences were demonstrated</h2>
+      <p class="section-lead">The public model produces reproducible autopilot/configuration crashes and physical-model crashes. These are simulation proofs for this reference model—not claims about the onsite aircraft.</p>
+      <div class="callout" style="margin-bottom:1.5rem"><p><strong>How to read the evidence:</strong> Each caption first defines the visual marks and then states the conclusion. Percentages are across 16 Monte Carlo trials per condition; medians describe the middle trial; 10–90% ranges show trial-to-trial uncertainty; and a dash in a failure-time heatmap means that no trial failed, not that data are missing.</p></div>
+
+      <article class="finding">
+        <div class="finding-copy"><span class="pill red">Autopilot crash</span><h3><code>FixedWingOuterLoop.K_h</code> polarity and loss</h3><p>Every negative <code>K_h</code> crashed, from −10× (<code>K_h = −20</code>) to −0.25× (<code>K_h = −0.5</code>). Zero gain (<code>K_h = 0</code>) crashed 15/16 nominal-altitude trials near 50 seconds; nominal feedback is <code>K_h = 2.0</code>.</p></div>
+        <figure class="figure"><img src="../../../figures/altitude_gain_sweep_failure_envelope.png" alt="Altitude gain crash probability and time-to-failure plot"><figcaption><strong>How to read:</strong> The left red curve is the percentage of trials with a hard failure. On the right, faint red dots are individual failed trials, the large red circle is their median failure time, and its vertical bar spans the 10th–90th percentiles. Green triangles show how long nonfailed trials ran. <strong>A green triangle at 60 s means successful completion of the full mission—not a failure at 60 s.</strong> The dashed vertical line marks nominal <code>K_h = 2.0</code> (scale 1×). <strong>Inference:</strong> Negative polarity is uniformly fatal; scale 0 fails late in 15/16 trials; every tested positive scale survives.</figcaption></figure>
+      </article>
+
+      <div class="two-col">
+        <article class="finding">
+          <div class="finding-copy"><span class="pill red">Configuration crash</span><h3>SAFE forced-dive protection</h3><p>A threshold of 8 m/s with dive slope 0.4 caused impact in 15/16 trials, 1.34–1.54 seconds after mission start.</p></div>
+          <figure class="figure"><img src="../../../figures/safe_protection_sweep.png" alt="SAFE protection failure heatmaps"><figcaption><strong>How to read:</strong> Each heatmap cell is one SAFE threshold/dive-slope setting; the printed number is the Monte Carlo percentage or median metric identified by that panel and color bar. In the failure-time panel, a dash means no hard failures occurred. <strong>Inference:</strong> Only the 8 m/s low-threshold, 9 m/s high-threshold, 0.4-slope cell produces near-universal impact, identifying a specific corrupted-configuration boundary.</figcaption></figure>
+        </article>
+        <article class="finding">
+          <div class="finding-copy"><span class="pill red">Physics crash</span><h3>Actual thrust-to-mass deficit</h3><p>Thrust at 25% or below crashed every tested mass. At 2× mass, even nominal thrust crashed 9/16 trials.</p></div>
+          <figure class="figure"><img src="../../../figures/thrust_mass_sweep.png" alt="Physical thrust-to-mass failure heatmaps"><figcaption><strong>How to read:</strong> Rows vary actual aircraft mass and columns vary actual maximum thrust; each annotated cell summarizes 16 trials using the percentage or median named by its panel. A dash in median failure time means no trial failed. <strong>Inference:</strong> Failure follows inadequate actual thrust-to-weight ratio: thrust at 25% or less is fatal at every tested mass, and increasing mass moves the crash boundary into higher-thrust cells.</figcaption></figure>
+        </article>
+      </div>
+      <article class="finding">
+        <div class="finding-copy"><span class="pill red">Confirmed additional crashes</span><h3>TECS thrust corruption, receiver pitch-loop corruption, and loss of elevator authority</h3><p>A separate 24-parameter screen followed by a 16-trial focused confirmation found six additional ground-impact parameters. Negative <code>FirmwareTecsController.thrustKi</code> caused 16/16 impacts in 7.38–14.10 s; zero gain caused 3/16 late impacts. Negative trim thrust caused 12/16 impacts. Reversed receiver attitude or pitch-rate proportional gains caused 15–16/16 rapid impacts, while disabling pitch-rate proportional gain caused 9/16. Receiver pitch-rate integral gain at 6× or higher caused 15–16/16 delayed impacts near 33 s. Physical elevator authority at 15% of nominal or below caused 12–16/16 impacts in 2.30–2.82 s.</p></div>
+        <figure class="figure"><img src="../../../figures/crash_parameter_boundary_sweep.png" alt="Six confirmed additional ground-impact parameter boundaries"><figcaption><strong>How to read:</strong> Each panel changes one named parameter while holding other settings nominal and reusing the same 16 physical uncertainty draws. Red circles and shading show ground-impact probability; blue diamonds show median time to impact among crashed trials; the dashed vertical line marks the nominal value at 1×. A missing blue diamond means no impact occurred. <strong>Inference:</strong> Polarity errors in TECS thrust integration and receiver pitch stabilization are robust crash mechanisms; excessive receiver pitch integration creates a delayed crash; and severe loss of physical elevator authority creates a rapid control-authority crash. Negative trim thrust is also crash-producing, but less robust to the tested uncertainty.</figcaption></figure>
+      </article>
+    </section>
+
+    <section id="conditions">
+      <p class="eyebrow" style="color:#b54708">Supporting argument 2</p>
+      <h2>Velocity, timing, and state determine whether a marginal fault matters</h2>
+      <p class="section-lead">The guide asks “when does it matter?” The evidence shows that a parameter value alone is incomplete: the same fault can crash or survive depending on the aircraft’s energy and mission state when it activates.</p>
+
+      <article class="finding">
+        <div class="finding-copy"><span class="pill amber">Velocity envelope</span><h3>Disabled altitude feedback changes from crash to survival between 4 and 5 m/s</h3><p>At 2–3 m/s every trial impacts; at 4 m/s, 15/16 impact; at 5–6 m/s all complete 60 seconds, although altitude remains poorly regulated.</p></div>
+        <figure class="figure"><img src="../../../figures/velocity_crash_altitude_survival.png" alt="Altitude Monte Carlo bands and survival curves by cruise velocity"><figcaption><strong>How to read:</strong> In the altitude panel, each colored line is the median and its translucent band is the 10th–90th percentile range for one cruise command. The survival step curve is the fraction of trials still free of hard failure; each downward step is a crash. <strong>Inference:</strong> With <code>K_h = 0</code>, 2–3 m/s commands lose all trials, 4 m/s loses 15/16, and 5–6 m/s survive 60 s but still lack reliable altitude regulation.</figcaption></figure>
+      </article>
+
+      <div class="two-col">
+        <article class="finding">
+          <div class="finding-copy"><span class="pill amber">Fault timing</span><h3>Disabled-feedback outcome is non-monotonic in onset time and initial altitude</h3><p>Across 480 trials, 82 impacts occurred. Higher starting altitude does not guarantee safety because waypoint, attitude, and energy state at activation also change.</p></div>
+          <figure class="figure"><img src="../../../figures/fault_timing_altitude_sweep_disabled_altitude_feedback.png" alt="Disabled altitude feedback timing and altitude heatmaps"><figcaption><strong>How to read:</strong> Columns are fault-activation times and rows are commanded initial altitudes. Each cell contains the failure percentage or median state/metric named above its heatmap; a dash in delay-to-impact means no hard failure. <strong>Inference:</strong> Disabling <code>K_h</code> can produce impact roughly 15–50 s later, but the non-monotonic pattern shows that aircraft state at activation—not altitude alone—sets the remaining recovery margin.</figcaption></figure>
+        </article>
+        <article class="finding">
+          <div class="finding-copy"><span class="pill amber">Fault timing</span><h3>SAFE forced-dive failures are rapid after activation</h3><p>Across 480 trials, 88 impacts occurred. When the fault is consequential, impact generally follows within about 0.8–1.6 seconds.</p></div>
+          <figure class="figure"><img src="../../../figures/fault_timing_altitude_sweep_safe_forced_dive.png" alt="SAFE forced-dive timing and altitude heatmaps"><figcaption><strong>How to read:</strong> Columns are SAFE-fault activation times and rows are initial altitudes. Annotated cells give failure percentage or the median quantity named by the panel; a dash means no observed failure. <strong>Inference:</strong> When the forced-dive configuration becomes consequential, impact generally follows within about 0.8–1.6 s, leaving little recovery time; activation state determines whether impact occurs before the 60 s endpoint.</figcaption></figure>
+        </article>
+      </div>
+
+      <article class="finding">
+        <div class="finding-copy"><span class="pill amber">Cross-envelope evidence</span><h3>Velocity rarely rescues severe thrust-to-mass failures</h3><p>Low thrust and high mass remain crash-producing across 2–6 m/s. Velocity changes tracking and sometimes delays impact, but physical energy authority dominates severe cells.</p></div>
+        <figure class="figure"><img src="../../../figures/velocity_boundary_sweep_thrust_mass.png" alt="Thrust mass boundary across cruise velocities"><figcaption><strong>How to read:</strong> Cruise command is compared against selected thrust/mass boundary conditions. Each annotated cell is the percentage or median indicated by its panel and color bar; a dash means zero observed hard failures. <strong>Inference:</strong> Severe low-thrust/high-mass cells remain fatal across 2–6 m/s, while only marginal cells change outcome with velocity—cruise command cannot compensate for a robust energy deficit.</figcaption></figure>
+      </article>
+    </section>
+
+    <section id="performance">
+      <p class="eyebrow" style="color:#027a48">Supporting argument 3</p>
+      <h2>Controller tuning improves performance before it consumes control margin</h2>
+      <p class="section-lead">The pitch study is a degradation and tuning result, not a crash claim. It demonstrates how to choose a balanced candidate using tracking, attitude, and saturation together.</p>
+      <article class="finding">
+        <div class="finding-copy"><span class="pill green">Balanced candidate</span><h3>Pitch-attitude PID: <code>kp[1]</code> 4× and <code>ki[1]</code> 2×</h3><p>These are the <code>FirmwareDiscretePidController stick_pid</code> pitch/elevator entries, nominally <code>kp[1] = 0.4</code> and <code>ki[1] = 0.4</code>; the candidate applies <strong><code>kp[1] = 1.6</code> and <code>ki[1] = 0.8</code></strong>. Course/aileron and TECS gains were held fixed. The candidate achieved 100% mission-tracking success with 0.675 m/s median airspeed RMSE and roughly 1% median elevator saturation. Higher Ki produced 50–70% saturation with little additional tracking benefit.</p></div>
+        <figure class="figure"><img src="../../../figures/pitch_attitude_kp_ki_interaction_surfaces.png" alt="Pitch Kp Ki response surfaces"><figcaption><strong>How to read:</strong> Rows scale pitch-attitude <code>kp[1]</code>, columns scale <code>ki[1]</code>, and every annotated cell is the median metric or success percentage named by that panel. Read lower tracking error together with lower saturation and angle of attack; no single panel defines the best tune. <strong>Inference:</strong> The 4×/2× candidate improves tracking with about 1% elevator saturation, whereas high integral gain drives 50–70% saturation for little additional benefit.</figcaption></figure>
+      </article>
+      <div class="callout"><p><strong>Mitigation direction:</strong> validate the 4×/2× candidate against the Modelica/event implementation, retain anti-windup and actuator-margin monitoring, and reject unvalidated high-integral configurations.</p></div>
+    </section>
+
+    <section id="method">
+      <h2>Method and reproducibility</h2>
+      <div class="cards">
+        <div class="card"><h3>Common random numbers</h3><p>The same 16 physical draws are reused across compared parameter values, velocities, and boundary conditions, improving paired attribution.</p></div>
+        <div class="card"><h3>Explicit outcomes</h3><p>Ground impact, sustained stall, unsafe attitude, non-finite state, and early termination are separate from mission-tracking success.</p></div>
+        <div class="card"><h3>Trace-backed metrics</h3><p>Attitude, angle of attack, altitude, actuator commands, failure time, waypoint progress, and tracking errors support the physical mechanism.</p></div>
+      </div>
+      <h3 style="margin-top:1.7rem">Reproduce the principal studies</h3>
+      <pre><code>../../.venv/bin/python autopilot_gain_sweep.py --parameter altitude_gain --workers 4
+../../.venv/bin/python failure_campaign_sweep.py --campaign safe_protection --workers 4
+../../.venv/bin/python failure_campaign_sweep.py --campaign thrust_mass --workers 4
+../../.venv/bin/python velocity_boundary_sweep.py --workers 4
+../../.venv/bin/python fault_timing_altitude_sweep.py --workers 4</code></pre>
+      <table>
+        <thead><tr><th>Study</th><th>Trials</th><th>Primary purpose</th></tr></thead>
+        <tbody>
+          <tr><td>Altitude gain polarity</td><td>192</td><td>Autopilot crash boundary and time to impact</td></tr>
+          <tr><td>SAFE threshold × dive slope</td><td>400</td><td>Configuration-driven forced-dive boundary</td></tr>
+          <tr><td>Actual thrust × physical mass</td><td>480</td><td>Physics-driven energy-deficit boundary</td></tr>
+          <tr><td>Velocity × selected boundaries</td><td>1,600</td><td>Operational velocity envelope</td></tr>
+          <tr><td>Fault onset × initial altitude</td><td>960</td><td>Timing, state, and recovery margin</td></tr>
+          <tr><td>Additional-parameter screen</td><td>1,152</td><td>Screen 24 firmware, receiver, and physical parameters; retain only hard-failure candidates</td></tr>
+          <tr><td>Focused additional crash boundaries</td><td>624</td><td>Confirm six ground-impact parameters using 16 matched trials per condition</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="limits">
+      <h2>Confidence and remaining uncertainty</h2>
+      <div class="two-col">
+        <div class="card"><h3>What is observed</h3><p>The recorded reference-model trials, failure times, states, and plots are deterministic for the stored seed and configuration.</p><h3 style="margin-top:1rem">What is inferred</h3><p>Feedback polarity, forced nose-down protection, and thrust-to-weight deficit are the physical mechanisms connecting each change to mission impact.</p></div>
+        <div class="card"><h3>What is not yet proven</h3><p>The public Python model is not proof of behavior on the event aircraft. Wind, sensor delay/dropout, actuator dynamics, terrain/contact, exact mission geometry, and event-specific constants remain outside this evidence.</p><h3 style="margin-top:1rem">Required validation</h3><p>Replay representative cases against Modelica/event artifacts, capture tool versions and timestamps, and compare predicted state trajectories with staged telemetry.</p></div>
+      </div>
+    </section>
+
+    <section id="parameter-details">
+      <p class="eyebrow" style="color:#175cd3">Technical reference</p>
+      <h2>Detailed parameter definitions</h2>
+      <p class="section-lead">This reference section records the exact Modelica mappings and sweep values supporting the concise campaign table above.</p>
+      <article class="finding"><div class="finding-copy">
+        <span class="pill red">Firmware Modelica gain</span>
+        <h3>Altitude plot: <code>FixedWingOuterLoop.K_h</code></h3>
+        <p><code>K_h</code> is the proportional altitude-guidance gain in <code>SportCubFirmwareMission.FixedWingOuterLoop</code>. Its nominal Modelica value is <strong>2.0</strong>. It converts vertical position error into a desired flight-path angle before the result is limited to ±0.12 rad:</p>
+        <div class="equation"><code>des_gamma = clamp(K_h × position_error[3] / max(horizontal_distance_error, lookaheadMin), −0.12, +0.12)</code></div>
+        <p>The sweep labels are multipliers of that exact nominal value. The tested scale factors were −10, −4, −2, −1, −0.5, −0.25, 0, 0.25, 0.5, 1, 2, and 4, giving applied <code>K_h</code> values of <strong>−20, −8, −4, −2, −1, −0.5, 0, 0.5, 1, 2, 4, and 8</strong>. A negative value reverses the altitude correction; zero removes the altitude-error contribution but does not turn off the rest of the autopilot.</p>
+      </div></article>
+
+      <div class="two-col">
+        <div class="card"><span class="pill red">Simulation-only configuration</span><h3>SAFE forced-dive study</h3><p>This does <strong>not</strong> tune <code>FixedWingOuterLoop</code>. It varies <code>SportCubReceiverStabilizer.v_prot_lo</code> and <code>dive_slope</code>, a receiver/protection model added for this simulation. Nominal values are <code>v_prot_lo = 2.6 m/s</code>, <code>v_prot_hi = 3.6 m/s</code>, and <code>dive_slope = 0.06</code>. The campaign tested low thresholds 2.6, 4, 5, 6, and 8 m/s and slopes 0, 0.06, 0.1, 0.2, and 0.4, maintaining <code>v_prot_hi = v_prot_lo + 1 m/s</code>. The severe crash cell was 8/9 m/s with slope 0.4.</p></div>
+        <div class="card"><span class="pill red">Physical Modelica parameters</span><h3>Thrust-to-mass study</h3><p>This varies actual plant values <code>SportCubPlant.thr_max</code> and <code>SportCubPlant.vehicle_mass</code>, nominally <strong>0.30 N</strong> and <strong>0.065 kg</strong>. Tested thrust multipliers were 0, 0.1, 0.25, 0.5, 0.75, and 1; mass multipliers were 1, 1.25, 1.5, 2, and 3. Controller assumptions stayed fixed at <code>FirmwareTecsController.thrustMax = 0.30 N</code> and <code>mass = 0.063 kg</code>, exposing an actual-versus-assumed aircraft mismatch.</p></div>
+      </div>
+
+      <div class="callout" style="margin-top:1.2rem"><p><strong>Naming caution:</strong> altitude <code>K_h</code> is separate from pitch-attitude PID gains (<code>stick_pid.kp[1]</code>, <code>stick_pid.ki[1]</code>) and TECS gains (<code>pitchKp</code>, <code>pitchKi</code>, <code>thrustKp</code>, <code>thrustKi</code>). None of those pitch/TECS gains changed in the altitude-crash sweep.</p></div>
+    </section>
+
+    <section id="artifacts">
+      <h2>Evidence artifacts</h2>
+      <p class="section-lead">Raw trial data remain available for independent analysis. Links are relative to this repository checkout.</p>
+      <div class="links">
+        <a href="../../../figures/altitude_gain_sweep.csv">Altitude gain CSV</a>
+        <a href="../../../figures/safe_protection_sweep.csv">SAFE campaign CSV</a>
+        <a href="../../../figures/thrust_mass_sweep.csv">Thrust–mass CSV</a>
+        <a href="../../../figures/velocity_boundary_sweep.csv">Velocity boundary CSV</a>
+        <a href="../../../figures/fault_timing_altitude_sweep.csv">Timing/altitude CSV</a>
+        <a href="../../../figures/pitch_attitude_kp_ki_interaction.csv">Kp–Ki CSV</a>
+        <a href="../../../figures/influential_parameter_screen_summary.csv">Additional screen summary</a>
+        <a href="../../../figures/crash_parameter_boundary_sweep.csv">Confirmed crash-boundary CSV</a>
+        <a href="../../../figures/crash_parameter_boundary_sweep_summary.csv">Confirmed boundary summary</a>
+        <a href="README.md">Example documentation</a>
+      </div>
+    </section>
+  </main>
+
+  <footer><div class="wrap"><p>Sport Cub Physics-Aware Monte Carlo Study · Public reference model · Generated as a reproducible proposed solution artifact.</p></div></footer>
+</body>
+</html>

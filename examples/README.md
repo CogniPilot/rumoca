@@ -12,6 +12,11 @@ Examples are organized by workflow:
 Generated code from `codegen/` scenarios goes under `codegen/gen/`, which is
 ignored by git.
 
+`simulation/sport_cub_monte_carlo/` is a pure-Python batch study built around
+one consolidated Sport Cub airframe, receiver, and deployed firmware model. It
+generates mission trajectories and performance bands for cruise commands from
+1 m/s through 5 m/s.
+
 The Neural ODE example in `models/NeuralODETensor.mo` is written as tensor
 array equations. Its derivative RHS follows the blog-style spiral Neural ODE
 shape with `W1 * x`, `Wmid * a1`, and `W2 * a2` matrix-vector products that
