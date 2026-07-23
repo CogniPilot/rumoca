@@ -2,5 +2,5 @@
 # See: https://github.com/RReverser/wasm-bindgen-rayon
 [toolchain]
 channel = "nightly-2026-02-27"
-components = ["rust-src"]
+components = ["llvm-tools-preview", "rust-src"]
 targets = ["wasm32-unknown-unknown"]

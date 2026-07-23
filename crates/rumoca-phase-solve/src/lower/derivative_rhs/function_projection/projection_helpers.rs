@@ -74,6 +74,22 @@ pub(super) struct ScalarSelectionCtx<'a> {
     pub(super) depth: usize,
 }
 
+pub(super) struct ScopedSelectionValueCtx<'a> {
+    pub(super) result_dims: &'a [i64],
+    pub(super) flat_index: usize,
+    pub(super) scope: &'a FunctionProjectionScope,
+    pub(super) depth: usize,
+    pub(super) span: rumoca_core::Span,
+}
+
+pub(super) struct ScopedSubscriptProjectionCtx<'a> {
+    pub(super) result_indices: &'a [usize],
+    pub(super) result_axis: &'a mut usize,
+    pub(super) scope: &'a FunctionProjectionScope,
+    pub(super) depth: usize,
+    pub(super) span: rumoca_core::Span,
+}
+
 struct FunctionScopeRefChecker<'a> {
     scoped_names: &'a [&'a str],
 }

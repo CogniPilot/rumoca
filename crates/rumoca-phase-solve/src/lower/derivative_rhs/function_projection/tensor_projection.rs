@@ -1,6 +1,128 @@
 use super::*;
 
 impl<'a> FunctionProjectionAnalysis<'a> {
+    pub(super) fn project_scoped_selection_value(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        ctx: ScopedSelectionValueCtx<'_>,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        let ScopedSelectionValueCtx {
+            result_dims,
+            flat_index,
+            scope,
+            depth,
+            span,
+        } = ctx;
+        let Some(base_dims) = scope.dims.get(name.as_str()) else {
+            return Ok(None);
+        };
+        let Some(values) = scope.scalars.get(name.as_str()) else {
+            return Ok(None);
+        };
+        let result_indices = required_flat_index_to_subscripts(result_dims, flat_index, span)?;
+        let mut result_axis = 0usize;
+        let mut scalar_subscripts = projection_vec_with_capacity(
+            base_dims.len(),
+            "projected selected expression subscript count",
+            span,
+        )?;
+        for axis in 0..base_dims.len() {
+            let projected = self.project_scoped_selection_subscript(
+                subscripts.get(axis),
+                ScopedSubscriptProjectionCtx {
+                    result_indices: &result_indices,
+                    result_axis: &mut result_axis,
+                    scope,
+                    depth,
+                    span,
+                },
+            )?;
+            let Some(projected) = projected else {
+                return Ok(None);
+            };
+            scalar_subscripts.push(projected);
+        }
+        if result_axis != result_indices.len() {
+            return Err(LowerError::contract_violation(
+                "projected selected expression did not consume its result dimensions",
+                span,
+            ));
+        }
+        projected_scalar_selection(
+            ScalarSelectionCtx {
+                name: name.as_str(),
+                subscripts: &scalar_subscripts,
+                dims: base_dims,
+                values,
+                span,
+                depth,
+            },
+            self,
+            scope,
+        )
+        .map(Some)
+    }
+
+    fn project_scoped_selection_subscript(
+        &self,
+        subscript: Option<&rumoca_core::Subscript>,
+        ctx: ScopedSubscriptProjectionCtx<'_>,
+    ) -> Result<Option<rumoca_core::Subscript>, LowerError> {
+        match subscript {
+            None | Some(rumoca_core::Subscript::Colon { .. }) => {
+                result_axis_subscript(ctx.result_indices, ctx.result_axis, ctx.span).map(Some)
+            }
+            Some(subscript @ rumoca_core::Subscript::Index { .. }) => Ok(Some(subscript.clone())),
+            Some(rumoca_core::Subscript::Expr { expr, span }) => {
+                self.project_scoped_expression_subscript(expr, *span, ctx)
+            }
+        }
+    }
+
+    fn project_scoped_expression_subscript(
+        &self,
+        expr: &rumoca_core::Expression,
+        source_span: rumoca_core::Span,
+        ctx: ScopedSubscriptProjectionCtx<'_>,
+    ) -> Result<Option<rumoca_core::Subscript>, LowerError> {
+        let span = inherited_projection_span(source_span, ctx.span);
+        let Some(index_dims) = self.expr_dims_with_owner(expr, ctx.scope, ctx.depth + 1, span)?
+        else {
+            return Ok(None);
+        };
+        if index_dims.is_empty() {
+            return Ok(Some(rumoca_core::Subscript::Expr {
+                expr: Box::new(expr.clone()),
+                span,
+            }));
+        }
+        let [index_width] = index_dims.as_slice() else {
+            return Err(unsupported_at(
+                "array subscript expression must be scalar or one-dimensional",
+                span,
+            ));
+        };
+        let coordinate = result_axis_coordinate(ctx.result_indices, ctx.result_axis, span)?;
+        validate_projected_subscript_coordinate(coordinate, *index_width, span)?;
+        let projected = self
+            .project_value(
+                expr,
+                &index_dims,
+                coordinate - 1,
+                ctx.scope,
+                ctx.depth + 1,
+                span,
+            )?
+            .ok_or_else(|| {
+                unsupported_at("array subscript expression could not be projected", span)
+            })?;
+        Ok(Some(rumoca_core::Subscript::Expr {
+            expr: Box::new(projected),
+            span,
+        }))
+    }
+
     pub(super) fn project_function_call_value(
         &self,
         expr: &rumoca_core::Expression,
@@ -9,7 +131,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         depth: usize,
         owner_span: rumoca_core::Span,
     ) -> Result<Option<rumoca_core::Expression>, LowerError> {
-        let mut call = self.substitute(expr, scope)?;
+        let mut call = self.substitute_for_call(expr, scope)?;
         if call.span().is_none() {
             call = call.with_span(owner_span);
         }
@@ -281,4 +403,54 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         }
         Ok(Some(sum_expressions(terms, ctx.span)))
     }
+}
+
+fn result_axis_subscript(
+    result_indices: &[usize],
+    result_axis: &mut usize,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Subscript, LowerError> {
+    let coordinate = result_axis_coordinate(result_indices, result_axis, span)?;
+    checked_generated_subscript_from_usize(
+        coordinate,
+        span,
+        "projected selected expression subscript",
+    )
+}
+
+fn result_axis_coordinate(
+    result_indices: &[usize],
+    result_axis: &mut usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let coordinate = result_indices.get(*result_axis).copied().ok_or_else(|| {
+        LowerError::contract_violation(
+            "projected selected expression is missing a result dimension",
+            span,
+        )
+    })?;
+    *result_axis = result_axis.checked_add(1).ok_or_else(|| {
+        LowerError::contract_violation(
+            "projected selected expression dimension index overflows host range",
+            span,
+        )
+    })?;
+    Ok(coordinate)
+}
+
+fn validate_projected_subscript_coordinate(
+    coordinate: usize,
+    dimension: i64,
+    span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    if i64::try_from(coordinate)
+        .ok()
+        .is_some_and(|index| index <= dimension)
+    {
+        return Ok(());
+    }
+    Err(LowerError::contract_violation(
+        "projected array subscript coordinate exceeds its dimension",
+        span,
+    ))
 }

@@ -1732,6 +1732,17 @@ fn ensure_wasm_deps(root: &Path) -> Result<()> {
         "WASM tooling ready: wasm-bindgen-cli {wasm_bindgen_version}, wasm-pack {wasm_pack_version}"
     );
 
+    let mut sysroot = Command::new("rustc");
+    sysroot.arg("--print").arg("sysroot").current_dir(root);
+    let sysroot = run_capture(sysroot)?;
+    if rust_target_is_installed(Path::new(sysroot.trim()), "wasm32-unknown-unknown") {
+        return Ok(());
+    }
+    ensure!(
+        command_exists("rustup"),
+        "the active Rust toolchain does not include wasm32-unknown-unknown and rustup is unavailable"
+    );
+
     let mut list = Command::new("rustup");
     list.arg("target")
         .arg("list")
@@ -1748,6 +1759,15 @@ fn ensure_wasm_deps(root: &Path) -> Result<()> {
         run_status(add)?;
     }
     Ok(())
+}
+
+fn rust_target_is_installed(sysroot: &Path, target: &str) -> bool {
+    sysroot
+        .join("lib")
+        .join("rustlib")
+        .join(target)
+        .join("lib")
+        .is_dir()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1115,6 +1115,22 @@ pub(super) struct AssignmentTarget {
     pub indices: Option<Vec<usize>>,
 }
 
+pub(super) fn component_reference_has_slice_subscript(
+    comp: &rumoca_core::ComponentReference,
+) -> bool {
+    comp.parts
+        .iter()
+        .flat_map(|part| &part.subs)
+        .any(|subscript| {
+            matches!(subscript, rumoca_core::Subscript::Colon { .. })
+                || matches!(
+                    subscript,
+                    rumoca_core::Subscript::Expr { expr, .. }
+                        if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
+                )
+        })
+}
+
 pub(super) fn assignment_target(
     comp: &rumoca_core::ComponentReference,
     const_scope: &IndexMap<String, f64>,
