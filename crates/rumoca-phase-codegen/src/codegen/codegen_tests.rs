@@ -74,6 +74,12 @@ fn solve_problem_with_one_by_one_matmul_derivative() -> solve::SolveProblem {
 }
 
 pub(super) fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::SolveProblem {
+    solve_problem_with_two_by_two_linsolve_outputs(Vec::new())
+}
+
+fn solve_problem_with_two_by_two_linsolve_outputs(
+    output_indices: Vec<usize>,
+) -> solve::SolveProblem {
     let mut problem = solve::SolveProblem::default();
     problem.continuous.derivative_rhs = solve::ComputeBlock {
         nodes: vec![solve::ComputeNode::LinSolve {
@@ -92,6 +98,7 @@ pub(super) fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::Solv
             rhs_start: 4,
             n: 2,
             next_reg: 6,
+            output_indices,
             metadata: Default::default(),
             span: fixture_span(),
         }],
@@ -388,6 +395,20 @@ fn test_solve_template_context_exposes_tensor_nodes_and_scalar_fallback_rows() {
     // The 2×2 linsolve now lowers to ONE multi-output scalar program (2 outputs)
     // rather than two single-output programs.
     assert_eq!(rendered, "1 1 1 true");
+}
+
+#[test]
+fn scalar_codegen_template_preserves_noncontiguous_linsolve_output_indices() {
+    let problem = solve_problem_with_two_by_two_linsolve_outputs(vec![0, 2]);
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &solve::SolveArtifacts::default(),
+        r#"{% for row in solve_blocks.continuous.derivative_rhs.scalar_fallback_rows %}out[{{ row.output_index }}]={{ row.output_ordinal }};{% endfor %}"#,
+        "NoncontiguousLinSolveScalarFallback",
+    )
+    .expect("scalar codegen template should render noncontiguous LinSolve fallback rows");
+
+    assert_eq!(rendered, "out[0]=0;out[2]=1;");
 }
 
 #[test]

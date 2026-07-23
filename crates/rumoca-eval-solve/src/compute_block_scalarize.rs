@@ -259,6 +259,16 @@ struct ScalarProgramCollector {
     next_output: usize,
 }
 
+struct LinSolveScalarizeInput<'a> {
+    setup_ops: &'a [LinearOp],
+    matrix_start: Reg,
+    rhs_start: Reg,
+    n: usize,
+    next_reg: Reg,
+    output_indices: &'a [usize],
+    span: rumoca_core::Span,
+}
+
 impl ScalarProgramCollector {
     fn append_scalar_program_block(
         &mut self,
@@ -316,6 +326,32 @@ impl ScalarProgramCollector {
         append_vec(&mut self.output_indices, &mut output_indices, kind, span)?;
         append_vec(&mut self.rows, &mut programs, kind, span)
     }
+
+    fn append_linsolve_program(
+        &mut self,
+        input: LinSolveScalarizeInput<'_>,
+    ) -> Result<(), ScalarizeError> {
+        let LinSolveScalarizeInput {
+            setup_ops,
+            matrix_start,
+            rhs_start,
+            n,
+            next_reg,
+            output_indices,
+            span,
+        } = input;
+        if n == 0 {
+            return Ok(());
+        }
+        let program = scalarize_linsolve(setup_ops, matrix_start, rhs_start, n, next_reg, span)?;
+        let output_indices = if output_indices.is_empty() {
+            let end = checked_contiguous_output_count(self.next_output, n, "linsolve", span)?;
+            (self.next_output..end).collect()
+        } else {
+            output_indices.to_vec()
+        };
+        self.append_tensor_programs(vec![program], output_indices, span, "linsolve")
+    }
 }
 
 impl SolveVisitor for ScalarProgramCollector {
@@ -365,18 +401,18 @@ impl SolveVisitor for ScalarProgramCollector {
                 rhs_start,
                 n,
                 next_reg,
+                output_indices,
                 span,
                 ..
-            } => {
-                if *n == 0 {
-                    return Ok(());
-                }
-                let program =
-                    scalarize_linsolve(setup_ops, *matrix_start, *rhs_start, *n, *next_reg, *span)?;
-                let start = self.next_output;
-                let end = checked_contiguous_output_count(start, *n, "linsolve", *span)?;
-                self.append_contiguous_programs(vec![program], start, end, *span, "linsolve")?;
-            }
+            } => self.append_linsolve_program(LinSolveScalarizeInput {
+                setup_ops,
+                matrix_start: *matrix_start,
+                rhs_start: *rhs_start,
+                n: *n,
+                next_reg: *next_reg,
+                output_indices,
+                span: *span,
+            })?,
             ComputeNode::Map {
                 domain,
                 output_map,

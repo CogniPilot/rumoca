@@ -709,16 +709,23 @@ fn partition_node_for_template(
                 scalar_row_index,
                 output_cursor,
                 count,
+                None,
                 span,
             )?;
         }
-        solve::ComputeNode::LinSolve { n, span, .. } => {
+        solve::ComputeNode::LinSolve {
+            n,
+            output_indices,
+            span,
+            ..
+        } => {
             let span = required_compute_node_span(*span, "linsolve scalar fallback")?;
             push_multi_output_tensor_fallback_program(
                 partition,
                 scalar_row_index,
                 output_cursor,
                 *n,
+                (!output_indices.is_empty()).then_some(output_indices),
                 span,
             )?;
         }
@@ -843,6 +850,7 @@ fn push_multi_output_tensor_fallback_program(
     scalar_row_index: &mut usize,
     output_cursor: &mut usize,
     count: usize,
+    explicit_output_indices: Option<&[usize]>,
     span: rumoca_core::Span,
 ) -> Result<(), rumoca_eval_solve::ScalarizeError> {
     let next_scalar_row_index = rumoca_eval_solve::checked_contiguous_output_count(
@@ -851,24 +859,47 @@ fn push_multi_output_tensor_fallback_program(
         "scalar fallback rows",
         span,
     )?;
-    let next_output_cursor = rumoca_eval_solve::checked_contiguous_output_count(
+    let output_indices = match explicit_output_indices {
+        Some(indices) => {
+            if indices.len() != count {
+                return Err(rumoca_eval_solve::ScalarizeError::ShapeContract {
+                    message: format!(
+                        "LinSolve scalar fallback has {count} outputs but {} output indices",
+                        indices.len()
+                    ),
+                    span: Some(span),
+                });
+            }
+            indices.to_vec()
+        }
+        None => {
+            let end = rumoca_eval_solve::checked_contiguous_output_count(
+                *output_cursor,
+                count,
+                "scalar fallback output",
+                span,
+            )?;
+            (*output_cursor..end).collect()
+        }
+    };
+    let next_output_cursor = (*output_cursor).max(rumoca_eval_solve::checked_tensor_output_count(
+        &output_indices,
         *output_cursor,
-        count,
         "scalar fallback output",
         span,
-    )?;
+    )?);
     reserve_partition_capacity(
         &mut partition.scalar_fallback_rows,
         count,
         "scalar fallback template row count",
         Some(span),
     )?;
-    for offset in 0..count {
+    for (offset, output_index) in output_indices.into_iter().enumerate() {
         partition
             .scalar_fallback_rows
             .push(RenderScalarFallbackRow {
                 row_index: *scalar_row_index,
-                output_index: *output_cursor + offset,
+                output_index,
                 output_ordinal: offset,
             });
     }

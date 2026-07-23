@@ -79,12 +79,121 @@ fn scalar_var(name: &str) -> dae::Variable {
     }
 }
 
+fn source_scalar_var(name: &str) -> dae::Variable {
+    let span = derivative_rhs_test_span();
+    let var_name = rumoca_core::VarName::new(name);
+    dae::Variable {
+        name: var_name.clone(),
+        component_ref: rumoca_core::component_reference_from_flat_name(&var_name, span),
+        ..dae::Variable::empty_with_span(span)
+    }
+}
+
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: Vec::new(),
         span: derivative_rhs_test_span(),
     }
+}
+
+fn derivative_test_var(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: Vec::new(),
+        span: derivative_rhs_test_span(),
+    }
+}
+
+fn derivative_test_derivative(expr: rumoca_core::Expression) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Der,
+        args: vec![expr],
+        span: derivative_rhs_test_span(),
+    }
+}
+
+fn derivative_test_binary(
+    op: rumoca_core::OpBinary,
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: derivative_rhs_test_span(),
+    }
+}
+
+#[test]
+fn noncontiguous_coupled_derivative_states_keep_their_output_ownership() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["x", "y", "z"] {
+        dae_model
+            .variables
+            .states
+            .insert(rumoca_core::VarName::new(name), source_scalar_var(name));
+    }
+    for name in ["u", "v", "w"] {
+        dae_model
+            .variables
+            .parameters
+            .insert(rumoca_core::VarName::new(name), source_scalar_var(name));
+    }
+    let sub = |lhs, rhs| derivative_test_binary(rumoca_core::OpBinary::Sub, lhs, rhs);
+    let add = |lhs, rhs| derivative_test_binary(rumoca_core::OpBinary::Add, lhs, rhs);
+    dae_model.continuous.equations.extend([
+        dae::Equation::residual(
+            sub(
+                add(
+                    derivative_test_derivative(derivative_test_var("x")),
+                    derivative_test_derivative(derivative_test_var("z")),
+                ),
+                derivative_test_var("u"),
+            ),
+            derivative_rhs_test_span(),
+            "x_z_coupling",
+        ),
+        dae::Equation::residual(
+            sub(
+                derivative_test_derivative(derivative_test_var("z")),
+                derivative_test_var("v"),
+            ),
+            derivative_rhs_test_span(),
+            "z_equation",
+        ),
+        dae::Equation::residual(
+            sub(
+                derivative_test_derivative(derivative_test_var("y")),
+                derivative_test_var("w"),
+            ),
+            derivative_rhs_test_span(),
+            "y_equation",
+        ),
+    ]);
+
+    let layout = crate::build_var_layout(&dae_model).expect("test DAE layout should build");
+    let block = lower_derivative_rhs(&dae_model, &layout)
+        .expect("noncontiguous coupled derivatives should lower");
+    assert!(matches!(
+        block.nodes.first(),
+        Some(rumoca_ir_solve::ComputeNode::LinSolve {
+            n: 2,
+            output_indices,
+            ..
+        }) if output_indices == &[0, 2]
+    ));
+    assert_eq!(
+        block
+            .len()
+            .expect("derivative block output count should be valid"),
+        3
+    );
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&block)
+        .expect("derivative block should scalarize");
+
+    assert_eq!(scalar.output_indices, vec![0, 2, 1]);
 }
 
 #[test]
