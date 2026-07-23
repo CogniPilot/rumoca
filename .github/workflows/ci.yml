@@ -982,6 +982,14 @@ jobs:
             --sim-total-memory-mb 6144 \
             --monitor-interval-secs 10
 
+      - name: Validate shard results before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/msl/results/msl_results.json
+          test -s target/msl/results/omc_simulation_reference.json
+          test -s target/msl/results/sim_trace_comparison.json
+
       - name: Upload shard results
         uses: actions/upload-artifact@v6
         with:

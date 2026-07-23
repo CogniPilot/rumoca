@@ -9,9 +9,7 @@ use tempfile::tempdir;
 
 mod cache_resume;
 mod wall_time;
-
 const ISOLATED_QUALITY_GATE_CHILD_MARKER: &str = "target/msl/isolated-quality-gate-child.marker";
-
 fn is_isolated_quality_gate_child() -> bool {
     Path::new(ISOLATED_QUALITY_GATE_CHILD_MARKER).is_file()
 }
@@ -113,7 +111,7 @@ fn panic_message(payload: &Box<dyn Any + Send>) -> String {
     "<non-string panic payload>".to_string()
 }
 
-fn run_in_isolated_default_parity_workspace(test_name: &str) {
+fn run_in_isolated_quality_gate_workspace(test_name: &str, config: Option<Value>) {
     let workspace = tempdir().expect("temporary workspace");
     fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n")
         .expect("write workspace manifest");
@@ -124,6 +122,16 @@ fn run_in_isolated_default_parity_workspace(test_name: &str) {
         "[package]\nname = \"rumoca-test-msl\"\nversion = \"0.0.0\"\n",
     )
     .expect("write temporary crate manifest");
+    if let Some(config) = config {
+        let config_path = workspace.path().join("target/msl/parity-config.json");
+        fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("create parity config directory");
+        fs::write(
+            config_path,
+            serde_json::to_vec_pretty(&config).expect("serialize parity config"),
+        )
+        .expect("write parity config");
+    }
     write_isolated_quality_gate_child_marker(workspace.path());
 
     let status = std::process::Command::new(std::env::current_exe().expect("current test binary"))
@@ -252,8 +260,9 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
 #[test]
 fn full_quality_gate_rejects_zero_simulation_attempts() {
     if !is_isolated_quality_gate_child() {
-        run_in_isolated_default_parity_workspace(
+        run_in_isolated_quality_gate_workspace(
             "balance_pipeline::balance_pipeline_quality_gate::tests::full_quality_gate_rejects_zero_simulation_attempts",
+            None,
         );
         return;
     }
@@ -266,6 +275,31 @@ fn full_quality_gate_rejects_zero_simulation_attempts() {
     let message = error.to_string();
     assert!(message.contains("invalid full run"));
     assert!(message.contains("0 simulations attempted for 2 selected simulation target(s)"));
+}
+
+#[test]
+fn root_examples_full_shard_requires_parity_artifacts_but_skips_aggregate_gate() {
+    if is_isolated_quality_gate_child() {
+        assert!(
+            requires_msl_parity_artifacts(),
+            "a root-examples/full shard must generate its own parity artifacts for fan-in"
+        );
+        assert!(
+            should_skip_msl_quality_gate(),
+            "a shard must still skip the aggregate baseline ratchet"
+        );
+        return;
+    }
+
+    run_in_isolated_quality_gate_workspace(
+        "balance_pipeline::balance_pipeline_quality_gate::tests::root_examples_full_shard_requires_parity_artifacts_but_skips_aggregate_gate",
+        Some(json!({
+            "target_scope": "root-examples",
+            "sim_set": "full",
+            "shard_index": 1,
+            "shard_count": 4
+        })),
+    );
 }
 
 #[test]
@@ -970,8 +1004,9 @@ fn valid_msl_summary_rejects_resolve_errors() {
 #[test]
 fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
     if !is_isolated_quality_gate_child() {
-        run_in_isolated_default_parity_workspace(
+        run_in_isolated_quality_gate_workspace(
             "balance_pipeline::balance_pipeline_quality_gate::tests::valid_msl_summary_rejects_baseline_sim_run_below_hard_floor",
+            None,
         );
         return;
     }
