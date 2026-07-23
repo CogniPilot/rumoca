@@ -330,59 +330,72 @@ fn render_sparse_matmul_cell_mlir(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
 pub(in crate::codegen) struct LinSolveRenderShape {
     pub(in crate::codegen) matrix_start: usize,
     pub(in crate::codegen) rhs_start: usize,
     pub(in crate::codegen) n: usize,
     pub(in crate::codegen) output_offset: usize,
+    pub(in crate::codegen) output_targets: SolveOutputTargets,
 }
 
 const LIN_SOLVE_RENDER_ENUMERATION_LIMIT: usize = 1_000_000;
 
 impl LinSolveRenderShape {
-    pub(in crate::codegen) fn matrix_count(self) -> Result<usize, minijinja::Error> {
+    pub(in crate::codegen) fn matrix_count(&self) -> Result<usize, minijinja::Error> {
         let count = checked_linsolve_product(self.n, self.n, "LinSolve matrix element count")?;
         checked_linsolve_render_count(count, "LinSolve matrix element count")
     }
 
-    pub(in crate::codegen) fn rhs_count(self) -> Result<usize, minijinja::Error> {
+    pub(in crate::codegen) fn rhs_count(&self) -> Result<usize, minijinja::Error> {
         checked_linsolve_render_count(self.n, "LinSolve RHS element count")
     }
 
-    pub(in crate::codegen) fn output_count(self) -> Result<usize, minijinja::Error> {
+    pub(in crate::codegen) fn output_count(&self) -> Result<usize, minijinja::Error> {
         checked_linsolve_render_count(self.n, "LinSolve output count")
     }
 
-    pub(in crate::codegen) fn end_offset(self) -> Result<usize, minijinja::Error> {
-        checked_linsolve_sum(
-            self.output_offset,
-            self.output_count()?,
-            "LinSolve output end offset",
-        )
+    pub(in crate::codegen) fn end_offset(&self) -> Result<usize, minijinja::Error> {
+        let mut end = self.output_offset;
+        for component in 0..self.output_count()? {
+            end = end.max(checked_linsolve_sum(
+                self.output_index(component)?,
+                1,
+                "LinSolve output end offset",
+            )?);
+        }
+        Ok(end)
     }
 
     pub(in crate::codegen) fn output_index(
-        self,
+        &self,
         component: usize,
     ) -> Result<usize, minijinja::Error> {
-        checked_linsolve_sum(self.output_offset, component, "LinSolve output index")
+        self.output_targets.target_for(component)
     }
 
-    pub(in crate::codegen) fn matrix_reg(self, offset: usize) -> Result<usize, minijinja::Error> {
+    pub(in crate::codegen) fn matrix_reg(&self, offset: usize) -> Result<usize, minijinja::Error> {
         checked_linsolve_sum(self.matrix_start, offset, "LinSolve matrix register index")
     }
 
-    pub(in crate::codegen) fn rhs_reg(self, offset: usize) -> Result<usize, minijinja::Error> {
+    pub(in crate::codegen) fn rhs_reg(&self, offset: usize) -> Result<usize, minijinja::Error> {
         checked_linsolve_sum(self.rhs_start, offset, "LinSolve RHS register index")
     }
 }
 
 pub(in crate::codegen) fn validate_linsolve_render_shape(
-    shape: LinSolveRenderShape,
+    shape: &LinSolveRenderShape,
 ) -> Result<(usize, usize, usize), minijinja::Error> {
     let matrix_count = shape.matrix_count()?;
     let rhs_count = shape.rhs_count()?;
+    if let SolveOutputTargets::Explicit(indices) = &shape.output_targets
+        && indices.len() != shape.n
+    {
+        return Err(render_err(format!(
+            "LinSolve has {} components but {} output indices",
+            shape.n,
+            indices.len()
+        )));
+    }
     let end_offset = shape.end_offset()?;
     Ok((matrix_count, rhs_count, end_offset))
 }
@@ -444,13 +457,17 @@ pub(in crate::codegen) fn render_linsolve_mlir_function(
     let matrix_start = solve_field_usize(&node, "matrix_start")?;
     let rhs_start = solve_field_usize(&node, "rhs_start")?;
     let n = solve_field_usize(&node, "n")?;
+    let output_indices = get_field(&node, "output_indices")
+        .unwrap_or_else(|_| Value::from_serialize(Vec::<usize>::new()));
+    let output_targets = linsolve_output_targets(output_indices, offset)?;
     let shape = LinSolveRenderShape {
         matrix_start,
         rhs_start,
         n,
         output_offset: offset,
+        output_targets,
     };
-    let (matrix_count, rhs_count, end_offset) = validate_linsolve_render_shape(shape)?;
+    let (matrix_count, rhs_count, end_offset) = validate_linsolve_render_shape(&shape)?;
 
     let pfx = format!("ls{id}");
     let mut out = format!("    // LinSolve {n}×{n} → out[{offset}..{end_offset}]\n");
@@ -501,6 +518,18 @@ pub(in crate::codegen) fn render_linsolve_mlir_function(
     }
 
     Ok(out)
+}
+
+fn linsolve_output_targets(
+    output_indices: Value,
+    output_offset: usize,
+) -> Result<SolveOutputTargets, minijinja::Error> {
+    match solve_output_targets(Some(output_indices))? {
+        SolveOutputTargets::Explicit(indices) if indices.is_empty() => {
+            Ok(SolveOutputTargets::DenseOffset(output_offset))
+        }
+        targets => Ok(targets),
+    }
 }
 
 fn required_usize_arg(value: &Value, context: &'static str) -> Result<usize, minijinja::Error> {

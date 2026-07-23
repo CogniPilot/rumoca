@@ -330,6 +330,7 @@ fn linsolve_render_shape_rejects_matrix_count_overflow() {
         rhs_start: 0,
         n: usize::MAX,
         output_offset: 0,
+        output_targets: SolveOutputTargets::DenseOffset(0),
     };
 
     let err = shape
@@ -338,6 +339,42 @@ fn linsolve_render_shape_rejects_matrix_count_overflow() {
         .to_string();
 
     assert!(err.contains("LinSolve matrix element count overflows host index range"));
+}
+
+#[test]
+fn native_mlir_linsolve_renderer_preserves_noncontiguous_output_indices() {
+    let node = solve::ComputeNode::LinSolve {
+        setup_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::Const { dst: 2, value: 0.0 },
+            solve::LinearOp::Const { dst: 3, value: 4.0 },
+            solve::LinearOp::Const { dst: 4, value: 8.0 },
+            solve::LinearOp::Const {
+                dst: 5,
+                value: 20.0,
+            },
+        ],
+        matrix_start: 0,
+        rhs_start: 4,
+        n: 2,
+        next_reg: 6,
+        output_indices: vec![0, 2],
+        metadata: Default::default(),
+        span: fixture_span("native_mlir_noncontiguous_linsolve.mo"),
+    };
+
+    let node = Value::from_serialize(node);
+    let rendered = render_linsolve_mlir_function(
+        get_field(&node, "LinSolve").expect("LinSolve fixture should serialize as its inner node"),
+        Value::from(7usize),
+        Value::from(0usize),
+    )
+    .expect("native MLIR LinSolve renderer should accept schema-v17 output indices");
+
+    assert!(rendered.contains("%ls7_oi0 = arith.constant 0 : index"));
+    assert!(rendered.contains("%ls7_oi1 = arith.constant 2 : index"));
+    assert!(!rendered.contains("%ls7_oi1 = arith.constant 1 : index"));
 }
 
 #[test]

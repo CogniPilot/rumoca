@@ -1357,7 +1357,7 @@ enum PreparedComputeNode {
         setup: PreparedLinearOps,
         matrix_start: u32,
         rhs_start: u32,
-        output_start: usize,
+        output_indices: Vec<usize>,
         matrix_len: usize,
         n: usize,
     },
@@ -1455,18 +1455,39 @@ fn prepared_linsolve(
     matrix_start: u32,
     rhs_start: u32,
     n: usize,
+    output_indices: &[usize],
     span: rumoca_core::Span,
     output_cursor: usize,
 ) -> Result<(PreparedComputeNode, usize), EvalSolveError> {
     let matrix_len = checked_product(n, n, "prepared linsolve matrix", span)?;
-    let next_output_cursor =
-        checked_contiguous_output_count(output_cursor, n, "prepared linsolve output", span)?;
+    let output_indices = if output_indices.is_empty() {
+        let end =
+            checked_contiguous_output_count(output_cursor, n, "prepared linsolve output", span)?;
+        (output_cursor..end).collect()
+    } else {
+        output_indices.to_vec()
+    };
+    if output_indices.len() != n {
+        return Err(EvalSolveError::ShapeContract {
+            message: format!(
+                "prepared LinSolve has {n} components but {} output indices",
+                output_indices.len()
+            ),
+            span: Some(span),
+        });
+    }
+    let next_output_cursor = output_cursor.max(checked_tensor_output_count(
+        &output_indices,
+        output_cursor,
+        "prepared linsolve output",
+        span,
+    )?);
     Ok((
         PreparedComputeNode::LinSolve {
             setup: PreparedLinearOps::new(setup_ops.to_vec())?,
             matrix_start,
             rhs_start,
-            output_start: output_cursor,
+            output_indices,
             matrix_len,
             n,
         },
@@ -1544,6 +1565,7 @@ impl PreparedComputeNode {
                 matrix_start,
                 rhs_start,
                 n,
+                output_indices,
                 span,
                 ..
             } => prepared_linsolve(
@@ -1551,6 +1573,7 @@ impl PreparedComputeNode {
                 *matrix_start,
                 *rhs_start,
                 *n,
+                output_indices,
                 *span,
                 output_cursor,
             )?,
@@ -1607,9 +1630,14 @@ impl PreparedComputeNode {
                 output_len,
                 ..
             } => Some((*output_start, *output_len)),
-            Self::LinSolve {
-                output_start, n, ..
-            } => Some((*output_start, *n)),
+            Self::LinSolve { output_indices, .. } => {
+                let start = *output_indices.first()?;
+                output_indices
+                    .iter()
+                    .copied()
+                    .eq(start..start.checked_add(output_indices.len())?)
+                    .then_some((start, output_indices.len()))
+            }
             Self::ScalarPrograms(_) => None,
         }
     }
@@ -1661,23 +1689,25 @@ impl PreparedComputeNode {
                 setup,
                 matrix_start,
                 rhs_start,
-                output_start,
+                output_indices,
                 matrix_len,
                 n,
             } => {
                 setup.eval(y, p, t, context, scratch)?;
                 ensure_register_range(&scratch.regs, "read", *matrix_start, *matrix_len)?;
                 ensure_register_range(&scratch.regs, "read", *rhs_start, *n)?;
-                let output_end = output_start.checked_add(*n).ok_or_else(|| {
-                    invalid_prepared_row("prepared linsolve output range overflows")
-                })?;
+                scratch.values.resize(*n, 0.0);
                 solve_all_unchecked(
                     &scratch.regs,
                     *matrix_start,
                     *rhs_start,
                     *n,
-                    &mut out[*output_start..output_end],
-                )
+                    &mut scratch.values,
+                )?;
+                for (value, output_index) in scratch.values.iter().zip(output_indices) {
+                    out[*output_index] = *value;
+                }
+                Ok(())
             }
         }
     }

@@ -479,6 +479,7 @@ mod tests {
             rhs_start: 1,
             n: 1,
             next_reg: 3,
+            output_indices: Vec::new(),
             metadata: crate::TensorNodeMetadata::default(),
             span,
         }

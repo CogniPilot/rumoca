@@ -1310,12 +1310,13 @@ impl SolveRowDialect {
             rhs_start,
             n,
             output_offset: 0,
+            output_targets: SolveOutputTargets::DenseOffset(0),
         };
-        let (matrix_count, rhs_count, _) = validate_linsolve_render_shape(shape)?;
+        let (matrix_count, rhs_count, _) = validate_linsolve_render_shape(&shape)?;
         let matrix =
-            render_linsolve_register_array(regs, shape, matrix_count, LinSolveOperand::Matrix)?
+            render_linsolve_register_array(regs, &shape, matrix_count, LinSolveOperand::Matrix)?
                 .join(", ");
-        let rhs = render_linsolve_register_array(regs, shape, rhs_count, LinSolveOperand::Rhs)?
+        let rhs = render_linsolve_register_array(regs, &shape, rhs_count, LinSolveOperand::Rhs)?
             .join(", ");
         match self {
             Self::C => Ok(format!(
@@ -1373,7 +1374,7 @@ enum LinSolveOperand {
 
 fn render_linsolve_register_array(
     regs: &[String],
-    shape: LinSolveRenderShape,
+    shape: &LinSolveRenderShape,
     count: usize,
     operand: LinSolveOperand,
 ) -> Result<Vec<String>, minijinja::Error> {
