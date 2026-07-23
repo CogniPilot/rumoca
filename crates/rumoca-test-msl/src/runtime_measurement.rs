@@ -29,6 +29,7 @@ pub struct WallTimeMeasurementProvenance {
     pub omc_threads: usize,
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn parse_load_text(text: &str, logical_cpus: usize) -> Option<HostLoadSnapshot> {
     if logical_cpus == 0 {
         return None;
@@ -52,23 +53,28 @@ fn parse_load_text(text: &str, logical_cpus: usize) -> Option<HostLoadSnapshot> 
 /// Capture the platform one-minute load average without unsafe system calls.
 #[must_use]
 pub fn sample_host_load() -> Option<HostLoadSnapshot> {
-    let logical_cpus = std::thread::available_parallelism().ok()?.get();
-    #[cfg(target_os = "linux")]
-    let text = std::fs::read_to_string("/proc/loadavg").ok()?;
-    #[cfg(target_os = "macos")]
-    let text = {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout).ok()?
-    };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let logical_cpus = std::thread::available_parallelism().ok()?.get();
+        #[cfg(target_os = "linux")]
+        let text = std::fs::read_to_string("/proc/loadavg").ok()?;
+        #[cfg(target_os = "macos")]
+        let text = {
+            let output = std::process::Command::new("sysctl")
+                .args(["-n", "vm.loadavg"])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            String::from_utf8(output.stdout).ok()?
+        };
+        parse_load_text(&text, logical_cpus)
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return None;
-    parse_load_text(&text, logical_cpus)
+    {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -94,5 +100,11 @@ mod tests {
         assert!(parse_load_text("unavailable", 10).is_none());
         assert!(parse_load_text("NaN 1 1", 10).is_none());
         assert!(parse_load_text("1 1 1", 0).is_none());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn unsupported_platform_returns_no_host_load() {
+        assert!(sample_host_load().is_none());
     }
 }
