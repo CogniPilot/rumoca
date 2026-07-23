@@ -39,7 +39,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 16;
+pub const SOLVE_SCHEMA_VERSION: u16 = 17;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -620,7 +620,7 @@ pub enum ComputeNode {
         span: Span,
     },
 
-    /// Dense linear solve: A (n×n) * x = b, writes n consecutive output values.
+    /// Dense linear solve: A (n×n) * x = b.
     ///
     /// `setup_ops` evaluates to n*n + n values:
     ///   regs `matrix_start..matrix_start+n*n` = A (row-major)
@@ -632,6 +632,12 @@ pub enum ComputeNode {
         rhs_start: Reg,
         n: usize,
         next_reg: Reg,
+        /// Dense output slots for the solution components. An empty map retains
+        /// the legacy contiguous placement at the current ComputeBlock cursor.
+        /// A populated map permits a coupled derivative group to retain its
+        /// native solve even when its state slots are not contiguous.
+        #[serde(default)]
+        output_indices: Vec<usize>,
         metadata: TensorNodeMetadata,
         span: Span,
     },
@@ -748,10 +754,20 @@ impl ComputeBlock {
                         .checked_add(output_count)
                         .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
                 }
-                ComputeNode::LinSolve { n, span, .. } => {
-                    output_cursor = output_cursor
-                        .checked_add(*n)
-                        .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
+                ComputeNode::LinSolve {
+                    n,
+                    output_indices,
+                    span,
+                    ..
+                } => {
+                    output_cursor = compute_node_output_cursor(
+                        context,
+                        node_index,
+                        output_cursor,
+                        *n,
+                        output_indices,
+                        *span,
+                    )?;
                 }
             }
         }
@@ -884,6 +900,62 @@ fn output_index_overflow(
     }
 }
 
+fn compute_node_output_cursor(
+    context: &str,
+    node_index: usize,
+    output_cursor: usize,
+    output_count: usize,
+    output_indices: &[usize],
+    span: Span,
+) -> Result<usize, SolveProblemShapeContractError> {
+    if output_indices.is_empty() {
+        return output_cursor
+            .checked_add(output_count)
+            .ok_or_else(|| output_index_overflow(context, node_index, Some(span)));
+    }
+    let Some(max_index) = output_indices.iter().copied().max() else {
+        return Ok(output_cursor);
+    };
+    let next = max_index
+        .checked_add(1)
+        .ok_or_else(|| output_index_overflow(context, node_index, Some(span)))?;
+    Ok(output_cursor.max(next))
+}
+
+fn validate_linsolve_output_indices(
+    context: &str,
+    node_index: usize,
+    n: usize,
+    output_indices: &[usize],
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    if !output_indices.is_empty() && output_indices.len() != n {
+        return Err(
+            SolveProblemShapeContractError::LinSolveOutputIndexMismatch {
+                context: context.to_string(),
+                node_index,
+                components: n,
+                output_indices: output_indices.len(),
+                span,
+            },
+        );
+    }
+    let mut seen = std::collections::HashSet::with_capacity(output_indices.len());
+    for output_index in output_indices {
+        if !seen.insert(*output_index) {
+            return Err(
+                SolveProblemShapeContractError::LinSolveDuplicateOutputIndex {
+                    context: context.to_string(),
+                    node_index,
+                    output_index: *output_index,
+                    span,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 impl ComputeNode {
     pub fn validate_shape_contract(
         &self,
@@ -930,7 +1002,12 @@ impl ComputeNode {
                     });
                 }
             }
-            ComputeNode::LinSolve { n, span, .. } => {
+            ComputeNode::LinSolve {
+                n,
+                output_indices,
+                span,
+                ..
+            } => {
                 if *n == 0 {
                     return Err(SolveProblemShapeContractError::ZeroTensorDimension {
                         context: context.to_string(),
@@ -939,6 +1016,7 @@ impl ComputeNode {
                         span: *span,
                     });
                 }
+                validate_linsolve_output_indices(context, node_index, *n, output_indices, *span)?;
             }
             ComputeNode::Map {
                 domain,
@@ -1438,6 +1516,19 @@ pub enum SolveProblemShapeContractError {
         output_indices: usize,
         span: Option<Span>,
     },
+    LinSolveOutputIndexMismatch {
+        context: String,
+        node_index: usize,
+        components: usize,
+        output_indices: usize,
+        span: Span,
+    },
+    LinSolveDuplicateOutputIndex {
+        context: String,
+        node_index: usize,
+        output_index: usize,
+        span: Span,
+    },
     ScalarProgramCountMismatch {
         context: &'static str,
         expected: usize,
@@ -1506,7 +1597,9 @@ impl SolveProblemShapeContractError {
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
-            Self::ZeroTensorDimension { span, .. }
+            Self::LinSolveOutputIndexMismatch { span, .. }
+            | Self::LinSolveDuplicateOutputIndex { span, .. }
+            | Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
             | Self::TensorOutputMapDimension { span, .. }
             | Self::TensorOutputMapNegativeIndex { span, .. } => Some(*span),
@@ -1544,6 +1637,26 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "{context} node {node_index} has {programs} scalar programs but \
                  {output_indices} output indices"
+            ),
+            Self::LinSolveOutputIndexMismatch {
+                context,
+                node_index,
+                components,
+                output_indices,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has {components} LinSolve components but \
+                 {output_indices} output indices"
+            ),
+            Self::LinSolveDuplicateOutputIndex {
+                context,
+                node_index,
+                output_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} assigns LinSolve output index {output_index} more than once"
             ),
             Self::ScalarProgramCountMismatch {
                 context,

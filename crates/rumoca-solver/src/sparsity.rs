@@ -191,6 +191,41 @@ fn checked_sparsity_row_end(
         .ok_or_else(|| RuntimeSolveError::solve_ir(format!("{context} overflows host index range")))
 }
 
+fn linsolve_sparsity_output_rows(
+    row_offset: usize,
+    n: usize,
+    output_indices: &[usize],
+) -> Result<(Vec<usize>, usize), RuntimeSolveError> {
+    if output_indices.is_empty() {
+        let end = checked_sparsity_row_end(row_offset, n, "LinSolve sparsity row count")?;
+        return Ok(((row_offset..end).collect(), end));
+    }
+    if output_indices.len() != n {
+        return Err(RuntimeSolveError::solve_ir(format!(
+            "LinSolve has {n} components but {} output indices while computing sparsity",
+            output_indices.len()
+        )));
+    }
+
+    let mut rows = Vec::with_capacity(n);
+    let mut seen = HashSet::with_capacity(n);
+    let mut next_row_offset = row_offset;
+    for &output_index in output_indices {
+        if !seen.insert(output_index) {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "LinSolve has duplicate output index {output_index} while computing sparsity"
+            )));
+        }
+        next_row_offset = next_row_offset.max(checked_sparsity_row_end(
+            output_index,
+            1,
+            "LinSolve sparsity output index",
+        )?);
+        rows.push(output_index);
+    }
+    Ok((rows, next_row_offset))
+}
+
 fn push_matmul_jac_sparsity(
     column_rows: &mut [Vec<usize>],
     rhs_ops: &[LinearOp],
@@ -303,16 +338,21 @@ impl SolveVisitor for JacSparsityVisitor {
                 )?;
             }
 
-            ComputeNode::LinSolve { setup_ops, n, .. } => {
+            ComputeNode::LinSolve {
+                setup_ops,
+                n,
+                output_indices,
+                ..
+            } => {
                 // Conservative: any seed in setup_ops may affect any output row.
                 let reg_seeds = seeds_affecting_regs(setup_ops);
                 let all_seeds = sorted_unique_seeds_from_regs(&reg_seeds);
-                let end =
-                    checked_sparsity_row_end(self.row_offset, *n, "LinSolve sparsity row count")?;
-                for out_row in self.row_offset..end {
+                let (output_rows, next_row_offset) =
+                    linsolve_sparsity_output_rows(self.row_offset, *n, output_indices)?;
+                for out_row in output_rows {
                     push_row_for_seeds(&mut self.column_rows, all_seeds.iter().copied(), out_row);
                 }
-                self.row_offset = end;
+                self.row_offset = next_row_offset;
             }
 
             ComputeNode::Map {
@@ -525,5 +565,58 @@ mod tests {
             vec![0, 1],
             "dense: seed 1 affects both output rows"
         );
+    }
+
+    #[test]
+    fn test_linsolve_sparsity_preserves_noncontiguous_output_rows_and_cursor() {
+        let block = ComputeBlock {
+            nodes: vec![
+                ComputeNode::LinSolve {
+                    setup_ops: vec![LinearOp::LoadSeed { dst: 0, index: 0 }],
+                    matrix_start: 0,
+                    rhs_start: 0,
+                    n: 2,
+                    next_reg: 1,
+                    output_indices: vec![0, 2],
+                    metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+                    span: fixture_span(),
+                },
+                ComputeNode::MatMul {
+                    lhs_ops: vec![LinearOp::Const { dst: 0, value: 1.0 }],
+                    lhs_start: 0,
+                    rhs_ops: vec![LinearOp::LoadSeed { dst: 1, index: 1 }],
+                    rhs_start: 1,
+                    m: 1,
+                    k: 1,
+                    n: 1,
+                    lhs_sparsity: SparsityPattern::Dense,
+                    rhs_sparsity: SparsityPattern::Dense,
+                    metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+                    span: fixture_span(),
+                },
+            ],
+        };
+
+        let column_rows =
+            compute_block_jac_sparsity(&block, 2).expect("noncontiguous LinSolve sparsity");
+
+        assert_eq!(column_rows[0], vec![0, 2]);
+        assert_eq!(column_rows[1], vec![3]);
+        assert!(column_rows.iter().all(|rows| !rows.contains(&1)));
+    }
+
+    #[test]
+    fn test_linsolve_sparsity_rejects_malformed_explicit_output_indices() {
+        let wrong_length = linsolve_sparsity_output_rows(0, 2, &[0])
+            .expect_err("explicit LinSolve map must have one row per component");
+        assert!(
+            wrong_length
+                .to_string()
+                .contains("2 components but 1 output indices")
+        );
+
+        let duplicate = linsolve_sparsity_output_rows(0, 2, &[0, 0])
+            .expect_err("explicit LinSolve map must not duplicate rows");
+        assert!(duplicate.to_string().contains("duplicate output index 0"));
     }
 }

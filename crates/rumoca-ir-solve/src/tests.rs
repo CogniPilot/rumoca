@@ -702,6 +702,7 @@ fn serde_roundtrip_linsolve_node() -> ComputeNode {
         rhs_start: 3,
         n: 2,
         next_reg: 4,
+        output_indices: Vec::new(),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -898,6 +899,7 @@ fn solve_problem_shape_contract_rejects_zero_tensor_dimension() {
             rhs_start: 0,
             n: 0,
             next_reg: 0,
+            output_indices: Vec::new(),
             metadata: TensorNodeMetadata::default(),
             span: Span::DUMMY,
         }],
@@ -912,6 +914,57 @@ fn solve_problem_shape_contract_rejects_zero_tensor_dimension() {
             span: Span::DUMMY,
         })
     );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_invalid_linsolve_output_indices() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.derivative_rhs = ComputeBlock {
+        nodes: vec![ComputeNode::LinSolve {
+            setup_ops: Vec::new(),
+            matrix_start: 0,
+            rhs_start: 0,
+            n: 2,
+            next_reg: 0,
+            output_indices: vec![1],
+            metadata: TensorNodeMetadata::default(),
+            span: Span::DUMMY,
+        }],
+    };
+
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(
+            SolveProblemShapeContractError::LinSolveOutputIndexMismatch {
+                components: 2,
+                output_indices: 1,
+                ..
+            }
+        )
+    ));
+
+    problem.continuous.derivative_rhs = ComputeBlock {
+        nodes: vec![ComputeNode::LinSolve {
+            setup_ops: Vec::new(),
+            matrix_start: 0,
+            rhs_start: 0,
+            n: 2,
+            next_reg: 0,
+            output_indices: vec![1, 1],
+            metadata: TensorNodeMetadata::default(),
+            span: Span::DUMMY,
+        }],
+    };
+
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(
+            SolveProblemShapeContractError::LinSolveDuplicateOutputIndex {
+                output_index: 1,
+                ..
+            }
+        )
+    ));
 }
 
 #[test]
