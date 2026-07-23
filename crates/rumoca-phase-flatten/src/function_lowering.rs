@@ -696,6 +696,9 @@ fn project_actuals_to_input_slots_with_known_vars(
     project_mixed_decomposed_input_slots(actuals, inputs, flat_variable_names)
         .or_else(|| project_field_access_actuals(actuals, inputs))
         .or_else(|| {
+            if actuals.len() == inputs.len() {
+                return Some(actuals.to_vec());
+            }
             let mut projected = Vec::new();
             for input in inputs {
                 let actual = actuals
@@ -2743,6 +2746,39 @@ mod tests {
             &args[1],
             rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec_b"
         ));
+    }
+
+    #[test]
+    fn positional_function_actuals_are_not_reordered_by_shared_name_suffixes() {
+        let inputs = vec![
+            rumoca_core::FunctionParam::new("foot_position_deck", "Real", test_span())
+                .with_dims(vec![3, 4]),
+            rumoca_core::FunctionParam::new("point_deck", "Real", test_span()).with_dims(vec![2]),
+            rumoca_core::FunctionParam::new("loaded", "Boolean", test_span()).with_dims(vec![4]),
+        ];
+        let point = rumoca_core::Expression::Array {
+            elements: vec![
+                var_ref("cg_position_deck[1]"),
+                var_ref("cg_position_deck[2]"),
+            ],
+            is_matrix: false,
+            span: test_span(),
+        };
+        let actuals = vec![
+            var_ref("leg_position_deck"),
+            point.clone(),
+            var_ref("leg_loaded"),
+        ];
+
+        assert_eq!(
+            project_actuals_to_input_slots(&actuals, &inputs),
+            Some(vec![actuals[0].clone(), point.clone(), actuals[2].clone()])
+        );
+        let shape_mismatched = vec![point, actuals[0].clone(), actuals[2].clone()];
+        assert_eq!(
+            project_actuals_to_input_slots(&shape_mismatched, &inputs),
+            Some(shape_mismatched)
+        );
     }
 
     #[test]
