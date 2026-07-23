@@ -230,19 +230,3 @@ pub(super) fn concrete_usize_dims_width(dims: &[usize]) -> Option<usize> {
         acc.checked_mul(*dim)
     })
 }
-
-pub(super) fn component_reference_has_slice_subscript(
-    comp: &rumoca_core::ComponentReference,
-) -> bool {
-    comp.parts
-        .iter()
-        .flat_map(|part| &part.subs)
-        .any(|subscript| {
-            matches!(subscript, rumoca_core::Subscript::Colon { .. })
-                || matches!(
-                    subscript,
-                    rumoca_core::Subscript::Expr { expr, .. }
-                        if matches!(expr.as_ref(), rumoca_core::Expression::Range { .. })
-                )
-        })
-}

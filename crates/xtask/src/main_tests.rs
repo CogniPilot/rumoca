@@ -2,7 +2,7 @@ use super::{
     Cli, Commands, CoverageCommand, PlaygroundCommand, PythonCommand, RepoCliCommand, RepoCommand,
     RepoCompletionsCommand, RepoGraphCommand, RepoHooksCommand, RepoPolicyCommand,
     RepoUbuntuCommand, VscodeCommand, WebCommand, classify_candidate,
-    docs_wasm_package_is_up_to_date, is_line_count_excluded_rust_file,
+    docs_wasm_package_is_up_to_date, is_line_count_excluded_rust_file, rust_target_is_installed,
 };
 use crate::docs_cmd::{DocsBook, DocsCommand};
 use crate::modelica_dependency_cache::{CmmCommand, ModelicaDepsCommand};
@@ -987,4 +987,20 @@ fn docs_wasm_freshness_gate_rebuilds_when_no_artifact_present() {
     std::fs::create_dir_all(&pkg).expect("create pkg dir");
     std::fs::write(pkg.join("rumoca_bind_wasm.js"), "// glue").expect("write glue");
     assert!(!docs_wasm_package_is_up_to_date(root, &pkg).expect("freshness check"));
+}
+
+#[test]
+fn rust_target_detection_uses_active_toolchain_sysroot() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    assert!(!rust_target_is_installed(
+        temp.path(),
+        "wasm32-unknown-unknown"
+    ));
+
+    let target_lib = temp.path().join("lib/rustlib/wasm32-unknown-unknown/lib");
+    std::fs::create_dir_all(target_lib).expect("create target lib");
+    assert!(rust_target_is_installed(
+        temp.path(),
+        "wasm32-unknown-unknown"
+    ));
 }

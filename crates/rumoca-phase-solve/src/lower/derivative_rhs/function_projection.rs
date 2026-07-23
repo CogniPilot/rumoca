@@ -25,6 +25,8 @@ mod projected_array;
 #[path = "function_projection/projection_helpers.rs"]
 mod projection_helpers;
 mod projection_selection;
+#[path = "function_projection/scope_initialization.rs"]
+mod scope_initialization;
 #[path = "function_projection/selected_output.rs"]
 mod selected_output;
 #[path = "function_projection/target_projection.rs"]
@@ -39,11 +41,12 @@ use dimension_helpers::{
     assignment_projection_dims, binary_mul_dims, constructor_input_projection_dims,
     copy_projection_dims, declared_dims, dimension_mismatch_error, elementwise_binary_dims,
     exact_declared_function_output_dims, flat_index_from_indices, flatten_array_elements,
-    formal_actual_projection_dims, is_ignorable_projection_statement, is_same_plain_var_ref,
-    named_actual_span, named_argument_spans, projected_declared_output_dims,
-    projected_field_output_dims, projection_assignment_target, required_flat_index_to_subscripts,
-    reserve_projection_capacity, scalar_count_for_dims, selector_dims_from_indices,
-    single_field_path, sum_expressions, valid_product_dim,
+    formal_accepts_structured_actual, formal_actual_projection_dims,
+    is_ignorable_projection_statement, is_same_plain_var_ref, named_actual_span,
+    named_argument_spans, projected_declared_output_dims, projected_field_output_dims,
+    projection_assignment_target, required_flat_index_to_subscripts, reserve_projection_capacity,
+    scalar_count_for_dims, selector_dims_from_indices, single_field_path, sum_expressions,
+    valid_product_dim,
 };
 #[cfg(test)]
 use entrypoints::take_selected_projected_output;
@@ -64,9 +67,9 @@ use projected_array::projected_array_expression;
 use projection_helpers::{
     ArrayProjectionValueCtx, IfStatementProjection, MatrixVectorProductDims,
     ProjectionAssignmentSelector, ProjectionAssignmentTarget, ProjectionValueCtx,
-    ScalarSelectionCtx, SelectedAssignment, array_element_scalar_width,
-    inherited_projection_source_span, inherited_projection_span, matrix_column_child_flat_index,
-    matrix_column_operand_count, matrix_elements_are_row_literals,
+    ScalarSelectionCtx, ScopedSelectionValueCtx, ScopedSubscriptProjectionCtx, SelectedAssignment,
+    array_element_scalar_width, inherited_projection_source_span, inherited_projection_span,
+    matrix_column_child_flat_index, matrix_column_operand_count, matrix_elements_are_row_literals,
     outputs_contain_unresolved_function_scope_refs, projection_actual_with_span,
     projection_arg_or_context_span, projection_value_ctx,
 };
@@ -393,57 +396,27 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 format!("function `{}` input `{}`", function.name, input.name),
                 actual.span().unwrap_or(actual_span),
             )?;
-            if let Some(dims) = dims.filter(|dims| !dims.is_empty()) {
-                self.insert_input_scalar_projection(
-                    input,
-                    &actual,
-                    dims,
-                    &mut scope,
-                    depth + 1,
-                    actual_span,
-                )?;
+            match dims {
+                Some(dims) if !dims.is_empty() => {
+                    self.insert_input_scalar_projection(
+                        input,
+                        &actual,
+                        dims,
+                        &mut scope,
+                        depth + 1,
+                        actual_span,
+                    )?;
+                }
+                Some(dims) => {
+                    scope.dims.insert(input.name.clone(), dims);
+                }
+                None if input.dims.is_empty() && !formal_accepts_structured_actual(input) => {
+                    scope.dims.insert(input.name.clone(), Vec::new());
+                }
+                None => {}
             }
         }
         Ok(Some(scope))
-    }
-
-    fn initialize_projected_declared_arrays(
-        &self,
-        function: &rumoca_core::Function,
-        scope: &mut FunctionProjectionScope,
-        depth: usize,
-        owner_span: rumoca_core::Span,
-    ) -> Result<(), LowerError> {
-        for param in function.outputs.iter().chain(function.locals.iter()) {
-            if self.initialize_declared_default(param, scope, depth + 1, owner_span)? {
-                continue;
-            }
-            if param.dims.is_empty() || scope.scalars.contains_key(param.name.as_str()) {
-                continue;
-            }
-            let param_span = inherited_projection_span(param.span, owner_span);
-            let count = scalar_count_for_dims(
-                &param.dims,
-                "function declared array dimensions",
-                param_span,
-            )?;
-            let dims = copy_projection_dims(
-                &param.dims,
-                "projected declared array dimension count",
-                param_span,
-            )?;
-            scope.dims.insert(param.name.clone(), dims);
-            let mut scalars = projection_vec_with_capacity(
-                count,
-                "projected declared array scalar count",
-                param_span,
-            )?;
-            for _ in 0..count {
-                scalars.push(rumoca_core::Expression::Empty { span: param_span });
-            }
-            scope.scalars.insert(param.name.clone(), scalars);
-        }
-        Ok(())
     }
 
     fn initialize_declared_default(
@@ -644,7 +617,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             is_constructor: false,
             span,
         };
-        let call = self.substitute(&call, scope)?;
+        let call = self.substitute_for_call(&call, scope)?;
         let projected = self
             .function_call_outputs_with_owner(&call, depth + 1, span)?
             .ok_or_else(|| {
@@ -786,8 +759,13 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             return Ok(());
         }
-        let inferred_dims = self.expr_dims_with_owner(&value, scope, depth + 1, value_span)?;
+        let inferred_dims = self
+            .expr_dims_with_owner(&value, scope, depth + 1, value_span)?
+            .or_else(|| scope.dims.get(target.as_str()).cloned());
         let dims = assignment_projection_dims(function, &target, inferred_dims, value_span)?;
+        if let Some(dims) = dims.as_ref().filter(|dims| dims.is_empty()) {
+            scope.dims.insert(target.clone(), dims.clone());
+        }
         if let Some(dims) = dims.filter(|dims| !dims.is_empty()) {
             let scalars = self
                 .project_value_scalars(&value, &dims, scope, depth + 1, value_span)
@@ -932,6 +910,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     span,
                 )
             })?;
+            if !self
+                .subscripted_projection_dims(dims, subscripts, scope, depth + 1, span)?
+                .is_empty()
+            {
+                return self.substitute(value, scope);
+            }
             return projected_scalar_selection(
                 ScalarSelectionCtx {
                     name: name.as_str(),
@@ -969,6 +953,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 *span,
             )
         })?;
+        if !self
+            .subscripted_projection_dims(dims, subscripts, scope, depth + 1, *span)?
+            .is_empty()
+        {
+            return Ok(value);
+        }
         projected_scalar_selection(
             ScalarSelectionCtx {
                 name: name.as_str(),
@@ -1427,7 +1417,28 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         expr: &rumoca_core::Expression,
         scope: &FunctionProjectionScope,
     ) -> Result<rumoca_core::Expression, LowerError> {
-        let mut substituter = FunctionScopeSubstituter { scope, error: None };
+        let mut substituter = FunctionScopeSubstituter {
+            scope,
+            materialize_arrays: false,
+            error: None,
+        };
+        let expr = substituter.rewrite_expression(expr);
+        if let Some(error) = substituter.error {
+            return Err(error);
+        }
+        Ok(expr)
+    }
+
+    fn substitute_for_call(
+        &self,
+        expr: &rumoca_core::Expression,
+        scope: &FunctionProjectionScope,
+    ) -> Result<rumoca_core::Expression, LowerError> {
+        let mut substituter = FunctionScopeSubstituter {
+            scope,
+            materialize_arrays: true,
+            error: None,
+        };
         let expr = substituter.rewrite_expression(expr);
         if let Some(error) = substituter.error {
             return Err(error);
@@ -1463,7 +1474,7 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         depth: usize,
         owner_span: rumoca_core::Span,
     ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
-        let mut substituted = self.substitute(expr, scope)?;
+        let mut substituted = self.substitute_for_call(expr, scope)?;
         if substituted.span().is_none() {
             substituted = substituted.with_span(owner_span);
         }
@@ -1505,6 +1516,21 @@ impl<'a> FunctionProjectionAnalysis<'a> {
         let owner_span = inherited_projection_source_span(expr.span(), owner_span);
         if dims.is_empty() {
             return Ok(Some(self.substitute(expr, scope)?));
+        }
+        if let Some((name, subscripts, selection_span)) = indexed_var_selection(expr)
+            && scope.scalars.contains_key(name.as_str())
+        {
+            return self.project_scoped_selection_value(
+                name,
+                subscripts,
+                ScopedSelectionValueCtx {
+                    result_dims: dims,
+                    flat_index,
+                    scope,
+                    depth: depth + 1,
+                    span: inherited_projection_span(selection_span, owner_span),
+                },
+            );
         }
         match expr {
             rumoca_core::Expression::VarRef {

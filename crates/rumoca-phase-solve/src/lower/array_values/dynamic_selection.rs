@@ -1365,6 +1365,13 @@ impl<'a> LowerBuilder<'a> {
                 }
             };
 
+            if component_reference_has_slice_subscript(comp) {
+                match self.lower_statement_or_stop(statement, scope, call_depth)? {
+                    true => break,
+                    false => continue,
+                }
+            }
+
             let target = assignment_target(comp, &self.local_const_bindings)?;
             if target.indices.is_some() || target.base != output.name {
                 match self.lower_statement_or_stop(statement, scope, call_depth)? {

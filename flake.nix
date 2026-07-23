@@ -38,6 +38,7 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
         ciJulia = pkgs.julia_111;
         ciPython = pkgs.python312.withPackages (ps: [
+          ps.casadi
           ps.ipython
           ps.numpy
           ps.pandas
@@ -245,11 +246,16 @@
             ++ [
               ciPython
               pkgs.binaryen
+              pkgs.cargo-llvm-cov
+              pkgs.libxml2
               pkgs.maturin
               pkgs.mdbook
               pkgs.nodejs_22
               pkgs.wasm-pack
             ];
+          shellHook = ''
+            export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+          '';
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
             [

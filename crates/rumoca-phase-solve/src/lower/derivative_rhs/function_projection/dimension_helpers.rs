@@ -299,7 +299,7 @@ pub(super) fn assignment_projection_dims(
                 )),
             }
         }
-        (Some(value_dims), _) if value_dims.is_empty() => Ok(None),
+        (Some(value_dims), _) if value_dims.is_empty() => Ok(Some(value_dims)),
         (Some(value_dims), _) => Ok(Some(value_dims)),
         (None, Some(declared)) => Ok(Some(declared)),
         (None, None) => Ok(None),
@@ -403,6 +403,7 @@ pub(super) fn projection_assignment_target(
 
 pub(super) struct FunctionScopeSubstituter<'a> {
     pub(super) scope: &'a FunctionProjectionScope,
+    pub(super) materialize_arrays: bool,
     pub(super) error: Option<LowerError>,
 }
 
@@ -451,6 +452,34 @@ impl FunctionScopeSubstituter<'_> {
             }
         }
     }
+
+    fn projected_array_binding(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if !self.materialize_arrays {
+            return expr.clone();
+        }
+        let Some(values) = self.scope.scalars.get(name.as_str()) else {
+            return expr.clone();
+        };
+        let Some(dims) = self.scope.dims.get(name.as_str()) else {
+            self.error = Some(LowerError::contract_violation(
+                format!(
+                    "projected array `{}` has scalar values but no dimensions",
+                    name.as_str()
+                ),
+                span,
+            ));
+            return expr.clone();
+        };
+        projected_array_expression(values, dims, span).unwrap_or_else(|error| {
+            self.error = Some(error);
+            expr.clone()
+        })
+    }
 }
 
 impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
@@ -468,6 +497,9 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
         };
         if !subscripts.is_empty() {
             return self.walk_expression(expr);
+        }
+        if self.scope.scalars.contains_key(name.as_str()) {
+            return self.projected_array_binding(expr, name, *span);
         }
         if let Some(expr) = self.scope.full.get(name.as_str()) {
             return expr.clone().with_span(*span);
@@ -500,6 +532,25 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
             }
         }
         self.walk_expression(expr)
+    }
+
+    fn walk_function_call_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let previous = self.materialize_arrays;
+        self.materialize_arrays = true;
+        let args = self.rewrite_expressions(args);
+        self.materialize_arrays = previous;
+        rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args,
+            is_constructor,
+            span,
+        }
     }
 }
 

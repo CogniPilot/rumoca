@@ -191,6 +191,50 @@ fn size_uses_resolved_callee_dims_after_following_full_alias() -> Result<(), Low
 }
 
 #[test]
+fn size_with_dimension_argument_has_scalar_projection_dimensions() {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.dims.insert("stage".to_string(), vec![3, 8]);
+    let size = builtin(
+        rumoca_core::BuiltinFunction::Size,
+        vec![
+            local_var("stage"),
+            rumoca_core::Expression::Literal {
+                value: Literal::Integer(2),
+                span: test_span(),
+            },
+        ],
+    );
+
+    assert_eq!(
+        analysis.expr_dims(&size, &scope, 0, test_span()),
+        Ok(Some(Vec::new()))
+    );
+}
+
+#[test]
+fn colon_selection_retains_selected_axis_extent() {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let scope = FunctionProjectionScope::default();
+    let subscripts = vec![
+        rumoca_core::Subscript::Colon { span: test_span() },
+        rumoca_core::Subscript::Index {
+            value: 2,
+            span: test_span(),
+        },
+    ];
+
+    assert_eq!(
+        analysis.subscripted_projection_dims(&[3, 8], &subscripts, &scope, 0, test_span()),
+        Ok(vec![3])
+    );
+}
+
+#[test]
 fn static_colon_assignment_projects_array_into_matrix_column() -> Result<(), LowerError> {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();

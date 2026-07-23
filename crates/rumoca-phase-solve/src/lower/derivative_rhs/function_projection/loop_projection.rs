@@ -97,7 +97,7 @@ impl FunctionProjectionAnalysis<'_> {
         }
     }
 
-    fn for_index_values(
+    pub(super) fn for_index_values(
         &self,
         range: &rumoca_core::Expression,
         scope: &FunctionProjectionScope,
