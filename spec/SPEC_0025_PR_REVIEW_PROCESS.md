@@ -173,6 +173,30 @@ net_added_lines:
 | No new trait without ≥ 2 concrete impls | Single-impl traits are noise |
 | No old/new code paths left side-by-side without explicit migration plan | Dead-but-alive code accretes |
 
+### 6a. Authorized Broken-Main Recovery (optional)
+
+The normal reviewer gate remains unchanged. The following is the sole
+exception: an Explicitly authorized ClimaMind Rumoca broken-main recovery batch
+may waive the GitHub approving review for its owner PRs only.
+
+| Rule | Owner / Where | Brief justification |
+|---|---|---|
+| The authoritative record MUST live outside every owner PR branch. `authorization_ref` MUST identify a durable record in the validation integration PR body or a maintainer-controlled GitHub artifact. `authorized_by` MUST identify a ClimaMind Rumoca repository maintainer; this task's explicit maintainer authorization is sufficient; no additional maintainer or approval is required. Its required fields: `authorization_ref`, `authorized_by`, `batch_id`, authorized ordered `owner_prs`, `target_branch`, and RFC 3339 UTC `expires_at`. | Recovery authorization | Makes activation durable and explicit |
+| The batch automatically becomes inactive and MUST fail closed as soon as any one of these conditions is true: its RFC 3339 `expires_at` has passed; every authorized owner PR has landed; or all required CI checks on the target `main` are green. | Maintainer | Limits the exception to broken-main recovery |
+| Before each owner PR merge, the authoritative record MUST exist, match the recorded batch, PR, head, and target values, and remain unexpired; it MUST also describe an active batch under the preceding rule. A maintainer MUST verify those values against the final owner head; missing, mismatched, expired, or inactive authorization MUST fail closed. | Maintainer | Makes activation fail closed |
+| Each owner PR records an independent technical review and owner mechanism test, binding both pieces of evidence to that owner PR's final `head_sha`; then exact-head integration hosted CI is green and all required hosted CI checks are green; then merge in sequence. Evidence order is mandatory: verify authorization; record the independent technical review; record the passing owner mechanism test; construct exact-head integration; record hosted CI; then merge. No later step may occur before its successful recorded predecessor. | Owner PR | Preserves ordered evidence |
+| Exact-head provenance records the owner PR `head_sha` values, including the recovery-rule PR. Every listed final owner `head_sha`, including the recovery-rule PR `head_sha`, MUST be a Git ancestor of the integration `head_sha`; the recorded target baseline `head_sha` MUST be a Git ancestor of the integration `head_sha` too. Cherry-pick, patch-id, squash, or content equivalence is not exact provenance. | Integration PR | Proves the tested commits are the owner commits |
+| The integration history MUST contain the target baseline, the listed exact owner histories, and signed merge commits only. Every such merge commit MUST carry exactly one `Signed-off-by` trailer and no `Co-Authored-By` trailer. It MUST NOT contain any integration-only production, test, spec, workflow, baseline, validator, tolerance, fixture, or content commit. | Integration PR | Prevents validation-only changes from manufacturing green status |
+| All required hosted CI checks MUST run on the recorded integration head; the hosted CI workflow `head_sha` MUST equal the recorded integration PR `head_sha`. | Integration PR | Prevents stale CI reuse |
+| Any owner PR `head_sha`, target baseline `head_sha`, or integration PR `head_sha` change MUST invalidate affected evidence and fail closed; reconstruct the integration PR, refresh affected review or mechanism-test evidence, and rerun all required hosted CI. | Maintainer | Rejects stale evidence |
+| No GitHub approving review is required only for owner PRs in that active batch. Every other §6 rule remains required. | Maintainer | Keeps waiver narrow |
+| Integration PR is Draft and validation-only; it MUST NEVER merge and MUST NOT contain unique fixes. | Integration PR | Keeps validation disposable |
+
+**PROHIBITED:**
+- MUST NOT weaken or bypass any existing gate, including CI, sign-off, or sequencing.
+- MUST NOT apply to third-party contributors or an unauthorized batch.
+- MUST NOT merge the integration PR or place a repair only on its branch.
+
 ### 7. Maintainability Quick Reference
 
 See SPEC_0021 for the authoritative function-length, nesting, and arg-count

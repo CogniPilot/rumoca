@@ -195,6 +195,154 @@ fn test_spec_0025_aligns_with_pr_template() {
     );
 }
 
+fn collect_missing_spec_recovery_contract(spec_recovery: &str, missing: &mut Vec<String>) {
+    let required_spec_contract = [
+        "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
+        "normal reviewer gate remains unchanged",
+        "`authorization_ref` MUST identify a durable record in the validation integration PR body or a maintainer-controlled GitHub artifact",
+        "`authorized_by` MUST identify a ClimaMind Rumoca repository maintainer",
+        "this task's explicit maintainer authorization is sufficient; no additional maintainer or approval is required",
+        "required fields: `authorization_ref`, `authorized_by`, `batch_id`, authorized ordered `owner_prs`, `target_branch`, and RFC 3339 UTC `expires_at`",
+        "automatically becomes inactive and MUST fail closed as soon as any one of these conditions is true",
+        "RFC 3339 `expires_at` has passed",
+        "every authorized owner PR has landed",
+        "all required CI checks on the target `main` are green",
+        "Before each owner PR merge, the authoritative record MUST exist, match the recorded batch, PR, head, and target values, and remain unexpired",
+        "independent technical review",
+        "owner mechanism test",
+        "evidence to that owner PR's final `head_sha`",
+        "exact-head integration hosted CI is green",
+        "all required hosted CI checks are green",
+        "then merge in sequence",
+        "owner PR `head_sha` values",
+        "Every listed final owner `head_sha`, including the recovery-rule PR `head_sha`, MUST be a Git ancestor of the integration `head_sha`",
+        "recorded target baseline `head_sha` MUST be a Git ancestor of the integration `head_sha`",
+        "Cherry-pick, patch-id, squash, or content equivalence is not exact provenance",
+        "target baseline, the listed exact owner histories, and signed merge commits only",
+        "Every such merge commit MUST carry exactly one `Signed-off-by` trailer and no `Co-Authored-By` trailer",
+        "MUST NOT contain any integration-only production, test, spec, workflow, baseline, validator, tolerance, fixture, or content commit",
+        "hosted CI workflow `head_sha` MUST equal the recorded integration PR `head_sha`",
+        "Any owner PR `head_sha`, target baseline `head_sha`, or integration PR `head_sha` change MUST invalidate affected evidence and fail closed",
+        "reconstruct the integration PR, refresh affected review or mechanism-test evidence, and rerun all required hosted CI",
+        "No GitHub approving review is required only for owner PRs in that active batch",
+        "Draft",
+        "validation-only",
+        "MUST NEVER merge",
+        "MUST NOT contain unique fixes",
+        "MUST NOT weaken or bypass any existing gate",
+        "MUST NOT apply to third-party contributors or an unauthorized batch",
+    ];
+    for required in required_spec_contract {
+        if !spec_recovery.contains(required) {
+            missing.push(format!("SPEC_0025 missing recovery contract: `{required}`"));
+        }
+    }
+}
+
+fn collect_missing_template_recovery_contract(template_recovery: &str, missing: &mut Vec<String>) {
+    let required_template_contract = [
+        "## Authorized Broken-Main Recovery (optional)",
+        "Leave blank for normal PRs",
+        "Explicitly authorized ClimaMind Rumoca broken-main recovery batch",
+        "`authorization_ref` (durable validation integration PR body or maintainer-controlled GitHub artifact):",
+        "`authorized_by` (ClimaMind Rumoca repository maintainer):",
+        "`batch_id`:",
+        "Authorized ordered `owner_prs`:",
+        "`target_branch` / baseline `head_sha`:",
+        "RFC 3339 UTC `expires_at`:",
+        "Owner PR / final `head_sha`:",
+        "Independent technical review / reviewed `head_sha`:",
+        "Owner mechanism test / tested `head_sha`:",
+        "Recovery-rule PR / final `head_sha`:",
+        "Integration PR / `head_sha`:",
+        "Hosted CI workflow / `head_sha`:",
+        "Authorization exists, matches this merge, and is unexpired.",
+        "`authorized_by` is a ClimaMind Rumoca maintainer; this task's explicit authorization is sufficient, with no additional maintainer or approval.",
+        "Recovery is inactive and fails closed if `expires_at` passed, every authorized owner PR landed, or target `main` has all required CI green.",
+        "Evidence is bound to the owner final head and recorded in order; merge only after all required hosted CI is green on the integration head.",
+        "Every listed final owner head, including the recovery-rule PR head, is a Git ancestor of the integration head; no cherry-pick, patch-id, squash, or content-equivalent substitute.",
+        "Recorded target baseline `head_sha` is a Git ancestor of the integration head.",
+        "Integration history = target baseline + listed exact owner histories + signed merge commits only; no integration-only production, test, spec, workflow, baseline, validator, tolerance, fixture, or content commit.",
+        "Every integration merge commit has exactly one `Signed-off-by` trailer and no `Co-Authored-By` trailer.",
+        "CI workflow head = integration head.",
+        "Any owner, baseline, or integration head change fails closed; rebuild and rerun affected evidence and CI.",
+        "Draft, validation-only, never merge",
+    ];
+    for required in required_template_contract {
+        if !template_recovery.contains(required) {
+            missing.push(format!(
+                "PR template missing recovery linkage: `{required}`"
+            ));
+        }
+    }
+}
+
+fn collect_forbidden_recovery_contract(
+    spec_recovery: &str,
+    template_recovery: &str,
+    missing: &mut Vec<String>,
+) {
+    let forbidden_contract = [
+        "`authorization_url`",
+        "independent maintainer",
+        "another maintainer",
+        "not the author of an owner PR",
+        "not self-attested by an owner-PR author",
+    ];
+    for forbidden in forbidden_contract {
+        if spec_recovery.contains(forbidden) {
+            missing.push(format!(
+                "SPEC_0025 recovery contract retains forbidden requirement: `{forbidden}`"
+            ));
+        }
+        if template_recovery.contains(forbidden) {
+            missing.push(format!(
+                "PR template recovery linkage retains forbidden requirement: `{forbidden}`"
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_spec_0025_preserves_authorized_broken_main_recovery_contract() {
+    // The narrow recovery path is documentation-enforced policy. Keep its
+    // activation boundary, ordered evidence, expiry, and integration-only
+    // restrictions mechanically visible so a later edit cannot broaden it.
+    let root = workspace_root();
+    let spec = fs::read_to_string(root.join("spec/SPEC_0025_PR_REVIEW_PROCESS.md"))
+        .expect("read SPEC_0025");
+    let template = fs::read_to_string(root.join(".github/pull_request_template.md"))
+        .expect("read PR template");
+
+    let spec_heading = "### 6a. Authorized Broken-Main Recovery (optional)";
+    let spec_tail = &spec[spec.find(spec_heading).expect("SPEC_0025 recovery section")..];
+    let spec_recovery = &spec_tail[..spec_tail
+        .find("\n### 7.")
+        .expect("SPEC_0025 recovery section end")];
+    let template_heading = "## Authorized Broken-Main Recovery (optional)";
+    let template_tail = &template[template
+        .find(template_heading)
+        .expect("PR template recovery section")..];
+    let template_after_heading = &template_tail[template_heading.len()..];
+    let template_end = template_after_heading
+        .find("\n## ")
+        .map_or(template_tail.len(), |offset| {
+            template_heading.len() + offset
+        });
+    let template_recovery = &template_tail[..template_end];
+
+    let mut missing = Vec::new();
+    collect_missing_spec_recovery_contract(spec_recovery, &mut missing);
+    collect_missing_template_recovery_contract(template_recovery, &mut missing);
+    collect_forbidden_recovery_contract(spec_recovery, template_recovery, &mut missing);
+
+    assert!(
+        missing.is_empty(),
+        "authorized broken-main recovery contract is incomplete:\n  {}",
+        missing.join("\n  "),
+    );
+}
+
 #[test]
 fn test_specs_have_required_status_marker() {
     // SPEC_0000 §"Required Sections": every spec must declare a parseable
