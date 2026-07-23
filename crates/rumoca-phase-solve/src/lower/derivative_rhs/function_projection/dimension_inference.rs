@@ -62,6 +62,21 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } => self.subscripted_var_ref_dims(name, subscripts, scope, depth, span),
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => {
+                let Some(base_dims) = self.expr_dims_with_owner(base, scope, depth + 1, span)?
+                else {
+                    return Ok(None);
+                };
+                if base_dims.is_empty() {
+                    return Ok(None);
+                }
+                if !self.index_expr_selectors_have_known_shape(subscripts, scope, depth, span)? {
+                    return Ok(None);
+                }
+                self.subscripted_dims(&base_dims, subscripts, scope, span)
+            }
             rumoca_core::Expression::Array {
                 elements,
                 is_matrix,
@@ -176,6 +191,34 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn index_expr_selectors_have_known_shape(
+        &self,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<bool, LowerError> {
+        for subscript in subscripts {
+            let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+                continue;
+            };
+            let known_shape = match expr.as_ref() {
+                rumoca_core::Expression::Range {
+                    start, step, end, ..
+                } => self
+                    .range_subscript_dim_count(start, step.as_deref(), end, scope, span)?
+                    .is_some(),
+                _ => self
+                    .expr_dims_with_owner(expr, scope, depth + 1, span)?
+                    .is_some_and(|dims| dims.is_empty()),
+            };
+            if !known_shape {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn builtin_call_dims(
