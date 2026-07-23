@@ -626,6 +626,7 @@ impl<'out> OutputCursor<'out> {
 pub(crate) struct RowEvalScratch {
     pub(crate) regs: Vec<f64>,
     pub(crate) initialized: Vec<bool>,
+    pub(crate) values: Vec<f64>,
 }
 
 #[derive(Clone, Copy)]

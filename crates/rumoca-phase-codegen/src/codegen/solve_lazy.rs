@@ -260,6 +260,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
             "rhs_start",
             "n",
             "next_reg",
+            "output_indices",
             "metadata",
             "span",
         ],
@@ -270,6 +271,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
                 rhs_start,
                 n,
                 next_reg,
+                output_indices,
                 metadata,
                 span,
             } = node.as_ref()
@@ -282,6 +284,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
                 "rhs_start" => Some(Value::from(*rhs_start)),
                 "n" => Some(Value::from(*n)),
                 "next_reg" => Some(Value::from(*next_reg)),
+                "output_indices" => Some(Value::from_serialize(output_indices)),
                 "metadata" => Some(Value::from_serialize(metadata)),
                 "span" => Some(Value::from_serialize(span)),
                 _ => None,

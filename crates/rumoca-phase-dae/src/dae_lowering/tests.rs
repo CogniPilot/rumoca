@@ -3,6 +3,7 @@ use rumoca_core::Span;
 
 mod colon_slice_dot;
 mod initialization_provenance;
+mod matrix_product_projection;
 mod record_array_member;
 mod record_array_projection_alias;
 
@@ -1835,7 +1836,8 @@ fn test_scalarize_record_array_field_uses_field_lane_before_record_lane() {
     }
 
     let record_array_fields = build_record_array_field_map(&dae);
-    let array_dims = build_array_dims_map(&dae);
+    let mut array_dims = build_dae_var_dims_map(&dae);
+    array_dims.retain(|_, dims| !dims.is_empty());
     let expr = rumoca_core::Expression::FieldAccess {
         base: Box::new(var_ref("ductOut.mediums.state")),
         field: "X".to_string(),
