@@ -8,6 +8,69 @@ fn builtin_template(target: &str, template: &str) -> &'static str {
 }
 
 #[test]
+fn dae_template_context_projects_scheduled_times_and_preserves_provenance() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("scheduled-event.mo"),
+        68,
+        78,
+    );
+    let event = dae::DaeScheduledTimeEvent {
+        time: 0.5,
+        source_span: Some(span),
+    };
+    let mut dae = dae::Dae::new();
+    dae.events.scheduled_time_events.push(event);
+
+    let expected_record = serde_json::json!({
+        "time": 0.5,
+        "source_span": serde_json::to_value(span).expect("span should serialize"),
+    });
+    let canonical = serde_json::to_value(&dae).expect("canonical DAE should serialize");
+    assert_eq!(
+        canonical["scheduled_time_events"],
+        serde_json::json!([expected_record.clone()]),
+        "canonical DAE must retain typed scheduled-event provenance",
+    );
+
+    let context = dae_template_json(&dae).expect("DAE template context should serialize");
+    assert_eq!(
+        context["scheduled_time_event_metadata"],
+        serde_json::json!([expected_record]),
+        "codegen context must expose full scheduled-event metadata",
+    );
+    assert_eq!(
+        context["scheduled_time_events"],
+        serde_json::json!([0.5]),
+        "stable template schedule surface must contain numeric times",
+    );
+
+    let renderer = SolveTemplateRenderer::new_with_dae(
+        &solve::SolveProblem::default(),
+        &solve::SolveArtifacts::default(),
+        dae,
+    )
+    .expect("Solve renderer should accept scheduled-event metadata");
+    for target in ["fmi2", "fmi3"] {
+        let rendered = renderer
+            .render_with_name(builtin_template(target, "model.c.jinja"), "M")
+            .unwrap_or_else(|err| panic!("{target} model.c should render: {err}"));
+        let scheduled_array = rendered
+            .split("static const double scheduled_events[] = {")
+            .nth(1)
+            .and_then(|tail| tail.split("};").next())
+            .unwrap_or_else(|| panic!("{target} should render a scheduled-event array"));
+        assert!(
+            scheduled_array.contains("0.5"),
+            "{target} scheduled array should contain numeric 0.5:\n{scheduled_array}",
+        );
+        assert!(
+            !scheduled_array.contains("source_span") && !scheduled_array.contains('{'),
+            "{target} scheduled array must not contain provenance JSON:\n{scheduled_array}",
+        );
+    }
+}
+
+#[test]
 fn fmi_templates_snapshot_solve_pre_parameters_before_discrete_rows() {
     let dae = dae::Dae::new();
     let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");

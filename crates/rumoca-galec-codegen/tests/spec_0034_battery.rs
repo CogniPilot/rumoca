@@ -326,7 +326,13 @@ mod rejected_constructs {
                     .insert(VarName::new("tableLookup"), function);
             }),
             ("runtime event", "ET003", |model| {
-                model.events.scheduled_time_events.push(0.5);
+                model
+                    .events
+                    .scheduled_time_events
+                    .push(rumoca_ir_dae::DaeScheduledTimeEvent {
+                        time: 0.5,
+                        source_span: None,
+                    });
             }),
             ("dynamic clock", "ET004", |model| {
                 model.clocks.triggered_conditions.push(boolean(true));

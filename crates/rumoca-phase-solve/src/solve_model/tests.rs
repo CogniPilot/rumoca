@@ -2010,3 +2010,44 @@ fn lower_propagates_enum_parameter_binding_chain_to_runtime_start() {
     };
     assert_eq!(prepared.parameters[index], 3.0);
 }
+
+#[test]
+fn gpu_profile_skips_runtime_demotion_and_keeps_state_only_layout() {
+    assert!(
+        !SolveModelLoweringProfile::GpuPreparation.needs_structural_derivative_preparation(),
+        "the GPU profile must not run runtime-only direct-state demotion"
+    );
+
+    let mut dae_model = dae::Dae::default();
+    let mut state = scalar_var("x");
+    state.start = Some(int_expr(7));
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), state);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        sub(der(var("x")), int_expr(0)),
+        solve_model_test_span(),
+        "der(x) = 0",
+    ));
+    let metadata = dae_model.clone();
+
+    let gpu =
+        lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata(dae_model, &metadata)
+            .expect("GPU preparation should preserve a direct state-only DAE");
+
+    assert_eq!(gpu.state_scalar_count(), 1);
+    assert_eq!(
+        gpu.problem.layout.binding("x"),
+        Some(solve::scalar_slot_y(0))
+    );
+    assert_eq!(gpu.initial_y, vec![7.0]);
+    assert!(gpu.problem.continuous.residual.is_empty());
+    assert!(
+        gpu.problem
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .is_empty()
+    );
+}

@@ -188,14 +188,16 @@ Canonical terminology:
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
 
-`ScalarProgramBlock` and `ComputeNode::ScalarPrograms` are the public source-code
-names. New Solve-IR APIs must use `ScalarProgram` / `ScalarProgramBlock`
-terminology and must not reintroduce `RowBlock` / `ScalarRows` naming.
+Public APIs use `ScalarProgram`/`ScalarProgramBlock`; `RowBlock`/`ScalarRows`
+must not return.
 
-`ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
-structured-family domains plus affine operand proofs. It carries the compact
-iteration domain and strides; Solve lowering must not recover stencils by
-scanning unstructured scalar rows after structured-family metadata is discarded.
+GPU initialization requires exact, nonoverlapping, source-spanned Y coverage;
+adjacency may merge, unsupported semantics never fall back, and settlement
+shares one runtime/table context.
+
+`ComputeNode::AffineStencil` is source-proven from preserved DAE family domains
+and affine operand proofs; Solve lowering must not recover stencils from
+unstructured scalar rows.
 
 The root `schema_version` field is mandatory on serialized Solve payloads.
 Deserializers reject unsupported versions and the Solve wire format does not

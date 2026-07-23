@@ -59,6 +59,9 @@ where
                 scalar_count,
             );
             dae.initialization.equations.push(dae_eq);
+            dae.initialization
+                .equation_provenance
+                .push(dae::InitializationEquationProvenance::User);
         }
         if dae.initialization.equations.len() == dae_index_before + 1 {
             flat_to_dae_index.insert(flat_idx, dae_index_before);
@@ -80,7 +83,14 @@ pub(crate) fn add_fixed_start_initial_equations(dae: &mut dae::Dae) -> Result<()
     collect_fixed_start_equations(&dae.variables.states, &mut equations)?;
     collect_fixed_start_equations(&dae.variables.algebraics, &mut equations)?;
     collect_fixed_start_equations(&dae.variables.outputs, &mut equations)?;
+    let generated = equations.len();
     dae.initialization.equations.extend(equations);
+    dae.initialization
+        .equation_provenance
+        .extend(std::iter::repeat_n(
+            dae::InitializationEquationProvenance::FixedStart,
+            generated,
+        ));
     Ok(())
 }
 

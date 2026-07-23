@@ -90,6 +90,49 @@ pub(super) fn lower_continuous_row_targets_for_equation(
     Ok(targets)
 }
 
+pub(super) fn lower_contiguous_y_target_range_for_equation(
+    dae_model: &dae::Dae,
+    eq: &dae::Equation,
+    layout: &solve::VarLayout,
+) -> Result<std::ops::Range<usize>, LowerError> {
+    let scalar_count = eq.scalar_count.max(1);
+    let target =
+        continuous_row_target_name(dae_model, eq, layout, 0, scalar_count)?.ok_or_else(|| {
+            lower_contract_violation(
+                "GPU fixed-start initialization requires a resolved Y target".to_string(),
+                eq.span,
+            )
+        })?;
+    let base =
+        rumoca_core::parse_scalar_name(&target).map_or(target.as_str(), |scalar| scalar.base);
+    let shape_count = layout.shape(base).map_or(Ok(1usize), |shape| {
+        shape.iter().try_fold(1usize, |count, dimension| {
+            count.checked_mul(*dimension).ok_or_else(|| {
+                lower_contract_violation(
+                    "GPU fixed-start target shape overflows the host index range".to_string(),
+                    eq.span,
+                )
+            })
+        })
+    })?;
+    if shape_count != scalar_count {
+        return Err(lower_contract_violation(
+            "GPU fixed-start target must cover one complete contiguous resolved shape".to_string(),
+            eq.span,
+        ));
+    }
+    let Some(solve::ScalarSlot::Y { index: start, .. }) = layout.binding(base) else {
+        return Err(lower_contract_violation(
+            "GPU fixed-start initialization requires a contiguous Y base target".to_string(),
+            eq.span,
+        ));
+    };
+    let end = start.checked_add(shape_count).ok_or_else(|| {
+        lower_contract_violation("GPU fixed-start target range overflow".to_string(), eq.span)
+    })?;
+    Ok(start..end)
+}
+
 fn push_bound_target_slots(
     layout: &solve::VarLayout,
     names: Vec<String>,
