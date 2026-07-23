@@ -6,11 +6,26 @@ on:
     tags: ['v*']
   pull_request:
     branches: ['main']
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited, labeled, unlabeled]
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  RUMOCA_CI_HEAD_SHA: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.action == 'labeled'
+        && github.event.label.name == 'recovery-exact-head-ci'
+        && github.event.pull_request.draft == true
+        && startsWith(github.event.pull_request.head.ref, 'integration/recovery-')
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && github.event.pull_request.base.repo.full_name == github.repository
+        && contains(github.event.pull_request.labels.*.name, 'recovery-exact-head-ci')
+        && contains(github.event.pull_request.body, 'recovery_batch_id: climamind-rumoca-broken-main-2026-07')
+        && contains(github.event.pull_request.body, format('recovery_head_sha: {0}', github.event.pull_request.head.sha))
+        && contains(github.event.pull_request.body, 'recovery_expires_at: ')
+        && github.event.pull_request.head.sha
+        || github.sha }}
 
 # Prevent duplicate runs
 concurrency:
@@ -26,6 +41,30 @@ permissions:
   pull-requests: write
 
 jobs:
+  ci-head-provenance:
+    name: CI head provenance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Validate recovery selection contract
+        run: node .github/scripts/recovery-exact-head-contract.mjs
+
+      - name: Verify checked-out commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$RUMOCA_CI_HEAD_SHA" || {
+            echo "::error::checked out $actual, expected $RUMOCA_CI_HEAD_SHA"
+            exit 1
+          }
+          echo "Verified CI head: $actual"
+
   detect-release-tag:
     name: Detect release tag on commit
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
@@ -36,6 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
@@ -72,6 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -87,6 +128,7 @@ jobs:
 
       - name: Verify repository toolchain pins
         run: |
+          node --test .github/scripts/recovery-exact-head-contract.test.mjs
           node --test .github/scripts/toolchain-pins.test.mjs
           node --test .github/scripts/msl-nix-closure.test.mjs
 
@@ -112,6 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
@@ -175,6 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -211,6 +255,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -417,6 +462,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -539,6 +585,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -675,6 +722,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -765,6 +813,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -780,12 +829,12 @@ jobs:
           nix build --print-build-logs .#msl-artifacts --out-link result-msl-artifacts
           system=$(nix eval --impure --raw --expr builtins.currentSystem)
           .github/scripts/msl-nix-closure.sh pack \
-            result-msl-artifacts target/msl-nix-closure "$GITHUB_SHA" "$system"
+            result-msl-artifacts target/msl-nix-closure "$RUMOCA_CI_HEAD_SHA" "$system"
 
       - name: Upload complete MSL Nix closure
         uses: actions/upload-artifact@v6
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ env.RUMOCA_CI_HEAD_SHA }}
           path: target/msl-nix-closure
           if-no-files-found: error
           overwrite: true
@@ -814,6 +863,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -958,7 +1008,7 @@ jobs:
       - name: Download complete MSL Nix closure
         uses: actions/download-artifact@v8
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ env.RUMOCA_CI_HEAD_SHA }}
           path: target/msl-nix-closure
 
       - name: Restore and verify prebuilt MSL closure
@@ -967,7 +1017,7 @@ jobs:
           set -euo pipefail
           system=$(nix eval --impure --raw --expr builtins.currentSystem)
           .github/scripts/msl-nix-closure.sh restore \
-            target/msl-nix-closure result-msl-artifacts "$GITHUB_SHA" "$system"
+            target/msl-nix-closure result-msl-artifacts "$RUMOCA_CI_HEAD_SHA" "$system"
 
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
@@ -1011,6 +1061,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1046,7 +1097,7 @@ jobs:
       - name: Download complete MSL Nix closure
         uses: actions/download-artifact@v8
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ env.RUMOCA_CI_HEAD_SHA }}
           path: target/msl-nix-closure
 
       - name: Restore and verify prebuilt MSL closure
@@ -1055,7 +1106,7 @@ jobs:
           set -euo pipefail
           system=$(nix eval --impure --raw --expr builtins.currentSystem)
           .github/scripts/msl-nix-closure.sh restore \
-            target/msl-nix-closure result-msl-artifacts "$GITHUB_SHA" "$system"
+            target/msl-nix-closure result-msl-artifacts "$RUMOCA_CI_HEAD_SHA" "$system"
 
       - name: Merge shards + run quality gate
         run: |
@@ -1330,6 +1381,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1397,7 +1449,7 @@ jobs:
       - name: Download complete MSL Nix closure
         uses: actions/download-artifact@v8
         with:
-          name: msl-nix-closure-${{ github.run_id }}-${{ github.sha }}
+          name: msl-nix-closure-${{ github.run_id }}-${{ env.RUMOCA_CI_HEAD_SHA }}
           path: target/msl-nix-closure
 
       - name: Restore and verify prebuilt MSL closure
@@ -1406,7 +1458,7 @@ jobs:
           set -euo pipefail
           system=$(nix eval --impure --raw --expr builtins.currentSystem)
           .github/scripts/msl-nix-closure.sh restore \
-            target/msl-nix-closure result-msl-artifacts "$GITHUB_SHA" "$system"
+            target/msl-nix-closure result-msl-artifacts "$RUMOCA_CI_HEAD_SHA" "$system"
 
       - name: Run ModelicaTest semantic gate
         shell: bash
@@ -1451,6 +1503,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1490,6 +1543,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1528,6 +1582,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1656,6 +1711,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1723,6 +1779,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1857,6 +1914,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1953,6 +2011,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
 
@@ -1990,6 +2049,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.RUMOCA_CI_HEAD_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
