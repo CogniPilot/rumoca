@@ -1493,10 +1493,14 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             value_dims.as_deref(),
             scope,
         )?;
+        let declared = self.declared_param_dims_in_scope(function, &target, scope)?;
+        let scalar_assignment = vectorized_scalar_assignment.is_none()
+            && value_dims.as_ref().is_some_and(Vec::is_empty)
+            && declared.as_ref().is_some_and(Vec::is_empty)
+            && function.locals.iter().any(|local| local.name == target);
         let dims = if let Some(dims) = vectorized_scalar_assignment {
             Some(dims)
         } else {
-            let declared = self.declared_param_dims_in_scope(function, &target, scope)?;
             assignment_projection_dims(
                 function.name.as_str(),
                 &target,
@@ -1542,6 +1546,11 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 )?;
             }
         }
+        let value = if scalar_assignment {
+            self.normalize_projected_scalar_output_expr(&value, scope, depth + 1, value_span)?
+        } else {
+            value
+        };
         scope.full.insert(target, value);
         Ok(())
     }
@@ -2403,6 +2412,12 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 let span = inherited_projection_span(*expr_span, span);
                 let lhs = self.normalize_projected_scalar_output_expr(lhs, scope, depth, span)?;
                 let rhs = self.normalize_projected_scalar_output_expr(rhs, scope, depth, span)?;
+                let ctx = projection_value_ctx(&[], 0, scope, depth, span);
+                if is_mul(op)
+                    && let Some(projected) = self.project_tensor_product(&lhs, &rhs, &ctx)?
+                {
+                    return Ok(projected);
+                }
                 let op = self.projected_binary_op(op, &lhs, &rhs, scope, depth, span)?;
                 Ok(rumoca_core::Expression::Binary {
                     op,
@@ -2411,6 +2426,18 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                     span,
                 })
             }
+            rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span: expr_span,
+            } if is_elementwise_builtin_projection(function) => self
+                .normalize_projected_scalar_builtin_args(
+                    *function,
+                    args,
+                    scope,
+                    depth,
+                    inherited_projection_span(*expr_span, span),
+                ),
             rumoca_core::Expression::If {
                 branches,
                 else_branch,
@@ -2474,6 +2501,34 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(expr.clone()),
         }
+    }
+
+    fn normalize_projected_scalar_builtin_args(
+        &self,
+        function: rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+        scope: &FunctionProjectionScope,
+        depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, LowerError> {
+        let mut normalized_args = projection_vec_with_capacity(
+            args.len(),
+            "projected scalar builtin argument count",
+            span,
+        )?;
+        for arg in args {
+            normalized_args.push(self.normalize_projected_scalar_output_expr(
+                arg,
+                scope,
+                depth + 1,
+                span,
+            )?);
+        }
+        Ok(rumoca_core::Expression::BuiltinCall {
+            function,
+            args: normalized_args,
+            span,
+        })
     }
 
     fn function_call_projected_scalars_with_scope(
@@ -3830,6 +3885,15 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             return Ok(None);
         };
         match (lhs_dims.as_slice(), rhs_dims.as_slice(), ctx.dims) {
+            ([lhs_size], [rhs_size], []) if lhs_size == rhs_size => {
+                self.project_vector_dot_product(lhs, rhs, &lhs_dims, &rhs_dims, ctx, *lhs_size)
+            }
+            ([lhs_size], [rhs_size], []) => Err(unsupported_at(
+                format!(
+                    "vector dot product dimensions [{lhs_size}] and [{rhs_size}] are incompatible"
+                ),
+                ctx.span,
+            )),
             ([rows, cols], [n], [_]) if cols == n => self.project_matrix_vector_product(
                 lhs,
                 rhs,
@@ -3851,6 +3915,44 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    fn project_vector_dot_product(
+        &self,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+        lhs_dims: &[i64],
+        rhs_dims: &[i64],
+        ctx: &ProjectionValueCtx<'_>,
+        size: i64,
+    ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+        if size == 0 {
+            return Err(unsupported_at(
+                "vector dot product dimension must be positive",
+                ctx.span,
+            ));
+        }
+        let size = valid_product_dim(size, ctx.span, "vector dot product dimension")?;
+        if ctx.flat_index != 0 {
+            return Ok(None);
+        }
+        let mut terms =
+            projection_vec_with_capacity(size, "vector dot product term count", ctx.span)?;
+        for index in 0..size {
+            let lhs_term = self
+                .project_value(lhs, lhs_dims, index, ctx.scope, ctx.depth, ctx.span)?
+                .ok_or_else(|| unsupported_at("vector dot lhs could not be projected", ctx.span))?;
+            let rhs_term = self
+                .project_value(rhs, rhs_dims, index, ctx.scope, ctx.depth, ctx.span)?
+                .ok_or_else(|| unsupported_at("vector dot rhs could not be projected", ctx.span))?;
+            terms.push(rumoca_core::Expression::Binary {
+                op: OpBinary::Mul,
+                lhs: Box::new(lhs_term),
+                rhs: Box::new(rhs_term),
+                span: ctx.span,
+            });
+        }
+        Ok(Some(sum_expressions(terms, ctx.span)))
     }
 
     fn project_matrix_vector_product(
