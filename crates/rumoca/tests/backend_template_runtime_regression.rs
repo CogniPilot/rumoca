@@ -18,6 +18,12 @@ use rumoca_phase_codegen::templates;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
 use tempfile::Builder;
 
+#[cfg(feature = "template-runtime-tests")]
+#[path = "backend_template_runtime_regression/python_runtime.rs"]
+mod python_runtime;
+#[cfg(feature = "template-runtime-tests")]
+use python_runtime::run_python;
+
 // ============================================================================
 // Tolerance — max bounded relative error: |a-b| / max(|a|, |b|, 1.0)
 // ============================================================================
@@ -29,24 +35,6 @@ const CASADI_TOLERANCE: f64 = 0.01;
 /// Embedded C uses RK4 with dt=0.001, FMI2 uses forward Euler with dt=0.001.
 #[cfg(feature = "template-runtime-tests")]
 const C_TOLERANCE: f64 = 0.05;
-
-// ============================================================================
-// Runtime detection
-// ============================================================================
-
-#[cfg(feature = "template-runtime-tests")]
-fn python_command() -> &'static str {
-    for candidate in ["python3", "python"] {
-        if Command::new(candidate)
-            .args(["-c", "import casadi, numpy, sympy"])
-            .output()
-            .is_ok_and(|output| output.status.success())
-        {
-            return candidate;
-        }
-    }
-    panic!("expected python3 or python with casadi, numpy, and sympy installed");
-}
 
 #[cfg(feature = "template-runtime-tests")]
 fn strict_runtime_dependencies() -> bool {
@@ -296,36 +284,6 @@ fn assert_traces_match(
     }
 }
 
-// ============================================================================
-// Python execution helper (returns stdout)
-// ============================================================================
-
-#[cfg(feature = "template-runtime-tests")]
-fn run_python(rendered: &str, driver: &str) -> String {
-    let dir = Builder::new()
-        .prefix("rumoca_runtime_test_")
-        .tempdir()
-        .expect("create temp dir");
-    let model_path = dir.path().join("model.py");
-    let driver_path = dir.path().join("driver.py");
-    fs::write(&model_path, rendered).expect("write model.py");
-    fs::write(&driver_path, driver).expect("write driver.py");
-
-    let output = Command::new(python_command())
-        .arg(driver_path.to_str().unwrap())
-        .output()
-        .expect("run Python driver");
-
-    assert!(
-        output.status.success(),
-        "Python execution failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    String::from_utf8(output.stdout).expect("stdout is utf8")
-}
-
 #[cfg(feature = "template-runtime-tests")]
 fn run_julia(rendered: &str, driver: &str) -> String {
     let dir = Builder::new()
@@ -570,7 +528,7 @@ for i, t in enumerate(tgrid):
 #[cfg(feature = "template-runtime-tests")]
 fn casadi_trace_test(source: &str, model_name: &str, template: &str) {
     let rendered = render_template(source, model_name, template);
-    let csv = run_python(&rendered, CASADI_CSV_DRIVER);
+    let csv = run_python(&rendered, CASADI_CSV_DRIVER, "CasADi");
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
     assert_traces_match(&backend_traces, &dae.dae, &sim, CASADI_TOLERANCE, "CasADi");
@@ -1655,7 +1613,7 @@ fn sympy_trace_test(source: &str, model_name: &str) {
     )
     .expect("render template");
 
-    let stdout = run_python(&rendered, SYMPY_EVAL_DRIVER);
+    let stdout = run_python(&rendered, SYMPY_EVAL_DRIVER, "SymPy");
     let result: serde_json::Value = serde_json::from_str(stdout.trim()).expect("parse JSON output");
 
     // Get reference derivatives at t=0 from rumoca simulator
@@ -1720,25 +1678,13 @@ print(mod.simulate())
 "#;
 
 #[cfg(feature = "template-runtime-tests")]
-fn python_has_onnx() -> bool {
-    Command::new(python_command())
-        .args(["-c", "import onnx; import onnxruntime; import numpy"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "template-runtime-tests")]
 fn onnx_trace_test(source: &str, model_name: &str) {
-    if !runtime_dependency_available(python_has_onnx(), "onnx/onnxruntime") {
-        return;
-    }
     let rendered = render_template(
         source,
         model_name,
         templates::builtin_template_source("onnx", "onnx.py.jinja").unwrap(),
     );
-    let csv = run_python(&rendered, ONNX_CSV_DRIVER);
+    let csv = run_python(&rendered, ONNX_CSV_DRIVER, "ONNX");
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
     assert_traces_match(&backend_traces, &dae.dae, &sim, C_TOLERANCE, "ONNX");
@@ -1784,25 +1730,13 @@ print(mod.simulate_csv())
 "#;
 
 #[cfg(feature = "template-runtime-tests")]
-fn python_has_jax() -> bool {
-    Command::new(python_command())
-        .args(["-c", "import jax; import diffrax; import numpy"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "template-runtime-tests")]
 fn jax_trace_test(source: &str, model_name: &str) {
-    if !runtime_dependency_available(python_has_jax(), "jax/diffrax") {
-        return;
-    }
     let rendered = render_template(
         source,
         model_name,
         templates::builtin_template_source("jax", "jax.py.jinja").unwrap(),
     );
-    let csv = run_python(&rendered, JAX_CSV_DRIVER);
+    let csv = run_python(&rendered, JAX_CSV_DRIVER, "JAX");
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
     assert_traces_match(&backend_traces, &dae.dae, &sim, JAX_TOLERANCE, "JAX");
