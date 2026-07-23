@@ -144,6 +144,24 @@ pub(super) fn shape_scalar_count(shape: ExpressionShape) -> Option<usize> {
     }
 }
 
+pub(super) fn equation_scalar_count(
+    eq: &Equation,
+    projection: &ScalarProjectionContext<'_>,
+    lhs_targets: &[ScalarizedLhsTarget],
+    has_residual_lhs_targets: bool,
+) -> usize {
+    if has_residual_lhs_targets {
+        return lhs_targets.len().max(1);
+    }
+    let rhs_shape_count = shape_scalar_count(projection.expression_shape(&eq.rhs));
+    if let Some(rhs_count) = rhs_shape_count.filter(|count| *count > 1) {
+        // MLS 10.6 / SPEC_0019: array equations represent one scalar equation
+        // per array element. Prefer expression IR shape over stale metadata.
+        return rhs_count.max(lhs_targets.len());
+    }
+    eq.scalar_count.max(lhs_targets.len()).max(1)
+}
+
 pub(super) fn combine_additive_shapes(
     lhs: ExpressionShape,
     rhs: ExpressionShape,
