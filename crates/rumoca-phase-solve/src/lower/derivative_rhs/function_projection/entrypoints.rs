@@ -319,12 +319,44 @@ fn projected_output_selector(output: &ProjectedFunctionOutput) -> String {
     selector
 }
 
+fn is_known_pure_nonconstructor_function_call(
+    expr: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+) -> bool {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor: false,
+        ..
+    } = expr
+    else {
+        return false;
+    };
+    dae_model
+        .symbols
+        .functions
+        .get(name.var_name())
+        .is_some_and(|function| {
+            function.pure
+                && function.external.is_none()
+                && !function.is_constructor
+                && !is_record_constructor_signature(name.as_str(), function)
+        })
+}
+
 pub(in crate::lower) fn project_array_like_scalars_with_owner(
     expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
+    if is_known_pure_nonconstructor_function_call(expr, dae_model) {
+        return function_call_projected_scalars_with_owner(
+            expr,
+            dae_model,
+            structural_bindings,
+            owner_span,
+        );
+    }
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
     let scope = FunctionProjectionScope::default();
     let Some(dims) = analysis.expr_dims_with_owner(expr, &scope, 0, owner_span)? else {
@@ -343,6 +375,15 @@ pub(in crate::lower) fn project_array_like_scalar_with_owner(
     structural_bindings: &IndexMap<String, f64>,
     owner_span: rumoca_core::Span,
 ) -> Result<Option<rumoca_core::Expression>, LowerError> {
+    if is_known_pure_nonconstructor_function_call(expr, dae_model) {
+        return Ok(function_call_projected_scalars_with_owner(
+            expr,
+            dae_model,
+            structural_bindings,
+            owner_span,
+        )?
+        .and_then(|values| values.get(flat_index).cloned()));
+    }
     let analysis = FunctionProjectionAnalysis::new(dae_model, structural_bindings);
     let scope = FunctionProjectionScope::default();
     let Some(dims) = analysis.expr_dims_with_owner(expr, &scope, 0, owner_span)? else {
