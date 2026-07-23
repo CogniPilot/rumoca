@@ -221,6 +221,24 @@ fn test_domain_3d(d0: usize, d1: usize, d2: usize) -> rumoca_core::StructuredInd
     }
 }
 
+fn test_domain_ranges(ranges: &[(i64, i64, i64)]) -> rumoca_core::StructuredIndexDomain {
+    rumoca_core::StructuredIndexDomain {
+        binders: ranges
+            .iter()
+            .enumerate()
+            .map(
+                |(id, &(lower, upper, step))| rumoca_core::StructuredIndexBinder {
+                    id,
+                    display_name: format!("i{id}"),
+                    lower,
+                    upper,
+                    step,
+                },
+            )
+            .collect(),
+    }
+}
+
 fn family_2d(start: usize, rows: usize, cols: usize) -> dae::StructuredEquationFamily {
     dae::StructuredEquationFamily {
         domain: test_domain_2d(rows, cols),
@@ -1153,21 +1171,54 @@ fn corner_rows_reproduce_full_row_affine_strides_for_2d_family() {
 }
 
 #[test]
-fn corner_rows_decline_when_a_dimension_has_extent_one() {
-    // With j pinned to a single value there is no j-neighbor to pin its stride, so
-    // the corner path declines (returns None) and the caller falls back to the
-    // full-row inference.
-    let domain = test_domain_2d(3, 1);
-    let count = domain_scalar_count(&domain);
-    let rows: Vec<StructuredProgram> = (0..count).map(|y| stencil_row(y, y)).collect();
-    let row_indices: Vec<usize> = (0..count).collect();
-    let span = stencil_test_span();
+fn corner_rows_infer_zero_stride_for_singleton_dimensions() {
+    let cases = [
+        (test_domain_2d(3, 1), vec![(0, 1)]),
+        (test_domain_2d(1, 3), vec![(1, 1)]),
+        (test_domain_3d(1, 3, 1), vec![(1, 1)]),
+        (test_domain_2d(1, 1), vec![]),
+        (test_domain_ranges(&[(3, 1, -1), (5, 5, -2)]), vec![(0, 1)]),
+    ];
+    for (domain, expected_terms) in cases {
+        let count = domain_scalar_count(&domain);
+        let rows: Vec<StructuredProgram> = (0..count).map(|y| stencil_row(y, y)).collect();
+        let row_indices: Vec<usize> = (0..count).collect();
+        let span = stencil_test_span();
 
-    assert_eq!(
-        affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
-            .expect("corner-row strides should compute"),
-        None
-    );
+        let full = affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
+            .expect("full-row strides should compute")
+            .expect("full-row strides should be present");
+        let corner = affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
+            .expect("corner-row strides should compute")
+            .expect("singleton dimensions should use zero stride");
+        assert_eq!(corner, full);
+        for load in &corner.load_strides {
+            let terms = load
+                .terms
+                .iter()
+                .map(|term| (term.dimension, term.stride))
+                .collect::<Vec<_>>();
+            assert_eq!(terms, expected_terms);
+        }
+        assert_eq!(
+            output_map_from_corner_rows(&rows, &row_indices, &domain, span)
+                .expect("corner output map should compute"),
+            output_map_for_rows(&rows, &row_indices, &domain, span)
+                .expect("full output map should compute")
+        );
+    }
+}
+
+#[test]
+fn corner_positions_decline_for_empty_or_invalid_domains() {
+    let span = stencil_test_span();
+    let empty = test_domain_ranges(&[(1, 0, 1), (1, 3, 1)]);
+    let empty_tuples = structured_domain_index_tuples(&empty, span).expect("empty domain is valid");
+    assert!(empty_tuples.is_empty());
+    assert_eq!(corner_index_positions(&empty_tuples, &empty), None);
+
+    let invalid = test_domain_ranges(&[(1, 3, 0)]);
+    assert!(structured_domain_index_tuples(&invalid, span).is_err());
 }
 
 #[test]
@@ -1190,24 +1241,23 @@ fn affine_strides_for_family_uses_corners_then_falls_back_to_full_scan() {
         "with corners available the wrapper returns the corner result (== full)"
     );
 
-    // 3x1: corners decline (no j-neighbor), so the wrapper must fall back to exactly
-    // the full-row result rather than declining to scalar.
+    // 3x1: the singleton j dimension contributes zero stride, so the corner path
+    // remains available even when interior rows are non-semantic placeholders.
     let domain = test_domain_2d(3, 1);
     let count = domain_scalar_count(&domain);
     let rows: Vec<StructuredProgram> = (0..count).map(|y| stencil_row(y, y)).collect();
     let row_indices: Vec<usize> = (0..count).collect();
+    let full = affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
+        .expect("full-row strides should compute");
     assert_eq!(
         affine_strides_from_corner_rows(&rows, &row_indices, &domain, span)
             .expect("corner-row strides should compute"),
-        None,
-        "precondition: corners decline on an extent-1 dimension"
+        full
     );
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
-            .expect("family strides should compute"),
-        affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
-            .expect("full-row strides should compute"),
-        "with corners declined the wrapper returns the full-row fallback result"
+        affine_strides_for_family(&rows, &row_indices, &domain, span, false)
+            .expect("unmaterialized family strides should compute"),
+        full
     );
 }
 
