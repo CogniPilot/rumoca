@@ -61,6 +61,7 @@ an empty domain produces zero rows and no corner proof.
 | Structured DAE contains no source `der(...)` | DAE lowering | MLS Appendix B form |
 | Derivative families map to canonical slots | DAE structured family | Explicit state identity |
 | No parallel scalarized owner | DAE IR | Avoids drift |
+| Orphan pruning counts exact scalar references on both equation sides | Structural phases | An explicit scalar lhs is a live owner use; a shaped slice/base lhs owns only the exact scalar projection proven by DAE dimensions and `scalar_count`; an aggregate base alias alone does not keep unrelated scalar leaves |
 
 A source family such as `der(u[i, j]) = w[i, j]` is represented as residuals
 over canonical derivative slots/state metadata. The structured node owns the
