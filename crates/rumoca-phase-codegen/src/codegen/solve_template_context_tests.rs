@@ -58,6 +58,7 @@ fn implicit_problem_with_artifacts() -> (solve::SolveProblem, solve::SolveArtifa
         solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![row.clone()]));
     problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![row.clone()]));
+    problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
 
     let mut artifacts = solve::SolveArtifacts::default();
     artifacts.continuous.implicit_jacobian_v_scalar = scalar_block(vec![row.clone()]);

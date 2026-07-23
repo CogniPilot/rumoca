@@ -790,10 +790,10 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
     }
 
     for pair in dae_model.events.scheduled_time_events.windows(2) {
-        if pair[1] <= pair[0] {
+        if pair[1].time <= pair[0].time {
             return Err(ToDaeError::runtime_metadata_violation(format!(
                 "scheduled_time_events must be strictly increasing; got [{}, {}]",
-                pair[0], pair[1]
+                pair[0].time, pair[1].time
             )));
         }
     }
