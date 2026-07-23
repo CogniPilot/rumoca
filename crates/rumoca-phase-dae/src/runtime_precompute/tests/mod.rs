@@ -17,6 +17,15 @@ fn test_span(start: usize, end: usize) -> Span {
     Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), start, end)
 }
 
+fn scheduled_times(dae_model: &dae::Dae) -> Vec<f64> {
+    dae_model
+        .events
+        .scheduled_time_events
+        .iter()
+        .map(|event| event.time)
+        .collect()
+}
+
 fn time_gt(value: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Gt,
@@ -288,7 +297,7 @@ fn test_runtime_precompute_suppresses_initial_only_time_events() {
     populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
 
     assert_eq!(
-        dae_model.events.scheduled_time_events,
+        scheduled_times(&dae_model),
         vec![0.5],
         "time events reachable only during initialization must not be scheduled for simulation"
     );
@@ -402,7 +411,7 @@ fn test_runtime_precompute_collects_event_without_synthetic_root_for_time_if_con
             .events
             .scheduled_time_events
             .iter()
-            .any(|time| (*time - 5.0).abs() <= 1.0e-12),
+            .any(|event| (event.time - 5.0).abs() <= 1.0e-12),
         "expected precompute to capture scheduled event at t=5"
     );
 }
@@ -526,7 +535,7 @@ fn test_runtime_precompute_interns_and_orders_root_and_time_event_metadata() {
         "Appendix B relations must not be duplicated as synthetic roots"
     );
     assert_eq!(
-        dae_model.events.scheduled_time_events,
+        scheduled_times(&dae_model),
         vec![0.5, 1.5],
         "scheduled time events should be canonicalized and sorted"
     );
@@ -749,7 +758,7 @@ fn test_runtime_precompute_skips_time_vs_parameter_synthetic_roots() {
             .all(|expr| format!("{expr:?}") != format!("{cond:?}")),
         "time-vs-parameter branch conditions should be scheduled time events, not synthetic roots"
     );
-    assert_eq!(dae_model.events.scheduled_time_events, vec![2.5]);
+    assert_eq!(scheduled_times(&dae_model), vec![2.5]);
     assert!(
         dae_model.conditions.relations.is_empty(),
         "time-vs-parameter conditions should be represented as scheduled events, not solver roots"

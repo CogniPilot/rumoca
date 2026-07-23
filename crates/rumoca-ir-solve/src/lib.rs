@@ -4,12 +4,12 @@
 //! structural/lowering phases. It must stay free of DAE evaluation and phase
 //! logic.
 //!
-//! SPEC_0021 file-size exception: Solve IR still defines scalar rows, tensor
-//! nodes, validation, and visitor contracts in one facade. split plan: move
-//! tensor contracts, validation errors, and visitors into focused modules.
+//! The facade defines the wire types while focused modules own layout, linear
+//! operations, direct-initialization validation, and visitor contracts.
 
 #[cfg(test)]
 mod compute_block_tests;
+mod initialization_validation;
 mod layout;
 mod linear_op;
 pub mod visitor;
@@ -19,6 +19,11 @@ use rumoca_core::{
     ExternalTableData, SourceId, Span, StructuredIndexDomain, StructuredIndexDomainError,
 };
 use serde::{Deserialize, Serialize};
+
+pub use initialization_validation::InitializationTargetRange;
+use initialization_validation::{
+    initialization_stored_row_count, validate_initialization_direct_families,
+};
 
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
@@ -34,7 +39,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 15;
+pub const SOLVE_SCHEMA_VERSION: u16 = 16;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1198,7 +1203,7 @@ impl<'de> Deserialize<'de> for SolveProblem {
             )));
         }
 
-        Ok(Self {
+        let problem = Self {
             schema_version: wire.schema_version,
             layout: wire.layout,
             solve_layout: wire.solve_layout,
@@ -1207,7 +1212,11 @@ impl<'de> Deserialize<'de> for SolveProblem {
             discrete: wire.discrete,
             events: wire.events,
             clocks: wire.clocks,
-        })
+        };
+        problem
+            .validate_shape_contract()
+            .map_err(serde::de::Error::custom)?;
+        Ok(problem)
     }
 }
 
@@ -1267,10 +1276,14 @@ impl SolveProblem {
         self.initialization
             .update_rhs
             .validate_shape_contract("initialization.update_rhs")?;
-        validate_count(
-            "initialization.row_targets",
-            self.initialization.residual.len()?,
-            self.initialization.row_targets.len(),
+        let initialization_rows = initialization_stored_row_count(
+            &self.initialization.residual,
+            "initialization.residual rows",
+        )?;
+        validate_initialization_direct_families(
+            &self.initialization,
+            self.layout.y_scalars(),
+            initialization_rows,
         )?;
         validate_count(
             "initialization.update_targets",
@@ -1285,7 +1298,7 @@ impl SolveProblem {
         validate_projection_plan(
             "initialization.projection_plan",
             &self.initialization.projection_plan,
-            self.initialization.residual.len()?,
+            initialization_rows,
             self.solve_layout.solver_scalar_count(),
         )?;
         self.discrete
@@ -1431,6 +1444,10 @@ pub enum SolveProblemShapeContractError {
         actual: usize,
         span: Option<Span>,
     },
+    InitializationTargetCoverage {
+        reason: &'static str,
+        span: Option<Span>,
+    },
     ZeroTensorDimension {
         context: String,
         node_index: usize,
@@ -1485,6 +1502,7 @@ impl SolveProblemShapeContractError {
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
+            | Self::InitializationTargetCoverage { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
@@ -1533,6 +1551,42 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 actual,
                 ..
             } => write!(f, "{context} expected {expected} rows, got {actual}"),
+            Self::InitializationTargetCoverage { reason, .. } => {
+                write!(f, "initialization target coverage is invalid: {reason}")
+            }
+            error @ (Self::ZeroTensorDimension { .. }
+            | Self::StructuredIndexDomain { .. }
+            | Self::TensorOutputMapDimension { .. }
+            | Self::TensorOutputMapNegativeIndex { .. }) => error.fmt_tensor_error(f),
+            Self::OutputIndexOverflow {
+                context,
+                node_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} output index arithmetic overflowed"
+            ),
+            Self::SolverIndexOutOfBounds {
+                context,
+                index,
+                upper_bound,
+                ..
+            } => write!(
+                f,
+                "{context} references solver index {index}, but upper bound is {upper_bound}"
+            ),
+            Self::InvalidScheduledRootTiming {
+                context,
+                root_index,
+                ..
+            } => write!(f, "{context} root {root_index} has invalid periodic timing"),
+        }
+    }
+}
+
+impl SolveProblemShapeContractError {
+    fn fmt_tensor_error(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::ZeroTensorDimension {
                 context,
                 node_index,
@@ -1574,28 +1628,7 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "{context} node {node_index} {dimension} output map produced negative output index {value}"
             ),
-            Self::OutputIndexOverflow {
-                context,
-                node_index,
-                ..
-            } => write!(
-                f,
-                "{context} node {node_index} output index arithmetic overflowed"
-            ),
-            Self::SolverIndexOutOfBounds {
-                context,
-                index,
-                upper_bound,
-                ..
-            } => write!(
-                f,
-                "{context} references solver index {index}, but upper bound is {upper_bound}"
-            ),
-            Self::InvalidScheduledRootTiming {
-                context,
-                root_index,
-                ..
-            } => write!(f, "{context} root {root_index} has invalid periodic timing"),
+            _ => unreachable!("only tensor errors are delegated to fmt_tensor_error"),
         }
     }
 }
@@ -1662,6 +1695,16 @@ pub struct ContinuousSolveArtifacts {
 pub struct InitializationSolveSystem {
     pub residual: ComputeBlock,
     pub row_targets: Vec<Option<ScalarSlot>>,
+    /// Compact, fully-proven direct initial assignments. Unlike `row_targets`,
+    /// this does not create one owned record per scalar initial row.
+    #[serde(default)]
+    pub direct_families: Vec<InitializationDirectFamily>,
+    /// Complete solver-Y coverage required by this initialization artifact.
+    #[serde(default)]
+    pub required_target_ranges: Vec<InitializationTargetRange>,
+    /// Required ranges already satisfied by declared fixed starts.
+    #[serde(default)]
+    pub fixed_target_ranges: Vec<InitializationTargetRange>,
     pub projection_indices: Vec<usize>,
     #[serde(default)]
     pub projection_plan: AlgebraicProjectionPlan,
@@ -1669,6 +1712,17 @@ pub struct InitializationSolveSystem {
     pub update_rhs: ScalarProgramBlock,
     #[serde(default)]
     pub update_targets: Vec<ScalarSlot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InitializationDirectFamily {
+    /// Index of the sole residual `Map` owner in `initialization.residual`.
+    pub node_index: usize,
+    /// Destination Y slot for every residual element, in the same domain.
+    pub targets: TensorOutputMap,
+    /// `+1` for `target - rhs`, `-1` for `rhs - target`.
+    pub residual_sign: i8,
+    pub span: rumoca_core::Span,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

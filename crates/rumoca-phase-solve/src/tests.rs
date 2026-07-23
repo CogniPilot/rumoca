@@ -598,6 +598,60 @@ fn projection_incidence_uses_store_output_slice() {
 }
 
 #[test]
+fn projection_plan_row_selection_respects_explicit_target_and_identity_owner() {
+    let row = vec![
+        solve::LinearOp::LoadY { dst: 0, index: 1 },
+        solve::LinearOp::LoadY { dst: 1, index: 2 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ];
+    let projection_set = BTreeSet::from([1, 2]);
+    let identity_projection_rows = std::collections::BTreeMap::from([(2, 1)]);
+
+    assert_eq!(
+        super::projection_row_y_indices_for_plan(
+            &row,
+            None,
+            0,
+            true,
+            &projection_set,
+            false,
+            &identity_projection_rows,
+        ),
+        Some(BTreeSet::from([1]))
+    );
+    assert_eq!(
+        super::projection_row_y_indices_for_plan(
+            &row,
+            Some(solve::scalar_slot_y(2)),
+            0,
+            true,
+            &projection_set,
+            false,
+            &identity_projection_rows,
+        ),
+        Some(BTreeSet::from([2]))
+    );
+    assert_eq!(
+        super::projection_row_y_indices_for_plan(
+            &row,
+            None,
+            0,
+            false,
+            &projection_set,
+            false,
+            &identity_projection_rows,
+        ),
+        None
+    );
+}
+
+#[test]
 fn implicit_rhs_records_residual_row_placement() {
     let derivative = vec![constant_row(10.0)];
     let residual = vec![constant_row(30.0), constant_row(11.0), constant_row(12.0)];

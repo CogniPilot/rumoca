@@ -27,7 +27,7 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 6;
+pub const DAE_SCHEMA_VERSION: u16 = 7;
 
 mod event_threshold;
 mod expr_query;
@@ -134,6 +134,7 @@ struct DaeWire {
     initial_equations: Vec<Equation>,
     #[serde(rename = "initial_structured_equations")]
     initial_structured_equations: Vec<StructuredEquationFamily>,
+    initial_equation_provenance: Vec<InitializationEquationProvenance>,
     #[serde(rename = "f_z")]
     real_updates: Vec<Equation>,
     #[serde(rename = "f_m")]
@@ -143,7 +144,7 @@ struct DaeWire {
     #[serde(default, rename = "relation")]
     relations: Vec<Expression>,
     synthetic_root_conditions: Vec<Expression>,
-    scheduled_time_events: Vec<f64>,
+    scheduled_time_events: Vec<DaeScheduledTimeEvent>,
     scheduled_root_conditions: Vec<DaeScheduledRootCondition>,
     event_actions: Vec<DaeEventAction>,
     constructor_exprs: Vec<Expression>,
@@ -183,7 +184,7 @@ impl Serialize for Dae {
         S: serde::Serializer,
     {
         if !serializer.is_human_readable() {
-            let mut tuple = serializer.serialize_tuple(29)?;
+            let mut tuple = serializer.serialize_tuple(30)?;
             tuple.serialize_element(&self.schema_version)?;
             tuple.serialize_element(&self.variables.states)?;
             tuple.serialize_element(&self.variables.algebraics)?;
@@ -197,6 +198,7 @@ impl Serialize for Dae {
             tuple.serialize_element(&self.continuous.structured_equations)?;
             tuple.serialize_element(&self.initialization.equations)?;
             tuple.serialize_element(&self.initialization.structured_equations)?;
+            tuple.serialize_element(&self.initialization.equation_provenance)?;
             tuple.serialize_element(&self.discrete.real_updates)?;
             tuple.serialize_element(&self.discrete.valued_updates)?;
             tuple.serialize_element(&self.conditions.equations)?;
@@ -216,7 +218,7 @@ impl Serialize for Dae {
             return tuple.end();
         }
 
-        let mut state = serializer.serialize_struct("Dae", 29)?;
+        let mut state = serializer.serialize_struct("Dae", 30)?;
         state.serialize_field("schema_version", &self.schema_version)?;
         state.serialize_field("x", &self.variables.states)?;
         state.serialize_field("y", &self.variables.algebraics)?;
@@ -235,6 +237,10 @@ impl Serialize for Dae {
         state.serialize_field(
             "initial_structured_equations",
             &self.initialization.structured_equations,
+        )?;
+        state.serialize_field(
+            "initial_equation_provenance",
+            &self.initialization.equation_provenance,
         )?;
         state.serialize_field("f_z", &self.discrete.real_updates)?;
         state.serialize_field("f_m", &self.discrete.valued_updates)?;
@@ -274,6 +280,11 @@ impl<'de> Deserialize<'de> for Dae {
                 wire.schema_version, DAE_SCHEMA_VERSION
             )));
         }
+        if wire.initial_equations.len() != wire.initial_equation_provenance.len() {
+            return Err(serde::de::Error::custom(
+                "DAE initial equation provenance cardinality mismatch",
+            ));
+        }
 
         Ok(Self {
             schema_version: wire.schema_version,
@@ -294,6 +305,7 @@ impl<'de> Deserialize<'de> for Dae {
             initialization: DaeInitializationPartition {
                 equations: wire.initial_equations,
                 structured_equations: wire.initial_structured_equations,
+                equation_provenance: wire.initial_equation_provenance,
             },
             discrete: DaeDiscretePartition {
                 real_updates: wire.real_updates,
@@ -502,6 +514,19 @@ pub struct DaeInitializationPartition {
     /// `initial_equations`.
     #[serde(rename = "initial_structured_equations")]
     pub structured_equations: Vec<StructuredEquationFamily>,
+    /// Typed provenance for generated initialization rows. This remains an
+    /// serialized phase contract with one entry per initialization equation.
+    #[serde(rename = "initial_equation_provenance")]
+    pub equation_provenance: Vec<InitializationEquationProvenance>,
+}
+
+/// Semantic origin of an initialization equation.  Consumers must use this
+/// rather than parsing the human-readable `Equation::origin` debug label.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InitializationEquationProvenance {
+    #[default]
+    User,
+    FixedStart,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -534,7 +559,7 @@ pub struct DaeEventPartition {
     pub synthetic_root_conditions: Vec<Expression>,
     /// Scheduled discontinuity instants derived at compile time.
     /// This is canonical runtime metadata (always present in DAE schema).
-    pub scheduled_time_events: Vec<f64>,
+    pub scheduled_time_events: Vec<DaeScheduledTimeEvent>,
     /// Root rows that correspond to periodic sample schedules.
     ///
     /// `root_index` is in Solve root-condition order:
@@ -548,6 +573,14 @@ pub struct DaeEventPartition {
     /// residual expressions. `reinit` is lowered earlier into guarded discrete
     /// state-update equations and must not appear here.
     pub event_actions: Vec<DaeEventAction>,
+}
+
+/// Compile-time scheduled discontinuity with the source expression that
+/// established the runtime instant.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DaeScheduledTimeEvent {
+    pub time: f64,
+    pub source_span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1368,7 +1401,12 @@ mod tests {
             Span::DUMMY,
             "when sample trigger then hold.y",
         ));
-        dae.events.scheduled_time_events.push(0.1);
+        dae.events
+            .scheduled_time_events
+            .push(super::DaeScheduledTimeEvent {
+                time: 0.1,
+                source_span: Some(fixture_span()),
+            });
         dae.clocks.schedules.push(ClockSchedule {
             period_seconds: 0.1,
             phase_seconds: 0.0,
@@ -1465,11 +1503,61 @@ mod tests {
             "DAE JSON must carry an explicit schema_version"
         );
 
+        let mut previous = value.clone();
+        previous["schema_version"] = serde_json::json!(DAE_SCHEMA_VERSION - 1);
+        let err = serde_json::from_value::<Dae>(previous)
+            .expect_err("previous DAE schema version must fail after wire replacement");
+        assert!(err.to_string().contains("unsupported DAE schema_version"));
+
         let mut unsupported = value;
         unsupported["schema_version"] = serde_json::json!(DAE_SCHEMA_VERSION + 1);
         let err = serde_json::from_value::<Dae>(unsupported)
             .expect_err("unsupported DAE schema version must fail");
         assert!(err.to_string().contains("unsupported DAE schema_version"));
+    }
+
+    #[test]
+    fn initialization_provenance_roundtrip_preserves_cardinality() {
+        let mut dae = Dae::default();
+        dae.initialization.equations.push(Equation::residual(
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(0.0),
+                span: fixture_span(),
+            },
+            fixture_span(),
+            "roundtrip",
+        ));
+        dae.initialization
+            .equation_provenance
+            .push(super::InitializationEquationProvenance::FixedStart);
+        let value = serde_json::to_value(&dae).expect("serialize DAE provenance");
+        let decoded: Dae = serde_json::from_value(value.clone()).expect("roundtrip DAE provenance");
+        assert_eq!(
+            decoded.initialization.equation_provenance,
+            dae.initialization.equation_provenance
+        );
+        let encoded = bincode::serialize(&dae).expect("serialize nonempty DAE provenance");
+        let equation_bytes = bincode::serialize(&dae.initialization.equations)
+            .expect("serialize nonempty initialization equations");
+        let _: Vec<Equation> = bincode::deserialize(&equation_bytes)
+            .expect("roundtrip nonempty initialization equations");
+        let provenance_bytes = bincode::serialize(&dae.initialization.equation_provenance)
+            .expect("serialize nonempty initialization provenance");
+        let _: Vec<super::InitializationEquationProvenance> =
+            bincode::deserialize(&provenance_bytes)
+                .expect("roundtrip nonempty initialization provenance");
+        let binary_decoded: Dae =
+            bincode::deserialize(&encoded).expect("roundtrip nonempty DAE provenance");
+        assert_eq!(
+            binary_decoded.initialization.equation_provenance,
+            vec![super::InitializationEquationProvenance::FixedStart]
+        );
+
+        let mut malformed = value;
+        malformed["initial_equation_provenance"] = serde_json::json!([]);
+        let error =
+            serde_json::from_value::<Dae>(malformed).expect_err("cardinality mismatch must fail");
+        assert!(error.to_string().contains("provenance cardinality"));
     }
 
     #[test]
