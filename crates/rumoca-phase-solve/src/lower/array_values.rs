@@ -2083,6 +2083,57 @@ impl<'a> LowerBuilder<'a> {
         }))
     }
 
+    fn lower_structured_index_local_slice_values(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        shape: &[usize],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let key = name.as_str();
+        let mut probe = crate::lower_vec_with_capacity(
+            subscripts.len(),
+            "local dynamic slice probe rank",
+            span,
+        )?;
+        let mut has_structured_index = false;
+        for subscript in subscripts {
+            if matches!(
+                subscript,
+                rumoca_core::Subscript::Expr { expr, .. }
+                    if matches!(expr.as_ref(), rumoca_core::Expression::Index { .. })
+            ) {
+                has_structured_index = true;
+                probe.push(rumoca_core::Subscript::try_generated_index(
+                    1,
+                    span,
+                    "local dynamic slice probe",
+                )?);
+            } else {
+                probe.push(subscript.clone());
+            }
+        }
+        if !has_structured_index {
+            return Ok(None);
+        }
+        self.slice_selections(&probe, shape, span, scope)
+            .map_err(|err| local_slice_error(err, key, shape))?;
+        self.lower_array_like_dynamic_selection_values(
+            &rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: Vec::new(),
+                span,
+            },
+            subscripts,
+            Some(span),
+            scope,
+            call_depth,
+        )
+        .map_err(|err| local_slice_error(err, key, shape))
+    }
+
     /// Resolve `name[subscripts]` against a function-scope (local) array
     /// binding, ignoring any global model variable of the same name. Once the
     /// scoped local binding exists, resolution must either produce local values
@@ -2169,14 +2220,15 @@ impl<'a> LowerBuilder<'a> {
                 name: format_subscript_binding_key(key, &indices),
             });
         }
-        let selections = self
-            .slice_selections(subscripts, &shape, span, scope)
-            .map_err(|err| {
-                let shape = format_usize_dims(&shape);
-                err.with_context(format!(
-                    "resolving subscripted local array `{key}` with shape {shape}"
-                ))
-            })?;
+        let selections = self.slice_selections(subscripts, &shape, span, scope);
+        if selections.is_err()
+            && let Some(values) = self.lower_structured_index_local_slice_values(
+                name, subscripts, &shape, span, scope, call_depth,
+            )?
+        {
+            return Ok(LocalSubscriptResolution::Values(values));
+        }
+        let selections = selections.map_err(|err| local_slice_error(err, key, &shape))?;
         let mut combos = Vec::new();
         collect_slice_index_combos(&selections, 0, &mut Vec::new(), &mut combos);
         let mut regs =
@@ -2276,6 +2328,13 @@ impl<'a> LowerBuilder<'a> {
             base, subscripts, owner_span, scope, call_depth,
         )?])
     }
+}
+
+fn local_slice_error(err: LowerError, key: &str, shape: &[usize]) -> LowerError {
+    err.with_context(format!(
+        "resolving subscripted local array `{key}` with shape {}",
+        format_usize_dims(shape)
+    ))
 }
 
 fn required_min_max_arg_span(

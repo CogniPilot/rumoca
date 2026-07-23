@@ -766,8 +766,10 @@ fn lower_expression_inlines_user_function_for_statement() {
     assert!((read_reg(&regs, lowered.result) - 6.0).abs() <= 1e-12);
 }
 
-#[test]
-fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
+fn lower_scoped_matrix_slice(
+    selector: rumoca_core::Expression,
+    selector_first: bool,
+) -> Result<f64, crate::LowerError> {
     let mut dae_model = dae::Dae::default();
     let mut pick_row = rumoca_core::Function::new("My.pickRow", lower_test_span());
     pick_row.inputs = vec![
@@ -776,27 +778,42 @@ fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
     ];
     pick_row.outputs = vec![function_param("out")];
     pick_row.locals = vec![function_param_with_dims("e3_1", &[3])];
+    let colon = rumoca_core::Subscript::Colon {
+        span: lower_test_span(),
+    };
+    let selector = rumoca_core::Subscript::generated_expr(Box::new(selector), lower_test_span());
+    let subscripts = if selector_first {
+        vec![selector, colon]
+    } else {
+        vec![colon, selector]
+    };
     pick_row.body = vec![
         rumoca_core::Statement::Assignment {
             comp: component_ref("e3_1"),
             value: rumoca_core::Expression::Index {
                 base: Box::new(var("R_T")),
-                subscripts: vec![
-                    rumoca_core::Subscript::generated_expr(
-                        Box::new(var("sequence[3]")),
-                        lower_test_span(),
-                    ),
-                    rumoca_core::Subscript::Colon {
-                        span: lower_test_span(),
-                    },
-                ],
+                subscripts,
                 span: lower_test_span(),
             },
             span: lower_test_span(),
         },
         rumoca_core::Statement::Assignment {
             comp: component_ref("out"),
-            value: var_index("e3_1", 2),
+            value: add(
+                var_index("e3_1", 1),
+                add(
+                    binary(
+                        rumoca_core::OpBinary::Mul,
+                        real_lit(10.0),
+                        var_index("e3_1", 2),
+                    ),
+                    binary(
+                        rumoca_core::OpBinary::Mul,
+                        real_lit(100.0),
+                        var_index("e3_1", 3),
+                    ),
+                ),
+            ),
             span: lower_test_span(),
         },
     ];
@@ -811,7 +828,8 @@ fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
         )),
         args: vec![
             rumoca_core::Expression::Array {
-                elements: (1..=9)
+                elements: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+                    .into_iter()
                     .map(|value| rumoca_core::Expression::Literal {
                         value: rumoca_core::Literal::Integer(value),
                         span: lower_test_span(),
@@ -836,11 +854,224 @@ fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
         span: lower_test_span(),
     };
 
-    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
-        .expect("function-local matrix row slice should lower");
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)?;
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    Ok(read_reg(&regs, lowered.result))
+}
 
-    assert_eq!(read_reg(&regs, lowered.result), 5.0);
+#[test]
+fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
+    let value = lower_scoped_matrix_slice(var("sequence[3]"), true)
+        .expect("function-local matrix row slice should lower");
+    assert_eq!(value, 1417.0);
+}
+
+#[test]
+fn lower_expression_inlines_local_matrix_slice_with_nested_index_selector() {
+    let selector = rumoca_core::Expression::Index {
+        base: Box::new(var("sequence")),
+        subscripts: vec![rumoca_core::Subscript::index(3, lower_test_span())],
+        span: lower_test_span(),
+    };
+    let value = lower_scoped_matrix_slice(selector, true)
+        .expect("function-local matrix row slice with nested selector should lower");
+    assert_eq!(value, 1417.0);
+}
+
+#[test]
+fn lower_expression_inlines_local_matrix_column_slice_with_nested_index_selector() {
+    let selector = rumoca_core::Expression::Index {
+        base: Box::new(var("sequence")),
+        subscripts: vec![rumoca_core::Subscript::index(3, lower_test_span())],
+        span: lower_test_span(),
+    };
+    let value = lower_scoped_matrix_slice(selector, false)
+        .expect("function-local matrix column slice with nested selector should lower");
+    assert_eq!(value, 2013.0);
+}
+
+#[test]
+fn lower_expression_keeps_static_local_matrix_slice() {
+    let selector = rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(2),
+        span: lower_test_span(),
+    };
+    let value = lower_scoped_matrix_slice(selector, true)
+        .expect("static function-local matrix row slice should lower");
+    assert_eq!(value, 1417.0);
+}
+
+fn lower_rank_three_slice_with_companion(
+    companion: rumoca_core::Subscript,
+) -> Result<(), crate::LowerError> {
+    let mut dae_model = dae::Dae::default();
+    let mut pick_slice = rumoca_core::Function::new("My.pickRankThreeSlice", lower_test_span());
+    pick_slice.inputs = vec![
+        function_param_with_dims("a", &[2, 3, 2]),
+        function_param_with_dims("sequence", &[3]),
+    ];
+    pick_slice.outputs = vec![function_param("out")];
+    pick_slice.locals = vec![function_param_with_dims("selected", &[2])];
+    pick_slice.body = vec![
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("selected"),
+            value: rumoca_core::Expression::Index {
+                base: Box::new(var("a")),
+                subscripts: vec![
+                    rumoca_core::Subscript::generated_expr(
+                        Box::new(rumoca_core::Expression::Index {
+                            base: Box::new(var("sequence")),
+                            subscripts: vec![rumoca_core::Subscript::index(3, lower_test_span())],
+                            span: lower_test_span(),
+                        }),
+                        lower_test_span(),
+                    ),
+                    companion,
+                    rumoca_core::Subscript::Colon {
+                        span: lower_test_span(),
+                    },
+                ],
+                span: lower_test_span(),
+            },
+            span: lower_test_span(),
+        },
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("out"),
+            value: var_index("selected", 1),
+            span: lower_test_span(),
+        },
+    ];
+    dae_model.symbols.functions.insert(
+        rumoca_core::VarName::new("My.pickRankThreeSlice"),
+        pick_slice,
+    );
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.pickRankThreeSlice",
+        )),
+        args: vec![
+            rumoca_core::Expression::Array {
+                elements: (1..=12)
+                    .map(|value| rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(value),
+                        span: lower_test_span(),
+                    })
+                    .collect(),
+                is_matrix: false,
+                span: lower_test_span(),
+            },
+            rumoca_core::Expression::Array {
+                elements: [1, 2, 1]
+                    .into_iter()
+                    .map(|value| rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(value),
+                        span: lower_test_span(),
+                    })
+                    .collect(),
+                is_matrix: false,
+                span: lower_test_span(),
+            },
+        ],
+        is_constructor: false,
+        span: lower_test_span(),
+    };
+
+    lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions).map(|_| ())
+}
+
+fn assert_rank_three_slice_unsupported(err: crate::LowerError, expected_reason: &str) {
+    let crate::LowerError::UnsupportedAt {
+        reason,
+        contexts,
+        span,
+    } = err
+    else {
+        panic!("expected source-spanned out-of-bounds selector error");
+    };
+    assert_eq!(reason, expected_reason);
+    assert_eq!(
+        contexts,
+        ["resolving subscripted local array `a` with shape [2, 3, 2]"]
+    );
+    assert!(!span.is_dummy());
+}
+
+#[test]
+fn lower_expression_rejects_out_of_bounds_companion_to_nested_slice_selector() {
+    let companion = rumoca_core::Subscript::generated_expr(
+        Box::new(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(4),
+            span: lower_test_span(),
+        }),
+        lower_test_span(),
+    );
+    let err = lower_rank_three_slice_with_companion(companion)
+        .expect_err("out-of-bounds companion selector must fail before dynamic selection");
+    assert_rank_three_slice_unsupported(err, "array slice index is outside dimension bounds");
+}
+
+#[test]
+fn lower_expression_rejects_unsupported_companion_to_nested_slice_selector() {
+    let companion = rumoca_core::Subscript::generated_expr(
+        Box::new(rumoca_core::Expression::Tuple {
+            elements: vec![real_lit(2.0)],
+            span: lower_test_span(),
+        }),
+        lower_test_span(),
+    );
+    let err = lower_rank_three_slice_with_companion(companion)
+        .expect_err("unsupported companion selector must fail before dynamic selection");
+    assert_rank_three_slice_unsupported(err, "unsupported expression in for-loop range");
+}
+
+#[test]
+fn lower_expression_preserves_local_context_for_dynamic_slice_error() {
+    let selector = rumoca_core::Expression::Index {
+        base: Box::new(var("missing_sequence")),
+        subscripts: vec![rumoca_core::Subscript::index(1, lower_test_span())],
+        span: lower_test_span(),
+    };
+    let err = lower_scoped_matrix_slice(selector, true)
+        .expect_err("missing dynamic selector binding should fail with local context");
+    let crate::LowerError::Spanned { source, span } = &err else {
+        panic!("expected source-spanned dynamic selector error, got {err:?}");
+    };
+    assert!(!span.is_dummy());
+    let crate::LowerError::WithContext { source, contexts } = source.as_ref() else {
+        panic!("expected local context on dynamic selector error, got {err:?}");
+    };
+    assert!(matches!(
+        source.as_ref(),
+        crate::LowerError::MissingBinding { name } if name == "missing_sequence[1]"
+    ));
+    assert_eq!(
+        contexts.as_slice(),
+        ["resolving subscripted local array `R_T` with shape [3, 3]"]
+    );
+}
+
+#[test]
+fn lower_expression_rejects_unsupported_local_matrix_slice_selector() {
+    let selector = rumoca_core::Expression::Tuple {
+        elements: vec![real_lit(2.0)],
+        span: lower_test_span(),
+    };
+    let err = lower_scoped_matrix_slice(selector, true)
+        .expect_err("tuple slice selector should remain unsupported");
+    let crate::LowerError::UnsupportedAt {
+        reason,
+        contexts,
+        span,
+    } = err
+    else {
+        panic!("expected source-spanned unsupported selector error");
+    };
+    assert_eq!(reason, "unsupported expression in for-loop range");
+    assert_eq!(
+        contexts,
+        ["resolving subscripted local array `R_T` with shape [3, 3]"]
+    );
+    assert!(!span.is_dummy());
 }
 
 #[test]
