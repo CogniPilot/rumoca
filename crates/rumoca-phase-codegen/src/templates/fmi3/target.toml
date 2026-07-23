@@ -17,11 +17,13 @@ ir = "dae"
 path = "resources/externalLibraries.txt"
 template = "externalLibraries.txt.jinja"
 ir = "dae"
+allow_empty = true
 
 [[files]]
 path = "resources/externalIncludeDirectories.txt"
 template = "externalIncludeDirectories.txt.jinja"
 ir = "dae"
+allow_empty = true
 
 [[files]]
 path = "modelDescription.xml"

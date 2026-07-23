@@ -108,6 +108,10 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
+    /// Whether this artifact may render as an empty file. Required artifacts
+    /// remain non-empty by default; targets must opt in per file.
+    #[serde(default)]
+    pub allow_empty: bool,
     /// Optional per-file IR override for mixed-context targets (for example,
     /// FMI resource metadata rendered from DAE alongside Solve runtime code).
     pub ir: Option<TargetTemplateIr>,
@@ -1113,6 +1117,30 @@ render_context = "fmi-model-description"
             manifest.files[0].render_context,
             Some(TargetFileRenderContext::FmiModelDescription)
         );
+    }
+
+    #[test]
+    fn target_manifest_file_allow_empty_parses_and_defaults_false() {
+        let manifest = super::parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "custom"
+
+[[files]]
+path = "required.txt"
+template = "required.txt.jinja"
+
+[[files]]
+path = "optional.txt"
+template = "optional.txt.jinja"
+allow_empty = true
+"#,
+        )
+        .expect("parse target manifest with optional empty output");
+
+        assert!(!manifest.files[0].allow_empty);
+        assert!(manifest.files[1].allow_empty);
     }
 
     #[test]
