@@ -1559,6 +1559,37 @@ fn scalarize_residual_index_column_slice_lhs_infers_targets_from_array_ir() {
 }
 
 #[test]
+fn scalarize_consumes_static_cross_component_index_after_reprojection() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["r", "f"] {
+        dae_model
+            .variables
+            .parameters
+            .insert(VarName::new(name), variable(name, &[3]));
+    }
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("m"), variable("m", &[]));
+    dae_model
+        .continuous
+        .equations
+        .push(eq("m", index(cross(var("r"), var("f")), &[2]), 1));
+
+    scalarize_equations(&mut dae_model).expect("indexed cross component should scalarize");
+
+    assert_eq!(dae_model.continuous.equations.len(), 1);
+    assert!(
+        !matches!(
+            dae_model.continuous.equations[0].rhs,
+            Expression::Index { .. }
+        ),
+        "a scalarized cross component must not retain a stale outer Index: {:#?}",
+        dae_model.continuous.equations[0].rhs
+    );
+}
+
+#[test]
 fn scalarize_matrix_vector_derivative_residual_uses_expression_shape() {
     let mut dae_model = dae::Dae::default();
     dae_model

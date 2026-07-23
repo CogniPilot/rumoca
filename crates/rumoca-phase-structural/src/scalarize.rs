@@ -877,8 +877,21 @@ impl<'a> IndexProjectionContext<'a> {
                 {
                     return project_dimmed_var_ref(name, dims, subscripts, expr, self);
                 }
+                if let [Subscript::Index { value, .. }] = subscripts.as_slice()
+                    && let Ok(index) = usize::try_from(*value)
+                    && index > 0
+                {
+                    let selected_base = self.project_at(base, index)?;
+                    if self
+                        .expression_dims(&selected_base)
+                        .is_some_and(|dims| dims.is_empty())
+                    {
+                        return Ok(selected_base);
+                    }
+                }
+                let projected_base = self.project(base)?;
                 Ok(Expression::Index {
-                    base: Box::new(self.project(base)?),
+                    base: Box::new(projected_base),
                     subscripts: subscripts.clone(),
                     span: *span,
                 })
