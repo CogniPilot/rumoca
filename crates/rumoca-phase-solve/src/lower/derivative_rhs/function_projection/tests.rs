@@ -3855,7 +3855,7 @@ fn non_function_constructor_and_unknown_array_like_behavior_is_unchanged() {
 }
 
 #[test]
-fn external_and_impure_array_calls_keep_runtime_lane_projection() {
+fn external_and_impure_array_calls_decline_at_both_projection_boundaries() {
     let mut external = rumoca_core::Function::new("My.externalVector", test_span());
     external.outputs.push(function_param_with_dims("y", &[2]));
     external.external = Some(rumoca_core::ExternalFunction::default());
@@ -3877,16 +3877,15 @@ fn external_and_impure_array_calls_keep_runtime_lane_projection() {
             is_constructor: false,
             span: test_span(),
         };
-        let (Some(values), Some(value)) = array_like_boundary_results(&call, &dae_model, 1) else {
-            panic!("external and impure calls should retain runtime lane calls");
-        };
-
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[1], value);
-        assert!(matches!(
-            value,
-            rumoca_core::Expression::FunctionCall { .. }
-        ));
+        let (values, value) = array_like_boundary_results(&call, &dae_model, 1);
+        assert!(
+            values.is_none(),
+            "{name} must stay whole at the array-like scalars boundary"
+        );
+        assert!(
+            value.is_none(),
+            "{name} must stay whole at the array-like scalar boundary"
+        );
     }
 }
 
