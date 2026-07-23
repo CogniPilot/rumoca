@@ -1360,7 +1360,9 @@ jobs:
     name: modelica_models Compatibility Gate
     runs-on: ubuntu-24.04
     needs: [nix-build-msl]
-    timeout-minutes: 15
+    # Cachix is optional for PRs, so a cache miss must leave enough time to
+    # rebuild the shared MSL artifact bundle before compiling the corpus.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:
