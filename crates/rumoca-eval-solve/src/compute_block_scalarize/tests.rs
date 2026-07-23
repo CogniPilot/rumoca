@@ -144,6 +144,7 @@ fn linsolve_scalarizes_to_one_program_with_unique_components() {
             rhs_start: (n * n) as Reg,
             n,
             next_reg,
+            output_indices: Vec::new(),
             metadata: TensorNodeMetadata::default(),
             span: rumoca_core::Span::DUMMY,
         }],
@@ -167,6 +168,26 @@ fn linsolve_scalarizes_to_one_program_with_unique_components() {
         }
     }
     assert_eq!(components, n);
+}
+
+#[test]
+fn linsolve_scalarization_preserves_noncontiguous_output_indices() {
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::LinSolve {
+            setup_ops: load_p_ops(0, 6),
+            matrix_start: 0,
+            rhs_start: 4,
+            n: 2,
+            next_reg: 6,
+            output_indices: vec![0, 2],
+            metadata: TensorNodeMetadata::default(),
+            span: rumoca_core::Span::DUMMY,
+        }],
+    };
+
+    let scalar = to_scalar_program_block(&block).expect("mapped LinSolve should scalarize");
+    assert_eq!(scalar.output_indices, vec![0, 2]);
+    assert_eq!(block.len().expect("mapped output count should be valid"), 3);
 }
 
 #[test]
