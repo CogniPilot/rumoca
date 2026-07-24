@@ -40,12 +40,9 @@ reverse_ad = false
 dynamic_control_flow = false
 host_callbacks = false
 
-# D2/GAL-008 split: these templates own the C FILE LAYOUT only (includes,
-# guards, struct/function skeletons, the fixed builtin-helper prelude);
-# every C expression/statement and identifier is printed by the typed Rust
-# printer in rumoca-galec-codegen (c_mangle/c_print) and arrives pre-printed
-# in the template context (`variables[*].c_name`, `methods.*.c_lines`).
-# Templates stay thin — iteration and interpolation, no C syntax logic.
+# D2/GAL-008 split: Rust lowers to structured C codegen IR (collision-checked
+# names, typed variables, normalized scalar assignments); these templates own
+# every C token, expression, statement, declaration, and file-layout choice.
 [[files]]
 path = "{{ model_name }}.h"
 template = "model.h.jinja"

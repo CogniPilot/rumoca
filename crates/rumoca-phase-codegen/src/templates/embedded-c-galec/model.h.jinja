@@ -7,13 +7,16 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+{%- macro c_type(scalar_type) -%}
+{%- if scalar_type == "real" -%}double{%- elif scalar_type == "integer" -%}int32_t{%- elif scalar_type == "boolean" -%}bool{%- endif -%}
+{%- endmacro %}
 
 /* Block state: every manifest-listed variable of the projected GALEC
  * block, including the 'previous(x)' discrete-state slots committed at
  * the end of dostep (eFMI trap T2). */
 typedef struct {
 {%- for variable in variables %}
-    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+    {{ c_type(variable.scalar_type) }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
 {%- endfor %}
 } {{ struct_name }};
 

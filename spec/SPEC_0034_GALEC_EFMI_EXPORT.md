@@ -16,11 +16,56 @@ canonical artifacts; GALEC is never a canonical IR stage.
 ## Pipeline Placement
 
 ```text
-AST -> Flat -> DAE -> Solve                    canonical (SPEC_0007)
-DAE (+ optional provenance)
-  -> AlgorithmCodePackage = GALEC AST + manifest context (rumoca-galec-codegen)
-  -> Model.alg + manifest.xml + __content.xml + schemas/ (+ typed C context)
+Modelica source
+  -> AST
+  -> resolved / typed AST
+  -> instantiated Flat IR
+  -> canonical DAE IR                         canonical pipeline (SPEC_0007)
+
+canonical DAE IR
+  -> generic target-capability checks         target.toml, over untouched DAE
+  -> projection-local DAE preparation         non-destructive clone
+  -> GALEC admissibility + classification     clocks, variables, supported subset
+  -> GALEC block-code projection
+  -> AlgorithmCodePackage
+       = validated GALEC Block AST
+       + typed Algorithm Code manifest fragment
+  -> typed serializable template contexts
+  -> minijinja rendering                      rumoca-phase-codegen
+       |-> Model.alg                          GALEC block-code template
+       |-> Model.h / Model.c                  structured C IR templates
+       |-> manifest.xml / __content.xml       eFMI XML templates
+  -> checksum validation + eFMU packaging
 ```
+
+GALEC is an export projection from DAE, not a canonical IR stage and not a
+Solve-IR backend. The projection preserves the GALEC block-code structure:
+interface and protected declarations plus exactly the parameter-free
+`Startup`, `Recalibrate`, and `DoStep` methods. It also materializes GALEC
+state conventions such as `'previous(x)'`, clock wiring, starts, causalities,
+and manifest identities that generic Solve IR does not own.
+
+The three textual branches share one projected package:
+
+```text
+GALEC Block AST
+  |-> GALEC template context -----------------------> Model.alg.jinja
+  |-> structured C codegen IR (no source strings) -> model.h/model.c.jinja
+  `-> validated manifest contexts -----------------> XML templates
+```
+
+The Production Code C representation MUST be derived from the validated GALEC
+Block AST, rather than independently from DAE or Solve IR. This keeps its state
+layout and three exported block methods aligned with `Model.alg` and makes the
+Production Code manifest's `LogicalData` mapping truthful. Rust owns semantic
+validation, projection, structured codegen IR, context serialization,
+checksums, and packaging; minijinja owns every emitted source/XML token.
+
+Consequently, the normal executable-target route
+`DAE -> structural analysis -> Solve IR -> templates` does not apply to the
+three GALEC-derived targets. Their shared route is
+`DAE -> GALEC admissibility -> GALEC block-code projection -> typed contexts
+-> minijinja`.
 
 ## Module Layout and Dependency Direction
 
@@ -43,7 +88,7 @@ rumoca crate  generic container/checksum build step + vendored schemas (BSD-3 ve
 | GAL-006 | Generic capability validation always runs; GALEC admissibility is additive; the target manifest declares source IR `dae` or `solve`, never `galec`. | `rumoca-compile` | No `ir`-keyed validator bypasses (SPEC_0029 §12). |
 | GAL-007 | Unsupported features fail with stable `unsupported-feature:<feature_id>` diagnostics; errors are structured phase-local enums with stable codes and spans (SPEC_0008); no silent defaults. | all GALEC crates | Fail early; CI-aggregatable. |
 | GAL-008 | Generated C **and eFMI packaging XML** are owned by minijinja templates (D3 amended); the producer emits typed serializable context only — never C/XML strings in Rust. | `rumoca-phase-codegen` | SPEC_0029 §12 template ownership. |
-| GAL-009 | `.alg` text is printed from the GALEC AST (recorded SPEC_0029 §12 exception), reaching emitted files as template context via the `target.toml` + minijinja pipeline. | `rumoca-ir-galec` printer | T4–T7/T12 need typed printing. |
+| GAL-009 | `.alg` text is rendered by minijinja from a typed, serializable GALEC codegen context. Rust validates and lowers through the codegen IR but does not supply pre-rendered declarations, expressions, statements, or whole-file source. The `rumoca-ir-galec` printer remains a language-tooling formatter and oracle, not a production codegen path. | `rumoca-phase-codegen` templates | Keeps all textual targets on the SPEC_0029 §12 ownership boundary while retaining typed T4–T7/T12 metadata. |
 | GAL-010 | Crate split: `rumoca-ir-galec` (language; depends on `rumoca-core` for source `Span`/provenance **only** — no IR-stage or eFMI/packaging deps, D11) and `rumoca-galec-codegen` (projection + eFMI packaging via `manifest_context`); the generic container/checksum build step + vendored schemas live in the `rumoca` crate. `rumoca-efmi` **dissolved** (D3). | workspace layout | Product-agnostic packaging. |
 | GAL-011 | GALEC output via `--target galec` / `--target embedded-c-galec`; `--emit` stays reserved for canonical IR inspection. | `rumoca` CLI | Preserves the CLI contract. |
 | GAL-012 | Template CI renders GALEC targets against a dedicated smoke fixture; skipped targets MUST NOT be marked covered; generated C is compile-checked (Testing Requirements). | template CI (xtask) | False coverage hides broken output. |
@@ -74,8 +119,8 @@ non-conformant (§2.2).
 
 | # | Decision | Resolution |
 |---|----------|------------|
-| D1 | `.alg` text ownership | `rumoca-ir-galec` printer (GAL-009). |
-| D2 | C text ownership | minijinja over typed `c_template_context` (GAL-008). |
+| D1 | `.alg` text ownership | minijinja over typed GALEC codegen context (GAL-009); the AST printer is tooling-only. |
+| D2 | C text ownership | minijinja over typed C codegen context (GAL-008); the context contains structured references, expressions, and normalized assignments, never pre-rendered C lines. |
 | D3 | eFMI XML ownership | **minijinja over a serializable context** in `rumoca-phase-codegen` — **reverses the Beta-1 typed-serializer decision**. Escaping/`xs:double` are filters; UUID-uniqueness/ref-resolution/dim≥1 are Rust validators run pre-render; SHA-1 + the cross-file checksum web are a generic `target.toml`-declared build step. `rumoca-efmi` dissolves; new products = template dir + `target.toml`. |
 | D4 | Provenance shape | Auxiliary artifact beside DAE with an equation-correspondence map (GAL-003); never "algorithms present ⇒ ignore f_z/f_m". |
 | D5 | Manifest `renderer` extension | Rejected: covered by D1. |

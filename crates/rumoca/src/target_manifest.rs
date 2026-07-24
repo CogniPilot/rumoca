@@ -230,8 +230,8 @@ fn source_map(result: &CompilationResult) -> SourceMap {
 /// plan for the product-agnostic manifest context — into which the plan slots
 /// the build-step-injected checksums (keyed by their `as` name) — and renders
 /// under a strict-undefined env with the `xml_escape`/`xs_double` filters. The
-/// `.alg`/`.h`/`.c` passthrough templates read the top-level `galec_*` keys;
-/// the manifest templates read `ctx`.
+/// Code templates read structured GALEC/C codegen context; manifest templates
+/// read their validated product contexts under `ctx`.
 fn galec_manifest_render<'a>(
     plan: &'a rumoca_compile::galec::GalecPackagingPlan,
     bundle: &'a TargetBundle,
@@ -240,6 +240,28 @@ fn galec_manifest_render<'a>(
     let mut env = minijinja::Environment::new();
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
     register_manifest_filters(&mut env);
+    let galec_bundle = TargetBundle::builtin(rumoca_compile::galec::GALEC_TARGET)
+        .expect("builtin galec templates are embedded");
+    env.add_template_owned(
+        "galec-model.alg.jinja",
+        galec_bundle
+            .template_source("model.alg.jinja")
+            .expect("builtin GALEC algorithm template exists")
+            .into_owned(),
+    )
+    .expect("builtin GALEC algorithm template parses");
+    let c_bundle = TargetBundle::builtin(rumoca_compile::galec::EMBEDDED_C_GALEC_TARGET)
+        .expect("builtin embedded-c-galec templates are embedded");
+    for template in ["model.h.jinja", "model.c.jinja"] {
+        env.add_template_owned(
+            format!("galec-{template}"),
+            c_bundle
+                .template_source(template)
+                .expect("builtin GALEC C template exists")
+                .into_owned(),
+        )
+        .expect("builtin GALEC C template parses");
+    }
     move |template: &str, checksums: &std::collections::BTreeMap<String, String>| {
         let source = if template.ends_with(".jinja") {
             bundle.template_source(template)?
@@ -253,10 +275,12 @@ fn galec_manifest_render<'a>(
             source.as_ref(),
             minijinja::context! {
                 model_name => model_identifier,
-                galec_alg_source => plan.alg_text(),
-                galec_c_header => plan.c_header(),
-                galec_c_source => plan.c_source(),
+                conformance_header => minijinja::context! {
+                    lines => rumoca_compile::galec::PRODUCTION_CONFORMANCE_LINES,
+                    summary => rumoca_compile::galec::PRODUCTION_CONFORMANCE_SUMMARY,
+                },
                 ctx => minijinja::Value::from_serialize(&ctx_value),
+                ..minijinja::Value::from_serialize(&ctx_value)
             },
         )
         .map_err(|error| anyhow::anyhow!("Render galec template '{template}': {error}"))

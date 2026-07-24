@@ -57,8 +57,8 @@ reverse_ad = false
 dynamic_control_flow = false
 host_callbacks = false
 
-# The `.alg`/`.h`/`.c` files are passthrough templates of the typed GALEC
-# printer / typed C printer (GAL-009 / D3); `ac_manifest.xml.jinja`,
+# The `.alg`/`.h`/`.c` templates render structured GALEC/C codegen contexts
+# (GAL-008/GAL-009 / D3); `ac_manifest.xml.jinja`,
 # `pc_manifest.xml.jinja`, and `__content.xml.jinja` are the real eFMI manifest
 # templates (contract §3, WI-2) that author every XML element from the
 # product-agnostic context — the typed serializers no longer emit packaging XML

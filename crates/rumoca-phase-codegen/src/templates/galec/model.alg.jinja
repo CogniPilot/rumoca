@@ -1,1 +1,50 @@
-{{- galec_alg_source -}}
+{%- macro name(value) -%}
+{%- if value.kind == "quoted" -%}'{{ value.value }}'{%- else -%}{{ value.value }}{%- endif -%}
+{%- endmacro -%}
+{%- macro reference(value) -%}
+{%- if value.scope == "state" -%}self.{%- endif -%}
+{%- for part in value.parts -%}
+{%- if not loop.first -%}.{%- endif -%}{{ name(part.name) }}
+{%- if part.subscripts -%}[{%- for subscript in part.subscripts -%}{{ expr(subscript) }}{% if not loop.last %}, {% endif %}{%- endfor -%}]{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro operator(kind) -%}
+{%- if kind == "pow" -%}^{%- elif kind == "mul" -%}*{%- elif kind == "div" -%}/{%- elif kind == "add" -%}+{%- elif kind == "sub" -%}-{%- elif kind == "lt" -%}<{%- elif kind == "gt" -%}>{%- elif kind == "le" -%}<={%- elif kind == "ge" -%}>={%- elif kind == "eq" -%}=={%- elif kind == "ne" -%}<>{%- elif kind == "and" -%}and{%- elif kind == "or" -%}or{%- endif -%}
+{%- endmacro -%}
+{%- macro expr(value) -%}
+{%- if value.kind == "bool" -%}{% if value.value %}true{% else %}false{% endif %}
+{%- elif value.kind == "integer" -%}{{ value.value }}
+{%- elif value.kind == "real" -%}{{ value.literal }}
+{%- elif value.kind == "ref" -%}{{ reference(value.reference) }}
+{%- elif value.kind == "size" -%}size({{ reference(value.array) }}, {{ expr(value.dimension) }})
+{%- elif value.kind == "call" -%}{{ name(value.function) }}({%- for argument in value.arguments -%}{{ expr(argument) }}{% if not loop.last %}, {% endif %}{%- endfor -%})
+{%- elif value.kind == "paren" -%}({{ expr(value.value) }})
+{%- elif value.kind == "if" -%}({%- for branch in value.branches -%}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch.condition) }} then {{ expr(branch.value) }}{%- endfor %} else {{ expr(value.else_value) }})
+{%- elif value.kind == "array" -%}{{ "{" }}{%- for element in value.elements -%}{{ expr(element) }}{% if not loop.last %}, {% endif %}{%- endfor -%}{{ "}" }}
+{%- elif value.kind == "neg" -%}-{{ reference(value.reference) }}
+{%- elif value.kind == "not" -%}not ({{ expr(value.value) }})
+{%- elif value.kind == "binary" -%}{% if value.wrap_lhs %}({% endif %}{{ expr(value.lhs) }}{% if value.wrap_lhs %}){% endif %} {{ operator(value.operator) }} {% if value.wrap_rhs %}({% endif %}{{ expr(value.rhs) }}{% if value.wrap_rhs %}){% endif %}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro declaration(value) -%}
+{{ value.type }} {{ name(value.name) }}{%- if value.dimensions -%}[{%- for dimension in value.dimensions -%}{% if dimension.kind == "derived" %}:{% else %}{{ expr(dimension.value) }}{% endif %}{% if not loop.last %}, {% endif %}{%- endfor -%}]{%- endif -%}
+{%- if value.min or value.max -%}({% if value.min %}min = {{ expr(value.min) }}{% endif %}{% if value.min and value.max %}, {% endif %}{% if value.max %}max = {{ expr(value.max) }}{% endif %}){%- endif -%};
+{%- endmacro -%}
+block {{ name(ctx.name) }}
+{%- for variable in ctx.interface %}
+    {{ variable.prefix }} {{ declaration(variable.declaration) }}
+{%- endfor %}
+protected
+{%- for variable in ctx.protected %}
+    {% if variable.prefix %}{{ variable.prefix }} {% endif %}{{ declaration(variable.declaration) }}
+{%- endfor %}
+public
+{%- for method in ctx.methods %}
+    method {{ method.name }}
+    algorithm
+{%- for statement in method.statements %}
+        {{ reference(statement.target) }} := {{ expr(statement.value) }};
+{%- endfor %}
+    end {{ method.name }};
+{%- endfor %}
+end {{ name(ctx.name) }};{{ "\n" }}

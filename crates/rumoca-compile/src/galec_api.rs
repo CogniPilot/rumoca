@@ -53,9 +53,9 @@ use rumoca_galec_codegen::manifest_context::manifest_common::ManifestAttributes;
 use rumoca_galec_codegen::{
     AcManifestCtx, AlgorithmCodePackage, ContentCtx, EmittedCodeFile, GalecInput, GalecOptions,
     GalecTargetError, ManifestId, ManifestIdentity, NameWithoutSlashes, NormalizedText,
-    PcManifestCtx, ScalarTypeMap, Sha1Hex, UtcTimestamp, assemble_manifest_with_identity,
-    assemble_production_manifest_with_identity, c_template_context, lower_to_algorithm_code,
-    render_algorithm_code,
+    PcManifestCtx, ScalarTypeMap, Sha1Hex, UtcTimestamp, algorithm_template_context,
+    assemble_manifest_with_identity, assemble_production_manifest_with_identity,
+    c_template_context, lower_to_algorithm_code,
 };
 use rumoca_ir_ast::TypeTable;
 use rumoca_ir_dae::Dae;
@@ -110,8 +110,8 @@ fn render_diagnostics(diagnostics: &[GalecTargetError]) -> String {
 pub struct GalecCExport {
     /// Serialized typed `CContext` (`rumoca-galec-codegen`'s `emit` module):
     /// `model_name`, `block_name`, `struct_name`, `function_prefix`,
-    /// `include_guard`, `variables`, `methods` — the complete template
-    /// context, C text intelligence stays in the typed printer (D2/GAL-008).
+    /// `include_guard`, `variables`, `methods` — the complete structured
+    /// context; C text intelligence stays in templates (D2/GAL-008).
     pub context: serde_json::Value,
 }
 
@@ -154,8 +154,7 @@ pub fn render_galec_c_export(
 /// A per-invocation eFMU packaging plan for the switch-dispatch build step
 /// (contract §9 WI-5): ONE projection, ONE minted packaging identity
 /// (shared UUIDs/timestamp/tool so the cross-manifest `manifestRefId` links
-/// agree), and the pre-rendered `.alg`/C texts the passthrough templates
-/// interpolate.
+/// agree), and structured GALEC/C codegen contexts consumed by templates.
 ///
 /// The manifest **contexts** are built on demand by the declarative build
 /// step (`rumoca::render_and_package`) in topological order: each producer's
@@ -170,13 +169,10 @@ pub fn render_galec_c_export(
 /// XML (the templates own all XML text — SPEC_0034 D3 amended).
 pub struct GalecPackagingPlan {
     package: AlgorithmCodePackage,
-    /// GALEC block source (`.alg`), pre-rendered; the `.alg` passthrough
-    /// template interpolates it and the build step hashes its bytes.
-    alg_text: String,
-    /// Generated C99 header (empty for the AC-only plan).
-    c_header: String,
-    /// Generated C99 source (empty for the AC-only plan).
-    c_source: String,
+    /// Structured GALEC codegen IR consumed by `model.alg.jinja`.
+    alg_context: serde_json::Value,
+    /// Structured C codegen IR; absent for the AC-only plan.
+    c_context: Option<serde_json::Value>,
     /// Model identifier (dots→underscores); names the `.h`/`.c` files the PC
     /// manifest `Files` entries reference.
     model_identifier: String,
@@ -201,24 +197,6 @@ pub struct GalecPackagingPlan {
 }
 
 impl GalecPackagingPlan {
-    /// The pre-rendered `.alg` block source (passthrough template input).
-    #[must_use]
-    pub fn alg_text(&self) -> &str {
-        &self.alg_text
-    }
-
-    /// The pre-rendered C99 header (empty for the AC-only plan).
-    #[must_use]
-    pub fn c_header(&self) -> &str {
-        &self.c_header
-    }
-
-    /// The pre-rendered C99 source (empty for the AC-only plan).
-    #[must_use]
-    pub fn c_source(&self) -> &str {
-        &self.c_source
-    }
-
     fn ac_identity(&self) -> ManifestIdentity {
         ManifestIdentity {
             id: self.ac_manifest_id,
@@ -245,9 +223,8 @@ impl GalecPackagingPlan {
     /// Build the render context (the `ctx` root the manifest templates read)
     /// for `template`, slotting the build-step-injected checksums (keyed by
     /// their `target.toml` `as` name) into the typed model it assembles.
-    /// Non-manifest templates (`.alg`/`.h`/`.c` passthroughs and `[[files]]`
-    /// path templates) get a null `ctx` — they interpolate only the top-level
-    /// `model_name`/`galec_*` keys the render site supplies.
+    /// Code templates receive structured GALEC/C codegen IR. Path templates
+    /// receive a null context.
     ///
     /// # Errors
     ///
@@ -260,6 +237,13 @@ impl GalecPackagingPlan {
         checksums: &BTreeMap<String, String>,
     ) -> Result<serde_json::Value, GalecExportError> {
         match template {
+            "model.alg.jinja" => Ok(self.alg_context.clone()),
+            "model.h.jinja" | "model.c.jinja" => {
+                let c = self.c_context.as_ref().ok_or_else(|| GalecExportError::Internal {
+                    detail: format!("internal: C template '{template}' requested from an Algorithm-Code-only plan"),
+                })?;
+                Ok(c.clone())
+            }
             "__content.xml.jinja" => self.content_context(
                 self.checksum(checksums, "ac_manifest_sha1")?,
                 checksums.get("pc_manifest_sha1").map(String::as_str),
@@ -392,7 +376,7 @@ impl GalecPackagingPlan {
 }
 
 /// Build the switch-dispatch packaging plan for the `galec` target (AC-only
-/// eFMU): one projection, minted packaging identity, the pre-rendered `.alg`.
+/// eFMU): one projection, minted packaging identity, and typed `.alg` context.
 ///
 /// `model_identifier` is the file-system-safe model name (dots→underscores)
 /// used for the projection and the `.alg` file name; `content_name` is the
@@ -411,13 +395,12 @@ pub fn plan_galec_export(
     content_name: &str,
 ) -> Result<GalecPackagingPlan, GalecExportError> {
     let package = lower_package(dae, flat, model_identifier)?;
-    let alg_text = render_algorithm_code(&package)?;
+    let alg_context = algorithm_template_context(&package)?;
     let identity = ManifestIdentity::generated()?;
     Ok(GalecPackagingPlan {
         package,
-        alg_text,
-        c_header: String::new(),
-        c_source: String::new(),
+        alg_context,
+        c_context: None,
         model_identifier: model_identifier.to_owned(),
         content_name: content_name.to_owned(),
         generated_at: identity.generated_at,
@@ -431,8 +414,8 @@ pub fn plan_galec_export(
 
 /// Build the switch-dispatch packaging plan for the `galec-production`
 /// target (AC + PC eFMU): one projection, minted packaging identity, the
-/// pre-rendered `.alg` and the generated C99 header/source (with the
-/// Production Code conformance header, D10).
+/// structured GALEC and C99 contexts (with the Production Code conformance
+/// header supplied at template render time, D10).
 ///
 /// # Errors
 ///
@@ -447,29 +430,13 @@ pub fn plan_galec_production_export(
     content_name: &str,
 ) -> Result<GalecPackagingPlan, GalecExportError> {
     let package = lower_package(dae, flat, model_identifier)?;
-    let alg_text = render_algorithm_code(&package)?;
+    let alg_context = algorithm_template_context(&package)?;
     let c_context = c_template_context(&package, model_identifier)?;
-    let bundle = embedded_c_layout_bundle()?;
-    let c_header = render_c_layout_template(
-        &bundle,
-        HEADER_TEMPLATE,
-        &c_context,
-        PRODUCTION_CONFORMANCE_LINES,
-        PRODUCTION_CONFORMANCE_SUMMARY,
-    )?;
-    let c_source = render_c_layout_template(
-        &bundle,
-        SOURCE_TEMPLATE,
-        &c_context,
-        PRODUCTION_CONFORMANCE_LINES,
-        PRODUCTION_CONFORMANCE_SUMMARY,
-    )?;
     let identity = ManifestIdentity::generated()?;
     Ok(GalecPackagingPlan {
         package,
-        alg_text,
-        c_header,
-        c_source,
+        alg_context,
+        c_context: Some(c_context),
         model_identifier: model_identifier.to_owned(),
         content_name: content_name.to_owned(),
         generated_at: identity.generated_at,
@@ -578,6 +545,33 @@ pub const EMBEDDED_C_GALEC_CONFORMANCE_SUMMARY: &str = "NOT an eFMI Production C
 fn embedded_c_layout_bundle() -> Result<TargetBundle, GalecExportError> {
     TargetBundle::builtin(EMBEDDED_C_GALEC_TARGET).ok_or_else(|| GalecExportError::CTemplate {
         detail: format!("builtin target '{EMBEDDED_C_GALEC_TARGET}' is not embedded"),
+    })
+}
+
+fn galec_algorithm_bundle() -> Result<TargetBundle, GalecExportError> {
+    TargetBundle::builtin(GALEC_TARGET).ok_or_else(|| GalecExportError::CTemplate {
+        detail: format!("builtin target '{GALEC_TARGET}' is not embedded"),
+    })
+}
+
+fn render_algorithm_template(context: &serde_json::Value) -> Result<String, GalecExportError> {
+    let bundle = galec_algorithm_bundle()?;
+    let source =
+        bundle
+            .template_source("model.alg.jinja")
+            .map_err(|error| GalecExportError::CTemplate {
+                detail: format!("{error:#}"),
+            })?;
+    let mut env = minijinja::Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.render_str(
+        &source,
+        minijinja::context! {
+            ctx => minijinja::Value::from_serialize(context),
+        },
+    )
+    .map_err(|error| GalecExportError::CTemplate {
+        detail: format!("render 'model.alg.jinja': {error}"),
     })
 }
 
@@ -708,7 +702,7 @@ pub fn render_galec_sources(
         return Err(GalecExportError::UnknownTarget(target.to_string()));
     }
     let package = lower_package(dae, flat, model_name)?;
-    let alg = render_algorithm_code(&package)?;
+    let alg = render_algorithm_template(&algorithm_template_context(&package)?)?;
     let (c_header, c_source) = match galec_c_conformance(target) {
         None => (String::new(), String::new()),
         Some((lines, summary)) => {
@@ -906,7 +900,7 @@ end GalecFacadeDemo;
     }
 
     #[test]
-    fn plan_galec_export_pre_renders_the_alg_block() {
+    fn plan_galec_export_carries_the_alg_codegen_context() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
         let plan = plan_galec_export(
             &result.dae,
@@ -916,15 +910,22 @@ end GalecFacadeDemo;
         )
         .expect("discrete fixture should project to GALEC");
 
-        assert!(
-            plan.alg_text().contains("GalecFacadeDemo"),
-            "alg text should name the block:\n{}",
-            plan.alg_text()
+        let alg = render_algorithm_template(&plan.alg_context).expect("algorithm template renders");
+        let formatter_oracle =
+            rumoca_galec_codegen::render_algorithm_code(&plan.package).expect("formatter oracle");
+        assert_eq!(
+            alg, formatter_oracle,
+            "the Jinja codegen path preserves the established GALEC style"
         );
         assert!(
-            plan.alg_text().contains("DoStep"),
+            alg.contains("GalecFacadeDemo"),
+            "alg text should name the block:\n{}",
+            alg
+        );
+        assert!(
+            alg.contains("DoStep"),
             "alg text should contain the DoStep method:\n{}",
-            plan.alg_text()
+            alg
         );
         // The AC manifest context assembles (validators pass) once the build
         // step injects the `.alg` SHA-1 under its declared `as` key; the XML
@@ -956,7 +957,7 @@ end GalecFacadeDemo;
     }
 
     #[test]
-    fn plan_galec_production_export_pre_renders_alg_and_c() {
+    fn plan_galec_production_export_carries_alg_and_c_contexts() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
         let plan = plan_galec_production_export(
             &result.dae,
@@ -966,16 +967,11 @@ end GalecFacadeDemo;
         )
         .expect("discrete fixture should plan the production export");
 
-        for (name, text) in [
-            ("alg_text", plan.alg_text()),
-            ("c_header", plan.c_header()),
-            ("c_source", plan.c_source()),
-        ] {
-            assert!(!text.is_empty(), "{name} must be non-empty");
-        }
+        assert!(!plan.alg_context.is_null());
+        assert!(plan.c_context.is_some());
     }
 
-    /// D10 honesty swap: inside the conformant container the pre-rendered C
+    /// D10 honesty swap: inside the conformant container the rendered C
     /// files claim the Production Code representation and point at the
     /// manifest as the conformance surface — the shared templates'
     /// `embedded-c-galec` NOT-a-PC text must not leak in.
@@ -989,20 +985,38 @@ end GalecFacadeDemo;
             "GalecFacadeDemo",
         )
         .expect("discrete fixture should plan the production export");
+        let c_context = plan.c_context.as_ref().expect("production C context");
+        let bundle = embedded_c_layout_bundle().expect("embedded C templates");
+        let c_header = render_c_layout_template(
+            &bundle,
+            HEADER_TEMPLATE,
+            c_context,
+            PRODUCTION_CONFORMANCE_LINES,
+            PRODUCTION_CONFORMANCE_SUMMARY,
+        )
+        .expect("header template renders");
+        let c_source = render_c_layout_template(
+            &bundle,
+            SOURCE_TEMPLATE,
+            c_context,
+            PRODUCTION_CONFORMANCE_LINES,
+            PRODUCTION_CONFORMANCE_SUMMARY,
+        )
+        .expect("source template renders");
 
         for line in PRODUCTION_CONFORMANCE_LINES {
             assert!(
-                plan.c_header().contains(line),
+                c_header.contains(line),
                 "C header must carry the PC conformance line '{line}':\n{}",
-                plan.c_header()
+                c_header
             );
         }
         assert!(
-            plan.c_source().contains(PRODUCTION_CONFORMANCE_SUMMARY),
+            c_source.contains(PRODUCTION_CONFORMANCE_SUMMARY),
             "C source must carry the PC conformance summary:\n{}",
-            plan.c_source()
+            c_source
         );
-        for text in [plan.c_header(), plan.c_source()] {
+        for text in [&c_header, &c_source] {
             assert!(
                 !text.contains("NOT an eFMI Production Code container"),
                 "embedded-c-galec's NOT-a-PC claim must not leak into the \

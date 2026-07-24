@@ -63,8 +63,8 @@ host_callbacks = false
 bundle = "efmi-schemas"
 dest = "schemas/"
 
-# `model.alg.jinja` is a passthrough of the typed GALEC printer output
-# (GAL-009 / D3); `manifest.xml.jinja` and `__content.xml.jinja` are the real
+# `model.alg.jinja` renders typed GALEC codegen context (GAL-009 / D3);
+# `manifest.xml.jinja` and `__content.xml.jinja` are the eFMI
 # eFMI manifest templates (contract §3, WI-2) that author every XML element
 # from the product-agnostic context — the typed serializers no longer emit
 # packaging XML (SPEC_0034 D3 amended). All three files render through the

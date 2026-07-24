@@ -269,16 +269,18 @@ fn validate_package(package: &AlgorithmCodePackage) -> Result<(), Vec<GalecTarge
             }
         }));
     }
-    match crate::emit::render_block(&package.block) {
-        Ok(alg_text) => {
-            if let Err(error) = crate::emit::assemble_manifest(package, alg_text.as_bytes()) {
+    match crate::emit::algorithm_template_context(package) {
+        Ok(_) => {
+            if let Err(error) =
+                crate::emit::assemble_manifest(package, b"validated-codegen-context")
+            {
                 errors.push(GalecTargetError::LoweringInternal {
                     detail: format!("lowering produced an invalid manifest fragment: {error}"),
                 });
             }
         }
         Err(error) => errors.push(GalecTargetError::LoweringInternal {
-            detail: format!("lowering produced an unprintable GALEC block: {error}"),
+            detail: format!("lowering produced an invalid GALEC template context: {error}"),
         }),
     }
     if errors.is_empty() {
