@@ -271,20 +271,56 @@ fn galec_manifest_render<'a>(
         let ctx_value = plan
             .template_ctx(template, checksums)
             .map_err(anyhow::Error::from)?;
-        env.render_str(
+        render_galec_template_source(
+            &env,
             source.as_ref(),
+            template,
+            model_identifier,
+            &ctx_value,
+        )
+        .map_err(|error| anyhow::anyhow!("Render galec template '{template}': {error}"))
+    }
+}
+
+/// Render one GALEC target template with its intended namespace contract.
+///
+/// The shared C templates predate the `ctx` namespace and intentionally read
+/// their structured C IR at top level. Every other template, especially the
+/// eFMI manifests, sees projection data only below `ctx`; strict undefined
+/// handling therefore catches accidental `ac`/`pc`/`content` access instead
+/// of silently accepting an un-namespaced field.
+fn render_galec_template_source(
+    env: &minijinja::Environment<'_>,
+    source: &str,
+    template: &str,
+    model_identifier: &str,
+    ctx_value: &serde_json::Value,
+) -> Result<String, minijinja::Error> {
+    if matches!(template, "model.h.jinja" | "model.c.jinja") {
+        return env.render_str(
+            source,
             minijinja::context! {
                 model_name => model_identifier,
                 conformance_header => minijinja::context! {
                     lines => rumoca_compile::galec::PRODUCTION_CONFORMANCE_LINES,
                     summary => rumoca_compile::galec::PRODUCTION_CONFORMANCE_SUMMARY,
                 },
-                ctx => minijinja::Value::from_serialize(&ctx_value),
-                ..minijinja::Value::from_serialize(&ctx_value)
+                ctx => minijinja::Value::from_serialize(ctx_value),
+                ..minijinja::Value::from_serialize(ctx_value)
             },
-        )
-        .map_err(|error| anyhow::anyhow!("Render galec template '{template}': {error}"))
+        );
     }
+    env.render_str(
+        source,
+        minijinja::context! {
+            model_name => model_identifier,
+            conformance_header => minijinja::context! {
+                lines => rumoca_compile::galec::PRODUCTION_CONFORMANCE_LINES,
+                summary => rumoca_compile::galec::PRODUCTION_CONFORMANCE_SUMMARY,
+            },
+            ctx => minijinja::Value::from_serialize(ctx_value),
+        },
+    )
 }
 
 /// Render every `[[files]]` entry of a manifest target in memory from one
@@ -1011,6 +1047,50 @@ end ScalarCudaSmoke;
 
     fn command_available(command: &str) -> bool {
         Command::new(command).arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn galec_manifest_context_is_available_only_below_ctx() {
+        let mut env = minijinja::Environment::new();
+        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+        let context = serde_json::json!({"ac": {"name": "Demo"}});
+
+        let rendered = render_galec_template_source(
+            &env,
+            "{{ ctx.ac.name }}",
+            "manifest.xml.jinja",
+            "Demo",
+            &context,
+        )
+        .expect("namespaced manifest field should render");
+        assert_eq!(rendered, "Demo");
+
+        let error = render_galec_template_source(
+            &env,
+            "{{ ac.name }}",
+            "manifest.xml.jinja",
+            "Demo",
+            &context,
+        )
+        .expect_err("bare manifest field must stay undefined");
+        assert_eq!(error.kind(), minijinja::ErrorKind::UndefinedError);
+    }
+
+    #[test]
+    fn galec_c_templates_retain_their_legacy_top_level_context() {
+        let mut env = minijinja::Environment::new();
+        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+        let context = serde_json::json!({"struct_name": "DemoState"});
+
+        let rendered = render_galec_template_source(
+            &env,
+            "{{ struct_name }}",
+            "model.h.jinja",
+            "Demo",
+            &context,
+        )
+        .expect("C template top-level field should render");
+        assert_eq!(rendered, "DemoState");
     }
 
     #[test]
