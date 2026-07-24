@@ -13,8 +13,8 @@ discrete models only** — models with no continuous states and no `der()`.
 | Target | Output | eFMI container? |
 |---|---|---|
 | `galec` | eFMI Algorithm Code eFMU: `AlgorithmCode/Model.alg` + `manifest.xml`, plus `__content.xml` and `schemas/` | Yes |
-| `galec-production` | eFMI Production Code eFMU: adds `ProductionCode/` C99 + LogicalData manifest, co-emits the `AlgorithmCode/` representation | Yes |
-| `embedded-c-galec` | GALEC-derived embedded C (`.h` + `.c`): block-state struct with `startup`/`recalibrate`/`dostep` | No — not an eFMI container |
+| `efmi` | eFMI Production Code eFMU: adds `ProductionCode/` C99 + LogicalData manifest, co-emits the `AlgorithmCode/` representation | Yes |
+| `galec-c` | GALEC-derived embedded C (`.h` + `.c`): block-state struct with `startup`/`recalibrate`/`dostep` | No — not an eFMI container |
 
 The **eFMI container?** column describes the CLI packaging step. The GUI's
 Generate Code (below) renders the inspectable `.alg`/`.h`/`.c` sources for any
@@ -24,11 +24,11 @@ target but does not itself build the container.
 
 ```bash
 rumoca compile Model.mo --target galec -o out/
-rumoca compile Model.mo --target galec-production -o out/
-rumoca compile Model.mo --target embedded-c-galec -o out/
+rumoca compile Model.mo --target efmi -o out/
+rumoca compile Model.mo --target galec-c -o out/
 ```
 
-The `galec` and `galec-production` targets write the eFMU container in two
+The `galec` and `efmi` targets write the eFMU container in two
 forms — a directory and the equivalent `.efmu` zip:
 
 ```text
@@ -37,27 +37,27 @@ out/
     __content.xml
     schemas/
     AlgorithmCode/      Model.alg + manifest.xml
-    ProductionCode/     galec-production only: Model.c/.h + manifest.xml
+    ProductionCode/     efmi only: Model.c/.h + manifest.xml
   Model.efmu            eFMU container, zip form (same content)
 ```
 
-The `embedded-c-galec` target instead writes plain `out/Model.h` and
+The `galec-c` target instead writes plain `out/Model.h` and
 `out/Model.c` — no manifest and no container.
 
 ## Code generation in the GUI
 
 The scenario config editor (the VS Code custom editor and its web build)
 exposes a **Code Generation** task. Pick a GALEC target from the codegen
-target dropdown (`galec`, `galec-production`, or `embedded-c-galec`), choose
+target dropdown (`galec`, `efmi`, or `galec-c`), choose
 an output location, and select **Generate Code**.
 
 The GUI renders the **inspectable GALEC sources** in stages: first the `.alg`
 Algorithm Code text, then generated C header/source from the current `.alg`
 editor contents. This browser render is *identity-free* — it does not mint the
 eFMU **container** (the `__content.xml` registry, per-representation
-`manifest.xml`, and checksum web). For `galec`/`galec-production`, those
+`manifest.xml`, and checksum web). For `galec`/`efmi`, those
 container artifacts are produced by the CLI packaging step
-(`rumoca compile … --target galec-production`). Use the GUI to inspect and edit
+(`rumoca compile … --target efmi`). Use the GUI to inspect and edit
 the target-language code, and use the CLI when you need the full eFMU package.
 
 ## Try GALEC Production Code in the guide
@@ -80,7 +80,7 @@ Native run:
 cargo run -p rumoca -- \
   compile examples/models/GalecCounter.mo \
   --model GalecCounter \
-  --target galec-production \
+  --target efmi \
   --output examples/codegen/gen/galec_counter_production
 ```
 

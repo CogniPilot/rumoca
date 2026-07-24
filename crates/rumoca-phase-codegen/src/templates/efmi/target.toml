@@ -1,6 +1,7 @@
 version = 1
-ir = "dae"
-name = "galec-production"
+ir = "galec"
+name = "efmi"
+# Custom template quick reference: ../GALEC_CUSTOM_TEMPLATES.md
 # Conformance ladder (SPEC_0034 GAL-021/GAL-024): this target earns the
 # "eFMI Production Code export" rung — one schema-valid eFMU container
 # holding BOTH an Algorithm Code representation (AlgorithmCode/: Model.alg
@@ -35,7 +36,7 @@ eFMU with Algorithm Code + Production Code representations, all SHA-1 checksums
 computed from the written bytes, LogicalData mapping every block variable and
 method; the co-emitted GALEC also round-trip parses ("GALEC language conformance")."""
 
-# Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
+# Generic capability gates (SPEC_0034 GAL-006), copied verbatim from
 # the galec target: both consume the same DAE → GALEC projection, so
 # admissibility is identical. The gates run before any rendering; the
 # projection re-checks admissibility on the untouched DAE afterwards
@@ -88,11 +89,13 @@ dest = "schemas/"
 id = "alg"
 path = "AlgorithmCode/{{ model_name }}.alg"
 template = "model.alg.jinja"
+render_context = "galec-algorithm"
 
 [[files]]
 id = "ac_manifest"
 path = "AlgorithmCode/manifest.xml"
 template = "ac_manifest.xml.jinja"
+render_context = "efmi-algorithm-manifest"
   # File/@checksum edge: the AC manifest embeds the SHA-1 of the `.alg` bytes.
   [[files.checksums]]
   of = "alg"
@@ -102,16 +105,19 @@ template = "ac_manifest.xml.jinja"
 id = "c_header"
 path = "ProductionCode/{{ model_name }}.h"
 template = "model.h.jinja"
+render_context = "galec-c"
 
 [[files]]
 id = "c_source"
 path = "ProductionCode/{{ model_name }}.c"
 template = "model.c.jinja"
+render_context = "galec-c"
 
 [[files]]
 id = "pc_manifest"
 path = "ProductionCode/manifest.xml"
 template = "pc_manifest.xml.jinja"
+render_context = "efmi-production-manifest"
   # ManifestReference/@checksum edge (AC → PC): the PC manifest embeds the
   # SHA-1 of the Algorithm Code manifest bytes.
   [[files.checksums]]
@@ -129,6 +135,7 @@ template = "pc_manifest.xml.jinja"
 id = "content"
 path = "__content.xml"
 template = "__content.xml.jinja"
+render_context = "efmi-content"
   # ModelRepresentation/@checksum edges: __content.xml embeds the SHA-1 of each
   # rendered representation manifest (Algorithm Code + Production Code bytes).
   [[files.checksums]]

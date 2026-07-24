@@ -39,7 +39,7 @@ include!(concat!(env!("OUT_DIR"), "/schema_assets.rs"));
 const CONTENT_XML_NAME: &str = "__content.xml";
 
 /// Logical name of the vendored eFMI XSD bundle, matching the `[[assets]]`
-/// `bundle` declaration in the `galec`/`galec-production` targets.
+/// `bundle` declaration in the `galec`/`efmi` targets.
 const EFMI_SCHEMA_BUNDLE: &str = "efmi-schemas";
 
 /// Enumerate the embedded files of a named vendored asset bundle as

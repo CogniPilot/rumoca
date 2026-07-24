@@ -13,7 +13,7 @@
 //!   product-agnostic [`crate::manifest_context::views`] serialize it and the
 //!   minijinja templates own every element/attribute (SPEC_0034 D3 amended);
 //! - [`c_template_context`] serializes the typed context the
-//!   `embedded-c-galec` minijinja templates consume (GAL-008/GAL-024):
+//!   `galec-c` minijinja templates consume (GAL-008/GAL-024):
 //!   C-mangled struct/function naming, per-variable C types + field names,
 //!   and C-printed method statement lines.
 
@@ -426,11 +426,11 @@ pub(crate) fn block_display_name(name: &Name) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// C template context (the `embedded-c-galec` target, GAL-024)
+// C template context (the `galec-c` target, GAL-024)
 // ---------------------------------------------------------------------------
 
 /// Typed template context (serialized shape of [`c_template_context`]).
-/// Every key is consumed by the `embedded-c-galec` templates. Rust supplies
+/// Every key is consumed by the `galec-c` templates. Rust supplies
 /// names, types, and normalized codegen IR; templates own all C syntax
 /// (D2/GAL-008).
 #[derive(Serialize)]
@@ -478,7 +478,7 @@ struct CMethods {
     do_step: Vec<serde_json::Value>,
 }
 
-/// Serialize the typed C-template context for the `embedded-c-galec`
+/// Serialize the typed C-template context for the `galec-c`
 /// target (module docs). The block is re-validated first, exactly as in
 /// [`algorithm_template_context`] (GAL-004: no rendering path accepts an
 /// un-validated package).

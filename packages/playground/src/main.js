@@ -424,7 +424,7 @@ function collectCustomCodegenTarget(targetPath) {
 // GALEC codegen targets (all ir = "dae") are served by the SEPARATE, lazily
 // loaded GALEC addon — never the core render_target/DAE-JSON path, which drops
 // the flat model the projection needs. The worker loads the addon on demand.
-const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+const GALEC_CODEGEN_TARGETS = new Set(['galec', 'efmi', 'galec-c']);
 
 async function renderGalecCodegenSelection(modelName, workspaceSources, target) {
     const rendered = await sendWorkspaceCommand('rumoca.workspace.renderGalec', {

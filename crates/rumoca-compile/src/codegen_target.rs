@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum TargetTemplateIr {
     Dae,
+    Galec,
     Solve,
     Flat,
     Ast,
@@ -130,6 +131,11 @@ pub struct TargetFile {
 pub enum TargetFileRenderContext {
     FmiModelDescription,
     FmiImplementation,
+    GalecAlgorithm,
+    GalecC,
+    EfmiAlgorithmManifest,
+    EfmiProductionManifest,
+    EfmiContent,
 }
 
 /// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
@@ -219,6 +225,10 @@ pub enum TargetBundle {
         dir: PathBuf,
         manifest: String,
     },
+    Overlay {
+        base: Box<TargetBundle>,
+        file_templates: BTreeMap<String, String>,
+    },
 }
 
 impl TargetBundle {
@@ -247,13 +257,43 @@ impl TargetBundle {
         match self {
             Self::Builtin { target } => parse_target_manifest(target.manifest),
             Self::Directory { manifest, .. } => parse_target_manifest(manifest),
+            Self::Overlay { base, .. } => base.parse_manifest(),
         }
+    }
+
+    #[must_use]
+    pub fn with_file_template_sources(self, file_templates: BTreeMap<String, String>) -> Self {
+        if file_templates.is_empty() {
+            self
+        } else {
+            Self::Overlay {
+                base: Box::new(self),
+                file_templates,
+            }
+        }
+    }
+
+    pub fn template_source_for_file<'a>(&'a self, file: &TargetFile) -> Result<Cow<'a, str>> {
+        if let Self::Overlay {
+            base,
+            file_templates,
+        } = self
+        {
+            if let Some(id) = file.id.as_deref()
+                && let Some(source) = file_templates.get(id)
+            {
+                return Ok(Cow::Borrowed(source));
+            }
+            return base.template_source_for_file(file);
+        }
+        self.template_source(&file.template)
     }
 
     pub fn label<'a>(&'a self, manifest: &'a TargetManifest) -> &'a str {
         manifest.name.as_deref().unwrap_or(match self {
             Self::Builtin { target } => target.name,
             Self::Directory { dir, .. } => dir.to_str().unwrap_or("custom"),
+            Self::Overlay { base, .. } => base.label(manifest),
         })
     }
 }
@@ -273,6 +313,7 @@ impl TargetTemplateSource for TargetBundle {
                     .map(Cow::Owned)
                     .with_context(|| format!("Read target template {}", path.display()))
             }
+            Self::Overlay { base, .. } => base.template_source(template),
         }
     }
 }
@@ -379,9 +420,10 @@ fn tensor_dtypes(tensor: Option<&TensorCapabilities>) -> Vec<String> {
 fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
     match ir {
         TargetTemplateIr::Solve => TargetFeatureSupport::Native,
-        TargetTemplateIr::Dae | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
-            TargetFeatureSupport::Unsupported
-        }
+        TargetTemplateIr::Dae
+        | TargetTemplateIr::Galec
+        | TargetTemplateIr::Flat
+        | TargetTemplateIr::Ast => TargetFeatureSupport::Unsupported,
     }
 }
 
@@ -583,10 +625,47 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
             u32::from_str_radix(mode.trim_start_matches("0o"), 8)
                 .with_context(|| format!("Parse target file mode '{mode}'"))?;
         }
+        if file
+            .render_context
+            .is_some_and(TargetFileRenderContext::is_galec)
+            && manifest.ir != TargetTemplateIr::Galec
+        {
+            bail!(
+                "render_context = \"{}\" requires ir = \"galec\"",
+                file.render_context.expect("checked as present").as_str()
+            );
+        }
     }
     validate_checksum_web(&manifest.files)?;
     validate_asset_bundles(&manifest.assets)?;
     Ok(())
+}
+
+impl TargetFileRenderContext {
+    #[must_use]
+    pub fn is_galec(self) -> bool {
+        matches!(
+            self,
+            Self::GalecAlgorithm
+                | Self::GalecC
+                | Self::EfmiAlgorithmManifest
+                | Self::EfmiProductionManifest
+                | Self::EfmiContent
+        )
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FmiModelDescription => "fmi-model-description",
+            Self::FmiImplementation => "fmi-implementation",
+            Self::GalecAlgorithm => "galec-algorithm",
+            Self::GalecC => "galec-c",
+            Self::EfmiAlgorithmManifest => "efmi-algorithm-manifest",
+            Self::EfmiProductionManifest => "efmi-production-manifest",
+            Self::EfmiContent => "efmi-content",
+        }
+    }
 }
 
 /// Fail-early structural checks on the declared checksum web (contract §4a/
@@ -1051,6 +1130,42 @@ template = "model.out.jinja"
 "#
         ))
         .expect("parse and validate target manifest")
+    }
+
+    #[test]
+    fn galec_is_a_manifest_ir() {
+        let manifest = parse_manifest_with_ir_capabilities("galec", "");
+        assert_eq!(manifest.ir, TargetTemplateIr::Galec);
+    }
+
+    #[test]
+    fn builtin_galec_consumers_declare_galec_ir() {
+        for name in ["galec", "efmi", "galec-c"] {
+            let target = templates::builtin_target(name).expect("built-in GALEC target");
+            let manifest =
+                parse_target_manifest(target.manifest).expect("parse built-in GALEC manifest");
+            assert_eq!(manifest.ir, TargetTemplateIr::Galec, "{name}");
+        }
+    }
+
+    #[test]
+    fn galec_render_context_requires_galec_ir() {
+        let error = parse_target_manifest(
+            r#"
+version = 1
+ir = "dae"
+
+[[files]]
+path = "Model.alg"
+template = "my-template.jinja"
+render_context = "galec-algorithm"
+"#,
+        )
+        .expect_err("GALEC render context on DAE target must be rejected");
+        assert!(
+            error.to_string().contains("requires ir = \"galec\""),
+            "{error:#}"
+        );
     }
 
     #[test]

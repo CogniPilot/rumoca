@@ -7,5 +7,5 @@ file = "../models/GalecCounter.mo"
 name = "GalecCounter"
 
 [codegen]
-target = "galec-production"
+target = "efmi"
 output_dir = "gen/galec_counter_production"

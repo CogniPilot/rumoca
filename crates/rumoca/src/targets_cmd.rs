@@ -74,7 +74,7 @@ fn render_human_targets(
     writeln!(
         output,
         "\nLegend:\n  \
-         ir       compiler stage the target consumes (ast < flat < dae < solve)\n  \
+         ir       representation consumed (ast < flat < dae; dae branches to solve or galec)\n  \
          mode     code-gen style (symbolic / compiled / source-transform / packaged)\n  \
          deploy   deployment class (cpu / symbolic / fmu / efmi / browser / modelica)\n  \
          level    readiness 0=experimental .. 2=validated (? = unrated)\n  \

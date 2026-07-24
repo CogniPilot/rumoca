@@ -44,7 +44,7 @@
 //! - [`emit`] — structured GALEC/C template contexts,
 //!   [`assemble_manifest_with_identity`] (typed Algorithm Code manifest, no
 //!   XML — the templates own that), and [`c_template_context`]
-//!   (typed-then-serialized minijinja context of the `embedded-c-galec`
+//!   (typed-then-serialized minijinja context of the `galec-c`
 //!   target, GAL-024);
 //! - [`crate::manifest_context`] — the eFMI packaging data model (manifest /
 //!   `__content.xml` models, checksums, id discipline), its data-integrity

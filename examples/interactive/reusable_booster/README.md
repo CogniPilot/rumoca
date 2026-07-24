@@ -17,7 +17,7 @@ vehicle or flight software.
 |---|---|
 | `ReusableBoosterLanding.mo` | Flatness planner, GPS/IMU filter, `SE_2(3)` controller, 6-DOF plant, actuators, and contact |
 | `rumoca-scenario.toml` | Realtime simulation, tunable parameters, viewer telemetry, and controls |
-| `rumoca-scenario.controller-galec-production.toml` | eFMI Algorithm Code + Production Code export of the shared discrete feedback law |
+| `rumoca-scenario.controller-efmi.toml` | eFMI Algorithm Code + Production Code export of the shared discrete feedback law |
 | `reusable_booster_scene.js` | Three.js ocean, drone ship, scale-correct booster, plumes, and trajectory display |
 | `../../../target/cmm/CMM-a642c381/LieGroups/package.mo` | Pinned CogniPilot LieGroups dependency |
 
@@ -133,11 +133,11 @@ cargo run -p rumoca -- \
   compile examples/interactive/reusable_booster/ReusableBoosterLanding.mo \
   --model ReusableBoosterEmbeddedControlLaw \
   --source-root target/cmm/CMM-a642c381 \
-  --target galec-production \
+  --target efmi \
   --output examples/interactive/reusable_booster/gen/control_law_efmu
 ```
 
-The scenario `rumoca-scenario.controller-galec-production.toml` exposes the
+The scenario `rumoca-scenario.controller-efmi.toml` exposes the
 same target in the code-generation editor.
 
 ## GPS/IMU Estimator

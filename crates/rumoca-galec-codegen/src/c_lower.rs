@@ -1,4 +1,4 @@
-//! GALEC AST → structured C codegen IR for the `embedded-c-galec` export (SPEC_0034
+//! GALEC AST → structured C codegen IR for the `galec-c` export (SPEC_0034
 //! GAL-024).
 //!
 //! Scope: exactly the AST shape [`crate::lower`] emits today — sequential
@@ -436,11 +436,8 @@ impl<'a> CContextLowerer<'a> {
             });
         };
         let mut part = part.clone();
-        part.subscripts = indices
-            .iter()
-            .copied()
-            .map(Expression::Integer)
-            .collect::<Vec<_>>();
+        part.subscripts
+            .extend(indices.iter().copied().map(Expression::Integer));
         Ok(Reference::State(vec![part]))
     }
 
@@ -503,5 +500,56 @@ fn unsupported_statement(construct: &'static str) -> GalecTargetError {
         detail: "the current DAE lowering emits sequential assignments only \
                  (crate::lower); this statement kind cannot have come from it"
             .to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rumoca_core::Span;
+    use rumoca_ir_galec::ast::{
+        Block, Dimension, Expression, Name, ProtectedEntity, ProtectedKind, RangeAttributes,
+        RefPart, Reference, ScalarType, Statement, TypeRef, VariableDeclaration,
+    };
+
+    use super::CContextLowerer;
+    use crate::c_mangle::CNameTable;
+
+    #[test]
+    fn array_literal_expansion_preserves_existing_target_subscripts() {
+        let name = Name::ident("m");
+        let mut block = Block::new(Name::ident("SliceAssignment"));
+        block.protected.push(ProtectedEntity {
+            kind: ProtectedKind::State,
+            decl: VariableDeclaration {
+                ty: TypeRef::Primitive(ScalarType::Real),
+                name: name.clone(),
+                dimensions: vec![
+                    Dimension::Expr(Expression::Integer(2)),
+                    Dimension::Expr(Expression::Integer(2)),
+                ],
+                range: RangeAttributes::default(),
+                span: Span::DUMMY,
+            },
+            start: None,
+        });
+        let names = CNameTable::build(&block).expect("build C names");
+        let statement = Statement::Assignment {
+            target: Reference::State(vec![RefPart {
+                name,
+                subscripts: vec![Expression::Integer(1)],
+                span: Span::DUMMY,
+            }]),
+            value: Expression::Array(vec![Expression::Real(1.0), Expression::Real(2.0)]),
+        };
+
+        let assignments = CContextLowerer::new(&names)
+            .statement_contexts(&statement)
+            .expect("lower slice assignment");
+
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(assignments[0]["target"]["indices"][0]["value"], 0);
+        assert_eq!(assignments[0]["target"]["indices"][1]["value"], 0);
+        assert_eq!(assignments[1]["target"]["indices"][0]["value"], 0);
+        assert_eq!(assignments[1]["target"]["indices"][1]["value"], 1);
     }
 }

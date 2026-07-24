@@ -5,8 +5,8 @@ ACCEPTED
 
 ## Summary
 
-Crate boundaries are compiler-enforced guardrails. A crate's `Cargo.toml` is
-its reading list; illegal coupling should fail before review.
+Crate boundaries are compiler-enforced guardrails; illegal coupling should
+fail before review.
 
 ## Specification
 

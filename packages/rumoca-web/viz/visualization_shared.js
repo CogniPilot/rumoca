@@ -1383,8 +1383,8 @@ ctx.onFrame = (api) => {
         ['fmi2', 'fmi2'],
         ['fmi3', 'fmi3'],
         ['galec', 'galec (eFMI Algorithm Code)'],
-        ['galec-production', 'galec-production (eFMI Production Code)'],
-        ['embedded-c-galec', 'embedded-c-galec (embedded C)'],
+        ['efmi', 'efmi (eFMI Production Code)'],
+        ['galec-c', 'galec-c (embedded C)'],
     ];
     const SCENARIO_INPUT_MODE_OPTIONS = [
         ['auto', 'auto'],

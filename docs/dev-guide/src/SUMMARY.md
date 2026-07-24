@@ -5,7 +5,7 @@
 # How the Compiler Works
 
 - [Pipeline Overview](./compiler/pipeline-overview.md)
-- [The Four IRs](./compiler/irs.md)
+- [The IR Graph](./compiler/irs.md)
 - [Front End: Parse to Flat](./compiler/front-end.md)
 - [DAE Lowering and Structural Analysis](./compiler/dae-structural.md)
 - [Solve IR and Execution](./compiler/solve.md)

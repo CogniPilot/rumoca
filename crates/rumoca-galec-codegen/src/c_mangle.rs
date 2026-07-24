@@ -1,4 +1,4 @@
-//! GALEC name → C identifier mangling for the `embedded-c-galec` export
+//! GALEC name → C identifier mangling for the `galec-c` export
 //! (SPEC_0034 GAL-024; injectivity discipline mirroring GAL-015).
 //!
 //! # Scheme

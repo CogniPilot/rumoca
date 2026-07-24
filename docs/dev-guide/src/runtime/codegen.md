@@ -9,9 +9,10 @@ chapter for the user-facing workflow).
 
 ## Ownership Rules
 
-- **The target owns its IR choice.** A manifest declares which stage it
-  consumes (`ast`/`flat`/`dae`/`solve`); individual templates may not
-  silently switch IRs. Targets consume the lowest IR they need — no lower.
+- **The target owns its IR choice.** A manifest's `ir` field declares the
+  representation its templates consume (`ast`/`flat`/`dae`/`galec`/`solve`);
+  individual templates may not silently switch IRs. GALEC is a target branch
+  projected from finalized DAE, but GALEC consumers still declare `galec`.
 - **The engine renders; it does not decide semantics.** Scalarization,
   structural analysis, and lowering happen in compiler phases; templates
   receive prepared data.
