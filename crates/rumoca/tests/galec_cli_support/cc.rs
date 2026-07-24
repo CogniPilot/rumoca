@@ -1,5 +1,5 @@
 //! Shared C-compiler helper for the suites that compile-check generated C
-//! (`cli_target_embedded_c_galec.rs`, `cli_target_galec_production.rs`).
+//! (`cli_target_galec_c.rs`, `cli_target_efmi.rs`).
 //!
 //! Included per suite via `#[path = "galec_cli_support/cc.rs"]` — see
 //! `galec_cli_support/cli.rs` for the include-pattern rationale.

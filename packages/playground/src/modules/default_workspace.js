@@ -33,7 +33,7 @@ const DEFAULT_EXAMPLE_FILE_PATHS = [
     'examples/interactive/reusable_booster/ReusableBoosterLanding.mo',
     'examples/interactive/reusable_booster/README.md',
     'examples/interactive/reusable_booster/reusable_booster_scene.js',
-    'examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml',
+    'examples/interactive/reusable_booster/rumoca-scenario.controller-efmi.toml',
     'examples/interactive/reusable_booster/rumoca-scenario.toml',
     'examples/interactive/fixedwing/FixedWingSIL.mo',
     'examples/interactive/fixedwing/README.md',

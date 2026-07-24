@@ -13,7 +13,7 @@
 //!   product-agnostic [`crate::manifest_context::views`] serialize it and the
 //!   minijinja templates own every element/attribute (SPEC_0034 D3 amended);
 //! - [`c_template_context`] serializes the typed context the
-//!   `embedded-c-galec` minijinja templates consume (GAL-008/GAL-024):
+//!   `galec-c` minijinja templates consume (GAL-008/GAL-024):
 //!   C-mangled struct/function naming, per-variable C types + field names,
 //!   and C-printed method statement lines.
 
@@ -29,8 +29,8 @@ use crate::manifest_context::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
 use rumoca_ir_galec::ast::{
-    Block, Dimension, Expression, InterfaceKind, Name, ProtectedKind, ScalarType, Spanned,
-    Statement, TypeRef, VariableDeclaration,
+    Associativity, Block, Dimension, Expression, InterfaceKind, Name, PrecedenceClass,
+    ProtectedKind, Reference, ScalarType, Spanned, Statement, TypeRef, VariableDeclaration,
 };
 
 use crate::diagnostic::GalecTargetError;
@@ -81,6 +81,205 @@ pub(crate) fn render_block(block: &Block) -> Result<String, GalecTargetError> {
     rumoca_ir_galec::print_block(block).map_err(|error| GalecTargetError::LoweringInternal {
         detail: format!("GALEC printer rejected the lowered block: {error}"),
     })
+}
+
+/// Serialize the validated GALEC block as language-neutral codegen data.
+///
+/// Unlike [`render_algorithm_code`], this is the production codegen API:
+/// declarations, references, expressions, statements, and block layout remain
+/// structured so `model.alg.jinja` owns their textual spelling.
+pub fn algorithm_template_context(
+    package: &AlgorithmCodePackage,
+) -> Result<serde_json::Value, GalecTargetError> {
+    validate_block(&package.block)?;
+    let block = &package.block;
+    if !block.compartments.is_empty()
+        || !block.error_signals.is_empty()
+        || !block.protected_functions.is_empty()
+        || !block.public_functions.is_empty()
+    {
+        return Err(GalecTargetError::LoweringInternal {
+            detail: "the DAE projection produced a GALEC construct outside the current template codegen IR"
+                .to_owned(),
+        });
+    }
+    Ok(serde_json::json!({
+        "name": name_context(&block.name),
+        "interface": block.interface.iter().map(|variable| {
+            Ok(serde_json::json!({
+                "prefix": match variable.kind {
+                    InterfaceKind::Input => "input",
+                    InterfaceKind::Output => "output",
+                    InterfaceKind::TunableParameter => "parameter",
+                },
+                "declaration": declaration_context(&variable.decl)?,
+            }))
+        }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+        "protected": block.protected.iter().map(|entity| {
+            Ok(serde_json::json!({
+                "prefix": match entity.kind {
+                    ProtectedKind::DependentParameter => "parameter",
+                    ProtectedKind::Constant => "constant",
+                    ProtectedKind::State => "",
+                },
+                "declaration": declaration_context(&entity.decl)?,
+            }))
+        }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+        "methods": [
+            method_context("Startup", &block.startup)?,
+            method_context("Recalibrate", &block.recalibrate)?,
+            method_context("DoStep", &block.do_step)?,
+        ],
+    }))
+}
+
+fn method_context(
+    name: &'static str,
+    method: &rumoca_ir_galec::ast::BlockMethod,
+) -> Result<serde_json::Value, GalecTargetError> {
+    if !method.signals.is_empty() || !method.locals.is_empty() {
+        return Err(GalecTargetError::LoweringInternal {
+            detail: format!("projected method {name} contains unsupported template context data"),
+        });
+    }
+    Ok(serde_json::json!({
+        "name": name,
+        "statements": method.statements.iter().map(|statement| {
+            match &statement.node {
+                Statement::Assignment { target, value } => Ok(serde_json::json!({
+                    "kind": "assignment",
+                    "target": alg_reference_context(target)?,
+                    "value": alg_expression_context(value)?,
+                })),
+                other => Err(GalecTargetError::LoweringInternal {
+                    detail: format!("projected method {name} contains unsupported statement {other:?}"),
+                }),
+            }
+        }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+    }))
+}
+
+fn declaration_context(decl: &VariableDeclaration) -> Result<serde_json::Value, GalecTargetError> {
+    let ty = match &decl.ty {
+        TypeRef::Primitive(scalar) => scalar.keyword().to_owned(),
+        TypeRef::Compartment(name) => name.lexeme().to_owned(),
+    };
+    Ok(serde_json::json!({
+        "type": ty,
+        "name": name_context(&decl.name),
+        "dimensions": decl.dimensions.iter().map(|dimension| match dimension {
+            Dimension::Derived => Ok(serde_json::json!({"kind": "derived"})),
+            Dimension::Expr(expression) => Ok(serde_json::json!({
+                "kind": "expression",
+                "value": alg_expression_context(expression)?,
+            })),
+        }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+        "min": decl.range.min.as_ref().map(alg_expression_context).transpose()?,
+        "max": decl.range.max.as_ref().map(alg_expression_context).transpose()?,
+    }))
+}
+
+fn name_context(name: &Name) -> serde_json::Value {
+    match name {
+        Name::Ident(identifier, _) => {
+            serde_json::json!({"kind": "ident", "value": identifier.as_str()})
+        }
+        Name::Quoted(content, _) => serde_json::json!({"kind": "quoted", "value": content}),
+    }
+}
+
+fn alg_reference_context(reference: &Reference) -> Result<serde_json::Value, GalecTargetError> {
+    let (scope, parts) = match reference {
+        Reference::Local(part) => ("local", std::slice::from_ref(part)),
+        Reference::State(parts) => ("state", parts.as_slice()),
+    };
+    Ok(serde_json::json!({
+        "scope": scope,
+        "parts": parts.iter().map(|part| {
+            Ok(serde_json::json!({
+                "name": name_context(&part.name),
+                "subscripts": part.subscripts.iter()
+                    .map(alg_expression_context)
+                    .collect::<Result<Vec<_>, _>>()?,
+            }))
+        }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+    }))
+}
+
+fn alg_expression_context(expression: &Expression) -> Result<serde_json::Value, GalecTargetError> {
+    Ok(match expression {
+        Expression::Bool(value) => serde_json::json!({"kind": "bool", "value": value}),
+        Expression::Integer(value) => serde_json::json!({"kind": "integer", "value": value}),
+        Expression::Real(value) => serde_json::json!({
+            "kind": "real",
+            "literal": rumoca_ir_galec::format_real_literal(*value).map_err(|error| {
+                GalecTargetError::LoweringInternal {
+                    detail: format!("GALEC codegen context met an unprintable Real literal: {error}"),
+                }
+            })?,
+        }),
+        Expression::Ref(reference) => {
+            serde_json::json!({"kind": "ref", "reference": alg_reference_context(reference)?})
+        }
+        Expression::Size { array, dimension } => serde_json::json!({
+            "kind": "size",
+            "array": alg_reference_context(array)?,
+            "dimension": alg_expression_context(dimension)?,
+        }),
+        Expression::Call(call) => serde_json::json!({
+            "kind": "call",
+            "function": name_context(&call.function),
+            "arguments": call.arguments.iter().map(alg_expression_context)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        Expression::Paren(inner) => {
+            serde_json::json!({"kind": "paren", "value": alg_expression_context(inner)?})
+        }
+        Expression::If(if_expression) => serde_json::json!({
+            "kind": "if",
+            "branches": if_expression.branches.iter().map(|(condition, value)| {
+                Ok(serde_json::json!({
+                    "condition": alg_expression_context(condition)?,
+                    "value": alg_expression_context(value)?,
+                }))
+            }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+            "else_value": alg_expression_context(&if_expression.else_value)?,
+        }),
+        Expression::Array(elements) => serde_json::json!({
+            "kind": "array",
+            "elements": elements.iter().map(alg_expression_context)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        Expression::Neg(reference) => {
+            serde_json::json!({"kind": "neg", "reference": alg_reference_context(reference)?})
+        }
+        Expression::Not(inner) => {
+            serde_json::json!({"kind": "not", "value": alg_expression_context(inner)?})
+        }
+        Expression::Binary { op, lhs, rhs } => serde_json::json!({
+            "kind": "binary",
+            "operator": crate::c_lower::binary_op_name(*op),
+            "lhs": alg_expression_context(lhs)?,
+            "rhs": alg_expression_context(rhs)?,
+            "wrap_lhs": alg_operand_needs_parens(lhs, op.precedence_class(), false),
+            "wrap_rhs": alg_operand_needs_parens(rhs, op.precedence_class(), true),
+        }),
+    })
+}
+
+fn alg_operand_needs_parens(child: &Expression, parent: PrecedenceClass, right: bool) -> bool {
+    match child {
+        Expression::Binary { op, .. } => {
+            let child_class = op.precedence_class();
+            child_class != parent
+                || (right && parent.associativity() == Associativity::Left)
+                || (!right && parent.associativity() == Associativity::Right)
+        }
+        Expression::Neg(_) | Expression::Not(_) => true,
+        Expression::Integer(value) => *value < 0,
+        Expression::Real(value) => value.is_sign_negative(),
+        _ => false,
+    }
 }
 
 /// Shared, minted-once packaging identity of one manifest (contract §2b /
@@ -227,14 +426,13 @@ pub(crate) fn block_display_name(name: &Name) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// C template context (the `embedded-c-galec` target, GAL-024)
+// C template context (the `galec-c` target, GAL-024)
 // ---------------------------------------------------------------------------
 
 /// Typed template context (serialized shape of [`c_template_context`]).
-/// Every key is consumed by the `embedded-c-galec` `target.toml` path
-/// templates or `model.h.jinja`/`model.c.jinja`; the templates stay thin
-/// (iteration + interpolation only) while all C syntax intelligence lives
-/// in [`crate::c_print`] (D2/GAL-008 split).
+/// Every key is consumed by the `galec-c` templates. Rust supplies
+/// names, types, and normalized codegen IR; templates own all C syntax
+/// (D2/GAL-008).
 #[derive(Serialize)]
 struct CContext {
     /// CLI model identifier (used by the `[[files]]` path templates).
@@ -251,7 +449,7 @@ struct CContext {
     include_guard: String,
     /// Manifest-listed variables — exactly the block-state struct fields.
     variables: Vec<CVariable>,
-    /// Method bodies as C statement lines.
+    /// Method bodies as structured C codegen IR.
     methods: CMethods,
 }
 
@@ -265,8 +463,8 @@ struct CVariable {
     id: String,
     /// Manifest `blockCausality` literal.
     causality: &'static str,
-    /// C scalar type the variable maps to.
-    c_type: &'static str,
+    /// Language-neutral GALEC scalar type; the C template owns its spelling.
+    scalar_type: &'static str,
     /// Collision-checked C struct field name ([`crate::c_mangle`]).
     c_name: String,
     /// Dimension sizes (empty = scalar).
@@ -275,36 +473,20 @@ struct CVariable {
 
 #[derive(Serialize)]
 struct CMethods {
-    startup: Vec<CStatement>,
-    recalibrate: Vec<CStatement>,
-    do_step: Vec<CStatement>,
+    startup: Vec<serde_json::Value>,
+    recalibrate: Vec<serde_json::Value>,
+    do_step: Vec<serde_json::Value>,
 }
 
-/// One lowered statement — an assignment, the only kind the lowering emits
-/// ([`crate::lower`]); other kinds fail with `ET023`, never drop.
-#[derive(Serialize)]
-struct CStatement {
-    kind: &'static str,
-    /// GALEC-printed assignment target (e.g. `self.'previous(x)'`),
-    /// carried for traceability comments (comment-safe,
-    /// [`c_comment_text`]).
-    target: String,
-    /// GALEC-printed value expression (traceability, comment-safe).
-    value: String,
-    /// C statement lines ([`crate::c_print`]); whole-array assignments
-    /// expand to one line per element.
-    c_lines: Vec<String>,
-}
-
-/// Serialize the typed C-template context for the `embedded-c-galec`
+/// Serialize the typed C-template context for the `galec-c`
 /// target (module docs). The block is re-validated first, exactly as in
-/// [`render_algorithm_code`] (GAL-004: no rendering path prints an
+/// [`algorithm_template_context`] (GAL-004: no rendering path accepts an
 /// un-validated package).
 ///
 /// # Errors
 ///
 /// `ET022` on C-name collisions, `ET023` for GALEC constructs the C
-/// export does not support, `ET018` for validator/printer rejections.
+/// export does not support, `ET018` for validator/context rejections.
 pub fn c_template_context(
     package: &AlgorithmCodePackage,
     model_name: &str,
@@ -323,13 +505,13 @@ pub fn c_template_context(
                 name: c_comment_text(spelling),
                 id: common.id.as_str().to_owned(),
                 causality: common.block_causality.as_str(),
-                c_type: c_scalar_type(variable),
+                scalar_type: scalar_type_name(manifest_scalar_type(variable)),
                 c_name: names.c_name_by_spelling(spelling)?.to_owned(),
                 dimensions: common.dimensions.clone(),
             })
         })
         .collect::<Result<Vec<_>, GalecTargetError>>()?;
-    let printer = crate::c_print::CPrinter::new(&names);
+    let lowerer = crate::c_lower::CContextLowerer::new(&names);
     let function_prefix = crate::c_mangle::c_identifier(&package.block.name)?;
     let context = CContext {
         model_name: model_name.to_owned(),
@@ -339,9 +521,9 @@ pub fn c_template_context(
         function_prefix,
         variables,
         methods: CMethods {
-            startup: statements(&package.block.startup.statements, &printer)?,
-            recalibrate: statements(&package.block.recalibrate.statements, &printer)?,
-            do_step: statements(&package.block.do_step.statements, &printer)?,
+            startup: statements(&package.block.startup.statements, &lowerer)?,
+            recalibrate: statements(&package.block.recalibrate.statements, &lowerer)?,
+            do_step: statements(&package.block.do_step.statements, &lowerer)?,
         },
     };
     serde_json::to_value(&context).map_err(|error| GalecTargetError::LoweringInternal {
@@ -385,7 +567,7 @@ pub fn c_template_context_for_block(
             &names,
         )?);
     }
-    let printer = crate::c_print::CPrinter::new(&names);
+    let lowerer = crate::c_lower::CContextLowerer::new(&names);
     let function_prefix = crate::c_mangle::c_identifier(&block.name)?;
     let context = CContext {
         model_name: model_name.to_owned(),
@@ -395,9 +577,9 @@ pub fn c_template_context_for_block(
         function_prefix,
         variables,
         methods: CMethods {
-            startup: statements(&block.startup.statements, &printer)?,
-            recalibrate: statements(&block.recalibrate.statements, &printer)?,
-            do_step: statements(&block.do_step.statements, &printer)?,
+            startup: statements(&block.startup.statements, &lowerer)?,
+            recalibrate: statements(&block.recalibrate.statements, &lowerer)?,
+            do_step: statements(&block.do_step.statements, &lowerer)?,
         },
     };
     serde_json::to_value(&context).map_err(|error| GalecTargetError::LoweringInternal {
@@ -438,15 +620,15 @@ fn c_variable_for_decl(
         name: c_comment_text(spelling),
         id,
         causality,
-        c_type: c_scalar_type_for_decl(decl)?,
+        scalar_type: scalar_type_name(scalar_type_for_decl(decl)?),
         c_name: names.c_name_by_spelling(spelling)?.to_owned(),
         dimensions: c_dimensions(&decl.dimensions)?,
     })
 }
 
-fn c_scalar_type_for_decl(decl: &VariableDeclaration) -> Result<&'static str, GalecTargetError> {
+fn scalar_type_for_decl(decl: &VariableDeclaration) -> Result<ScalarType, GalecTargetError> {
     match &decl.ty {
-        TypeRef::Primitive(scalar) => Ok(c_scalar_binding(*scalar).1),
+        TypeRef::Primitive(scalar) => Ok(*scalar),
         TypeRef::Compartment(_) => Err(GalecTargetError::CExportUnsupported {
             construct: "a state-compartment variable",
             detail: "the standalone GALEC-to-C preview currently supports only primitive block variables"
@@ -511,8 +693,12 @@ pub(crate) fn ensure_c_exportable(block: &Block) -> Result<(), GalecTargetError>
     Ok(())
 }
 
-fn c_scalar_type(variable: &ManifestVariable) -> &'static str {
-    c_scalar_binding(manifest_scalar_type(variable)).1
+fn scalar_type_name(scalar: ScalarType) -> &'static str {
+    match scalar {
+        ScalarType::Real => "real",
+        ScalarType::Integer => "integer",
+        ScalarType::Boolean => "boolean",
+    }
 }
 
 /// The GALEC scalar type of a manifest variable (the manifest variable kinds
@@ -525,12 +711,10 @@ pub(crate) fn manifest_scalar_type(variable: &ManifestVariable) -> ScalarType {
     }
 }
 
-/// The single GALEC-scalar → C binding of the embedded C export: the eFMI
-/// target-type kind and the C type token. Shared by the C template context
-/// (struct field types) and the Production Code manifest builder
-/// ([`crate::production_manifest`]: `TargetType@kind`/`@codedType` and the
-/// alias `Typedef@name`), so the manifest describes the generated C in
-/// lockstep by construction, not by comment.
+/// The GALEC-scalar → eFMI Production Code target binding used by the typed
+/// manifest builder (`TargetType@kind`/`@codedType` and `Typedef@name`).
+/// Generated C declarations use the language-neutral scalar kind in
+/// [`CVariable`] and let the template choose its textual type spelling.
 pub(crate) fn c_scalar_binding(scalar: ScalarType) -> (TargetTypeKind, &'static str) {
     match scalar {
         ScalarType::Real => (TargetTypeKind::EfmiFloat64, "double"),
@@ -541,46 +725,13 @@ pub(crate) fn c_scalar_binding(scalar: ScalarType) -> (TargetTypeKind, &'static 
 
 fn statements(
     block_statements: &[Spanned<Statement>],
-    printer: &crate::c_print::CPrinter<'_>,
-) -> Result<Vec<CStatement>, GalecTargetError> {
+    lowerer: &crate::c_lower::CContextLowerer<'_>,
+) -> Result<Vec<serde_json::Value>, GalecTargetError> {
     block_statements
         .iter()
-        .map(|statement| {
-            let statement = &statement.node;
-            // Non-assignment kinds fail here with ET023 (the printer owns
-            // that rejection); a kind the printer someday accepts still
-            // needs a CStatement shape before it can pass below.
-            let c_lines = printer.statement_lines(statement)?;
-            match statement {
-                Statement::Assignment { target, value } => Ok(CStatement {
-                    kind: "assignment",
-                    target: c_comment_text(&print_reference(target)?),
-                    value: c_comment_text(&print_expression(value)?),
-                    c_lines,
-                }),
-                other => Err(GalecTargetError::CExportUnsupported {
-                    construct: "a statement kind the C context does not model",
-                    detail: format!("statement {other:?} has no CStatement shape yet"),
-                }),
-            }
-        })
-        .collect()
-}
-
-fn print_expression(
-    expression: &rumoca_ir_galec::ast::Expression,
-) -> Result<String, GalecTargetError> {
-    rumoca_ir_galec::print_expression(expression).map_err(|error| {
-        GalecTargetError::LoweringInternal {
-            detail: format!("GALEC printer rejected an expression: {error}"),
-        }
-    })
-}
-
-fn print_reference(
-    reference: &rumoca_ir_galec::ast::Reference,
-) -> Result<String, GalecTargetError> {
-    print_expression(&rumoca_ir_galec::ast::Expression::Ref(reference.clone()))
+        .map(|statement| lowerer.statement_contexts(&statement.node))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|groups| groups.into_iter().flatten().collect())
 }
 
 /// Make traceability text safe inside a C block comment by breaking both the

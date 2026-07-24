@@ -199,7 +199,8 @@ pub fn get_build_time_utc() -> String {
 /// Get the built-in codegen targets bundled with the WASM runtime.
 #[wasm_bindgen]
 pub fn get_builtin_targets() -> Result<JsValue, JsValue> {
-    let targets = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
+    let mut targets = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
+    targets.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Galec));
     serialize_js_value(&targets, "Serialize built-in target descriptors")
 }
 

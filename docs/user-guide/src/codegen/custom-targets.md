@@ -33,6 +33,25 @@ The manifest declares which IR stage the target consumes and which
 templates render which output files. The target — not individual templates —
 owns the IR choice, so a bundle stays consistent.
 
+Set `ir = "galec"` when the templates consume Rumoca's projected GALEC IR.
+This selects GALEC lowering directly; it does not depend on naming the target
+`galec`, `efmi`, or `galec-c`. An eFMU target declares
+`build = "efmu"`; a `ProductionCode/` file entry selects the combined
+Algorithm Code + Production Code packaging plan.
+
+GALEC targets use their embedded templates by default. Override only the file
+you want with its manifest ID:
+
+```bash
+rumoca compile Model.mo --target galec \
+  --template alg=path/to/my-algorithm.jinja -o generated/
+```
+
+Repeat `--template FILE_ID=PATH` to replace multiple files; all unspecified
+files retain their built-in templates. The repository-local
+[Custom GALEC Templates guide](https://github.com/CogniPilot/rumoca/blob/main/crates/rumoca-phase-codegen/src/templates/GALEC_CUSTOM_TEMPLATES.md)
+lists the IDs for every GALEC target.
+
 The repository ships a complete worked example:
 `examples/codegen/standalone_web/target.toml` renders a standalone HTML page
 plus companion JavaScript from one model.

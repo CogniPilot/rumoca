@@ -141,12 +141,12 @@ model call the same functions, so the generated code does not maintain a
 second copy of the control equations.
 
 The export model is fixed-sample and discrete, which makes it admissible for
-Rumoca's `galec-production` target. Select **Generate .alg** below to inspect
+Rumoca's `efmi` target. Select **Generate .alg** below to inspect
 the eFMI Algorithm Code, then **Generate C/H** to inspect the corresponding C99
 Production Code.
 
 ```modelica,codegen
-// rumoca-live-scenario: ../repo-examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml
+// rumoca-live-scenario: ../repo-examples/interactive/reusable_booster/rumoca-scenario.controller-efmi.toml
 ```
 
 The native packaging command emits both a directory-form eFMU and a matching
@@ -158,7 +158,7 @@ cargo run -p rumoca -- \
   compile examples/interactive/reusable_booster/ReusableBoosterLanding.mo \
   --model ReusableBoosterEmbeddedControlLaw \
   --source-root target/cmm/CMM-a642c381 \
-  --target galec-production \
+  --target efmi \
   --output examples/interactive/reusable_booster/gen/control_law_efmu
 ```
 

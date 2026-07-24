@@ -1,8 +1,8 @@
 //! Render tests for the real eFMI manifest jinja templates (WI-2).
 //!
-//! These are the shipping `galec-production` manifest templates
-//! (`src/templates/galec-production/`), which the switch-dispatch build step
-//! renders for the `galec`/`galec-production` targets (contract §9 WI-5; the
+//! These are the shipping `efmi` manifest templates
+//! (`src/templates/efmi/`), which the switch-dispatch build step
+//! renders for the `galec`/`efmi` targets (contract §9 WI-5; the
 //! AC-only `galec` target ships a byte-identical copy as `manifest.xml.jinja`).
 //! They are loaded here with `include_str!` and rendered through the shared
 //! [`create_environment`] (which registers the `xml_escape` / `xs_double`
@@ -18,13 +18,13 @@
 use super::*;
 use serde_json::json;
 
-const AC_TEMPLATE: &str = include_str!("../templates/galec-production/ac_manifest.xml.jinja");
-const PC_TEMPLATE: &str = include_str!("../templates/galec-production/pc_manifest.xml.jinja");
-const CONTENT_TEMPLATE: &str = include_str!("../templates/galec-production/__content.xml.jinja");
+const AC_TEMPLATE: &str = include_str!("../templates/efmi/ac_manifest.xml.jinja");
+const PC_TEMPLATE: &str = include_str!("../templates/efmi/pc_manifest.xml.jinja");
+const CONTENT_TEMPLATE: &str = include_str!("../templates/efmi/__content.xml.jinja");
 
 /// The AC-only `galec` target ships its own copy of the Algorithm Code
 /// manifest template (each `target.toml` bundle is self-contained). It must
-/// stay byte-identical to the `galec-production` copy this file validates, so
+/// stay byte-identical to the `efmi` copy this file validates, so
 /// the equivalence proof here covers both — a divergence is a drift bug.
 const GALEC_AC_TEMPLATE: &str = include_str!("../templates/galec/manifest.xml.jinja");
 const GALEC_CONTENT_TEMPLATE: &str = include_str!("../templates/galec/__content.xml.jinja");
@@ -34,12 +34,12 @@ fn galec_and_galec_production_share_identical_manifest_templates() {
     assert_eq!(
         GALEC_AC_TEMPLATE, AC_TEMPLATE,
         "galec/manifest.xml.jinja must stay byte-identical to \
-         galec-production/ac_manifest.xml.jinja"
+         efmi/ac_manifest.xml.jinja"
     );
     assert_eq!(
         GALEC_CONTENT_TEMPLATE, CONTENT_TEMPLATE,
         "galec/__content.xml.jinja must stay byte-identical to \
-         galec-production/__content.xml.jinja"
+         efmi/__content.xml.jinja"
     );
 }
 

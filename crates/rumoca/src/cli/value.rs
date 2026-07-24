@@ -68,9 +68,13 @@ pub fn compile_to_value(args: &CompileArgs, source: &str) -> Result<Value> {
 
     match (args.emit, args.target.as_deref()) {
         (Some(emit), _) => ir_value(&result, &model, emit.phase(), emit.is_json()),
-        (None, Some(target)) => {
-            target_value(&result, &model, target, args.phase.map(TemplateIr::from))
-        }
+        (None, Some(target)) => target_value(
+            &result,
+            &model,
+            target,
+            args.phase.map(TemplateIr::from),
+            &args.templates,
+        ),
         (None, None) => serde_json::to_value(&result.dae)
             .map_err(|e| anyhow::anyhow!("serialize DAE to JSON: {e}")),
     }
@@ -111,8 +115,15 @@ fn target_value(
     model: &str,
     target: &str,
     phase: Option<TemplateIr>,
+    template_overrides: &[String],
 ) -> Result<Value> {
-    let files = target_manifest::render_target_files(result, model, target, phase)?;
+    let files = target_manifest::render_target_files_with_overrides(
+        result,
+        model,
+        target,
+        phase,
+        template_overrides,
+    )?;
     let files_json = files
         .into_iter()
         .map(|file| json!({ "path": file.path, "content": file.content }))

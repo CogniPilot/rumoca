@@ -180,10 +180,10 @@ fn assert_binding_codegen_matches_cli_dispatch(target: &str) {
 
 #[test]
 fn fixed_wing_outer_loop_embedded_c_galec_matches_cli_dispatch() {
-    assert_binding_codegen_matches_cli_dispatch("embedded-c-galec");
+    assert_binding_codegen_matches_cli_dispatch("galec-c");
 }
 
 #[test]
 fn fixed_wing_outer_loop_galec_production_matches_cli_dispatch() {
-    assert_binding_codegen_matches_cli_dispatch("galec-production");
+    assert_binding_codegen_matches_cli_dispatch("efmi");
 }

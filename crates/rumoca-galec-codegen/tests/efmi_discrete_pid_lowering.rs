@@ -735,7 +735,7 @@ fn c_template_context_serializes_the_c_export_shape() {
             .expect("variables array")
             .iter()
             .any(|variable| variable["name"] == "vMotor"
-                && variable["c_type"] == "double"
+                && variable["scalar_type"] == "real"
                 && variable["c_name"] == "vMotor")
     );
     let do_step = context["methods"]["do_step"]
@@ -743,25 +743,21 @@ fn c_template_context_serializes_the_c_export_shape() {
         .expect("do_step statements");
     assert!(!do_step.is_empty());
     for statement in do_step {
-        assert_eq!(statement["kind"], "assignment");
-        let lines = statement["c_lines"].as_array().expect("c_lines array");
         assert!(
-            lines
-                .iter()
-                .all(|line| line.as_str().is_some_and(|text| text.ends_with(';'))),
-            "every C line is a terminated statement: {statement}"
+            matches!(statement["kind"].as_str(), Some("assign" | "copy")),
+            "every item is structured C codegen IR: {statement}"
         );
+        assert!(statement["target"]["name"].is_string(), "{statement}");
+        assert!(statement.get("c_lines").is_none(), "{statement}");
     }
-    // The end-of-DoStep pre-commit surfaces with the mangled C field name.
+    // The end-of-DoStep pre-commit surfaces as a structured mangled target.
     assert!(
         do_step.iter().any(|statement| {
-            statement["c_lines"]
-                .as_array()
-                .expect("c_lines array")
-                .iter()
-                .any(|line| line.as_str().is_some_and(|text| text.contains("previous_")))
+            statement["target"]["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("previous_"))
         }),
-        "expected a 'previous(x)' commit in C form: {do_step:#?}"
+        "expected a 'previous(x)' commit in structured C IR: {do_step:#?}"
     );
 }
 

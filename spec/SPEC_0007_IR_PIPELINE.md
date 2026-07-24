@@ -1,14 +1,15 @@
-# SPEC_0007: IR Pipeline (AST → Flat → DAE → Solve)
+# SPEC_0007: IR Graph (AST → Flat → DAE → Solve / GALEC)
 
 ## Status
 ACCEPTED
 
 ## Summary
 
-Rumoca transforms Modelica through AST → Flat → DAE → Solve IRs. Each
-stage has a contract: contents, ownership, boundary leaks.
+Rumoca transforms Modelica through AST → Flat → DAE, then branches into
+consumer-specific IRs including Solve and GALEC. Each IR has a contract:
+contents, ownership, and boundary leaks.
 
-## The Four IR Stages
+## The IR Graph
 
 ```
 Modelica source (.mo)
@@ -28,11 +29,18 @@ Modelica source (.mo)
   ┌──────────┐
   │   DAE    │  rumoca-ir-dae        ◄─ codegen: FMI export, DAE-level
   └────┬─────┘                           symbolic/array backends
-       │  rumoca-phase-solve              (CasADi, SymPy, JAX)
-       ▼
-  ┌──────────┐
-  │  Solve   │  rumoca-ir-solve      ◄─ codegen/JIT: numeric C/Rust,
-  └──────────┘                           CUDA C/NVRTC, MLIR/LLVM, kernels
+       │
+       ├── rumoca-phase-solve
+       │       ▼
+       │  ┌──────────┐
+       │  │  Solve   │  rumoca-ir-solve  ◄─ numeric runtimes, JIT, kernels
+       │  └──────────┘
+       │
+       └── rumoca-galec-codegen
+               ▼
+          ┌──────────┐
+          │  GALEC   │  rumoca-ir-galec  ◄─ Algorithm Code + Production Code
+          └──────────┘
 ```
 
 **Codegen targets the lowest IR it needs — no lower.**
@@ -43,6 +51,7 @@ Modelica source (.mo)
 | Flat Modelica export | Flat | Original expression structure |
 | FMI export, DAE-readable C/Fortran, CasADi, SymPy, JAX-style symbolic/array targets | DAE | MLS B.1 form, source traceability |
 | Numeric sim, C/Rust kernels, JIT, MLIR, CUDA/GPU | Solve | Register-machine plus tensor bytecode |
+| eFMI Algorithm Code and derived Production Code | GALEC | Validated sampled-block methods and algorithm structure |
 
 **Template/codegen ownership:** `rumoca-phase-codegen` renders text. Execution
 adapters wrap toolchains, packaging, runtime calls, or JIT APIs, not semantics,
@@ -236,83 +245,74 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
 
 ---
 
+### DAE Branch — GALEC (`rumoca-ir-galec`)
+
+**What it is:** The eFMI Algorithm Code IR: an array-native sampled-block
+representation with declarations, functions, error signals, and exactly the
+`Startup`, `Recalibrate`, and `DoStep` block methods. It is both a structured
+language AST for `.alg` tooling and the target-independent IR from which Rumoca
+derives eFMI Production Code.
+
+The DAE projection produces the actual type in
+`crates/rumoca-galec-codegen/src/package.rs`:
+
+```rust
+pub struct AlgorithmCodePackage {
+    pub block: rumoca_ir_galec::Block,
+    pub manifest: ManifestFragment,
+    pub alg_file_name: String,
+}
+```
+
+| Rule | Owner/Where | Why |
+|---|---|---|
+| GALEC branches directly from finalized DAE | `rumoca-galec-codegen` | Solve IR does not own eFMI block semantics |
+| `.alg` and Production Code derive from one validated GALEC Block | GALEC codegen | Keeps both representations semantically aligned |
+| GALEC types stay out of DAE fields | `rumoca-ir-dae` | Target constraints must not contaminate shared DAE |
+| GALEC consumers declare `ir = "galec"` | target manifests | The key names the representation templates actually consume; lowering still branches from finalized DAE |
+
+See SPEC_0034 for GALEC validation, lowering, rendering, and eFMI packaging
+contracts.
+
+---
+
 ## Key Invariants for Agents
 
-1. **Source temporal operators are eliminated at the DAE boundary.** Any `pre`,
-   `edge`, `change`, `sample`, or `previous` callable expression past
-   `phase-dae` is a bug; Solve-IR is also free of these operators.
-
-1. **Runtime flow actions are not expression graph nodes.** DAE-IR lowers
-   `reinit` into guarded updates and stores `assert`/`terminate` as guarded
-   event actions. Numeric DAE or Solve compute graphs must never contain these
-   source calls.
-
-2. **IR crates are pure data.** No evaluation logic, phase logic, or side
-   effects in `rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, or
-   `rumoca-ir-solve`. See `SPEC_0029`.
-
-3. **Scalarization happens at the backend/evaluator boundary.** Call
-   `rumoca_eval_solve::to_scalar_program_block(&compute_block)` from the backend
-   or evaluator crate that needs scalar programs, and propagate its `Result`.
-   Do not define scalarization helpers in IR crates, and do not
-   flatten tensor nodes in `rumoca-phase-solve` lowering.
-
-4. **Each stage's output is serializable.** All IR types implement
-   `serde::Serialize` / `Deserialize`. Serialized DAE and Solve root payloads
-   carry a mandatory `schema_version`; deserializers reject unsupported
-   versions. `#[serde(default)]` is allowed only for documented optional
-   same-version fields where the default is semantically valid.
-
-5. **The dependency direction is strictly downward.** AST → Flat → DAE → Solve.
-   No stage imports from a later stage.
-
-6. **DAE-IR owns symbolic math; Solve-IR lowers format only.** Do not add
-   expression rewrites or new mathematical content in Solve-IR or solve
-   lowering; add them to DAE-IR first.
-
-7. **Optional IR fields are explicit same-version omissions, not hidden work
-   caches.** DAE optional fields must still be canonical MLS/diagnostic data.
-   Solver-facing optional products belong in structural analysis results or
-   Solve artifacts. If a field changes the meaning of existing payloads, bump
-   `schema_version` instead of adding a defaulted field.
+| Invariant | Requirement |
+|---|---|
+| DAE removes source temporal operators | No `pre`, `edge`, `change`, `sample`, or `previous` call survives |
+| Flow actions stay out of compute graphs | Lower `reinit`; store `assert`/`terminate` as event actions |
+| Shared pipeline IR crates are pure data | GALEC alone also owns its language parser, validator, and printer |
+| Scalarization is a consumer choice | Call fallible `rumoca_eval_solve::to_scalar_program_block`; never flatten during Solve lowering |
+| IR outputs are serializable | DAE/Solve roots require supported `schema_version`; defaults need documented same-version meaning |
+| Dependencies follow the graph | AST → Flat → DAE → {Solve, GALEC}; sibling branches never import each other |
+| DAE owns symbolic math | Solve lowers format only; derived work products stay outside canonical DAE |
 
 ## Structural Lowering Scope
 
-Rumoca performs OpenModelica-class structural lowering between DAE and Solve.
-Structural lowering is DAE-to-DAE: it rewrites or annotates mathematical
-structure for downstream lowering without changing IR stage. The supported
-transformations are listed here to keep scope and ownership clear.
+Structural lowering is DAE-to-DAE preparation for the Solve branch.
 
 **In scope:**
 
 | Transformation | Owning module | Notes |
 |---|---|---|
-| Pre-lowering (`pre(v)` → `__pre__.v`) | `rumoca-phase-dae::pre_lowering` | Runs at DAE entry; applies to every partition (f_x, f_z, f_m, f_c). See Stage 3 Contract. |
+| Pre-lowering (`pre(v)` → `__pre__.v`) | `rumoca-phase-dae::pre_lowering` | Applies to every DAE partition |
 | Alias elimination | `rumoca-phase-dae` | Folds trivial equalities into the variable graph. |
-| Structural index reduction (Pantelides-style) | `rumoca-phase-structural` | For states without a `der(state)` equation, differentiate a non-ODE constraint referencing that state and substitute. Index-1 lift is supported; higher-index lifts are an explicit subset of Pantelides. |
+| Structural index reduction (Pantelides-style) | `rumoca-phase-structural` | Index-1 lift; restricted higher-index subset |
 | State demotion | `rumoca-phase-structural` | Demote over-classified states whose derivative is structurally unreachable. |
 | BLT ordering | `rumoca-phase-structural` | Block-lower-triangular ordering of equations for sequential solve. |
 | Algebraic-loop tearing (Greedy Cellier) | `rumoca-phase-structural::tearing` | Identifies tear variables for cyclic algebraic blocks. |
 | State selection | `rumoca-phase-structural` | Pick a consistent state set. |
 
-**Out of scope (require an explicit spec update before adding):**
-
-- Full dummy-derivative method (Mattsson-Söderlind). The current
-  Pantelides-style approach may add dummy derivatives in restricted forms,
-  but a general dummy-derivative pass is not implemented.
-- Higher-order symbolic simplification beyond what serves index reduction
-  and alias elimination.
-- Symbolic linearization for control-design output (codegen-level concern,
-  not pipeline-level).
+**Out of scope without a spec amendment:** full Mattsson-Söderlind dummy
+derivatives, general higher-order symbolic simplification, and control-design
+linearization.
 
 **Placement requirement:**
 
-All DAE structural lowering/transformation MUST live in
-`rumoca-phase-structural` per SPEC_0029 §12. A structural lowering pass's IR
-output is another finalized DAE. Separate structural analysis products may
-accompany that DAE, but they are not stored as backend convenience fields on
-`ir-dae::Dae`. `rumoca-phase-solve` only lowers a finalized DAE to Solve-IR; it
-does not mutate DAE mathematical structure.
+DAE structural transformations live in `rumoca-phase-structural` per SPEC_0029
+§12 and return finalized DAE. Analysis products remain separate.
+`rumoca-phase-solve` lowers that DAE without mutating its mathematics.
 
 ## Relevant Specs
 

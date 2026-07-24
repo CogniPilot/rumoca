@@ -1,0 +1,104 @@
+{%- macro reference(value) -%}
+self->{{ value.name }}{%- for index in value.indices -%}[{% if index.kind == "literal" %}{{ index.value }}{% else %}({{ expr(index.value) }} - 1){% endif %}]{%- endfor -%}
+{%- endmacro -%}
+{%- macro binary_operator(kind) -%}
+{%- if kind == "mul" -%}*{%- elif kind == "div" -%}/{%- elif kind == "add" -%}+{%- elif kind == "sub" -%}-{%- elif kind == "lt" -%}<{%- elif kind == "gt" -%}>{%- elif kind == "le" -%}<={%- elif kind == "ge" -%}>={%- elif kind == "eq" -%}=={%- elif kind == "ne" -%}!={%- elif kind == "and" -%}&&{%- elif kind == "or" -%}||{%- endif -%}
+{%- endmacro -%}
+{%- macro ternary(value, index) -%}
+({{ expr(value.branches[index].condition) }} ? {{ expr(value.branches[index].value) }} : {% if index + 1 < value.branches|length %}{{ ternary(value, index + 1) }}{% else %}{{ expr(value.else_value) }}{% endif %})
+{%- endmacro -%}
+{%- macro call(value) -%}
+{%- if value.function == "real" -%}((double)({{ expr(value.arguments[0]) }}))
+{%- elif value.function == "divisionTowardsZero" -%}({{ expr(value.arguments[0]) }} / {{ expr(value.arguments[1]) }})
+{%- else -%}
+{%- if value.function == "absolute" -%}fabs
+{%- elif value.function == "sign" -%}rumoca_ir_galec_sign
+{%- elif value.function == "ln" -%}log
+{%- elif value.function == "lg" -%}log10
+{%- elif value.function == "roundDown" -%}floor
+{%- elif value.function == "roundUp" -%}ceil
+{%- elif value.function == "min" -%}rumoca_ir_galec_min
+{%- elif value.function == "max" -%}rumoca_ir_galec_max
+{%- elif value.function == "imin" -%}rumoca_ir_galec_imin
+{%- elif value.function == "imax" -%}rumoca_ir_galec_imax
+{%- else -%}{{ value.function }}{%- endif -%}
+({%- for argument in value.arguments -%}{{ expr(argument) }}{% if not loop.last %}, {% endif %}{%- endfor -%})
+{%- endif -%}
+{%- endmacro -%}
+{%- macro expr(value) -%}
+{%- if value.kind == "bool" -%}{% if value.value %}true{% else %}false{% endif %}
+{%- elif value.kind == "integer" -%}{% if value.value < 0 %}({{ value.value }}){% else %}{{ value.value }}{% endif %}
+{%- elif value.kind == "real" -%}{% if value.negative %}({{ value.literal }}){% else %}{{ value.literal }}{% endif %}
+{%- elif value.kind == "ref" -%}{{ reference(value.reference) }}
+{%- elif value.kind == "call" -%}{{ call(value) }}
+{%- elif value.kind == "paren" -%}({{ expr(value.value) }})
+{%- elif value.kind == "if" -%}{{ ternary(value, 0) }}
+{%- elif value.kind == "neg" -%}(-{{ reference(value.reference) }})
+{%- elif value.kind == "not" -%}(!({{ expr(value.value) }}))
+{%- elif value.kind == "binary" -%}{% if value.operator == "pow" %}pow({{ expr(value.lhs) }}, {{ expr(value.rhs) }}){% else %}({{ expr(value.lhs) }} {{ binary_operator(value.operator) }} {{ expr(value.rhs) }}){% endif %}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro statement(value) -%}
+{%- if value.kind == "copy" -%}memcpy({{ reference(value.target) }}, {{ reference(value.source) }}, sizeof({{ reference(value.target) }}));
+{%- else -%}{{ reference(value.target) }} = {{ expr(value.value) }};
+{%- endif -%}
+{%- endmacro -%}
+/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * {{ conformance_header.summary }} Method bodies below are rendered
+ * from structured C codegen IR by this minijinja template. */
+#include "{{ model_name }}.h"
+
+#include <math.h>
+#include <string.h> /* memcpy, for whole-array state copies */
+
+/* A model uses only some of the fixed helper prelude below. `static inline`
+ * alone is not enough to keep the rest quiet under -Wall -Werror: clang's
+ * -Wunused-function flags an unused `static inline` (gcc does not), so the
+ * helpers are marked maybe-unused. The macro is a no-op on compilers without
+ * the GNU attribute. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define RUMOCA_MAYBE_UNUSED __attribute__((unused))
+#else
+#  define RUMOCA_MAYBE_UNUSED
+#endif
+
+/* GALEC §3.2.6 builtins without a direct C99 counterpart. The names are a
+ * fixed contract with the typed C printer (compile-checked in CI). min/max use
+ * the GALEC relational definition (`u1 < u2` selects), NOT fmin/fmax: a false
+ * qNaN comparison must take the else operand (eFMI traps T9/T14). */
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_sign(double x) {
+    return (double)((x > 0.0) - (x < 0.0));
+}
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_min(double u1, double u2) {
+    return u1 < u2 ? u1 : u2;
+}
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_max(double u1, double u2) {
+    return u1 > u2 ? u1 : u2;
+}
+RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imin(int32_t u1, int32_t u2) {
+    return u1 < u2 ? u1 : u2;
+}
+RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32_t u2) {
+    return u1 > u2 ? u1 : u2;
+}
+
+void {{ function_prefix }}_startup({{ struct_name }} *self) {
+    (void)self;
+{%- for item in methods.startup %}
+    {{ statement(item) }}
+{%- endfor %}
+}
+
+void {{ function_prefix }}_recalibrate({{ struct_name }} *self) {
+    (void)self;
+{%- for item in methods.recalibrate %}
+    {{ statement(item) }}
+{%- endfor %}
+}
+
+void {{ function_prefix }}_dostep({{ struct_name }} *self) {
+    (void)self;
+{%- for item in methods.do_step %}
+    {{ statement(item) }}
+{%- endfor %}
+}

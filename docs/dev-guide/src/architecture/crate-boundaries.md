@@ -11,7 +11,7 @@ this page is the orientation map.
 | Family | Crates | Role |
 |---|---|---|
 | Foundation | `rumoca-core`, `rumoca-contracts`, `rumoca-codec`, `rumoca-codec-flatbuffers` | Shared low-level types, contracts, serialization |
-| IRs | `rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, `rumoca-ir-solve` | The four stage data structures |
+| IRs | `rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, `rumoca-ir-solve`, `rumoca-ir-galec` | Shared pipeline and target-branch data structures |
 | Phases | `rumoca-phase-parse`, `-resolve`, `-typecheck`, `-instantiate`, `-flatten`, `-dae`, `-structural`, `-solve`, `-codegen` | One transformation each |
 | Facade | `rumoca-compile` | Session/compilation API the tools use |
 | Evaluators | `rumoca-eval-ast`, `-eval-flat`, `-eval-dae`, `-eval-solve` | Stage-appropriate evaluation |

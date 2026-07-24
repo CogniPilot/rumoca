@@ -601,8 +601,8 @@ self.onmessage = async (e) => {
                         );
                         break;
                     case 'rumoca.workspace.renderGalec':
-                        // GALEC codegen ('galec' / 'galec-production' /
-                        // 'embedded-c-galec') is served by the SEPARATE, lazily
+                        // GALEC codegen ('galec' / 'efmi' /
+                        // 'galec-c') is served by the SEPARATE, lazily
                         // imported GALEC addon — never the core render_target
                         // (DAE-JSON) path, which drops the flat model the
                         // projection needs. The addon wasm loads only on this

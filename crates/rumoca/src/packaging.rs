@@ -1,6 +1,6 @@
 //! Generic declarative checksum/packaging build step (contract §4).
 //!
-//! This is the product-agnostic packaging path for the `galec`/`galec-production`
+//! This is the product-agnostic packaging path for the `galec`/`efmi`
 //! eFMU targets (contract §9 WI-5). Rather than baking eFMI representation
 //! grouping and `__content.xml` synthesis into Rust, this build step is driven
 //! entirely by `target.toml` declarations: `[[files]]` carry a logical `id` and
@@ -169,7 +169,7 @@ pub fn topo_sort(files: &[TargetFile]) -> Result<Vec<usize>> {
 #[cfg(feature = "scheduled-sim")]
 pub fn render_and_package(
     files: &[TargetFile],
-    render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
+    render: impl Fn(&str, &BTreeMap<String, String>, Option<&TargetFile>) -> Result<String>,
     assets: &[AssetBundle],
     asset_source: impl Fn(&str) -> Result<Vec<AssetFile>>,
     package: &PackageSpec,
@@ -206,7 +206,7 @@ pub fn render_and_package(
 /// any per-file render failure from `render`.
 pub fn render_web(
     files: &[TargetFile],
-    render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
+    render: impl Fn(&str, &BTreeMap<String, String>, Option<&TargetFile>) -> Result<String>,
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let order = topo_sort(files)?;
 
@@ -228,11 +228,11 @@ pub fn render_web(
             })?;
             checksums.insert(need.as_key.clone(), digest.as_str().to_string());
         }
-        let path = render(&file.path, &checksums)
+        let path = render(&file.path, &checksums, None)
             .with_context(|| format!("Render target output path '{}'", file.path))?
             .trim()
             .to_string();
-        let bytes = render(&file.template, &checksums)
+        let bytes = render(&file.template, &checksums, Some(file))
             .with_context(|| format!("Render target template '{}'", file.template))?
             .into_bytes();
         // Hash the EXACT bytes that will be written (§4c): `Sha1Hex::of_bytes`
@@ -261,7 +261,7 @@ pub fn render_web(
 /// emit UTF-8, so this is an internal invariant break).
 pub fn render_web_files(
     files: &[TargetFile],
-    render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
+    render: impl Fn(&str, &BTreeMap<String, String>, Option<&TargetFile>) -> Result<String>,
 ) -> Result<Vec<RenderedTargetFile>> {
     render_web(files, render)?
         .into_iter()
@@ -549,7 +549,10 @@ template = "root-template"
         );
         // Fake renderer: `leaf-template` -> fixed content; `root-template` ->
         // text embedding the injected `leaf_sha1`; path templates -> the path.
-        let render = |template: &str, checksums: &BTreeMap<String, String>| -> Result<String> {
+        let render = |template: &str,
+                      checksums: &BTreeMap<String, String>,
+                      _file: Option<&TargetFile>|
+         -> Result<String> {
             Ok(match template {
                 "leaf-template" => "LEAF-BODY".to_string(),
                 "root-template" => format!(

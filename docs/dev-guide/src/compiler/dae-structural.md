@@ -3,7 +3,7 @@
 ## DAE Lowering (`rumoca-phase-dae`)
 
 DAE lowering eliminates the Modelica-specific surface and produces the MLS
-Appendix B canonical system (see [The Four IRs](./irs.md)). The
+Appendix B canonical system (see [The IR Graph](./irs.md)). The
 transformations with the most moving parts:
 
 - **`pre()` elimination.** Every `pre(x)` becomes an explicit `__pre__.*`

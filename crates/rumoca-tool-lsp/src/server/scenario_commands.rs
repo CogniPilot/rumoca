@@ -10,7 +10,9 @@ use rumoca_compile::codegen::targets::{
 
 fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>
 {
-    builtin_target_descriptors_for_ir(TargetTemplateIr::Dae)
+    let mut targets = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
+    targets.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Galec));
+    targets
 }
 
 impl ModelicaLanguageServer {
