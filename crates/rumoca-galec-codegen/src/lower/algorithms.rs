@@ -1,6 +1,8 @@
 //! Structured DAE algorithm → GALEC statement lowering.
 
-use rumoca_core::{BuiltinFunction, Expression, Statement};
+use rumoca_core::{
+    BuiltinFunction, Expression, ExpressionRewriter, Literal, Span, Statement, VarName,
+};
 use rumoca_ir_dae::Algorithm;
 use rumoca_ir_galec::ast::{self as gast, Condition, IfBranch, IfStatement, RefPart, Reference};
 
@@ -8,6 +10,21 @@ use crate::classify::Classification;
 use crate::diagnostic::GalecTargetError;
 use crate::lower::expr::ExprLowerer;
 use crate::lower::methods;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DerivedUpdateKey {
+    target: VarName,
+    span: Span,
+}
+
+impl DerivedUpdateKey {
+    pub(crate) fn matches(&self, equation: &rumoca_ir_dae::Equation) -> bool {
+        equation
+            .lhs
+            .as_ref()
+            .is_some_and(|lhs| lhs.var_name() == &self.target && equation.span == self.span)
+    }
+}
 
 pub(crate) fn lower_model_algorithms(
     algorithms: &[Algorithm],
@@ -23,6 +40,87 @@ pub(crate) fn lower_model_algorithms(
     Ok(lowered)
 }
 
+pub(crate) fn derived_update_keys(algorithms: &[Algorithm]) -> Vec<DerivedUpdateKey> {
+    let mut keys = Vec::new();
+    for algorithm in algorithms {
+        collect_statement_keys(&algorithm.statements, algorithm.span, &mut keys);
+    }
+    keys
+}
+
+fn collect_statement_keys(
+    statements: &[Statement],
+    fallback_span: Span,
+    keys: &mut Vec<DerivedUpdateKey>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Assignment { comp, span, .. } => {
+                let span = if span.is_dummy() {
+                    fallback_span
+                } else {
+                    *span
+                };
+                keys.push(DerivedUpdateKey {
+                    target: comp.to_var_name(),
+                    span,
+                });
+            }
+            Statement::When { blocks, span } => {
+                let span = if span.is_dummy() {
+                    fallback_span
+                } else {
+                    *span
+                };
+                for block in blocks {
+                    collect_when_target_keys(&block.stmts, span, keys);
+                }
+            }
+            Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_statement_keys(&block.stmts, fallback_span, keys);
+                }
+                if let Some(statements) = else_block {
+                    collect_statement_keys(statements, fallback_span, keys);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_when_target_keys(
+    statements: &[Statement],
+    when_span: Span,
+    keys: &mut Vec<DerivedUpdateKey>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Assignment { comp, .. } => keys.push(DerivedUpdateKey {
+                target: comp.to_var_name(),
+                span: when_span,
+            }),
+            Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_when_target_keys(&block.stmts, when_span, keys);
+                }
+                if let Some(statements) = else_block {
+                    collect_when_target_keys(statements, when_span, keys);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn lower_runtime_statement(
     statement: &Statement,
     classification: &Classification<'_>,
@@ -30,19 +128,75 @@ fn lower_runtime_statement(
     lowered: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
     match statement {
-        Statement::When { blocks, .. } => {
-            for block in blocks {
-                if contains_sample(&block.cond) {
-                    lower_statements(&block.stmts, classification, lowerer, lowered)?;
-                }
-            }
-            Ok(())
+        Statement::When { blocks, span } => {
+            lower_sampled_when(blocks, *span, classification, lowerer, lowered)
         }
         other => {
             if let Some(statement) = lower_statement(other, classification, lowerer)? {
                 lowered.push(statement);
             }
             Ok(())
+        }
+    }
+}
+
+fn lower_sampled_when(
+    blocks: &[rumoca_core::StatementBlock],
+    span: Span,
+    classification: &Classification<'_>,
+    lowerer: &mut ExprLowerer<'_>,
+    lowered: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<(), GalecTargetError> {
+    let mut branches = Vec::new();
+    for block in blocks {
+        if !contains_sample(&block.cond) {
+            continue;
+        }
+        let residual = SampleTickRewriter.rewrite_expression(&block.cond);
+        let condition = lowerer.lower_as_boolean(&residual, "when-statement condition")?;
+        let mut body = Vec::new();
+        lower_statements(&block.stmts, classification, lowerer, &mut body)?;
+        branches.push(IfBranch {
+            condition: Condition::Expression(condition),
+            body,
+            span,
+        });
+    }
+    if branches.len() == 1 && is_true_condition(&branches[0].condition) {
+        lowered.append(&mut branches.remove(0).body);
+    } else if !branches.is_empty() {
+        lowered.push(gast::Spanned::new(
+            gast::Statement::If(IfStatement {
+                branches,
+                else_body: None,
+            }),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn is_true_condition(condition: &Condition) -> bool {
+    matches!(
+        condition,
+        Condition::Expression(gast::Expression::Bool(true))
+    )
+}
+
+struct SampleTickRewriter;
+
+impl ExpressionRewriter for SampleTickRewriter {
+    fn rewrite_expression(&mut self, expression: &Expression) -> Expression {
+        match expression {
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Sample,
+                span,
+                ..
+            } => Expression::Literal {
+                value: Literal::Boolean(true),
+                span: *span,
+            },
+            _ => self.walk_expression(expression),
         }
     }
 }

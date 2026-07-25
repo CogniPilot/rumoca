@@ -81,41 +81,47 @@ pub fn lower_to_algorithm_code(
 
     // 3. DoStep rows: unwrap guards, lower bodies, record read pre slots.
     let mut lowerer = ExprLowerer::new(&classification, &conditions, &input.dae.symbols);
-    let mut do_step = Vec::new();
+    let mut equation_statements = Vec::new();
     let mut errors = Vec::new();
-    if input.dae.algorithms.model.is_empty() {
-        let updates = input
-            .dae
-            .discrete
-            .real_updates
-            .iter()
-            .chain(input.dae.discrete.valued_updates.iter());
-        for equation in updates {
-            match lower_update_row(
-                equation,
-                &classification,
-                &conditions,
-                &sample_indices,
-                &mut lowerer,
-            ) {
-                Ok(statement) => do_step.push(statement),
-                Err(error) => errors.push(error),
-            }
-        }
-        // MLS B.1b rows are simultaneous; order the sequential DoStep by
-        // current-tick reads (discrete algebraic loops are rejected).
-        do_step = schedule::order_by_dependencies(do_step).map_err(|error| vec![error])?;
-    } else {
-        do_step = algorithms::lower_model_algorithms(
-            &input.dae.algorithms.model,
+    let algorithm_update_keys = algorithms::derived_update_keys(&input.dae.algorithms.model);
+    let updates = input
+        .dae
+        .discrete
+        .real_updates
+        .iter()
+        .chain(input.dae.discrete.valued_updates.iter())
+        .filter(|equation| {
+            !algorithm_update_keys
+                .iter()
+                .any(|key| key.matches(equation))
+        });
+    for equation in updates {
+        match lower_update_row(
+            equation,
             &classification,
+            &conditions,
+            &sample_indices,
             &mut lowerer,
-        )
-        .map_err(|error| vec![error])?;
+        ) {
+            Ok(statement) => equation_statements.push(statement),
+            Err(error) => errors.push(error),
+        }
     }
     if !errors.is_empty() {
         return Err(errors);
     }
+    // MLS B.1b rows are simultaneous; order the equation-section updates
+    // before combining them with source-ordered structured algorithms.
+    let mut do_step =
+        schedule::order_by_dependencies(equation_statements).map_err(|error| vec![error])?;
+    do_step.extend(
+        algorithms::lower_model_algorithms(
+            &input.dae.algorithms.model,
+            &classification,
+            &mut lowerer,
+        )
+        .map_err(|error| vec![error])?,
+    );
     // 4. Keep only the pre slots the emitted code reads; unread slots
     // existed solely for the dropped keep-previous hold branches.
     let referenced = lowerer.into_referenced_pre();

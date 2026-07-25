@@ -57,33 +57,7 @@ impl<'a> CContextLowerer<'a> {
     ) -> Result<Vec<serde_json::Value>, GalecTargetError> {
         match statement {
             Statement::Assignment { target, value } => self.assignment_contexts(target, value),
-            Statement::If(if_statement) => {
-                let branches = if_statement
-                    .branches
-                    .iter()
-                    .map(|branch| {
-                        let Condition::Expression(condition) = &branch.condition else {
-                            return Err(unsupported_statement(
-                                "an if statement with an error-signal condition",
-                            ));
-                        };
-                        Ok(serde_json::json!({
-                            "condition": self.expression_context(condition)?,
-                            "body": self.body_contexts(&branch.body)?,
-                        }))
-                    })
-                    .collect::<Result<Vec<_>, GalecTargetError>>()?;
-                let else_body = if_statement
-                    .else_body
-                    .as_ref()
-                    .map(|body| self.body_contexts(body))
-                    .transpose()?;
-                Ok(vec![serde_json::json!({
-                    "kind": "if",
-                    "branches": branches,
-                    "else_body": else_body,
-                })])
-            }
+            Statement::If(if_statement) => self.if_statement_context(if_statement),
             Statement::MultiAssignment { .. } => {
                 Err(unsupported_statement("a multi-assignment statement"))
             }
@@ -92,6 +66,37 @@ impl<'a> CContextLowerer<'a> {
             Statement::Limit(_) => Err(unsupported_statement("a limit statement")),
             Statement::Signal(_) => Err(unsupported_statement("a signal statement")),
         }
+    }
+
+    fn if_statement_context(
+        &self,
+        statement: &rumoca_ir_galec::ast::IfStatement,
+    ) -> Result<Vec<serde_json::Value>, GalecTargetError> {
+        let branches = statement
+            .branches
+            .iter()
+            .map(|branch| {
+                let Condition::Expression(condition) = &branch.condition else {
+                    return Err(unsupported_statement(
+                        "an if statement with an error-signal condition",
+                    ));
+                };
+                Ok(serde_json::json!({
+                    "condition": self.expression_context(condition)?,
+                    "body": self.body_contexts(&branch.body)?,
+                }))
+            })
+            .collect::<Result<Vec<_>, GalecTargetError>>()?;
+        let else_body = statement
+            .else_body
+            .as_ref()
+            .map(|body| self.body_contexts(body))
+            .transpose()?;
+        Ok(vec![serde_json::json!({
+            "kind": "if",
+            "branches": branches,
+            "else_body": else_body,
+        })])
     }
 
     fn body_contexts(
