@@ -49,6 +49,7 @@ use crate::manifest_vars::build_manifest_variables;
 use crate::package::{AlgorithmCodePackage, ManifestFragment};
 
 pub(crate) mod clock;
+pub(crate) mod algorithms;
 pub(crate) mod conditions;
 pub(crate) mod expr;
 pub(crate) mod guard;
@@ -82,31 +83,39 @@ pub fn lower_to_algorithm_code(
     let mut lowerer = ExprLowerer::new(&classification, &conditions, &input.dae.symbols);
     let mut do_step = Vec::new();
     let mut errors = Vec::new();
-    let updates = input
-        .dae
-        .discrete
-        .real_updates
-        .iter()
-        .chain(input.dae.discrete.valued_updates.iter());
-    for equation in updates {
-        match lower_update_row(
-            equation,
-            &classification,
-            &conditions,
-            &sample_indices,
-            &mut lowerer,
-        ) {
-            Ok(statement) => do_step.push(statement),
-            Err(error) => errors.push(error),
+    if input.dae.algorithms.model.is_empty() {
+        let updates = input
+            .dae
+            .discrete
+            .real_updates
+            .iter()
+            .chain(input.dae.discrete.valued_updates.iter());
+        for equation in updates {
+            match lower_update_row(
+                equation,
+                &classification,
+                &conditions,
+                &sample_indices,
+                &mut lowerer,
+            ) {
+                Ok(statement) => do_step.push(statement),
+                Err(error) => errors.push(error),
+            }
         }
+        // MLS B.1b rows are simultaneous; order the sequential DoStep by
+        // current-tick reads (discrete algebraic loops are rejected).
+        do_step = schedule::order_by_dependencies(do_step).map_err(|error| vec![error])?;
+    } else {
+        do_step = algorithms::lower_model_algorithms(
+            &input.dae.algorithms.model,
+            &classification,
+            &mut lowerer,
+        )
+        .map_err(|error| vec![error])?;
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    // MLS B.1b rows are simultaneous; order the sequential DoStep by
-    // current-tick reads (discrete algebraic loops are rejected).
-    let mut do_step = schedule::order_by_dependencies(do_step).map_err(|error| vec![error])?;
-
     // 4. Keep only the pre slots the emitted code reads; unread slots
     // existed solely for the dropped keep-previous hold branches.
     let referenced = lowerer.into_referenced_pre();

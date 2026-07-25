@@ -220,7 +220,7 @@ impl<'a> ExprLowerer<'a> {
     }
 
     /// Lower an expression that must be Boolean.
-    fn lower_as_boolean(
+    pub(crate) fn lower_as_boolean(
         &mut self,
         expr: &Expression,
         context: &str,
@@ -900,6 +900,9 @@ impl<'a> ExprLowerer<'a> {
         args: &[Expression],
         span: Span,
     ) -> Result<Typed, GalecTargetError> {
+        if function == BuiltinFunction::Pre {
+            return self.lower_pre(args, span);
+        }
         let mapping = BUILTIN_MAP
             .iter()
             .find(|(modelica, _)| *modelica == function)
@@ -962,6 +965,28 @@ impl<'a> ExprLowerer<'a> {
                 Some(span),
             )),
         }
+    }
+
+    /// Structured algorithm provenance retains source `pre(x)` calls. Map
+    /// them to the same generated `__pre__.x` slots used by canonical DAE
+    /// lowering so the existing GALEC previous-state machinery is shared.
+    fn lower_pre(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let [Expression::VarRef {
+            name, subscripts, ..
+        }] = args
+        else {
+            return Err(unsupported(
+                "structured-pre".to_owned(),
+                "structured algorithm pre() requires one variable reference".to_owned(),
+                Some(span),
+            ));
+        };
+        let slot = rumoca_core::pre_slot_name(name.as_str());
+        self.lower_var_ref(slot.as_str(), subscripts, span)
     }
 
     /// 2-argument min/max: `imin`/`imax` for Integer operands, `min`/`max`
