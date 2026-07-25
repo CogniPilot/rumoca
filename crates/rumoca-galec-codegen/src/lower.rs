@@ -48,8 +48,8 @@ use crate::input::{GalecInput, GalecOptions};
 use crate::manifest_vars::build_manifest_variables;
 use crate::package::{AlgorithmCodePackage, ManifestFragment};
 
-pub(crate) mod clock;
 pub(crate) mod algorithms;
+pub(crate) mod clock;
 pub(crate) mod conditions;
 pub(crate) mod expr;
 pub(crate) mod guard;

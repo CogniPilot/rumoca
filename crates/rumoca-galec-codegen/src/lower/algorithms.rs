@@ -96,8 +96,7 @@ fn lower_statement(
         } => {
             let mut branches = Vec::with_capacity(cond_blocks.len());
             for block in cond_blocks {
-                let condition =
-                    lowerer.lower_as_boolean(&block.cond, "if-statement condition")?;
+                let condition = lowerer.lower_as_boolean(&block.cond, "if-statement condition")?;
                 let mut body = Vec::new();
                 lower_statements(&block.stmts, classification, lowerer, &mut body)?;
                 let branch_span = body

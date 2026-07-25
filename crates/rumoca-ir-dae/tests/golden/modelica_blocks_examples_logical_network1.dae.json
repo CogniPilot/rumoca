@@ -383,6 +383,8 @@
       "scalar_count": 1
     }
   ],
+  "model_algorithms": [],
+  "initial_algorithms": [],
   "f_c": [
     {
       "lhs": {

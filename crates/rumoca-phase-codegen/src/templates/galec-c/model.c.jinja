@@ -38,9 +38,29 @@ self->{{ value.name }}{%- for index in value.indices -%}[{% if index.kind == "li
 {%- elif value.kind == "binary" -%}{% if value.operator == "pow" %}pow({{ expr(value.lhs) }}, {{ expr(value.rhs) }}){% else %}({{ expr(value.lhs) }} {{ binary_operator(value.operator) }} {{ expr(value.rhs) }}){% endif %}
 {%- endif -%}
 {%- endmacro -%}
-{%- macro statement(value) -%}
-{%- if value.kind == "copy" -%}memcpy({{ reference(value.target) }}, {{ reference(value.source) }}, sizeof({{ reference(value.target) }}));
-{%- else -%}{{ reference(value.target) }} = {{ expr(value.value) }};
+{%- macro padding(depth) -%}
+{%- for _ in range(depth) %}    {% endfor -%}
+{%- endmacro -%}
+{%- macro statement(value, depth) -%}
+{%- if value.kind == "copy" -%}
+{{ padding(depth) }}memcpy({{ reference(value.target) }}, {{ reference(value.source) }}, sizeof({{ reference(value.target) }}));
+{%- elif value.kind == "assign" -%}
+{{ padding(depth) }}{{ reference(value.target) }} = {{ expr(value.value) }};
+{%- elif value.kind == "if" -%}
+{%- for branch in value.branches %}
+{{ padding(depth) }}{% if loop.first %}if{% else %}else if{% endif %} ({{ expr(branch.condition) }}) {
+{%- for item in branch.body %}
+{{ statement(item, depth + 1) }}
+{%- endfor %}
+{{ padding(depth) }}}
+{%- endfor %}
+{%- if value.else_body is not none %}
+{{ padding(depth) }}else {
+{%- for item in value.else_body %}
+{{ statement(item, depth + 1) }}
+{%- endfor %}
+{{ padding(depth) }}}
+{%- endif -%}
 {%- endif -%}
 {%- endmacro -%}
 /* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
@@ -85,20 +105,20 @@ RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32
 void {{ function_prefix }}_startup({{ struct_name }} *self) {
     (void)self;
 {%- for item in methods.startup %}
-    {{ statement(item) }}
+{{ statement(item, 1) }}
 {%- endfor %}
 }
 
 void {{ function_prefix }}_recalibrate({{ struct_name }} *self) {
     (void)self;
 {%- for item in methods.recalibrate %}
-    {{ statement(item) }}
+{{ statement(item, 1) }}
 {%- endfor %}
 }
 
 void {{ function_prefix }}_dostep({{ struct_name }} *self) {
     (void)self;
 {%- for item in methods.do_step %}
-    {{ statement(item) }}
+{{ statement(item, 1) }}
 {%- endfor %}
 }

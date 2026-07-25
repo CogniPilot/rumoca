@@ -30,6 +30,28 @@
 {{ value.type }} {{ name(value.name) }}{%- if value.dimensions -%}[{%- for dimension in value.dimensions -%}{% if dimension.kind == "derived" %}:{% else %}{{ expr(dimension.value) }}{% endif %}{% if not loop.last %}, {% endif %}{%- endfor -%}]{%- endif -%}
 {%- if value.min or value.max -%}({% if value.min %}min = {{ expr(value.min) }}{% endif %}{% if value.min and value.max %}, {% endif %}{% if value.max %}max = {{ expr(value.max) }}{% endif %}){%- endif -%};
 {%- endmacro -%}
+{%- macro padding(depth) -%}
+{%- for _ in range(depth) %}    {% endfor -%}
+{%- endmacro -%}
+{%- macro statement(value, depth) -%}
+{%- if value.kind == "assignment" -%}
+{{ padding(depth) }}{{ reference(value.target) }} := {{ expr(value.value) }};
+{%- elif value.kind == "if" -%}
+{%- for branch in value.branches %}
+{{ padding(depth) }}{% if loop.first %}if{% else %}elseif{% endif %} {{ expr(branch.condition) }} then
+{%- for item in branch.body %}
+{{ statement(item, depth + 1) }}
+{%- endfor %}
+{%- endfor %}
+{%- if value.else_body is not none %}
+{{ padding(depth) }}else
+{%- for item in value.else_body %}
+{{ statement(item, depth + 1) }}
+{%- endfor %}
+{%- endif %}
+{{ padding(depth) }}end if;
+{%- endif -%}
+{%- endmacro -%}
 block {{ name(ctx.name) }}
 {%- for variable in ctx.interface %}
     {{ variable.prefix }} {{ declaration(variable.declaration) }}
@@ -42,8 +64,8 @@ public
 {%- for method in ctx.methods %}
     method {{ method.name }}
     algorithm
-{%- for statement in method.statements %}
-        {{ reference(statement.target) }} := {{ expr(statement.value) }};
+{%- for item in method.statements %}
+{{ statement(item, 2) }}
 {%- endfor %}
     end {{ method.name }};
 {%- endfor %}

@@ -1,8 +1,9 @@
 //! GALEC AST → structured C codegen IR for the `galec-c` export (SPEC_0034
 //! GAL-024).
 //!
-//! Scope: exactly the AST shape [`crate::lower`] emits today — sequential
-//! [`Statement::Assignment`]s over single-part `self.` state references,
+//! Scope: exactly the AST shape [`crate::lower`] emits today — nested
+//! [`Statement::Assignment`] and Boolean [`Statement::If`] trees over
+//! single-part `self.` state references,
 //! with expressions built from literals, references, the emittable §3.2.6
 //! builtin calls ([`crate::lower::emittable_builtin_targets`]),
 //! parentheses, if-expressions, `not`, unary minus over references, binary
@@ -25,7 +26,9 @@
 //! - builtin identity and arguments stay semantic in the context; the
 //!   templates own C99 names and helper selection.
 
-use rumoca_ir_galec::ast::{BinaryOp, Expression, IfExpression, Name, Reference, Statement};
+use rumoca_ir_galec::ast::{
+    BinaryOp, Condition, Expression, IfExpression, Name, Reference, Spanned, Statement,
+};
 
 use crate::c_mangle::CNameTable;
 use crate::diagnostic::GalecTargetError;
@@ -52,19 +55,61 @@ impl<'a> CContextLowerer<'a> {
         &self,
         statement: &Statement,
     ) -> Result<Vec<serde_json::Value>, GalecTargetError> {
-        let Statement::Assignment { target, value } = statement else {
-            return Err(match statement {
-                Statement::MultiAssignment { .. } => {
-                    unsupported_statement("a multi-assignment statement")
-                }
-                Statement::Call(_) => unsupported_statement("a bare call statement"),
-                Statement::If(_) => unsupported_statement("an if statement"),
-                Statement::For(_) => unsupported_statement("a for loop"),
-                Statement::Limit(_) => unsupported_statement("a limit statement"),
-                Statement::Signal(_) => unsupported_statement("a signal statement"),
-                Statement::Assignment { .. } => unreachable!(),
-            });
-        };
+        match statement {
+            Statement::Assignment { target, value } => self.assignment_contexts(target, value),
+            Statement::If(if_statement) => {
+                let branches = if_statement
+                    .branches
+                    .iter()
+                    .map(|branch| {
+                        let Condition::Expression(condition) = &branch.condition else {
+                            return Err(unsupported_statement(
+                                "an if statement with an error-signal condition",
+                            ));
+                        };
+                        Ok(serde_json::json!({
+                            "condition": self.expression_context(condition)?,
+                            "body": self.body_contexts(&branch.body)?,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, GalecTargetError>>()?;
+                let else_body = if_statement
+                    .else_body
+                    .as_ref()
+                    .map(|body| self.body_contexts(body))
+                    .transpose()?;
+                Ok(vec![serde_json::json!({
+                    "kind": "if",
+                    "branches": branches,
+                    "else_body": else_body,
+                })])
+            }
+            Statement::MultiAssignment { .. } => {
+                Err(unsupported_statement("a multi-assignment statement"))
+            }
+            Statement::Call(_) => Err(unsupported_statement("a bare call statement")),
+            Statement::For(_) => Err(unsupported_statement("a for loop")),
+            Statement::Limit(_) => Err(unsupported_statement("a limit statement")),
+            Statement::Signal(_) => Err(unsupported_statement("a signal statement")),
+        }
+    }
+
+    fn body_contexts(
+        &self,
+        statements: &[Spanned<Statement>],
+    ) -> Result<Vec<serde_json::Value>, GalecTargetError> {
+        statements
+            .iter()
+            .map(|statement| self.statement_contexts(&statement.node))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|groups| groups.into_iter().flatten().collect())
+    }
+
+    fn assignment_contexts(
+        &self,
+        target: &Reference,
+        value: &Expression,
+    ) -> Result<Vec<serde_json::Value>, GalecTargetError> {
         if let Expression::Array(elements) = value {
             let mut assignments = Vec::new();
             self.array_assignment_context(target, elements, &mut Vec::new(), &mut assignments)?;
@@ -497,8 +542,8 @@ pub(crate) fn binary_op_name(op: BinaryOp) -> &'static str {
 fn unsupported_statement(construct: &'static str) -> GalecTargetError {
     GalecTargetError::CExportUnsupported {
         construct,
-        detail: "the current DAE lowering emits sequential assignments only \
-                 (crate::lower); this statement kind cannot have come from it"
+        detail: "the current C context supports assignments and Boolean if statements only; \
+                 this statement kind cannot come from the supported DAE lowering"
             .to_owned(),
     }
 }
@@ -507,8 +552,9 @@ fn unsupported_statement(construct: &'static str) -> GalecTargetError {
 mod tests {
     use rumoca_core::Span;
     use rumoca_ir_galec::ast::{
-        Block, Dimension, Expression, Name, ProtectedEntity, ProtectedKind, RangeAttributes,
-        RefPart, Reference, ScalarType, Statement, TypeRef, VariableDeclaration,
+        Block, Condition, Dimension, Expression, IfBranch, IfExpression, IfStatement, Name,
+        ProtectedEntity, ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, Spanned,
+        Statement, TypeRef, VariableDeclaration,
     };
 
     use super::CContextLowerer;
@@ -551,5 +597,55 @@ mod tests {
         assert_eq!(assignments[0]["target"]["indices"][1]["value"], 0);
         assert_eq!(assignments[1]["target"]["indices"][0]["value"], 0);
         assert_eq!(assignments[1]["target"]["indices"][1]["value"], 1);
+    }
+
+    #[test]
+    fn statement_if_and_expression_if_remain_distinct_context_nodes() {
+        let name = Name::ident("x");
+        let mut block = Block::new(Name::ident("StructuredIf"));
+        block.protected.push(ProtectedEntity {
+            kind: ProtectedKind::State,
+            decl: VariableDeclaration {
+                ty: TypeRef::Primitive(ScalarType::Real),
+                name: name.clone(),
+                dimensions: Vec::new(),
+                range: RangeAttributes::default(),
+                span: Span::DUMMY,
+            },
+            start: None,
+        });
+        let target = Reference::State(vec![RefPart {
+            name,
+            subscripts: Vec::new(),
+            span: Span::DUMMY,
+        }]);
+        let statement = Statement::If(IfStatement {
+            branches: vec![IfBranch {
+                condition: Condition::Expression(Expression::Bool(true)),
+                body: vec![Spanned::dummy(Statement::Assignment {
+                    target: target.clone(),
+                    value: Expression::If(IfExpression {
+                        branches: vec![(Expression::Bool(false), Expression::Real(1.0))],
+                        else_value: Box::new(Expression::Real(2.0)),
+                    }),
+                })],
+                span: Span::DUMMY,
+            }],
+            else_body: Some(vec![Spanned::dummy(Statement::Assignment {
+                target,
+                value: Expression::Real(3.0),
+            })]),
+        });
+
+        let names = CNameTable::build(&block).expect("build C names");
+        let contexts = CContextLowerer::new(&names)
+            .statement_contexts(&statement)
+            .expect("lower structured if");
+
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0]["kind"], "if");
+        assert_eq!(contexts[0]["branches"][0]["body"][0]["kind"], "assign");
+        assert_eq!(contexts[0]["branches"][0]["body"][0]["value"]["kind"], "if");
+        assert_eq!(contexts[0]["else_body"][0]["kind"], "assign");
     }
 }

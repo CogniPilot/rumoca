@@ -15,7 +15,7 @@
 //! - [`c_template_context`] serializes the typed context the
 //!   `galec-c` minijinja templates consume (GAL-008/GAL-024):
 //!   C-mangled struct/function naming, per-variable C types + field names,
-//!   and C-printed method statement lines.
+//!   and structured method statement/expression trees.
 
 use serde::Serialize;
 
@@ -29,7 +29,7 @@ use crate::manifest_context::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
 use rumoca_ir_galec::ast::{
-    Associativity, Block, Dimension, Expression, InterfaceKind, Name, PrecedenceClass,
+    Associativity, Block, Condition, Dimension, Expression, InterfaceKind, Name, PrecedenceClass,
     ProtectedKind, Reference, ScalarType, Spanned, Statement, TypeRef, VariableDeclaration,
 };
 
@@ -144,19 +144,49 @@ fn method_context(
     }
     Ok(serde_json::json!({
         "name": name,
-        "statements": method.statements.iter().map(|statement| {
-            match &statement.node {
-                Statement::Assignment { target, value } => Ok(serde_json::json!({
-                    "kind": "assignment",
-                    "target": alg_reference_context(target)?,
-                    "value": alg_expression_context(value)?,
-                })),
-                other => Err(GalecTargetError::LoweringInternal {
-                    detail: format!("projected method {name} contains unsupported statement {other:?}"),
-                }),
-            }
-        }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+        "statements": alg_statement_contexts(&method.statements, name)?,
     }))
+}
+
+fn alg_statement_contexts(
+    statements: &[Spanned<Statement>],
+    method_name: &'static str,
+) -> Result<Vec<serde_json::Value>, GalecTargetError> {
+    statements
+        .iter()
+        .map(|statement| match &statement.node {
+            Statement::Assignment { target, value } => Ok(serde_json::json!({
+                "kind": "assignment",
+                "target": alg_reference_context(target)?,
+                "value": alg_expression_context(value)?,
+            })),
+            Statement::If(if_statement) => Ok(serde_json::json!({
+                "kind": "if",
+                "branches": if_statement.branches.iter().map(|branch| {
+                    let Condition::Expression(condition) = &branch.condition else {
+                        return Err(GalecTargetError::LoweringInternal {
+                            detail: format!(
+                                "projected method {method_name} contains an unsupported \
+                                 error-signal if condition"
+                            ),
+                        });
+                    };
+                    Ok(serde_json::json!({
+                        "condition": alg_expression_context(condition)?,
+                        "body": alg_statement_contexts(&branch.body, method_name)?,
+                    }))
+                }).collect::<Result<Vec<_>, GalecTargetError>>()?,
+                "else_body": if_statement.else_body.as_ref()
+                    .map(|body| alg_statement_contexts(body, method_name))
+                    .transpose()?,
+            })),
+            other => Err(GalecTargetError::LoweringInternal {
+                detail: format!(
+                    "projected method {method_name} contains unsupported statement {other:?}"
+                ),
+            }),
+        })
+        .collect()
 }
 
 fn declaration_context(decl: &VariableDeclaration) -> Result<serde_json::Value, GalecTargetError> {

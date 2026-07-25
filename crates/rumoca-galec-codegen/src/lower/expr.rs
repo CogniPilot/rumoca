@@ -970,14 +970,12 @@ impl<'a> ExprLowerer<'a> {
     /// Structured algorithm provenance retains source `pre(x)` calls. Map
     /// them to the same generated `__pre__.x` slots used by canonical DAE
     /// lowering so the existing GALEC previous-state machinery is shared.
-    fn lower_pre(
-        &mut self,
-        args: &[Expression],
-        span: Span,
-    ) -> Result<Typed, GalecTargetError> {
-        let [Expression::VarRef {
-            name, subscripts, ..
-        }] = args
+    fn lower_pre(&mut self, args: &[Expression], span: Span) -> Result<Typed, GalecTargetError> {
+        let [
+            Expression::VarRef {
+                name, subscripts, ..
+            },
+        ] = args
         else {
             return Err(unsupported(
                 "structured-pre".to_owned(),
