@@ -916,7 +916,7 @@ enum ManifestRenderer {
     WgslSolve,
     /// A non-packaged `ir = "galec"` target renders each file from its
     /// explicitly declared GALEC context.
-    Galec(rumoca_compile::galec::GalecPackagingPlan),
+    Galec(Box<rumoca_compile::galec::GalecPackagingPlan>),
 }
 
 /// Resolve the renderer for one non-eFMU target invocation (module docs on
@@ -951,7 +951,7 @@ fn resolve_manifest_renderer(
             )
         }
         .map_err(|error| galec_plan_error(result, error, target))?;
-        return Ok(ManifestRenderer::Galec(plan));
+        return Ok(ManifestRenderer::Galec(Box::new(plan)));
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -1303,7 +1303,7 @@ end RelativeIncludeDemo;
             let rendered = files
                 .iter()
                 .find(|file| file.path == path)
-                .unwrap_or_else(|| panic!("rendered target should contain {path}"));
+                .expect("rendered target should contain each expected eFMI output");
             assert!(!rendered.content.is_empty(), "{path} should not be empty");
             assert!(
                 !rendered.content.contains("{% include"),
@@ -1313,7 +1313,7 @@ end RelativeIncludeDemo;
     }
 
     #[test]
-    fn galec_c_templates_retain_their_legacy_top_level_context() {
+    fn galec_c_templates_retain_their_top_level_context() {
         let mut env = minijinja::Environment::new();
         env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
         let context = serde_json::json!({"struct_name": "DemoState"});
