@@ -111,19 +111,24 @@ fn collect_statement_keys(
                     *span
                 };
                 for block in blocks {
-                    collect_when_target_keys(&block.stmts, span, keys);
+                    collect_target_keys_with_span(&block.stmts, span, keys);
                 }
             }
             Statement::If {
                 cond_blocks,
                 else_block,
-                ..
+                span,
             } => {
+                let span = if span.is_dummy() {
+                    fallback_span
+                } else {
+                    *span
+                };
                 for block in cond_blocks {
-                    collect_statement_keys(&block.stmts, fallback_span, keys);
+                    collect_target_keys_with_span(&block.stmts, span, keys);
                 }
                 if let Some(statements) = else_block {
-                    collect_statement_keys(statements, fallback_span, keys);
+                    collect_target_keys_with_span(statements, span, keys);
                 }
             }
             _ => {}
@@ -131,16 +136,16 @@ fn collect_statement_keys(
     }
 }
 
-fn collect_when_target_keys(
+fn collect_target_keys_with_span(
     statements: &[Statement],
-    when_span: Span,
+    owner_span: Span,
     keys: &mut Vec<DerivedUpdateKey>,
 ) {
     for statement in statements {
         match statement {
             Statement::Assignment { comp, .. } => keys.push(DerivedUpdateKey {
                 target: comp.to_var_name(),
-                span: when_span,
+                span: owner_span,
             }),
             Statement::If {
                 cond_blocks,
@@ -148,10 +153,10 @@ fn collect_when_target_keys(
                 ..
             } => {
                 for block in cond_blocks {
-                    collect_when_target_keys(&block.stmts, when_span, keys);
+                    collect_target_keys_with_span(&block.stmts, owner_span, keys);
                 }
                 if let Some(statements) = else_block {
-                    collect_when_target_keys(statements, when_span, keys);
+                    collect_target_keys_with_span(statements, owner_span, keys);
                 }
             }
             _ => {}

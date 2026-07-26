@@ -80,6 +80,25 @@ algorithm
 end GalecFixedRangeAlgorithm;
 ";
 
+const CONDITIONAL_ALGORITHM_FIXTURE: &str = "\
+model GalecConditionalAlgorithm
+  constant Real samplePeriod = 0.1;
+  parameter Boolean choose = true;
+  discrete output Real x(start = 0.0);
+  discrete Real tick(start = 0.0);
+algorithm
+  if choose then
+    x := pre(x) + 1.0;
+  else
+    x := pre(x) + 2.0;
+  end if;
+equation
+  when sample(0.0, samplePeriod) then
+    tick = pre(tick) + 1.0;
+  end when;
+end GalecConditionalAlgorithm;
+";
+
 fn run_compile_target_galec(file: &Path, out_dir: &Path) -> Output {
     run_compile_target(file, "galec", out_dir)
 }
@@ -147,6 +166,32 @@ fn sampled_algorithm_with_fixed_range_for_compiles() {
     assert!(
         alg.contains("x[1]") && alg.contains("x[2]"),
         "fixed-range assignments must be expanded into the generated block:\n{alg}"
+    );
+}
+
+#[test]
+fn top_level_conditional_algorithm_compiles() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecConditionalAlgorithm";
+    let file = write_fixture(dir.path(), model, CONDITIONAL_ALGORITHM_FIXTURE);
+    let output = run_compile_target_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "`compile --target galec` rejected a structured conditional algorithm.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let alg = fs::read_to_string(
+        out_dir
+            .join(model)
+            .join("AlgorithmCode")
+            .join(format!("{model}.alg")),
+    )
+    .expect("read generated GALEC");
+    assert!(
+        alg.contains("if self.choose then") && alg.contains("else"),
+        "the generated block must retain the conditional structure:\n{alg}"
     );
 }
 
