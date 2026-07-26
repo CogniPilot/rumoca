@@ -11,6 +11,7 @@ mod guarded_expr;
 mod overlapping_array_assignments;
 mod rewrite_discrete;
 mod slice_lowering;
+mod structured;
 mod substitution;
 mod target_names;
 use alias_canonicalization::{
@@ -1955,7 +1956,7 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
             Ok(lowered) => {
                 dae.algorithms
                     .model
-                    .push(structured_dae_algorithm(algorithm, flat)?);
+                    .push(structured::structured_dae_algorithm(algorithm, flat)?);
                 dae.continuous.equations.extend(lowered.main);
                 dae.discrete.real_updates.extend(lowered.f_z);
                 dae.discrete.valued_updates.extend(lowered.f_m);
@@ -1975,13 +1976,10 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
             Ok(lowered) => {
                 dae.algorithms
                     .initial
-                    .push(structured_dae_algorithm(algorithm, flat)?);
+                    .push(structured::structured_dae_algorithm(algorithm, flat)?);
                 dae.initialization.equations.extend(lowered.main);
-                // MLS §8.6 and §11.1: initial algorithms contribute equations
-                // to the initialization problem. Discrete targets still use
-                // the same Appendix B solved forms as model algorithms, but
-                // they must initialize here rather than populate runtime event
-                // update partitions.
+                // MLS §8.6/§11.1: initialize the Appendix B solved forms here,
+                // rather than populating the runtime event-update partitions.
                 dae.initialization.equations.extend(lowered.f_z);
                 dae.initialization.equations.extend(lowered.f_m);
             }
@@ -1996,131 +1994,6 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     }
 
     Ok(())
-}
-
-fn structured_dae_algorithm(
-    algorithm: &rumoca_ir_flat::Algorithm,
-    flat: &Model,
-) -> Result<rumoca_ir_dae::Algorithm, ToDaeError> {
-    Ok(rumoca_ir_dae::Algorithm::new(
-        algorithm
-            .statements
-            .iter()
-            .map(|statement| structured_dae_statement(statement, flat))
-            .collect::<Result<Vec<_>, _>>()?,
-        algorithm.span,
-        &algorithm.origin,
-    ))
-}
-
-fn structured_dae_statement(statement: &Statement, flat: &Model) -> Result<Statement, ToDaeError> {
-    let expr = |value: &Expression| flat_to_dae_expression_with_refs(value, flat);
-    Ok(match statement {
-        Statement::Empty { span } => Statement::Empty { span: *span },
-        Statement::Assignment { comp, value, span } => Statement::Assignment {
-            comp: comp.clone(),
-            value: expr(value)?,
-            span: *span,
-        },
-        Statement::Return { span } => Statement::Return { span: *span },
-        Statement::Break { span } => Statement::Break { span: *span },
-        Statement::For {
-            indices,
-            equations,
-            span,
-        } => Statement::For {
-            indices: indices
-                .iter()
-                .map(|index| {
-                    Ok(rumoca_core::ForIndex {
-                        ident: index.ident.clone(),
-                        range: expr(&index.range)?,
-                    })
-                })
-                .collect::<Result<Vec<_>, ToDaeError>>()?,
-            equations: equations
-                .iter()
-                .map(|nested| structured_dae_statement(nested, flat))
-                .collect::<Result<Vec<_>, _>>()?,
-            span: *span,
-        },
-        Statement::While { block, span } => Statement::While {
-            block: structured_dae_statement_block(block, flat)?,
-            span: *span,
-        },
-        Statement::If {
-            cond_blocks,
-            else_block,
-            span,
-        } => Statement::If {
-            cond_blocks: cond_blocks
-                .iter()
-                .map(|block| structured_dae_statement_block(block, flat))
-                .collect::<Result<Vec<_>, _>>()?,
-            else_block: else_block
-                .as_ref()
-                .map(|statements| {
-                    statements
-                        .iter()
-                        .map(|nested| structured_dae_statement(nested, flat))
-                        .collect()
-                })
-                .transpose()?,
-            span: *span,
-        },
-        Statement::When { blocks, span } => Statement::When {
-            blocks: blocks
-                .iter()
-                .map(|block| structured_dae_statement_block(block, flat))
-                .collect::<Result<Vec<_>, _>>()?,
-            span: *span,
-        },
-        Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-            span,
-        } => Statement::FunctionCall {
-            comp: comp.clone(),
-            args: args.iter().map(expr).collect::<Result<Vec<_>, _>>()?,
-            outputs: outputs.clone(),
-            span: *span,
-        },
-        Statement::Reinit {
-            variable,
-            value,
-            span,
-        } => Statement::Reinit {
-            variable: variable.clone(),
-            value: expr(value)?,
-            span: *span,
-        },
-        Statement::Assert {
-            condition,
-            message,
-            level,
-            span,
-        } => Statement::Assert {
-            condition: expr(condition)?,
-            message: Box::new(expr(message)?),
-            level: level.as_deref().map(expr).transpose()?.map(Box::new),
-            span: *span,
-        },
-    })
-}
-
-fn structured_dae_statement_block(
-    block: &StatementBlock,
-    flat: &Model,
-) -> Result<StatementBlock, ToDaeError> {
-    Ok(StatementBlock {
-        cond: flat_to_dae_expression_with_refs(&block.cond, flat)?,
-        stmts: block
-            .stmts
-            .iter()
-            .map(|statement| structured_dae_statement(statement, flat))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
 }
 
 #[cfg(test)]
