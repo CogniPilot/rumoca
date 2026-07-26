@@ -33,6 +33,14 @@ pub(crate) fn lower_model_algorithms(
 ) -> Result<Vec<Vec<gast::Spanned<gast::Statement>>>, GalecTargetError> {
     let mut lowered_algorithms = Vec::with_capacity(algorithms.len());
     for algorithm in algorithms {
+        // Fixed-range loops already have an equivalent, statically expanded
+        // equation representation in the DAE. Fall back for the whole
+        // algorithm so source-ordered updates around the loop are not split
+        // between structured statements and expanded rows.
+        if contains_for_statement(&algorithm.statements) {
+            lowered_algorithms.push(Vec::new());
+            continue;
+        }
         let mut lowered = Vec::new();
         for statement in &algorithm.statements {
             lower_runtime_statement(statement, classification, lowerer, &mut lowered)?;
@@ -45,9 +53,37 @@ pub(crate) fn lower_model_algorithms(
 pub(crate) fn derived_update_keys(algorithms: &[Algorithm]) -> Vec<DerivedUpdateKey> {
     let mut keys = Vec::new();
     for algorithm in algorithms {
+        // Keep every expanded row when lower_model_algorithms uses the
+        // fixed-range-loop fallback above.
+        if contains_for_statement(&algorithm.statements) {
+            continue;
+        }
         collect_statement_keys(&algorithm.statements, algorithm.span, &mut keys);
     }
     keys
+}
+
+fn contains_for_statement(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::For { .. } => true,
+        Statement::While { block, .. } => contains_for_statement(&block.stmts),
+        Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks
+                .iter()
+                .any(|block| contains_for_statement(&block.stmts))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|statements| contains_for_statement(statements))
+        }
+        Statement::When { blocks, .. } => blocks
+            .iter()
+            .any(|block| contains_for_statement(&block.stmts)),
+        _ => false,
+    })
 }
 
 fn collect_statement_keys(
