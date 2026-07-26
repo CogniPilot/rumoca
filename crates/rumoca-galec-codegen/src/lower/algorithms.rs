@@ -30,14 +30,16 @@ pub(crate) fn lower_model_algorithms(
     algorithms: &[Algorithm],
     classification: &Classification<'_>,
     lowerer: &mut ExprLowerer<'_>,
-) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-    let mut lowered = Vec::new();
+) -> Result<Vec<Vec<gast::Spanned<gast::Statement>>>, GalecTargetError> {
+    let mut lowered_algorithms = Vec::with_capacity(algorithms.len());
     for algorithm in algorithms {
+        let mut lowered = Vec::new();
         for statement in &algorithm.statements {
             lower_runtime_statement(statement, classification, lowerer, &mut lowered)?;
         }
+        lowered_algorithms.push(lowered);
     }
-    Ok(lowered)
+    Ok(lowered_algorithms)
 }
 
 pub(crate) fn derived_update_keys(algorithms: &[Algorithm]) -> Vec<DerivedUpdateKey> {

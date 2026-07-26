@@ -866,6 +866,10 @@ fn structured_algorithm_keeps_independent_equation_updates() {
         do_step.contains("self.pidY :=") && do_step.contains("self.vMotor :="),
         "equation-section updates must survive alongside a structured algorithm:\n{alg}"
     );
+    assert!(
+        do_step_position(&alg, "self.gainY :=") < do_step_position(&alg, "self.feedbackY :="),
+        "an equation update must run after the structured algorithm assignment it reads:\n{alg}"
+    );
 }
 
 #[test]
@@ -878,7 +882,7 @@ fn sampled_algorithm_retains_residual_guard_and_elsewhen_priority() {
         },
         StatementBlock {
             cond: sample_builtin(),
-            stmts: vec![assignment("gainY", var("feedbackY"))],
+            stmts: vec![assignment("gainY", var("wMotor"))],
         },
     ]));
     let types = pid_types();
@@ -903,7 +907,7 @@ fn sampled_algorithm_retains_residual_guard_and_elsewhen_priority() {
         .expect("sampled elsewhen remains an ordered fallback")
         + first_assignment;
     let second_assignment = do_step[fallback..]
-        .find("self.gainY := self.feedbackY;")
+        .find("self.gainY := self.wMotor;")
         .expect("fallback branch assignment")
         + fallback;
     assert!(

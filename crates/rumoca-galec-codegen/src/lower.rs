@@ -110,18 +110,17 @@ pub fn lower_to_algorithm_code(
     if !errors.is_empty() {
         return Err(errors);
     }
-    // MLS B.1b rows are simultaneous; order the equation-section updates
-    // before combining them with source-ordered structured algorithms.
-    let mut do_step =
-        schedule::order_by_dependencies(equation_statements).map_err(|error| vec![error])?;
-    do_step.extend(
-        algorithms::lower_model_algorithms(
-            &input.dae.algorithms.model,
-            &classification,
-            &mut lowerer,
-        )
-        .map_err(|error| vec![error])?,
-    );
+    let algorithm_statements = algorithms::lower_model_algorithms(
+        &input.dae.algorithms.model,
+        &classification,
+        &mut lowerer,
+    )
+    .map_err(|error| vec![error])?;
+    // Equation rows are simultaneous, while each algorithm section is
+    // sequential. Schedule both sources together so cross-source reads see
+    // current-tick writers without changing source order inside an algorithm.
+    let mut do_step = schedule::order_mixed_updates(equation_statements, algorithm_statements)
+        .map_err(|error| vec![error])?;
     // 4. Keep only the pre slots the emitted code reads; unread slots
     // existed solely for the dropped keep-previous hold branches.
     let referenced = lowerer.into_referenced_pre();
